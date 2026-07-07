@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
@@ -161,40 +162,39 @@ async def _dump_radios(page) -> None:
 
 
 async def _choose_radio(page, label: str) -> bool:
-    """点一个单选项。抖音用 Semi Design 单选(文本外套 label/icon),
-    单纯 get_by_text 常点不中,故多策略:role → 精确文本 → label 祖先 → 强制点。"""
-    # 1) 无障碍 role=radio(Semi 会给 radio 组件挂 role)
+    """点一个单选项。**只走安全精确策略**,绝不 force / 不点任意祖先 ——
+    否则可能误点「继续添加/封面」等触发系统选图框的按钮,卡死自动化。"""
+    # 1) 无障碍 role=radio(Semi 给单选组件挂 role),用 check() 语义最稳
     try:
         loc = page.get_by_role("radio", name=label, exact=True)
         if await loc.count():
             await loc.first.scroll_into_view_if_needed(timeout=2000)
-            await loc.first.click(timeout=2500)
+            try:
+                await loc.first.check(timeout=2500)
+            except Exception:
+                await loc.first.click(timeout=2500)
             _log(f"已选发布设置「{label}」(role)")
             return True
     except Exception:
         pass
-    # 2) 精确文本节点 → 点它,以及点它最近的可点祖先(label / .semi-radio)
+    # 2) 仅在 Semi 单选组件内、且整项文本恰等于 label 的元素上点(不碰其它任何东西)
     try:
-        node = page.get_by_text(label, exact=True).first
-        if await node.count():
-            await node.scroll_into_view_if_needed(timeout=2000)
-            for target in (node,
-                           node.locator('xpath=ancestor-or-self::label[1]'),
-                           node.locator('xpath=ancestor-or-self::*[contains(@class,"radio")][1]')):
-                try:
-                    if await target.count():
-                        await target.first.click(timeout=2000)
-                        _log(f"已选发布设置「{label}」(text/ancestor)")
-                        return True
-                except Exception:
-                    continue
-            # 3) 强制点(绕过遮挡判定)
-            await node.click(timeout=2000, force=True)
-            _log(f"已选发布设置「{label}」(force)")
-            return True
+        radios = page.locator('label.semi-radio, .semi-radio, label[class*="radio"]')
+        n = await radios.count()
+        for i in range(n):
+            r = radios.nth(i)
+            try:
+                txt = ((await r.inner_text()) or "").strip()
+            except Exception:
+                continue
+            if txt == label:
+                await r.scroll_into_view_if_needed(timeout=2000)
+                await r.click(timeout=2000)
+                _log(f"已选发布设置「{label}」(semi-radio)")
+                return True
     except Exception:
         pass
-    _log(f"⚠️ 未点中发布设置「{label}」—— 下面打印页面实际可选项供校准:")
+    _log(f"⚠️ 未点中发布设置「{label}」(已安全跳过,不乱点)—— 打印页面实际可选项供校准:")
     await _dump_radios(page)
     return False
 
@@ -226,6 +226,22 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
 
     ctx = await mgr.open_headed(identity)
     page = await ctx.new_page()
+
+    # 保险:媒体上传我们全用 set_input_files(不触发 filechooser),故任何 filechooser
+    # 事件都是意外(比如误点了「继续添加/封面」的 <input type=file>),自动取消避免卡死。
+    # 注:抖音部分选图用系统级 showOpenFilePicker,此 hook 拦不到 —— 根本对策是别乱点。
+    def _fc_guard(fc):
+        async def _cancel():
+            try:
+                await fc.set_files([])
+            except Exception:
+                pass
+        asyncio.ensure_future(_cancel())
+    try:
+        page.on("filechooser", _fc_guard)
+    except Exception:
+        pass
+
     ok, result_url, error = False, "", ""
     try:
         url = IMAGE_URL if media_type == "images" else UPLOAD_URL
