@@ -269,10 +269,17 @@
   .rp-box .field { display:block; margin:0 0 5px; }
   .rp-src { color:var(--mut); font-size:12px; margin:-6px 0 2px; }
   .rp-thumbs { display:flex; gap:8px; align-items:center; overflow-x:auto; padding:2px 0 6px; }
-  .rp-thumbs img, .rp-thumbs .rp-th-ph { flex:0 0 auto; width:66px; height:66px; border-radius:10px; object-fit:cover; cursor:zoom-in; border:1px solid var(--line, #e5e5e5); background:var(--card, #f4f4f4); transition:transform .12s, box-shadow .12s; }
-  .rp-thumbs img:hover { transform:translateY(-2px); box-shadow:0 4px 12px rgba(0,0,0,.18); }
-  .rp-thumbs .rp-th-ph { display:flex; align-items:center; justify-content:center; }
-  .rp-thumbs .rp-th-more { flex:0 0 auto; color:var(--mut); font-size:12px; cursor:pointer; white-space:nowrap; padding-right:4px; }
+  .rp-th { position:relative; flex:0 0 auto; width:72px; }
+  .rp-th img, .rp-thumbs .rp-th-ph { width:72px; height:72px; border-radius:10px; object-fit:cover; cursor:zoom-in; border:1px solid var(--line, #e5e5e5); background:var(--card, #f4f4f4); display:block; }
+  .rp-thumbs .rp-th-ph { flex:0 0 auto; display:flex; align-items:center; justify-content:center; }
+  .rp-th-badge { position:absolute; top:3px; left:3px; font-size:10px; line-height:1; padding:2px 5px; border-radius:6px; background:rgba(0,0,0,.55); color:#fff; pointer-events:none; }
+  .rp-th-badge.cover { background:var(--brand, #ff2e51); }
+  .rp-th-x { position:absolute; top:2px; right:2px; width:18px; height:18px; border:none; border-radius:50%; background:rgba(0,0,0,.6); color:#fff; font-size:11px; line-height:1; cursor:pointer; padding:0; display:flex; align-items:center; justify-content:center; }
+  .rp-th-x:hover { background:#e0245e; }
+  .rp-th-mv { position:absolute; bottom:2px; left:2px; right:2px; display:flex; justify-content:space-between; }
+  .rp-th-mv button { width:22px; height:18px; border:none; border-radius:5px; background:rgba(0,0,0,.55); color:#fff; cursor:pointer; font-size:13px; line-height:1; padding:0; }
+  .rp-th-mv button:disabled { opacity:.3; cursor:default; }
+  .rp-th-more { flex:0 0 auto; align-self:center; color:var(--mut); font-size:12px; white-space:nowrap; padding:0 4px; }
 
   /* carousel */
   .pv-carousel { position:relative; width:100%; overflow:hidden; }

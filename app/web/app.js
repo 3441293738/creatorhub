@@ -2037,25 +2037,62 @@ async function openRepost(id, target) {
   $("repost").style.display = "flex";
   $("rp-title").focus();
 }
+let RP_MEDIA = [];         // 可编辑图集:[{url, idx}](idx=原始序号,提交时回传)
+let RP_MEDIA_LEN = 0;      // 原始图片总数(判断是否被编辑过)
+let RP_IS_VIDEO = false;
 async function renderRepostThumbs(id) {
   const box = $("rp-thumbs"); if (!box) return;
+  RP_MEDIA = []; RP_MEDIA_LEN = 0; RP_IS_VIDEO = false;
   box.style.display = "none"; box.innerHTML = "";
   try {
     const d = await api("/api/contents/" + id + "/media");
     if (REPOST_ID !== id) return;   // 弹窗已切换/关闭
     const vid = (d.medias || []).find(m => m.kind === "video");
-    let items;
     if (d.media_type === "video" && vid) {
-      items = [`<div class="rp-th-ph" onclick="openPreview(${id})" title="点击预览视频">${ic("i-play")}</div>`];
-    } else {
-      const imgs = (d.medias || []).filter(m => m.kind === "image").map(m => m.url);
-      const all = imgs.length ? imgs : (d.cover_url ? [d.cover_url] : []);
-      const list = all.slice(0, 20);
-      items = list.map(u => `<img src="${esc(u)}" referrerpolicy="no-referrer" alt="" title="点击看大图" onclick="openPreview(${id})">`);
-      if (all.length > 20) items.push(`<span class="rp-th-more" onclick="openPreview(${id})">+${all.length - 20} 张</span>`);
+      RP_IS_VIDEO = true;
+      box.innerHTML = `<div class="rp-th-ph" onclick="openPreview(${id})" title="点击预览视频">${ic("i-play")}</div>`;
+      box.style.display = "flex";
+      return;
     }
-    if (items.length) { box.innerHTML = items.join(""); box.style.display = "flex"; }
+    const imgs = (d.medias || []).filter(m => m.kind === "image").map(m => m.url);
+    const all = imgs.length ? imgs : (d.cover_url ? [d.cover_url] : []);
+    RP_MEDIA = all.map((u, i) => ({ url: u, idx: i }));
+    RP_MEDIA_LEN = RP_MEDIA.length;
+    rpDrawThumbs();
   } catch (e) { /* 预览失败不影响转发 */ }
+}
+function rpDrawThumbs() {
+  const box = $("rp-thumbs"); if (!box) return;
+  if (!RP_MEDIA.length) { box.style.display = "none"; box.innerHTML = ""; return; }
+  const n = RP_MEDIA.length;
+  box.innerHTML = RP_MEDIA.map((m, pos) => `
+    <div class="rp-th">
+      <img src="${esc(m.url)}" referrerpolicy="no-referrer" alt="" title="点击看大图" onclick="openPreview(${REPOST_ID})">
+      <span class="rp-th-badge${pos === 0 ? " cover" : ""}">${pos === 0 ? "封面" : pos + 1}</span>
+      <button type="button" class="rp-th-x" title="移除这张" onclick="rpImgRemove(${pos})">✕</button>
+      <div class="rp-th-mv">
+        <button type="button" onclick="rpImgMove(${pos},-1)" ${pos === 0 ? "disabled" : ""} title="前移(移到最前=封面)">‹</button>
+        <button type="button" onclick="rpImgMove(${pos},1)" ${pos === n - 1 ? "disabled" : ""} title="后移">›</button>
+      </div>
+    </div>`).join("") + `<span class="rp-th-more">共 ${n} 张 · 首图为封面</span>`;
+  box.style.display = "flex";
+}
+function rpImgRemove(pos) {
+  if (RP_MEDIA.length <= 1) { toast("至少保留一张图片", "err"); return; }
+  RP_MEDIA.splice(pos, 1); rpDrawThumbs();
+}
+function rpImgMove(pos, dir) {
+  const j = pos + dir;
+  if (j < 0 || j >= RP_MEDIA.length) return;
+  [RP_MEDIA[pos], RP_MEDIA[j]] = [RP_MEDIA[j], RP_MEDIA[pos]];
+  rpDrawThumbs();
+}
+// 图片被编辑过(删了 / 调了序)才回传 media_order;未动则 null 用全部原序
+function rpMediaOrder() {
+  if (RP_IS_VIDEO || !RP_MEDIA.length) return null;
+  const order = RP_MEDIA.map(m => m.idx);
+  const unchanged = order.length === RP_MEDIA_LEN && order.every((v, i) => v === i);
+  return unchanged ? null : order;
 }
 function hideRepost() { $("repost").style.display = "none"; REPOST_ID = null; }
 async function submitRepost() {
@@ -2072,6 +2109,7 @@ async function submitRepost() {
     scheduled_at: $("rp-when").value || null,
     visibility: $("rp-visibility") ? $("rp-visibility").value : "public",
     allow_save: $("rp-allowsave") ? $("rp-allowsave").value !== "0" : true,
+    media_order: rpMediaOrder(),
   };
   const pname = REPOST_TARGET === "douyin" ? "抖音" : "小红书";
   try {

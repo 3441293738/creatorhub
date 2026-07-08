@@ -2351,6 +2351,7 @@ class RepostIn(BaseModel):
     topics: str | None = None
     visibility: str = "public"           # 抖音:public | friends | private
     allow_save: bool = True              # 抖音:是否允许他人保存
+    media_order: list[int] | None = None  # 剔除/调序后保留的图片原始序号(按新顺序);None=全部原序
 
 
 async def _repost_content(cid: int, body: RepostIn, target_platform: str):
@@ -2380,7 +2381,8 @@ async def _repost_content(cid: int, body: RepostIn, target_platform: str):
     tid = engine.create_relay_publish(
         cid, body.account_id, target_platform=target_platform,
         title=body.title, desc=body.desc, topics=body.topics,
-        visibility=vis, allow_save=bool(body.allow_save))
+        visibility=vis, allow_save=bool(body.allow_save),
+        media_order=body.media_order)
     if not tid:
         raise HTTPException(400, "未找到该作品的本地文件,无法转发")
     # 3) 定时时间另开一个会话更新

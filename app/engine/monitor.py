@@ -964,15 +964,21 @@ class MonitorEngine:
         folder = p if p.is_dir() else p.parent
         if not folder.exists():
             return []
-        files = sorted(str(f) for f in folder.glob(f"{rec.aweme_id}_*")
-                       if f.is_file() and not f.name.endswith(".part"))
-        return files
+        # 文件名形如 {aweme_id}_{title}_{index}.{ext};按末尾数字序号排(而非字典序,
+        # 否则 10 张以上会 _10 排到 _2 前面 —— 图集顺序错乱、封面选错)。
+        def _idx_key(f: Path):
+            tail = f.stem.rsplit("_", 1)[-1]
+            return (0, int(tail)) if tail.isdigit() else (1, f.name)
+        cands = [f for f in folder.glob(f"{rec.aweme_id}_*")
+                 if f.is_file() and not f.name.endswith(".part")]
+        return [str(f) for f in sorted(cands, key=_idx_key)]
 
     def create_relay_publish(self, content_id: int, account_id: int,
                              target_platform: str = "xhs",
                              title: Optional[str] = None, desc: Optional[str] = None,
                              topics: Optional[str] = None,
-                             visibility: str = "public", allow_save: bool = True
+                             visibility: str = "public", allow_save: bool = True,
+                             media_order: Optional[list] = None
                              ) -> Optional[int]:
         """从一条已下载的作品创建一个发往目标平台(小红书 / 抖音)的发布任务。返回任务 id。
 
@@ -987,6 +993,13 @@ class MonitorEngine:
             files = self._content_files(rec)
             if not files:
                 return None
+            # 转发前若在弹窗里剔除/调序了图片,media_order 是保留下来的原始序号(按新顺序)。
+            # 按它过滤+重排本地文件(首个=封面);越界序号忽略,全无效则回退全部原序。
+            if media_order:
+                picked = [files[i] for i in media_order
+                          if isinstance(i, int) and 0 <= i < len(files)]
+                if picked:
+                    files = picked
             title_cap = 30 if target_platform == "douyin" else 20   # 抖音标题上限更宽
             t_title = (title if title is not None else (rec.desc or ""))[:title_cap]
             t_desc = desc if desc is not None else (rec.desc or "")
