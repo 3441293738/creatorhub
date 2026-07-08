@@ -12,7 +12,8 @@ import hashlib
 from typing import Callable, Dict, List, Optional
 
 from .douyin_im_pb import (_get_fields, _first, _s, _preview_text,
-                           _msg_create_ts, peer_uid_from_conv_id)
+                           _msg_create_ts, peer_uid_from_conv_id,
+                           share_video_card)
 
 _APP_KEY = "e1bd35ec9db7b8d846de66ed140b1ad9"
 _FPID = "9"
@@ -68,13 +69,15 @@ def decode_push_frame(raw: bytes, self_uid: str = "") -> List[dict]:
     content = _first(m, 8, b"")
     content = content if isinstance(content, bytes) else b""
     sender = _s(_first(m, 7))
+    msg_type = _first(m, 6) or 0
     return [{
         "conv_id": conv_id,
         "conv_short_id": _s(_first(m, 5)),
         "server_msg_id": _s(_first(m, 3)),
-        "msg_type": _first(m, 6) or 0,
+        "msg_type": msg_type,
         "sender_uid": sender,
-        "text": _preview_text(content),
+        "text": _preview_text(content, msg_type),
+        "card": share_video_card(content) if msg_type == 8 else None,
         "create_time": _msg_create_ts(m),
         "peer_uid": peer_uid_from_conv_id(conv_id, self_uid),
         "is_self": bool(self_uid) and sender == self_uid,

@@ -346,10 +346,24 @@
   .dm-conv .unread { background:var(--acc); color:#fff; font:600 10px/1 var(--mono); padding:2px 6px; border-radius:999px; flex:0 0 auto; }
   .dm-main { display:flex; flex-direction:column; min-width:0; }
   .dm-thread { flex:1; padding:16px; overflow-y:auto; max-height:500px; display:flex; flex-direction:column; gap:8px; }
-  .dm-bubble { max-width:72%; padding:8px 12px; border-radius:12px; font-size:13px; line-height:1.5; word-break:break-word; white-space:pre-wrap; }
+  .dm-bubble { max-width:72%; flex:0 0 auto; padding:8px 12px; border-radius:12px; font-size:13px; line-height:1.5; word-break:break-word; white-space:pre-wrap; }
   .dm-bubble.in { align-self:flex-start; background:var(--surface-3); color:var(--fg); border-bottom-left-radius:3px; }
   .dm-bubble.out { align-self:flex-end; background:var(--acc); color:#fff; border-bottom-right-radius:3px; }
   .dm-bubble .t { display:block; font-size:10px; opacity:.7; margin-top:3px; }
+  /* 分享视频卡片 */
+  .dm-bubble.card { padding:0; overflow:hidden; background:var(--surface-3); max-width:60%; }
+  .dm-bubble.out.card { background:var(--surface-3); }
+  .dm-bubble.card .t { padding:0 10px 6px; opacity:.55; }
+  .dm-vcard { display:flex; gap:0; text-decoration:none; color:inherit; }
+  .dm-vcard .cov { position:relative; flex:0 0 88px; width:88px; height:116px; background:#000; }
+  .dm-vcard .cov img { width:100%; height:100%; object-fit:cover; display:block; }
+  .dm-vcard .cov .play { position:absolute; inset:0; margin:auto; width:26px; height:26px; display:flex; align-items:center; justify-content:center; font-size:11px; color:#fff; background:rgba(0,0,0,.42); border-radius:999px; }
+  .dm-vcard .meta { flex:1; min-width:0; padding:9px 11px; display:flex; flex-direction:column; gap:6px; }
+  .dm-vcard .ttl { font-size:13px; line-height:1.35; color:var(--fg-strong); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+  .dm-vcard .au { display:flex; align-items:center; gap:5px; margin-top:auto; font-size:11.5px; color:var(--mut); overflow:hidden; }
+  .dm-vcard .au .av { width:16px; height:16px; border-radius:999px; flex:0 0 auto; object-fit:cover; }
+  .dm-vcard .au span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dm-vcard:hover .ttl { color:var(--acc); }
   .dm-composer { display:flex; gap:8px; padding:12px; border-top:1px solid var(--line-soft); }
   .dm-composer input { flex:1; }
   .dm-composer button { flex:0 0 auto; }

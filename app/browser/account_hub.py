@@ -1199,6 +1199,11 @@ async def fetch_dm_history(mgr: BrowserManager, identity, platform: str,
                   f"resp_len={len(body)} msgs={len(parsed.get('messages', []))} "
                   f"next_cursor={parsed.get('next_cursor')}")
             print(f"[dm-hist-raw] b64:{_b64.b64encode(body[:1200]).decode()}")
+            # 非文本消息(分享视频=8/图片=27/语音=17...)dump 原始 content JSON,标定字段用
+            for _m in parsed.get("messages", []):
+                if _m.get("msg_type") not in (7, 0):
+                    print(f"[dm-hist-content] type={_m.get('msg_type')} "
+                          f"text={_m.get('text')!r} content={_m.get('content')}")
         if resp.status != 200:
             return parsed, f"imapi 返回 {resp.status}"
         return parsed, ""

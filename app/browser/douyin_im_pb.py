@@ -79,19 +79,73 @@ def _s(v) -> str:
 _AWE_LABEL = {507: "[表情]", 5: "[表情]", 11048: "[小程序卡片]",
               100157: "[系统通知]", 2702: "[小程序]"}
 
+# 消息类型(MessageBody.field6)→ 占位。实测标定见 DouYin_Spider/douyin_recv_msg.py:
+#   7=文本 5=表情 17=语音 27=图片 8=分享视频。媒体类消息 content 里没有 .text,
+#   只认 .text 会让分享视频/图片/语音等显示成空气泡,故按 msg_type 兜底给占位。
+_MSG_TYPE_LABEL = {5: "[表情]", 8: "[视频]", 17: "[语音]", 27: "[图片]"}
 
-def _preview_text(content: bytes) -> str:
-    """从消息 content(JSON 串)取会话列表预览文本。"""
+
+def _share_video_text(obj: dict) -> str:
+    """分享视频卡片(msg_type=8)预览。实测 content 字段(标定见 fetch_dm_history debug):
+      content_title=视频标题(偶尔空,如图集/直播分享) content_name=作者昵称
+      cover_url.url_list=封面 itemId=视频ID secUID=作者。
+    标题优先;标题空退回 @作者;都没有才纯 [视频],绝不返回空。"""
+    title = obj.get("content_title")
+    if isinstance(title, str) and title.strip():
+        return "[视频] " + title.strip()
+    author = obj.get("content_name")
+    if isinstance(author, str) and author.strip():
+        return "[视频] @" + author.strip()
+    return "[视频]"
+
+
+def _first_url(d) -> str:
+    u = d.get("url_list") if isinstance(d, dict) else None
+    return u[0] if isinstance(u, list) and u and isinstance(u[0], str) else ""
+
+
+def share_video_card(content) -> Optional[dict]:
+    """分享视频(msg_type=8)→ 前端卡片渲染字段。content 可为 JSON 串/bytes/dict。
+    抽 {kind, item_id, title, author, author_sec_uid, cover, avatar};非视频卡返回 None。"""
+    if isinstance(content, (bytes, bytearray)):
+        try:
+            content = json.loads(bytes(content).decode("utf-8"))
+        except Exception:
+            return None
+    elif isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except Exception:
+            return None
+    if not isinstance(content, dict) or not content.get("itemId"):
+        return None
+    return {
+        "kind": "video",
+        "item_id": str(content.get("itemId") or ""),
+        "title": str(content.get("content_title") or ""),
+        "author": str(content.get("content_name") or ""),
+        "author_sec_uid": str(content.get("secUID") or ""),
+        "cover": _first_url(content.get("cover_url")),
+        "avatar": _first_url(content.get("content_thumb")),
+    }
+
+
+def _preview_text(content: bytes, msg_type=None) -> str:
+    """从消息 content(JSON 串)取会话列表/气泡预览文本。
+    msg_type(可选)= MessageBody.field6,用于给媒体类消息(分享视频/图片/语音/表情)
+    兜底占位——这些消息 content 无 .text,不给占位就会显示成空白。"""
     if not isinstance(content, bytes) or not content:
-        return ""
+        return _MSG_TYPE_LABEL.get(msg_type, "")
     try:
         obj = json.loads(content.decode("utf-8"))
     except Exception:
-        return ""
+        return _MSG_TYPE_LABEL.get(msg_type, "")
     if not isinstance(obj, dict):
-        return ""
+        return _MSG_TYPE_LABEL.get(msg_type, "")
     if obj.get("text"):
         return str(obj["text"])
+    if msg_type == 8 or obj.get("itemId"):     # 分享视频
+        return _share_video_text(obj)
     if obj.get("trans_type") is not None:      # 转账
         return "[转账] " + str(obj.get("title") or "")
     lbl = _AWE_LABEL.get(obj.get("aweType"))
@@ -101,7 +155,7 @@ def _preview_text(content: bytes) -> str:
         return str(obj["push_detail"])
     if obj.get("description"):
         return str(obj["description"])
-    return ""
+    return _MSG_TYPE_LABEL.get(msg_type, "")   # 按类型兜底,别返回空
 
 
 def peer_uid_from_conv_id(conv_id: str, self_uid: str) -> str:
@@ -171,7 +225,8 @@ def parse_conversations(raw: bytes) -> List[dict]:
             "peer_uid": peer_uid,
             "peer_sec_uid": peer_sec,
             "ticket": _s(_first(core, 4, b"")),
-            "last_text": _preview_text(content if isinstance(content, bytes) else b""),
+            "last_text": _preview_text(
+                content if isinstance(content, bytes) else b"", _first(msg, 6)),
             "last_msg_type": _first(msg, 6),
             "last_sender_uid": _s(_first(msg, 7)),
             "last_time": _msg_create_ts(msg),
@@ -349,14 +404,16 @@ def _msg_from_body(mb: bytes) -> Optional[dict]:
         return None
     content = _first(m, 8, b"")
     content = content if isinstance(content, bytes) else b""
+    msg_type = _first(m, 6) or 0
     return {
         "conv_id": conv_id,
         "server_msg_id": _s(_first(m, 3)),
         "index": _first(m, 4) or 0,
-        "msg_type": _first(m, 6) or 0,
+        "msg_type": msg_type,
         "sender_uid": _s(_first(m, 7)),
         "content": content.decode("utf-8", "ignore"),
-        "text": _preview_text(content),
+        "text": _preview_text(content, msg_type),
+        "card": share_video_card(content) if msg_type == 8 else None,
         "create_time": _msg_create_ts(m),
         "sender_sec_uid": _s(_first(m, 14, b"")),
     }

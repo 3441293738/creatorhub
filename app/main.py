@@ -719,8 +719,17 @@ async def list_dm_messages(account_id: int, conv_id: str, limit: int = 200):
         q = (select(DmMessage).where(DmMessage.account_id == account_id,
                                      DmMessage.conv_id == conv_id)
              .order_by(DmMessage.create_time.asc()).limit(limit))
+
+        def _card(m):
+            if not m.raw_json:
+                return None
+            try:
+                return json.loads(m.raw_json)
+            except Exception:
+                return None
         return [{"id": m.id, "direction": m.direction, "text": m.text,
-                 "msg_type": m.msg_type, "create_time": m.create_time}
+                 "msg_type": m.msg_type, "create_time": m.create_time,
+                 "card": _card(m)}
                 for m in s.exec(q).all()]
 
 
@@ -877,15 +886,24 @@ async def fetch_dm_conversation_history(account_id: int, conv_id: str,
             seen.add(mid)
             direction = ("out" if self_uid and m.get("sender_uid") == self_uid
                          else "in")
+            card = m.get("card")
             s.add(DmMessage(
                 platform=platform, account_id=account_id, conv_id=conv_id,
                 msg_id=mid, direction=direction,
-                msg_type=("text" if m.get("text") else str(m.get("msg_type") or "")),
-                text=m.get("text") or "", create_time=int(m.get("create_time") or 0)))
+                msg_type=("video" if card else
+                          "text" if m.get("text") else str(m.get("msg_type") or "")),
+                text=m.get("text") or "", create_time=int(m.get("create_time") or 0),
+                raw_json=json.dumps(card, ensure_ascii=False) if card else ""))
             added += 1
         s.commit()
-    return {"ok": True, "fetched": len(msgs), "added": added,
-            "next_cursor": parsed.get("next_cursor"), "has_more": parsed.get("has_more")}
+    out = {"ok": True, "fetched": len(msgs), "added": added,
+           "next_cursor": parsed.get("next_cursor"), "has_more": parsed.get("has_more")}
+    if debug:   # 非文本消息(分享视频=8/图片=27/语音=17...)回原始 content,标定字段用
+        out["media_samples"] = [
+            {"msg_type": m.get("msg_type"), "text": m.get("text"),
+             "content": m.get("content")}
+            for m in msgs if m.get("msg_type") not in (7, 0)]
+    return out
 
 
 # ─────────── 本账号管理:计数汇总(账号管理面板徽章,纯查库不触发抓取)───────────
@@ -2853,7 +2871,17 @@ async def test_channel(cid: int):
 # ─────────── 前端 ───────────
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    # 给 app.js 带上基于 mtime 的版本号,前端改动后自动击穿浏览器缓存(免手动强刷)
+    try:
+        ver = int((WEB_DIR / "app.js").stat().st_mtime)
+        html = html.replace("/static/app.js", f"/static/app.js?v={ver}")
+    except Exception:
+        pass
+    # 首页(含内联 CSS)禁缓存:否则 webview 缓存旧 HTML,改了样式也不生效
+    return HTMLResponse(html, headers={
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache", "Expires": "0"})
 
 
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")

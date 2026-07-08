@@ -1027,12 +1027,33 @@ function markDmRead(convId) {
   api(`/api/accounts/${HUB_ACC}/dm/conversations/${convId}/mark-read`, { method: "POST" })
     .then(() => refreshDmConvs()).catch(() => {});
 }
+// 分享视频卡片(msg_type=8):封面+标题+作者,点击跳抖音该视频
+function dmVideoCard(c) {
+  const url = c.item_id ? `https://www.douyin.com/video/${encodeURIComponent(c.item_id)}` : "#";
+  const cover = c.cover
+    ? `<img src="${esc(c.cover)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
+    : "";
+  const avatar = c.avatar
+    ? `<img class="av" src="${esc(c.avatar)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
+    : "";
+  return `<a class="dm-vcard" href="${url}" target="_blank" rel="noopener">
+    <div class="cov">${cover}<span class="play">▶</span></div>
+    <div class="meta">
+      <div class="ttl">${esc(c.title || "[视频]")}</div>
+      <div class="au">${avatar}<span>${esc(c.author || "")}</span></div>
+    </div>
+  </a>`;
+}
+function dmBody(m) {
+  if (m.card && m.card.kind === "video") return dmVideoCard(m.card);
+  return esc(m.text);
+}
 async function refreshDmMessages() {
   const thread = $("dm-thread"); if (!thread || !HUB_ACC || !DM_CONV) return;
   try {
     const msgs = await api(`/api/dm/messages?account_id=${HUB_ACC}&conv_id=${encodeURIComponent(DM_CONV)}`);
     thread.innerHTML = msgs.length
-      ? msgs.map(m => `<div class="dm-bubble ${m.direction === "out" ? "out" : "in"}">${esc(m.text)}<span class="t">${fmtTime(m.create_time)}</span></div>`).join("")
+      ? msgs.map(m => `<div class="dm-bubble ${m.direction === "out" ? "out" : "in"}${m.card ? " card" : ""}">${dmBody(m)}<span class="t">${fmtTime(m.create_time)}</span></div>`).join("")
       : `<div class="empty"><div class="empty-t">暂无消息记录</div><div class="empty-sub">该会话没有可拉取的历史(或对方为系统号)</div></div>`;
     thread.scrollTop = thread.scrollHeight;
   } catch (e) { thread.innerHTML = `<div class="empty"><div class="empty-t">加载失败:${esc(e.message)}</div></div>`; }

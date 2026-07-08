@@ -110,11 +110,13 @@ class ImReceiverManager:
                     DmMessage.msg_id == "last:" + conv_id)).first()
                 if ph:
                     s.delete(ph)
+                card = m.get("card")
                 s.add(DmMessage(
                     platform="douyin", account_id=account_id, conv_id=conv_id,
                     msg_id=mid or f"ws:{ts}:{m.get('sender_uid')}",
-                    direction=direction, msg_type="text",
-                    text=m.get("text") or "", create_time=ts))
+                    direction=direction, msg_type=("video" if card else "text"),
+                    text=m.get("text") or "", create_time=ts,
+                    raw_json=json.dumps(card, ensure_ascii=False) if card else ""))
                 conv = s.exec(select(DmConversation).where(
                     DmConversation.account_id == account_id,
                     DmConversation.conv_id == conv_id)).first()
@@ -131,7 +133,7 @@ class ImReceiverManager:
         st = self._accts.get(account_id)
         if st:
             evt = {"conv_id": conv_id, "text": m.get("text"),
-                   "direction": direction, "create_time": ts,
+                   "direction": direction, "create_time": ts, "card": m.get("card"),
                    "sender_uid": m.get("sender_uid"), "peer_uid": m.get("peer_uid")}
             for q in list(st["queues"]):
                 try:
