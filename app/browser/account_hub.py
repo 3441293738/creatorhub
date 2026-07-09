@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -676,6 +677,40 @@ _DM_URL_HINTS = ("/v1/message/", "/v1/stranger/", "get_conversation_list",
                  "/api/im/web/chat", "/api/im/web/session", "/api/im/web/conversation",
                  "/api/im/web/msg")
 
+# 「私信面板真的打开了」的信号:只认会话/消息数据接口。
+# 不含 im/strategy/config、im/resources/*、im/user/active/* 等 —— 它们随便哪个页面加载都会发,
+# 拿来当信号会把「SDK 预加载」误判成「面板已打开」。
+_IM_BOOTSTRAP_SIGNALS = ("/v1/message/", "/v1/stranger/", "get_message_by_init",
+                         "get_conversation_list", "/imapi/", "/v2/conversation/",
+                         "/aweme/v1/web/im/user/info", "/api/im/web/chat",
+                         "/api/im/web/session", "/api/im/web/msg")
+
+# 抖音顶栏「消息」是 <div>(无 href),React onClick 绑在祖先上。
+# ⚠️ 向上找可点祖先只用来判定「这一项可点」,坐标必须取文本元素自身的中心 ——
+#    祖先常是整条导航栏容器,取它的中心会点到旁边的空白或别的 nav item。
+_DOUYIN_IM_BOXES_JS = """() => {
+  const hits = [...document.querySelectorAll('div,span,a,button,li')]
+    .filter(e => (e.textContent || '').trim() === '消息');
+  const out = [];
+  for (const e of hits) {
+    const r = e.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    let clickable = false;
+    for (let t = e, d = 0; d < 4 && t; d++, t = t.parentElement) {
+      const s = getComputedStyle(t);
+      if (t.tagName === 'A' || t.tagName === 'BUTTON'
+          || t.getAttribute('role') === 'button' || s.cursor === 'pointer') {
+        clickable = true; break;
+      }
+    }
+    const x = r.x + r.width / 2, y = r.y + r.height / 2;
+    const top = document.elementFromPoint(x, y);   // 该坐标上真正会收到点击的元素
+    const covered = !(top && (top === e || e.contains(top) || top.contains(e)));
+    out.push({x, y, tag: e.tagName, clickable, covered});
+  }
+  return out;
+}"""
+
 
 def _peer_uid_from_conv_id(conv_id: str, self_uid: str = "") -> str:
     """抖音单聊 conversation_id 格式为 `0:{type}:{uidA}:{uidB}`。
@@ -799,6 +834,35 @@ def _harvest_users(data, into: Dict[str, dict]) -> None:
             stack.extend(cur)
 
 
+_DM_PANEL_PROBE_JS = """() => {
+  const txt = document.body.innerText || '';
+  const cls = (e) => (e.className && e.className.toString) ? e.className.toString() : '';
+  // 抖音的 class 是编译后的 hash(ASay5JTn),靠 class 正则永远匹配不到 —— 认 data-e2e
+  const imish = [...document.querySelectorAll('div,section,aside')]
+    .filter(e => /im[-_]|message|conversation|chat|私信/i.test(cls(e))
+              || /im|message|conversation/i.test(e.getAttribute('data-e2e') || ''))
+    .filter(e => { const r = e.getBoundingClientRect(); return r.width > 200 && r.height > 200; });
+  return {
+    url: location.pathname,
+    iframes: document.querySelectorAll('iframe').length,
+    // 大块的 im/会话 容器出现 = 面板真的渲染了
+    panels: imish.length,
+    panel_cls: imish.slice(0, 3).map(e => cls(e).slice(0, 40)),
+    // 面板里才会出现的文案
+    has_dm_text: /私信|发消息|暂无消息|陌生人消息/.test(txt),
+    dialogs: document.querySelectorAll('[role="dialog"],[class*="modal"],[class*="mask"]').length,
+  };
+}"""
+
+
+async def _dm_panel_probe(page) -> dict:
+    """点击前后各拍一次:面板到底渲染了没。比反复猜「点没点中」有用。"""
+    try:
+        return await page.evaluate(_DM_PANEL_PROBE_JS)
+    except Exception as e:
+        return {"probe_failed": repr(e)}
+
+
 async def _douyin_cookie_str(mgr: BrowserManager, identity) -> str:
     """从账号常驻 context 取 douyin.com 的 cookie 串(给 WS/直连用)。"""
     ctx = await mgr.context_for(identity)
@@ -873,13 +937,16 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
         ws_urls.append(ws.url)
 
         def _cap(payload, direction):
-            if "frontier" not in ws.url or len(ws_frames) >= 6:
+            # bytelink 是直播心跳,会把配额刷满(上轮 10 帧里 7 帧是它),挤掉 frontier-im
+            noisy = "bytelink" in ws.url
+            if len(ws_frames) >= 20 or (noisy and sum(
+                    1 for f in ws_frames if "bytelink" in f) >= 3):
                 return
             try:
                 n = len(payload) if payload is not None else 0
             except Exception:
                 n = -1
-            ws_frames.append(f"{direction}[{n}] {ws.url.split('?')[0]}")
+            ws_frames.append(f"{direction}[{n}] {ws.url.split('?')[0].split('//')[-1][:34]}")
         ws.on("framereceived", lambda p: _cap(p, "recv"))
         ws.on("framesent", lambda p: _cap(p, "sent"))
 
@@ -894,17 +961,22 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
         low = path.lower()
         if len(api_seen) < 100:
             api_seen.append(f"{resp.status} {path}")
-        # IM 真正起来的信号:私信数据接口或 IM SDK 引导接口出现
-        if any(s in low for s in ("/v1/message/", "/v1/stranger/", "/aweme/v1/web/im/")):
+        # IM 真正起来的信号:必须是「会话/消息数据」接口。
+        # ⚠️ 别用宽泛的 "/aweme/v1/web/im/" —— im/strategy/config、im/resources/emoticon/trending、
+        # im/user/active/status 在任意页面加载时都会发,拿它当信号会误判成「面板已打开」。
+        if any(s in low for s in _IM_BOOTSTRAP_SIGNALS):
             im_hit[0] = True
         # 抖音会话大包:get_message_by_init(protobuf)。留最大的一份(全量那次)。
         if platform == "douyin" and "get_message_by_init" in low:
             try:
-                b = await resp.body()
-            except Exception:
+                b = await resp.body()      # body() 内部已等 body 下完,无需 finished()
+            except Exception as e:
                 b = b""
+                print(f"[dm-init] body 读取失败: {e!r}")
+            # 一次同步会收到多份(增量包),只在换成更大的那份时打日志
             if len(b) > len(dm_init_raw[0]):
                 dm_init_raw[0] = b
+                print(f"[dm-init] get_message_by_init kept={len(b)} bytes")
         # 私信接口可能是 protobuf:先取文本,JSON 解析失败也留个样本(标注 non-json)
         raw_text = ""
         try:
@@ -973,10 +1045,28 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                  '[class*="message"]', 'text=私信', 'text=消息']
 
     page.on("response", on_response)
+    # 私信入口可能 window.open 到新标签页(pcim_saas 是独立微应用)。不监听的话:
+    # 原 page 的 DOM/URL/XHR 全都不动 —— 看起来就像「点击没生效」,其实是在看错的页。
+    popups: List = []
+
+    def on_popup(p):
+        if p is page:                     # context 是账号常驻的,别把主页面/别处开的页收进来
+            return
+        popups.append(p)
+        p.on("response", on_response)     # 新页的 XHR 也要拦
+        print(f"[dm] douyin popup opened: {p.url!r}")
+
+    page.context.on("page", on_popup)
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         if "passport" in page.url or "/login" in page.url:
             return [], "logged_out:登录态失效,请重新登录"
+        # 上一轮实测:页面没 hydrate 完就点(只有 6 个 XHR、frontier WS 都没连),
+        # handler 还没绑上,clickable=True 只是 CSS cursor 的假象。先等网络静默。
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            await page.wait_for_timeout(3000)
         # 标定:枚举页面上所有像「私信/消息」的可点元素(真实 DOM),用来校准入口选择器,
         # 而不是继续盲猜。抖音私信入口是顶栏信封图标(多为 SVG + aria-label,无文字)。
         if platform == "douyin":
@@ -998,19 +1088,36 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
         # 每次确认 IM 是否真的 bootstrap(im_hit);再加 JS 点祖先链兜底。
         if platform == "douyin":
             via = ""
+            boxes = []
+            # 实测:hydrate 完成后抖音会给入口打 data-e2e="im-entry"。优先用它,
+            # 比坐标点击稳(坐标只是没有 data-e2e 时的兜底)。
             try:
-                boxes = await page.evaluate(
-                    "() => { const hits=[...document.querySelectorAll('div,span,a,button,li')]"
-                    ".filter(e => (e.textContent||'').trim()==='消息'); const out=[];"
-                    " for (const e of hits){ let t=e;"
-                    "   for(let d=0;d<4&&t;d++,t=t.parentElement){ const s=getComputedStyle(t);"
-                    "     if(t.tagName==='A'||t.tagName==='BUTTON'||t.getAttribute('role')==='button'||s.cursor==='pointer')break; }"
-                    "   const el=t||e; const r=el.getBoundingClientRect();"
-                    "   if(r.width>0&&r.height>0) out.push({x:r.x+r.width/2,y:r.y+r.height/2,tag:el.tagName}); }"
-                    " return out; }")
+                entry = page.locator('[data-e2e="im-entry"]').first
+                if await entry.is_visible(timeout=2000):
+                    await entry.click(timeout=3000)
+                    for _ in range(10):
+                        await page.wait_for_timeout(500)
+                        if im_hit[0]:
+                            break
+                    if im_hit[0]:
+                        via = 'data-e2e=im-entry'
+            except Exception:
+                pass
+            try:
+                boxes = await page.evaluate(_DOUYIN_IM_BOXES_JS)
             except Exception:
                 boxes = []
-            for b in reversed(boxes or []):
+            print(f"[dm-probe] douyin 消息 boxes({len(boxes or [])}): {boxes}")
+            # 嵌套的「消息」DIV 常落在同一坐标,点 3 次和点 1 次等价 —— 去重,省 10s
+            seen_pt: Set[tuple] = set()
+            ordered = []
+            for b in sorted(boxes or [], key=lambda b: (not b["clickable"], b["covered"])):
+                pt = (int(b["x"]), int(b["y"]))
+                if pt not in seen_pt:
+                    seen_pt.add(pt)
+                    ordered.append(b)
+            before_dom = await _dm_panel_probe(page)
+            for b in ordered:             # via 非空时 im_hit 必为真,这里就会跳过
                 if im_hit[0]:
                     break
                 try:
@@ -1025,11 +1132,26 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                         via = f"mouse@{int(b['x'])},{int(b['y'])}({b['tag']})"
                 except Exception:
                     continue
+            # 点击到底做了什么?没有这个对比,只能反复猜「点没点中」
+            after_dom = await _dm_panel_probe(page)
+            print(f"[dm-probe] douyin dom before={before_dom}")
+            print(f"[dm-probe] douyin dom after ={after_dom}")
+            if popups:
+                # 私信开在了新标签页:后续等待/滚动/取资料都必须对着它做
+                page = popups[-1]
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
+                via = via or f"popup:{page.url.split('?')[0]}"
+                print(f"[dm] douyin switched to popup url={page.url} "
+                      f"dom={await _dm_panel_probe(page)}")
             if not im_hit[0]:
                 try:
                     await page.evaluate(
-                        "() => { const h=[...document.querySelectorAll('div,span,a,button,li')]"
-                        ".find(e => (e.textContent||'').trim()==='消息'); let t=h;"
+                        # 取最内层(.pop())——外层 wrapper 上通常没绑 handler
+                        "() => { const hs=[...document.querySelectorAll('div,span,a,button,li')]"
+                        ".filter(e => (e.textContent||'').trim()==='消息'); let t=hs.pop();"
                         " for(let d=0;d<5&&t;d++,t=t.parentElement){ try{t.click();}catch(e){} } }")
                     for _ in range(8):
                         await page.wait_for_timeout(500)
@@ -1039,7 +1161,7 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                         via = "js-clickchain"
                 except Exception:
                     pass
-            print(f"[dm] douyin im open im_hit={im_hit[0]} via={via or 'FAIL'} boxes={len(boxes or [])}")
+            douyin_open_via = via
         # 打开私信抽屉/面板(站内图标里,点开才会拉会话列表);小红书私信走 /api/im/web REST。
         # 关键:入口是 flaky 的 —— 「消息」有多个同文本 DIV,.first 常点中非导航的文本节点。
         # 所以不信任单次点击,逐个可见候选点,每点后确认 IM 是否真的 bootstrap(im_hit),命中才停。
@@ -1093,6 +1215,11 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 timeout=22000)
         except Exception:
             pass
+        if platform == "douyin":
+            # 打印放在等待之后:IM SDK 是慢启动的,点击那一刻 im_hit 必然还是 False
+            print(f"[dm] douyin im open im_hit={im_hit[0]} "
+                  f"via={douyin_open_via or 'FAIL'} boxes={len(boxes or [])} "
+                  f"url={page.url}")
         await page.wait_for_timeout(settle_ms)
         for _ in range(max_scrolls):
             before = len(collected)
@@ -1108,6 +1235,23 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
             await page.wait_for_timeout(settle_ms)
             if len(collected) == before:
                 break
+        # wait_for_response 只等到响应头就返回,大包的 body 可能还在下载 —— 不等的话
+        # 解析时 dm_init_raw 还是空的,看起来就像「包没来」。
+        if platform == "douyin" and im_hit[0] and not dm_init_raw[0]:
+            for _ in range(20):           # 最多 ~10s
+                await page.wait_for_timeout(500)
+                if dm_init_raw[0]:
+                    break
+            print(f"[dm-init] 等待 body 落地: len={len(dm_init_raw[0])}")
+        # 标定用:把会话大包落盘,protobuf 字段号可以离线试,不用每次都跑浏览器
+        _dump = os.environ.get("CREATORHUB_DM_DUMP")
+        if _dump and dm_init_raw[0]:
+            try:
+                with open(_dump, "wb") as f:
+                    f.write(dm_init_raw[0])
+                print(f"[dm-init] 已落盘 {_dump} ({len(dm_init_raw[0])} bytes)")
+            except Exception as e:
+                print(f"[dm-init] 落盘失败: {e!r}")
         # 抖音:会话在 get_message_by_init 的 protobuf 大包里。解会话 → 页面内批量
         # POST im/user/info(按 sec_uid,抖音自己签名)补昵称/头像 → 水合。
         if platform == "douyin" and dm_init_raw[0]:
@@ -1143,6 +1287,16 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 print(f"[dm-pb] douyin parsed={len(collected)} "
                       f"im_profiles={len(im_profiles)} sec_profiles={len(sec_profiles)} "
                       f"named={_named}")
+                # named 远小于 profiles 总数 = 键对不上,而不是「没拉到资料」。
+                # 分别统计三条水合路径的命中数,定位是哪条断了。
+                _with_sec = sum(1 for c in convs_parsed if c.get("peer_sec_uid"))
+                _by_uid = sum(1 for c in convs_parsed if im_profiles.get(c["peer_uid"]))
+                _by_sec = sum(1 for c in convs_parsed
+                              if sec_profiles.get(c.get("peer_sec_uid") or "\0"))
+                print(f"[dm-pb] convs={len(convs_parsed)} with_sec={_with_sec} "
+                      f"hydrated_by_uid={_by_uid} hydrated_by_sec={_by_sec}")
+                print(f"[dm-pb] im_profiles keys sample={list(im_profiles)[:3]} "
+                      f"peer_uid sample={[c['peer_uid'] for c in convs_parsed[:3]]}")
             except Exception as e:
                 print(f"[dm-pb] douyin protobuf parse failed: {e!r}")
 
@@ -1152,9 +1306,15 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
         final_url = ""
     finally:
         try:
-            await page.close()
+            page.context.remove_listener("page", on_popup)
         except Exception:
             pass
+        for p in ([page] + popups):      # popup 也要关,否则残留标签页拖慢下个账号
+            try:
+                if not p.is_closed():
+                    await p.close()
+            except Exception:
+                pass
     # 标定期:无论成败都打日志(私信接口完全未知,这行最关键)
     print(f"[dm] convs platform={platform} got={len(collected)} im_visible={im_visible} "
           f"hit_urls={hit_urls[:8]} final_url={final_url} api_seen({len(api_seen)})={api_seen[:60]}")

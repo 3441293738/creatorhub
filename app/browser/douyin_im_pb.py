@@ -204,10 +204,11 @@ def parse_conversations(raw: bytes) -> List[dict]:
             continue
         msg = _get_fields(_first(conv, 2, b"") or b"")
         content = _first(msg, 8, b"")
-        # peer sec_uid:优先从参与者列表(conv.6.1[]={1:uid,5:sec_uid})取(全会话都有);
+        # peer sec_uid:优先从参与者列表取 —— 实测挂在 core.6.1[]={1:uid,5:sec_uid},
+        # 不是 conv.6(找错一层的话这里一条都命中不了,只剩下面的兜底能救)。
         # 退回最后消息的 sender_sec_uid(仅当 peer 是最后发送者)
         peer_sec = ""
-        for p in conv.get(6, []):
+        for p in core.get(6, []):
             if not isinstance(p, bytes):
                 continue
             for pp in _get_fields(p).get(1, []):

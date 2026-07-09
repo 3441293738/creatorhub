@@ -7,13 +7,17 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Set, Tuple
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from .identity import Identity
 from .manager import BrowserManager
 
 POST_API = "aweme/v1/web/aweme/post"
 PROFILE_API = "aweme/v1/web/user/profile/other"
+SELF_PROFILE_API = "aweme/v1/web/user/profile/self"
 COMMENT_API = "aweme/v1/web/comment/list"
+# 重发时必须去掉的一次性签名/风控参数,让抖音的 fetch 拦截器重新签
+_SIGN_PARAMS = ("a_bogus", "X-Bogus", "x-bogus", "msToken", "_signature", "verifyFp")
 
 
 async def fetch_videos(mgr: BrowserManager, identity: Identity, sec_uid: str,
@@ -347,32 +351,71 @@ def _extract_user(data) -> Optional[dict]:
     return None
 
 
+async def _refetch_in_page(page, full_url: str) -> Optional[dict]:
+    """在 douyin 页面内重发 profile/self。剥掉一次性签名参数后走相对路径,
+    抖音自己的 fetch 拦截器会重新补 a_bogus(同 account_hub._fetch_im_user_info)。"""
+    try:
+        u = urlsplit(full_url)
+        qs = [(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True)
+              if k not in _SIGN_PARAMS]
+        path = u.path + (("?" + urlencode(qs)) if qs else "")
+        return await page.evaluate(
+            """async (p) => {
+              try {
+                const r = await fetch(p, {credentials:'include',
+                                          headers:{'accept':'application/json'}});
+                return await r.json();
+              } catch (e) { return null; }
+            }""", path)
+    except Exception as e:
+        print(f"[self_profile] refetch failed: {e!r}")
+        return None
+
+
 async def fetch_self_profile(mgr: BrowserManager, identity: Identity,
                              timeout_ms: int = 15000, block_media: bool = False
                              ) -> Tuple[dict, str]:
-    """打开自己的主页,显式等待并拦截 user/profile 接口拿登录账号真实资料。
-    返回 (user dict, error)。error == "logged_out" 表示登录态失效。"""
+    """打开自己的主页,显式等待并拦截 user/profile/self 拿登录账号真实资料。
+    返回 (user dict, error)。error == "logged_out" 表示登录态失效。
+
+    ⚠️ /user/self 常被重定向到 /jingxuan,但 profile/self 仍会发出;拦截时若页面正在
+    跳转,Playwright 读 body 会失败,故再补一发页内 refetch(抖音自己的 fetch 拦截器
+    会补 a_bogus 签名,同 _fetch_im_user_info 的做法)。
+    注:query/user 不是资料接口,它返回的是设备会话记录(user_uid/browser_name),无 sec_uid。"""
     result: dict = {}
     api_seen = []                   # 看到的抖音 API 请求(诊断用)
+    hit_apis = []                   # 命中的 profile/self(判断是"没发"还是"读不到")
+    shapes = []                     # 命中但挖不出 user 时的响应结构/读取异常(标定用)
+    self_urls: List[str] = []       # profile/self 的完整 URL(带 query),供页内 refetch 复用
     error = ""
     page = await mgr.new_page(identity, block_media)
 
     def is_profile(resp):
-        return "aweme/v1/web/user/profile" in resp.url
+        # 只认自己的 profile/self:profile/other 是看别人主页时发的,拦了会绑错号
+        return SELF_PROFILE_API in resp.url
 
     async def on_response(resp):
         url = resp.url
         if ("douyin.com" in url and ("/aweme/v1/web/" in url or "/web/api/" in url)
                 and len(api_seen) < 40):
             api_seen.append(f"{resp.status} {url.split('?')[0]}")
-        if is_profile(resp):
+        if is_profile(resp) and resp.status == 200:
+            path = url.split("?")[0]
+            hit_apis.append(path)
+            if url not in self_urls:
+                self_urls.append(url)
             try:
                 data = await resp.json()
-            except Exception:
+            except Exception as e:
+                # 页面跳转会丢弃 body。别静默 return,否则日志显示"命中了"却查不出原因
+                if len(shapes) < 4:
+                    shapes.append(f"{path} body_read_failed={e!r}")
                 return
             u = _extract_user(data)
             if u:
                 result.update(u)
+            elif isinstance(data, dict) and len(shapes) < 4:
+                shapes.append(f"{path} keys={sorted(data)[:12]}")
 
     page.on("response", on_response)
     logged_out = False
@@ -393,6 +436,14 @@ async def fetch_self_profile(mgr: BrowserManager, identity: Identity,
                 break
             if result:
                 break
+        if not result and self_urls:
+            # 拦到了但 body 读不到:页内重发一次(此时页面已静止,不会再丢 body)
+            data = await _refetch_in_page(page, self_urls[-1])
+            u = _extract_user(data)
+            if u:
+                result.update(u)
+            elif isinstance(data, dict) and len(shapes) < 6:
+                shapes.append(f"refetch keys={sorted(data)[:12]}")
         # 是否能看到“登录”按钮(看到=其实没登录进去)
         try:
             has_login_btn = await page.get_by_text("登录", exact=True).first.is_visible(
@@ -411,9 +462,11 @@ async def fetch_self_profile(mgr: BrowserManager, identity: Identity,
         if logged_out:
             error = "logged_out"
         elif not error:
-            error = "no_profile_xhr" if not api_seen else "profile 接口无 user 字段"
+            # 区分「接口没发出来」和「发了但取不到 user」——之前一律报后者,误导排查
+            error = ("profile/self 命中但取不到 user" if hit_apis else "no_profile_xhr")
         print(f"[self_profile] 未拿到资料; err={error}; final_url={final_url}; "
-              f"login_btn_visible={has_login_btn}; api_seen({len(api_seen)})={api_seen[:25]}")
+              f"login_btn_visible={has_login_btn}; hit={hit_apis}; shapes={shapes}; "
+              f"api_seen({len(api_seen)})={api_seen[:25]}")
     return result, error
 
 
