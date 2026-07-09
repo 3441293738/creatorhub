@@ -20,6 +20,24 @@ COMMENT_API = "aweme/v1/web/comment/list"
 _SIGN_PARAMS = ("a_bogus", "X-Bogus", "x-bogus", "msToken", "_signature", "verifyFp")
 
 
+# 作品页没拿到数据时,看页面究竟是什么状态:登录墙?空态?还是 tab 没激活?
+_WORKS_DOM_PROBE_JS = """() => {
+  const txt = (document.body.innerText || '').replace(/\\s+/g, ' ');
+  const tabs = [...document.querySelectorAll('[data-e2e*="tab"],[class*="tab"]')]
+    .map(e => (e.textContent || '').trim().slice(0, 8))
+    .filter(t => t && t.length <= 8).slice(0, 8);
+  return {
+    tabs: [...new Set(tabs)],
+    items: document.querySelectorAll('[data-e2e="user-post-list"] li, li[data-e2e]').length,
+    // 这几种文案能把「空态 / 登录墙 / 风控」区分开
+    empty: /暂无作品|还没有发布|没有更多了/.test(txt),
+    login_wall: /登录后查看|立即登录|扫码登录/.test(txt),
+    risk: /访问频繁|环境异常|验证/.test(txt),
+    body_len: txt.length,
+  };
+}"""
+
+
 async def fetch_videos(mgr: BrowserManager, identity: Identity, sec_uid: str,
                        known_ids: Set[str], max_scrolls: int = 12,
                        settle_ms: int = 1800, block_media: bool = True
@@ -28,33 +46,52 @@ async def fetch_videos(mgr: BrowserManager, identity: Identity, sec_uid: str,
     collected: Dict[str, dict] = {}
     author: Optional[dict] = None
     error = ""
+    post_hits = []        # 命中的 aweme/post 响应(判断是「没发」还是「发了解不出」)
+    api_seen = []         # 该页发出的抖音 API(post_hits 为空时,靠它看页面到底在请求什么)
 
     page = await mgr.new_page(identity, block_media)
 
     async def on_response(resp):
         nonlocal author
         url = resp.url
-        try:
-            if POST_API in url:
+        if ("douyin.com" in url and ("/aweme/v1/web/" in url or "/web/api/" in url)
+                and len(api_seen) < 40):
+            api_seen.append(f"{resp.status} {url.split('?')[0].split('douyin.com')[-1]}")
+        if POST_API in url:
+            try:
                 data = await resp.json()
-                for it in (data.get("aweme_list") or []):
-                    aid = str(it.get("aweme_id") or "")
-                    if aid:
-                        collected[aid] = it
-                        if author is None and it.get("author"):
-                            author = it["author"]
-            elif PROFILE_API in url and author is None:
+            except Exception as e:
+                # 页面跳转会丢弃 body。别静默 pass,否则「200 却没数据」永远查不出原因
+                post_hits.append(f"{resp.status} body_read_failed={e!r}")
+                return
+            lst = data.get("aweme_list")
+            post_hits.append(f"{resp.status} status_code={data.get('status_code')} "
+                             f"aweme_list={len(lst) if isinstance(lst, list) else lst!r} "
+                             f"keys={sorted(data)[:8]}")
+            for it in (lst or []):
+                aid = str(it.get("aweme_id") or "")
+                if aid:
+                    collected[aid] = it
+                    if author is None and it.get("author"):
+                        author = it["author"]
+        elif PROFILE_API in url and author is None:
+            try:
                 data = await resp.json()
-                if data.get("user"):
-                    author = data["user"]
-        except Exception:
-            pass
+            except Exception:
+                return
+            if data.get("user"):
+                author = data["user"]
 
     page.on("response", on_response)
 
     try:
         await page.goto(f"https://www.douyin.com/user/{sec_uid}",
                         wait_until="domcontentloaded", timeout=30000)
+        # 同私信/粉丝入口:没 hydrate 完,作品列表的分页请求根本不会发
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
         await page.wait_for_timeout(settle_ms)
         stagnant = 0
         for _ in range(max_scrolls):
@@ -64,8 +101,10 @@ async def fetch_videos(mgr: BrowserManager, identity: Identity, sec_uid: str,
             await page.mouse.wheel(0, 4000)
             await page.wait_for_timeout(settle_ms)
             if len(collected) == before:               # 本次下滑无新增
+                # 一条都没抓到时别提前退:那是「还没开始」,不是「已经到底」。
+                # 首屏 XHR 可能比 networkidle 更晚,滚满 max_scrolls 再放弃。
                 stagnant += 1
-                if stagnant >= 2:                      # 连续两次到底,停
+                if collected and stagnant >= 2:        # 连续两次到底,停
                     break
             else:
                 stagnant = 0
@@ -74,11 +113,23 @@ async def fetch_videos(mgr: BrowserManager, identity: Identity, sec_uid: str,
     except Exception as e:
         error = f"打开主页失败: {e!r}"
     finally:
+        final_url = page.url
+        dom = {}
+        if not collected:
+            try:                        # 页面到底渲染成什么样了(tab?空态?登录墙?)
+                dom = await page.evaluate(_WORKS_DOM_PROBE_JS)
+            except Exception as e:
+                dom = {"probe_failed": repr(e)}
         try:
             await page.close()
         except Exception:
             pass
 
+    if not collected:
+        # 「aweme/post 没发出来」和「发了但 aweme_list 空/读不到」是两回事,原来一律报同一句话
+        print(f"[works] 未拿到作品; sec_uid={sec_uid[:24]}… final_url={final_url}; "
+              f"post_hits({len(post_hits)})={post_hits[:5]}; dom={dom}")
+        print(f"[works] api_seen({len(api_seen)})={api_seen[:30]}")
     new_items = [it for aid, it in collected.items() if aid not in known_ids]
     return new_items, author, error
 
