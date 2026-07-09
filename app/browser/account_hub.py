@@ -420,7 +420,27 @@ _XHS_SCRAPE_DRAWER_JS = """(selfUid) => {
 }"""
 # 各平台 关注/粉丝 列表接口的「方向专属」URL 关键词 —— 必须互斥,否则两边混到一起。
 # 抖音:following/list vs follower/list(都含 follow,但 following 不含于 follower,反之亦然)。
+# 抖音主页「关注/粉丝」统计项:hydrate 后才有真实标记。打出来校准选择器,
+# 顺便看它是不是 <a>(能直接 goto)还是纯 div(必须点)。
+_DOUYIN_STAT_PROBE_JS = """() => {
+  const out = [];
+  for (const e of document.querySelectorAll('a,div,span,button')) {
+    const t = (e.textContent || '').trim();
+    if (!/^(关注|粉丝|获赞)\\s*\\d*$/.test(t) && !/^\\d[\\d.万亿]*\\s*(关注|粉丝)$/.test(t)) continue;
+    const r = e.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    out.push({tag: e.tagName, txt: t.slice(0, 12),
+              de: e.getAttribute('data-e2e'),
+              href: e.getAttribute('href'),
+              cls: (e.className && e.className.toString ? e.className.toString() : '').slice(0, 32)});
+  }
+  return out.slice(0, 12);
+}"""
+
 _FOLLOW_PRECISE = {
+    # follower/list 接口是活的(浏览器拦截能拿到数据),但直连拿不到:所有参数组合都是
+    # HTTP 200 + 空 body,而同一套签名下 following/list 正常。推测是假 msToken 被风控拒
+    # (未验证)。所以 fan 方向实际靠浏览器兜底,别再去调直连的参数。
     "douyin":   {"following": ("following/list",), "fan": ("follower/list",)},
     "xhs":      {"following": ("followings", "/follows"), "fan": ("fans", "/followers")},
     "kuaishou": {"following": (), "fan": ()},   # 快手走 graphql visionProfileUserList(见下)
@@ -526,7 +546,20 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         if "passport" in page.url or "/login" in page.url:
             return [], "logged_out:登录态失效,请重新登录"
+        # 和私信入口同一个坑:没 hydrate 完就点,React handler 还没绑,
+        # 元素「看起来可点」但点了没反应。先等网络静默。
+        try:
+            await page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
         await page.wait_for_timeout(settle_ms)
+        if platform == "douyin":
+            # 标定:hydrate 后把关注/粉丝入口的真实标记打出来,别再盲猜选择器
+            try:
+                print(f"[follow-probe] douyin stat entries: "
+                      f"{await page.evaluate(_DOUYIN_STAT_PROBE_JS)}")
+            except Exception as e:
+                print(f"[follow-probe] douyin probe failed: {e!r}")
         # 打开「当前方向」的列表:依次试候选入口,点完等该方向专属接口回包来确认开对了。
         openers = nav.get("open", {}).get(direction, [])
         opened = False

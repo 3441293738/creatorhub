@@ -89,10 +89,16 @@ class DouyinClient:
             r = await cli.get(url, headers=self._headers(referer),
                               impersonate=self.impersonate, timeout=self.timeout)
             if r.status_code != 200 or not r.content:
+                # HTTP 200 + 空 body = 被风控拒了(接口本身可能是活的:follower/list 直连
+                # 空 body,页面里发同一个请求却正常)。静默 return None 会让上层把「被拒」
+                # 和「没有数据」混为一谈 —— 那正是 raw=0 查了半天的原因。
+                print(f"[dy-client] {path} → HTTP {r.status_code} len={len(r.content)}"
+                      f"{' (空 body:多半被风控拒,非无数据)' if r.status_code == 200 else ''}")
                 return None
             try:
                 return r.json()
             except Exception:
+                print(f"[dy-client] {path} → 非 JSON len={len(r.content)}")
                 return None
 
     # ── 用户资料(对应 NativeClient.FetchProfile)──
