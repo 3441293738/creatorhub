@@ -328,12 +328,15 @@ def _norm_follow_user(d: dict, direction: str) -> Optional[dict]:
 # 关键:关注与粉丝要点不同入口,否则两边抓到同一份(改版时改 open 候选)。
 _FOLLOW_NAV = {
     "douyin": {
+        # ⚠️ 顶栏有「关注」feed 导航(<a href="/follow?from_nav=1">,带未读角标),会和主页
+        # 统计项撞文本 —— 'text=关注' 的 .first 常点中它。dyjs: 锚定确定存在的
+        # [data-e2e="user-info-fans"],反查统计容器,只在容器内点,天然避开顶栏。
         "url": "https://www.douyin.com/user/self",
         "open": {
-            "following": ['[data-e2e="user-info-follow"]', '[data-e2e="user-following"]',
-                          'text=关注'],
-            "fan":       ['[data-e2e="user-info-fans"]', '[data-e2e="user-fans"]',
-                          'text=粉丝'],
+            "following": ['dyjs:关注', '[data-e2e="user-info-follow"]',
+                          '[data-e2e="user-following"]'],
+            "fan":       ['dyjs:粉丝', '[data-e2e="user-info-fans"]',
+                          '[data-e2e="user-fans"]'],
         },
     },
     "xhs": {
@@ -346,6 +349,34 @@ _FOLLOW_NAV = {
         "open": {"following": ['text=关注'], "fan": ['text=粉丝']},
     },
 }
+# 抖音:主页统计区里「关注」没有 data-e2e(只有编译 hash class),而「粉丝/获赞」有。
+# 所以拿 user-info-fans 当锚点:向上找到同时含「关注」「粉丝」的最小容器(= 统计区),
+# 再在容器内点目标项。顶栏的「关注」导航不在这个容器里,天然被排除。
+_DOUYIN_OPEN_STAT_JS = """(label) => {
+  const anchor = document.querySelector('[data-e2e="user-info-fans"]');
+  if (!anchor) return '';
+  // 向上找最小的、同时包含「关注」和「粉丝」的祖先 —— 那就是统计区
+  let box = anchor;
+  for (let d = 0; d < 6 && box; d++, box = box.parentElement) {
+    const t = box.textContent || '';
+    if (t.includes('关注') && t.includes('粉丝')) break;
+  }
+  if (!box) return '';
+  // 容器内找目标项:文本形如「关注22」/「22关注」
+  const re = new RegExp('^(' + label + '\\\\s*[\\\\d.万亿]*|[\\\\d.万亿]+\\\\s*' + label + ')$');
+  const hits = [...box.querySelectorAll('div,span,a')]
+    .filter(e => re.test((e.textContent || '').trim()))
+    .filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+  if (!hits.length) return '';
+  // 「关注」这个纯文本标签也会匹配(数字部分可为空),它只是 label,handler 在带数字的
+  // 统计项上。优先带数字的最内层;真没有数字(计数为 0 被隐藏)才退回最内层。
+  const withNum = hits.filter(e => /\\d/.test(e.textContent || ''));
+  const pool = withNum.length ? withNum : hits;
+  const el = pool[pool.length - 1];          // 最内层
+  el.click();
+  return (el.tagName + ':' + (el.textContent || '').trim()).slice(0, 40);
+}"""
+
 # 小红书:主页统计里「关注/粉丝」文案会和顶栏导航「关注」撞,用 JS 只点「紧挨数字、且不在
 # 顶栏/侧栏」的那个统计项(点它才会弹出关注/粉丝列表抽屉,进而触发列表接口)。
 _XHS_OPEN_STAT_JS = """(label) => {
@@ -565,7 +596,13 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         opened = False
         for cand in openers:
             try:
-                if cand.startswith("js:"):
+                if cand.startswith("dyjs:"):
+                    # 抖音:锚定 user-info-fans 反查统计区,只在区内点(避开顶栏「关注」导航)
+                    clicked = await page.evaluate(_DOUYIN_OPEN_STAT_JS, cand[5:])
+                    print(f"[follow] douyin stat click {cand[5:]} → {clicked!r}")
+                    if not clicked:
+                        continue
+                elif cand.startswith("js:"):
                     # 小红书:JS 精确点主页统计区的「关注/粉丝」(避开顶栏同名标签)
                     clicked = await page.evaluate(_XHS_OPEN_STAT_JS, cand[3:])
                     if not clicked:
