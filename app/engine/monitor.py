@@ -1639,12 +1639,44 @@ class MonitorEngine:
                 t.done_at = datetime.utcnow()
                 s.add(t); s.commit()
                 if ok and action in ("follow", "unfollow"):
-                    edge = s.exec(select(FollowEdge).where(
-                        FollowEdge.account_id == t.account_id,
-                        FollowEdge.uid == target_uid)).first()
-                    if edge:
-                        edge.is_following = (action == "follow")
-                        s.add(edge); s.commit()
+                    # 同一个人可能同时有两行:关注列表(following)+ 粉丝列表(fan)。
+                    # 两行都要维护 —— 回关是在粉丝列表点的,只动 following 行的话
+                    # 粉丝列表那行 is_following 还是 0,界面继续显示「未关注」。
+                    def _edge(direction: str):
+                        return s.exec(select(FollowEdge).where(
+                            FollowEdge.account_id == t.account_id,
+                            FollowEdge.platform == t.platform,
+                            FollowEdge.direction == direction,
+                            FollowEdge.uid == target_uid)).first()
+
+                    edge, fan = _edge("following"), _edge("fan")
+                    if action == "unfollow":
+                        # 关注列表按 direction 取行,不看 is_following,
+                        # 只翻标记的话取关成功后这人还挂在列表里。
+                        if edge:
+                            s.delete(edge)
+                        if fan:      # ta 还关注我,但已不再互关
+                            fan.is_following = False
+                            fan.is_mutual = False
+                            s.add(fan)
+                    else:
+                        if edge:
+                            edge.is_following = True
+                            s.add(edge)
+                        else:        # 回关的人本来不在关注列表里,补一行
+                            s.add(FollowEdge(
+                                platform=t.platform, account_id=t.account_id,
+                                direction="following", uid=target_uid,
+                                sec_uid=target_sec_uid, nickname=t.target_nick,
+                                avatar=fan.avatar if fan else "",
+                                signature=fan.signature if fan else "",
+                                is_following=True, is_mutual=bool(fan),
+                                fetched_at=datetime.utcnow()))
+                        if fan:      # 回关 ta = 互关
+                            fan.is_following = True
+                            fan.is_mutual = True
+                            s.add(fan)
+                    s.commit()
         return {"ok": ok, "error": "" if ok else err}
 
     async def execute_comment_task(self, task_id: int) -> dict:

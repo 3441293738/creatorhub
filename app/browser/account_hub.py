@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .douyin_im_pb import parse_conversations
 from .fetcher import fetch_videos
@@ -1442,15 +1442,17 @@ async def fetch_dm_history(mgr: BrowserManager, identity, platform: str,
 
 
 # ═══════════ 写操作(无公开接口:登录态浏览器 UI 自动化) ═══════════
-_FOLLOW_BTN = [
-    'button:has-text("关注")', 'div[role=button]:has-text("关注")',
-    'span:has-text("关注")', '.follow-button', '[data-e2e="user-info-follow"]',
+# 关注按钮的稳定锚点。注意别写成 user-info-follow(少个 -btn)——那是统计区
+# 「关注 N」那一项,点下去只会打开关注列表,然后一路返回「成功」。
+_FOLLOW_BTN_ANCHOR = '[data-e2e="user-info-follow-btn"]'
+# 锚点缺失时的兜底。不放 span:has-text("关注"):顶栏「关注」feed 导航也匹配。
+_FOLLOW_BTN_FALLBACK = [
+    'button:has-text("已关注")', 'button:has-text("关注")',
+    'div[role=button]:has-text("关注")', '.follow-button',
 ]
-_UNFOLLOW_BTN = [
-    'button:has-text("已关注")', 'button:has-text("相互关注")',
-    'div[role=button]:has-text("已关注")', 'span:has-text("已关注")',
-    'span:has-text("取消关注")',
-]
+# 按钮文案 → 当前是否已关注。含「已/互相/相互」的先判,否则「已关注」会被「关注」吃掉。
+_FOLLOWING_TEXTS = ("已关注", "相互关注", "互相关注")
+_FOLLOW_TEXTS = ("关注", "回关")
 _PROFILE_URL = {
     "douyin": "https://www.douyin.com/user/{sec}",
     "xhs": "https://www.xiaohongshu.com/user/profile/{uid}",
@@ -1469,39 +1471,132 @@ async def _open_target_profile(mgr, identity, platform, target_uid, target_sec_u
     return ctx, page
 
 
+def _is_following(text: str) -> bool:
+    return any(t in text for t in _FOLLOWING_TEXTS)
+
+
+async def _first_visible(page, sel, limit: int = 8):
+    """取第一个可见匹配,不是第一个匹配。
+
+    抖音主页同时挂两个 user-info-follow-btn:吸顶栏里那个副本 rect 全 0。
+    原来用 .first 恒中隐藏副本,再被 is_visible() 判掉,最后报「未找到按钮」。
+    """
+    loc = page.locator(sel)
+    for i in range(min(await loc.count(), limit)):
+        cand = loc.nth(i)
+        try:
+            if await cand.is_visible():
+                return cand
+        except Exception:
+            continue
+    return None
+
+
+async def _follow_button(page) -> Tuple[Any, str]:
+    """返回(可见的关注按钮 locator, 按钮文案);找不到则 (None, "")。"""
+    btn = await _first_visible(page, _FOLLOW_BTN_ANCHOR)
+    if btn is None:
+        for sel in _FOLLOW_BTN_FALLBACK:
+            btn = await _first_visible(page, sel)
+            if btn is not None:
+                break
+    if btn is None:
+        return None, ""
+    try:
+        return btn, (await btn.inner_text()).strip()
+    except Exception:
+        return btn, ""
+
+
+async def _await_follow_button(page, timeout_ms: int = 12000) -> Tuple[Any, str]:
+    """轮询等按钮出现:主页偶尔要好几秒才渲染出 user-info(空 title「的抖音」)。"""
+    waited = 0
+    while True:
+        btn, text = await _follow_button(page)
+        if btn is not None and text:
+            return btn, text
+        if waited >= timeout_ms:
+            return btn, text
+        await page.wait_for_timeout(500)
+        waited += 500
+
+
+async def _wait_flip(page, want_following: bool, timeout_ms: int = 6000) -> str:
+    """等按钮文案翻到目标态,返回最后读到的文案(超时则返回未翻转的文案)。"""
+    waited, text = 0, ""
+    while waited < timeout_ms:
+        await page.wait_for_timeout(400)
+        waited += 400
+        _, text = await _follow_button(page)
+        if text and _is_following(text) == want_following:
+            return text
+    return text
+
+
+async def _dismiss_confirm(page) -> bool:
+    """取关有时弹二次确认。只点按钮:'text=确定' 是子串匹配,会点中标题
+    「确定要取消关注吗」这类纯文本节点,点了等于没点。"""
+    for c in ("确定", "取消关注", "不再关注"):
+        cc = await _first_visible(page, f'button:has-text("{c}")')
+        if cc is not None:
+            try:
+                await cc.click(timeout=2500)
+                return True
+            except Exception:
+                continue
+    return False
+
+
 async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: str = "",
                     target_sec_uid: str = "", unfollow: bool = False
                     ) -> Tuple[bool, str]:
-    """打开目标主页,点「关注 / 已关注」按钮(UI 自动化,有头窗口更稳)。"""
+    """打开目标主页,点「关注 / 已关注」按钮(UI 自动化,有头窗口更稳)。
+
+    按钮文案就是当前关注态,先读再决定点不点:已是目标态直接成功返回(幂等),
+    点完轮询等文案翻转才算成功 —— 只确认「点到了东西」会把空点、二次确认框、
+    被风控拦下统统算成成功。
+
+    首次点击常常打空:按钮已渲染但 React handler 还没绑上(和粉丝/作品/私信
+    入口同一个 hydrate 病)。所以点不动就重点,而不是直接判失败。
+    """
     ctx = None
+    want = "取关" if unfollow else "关注"
+    want_following = not unfollow
     try:
         ctx, page = await _open_target_profile(mgr, identity, platform,
                                                target_uid, target_sec_uid)
         if "passport" in page.url or "/login" in page.url:
             return False, "logged_out:账号未登录"
-        sels = _UNFOLLOW_BTN if unfollow else _FOLLOW_BTN
-        for sel in sels:
+
+        btn, text = await _await_follow_button(page)
+        if btn is None or not text:
+            return False, f"未找到关注按钮(主页未渲染/改版?url={page.url})"
+        if _is_following(text) == want_following:      # 已是目标状态
+            return True, ""
+
+        after = text
+        for attempt in range(3):
             try:
-                btn = page.locator(sel).first
-                if await btn.count() and await btn.is_visible():
-                    await btn.click(timeout=4000)
-                    await page.wait_for_timeout(1500)
-                    if unfollow:   # 取关常有二次确认
-                        for c in ("确定", "取消关注", "不再关注"):
-                            try:
-                                cc = page.get_by_text(c, exact=False).last
-                                if await cc.count() and await cc.is_visible():
-                                    await cc.click(timeout=2500)
-                                    break
-                            except Exception:
-                                continue
-                    return True, ""
-            except Exception:
+                await btn.click(timeout=4000)
+            except Exception as e:
+                if attempt == 2:
+                    return False, f"{want}点击失败: {e!r}"
+                await page.wait_for_timeout(800)
                 continue
-        return False, ("未找到「" + ("已关注" if unfollow else "关注") +
-                       "」按钮(可能已是目标状态/页面改版)")
+            if unfollow:
+                await page.wait_for_timeout(600)
+                await _dismiss_confirm(page)
+            after = await _wait_flip(page, want_following)
+            if after and _is_following(after) == want_following:
+                return True, ""
+            # 空点:重新取一次 locator(翻转失败时 DOM 可能已被 React 换掉)
+            btn, cur = await _follow_button(page)
+            if btn is None:
+                return False, f"{want}后按钮消失(点前「{text}」)"
+            after = cur
+        return False, f"{want}未生效:点了 3 次,按钮仍是「{after}」(风控?)"
     except Exception as e:
-        return False, f"{'取关' if unfollow else '关注'}异常: {e!r}"
+        return False, f"{want}异常: {e!r}"
     finally:
         try:
             if ctx is not None:
