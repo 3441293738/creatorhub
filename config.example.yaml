@@ -40,6 +40,15 @@ engine:
   active_hours_start: 8           # 活跃起点小时(含)
   active_hours_end: 24            # 活跃止点小时(不含);可 >24 跨零点(如 25=次日 1 点)
 
+  # ── 本账号作品健康监控(盯自己作品的流量/0播/违规,异常推送通知)──
+  #    默认关:开启后每 interval 用各账号登录态打开自己主页抓作品列表(较重),
+  #    检测「发布满 N 小时仍 0 播」「状态含违规/下架」并推通知;顺带写每日粉丝/互动快照供「数据」视图。
+  work_health_enabled: false            # 作品健康监控总开关
+  work_health_interval_seconds: 3600    # 每个账号多久体检一次自己作品
+  work_health_zero_play_hours: 6.0      # 发布满 N 小时仍 0 播即预警(仅对会报播放量的平台生效)
+  work_health_recent_days: 7            # 只体检最近 N 天内发布的作品
+  work_health_stat_snapshots: true      # 记录账号粉丝/作品/互动每日快照(「本账号→数据」趋势;不占额外抓取)
+
 storage:
   db_path: ./data/creatorhub.db
 

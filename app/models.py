@@ -31,6 +31,8 @@ class DouyinAccount(SQLModel, table=True):
     timezone_id: str = "Asia/Shanghai"
     locale: str = "zh-CN"
     fp_seed: str = ""             # 指纹种子(canvas/webgl/navigator 据此确定性生成,保证每次一致)
+    geo_lat: float = 0.0          # geolocation 伪造纬度(代理体检时按出口 IP 归属地写入;0=按种子派生兜底)
+    geo_lon: float = 0.0          # geolocation 伪造经度
     proxy_status: str = "unknown"  # unknown | ok | bad
     last_active_at: Optional[datetime] = None  # 上次活跃(用于错峰调度)
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -145,6 +147,7 @@ class PublishTask(SQLModel, table=True):
     title: str = ""                                    # 标题(小红书上限 20 字)
     desc: str = ""                                     # 正文
     topics: str = ""                                   # 话题,逗号分隔(不带 #)
+    location: str = ""                                 # 视频号:位置 POI(可选,best-effort)
     media_json: str = ""                               # 本地文件路径列表(JSON)
     visibility: str = "public"                         # 抖音:public 公开 | friends 好友可见 | private 仅自己可见
     allow_save: bool = True                            # 抖音:是否允许他人保存(下载)
@@ -247,6 +250,23 @@ class AccountWork(SQLModel, table=True):
     xsec_token: str = ""               # 小红书:打开笔记/抓评论所需令牌(其余平台空)
     raw_json: str = ""                 # 原始项快照
     fetched_at: Optional[datetime] = None  # 上次同步时间
+    # ── 作品健康监控(B5)去重标记:同一异常只推一次 ──
+    zero_play_alerted: bool = False    # 已就「发布满 N 小时仍 0 播」推过预警
+    status_alerted: str = ""           # 已就此状态(如「违规/已删除」)推过预警(存已告警的状态文案)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AccountStatSnapshot(SQLModel, table=True):
+    """本账号每日数据快照(B4:粉丝/作品/互动趋势)。每账号每天一行,体检时写入。"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    platform: str = Field(default="douyin", index=True)
+    account_id: int = Field(index=True)
+    date: str = Field(default="", index=True)   # YYYY-MM-DD(账号时区);每账号每天唯一
+    follower_count: int = 0
+    aweme_count: int = 0
+    total_like: int = 0                # 已同步本账号作品的点赞合计(能取到的范围)
+    total_comment: int = 0
+    total_play: int = 0
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

@@ -21,7 +21,11 @@ from ..browser import (BrowserManager, fetch_videos, fetch_comments,
                        fetch_xhs_comments, fetch_xhs_self_profile,
                        post_comment_browser,
                        fetch_ks_videos, fetch_ks_comments, fetch_ks_self_profile,
-                       post_ks_comment, do_follow, send_dm, send_dm_api)
+                       post_ks_comment,
+                       fetch_channels_works, fetch_channels_comments,
+                       fetch_channels_self_profile, post_channels_comment,
+                       fetch_account_works,
+                       do_follow, send_dm, send_dm_api)
 from . import compose
 from ..config import Config
 from ..db import get_session
@@ -38,10 +42,13 @@ from ..platforms.xhs import (parse_note_brief, parse_note_detail,
 from ..platforms.kuaishou import (parse_ks_feed, parse_ks_comment,
                    flatten_ks_comments, parse_self_user as parse_ks_self_user,
                    publish_kuaishou)
+from ..platforms.channels import (parse_channels_feed, parse_channels_comment,
+                   flatten_channels_comments, parse_self_user as parse_channels_self_user,
+                   publish_channels)
 from ..models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
                       CommentWatch, DouyinAccount, MonitorTarget,
                       NotificationChannel, PublishTask, AccountActionTask,
-                      FollowEdge, DmConversation)
+                      FollowEdge, DmConversation, AccountWork, AccountStatSnapshot)
 from ..notifier import notify_all
 from ..netfp import probe_ip_region
 from ..settings import get_setting
@@ -141,6 +148,7 @@ class MonitorEngine:
                 await self._scan_comment_watches()
                 await self._retry_failed()
                 await self._check_accounts()
+                await self._check_work_health()
                 await self._process_publish()
                 await self._process_comment_rules()
                 await self._process_comment_tasks()
@@ -182,7 +190,23 @@ class MonitorEngine:
         if not expected:
             return
         geo = await probe_ip_region(proxy)
-        if not geo or not geo.get("country"):
+        if not geo:
+            return
+        # 把代理出口的真实经纬度写回账号 —— geolocation 伪造坐标据此对齐真实出口地,
+        # 避免 navigator.geolocation(城市池兜底)与代理 IP 归属地对不上。
+        lat, lon = geo.get("lat") or 0.0, geo.get("lon") or 0.0
+        if lat and lon:
+            try:
+                with get_session() as s:
+                    acc = s.get(DouyinAccount, account_id)
+                    if acc and (round(acc.geo_lat, 3) != round(lat, 3)
+                                or round(acc.geo_lon, 3) != round(lon, 3)):
+                        acc.geo_lat, acc.geo_lon = lat, lon
+                        s.add(acc)
+                        s.commit()
+            except Exception:
+                pass
+        if not geo.get("country"):
             return
         if geo["country"] != expected:
             log.warning("账号 %s 代理出口国家 %s 与时区 %s(期望 %s)不一致,IP=%s"
@@ -230,6 +254,8 @@ class MonitorEngine:
                                 u, err = {}, "logged_out"
                     elif platform == "kuaishou":
                         u, err = await fetch_ks_self_profile(self.browser, identity)
+                    elif platform == "shipinhao":
+                        u, err = await fetch_channels_self_profile(self.browser, identity)
                     else:
                         u, err = await fetch_self_profile(self.browser, identity)
             except Exception:
@@ -243,6 +269,8 @@ class MonitorEngine:
                         p = parse_xhs_self_user(u)
                     elif platform == "kuaishou":
                         p = parse_ks_self_user(u)
+                    elif platform == "shipinhao":
+                        p = parse_channels_self_user(u)
                     else:
                         p = parse_self_user(u)
                     a.status = "active"
@@ -254,10 +282,131 @@ class MonitorEngine:
                     a.avatar = p.get("avatar") or a.avatar
                     a.follower_count = p.get("follower_count") or a.follower_count
                     a.aweme_count = p.get("aweme_count") or a.aweme_count
+                    got_profile = True
                 elif err == "logged_out":
                     a.status = "invalid"
                     log.warning("账号 %s(%s)登录态失效", aid, a.nickname)
+                    got_profile = False
+                else:
+                    got_profile = False
                 s.add(a); s.commit()
+            # 体检成功即记一条粉丝/作品数快照(B4 趋势;不依赖作品健康开关也能出粉丝曲线)
+            if got_profile and self.cfg.engine.work_health_stat_snapshots:
+                try:
+                    self._write_stat_snapshot(aid, platform, [])
+                except Exception:
+                    pass
+
+    # ── 本账号作品健康监控(B5)+ 数据快照(B4)──
+    async def _check_work_health(self):
+        """定期同步本账号作品,检测「持续0播 / 违规下架」并推送;顺带写每日数据快照。
+        默认关闭(work_health_enabled)。较重(每账号开一次浏览器抓自己作品),故独立节流。"""
+        if not self.cfg.engine.work_health_enabled:
+            return
+        now = time.time()
+        if now - getattr(self, "_last_work_health", 0.0) < \
+                self.cfg.engine.work_health_interval_seconds:
+            return
+        self._last_work_health = now
+        with get_session() as s:
+            accs = [(a.id, a.platform, a.sec_uid or "", self.browser.identity_for(a))
+                    for a in s.exec(select(DouyinAccount)).all()
+                    if a.status != "invalid" and (a.storage_state or a.creator_storage_state)]
+        for aid, platform, uid, identity in accs:
+            try:
+                async with self._account_guard(aid):
+                    items, err = await fetch_account_works(self.browser, identity,
+                                                           platform, uid)
+            except Exception as e:
+                log.warning("作品健康:账号 %s 抓取失败 %s", aid, e)
+                continue
+            if not items:
+                continue
+            self._stamp_active(aid)
+            try:
+                await self._eval_work_health(aid, platform, items)
+            except Exception as e:
+                log.warning("作品健康:账号 %s 评估失败 %s", aid, e)
+
+    # 视为「异常/受限」的状态关键词(命中即告警)
+    _BAD_STATUS = ("违规", "删除", "下架", "不适宜", "限流", "私密", "仅自己", "审核不")
+
+    async def _eval_work_health(self, account_id, platform, items):
+        """upsert 本账号作品 + 判定 0播/违规告警 + 写数据快照。"""
+        now = datetime.utcnow()
+        zero_hours = self.cfg.engine.work_health_zero_play_hours
+        cutoff = time.time() - self.cfg.engine.work_health_recent_days * 86400
+        # 该平台是否真的暴露播放量:有任一作品 play>0 才启用「0播」判定,避免对不报播放量的
+        # 平台(web 抖音等)误报。
+        play_reliable = any((w.get("play_count") or 0) > 0 for w in items)
+        alerts = []
+        with get_session() as s:
+            acc = s.get(DouyinAccount, account_id)
+            nick = (acc.nickname if acc else "") or f"账号{account_id}"
+            for w in items:
+                rec = s.exec(select(AccountWork).where(
+                    AccountWork.account_id == account_id,
+                    AccountWork.item_id == w["item_id"])).first()
+                if rec:
+                    for k, v in w.items():
+                        setattr(rec, k, v)
+                    rec.fetched_at = now
+                else:
+                    rec = AccountWork(platform=platform, account_id=account_id,
+                                      fetched_at=now, **w)
+                    s.add(rec); s.flush()
+                ct = rec.create_time or 0
+                if ct and ct < cutoff:
+                    s.add(rec); continue          # 太老,不体检
+                title = (rec.desc or rec.item_id or "")[:20]
+                st = rec.status or ""
+                if st and any(k in st for k in self._BAD_STATUS) and rec.status_alerted != st:
+                    alerts.append(("⚠️ 视频号/作品状态异常" if platform == "shipinhao"
+                                   else "⚠️ 作品状态异常",
+                                   f"{nick}:「{title}」当前状态「{st}」"))
+                    rec.status_alerted = st
+                if play_reliable and ct:
+                    age_h = (time.time() - ct) / 3600
+                    if (age_h >= zero_hours and (rec.play_count or 0) == 0
+                            and not rec.zero_play_alerted):
+                        alerts.append(("⚠️ 作品持续0播",
+                                       f"{nick}:「{title}」发布 {age_h:.0f} 小时仍 0 播放,疑似限流"))
+                        rec.zero_play_alerted = True
+                s.add(rec)
+            s.commit()
+        if self.cfg.engine.work_health_stat_snapshots:
+            self._write_stat_snapshot(account_id, platform, items)
+        if alerts:
+            try:
+                with get_session() as s:
+                    chans = s.exec(select(NotificationChannel)
+                                   .where(NotificationChannel.enabled == True)).all()  # noqa: E712
+                    channels = [{"type": c.type, "config": _loads(c.config)} for c in chans]
+                for title, body in alerts:
+                    if channels:
+                        await notify_all(channels, title, body)
+                    log.info("作品健康告警: %s | %s", title, body)
+            except Exception:
+                pass
+
+    def _write_stat_snapshot(self, account_id, platform, items):
+        """每账号每天一行数据快照(粉丝/作品/互动合计),供「数据」趋势视图。"""
+        day = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d")  # 东八区日期
+        with get_session() as s:
+            acc = s.get(DouyinAccount, account_id)
+            snap = s.exec(select(AccountStatSnapshot).where(
+                AccountStatSnapshot.account_id == account_id,
+                AccountStatSnapshot.date == day)).first()
+            if not snap:
+                snap = AccountStatSnapshot(platform=platform, account_id=account_id, date=day)
+            snap.follower_count = (acc.follower_count if acc else 0) or snap.follower_count
+            snap.aweme_count = (acc.aweme_count if acc else 0) or snap.aweme_count or len(items)
+            # 只有带作品列表(作品健康那趟)才更新互动合计;粉丝-only 快照不清零已有合计
+            if items:
+                snap.total_like = sum((w.get("like_count") or 0) for w in items)
+                snap.total_comment = sum((w.get("comment_count") or 0) for w in items)
+                snap.total_play = sum((w.get("play_count") or 0) for w in items)
+            s.add(snap); s.commit()
 
     def _due(self, last_scan_at, interval_seconds) -> bool:
         """到点判断,叠加 ±jitter 随机,避免所有目标整点齐发(机器矩阵特征)。"""
@@ -659,6 +808,15 @@ class MonitorEngine:
                     block_media=self.cfg.engine.block_media_resources)
                 error = err or ""
                 fresh = [c for c in (parse_ks_comment(rc) for rc in flatten_ks_comments(raw))
+                         if c and c["comment_id"] not in known]
+            elif platform == "shipinhao":
+                raw, err = await fetch_channels_comments(
+                    self.browser, identity, item_id, known,
+                    max_scrolls=self.cfg.engine.comment_max_scrolls,
+                    block_media=self.cfg.engine.block_media_resources)
+                error = err or ""
+                fresh = [c for c in (parse_channels_comment(rc)
+                                     for rc in flatten_channels_comments(raw))
                          if c and c["comment_id"] not in known]
             else:
                 return {"ok": False, "error": f"不支持的平台:{platform}"}
@@ -1117,6 +1275,7 @@ class MonitorEngine:
                     identity = self.browser.identity_for(acc)
             media_type, title, desc, topics = t.media_type, t.title, t.desc, t.topics
             visibility, allow_save = t.visibility, t.allow_save
+            location = getattr(t, "location", "") or ""
             platform = t.platform
             files = _loads_list(t.media_json)
             t.status = "publishing"; t.error = ""
@@ -1134,6 +1293,20 @@ class MonitorEngine:
             except Exception as e:
                 ok, url, err = False, "", f"发布异常: {e!r}"
             return await self._finish_publish(task_id, ok, url, err, platform="kuaishou")
+
+        if platform == "shipinhao":
+            # 视频号发布:登录态在该账号持久 profile 里,走浏览器自动化(wujie shadowRoot)
+            if not state:
+                return await self._finish_publish(
+                    task_id, False, "", "该账号未完成视频号登录,请先在账号页点「视频号登录」")
+            try:
+                ok, url, err = await publish_channels(self.browser, identity, state,
+                                                      media_type, title, desc, files,
+                                                      topics=topics, headed=True,
+                                                      location=location)
+            except Exception as e:
+                ok, url, err = False, "", f"发布异常: {e!r}"
+            return await self._finish_publish(task_id, ok, url, err, platform="shipinhao")
 
         if platform == "douyin":
             # 抖音发布:同快手走浏览器自动化,登录态在该账号持久 profile 里
@@ -1176,7 +1349,8 @@ class MonitorEngine:
                                    .where(NotificationChannel.enabled == True)).all()  # noqa: E712
                     channels = [{"type": c.type, "config": _loads(c.config)} for c in chans]
                 if channels:
-                    pname = {"kuaishou": "快手", "douyin": "抖音"}.get(platform, "小红书")
+                    pname = {"kuaishou": "快手", "douyin": "抖音",
+                             "shipinhao": "视频号"}.get(platform, "小红书")
                     await notify_all(channels, f"{pname}发布成功", url or "已发布一条作品")
             except Exception:
                 pass
@@ -1837,6 +2011,14 @@ class MonitorEngine:
             elif platform == "kuaishou":
                 method = "browser"
                 ok, err = await post_ks_comment(
+                    self.browser, identity, aweme_id, content,
+                    reply_to_text=target_nick if target_cid else "",
+                    headed=self.cfg.engine.comment_browser_headed)
+                result = "ok" if ok else ""
+            elif platform == "shipinhao":
+                # 视频号只能回复自己作品的评论(助手端无法主动去别人作品下评论)
+                method = "browser"
+                ok, err = await post_channels_comment(
                     self.browser, identity, aweme_id, content,
                     reply_to_text=target_nick if target_cid else "",
                     headed=self.cfg.engine.comment_browser_headed)

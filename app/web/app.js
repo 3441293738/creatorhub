@@ -364,11 +364,13 @@ async function refreshOverviewChart() {
 
 // ─── 平台切换(抖音 / 小红书) ───
 let PLATFORM = "douyin";
-const PF_NAME = { douyin: "抖音", xhs: "小红书", kuaishou: "快手" };
-// 是否支持「发布」面板(抖音 / 小红书 / 快手均有)
-function pfHasPublish(pf) { return pf === "xhs" || pf === "kuaishou" || pf === "douyin"; }
+const PF_NAME = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号" };
+// 是否支持「发布」面板(四平台均有)
+function pfHasPublish(pf) { return pf === "xhs" || pf === "kuaishou" || pf === "douyin" || pf === "shipinhao"; }
+// 视频号只有「本账号」数据(助手接口本账号),不支持监控他人作品/评论
+function pfIsChannels(pf) { return pf === "shipinhao"; }
 function switchPlatform(pf) {
-  if (pf !== "douyin" && pf !== "xhs" && pf !== "kuaishou") pf = "douyin";
+  if (!["douyin", "xhs", "kuaishou", "shipinhao"].includes(pf)) pf = "douyin";
   PLATFORM = pf;
   try { localStorage.setItem("dym-pf", pf); } catch (e) {}
   applyPlatformUI();
@@ -381,24 +383,32 @@ function applyPlatformUI() {
   document.body.classList.toggle("pf-douyin", PLATFORM === "douyin");
   document.body.classList.toggle("pf-xhs", PLATFORM === "xhs");
   document.body.classList.toggle("pf-kuaishou", PLATFORM === "kuaishou");
+  document.body.classList.toggle("pf-shipinhao", PLATFORM === "shipinhao");
+  // 视频号:只有本账号数据,隐藏「监控他人作品/评论」相关入口(.notsh-only)
+  document.body.classList.toggle("pf-channels", pfIsChannels(PLATFORM));
   document.querySelectorAll(".pswitch button").forEach(b =>
     b.classList.toggle("active", b.dataset.pf === PLATFORM));
   document.querySelectorAll(".dy-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "douyin"));
   document.querySelectorAll(".xhs-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "xhs"));
   document.querySelectorAll(".ks-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "kuaishou"));
+  document.querySelectorAll(".sh-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "shipinhao"));
+  document.querySelectorAll(".notsh-only").forEach(e => e.classList.toggle("hidden", pfIsChannels(PLATFORM)));
   // 发布面板入口:抖音 / 小红书 / 快手均显示
   document.querySelectorAll(".pub-only").forEach(e => e.classList.toggle("hidden", !pfHasPublish(PLATFORM)));
   // 发布面板文案随平台切换
-  const ks = PLATFORM === "kuaishou", dy = PLATFORM === "douyin";
+  const ks = PLATFORM === "kuaishou", dy = PLATFORM === "douyin", sph = PLATFORM === "shipinhao";
   const pubSub = $("pub-head-sub");
   if (pubSub) pubSub.textContent = dy ? "上传图集 / 视频到抖音创作平台(实验性)"
-    : ks ? "上传图集 / 视频到快手创作平台(实验性)" : "上传图集 / 视频到小红书(实验性)";
-  if ($("pub-head-lead")) $("pub-head-lead").textContent = (ks || dy) ? "发布作品" : "发布笔记";
-  if ($("pub-title")) $("pub-title").placeholder = (ks || dy) ? "给作品起个标题" : "给笔记起个标题";
+    : ks ? "上传图集 / 视频到快手创作平台(实验性)"
+    : sph ? "上传视频到视频号助手(实验性)" : "上传图集 / 视频到小红书(实验性)";
+  if ($("pub-head-lead")) $("pub-head-lead").textContent = (ks || dy || sph) ? "发布作品" : "发布笔记";
+  if ($("pub-title")) $("pub-title").placeholder = (ks || dy || sph) ? "给作品起个标题" : "给笔记起个标题";
   if ($("pub-hint")) $("pub-hint").textContent = dy
     ? "发布通过自动化抖音创作平台(creator.douyin.com)完成,会弹出浏览器窗口。首次或触发风控时抖音会要求「短信验证码/扫码」验证,请在弹出窗口里手动完成(最多等 5 分钟,验证通过后自动继续发布);视频上传后需等转码,发布稍慢。⚠️ 因需本人验证,定时/无人值守发布可能被此步骤挡住,建议发布时在场。"
     : ks
     ? "发布通过自动化快手创作平台(cp.kuaishou.com)完成,会弹出浏览器窗口;若遇验证码/需补封面可在窗口里手动处理。定时任务由后台引擎到点执行。"
+    : sph
+    ? "发布通过自动化视频号助手(channels.weixin.qq.com)完成,会弹出浏览器窗口。视频号视频上传需转码、发布前可能要求封面/实名/过脸验证,请在弹出窗口里手动处理(建议发布时在场)。⚠️ 发布页在 wujie 微前端里,选择器随视频号改版可能失效。"
     : "发布通过自动化小红书创作平台完成,会弹出浏览器窗口;若遇验证码/需补封面可在窗口里手动处理。定时任务由后台引擎到点执行。";
   // 评论监控「类型」下拉随平台改写文案
   const wk = $("w-kind");
@@ -428,7 +438,14 @@ function applyPlatformUI() {
     : "从浏览器开发者工具复制完整 Cookie";
   applyMonitorForm();
   if ($("t-kind") && PLATFORM !== "xhs") $("t-kind").value = "creator";
-  // 不支持发布的平台:若正停在该面板则回到总览(当前三平台均支持,兜底保留)
+  // 视频号只有本账号数据,不支持「监控他人」:若正停在这些面板,自动切到「账号管理」
+  if (pfIsChannels(PLATFORM)) {
+    const cur = (document.querySelector('.navitem.active') || {}).dataset;
+    if (cur && ["monitors", "comments", "autocomment"].includes(cur.tab)) switchTab("hub");
+    // 视频号本账号只有「我的作品 / 数据」;若停在关注/粉丝/私信子页,切回我的作品
+    if (["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
+  }
+  // 不支持发布的平台:若正停在该面板则回到总览(当前四平台均支持,兜底保留)
   if (!pfHasPublish(PLATFORM)) {
     const pub = document.querySelector('[data-panel="publish"]');
     if (pub && pub.style.display !== "none") switchTab("overview");
@@ -601,6 +618,20 @@ async function startKsCreatorLogin() {
     $("qrstatus").innerHTML = "🪟 已弹出<b>快手创作平台</b>窗口(cp.kuaishou.com),请扫码登录(此登录态用于<b>发布</b>)。<br>登录成功后稍等一两秒再关窗口。";
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
+}
+
+// ─── 视频号扫码登录(读取/发布共用,微信扫码) ───
+async function startChannelsLogin() {
+  const proxy = await choosePreLoginProxy();
+  if (proxy === null) return;
+  $("cookiebox").style.display = "none";
+  $("qrbox").style.display = "block";
+  $("qrstatus").textContent = "正在打开视频号助手窗口…";
+  try {
+    const res = await api(loginStartUrl("/api/login/shipinhao/start", proxy), { method: "POST" });
+    $("qrstatus").innerHTML = "🪟 已弹出<b>视频号助手</b>窗口(channels.weixin.qq.com),请用<b>微信</b>扫码登录(读取/发布共用一套登录态)。<br>登录成功后稍等一两秒再关窗口。";
+    pollLogin(res.task_id);
+  } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("视频号登录启动失败:" + e.message, "err"); }
 }
 
 // ─── Cookie 登录 ───
@@ -794,6 +825,46 @@ function refreshHubPanel() {
   else if (HUB_TAB === "following") refreshFollows("following");
   else if (HUB_TAB === "fans") refreshFollows("fan");
   else if (HUB_TAB === "dm") { refreshDmConvs(); startDmStream(); }
+  else if (HUB_TAB === "stats") loadHubStats();
+}
+
+// ── 本账号数据分析(B4)──
+function _kpiCard(label, val, delta) {
+  const d = (delta === undefined || delta === null || delta === 0) ? ""
+    : `<span style="font-size:12px;color:${delta > 0 ? "var(--success)" : "var(--danger)"}">${delta > 0 ? "▲+" : "▼"}${Math.abs(delta)}</span>`;
+  return `<div class="card" style="flex:1;min-width:120px;padding:12px 14px">
+    <div class="mut" style="font-size:12px">${esc(label)}</div>
+    <div style="font-size:22px;font-weight:700;margin-top:2px">${val} ${d}</div></div>`;
+}
+function _spark(vals) {
+  // 极简 SVG 折线(粉丝趋势),无外部依赖
+  vals = vals.filter(v => typeof v === "number");
+  if (vals.length < 2) return '<div class="mut" style="font-size:12px">趋势数据不足(运行几天后出多点曲线)</div>';
+  const w = 480, h = 60, mn = Math.min(...vals), mx = Math.max(...vals), rng = (mx - mn) || 1;
+  const pts = vals.map((v, i) => `${(i / (vals.length - 1) * w).toFixed(1)},${(h - (v - mn) / rng * (h - 8) - 4).toFixed(1)}`).join(" ");
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:60px" preserveAspectRatio="none">
+    <polyline fill="none" stroke="var(--acc)" stroke-width="2" points="${pts}"/></svg>`;
+}
+async function loadHubStats() {
+  const kpi = $("stats-kpi"), tr = $("stats-trend"), wb = $("stats-works");
+  if (!kpi) return;
+  if (!HUB_ACC) { kpi.innerHTML = ""; if (tr) tr.innerHTML = ""; if (wb) wb.innerHTML = `<tr><td colspan="5" class="mut">请先选择账号</td></tr>`; return; }
+  try {
+    const d = await api("/api/account-stats/" + HUB_ACC + "?days=30");
+    if ($("hb-stats")) $("hb-stats").textContent = (d.works || []).length;
+    kpi.innerHTML = _kpiCard("粉丝", d.account.follower_count || 0, d.fans_delta)
+      + _kpiCard("作品数", d.account.aweme_count || 0)
+      + _kpiCard("近30天快照", (d.trend || []).length);
+    if (tr) tr.innerHTML = `<div class="mut" style="font-size:12px;margin-bottom:4px">粉丝趋势</div>`
+      + _spark((d.trend || []).map(x => x.follower_count));
+    if (wb) wb.innerHTML = (d.works || []).length
+      ? d.works.map(w => `<tr><td>${esc((w.desc || w.item_id || "").slice(0, 30))}</td>`
+        + `<td>${w.play_count || 0}</td><td>${w.like_count || 0}</td><td>${w.comment_count || 0}</td>`
+        + `<td>${esc(w.status || "")}</td></tr>`).join("")
+      : `<tr><td colspan="5" class="mut">暂无作品数据,先到「我的作品」点「同步作品」</td></tr>`;
+  } catch (e) {
+    kpi.innerHTML = `<div class="mut">加载失败:${esc(e.message)}</div>`;
+  }
 }
 function hubGridEmpty(text, sub = "") {
   return `<div class="empty" style="width:100%;column-span:all;break-inside:avoid"><div class="empty-ic">${ic("i-inbox")}</div>` +
@@ -815,6 +886,7 @@ function workLink(platform, id) {
   id = encodeURIComponent(id);
   if (platform === "xhs") return "https://www.xiaohongshu.com/explore/" + id;
   if (platform === "kuaishou") return "https://www.kuaishou.com/short-video/" + id;
+  if (platform === "shipinhao") return "https://channels.weixin.qq.com/platform/post/list";
   return "https://www.douyin.com/video/" + id;
 }
 function openWork(platform, id) { try { window.open(workLink(platform, id), "_blank", "noopener"); } catch (e) {} }
@@ -1923,10 +1995,11 @@ async function addPublish() {
       await api("/api/publish", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ account_id: +acc, media_type: $("pub-type").value, title: $("pub-title").value.trim(), desc: $("pub-desc").value, topics: $("pub-topics").value.trim(), media_paths: paths, scheduled_at: when,
+          location: $("pub-location") ? $("pub-location").value.trim() : "",
           visibility: $("pub-visibility") ? $("pub-visibility").value : "public",
           allow_save: $("pub-allowsave") ? $("pub-allowsave").value !== "0" : true }),
       });
-      pubFilesClear(); $("pub-title").value = ""; $("pub-desc").value = ""; $("pub-topics").value = ""; $("pub-when").value = ""; dtSyncAll();
+      pubFilesClear(); $("pub-title").value = ""; $("pub-desc").value = ""; $("pub-topics").value = ""; $("pub-when").value = ""; if ($("pub-location")) $("pub-location").value = ""; dtSyncAll();
       $("pub-msg").textContent = when ? "已加入定时队列 ✓" : "已加入队列,即将发布 ✓";
       toast("已加入发布队列", "ok");
     } catch (e) { $("pub-msg").textContent = "失败: " + e.message; toast("发布失败:" + e.message, "err"); }
@@ -1945,7 +2018,7 @@ async function refreshPublish() {
     <td class="num">${t.media_count}</td>
     <td>${t.source_platform ? esc(t.source_platform) + " 转发" : "手动"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at + "Z").toLocaleString() : "尽快"}</td>
-    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ` <a href="${esc(t.result_url)}" target="_blank">查看</a>` : ""}</td>
+    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? (t.platform === "shipinhao" ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${t.account_id}, '${esc(t.result_url)}')">查看</a>` : ` <a href="${esc(t.result_url)}" target="_blank">查看</a>`) : ""}</td>
     <td class="acttd">
       ${(t.status !== "done" && t.status !== "publishing") ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
       <button class="ghost sm" onclick="delPublish(${t.id})">删除</button>
@@ -1953,6 +2026,14 @@ async function refreshPublish() {
       PLATFORM === "kuaishou" ? "上传图集/视频加入队列(发布到快手创作平台)"
       : PLATFORM === "douyin" ? "上传图集/视频加入队列(发布到抖音创作平台)"
       : "上传图集/视频加入队列,或在抖音作品上点「发小红书」转发过来");
+}
+// 视频号作品无公开链接:用该账号已登录浏览器打开图文/视频管理页查看
+async function openPubInBrowser(accountId, url) {
+  if (!accountId) { toast("缺少账号信息", "err"); return; }
+  toast("正在用该账号浏览器打开视频号管理页…", "info", 5000);
+  try {
+    await api("/api/accounts/" + accountId + "/open-browser?url=" + encodeURIComponent(url || ""), { method: "POST" });
+  } catch (e) { toast("打开失败:" + e.message, "err"); }
 }
 async function runPublish(id) {
   const btn = evtBtn();
@@ -2479,7 +2560,7 @@ switchTab((() => {
 switchHubTab(HUB_TAB);   // 恢复上次停留的子标签(我的作品/关注/粉丝/私信)
 
 // restore last-selected platform (default: 抖音)
-PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return (p === "xhs" || p === "douyin" || p === "kuaishou") ? p : "douyin"; } catch (e) { return "douyin"; } })();
+PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "douyin", "kuaishou", "shipinhao"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
 applyPlatformUI();
 
 onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); onAcMode(); loadSettings(); refreshAccounts(); refreshProxies(); refreshChannels(); loop();

@@ -21,7 +21,9 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       interactive_login, interactive_creator_login,
                       interactive_xhs_login, interactive_xhs_creator_login,
                       interactive_ks_login, interactive_ks_creator_login,
+                      interactive_channels_login, interactive_channels_creator_login,
                       fetch_self_profile, fetch_xhs_self_profile, fetch_ks_self_profile,
+                      fetch_channels_self_profile,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
                       fetch_dm_history)
 from .platforms.douyin import parse_self_user
@@ -37,12 +39,13 @@ from .platforms.xhs import (resolve_note as xhs_resolve_note,
 from .platforms.kuaishou import (resolve_ks_user_id, resolve_ks_photo_id,
                   looks_like_photo as ks_looks_like_photo,
                   parse_self_user as parse_ks_self_user)
+from .platforms.channels import parse_self_user as parse_channels_self_user
 from .engine import MonitorEngine
 from .models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
                      CommentWatch, DouyinAccount, MonitorTarget,
                      NotificationChannel, ProxyPool, PublishTask,
                      AccountWork, FollowEdge, DmConversation, DmMessage,
-                     AccountActionTask)
+                     AccountActionTask, AccountStatSnapshot)
 from .notifier import CHANNEL_TYPES, send_one
 from .profiles import (ensure_identity, migrate_identities, assign_proxy_from_pool,
                        seed_proxy_pool)
@@ -176,6 +179,8 @@ async def _enrich_account_profile(account_id: int, state: str) -> str:
             u, err = await _xhs_profile(state, proxy)
         elif platform == "kuaishou":
             u, err = await fetch_ks_self_profile(browser, identity)
+        elif platform == "shipinhao":
+            u, err = await fetch_channels_self_profile(browser, identity)
         else:
             u, err = await fetch_self_profile(browser, identity)
     except Exception:
@@ -189,6 +194,8 @@ async def _enrich_account_profile(account_id: int, state: str) -> str:
                 p = parse_xhs_self_user(u)
             elif platform == "kuaishou":
                 p = parse_ks_self_user(u)
+            elif platform == "shipinhao":
+                p = parse_channels_self_user(u)
             else:
                 p = parse_self_user(u)
             if p.get("nickname"):
@@ -222,6 +229,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
     new_fields = None
     nm = ("小红书账号" if platform == "xhs"
           else "快手账号" if platform == "kuaishou"
+          else "视频号账号" if platform == "shipinhao"
           else "创作者账号" if creator else "扫码账号")
     try:
         # 1) 准备画像 + identity(新建账号此时不写库,只用临时 profile)
@@ -266,6 +274,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 ok, state_json, nickname = await interactive_ks_creator_login(browser, identity)
             else:
                 ok, state_json, nickname = await interactive_ks_login(browser, identity)
+        elif platform == "shipinhao":
+            # 视频号只有一套登录态(助手即创作平台),读取/发布共用
+            ok, state_json, nickname = await interactive_channels_login(browser, identity)
         elif creator:
             ok, state_json, nickname = await interactive_creator_login(browser, identity)
         else:
@@ -290,6 +301,10 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     acc.creator_storage_state = state_json
                     if not is_xhs or not acc.storage_state:   # xhs 创作登录不覆盖读取态
                         acc.storage_state = state_json
+                elif platform == "shipinhao":
+                    # 视频号一套登录态即读取又发布,两处都写
+                    acc.storage_state = state_json
+                    acc.creator_storage_state = state_json
                 else:
                     acc.storage_state = state_json
                 if nickname:
@@ -390,6 +405,18 @@ async def login_ks_creator_start(proxy: str = "auto"):
                                    proxy_choice=proxy))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开快手创作平台窗口,请扫码登录(发布用)"}
+
+
+@app.post("/api/login/shipinhao/start")
+async def login_channels_start(proxy: str = "auto"):
+    """视频号扫码登录(读取/发布共用,微信扫码)。"""
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    task_id = uuid.uuid4().hex
+    login_tasks[task_id] = {"status": "opening"}
+    asyncio.create_task(_run_login(task_id, platform="shipinhao", proxy_choice=proxy))
+    return {"task_id": task_id, "status": "opening",
+            "hint": "已打开视频号助手窗口,请用微信扫码登录"}
 
 
 @app.get("/api/login/browser/poll")
@@ -593,6 +620,39 @@ async def sync_account_works(account_id: int):
                 added += 1
         s.commit()
     return {"ok": True, "fetched": len(items), "added": added}
+
+
+# ─────────── 本账号数据分析(B4:粉丝/作品/互动趋势 + 单篇作品表)───────────
+@app.get("/api/account-stats/{account_id}")
+async def account_stats(account_id: int, days: int = 30):
+    """返回该账号近 days 天的每日快照趋势 + 当前本账号作品的单篇互动明细。
+    快照由引擎在账号体检/作品健康时写入(见 EngineConfig.work_health_*)。"""
+    days = max(1, min(days, 180))
+    with get_session() as s:
+        acc = s.get(DouyinAccount, account_id)
+        if not acc:
+            raise HTTPException(404, "账号不存在")
+        snaps = s.exec(select(AccountStatSnapshot)
+                       .where(AccountStatSnapshot.account_id == account_id)
+                       .order_by(AccountStatSnapshot.date.desc()).limit(days)).all()
+        works = s.exec(select(AccountWork)
+                       .where(AccountWork.account_id == account_id)
+                       .order_by(AccountWork.create_time.desc()).limit(50)).all()
+    trend = [{"date": x.date, "follower_count": x.follower_count,
+              "aweme_count": x.aweme_count, "total_like": x.total_like,
+              "total_comment": x.total_comment, "total_play": x.total_play}
+             for x in reversed(snaps)]
+    latest = trend[-1] if trend else {}
+    prev = trend[-2] if len(trend) >= 2 else {}
+    fans_delta = (latest.get("follower_count", 0) - prev.get("follower_count", 0)
+                  if prev else 0)
+    return {
+        "account": {"id": acc.id, "platform": acc.platform, "nickname": acc.nickname,
+                    "follower_count": acc.follower_count, "aweme_count": acc.aweme_count},
+        "fans_delta": fans_delta,
+        "trend": trend,
+        "works": [_work_dict(w) for w in works],
+    }
 
 
 # ─────────── 本账号管理:作品评论(抖音直连分页 / 小红书客户端 / 快手拦截)───────────
@@ -1013,10 +1073,15 @@ async def cancel_account_action(task_id: int):
     return {"ok": True}
 
 
+_PLATFORM_HOST = {"douyin": "douyin.com", "xhs": "xiaohongshu.com",
+                  "kuaishou": "kuaishou.com", "shipinhao": "weixin.qq.com"}
+
+
 @app.post("/api/accounts/{account_id}/open-browser")
-async def open_account_browser(account_id: int):
-    """用该账号登录态弹出一个真实浏览器窗口并停在平台首页,留给用户手动操作
-    (查看/收发私信、F12 抓接口、手动维护等)。关闭窗口即落盘 Cookie。
+async def open_account_browser(account_id: int, url: str = ""):
+    """用该账号登录态弹出一个真实浏览器窗口。默认停在平台首页;传 url 则停在该地址
+    (仅允许本平台域名,用于「查看」视频号作品/管理页等需登录态才能打开的页面)。
+    留给用户手动操作(查看/收发私信、F12 抓接口、手动维护等)。关闭窗口即落盘 Cookie。
     注意:窗口开着期间该账号的后台抓取/写操作会因 profile 占用而暂时失败,用完关掉即可。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
@@ -1035,7 +1100,13 @@ async def open_account_browser(account_id: int):
         except Exception:
             pass
     home = {"xhs": "https://www.xiaohongshu.com/",
-            "kuaishou": "https://www.kuaishou.com/"}.get(platform, "https://www.douyin.com/")
+            "kuaishou": "https://www.kuaishou.com/",
+            "shipinhao": "https://channels.weixin.qq.com/platform"}.get(
+                platform, "https://www.douyin.com/")
+    # 传了 url 且属于本平台域名 -> 停在该地址(否则回首页,防被当跳转开任意站)
+    tgt = (url or "").strip()
+    if tgt.startswith("http") and _PLATFORM_HOST.get(platform, "") in tgt:
+        home = tgt
     # 持久 profile 只在"首次空目录"才注入登录态;为防 profile 里 Cookie 缺失/过期导致
     # 打开后未登录,这里用 DB 里已知的登录态 Cookie 再注入一次(覆盖刷新)。
     from .browser.manager import _sanitize_cookies
@@ -1115,6 +1186,7 @@ async def _probe_proxy(url: str, platform: str = "douyin", timeout: float = 15):
         return False, "未配置代理"
     test_url = ("https://www.xiaohongshu.com/" if platform == "xhs"
                 else "https://www.kuaishou.com/" if platform == "kuaishou"
+                else "https://channels.weixin.qq.com/" if platform == "shipinhao"
                 else "https://www.douyin.com/")
     try:
         async with httpx.AsyncClient(proxy=url, timeout=timeout, follow_redirects=True) as cli:
@@ -2115,6 +2187,7 @@ class PublishIn(BaseModel):
     title: str = ""
     desc: str = ""
     topics: str = ""
+    location: str = ""                    # 视频号:位置 POI(可选)
     media_paths: list[str] = []
     visibility: str = "public"            # 抖音:public | friends | private
     allow_save: bool = True               # 抖音:是否允许他人保存
@@ -2162,19 +2235,21 @@ async def add_publish(body: PublishIn):
         raise HTTPException(400, "没有可用的媒体文件,请先上传")
     with get_session() as s:
         acc = s.get(DouyinAccount, body.account_id)
-        if not acc or acc.platform not in ("xhs", "kuaishou", "douyin"):
-            raise HTTPException(400, "请选择一个已登录的抖音 / 小红书 / 快手账号")
-        pname = {"kuaishou": "快手", "douyin": "抖音"}.get(acc.platform, "小红书")
-        if acc.platform in ("kuaishou", "douyin"):
-            # 抖音 / 快手发布走浏览器自动化,登录态在该账号持久 profile 里;需创作者登录态
+        if not acc or acc.platform not in ("xhs", "kuaishou", "douyin", "shipinhao"):
+            raise HTTPException(400, "请选择一个已登录的抖音 / 小红书 / 快手 / 视频号账号")
+        pname = {"kuaishou": "快手", "douyin": "抖音",
+                 "shipinhao": "视频号"}.get(acc.platform, "小红书")
+        if acc.platform in ("kuaishou", "douyin", "shipinhao"):
+            # 抖音 / 快手 / 视频号发布走浏览器自动化,登录态在该账号持久 profile 里
             if not (acc.creator_storage_state or acc.storage_state):
-                raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成「创作者登录」")
+                raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成登录")
         elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
             raise HTTPException(400, "该账号不可发布:请对该号完成「小红书扫码登录」或「创作者登录」")
         vis = body.visibility if body.visibility in ("public", "friends", "private") else "public"
         t = PublishTask(
             platform=acc.platform, account_id=body.account_id, media_type=body.media_type,
             title=body.title.strip()[:20], desc=body.desc, topics=body.topics,
+            location=(body.location or "").strip()[:60],
             visibility=vis, allow_save=bool(body.allow_save),
             media_json=json.dumps(paths), scheduled_at=_parse_when(body.scheduled_at),
         )

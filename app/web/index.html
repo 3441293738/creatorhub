@@ -93,6 +93,7 @@
   .pswitch button.active[data-pf="douyin"] { background:var(--acc-soft); color:var(--acc); border-color:var(--acc-ring); }
   .pswitch button.active[data-pf="xhs"] { background:var(--xhs-soft); color:var(--xhs); border-color:var(--xhs-ring); }
   .pswitch button.active[data-pf="kuaishou"] { background:rgba(255,121,2,.16); color:#ff7902; border-color:rgba(255,121,2,.4); }
+  .pswitch button.active[data-pf="shipinhao"] { background:rgba(7,193,96,.16); color:#07c160; border-color:rgba(7,193,96,.4); }
   .hidden { display:none !important; }
 
   /* ════ 小红书:浅色暖调主题(整页随平台切换;抖音保持深色) ════ */
@@ -158,6 +159,19 @@
   /* 深色橙主题下日期选择器图标维持反白 */
   body.pf-kuaishou input[type=date]::-webkit-calendar-picker-indicator,
   body.pf-kuaishou input[type=datetime-local]::-webkit-calendar-picker-indicator { filter:invert(.7); }
+
+  /* ════ 视频号:深色 + 微信招牌绿主题 #07C160 ════ */
+  body.pf-shipinhao {
+    --acc:#07c160; --acc-hover:#1ecb73; --acc-soft:rgba(7,193,96,.15); --acc-ring:rgba(7,193,96,.38);
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(7,193,96,.10), transparent 60%),
+      radial-gradient(900px 500px at 0% 0%, rgba(60,200,130,.05), transparent 55%),
+      var(--bg);
+  }
+  body.pf-shipinhao .brand-mark { background:linear-gradient(135deg,#07c160,#4fd68f); box-shadow:0 4px 14px -4px var(--acc-ring); }
+  body.pf-shipinhao .badge-lite { color:var(--acc); background:var(--acc-soft); }
+  body.pf-shipinhao input[type=date]::-webkit-calendar-picker-indicator,
+  body.pf-shipinhao input[type=datetime-local]::-webkit-calendar-picker-indicator { filter:invert(.7); }
 
   /* ── 小红书笔记瀑布流卡片 ── */
   .xhs-grid { columns:240px; column-gap:14px; }
@@ -745,6 +759,7 @@
     <button data-pf="douyin" onclick="switchPlatform('douyin')">抖音</button>
     <button data-pf="xhs" onclick="switchPlatform('xhs')">小红书</button>
     <button data-pf="kuaishou" onclick="switchPlatform('kuaishou')">快手</button>
+    <button data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
   </div>
   <span class="spacer"></span>
   <span class="engine" id="engine-status"><span class="dot live"></span>引擎运行中</span>
@@ -755,13 +770,13 @@
   <nav class="nav">
     <button class="navitem" data-tab="overview" onclick="switchTab('overview')"><svg><use href="#i-bolt"/></svg><span class="nav-label">总览</span></button>
     <button class="navitem" data-tab="accounts" onclick="switchTab('accounts')"><svg><use href="#i-user"/></svg><span class="nav-label">账号</span><span class="nav-badge" id="tb-acc">0</span></button>
-    <button class="navitem" data-tab="monitors" onclick="switchTab('monitors')"><svg><use href="#i-target"/></svg><span class="nav-label">作品监控</span><span class="nav-badge" id="tb-mon">0</span></button>
-    <button class="navitem" data-tab="comments" onclick="switchTab('comments')"><svg><use href="#i-msg"/></svg><span class="nav-label">评论监控</span><span class="nav-badge" id="tb-watch">0</span></button>
+    <button class="navitem notsh-only" data-tab="monitors" onclick="switchTab('monitors')"><svg><use href="#i-target"/></svg><span class="nav-label">作品监控</span><span class="nav-badge" id="tb-mon">0</span></button>
+    <button class="navitem notsh-only" data-tab="comments" onclick="switchTab('comments')"><svg><use href="#i-msg"/></svg><span class="nav-label">评论监控</span><span class="nav-badge" id="tb-watch">0</span></button>
     <div class="nav-sep">本账号</div>
     <button class="navitem" data-tab="hub" onclick="switchTab('hub')"><svg><use href="#i-user"/></svg><span class="nav-label">账号管理</span></button>
     <div class="nav-sep">工具</div>
     <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish')"><svg><use href="#i-send"/></svg><span class="nav-label">发布</span><span class="nav-badge" id="tb-pub">0</span></button>
-    <button class="navitem" data-tab="autocomment" onclick="switchTab('autocomment')"><svg><use href="#i-msg"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
+    <button class="navitem notsh-only" data-tab="autocomment" onclick="switchTab('autocomment')"><svg><use href="#i-msg"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
     <button class="navitem" data-tab="notifications" onclick="switchTab('notifications')"><svg><use href="#i-bell"/></svg><span class="nav-label">通知</span></button>
     <button class="navitem" data-tab="settings" onclick="switchTab('settings')"><svg><use href="#i-download"/></svg><span class="nav-label">设置</span></button>
   </nav>
@@ -785,7 +800,7 @@
     </div>
     <div class="chart-wrap" id="overview-chart"><div class="chart-empty">加载中…</div></div>
   </div>
-  <div class="card"><div class="hint">顶部切换 <b>抖音 / 小红书 / 快手</b> 平台,各平台拥有独立的账号、监控与评论数据;左侧切换模块进行管理。小红书支持 <b>创作者笔记</b> 与 <b>关键词</b> 两种监控;快手支持 <b>创作者作品</b> 监控、自动评论与发布。通知与下载设置为全局共用。</div></div>
+  <div class="card"><div class="hint">顶部切换 <b>抖音 / 小红书 / 快手 / 视频号</b> 平台,各平台拥有独立的账号、监控与评论数据;左侧切换模块进行管理。小红书支持 <b>创作者笔记</b> 与 <b>关键词</b> 两种监控;快手支持 <b>创作者作品</b> 监控、自动评论与发布。<b>视频号</b>因助手接口只有本账号数据,仅支持 <b>账号 / 本账号作品·数据 / 发布</b>,不做监控他人。通知与下载设置为全局共用。</div></div>
   </section>
 
   <section data-panel="accounts">
@@ -805,6 +820,7 @@
         <button class="ks-only" onclick="startKsLogin()"><svg><use href="#i-logo"/></svg>快手扫码登录</button>
         <button class="ghost ks-only" onclick="startKsCreatorLogin()"><svg><use href="#i-send"/></svg>快手创作者登录</button>
         <button class="ghost ks-only" onclick="toggleCookie()">Cookie 粘贴</button>
+        <button class="sh-only" onclick="startChannelsLogin()"><svg><use href="#i-logo"/></svg>视频号登录</button>
       </div>
       <div id="qrbox" style="display:none;margin-bottom:14px">
         <div class="mut" id="qrstatus">准备中…</div>
@@ -984,6 +1000,9 @@
         <div class="row">
           <input id="pub-topics" placeholder="话题(逗号分隔,不用带 #),如:露营,户外">
           <input type="datetime-local" id="pub-when" aria-label="定时发布(留空=尽快发)" style="flex:0 0 220px">
+        </div>
+        <div class="row sh-only">
+          <input id="pub-location" placeholder="位置(视频号,可选):填城市/地点名,如 东莞市 / 杭州西湖">
         </div>
         <div class="row dy-only" id="pub-dy-opts" style="justify-content:flex-start;gap:18px;align-items:center">
           <label class="field" style="flex:0 0 auto;margin:0;display:flex;align-items:center;gap:6px">谁可以看
@@ -1251,9 +1270,10 @@
       </div>
       <div class="tabbar" style="position:static;margin-bottom:14px">
         <button class="tab active" data-hubtab="myworks" onclick="switchHubTab('myworks')"><svg><use href="#i-film"/></svg>我的作品 <span class="tab-badge" id="hb-myworks">0</span></button>
-        <button class="tab" data-hubtab="following" onclick="switchHubTab('following')"><svg><use href="#i-user"/></svg>关注 <span class="tab-badge" id="hb-following">0</span></button>
-        <button class="tab" data-hubtab="fans" onclick="switchHubTab('fans')"><svg><use href="#i-heart"/></svg>粉丝 <span class="tab-badge" id="hb-fans">0</span></button>
-        <button class="tab" data-hubtab="dm" onclick="switchHubTab('dm')"><svg><use href="#i-send"/></svg>私信 <span class="tab-badge" id="hb-dm">0</span></button>
+        <button class="tab notsh-only" data-hubtab="following" onclick="switchHubTab('following')"><svg><use href="#i-user"/></svg>关注 <span class="tab-badge" id="hb-following">0</span></button>
+        <button class="tab notsh-only" data-hubtab="fans" onclick="switchHubTab('fans')"><svg><use href="#i-heart"/></svg>粉丝 <span class="tab-badge" id="hb-fans">0</span></button>
+        <button class="tab notsh-only" data-hubtab="dm" onclick="switchHubTab('dm')"><svg><use href="#i-send"/></svg>私信 <span class="tab-badge" id="hb-dm">0</span></button>
+        <button class="tab" data-hubtab="stats" onclick="switchHubTab('stats')"><svg><use href="#i-eye"/></svg>数据 <span class="tab-badge" id="hb-stats">0</span></button>
       </div>
 
       <div data-hubpanel="myworks">
@@ -1296,6 +1316,16 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <div data-hubpanel="stats" style="display:none">
+        <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:12px">
+          <div class="hint" style="margin:0;flex:1">本账号数据趋势(粉丝 / 作品互动)由后台引擎在账号体检时逐日快照;单篇明细来自「我的作品」。作品健康监控(持续0播/违规告警)可在 <code>config.yaml</code> 打开 <code>engine.work_health_enabled</code>。趋势需运行若干天才有多点。</div>
+          <button class="ghost sm" style="flex:0 0 auto" onclick="loadHubStats()"><svg><use href="#i-download"/></svg>刷新数据</button>
+        </div>
+        <div id="stats-kpi" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px"></div>
+        <div id="stats-trend" style="margin-bottom:14px"></div>
+        <div class="table-wrap"><table><thead><tr><th>作品</th><th>播放</th><th>点赞</th><th>评论</th><th>状态</th></tr></thead><tbody id="stats-works"></tbody></table></div>
       </div>
     </div>
   </section>

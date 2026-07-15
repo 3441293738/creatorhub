@@ -178,6 +178,11 @@ class BrowserManager:
             viewport={"width": identity.viewport_w, "height": identity.viewport_h},
             locale=identity.locale or "zh-CN",
             timezone_id=identity.timezone_id or "Asia/Shanghai",
+            # geolocation 伪造:坐标与代理 IP 归属地/时区对齐,并预授权定位权限
+            # (模拟"用户已允许定位"的真实浏览器),避免 navigator.geolocation 暴露真实位置
+            # 或与代理 IP 地区冲突 —— 抖音/视频号 POI 等功能会读它。
+            geolocation=identity.geolocation,
+            permissions=["geolocation"],
         )
         proxy = _parse_proxy(identity.proxy)
         if proxy:
@@ -273,6 +278,7 @@ _COOKIE_DOMAIN = {
     "douyin": ".douyin.com",
     "xhs": ".xiaohongshu.com",
     "kuaishou": ".kuaishou.com",
+    "shipinhao": ".weixin.qq.com",   # 视频号:finder 登录态(_finder_auth/sessionid)挂在 .weixin.qq.com
 }
 
 

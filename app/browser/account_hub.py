@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from .douyin_im_pb import parse_conversations
 from .fetcher import fetch_videos
 from .ks_fetcher import fetch_ks_videos, fetch_ks_self_profile
+from .channels_fetcher import fetch_channels_works
 from .manager import BrowserManager
 from .xhs_fetcher import fetch_xhs_notes
 from ..platforms.kuaishou import parse_self_user as parse_ks_self_user
@@ -183,6 +184,36 @@ def _norm_ks_work(feed: dict) -> Optional[dict]:
     }
 
 
+def _norm_channels_work(it: dict) -> Optional[dict]:
+    """视频号助手 post_list 一项 -> 本账号作品 dict。视频号视频加密不可下载,
+    这里只记元数据+统计(供本账号作品展示 + 作品健康监控)。字段以真机抓包为准。"""
+    if not isinstance(it, dict):
+        return None
+    oid = str(_first(it, "objectId", "exportId", "id", default="") or "")
+    if not oid:
+        return None
+    od = _first(it, "objectDesc", default={}) or {}
+    media = (od.get("media") or it.get("media") or [])
+    m0 = media[0] if media and isinstance(media[0], dict) else {}
+    fmt = str(_first(m0, "fileFormat", "mediaType", default="")).lower()
+    ts = _num(_first(it, "createtime", "createTime", default=0))
+    return {
+        "item_id": oid,
+        "desc": (_first(od, "description", default="")
+                 or _first(it, "desc", "title", default="") or "").strip(),
+        "media_type": "images" if ("pic" in fmt or "image" in fmt) else "video",
+        "cover_url": _first(m0, "coverUrl", "thumbUrl", default="")
+                     or _first(it, "coverUrl", default=""),
+        "create_time": int(ts / 1000) if ts > 1e12 else ts,
+        "like_count": _num(_first(it, "likeCount", "like_count", default=0)),
+        "comment_count": _num(_first(it, "commentCount", "comment_count", default=0)),
+        "collect_count": _num(_first(it, "favCount", "collectCount", default=0)),
+        "share_count": _num(_first(it, "forwardCount", "shareCount", default=0)),
+        "play_count": _num(_first(it, "readCount", "playCount", "viewCount", default=0)),
+        "status": str(_first(it, "statusText", "auditStatus", default="") or ""),
+    }
+
+
 async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid: str,
                               max_scrolls: int = 14) -> Tuple[List[dict], str]:
     """抓取登录账号自己发布的作品(复用各平台已有的主页拦截抓取)。
@@ -206,12 +237,17 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                 uid = self3x
         except Exception as e:
             print(f"[hub-self] kuaishou self-resolve failed: {e!r}")
-    if not uid and not open_url:
+    # 视频号:助手接口即本账号,不需要 uid
+    if not uid and not open_url and platform != "shipinhao":
         return [], "missing_uid:账号缺自身 uid,请先点账号「刷新资料」再同步作品"
 
     known: Set[str] = set()
     try:
-        if platform == "xhs":
+        if platform == "shipinhao":
+            items, _author, err = await fetch_channels_works(mgr, identity, known,
+                                                             max_scrolls=max_scrolls)
+            norm = _norm_channels_work
+        elif platform == "xhs":
             items, _author, err = await fetch_xhs_notes(mgr, identity, uid, known,
                                                         xsec_token="",
                                                         max_scrolls=max_scrolls,

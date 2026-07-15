@@ -32,8 +32,10 @@ def impersonate_for_ua(user_agent: str) -> str:
 
 
 async def probe_ip_region(proxy: str = "", timeout: float = 8.0) -> Optional[dict]:
-    """尽力探测出口 IP 的国家/地区(经指定代理)。返回 {'ip','country'}(country 为大写
-    ISO2)或 None。仅用于「代理地区是否与账号时区一致」的告警,任何失败都静默 None。"""
+    """尽力探测出口 IP 的国家/地区 + 经纬度(经指定代理)。返回
+    {'ip','country'(大写 ISO2),'lat','lon','city'} 或 None。country 用于「代理地区是否与
+    账号时区一致」的告警;lat/lon 用于把该账号的 geolocation 伪造坐标对齐到真实出口地。
+    任何失败都静默 None。"""
     from curl_cffi.requests import AsyncSession
     proxies = {"http": proxy, "https": proxy} if proxy else None
     try:
@@ -43,6 +45,15 @@ async def probe_ip_region(proxy: str = "", timeout: float = 8.0) -> Optional[dic
             if r.status_code != 200:
                 return None
             d = r.json()
-            return {"ip": d.get("ip", ""), "country": (d.get("country") or "").upper()}
+            lat = lon = 0.0
+            loc = d.get("loc") or ""       # ipinfo 形如 "31.2222,121.4581"
+            if "," in loc:
+                try:
+                    a, b = loc.split(",", 1)
+                    lat, lon = float(a), float(b)
+                except Exception:
+                    lat = lon = 0.0
+            return {"ip": d.get("ip", ""), "country": (d.get("country") or "").upper(),
+                    "lat": lat, "lon": lon, "city": d.get("city", "")}
     except Exception:
         return None

@@ -332,6 +332,66 @@ async def interactive_ks_creator_login(mgr: BrowserManager, identity: Identity,
     return logged, state_json, nickname
 
 
+# ── 视频号(微信视频号 / finder)登录 ──
+# 视频号助手登录后写入的 Cookie(挂在 channels.weixin.qq.com / .weixin.qq.com)。
+# sessionid 是权威信号(游客态没有);_finder_auth / wxuin 兜底。
+# ⚠️ Cookie 名以真实抓包为准,变化时改这里。
+_CHANNELS_LOGIN_COOKIES = {"sessionid", "_finder_auth", "wxuin"}
+
+
+async def interactive_channels_login(mgr: BrowserManager, identity: Identity,
+                                     timeout_seconds: int = 180
+                                     ) -> Tuple[bool, str, str]:
+    """视频号扫码登录。打开视频号助手登录页让用户用微信扫码,落地登录态。
+    返回 (是否成功, storage_state_json, nickname)。
+    视频号只有一套登录态(助手即创作平台),读取/发布共用,故无独立创作登录。
+    昵称登录页不易读,返回空串,交由「资料刷新」用 fetch_channels_self_profile 补全。
+    ⚠️ 登录判定 Cookie 名随视频号改版可能变化,集中在 _CHANNELS_LOGIN_COOKIES。"""
+    ctx = await mgr.open_headed(identity)
+    page = await ctx.new_page()
+    await _focus(page)
+    logged = False
+    nickname = ""
+    state_json = ""
+    try:
+        await page.goto("https://channels.weixin.qq.com/login.html",
+                        wait_until="domcontentloaded", timeout=30000)
+        await _focus(page)
+        waited = 0
+        while waited < timeout_seconds:
+            if page.is_closed():
+                break
+            try:
+                cookies = await ctx.cookies()
+            except Exception:
+                break
+            names = {c["name"] for c in cookies}
+            # 登录成功:出现 sessionid 且已跳离 login.html(进入 /platform)
+            on_platform = "channels.weixin.qq.com" in page.url \
+                and "login.html" not in page.url
+            if (names & _CHANNELS_LOGIN_COOKIES) and on_platform:
+                logged = True
+                break
+            await asyncio.sleep(2)
+            waited += 2
+        if logged:
+            await page.wait_for_timeout(2000)   # 等登录态/跳转写全
+            state_json = json.dumps(await ctx.storage_state())
+    finally:
+        try:
+            await ctx.close()
+        except Exception:
+            pass
+    return logged, state_json, nickname
+
+
+async def interactive_channels_creator_login(mgr: BrowserManager, identity: Identity,
+                                             timeout_seconds: int = 180
+                                             ) -> Tuple[bool, str, str]:
+    """视频号无独立创作登录 —— 助手即创作平台,直接复用普通登录。"""
+    return await interactive_channels_login(mgr, identity, timeout_seconds)
+
+
 async def _read_ks_nickname(page) -> str:
     for sel in ('.profile-user-name', '[class*="user-name"]', '[class*="userName"]',
                 '.user-name', 'span.name'):

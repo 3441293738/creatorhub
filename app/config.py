@@ -55,6 +55,13 @@ class EngineConfig:
     active_hours_start: int = 8              # 活跃起点小时(含),0-23
     active_hours_end: int = 24               # 活跃止点小时(不含);可 >24 表示跨零点(如 25=次日 1 点)
     verify_proxy_region: bool = True         # 体检时探测代理出口国家,与账号时区不一致则告警
+    # ── 本账号作品健康监控(B5:盯自己作品的流量/0播/违规,发现异常推送通知)──
+    #   借鉴竞品「流速监控 / 持续0播 / 作品违规监控」。默认关闭(需 periodic 同步本账号作品,较重)。
+    work_health_enabled: bool = False         # 作品健康监控总开关
+    work_health_interval_seconds: int = 3600  # 每个账号多久体检一次自己作品
+    work_health_zero_play_hours: float = 6.0  # 作品发布满 N 小时仍 0 播 -> 预警(限流信号)
+    work_health_recent_days: int = 7          # 只体检最近 N 天内发布的作品
+    work_health_stat_snapshots: bool = True   # 顺带记录账号粉丝/作品数每日快照(供「数据」趋势视图)
 
 
 @dataclass
