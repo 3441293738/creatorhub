@@ -80,6 +80,39 @@ def _loads_list(s: str) -> list:
         return []
 
 
+def _select_douyin_awemes(items: list, quality: str, first_scan: bool,
+                          monitor_since: int, initial_backfill_count: int) -> list[Aweme]:
+    """按发布时间稳定排序，并应用“订阅后新增 + 可选首次回填”策略。"""
+    parsed = []
+    seen = set()
+    for item in items:
+        aw = parse_aweme(item, quality)
+        if not aw or aw.aweme_id in seen:
+            continue
+        seen.add(aw.aweme_id)
+        parsed.append(aw)
+    parsed.sort(key=lambda aw: (aw.create_time, aw.aweme_id), reverse=True)
+
+    if not first_scan:
+        # create_time 缺失时宁可保留，避免平台字段小改后静默漏掉真正的新作品。
+        return [aw for aw in parsed
+                if not aw.create_time or aw.create_time >= monitor_since]
+    if initial_backfill_count < 0:
+        return parsed
+
+    current = [aw for aw in parsed
+               if aw.create_time and aw.create_time >= monitor_since]
+    historical = [aw for aw in parsed
+                  if aw.create_time and aw.create_time < monitor_since]
+    return current + historical[:max(0, initial_backfill_count)]
+
+
+def _douyin_scan_since(monitor_since: int, known_create_times: list[int]) -> int:
+    """给旧版残缺首扫留出自愈窗口，但不回退到整个账号历史。"""
+    latest_known = max((ts or 0 for ts in known_create_times), default=0)
+    return min(monitor_since, latest_known) if latest_known else monitor_since
+
+
 class MonitorEngine:
     def __init__(self, cfg: Config, browser: BrowserManager):
         self.cfg = cfg
@@ -457,19 +490,24 @@ class MonitorEngine:
             target = s.get(MonitorTarget, target_id)
             if not target:
                 return {"ok": False, "error": "target not found"}
-            first_scan = target.last_scan_at is None   # 首次抓取=回填,不发通知
-            identity = self.browser.anon_identity()
-            proxy = ""
-            if target.account_id:
-                acc = s.get(DouyinAccount, target.account_id)
-                if acc:
-                    if self._proxy_bad(acc):
-                        return self._mark_target_skip(
-                            target_id, "账号代理标记为不可用(proxy bad),已跳过以免暴露真实 IP")
-                    identity, proxy = self._identity_proxy(acc)
+            first_scan = target.last_scan_at is None   # 首扫建立时间基线，可按目标配置回填历史
+            if not target.account_id:
+                return self._mark_target_skip(
+                    target_id, "抖音作品监控必须绑定已登录账号,匿名主页可能返回陈旧或残缺作品")
+            acc = s.get(DouyinAccount, target.account_id)
+            if not acc or acc.platform != "douyin" or acc.status != "active":
+                return self._mark_target_skip(
+                    target_id, "绑定的抖音账号不存在或登录态已失效,请重新绑定/登录")
+            if self._proxy_bad(acc):
+                return self._mark_target_skip(
+                    target_id, "账号代理标记为不可用(proxy bad),已跳过以免暴露真实 IP")
+            identity, proxy = self._identity_proxy(acc)
             # 只取 aweme_id 列,避免把整行作品都加载进内存
             known = set(s.exec(
                 select(ContentRecord.aweme_id)
+                .where(ContentRecord.target_id == target_id)).all())
+            known_create_times = list(s.exec(
+                select(ContentRecord.create_time)
                 .where(ContentRecord.target_id == target_id)).all())
             sec_uid = target.sec_uid
             # 有效下载目录:目标自定义 > 全局默认 > 配置兜底
@@ -477,18 +515,20 @@ class MonitorEngine:
                 "download_dir", self.cfg.engine.media_dir)
             # 有效画质:目标自定义 > 全局默认 > highest
             quality = target.video_quality or get_setting("video_quality", "highest")
+            monitor_since = int(target.created_at.timestamp())
+            scan_since = _douyin_scan_since(monitor_since, known_create_times)
+            backfill_count = target.initial_backfill_count
 
         items, author, error = await fetch_videos(
             self.browser, identity, sec_uid, known,
-            block_media=self.cfg.engine.block_media_resources)
+            block_media=self.cfg.engine.block_media_resources,
+            # 默认只监控订阅后的作品；显式首次回填时允许继续向历史翻页。
+            stop_before=(0 if first_scan and backfill_count != 0 else scan_since))
 
         new_records = []
-        seen = set()
-        for item in items:
-            aw = parse_aweme(item, quality)
-            if not aw or aw.aweme_id in seen:   # 批内去重
-                continue
-            seen.add(aw.aweme_id)
+        selected = _select_douyin_awemes(
+            items, quality, first_scan, scan_since, backfill_count)
+        for aw in selected:
             media_json = json.dumps([{"url": m.url, "kind": m.kind, "ext": m.ext,
                                       "index": m.index} for m in aw.medias])
             rec = ContentRecord(

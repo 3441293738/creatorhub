@@ -50,6 +50,7 @@ class MonitorTarget(SQLModel, table=True):
     avatar: str = ""
     enabled: bool = True
     interval_seconds: int = 300
+    initial_backfill_count: int = 0            # 首扫历史回填数;0=仅订阅后,-1=尽可能全量
     download_dir: str = ""                  # 自定义下载目录(空=用全局默认)
     video_quality: str = ""                 # 画质偏好(空=用全局默认)
     monitor_comments: bool = False          # 是否同时监控评论

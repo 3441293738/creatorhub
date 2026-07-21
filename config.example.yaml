@@ -8,6 +8,7 @@ engine:
   worker_pool_size: 2             # 并发下载数(跨作品)
   scan_concurrency: 2             # 同时抓取的目标数(并发浏览器上下文)
   block_media_resources: false    # 屏蔽图片/视频/字体加载(省带宽但会打断抖音 SPA 致拿不到数据,建议保持 false)
+  monitor_initial_backfill_count: 0  # 新增博主时回填最近 N 条;0=只下载订阅后的新作品,-1=尽可能全量
   comment_recent_works: 5         # 监控评论时,只看每个目标最近 N 条作品
   comment_recent_days: 7          # 且仅限最近多少天内发布的作品
   comment_max_scrolls: 6          # 评论区翻页深度(滚动容器次数,越大扫得越深)

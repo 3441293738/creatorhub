@@ -500,6 +500,10 @@
   select { appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%238b94a3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 9px center; padding-right:30px; cursor:pointer; }
 
   .row { display:flex; gap:10px; align-items:center; }
+  .monitor-options { display:grid; grid-template-columns:minmax(190px,1.4fr) repeat(3,minmax(130px,1fr)); }
+  .monitor-options select { width:100%; min-width:0; }
+  @media(max-width:820px){ .monitor-options{grid-template-columns:1fr 1fr} }
+  @media(max-width:480px){ .monitor-options{grid-template-columns:1fr} }
   .row > * { flex:1; }
   .row > button { flex:0 0 auto; }
 
@@ -901,7 +905,7 @@
           <label class="field" for="t-dir">下载目录(可选)</label>
           <input id="t-dir" placeholder="留空使用全局默认目录">
         </div>
-        <div class="row">
+        <div class="row monitor-options">
           <select id="t-acc" aria-label="使用账号"></select>
           <select id="t-interval" aria-label="监控间隔">
             <option value="300">每 5 分钟</option>
@@ -916,6 +920,12 @@
             <option value="720">720P</option>
             <option value="540">540P</option>
             <option value="lowest">最低省流</option>
+          </select>
+          <select id="t-backfill" class="dy-only" aria-label="首次历史回填">
+            <option value="0">历史:不下载</option>
+            <option value="5">历史:最近 5 条</option>
+            <option value="20">历史:最近 20 条</option>
+            <option value="-1">历史:尽可能全量</option>
           </select>
         </div>
         <button onclick="addMonitor()"><svg><use href="#i-target"/></svg>开始监控</button>

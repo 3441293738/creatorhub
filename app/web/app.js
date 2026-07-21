@@ -1155,10 +1155,11 @@ function accOptions(list, ph) {
 }
 function populateAccountSelect() {
   const sel = $("t-acc"); if (!sel) return;
-  const xhs = PLATFORM === "xhs";
-  sel.innerHTML = accOptions(ACCOUNTS, xhs ? "请选择小红书账号(必选)" : "不指定账号");
-  // 小红书所有页面都要登录:自动选中第一个账号,避免漏选导致被弹登录墙
-  if (xhs && ACCOUNTS.length) sel.value = String(ACCOUNTS[0].id);
+  const required = PLATFORM === "xhs" || PLATFORM === "douyin";
+  const platformName = PLATFORM === "xhs" ? "小红书" : "抖音";
+  sel.innerHTML = accOptions(ACCOUNTS, required ? `请选择${platformName}账号(必选)` : "不指定账号");
+  // 抖音匿名主页可能返回风控后的旧快照；作品监控与小红书一样必须使用登录态。
+  if (required && ACCOUNTS.length) sel.value = String(ACCOUNTS[0].id);
 }
 function populateWatchAccount() {
   const sel = $("w-acc"); if (!sel) return;
@@ -1514,9 +1515,10 @@ async function addMonitor() {
   const url_or_secuid = $("t-url").value.trim();
   const target_kind = (PLATFORM === "xhs" && $("t-kind")) ? $("t-kind").value : "creator";
   if (!url_or_secuid) { toast(target_kind === "keyword" ? "请输入搜索关键词" : "请输入主页链接 / 短链 / id", "err"); return; }
-  if (PLATFORM === "xhs" && !$("t-acc").value) {
-    if (!ACCOUNTS.length) { toast("请先在「账号」里完成小红书扫码登录", "err"); switchTab("accounts"); return; }
-    toast("小红书监控必须选择一个已登录账号", "err"); return;
+  if ((PLATFORM === "xhs" || PLATFORM === "douyin") && !$("t-acc").value) {
+    const platformName = PLATFORM === "xhs" ? "小红书" : "抖音";
+    if (!ACCOUNTS.length) { toast(`请先在「账号」里完成${platformName}扫码登录`, "err"); switchTab("accounts"); return; }
+    toast(`${platformName}监控必须选择一个已登录账号`, "err"); return;
   }
   const btn = evtBtn();
   $("add-msg").textContent = "解析中…";
@@ -1524,7 +1526,7 @@ async function addMonitor() {
     try {
       await api("/api/monitors", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url_or_secuid, platform: PLATFORM, target_kind, account_id: $("t-acc").value ? +$("t-acc").value : null, interval_seconds: +$("t-interval").value, download_dir: $("t-dir").value.trim(), video_quality: PLATFORM === "xhs" ? "" : $("t-quality").value }),
+        body: JSON.stringify({ url_or_secuid, platform: PLATFORM, target_kind, account_id: $("t-acc").value ? +$("t-acc").value : null, interval_seconds: +$("t-interval").value, initial_backfill_count: PLATFORM === "douyin" ? +$("t-backfill").value : 0, download_dir: $("t-dir").value.trim(), video_quality: PLATFORM === "xhs" ? "" : $("t-quality").value }),
       });
       $("t-url").value = ""; $("t-dir").value = ""; $("add-msg").textContent = "已添加 ✓";
       toast("已开始监控", "ok");

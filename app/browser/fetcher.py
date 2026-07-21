@@ -19,6 +19,40 @@ COMMENT_API = "aweme/v1/web/comment/list"
 # 重发时必须去掉的一次性签名/风控参数,让抖音的 fetch 拦截器重新签
 _SIGN_PARAMS = ("a_bogus", "X-Bogus", "x-bogus", "msToken", "_signature", "verifyFp")
 
+# 抖音主页不一定由 window 承担滚动。选出页面里滚动范围最大的容器并拉到底，
+# 再配合 mouse.wheel 触发 React 的滚动/分页监听。
+_SCROLL_PROFILE_JS = """() => {
+  const roots = [document.scrollingElement, document.documentElement, document.body];
+  const nodes = [...document.querySelectorAll('main,section,div')];
+  let best = null;
+  let bestRange = 0;
+  for (const el of [...roots, ...nodes]) {
+    if (!el) continue;
+    const range = (el.scrollHeight || 0) - (el.clientHeight || 0);
+    if (range > bestRange) { best = el; bestRange = range; }
+  }
+  window.scrollTo(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight));
+  if (best) best.scrollTop = best.scrollHeight;
+  return { range: bestRange, top: best ? best.scrollTop : window.scrollY };
+}"""
+
+
+def _page_reaches_boundary(items: List[dict], known_ids: Set[str],
+                           stop_before: int = 0) -> bool:
+    """一整页都已见过/早于监控起点时，才认为翻到了历史边界。
+
+    置顶作品会把旧 ID 混在第一页，不能因为单个旧 ID 就停止。
+    """
+    rows = [it for it in items if str(it.get("aweme_id") or "")]
+    if not rows:
+        return False
+    if known_ids and all(str(it.get("aweme_id") or "") in known_ids for it in rows):
+        return True
+    if stop_before:
+        times = [int(it.get("create_time") or 0) for it in rows]
+        return bool(times) and all(ts and ts < stop_before for ts in times)
+    return False
+
 
 # 作品页没拿到数据时,看页面究竟是什么状态:登录墙?空态?还是 tab 没激活?
 _WORKS_DOM_PROBE_JS = """() => {
@@ -40,14 +74,17 @@ _WORKS_DOM_PROBE_JS = """() => {
 
 async def fetch_videos(mgr: BrowserManager, identity: Identity, sec_uid: str,
                        known_ids: Set[str], max_scrolls: int = 12,
-                       settle_ms: int = 1800, block_media: bool = True
+                       settle_ms: int = 1800, block_media: bool = True,
+                       stop_before: int = 0, min_scrolls: int = 2,
                        ) -> Tuple[List[dict], Optional[dict], str]:
     """打开主页并下滑,收集作品。返回 (新作品列表, 作者信息dict, error)。"""
     collected: Dict[str, dict] = {}
     author: Optional[dict] = None
     error = ""
     post_hits = []        # 命中的 aweme/post 响应(判断是「没发」还是「发了解不出」)
+    post_pages: List[List[dict]] = []  # 保留每页边界，不能拿混合后的 collected 判断停止
     api_seen = []         # 该页发出的抖音 API(post_hits 为空时,靠它看页面到底在请求什么)
+    pagination_stalled = False
 
     page = await mgr.new_page(identity, block_media)
 
@@ -67,7 +104,10 @@ async def fetch_videos(mgr: BrowserManager, identity: Identity, sec_uid: str,
             lst = data.get("aweme_list")
             post_hits.append(f"{resp.status} status_code={data.get('status_code')} "
                              f"aweme_list={len(lst) if isinstance(lst, list) else lst!r} "
+                             f"has_more={data.get('has_more')} max_cursor={data.get('max_cursor')} "
                              f"keys={sorted(data)[:8]}")
+            if isinstance(lst, list):
+                post_pages.append(lst)
             for it in (lst or []):
                 aid = str(it.get("aweme_id") or "")
                 if aid:
@@ -94,17 +134,29 @@ async def fetch_videos(mgr: BrowserManager, identity: Identity, sec_uid: str,
             pass
         await page.wait_for_timeout(settle_ms)
         stagnant = 0
-        for _ in range(max_scrolls):
-            if known_ids & set(collected.keys()):      # 翻到旧内容了
-                break
+        min_scrolls = max(1, min(min_scrolls, max_scrolls))
+        for scroll_index in range(max_scrolls):
             before = len(collected)
+            pages_before = len(post_pages)
+            try:
+                await page.evaluate(_SCROLL_PROFILE_JS)
+            except Exception:
+                pass
             await page.mouse.wheel(0, 4000)
             await page.wait_for_timeout(settle_ms)
+            fresh_pages = post_pages[pages_before:]
+            boundary = any(_page_reaches_boundary(p, known_ids, stop_before)
+                           for p in fresh_pages)
+            # 至少真实滚动几次，避免首屏里一个置顶旧作品直接截断扫描。
+            if scroll_index + 1 >= min_scrolls and boundary:
+                break
             if len(collected) == before:               # 本次下滑无新增
                 # 一条都没抓到时别提前退:那是「还没开始」,不是「已经到底」。
                 # 首屏 XHR 可能比 networkidle 更晚,滚满 max_scrolls 再放弃。
                 stagnant += 1
-                if collected and stagnant >= 2:        # 连续两次到底,停
+                if (collected and scroll_index + 1 >= min_scrolls
+                        and stagnant >= 3):             # 连续三次无响应才判定到底
+                    pagination_stalled = bool(post_pages and len(post_pages) == 1)
                     break
             else:
                 stagnant = 0
@@ -130,6 +182,9 @@ async def fetch_videos(mgr: BrowserManager, identity: Identity, sec_uid: str,
         print(f"[works] 未拿到作品; sec_uid={sec_uid[:24]}… final_url={final_url}; "
               f"post_hits({len(post_hits)})={post_hits[:5]}; dom={dom}")
         print(f"[works] api_seen({len(api_seen)})={api_seen[:30]}")
+    elif pagination_stalled:
+        print(f"[works] 主页分页未触发; sec_uid={sec_uid[:24]}… "
+              f"collected={len(collected)} post_hits={post_hits[:3]}")
     new_items = [it for aid, it in collected.items() if aid not in known_ids]
     return new_items, author, error
 

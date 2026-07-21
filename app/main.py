@@ -1662,6 +1662,7 @@ class TargetIn(BaseModel):
     target_kind: str = "creator"            # creator | keyword(仅小红书)
     account_id: int | None = None
     interval_seconds: int = 300
+    initial_backfill_count: int | None = None
     download_dir: str = ""
     video_quality: str = ""
 
@@ -1706,6 +1707,18 @@ async def add_monitor(body: TargetIn):
         except Exception as e:
             raise HTTPException(400, f"下载目录不可用: {e}")
     with get_session() as s:
+        if platform == "douyin":
+            if not body.account_id:
+                raise HTTPException(
+                    400, "抖音作品监控必须选择已登录账号,匿名抓取可能返回陈旧或残缺作品")
+            monitor_acc = s.get(DouyinAccount, body.account_id)
+            if (not monitor_acc or monitor_acc.platform != "douyin"
+                    or monitor_acc.status != "active"):
+                raise HTTPException(400, "所选抖音账号不存在或登录态已失效")
+        elif body.account_id:
+            monitor_acc = s.get(DouyinAccount, body.account_id)
+            if not monitor_acc or monitor_acc.platform != platform:
+                raise HTTPException(400, "所选账号不存在或与监控平台不匹配")
         if kind == "keyword":
             dup = s.exec(select(MonitorTarget).where(MonitorTarget.platform == platform)
                          .where(MonitorTarget.keyword == keyword)).first()
@@ -1717,12 +1730,17 @@ async def add_monitor(body: TargetIn):
         q = body.video_quality.strip()
         if q and q not in QUALITY_CHOICES:
             raise HTTPException(400, f"画质取值无效: {q}")
+        backfill_count = (cfg.engine.monitor_initial_backfill_count
+                          if body.initial_backfill_count is None
+                          else body.initial_backfill_count)
+        if backfill_count < -1 or backfill_count > 1000:
+            raise HTTPException(400, "首次回填数须为 -1(尽可能全量)或 0~1000")
         t = MonitorTarget(platform=platform, target_kind=kind, keyword=keyword,
                           sec_uid=sec_uid, xsec_token=xsec_token,
                           nickname=("#" + keyword) if kind == "keyword" else "",
                           account_id=body.account_id,
                           interval_seconds=body.interval_seconds, download_dir=dl,
-                          video_quality=q)
+                          initial_backfill_count=backfill_count, video_quality=q)
         s.add(t); s.commit(); s.refresh(t)
         return _target_dict(t)
 
@@ -1750,8 +1768,8 @@ async def update_monitor(tid: int, body: TargetUpdate):
             t.video_quality = q
         if body.account_id is not None:
             acc = s.get(DouyinAccount, body.account_id)
-            if not acc or acc.platform != t.platform:
-                raise HTTPException(400, "账号不存在或与监控平台不匹配")
+            if not acc or acc.platform != t.platform or acc.status != "active":
+                raise HTTPException(400, "账号不存在、登录态失效或与监控平台不匹配")
             t.account_id = body.account_id
         if body.relay_to_xhs_account_id is not None:
             if body.relay_to_xhs_account_id and body.relay_to_xhs_account_id > 0:
@@ -1868,6 +1886,7 @@ def _target_dict(t: MonitorTarget) -> dict:
         "keyword": t.keyword,
         "sec_uid": t.sec_uid, "nickname": t.nickname, "avatar": t.avatar,
         "enabled": t.enabled, "interval_seconds": t.interval_seconds,
+        "initial_backfill_count": t.initial_backfill_count,
         "download_dir": t.download_dir, "video_quality": t.video_quality,
         "account_id": t.account_id,
         "relay_to_xhs_account_id": t.relay_to_xhs_account_id,
