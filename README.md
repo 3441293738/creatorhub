@@ -103,6 +103,48 @@
 
 ## 快速开始
 
+### 一键启动（推荐）
+
+**Windows**
+
+```bat
+.\start.cmd
+```
+
+也可以直接双击根目录的 `start.cmd`。
+
+**macOS / Linux**
+
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+第一次运行会自动完成以下工作，后续启动不会重复安装：
+
+1. 创建 `.venv` Python 隔离环境；
+2. 安装 `requirements.txt`；
+3. 安装 Playwright Chromium；
+4. 安装小红书发布所需的 Node.js 依赖（未装 Node.js 时自动跳过，不影响其他功能）；
+5. 从示例生成 `config.yaml`；
+6. 启动服务并打开 `http://127.0.0.1:8000`。
+
+常用维护命令：
+
+```bash
+# Windows（macOS / Linux 将 start.cmd 换成 ./start.sh）
+.\start.cmd install             # 重新安装/更新依赖
+.\start.cmd check               # 环境自检
+.\start.cmd --no-open           # 启动但不自动打开浏览器
+.\start.cmd --port 8080         # 临时使用其他端口
+.\start.cmd --reload            # 开发模式，修改代码后自动重载
+```
+
+> 环境要求：Python 3.10+。Node.js 18+ 只在使用「小红书发布」时需要。
+> 扫码/创作者登录会弹出真实浏览器窗口，因此需要桌面环境。
+
+### 手动安装
+
 ```bash
 git clone <this-repo> && cd creatorhub
 
