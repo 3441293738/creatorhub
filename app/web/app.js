@@ -486,6 +486,10 @@ function switchTab(name) {
   try { localStorage.setItem("dym-tab", name); } catch (e) {}
   if (name === "hub") { refreshHubSummary(); refreshHubPanel(); }
   else stopDmStream();   // 离开本账号管理即断开私信实时流
+  if (name === "share-download") {
+    loadShareAccounts();
+    refreshShareHistory();
+  }
 }
 
 // ─── 扫码登录(真实浏览器窗口) ───
@@ -1468,6 +1472,282 @@ async function saveSettings() {
   } catch (e) { $("dl-msg").textContent = "失败: " + e.message; toast("保存失败:" + e.message, "err"); }
 }
 const QMAP = { "": "默认", highest: "原画", "1080": "1080P", "720": "720P", "540": "540P", lowest: "省流" };
+
+// ─── 通用分享链接下载 ───
+let SHARE_LINKS = [], SHARE_LINK_INDEX = 0, SHARE_SOURCE = "", SHARE_ACCOUNTS = [];
+
+async function loadShareAccounts() {
+  const sel = $("sd-account");
+  if (!sel) return;
+  try {
+    SHARE_ACCOUNTS = await api("/api/accounts");
+    filterShareAccounts();
+  } catch (e) {}
+}
+
+function setShareLinkIndex(index) {
+  SHARE_LINK_INDEX = Number(index) || 0;
+  filterShareAccounts();
+}
+
+function shareAccountPlatform() {
+  const platform = (SHARE_LINKS[SHARE_LINK_INDEX] || {}).platform || "";
+  // 链接识别名与账号表平台名的少量映射。
+  return platform === "wechat" ? "shipinhao" : platform;
+}
+
+function filterShareAccounts() {
+  const sel = $("sd-account");
+  if (!sel) return;
+  const old = sel.value;
+  const platform = shareAccountPlatform();
+  const hasDetectedLink = !!SHARE_LINKS.length;
+  const knownAccountPlatform = ["douyin", "xhs", "kuaishou", "shipinhao"].includes(platform);
+  const rows = knownAccountPlatform
+    ? SHARE_ACCOUNTS.filter(a => a.platform === platform)
+    : [];
+  const platformLabel = PF_NAME[platform] || platform || "";
+  const emptyLabel = !hasDetectedLink
+    ? "先识别链接，再选择对应平台账号"
+    : knownAccountPlatform
+      ? `不使用${platformLabel}账号登录态`
+      : "该链接无需或暂无可复用账号";
+  sel.innerHTML =
+    `<option value="">${esc(emptyLabel)}</option>` +
+    rows.map(a =>
+      `<option value="${a.id}">${esc(PF_NAME[a.platform] || a.platform || "账号")} · ${esc(a.nickname || ("账号 " + a.id))}${a.status === "invalid" ? "（登录态可能失效）" : ""}</option>`
+    ).join("");
+
+  if (rows.some(a => String(a.id) === old)) {
+    sel.value = old;
+  } else {
+    // 已识别为具体平台且只有一个可用账号时直接选中，图文下载无需用户再手选。
+    const active = rows.filter(a => a.status !== "invalid");
+    if (knownAccountPlatform && active.length === 1) sel.value = String(active[0].id);
+  }
+  csSyncAll();
+}
+
+function renderShareLinks(links) {
+  const box = $("sd-links");
+  SHARE_LINKS = links || [];
+  SHARE_LINK_INDEX = Math.min(SHARE_LINK_INDEX, Math.max(0, SHARE_LINKS.length - 1));
+  filterShareAccounts();
+  if (!SHARE_LINKS.length) {
+    box.style.display = "block";
+    box.innerHTML = `<b>未识别到链接。</b> 请检查是否粘贴了完整分享内容。`;
+    return;
+  }
+  const labels = SHARE_LINKS.map((link, i) => `
+    <label style="display:flex;align-items:flex-start;gap:8px;margin-top:8px;cursor:pointer">
+      <input type="radio" name="sd-link" value="${i}" ${i === SHARE_LINK_INDEX ? "checked" : ""}
+        onchange="setShareLinkIndex(this.value)" style="width:auto;margin-top:3px">
+      <span><b>${esc(link.platform === "generic" ? "通用站点" : (PF_NAME[link.platform] || link.platform))}</b>
+      · ${esc(link.host)}<br><code style="word-break:break-all">${esc(link.url)}</code></span>
+    </label>`).join("");
+  box.style.display = "block";
+  box.innerHTML = `<b>已识别 ${SHARE_LINKS.length} 条候选链接</b>${labels}`;
+}
+
+async function parseShareLinks(button = null) {
+  const text = $("sd-text").value.trim();
+  if (!text) { toast("请粘贴分享链接或完整分享文案", "err"); return null; }
+  const btn = button || evtBtn();
+  $("sd-msg").textContent = "正在清洗文案并识别链接…";
+  return await withBusy(btn, "识别中", async () => {
+    try {
+      const result = await api("/api/share-download/links", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ share_text: text }),
+      });
+      SHARE_SOURCE = text;
+      renderShareLinks(result.links);
+      $("sd-msg").textContent = result.count ? `已识别 ${result.count} 条链接 ✓` : "未识别到链接";
+      if (!result.count) toast("没有识别到 http(s) 链接", "err");
+      return result;
+    } catch (e) {
+      $("sd-msg").textContent = "识别失败：" + e.message;
+      toast("识别失败：" + e.message, "err");
+      return null;
+    }
+  });
+}
+
+function shareRequestBody(download) {
+  const text = $("sd-text").value.trim();
+  const maxSize = Number($("sd-max-size").value || 0);
+  const accountId = Number($("sd-account").value || 0);
+  return {
+    share_text: text,
+    download,
+    all_links: $("sd-all-links").checked,
+    link_index: SHARE_LINK_INDEX,
+    quality: $("sd-quality").value,
+    output_dir: $("sd-dir").value.trim() || null,
+    save_metadata: $("sd-metadata").checked,
+    save_thumbnail: $("sd-thumbnail").checked,
+    save_subtitles: $("sd-subtitles").checked,
+    max_filesize_mb: Number.isFinite(maxSize) && maxSize > 0 ? Math.floor(maxSize) : 0,
+    account_id: accountId || null,
+  };
+}
+
+function fmtShareSize(bytes) {
+  let n = Number(bytes || 0);
+  if (n < 1024) return n + " B";
+  const units = ["KB", "MB", "GB", "TB"];
+  let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < units.length - 1);
+  return n.toFixed(n >= 10 ? 1 : 2) + " " + units[i];
+}
+
+function copySharePath(button) {
+  const value = button.dataset.path || "";
+  navigator.clipboard.writeText(value).then(
+    () => toast("本地路径已复制", "ok"),
+    () => toast("复制失败，请手动复制路径", "err")
+  );
+}
+
+function fmtShareHistoryTime(value) {
+  if (!value) return "—";
+  let text = String(value);
+  if (!/[zZ]$|[+-]\d\d:\d\d$/.test(text)) text += "Z";
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+async function refreshShareHistory() {
+  const body = $("sd-history-body");
+  if (!body) return;
+  body.innerHTML = skeleton(7, 3);
+  try {
+    const rows = await api("/api/share-download/history?limit=100");
+    $("sd-history-count").textContent = `${rows.length} 条`;
+    body.innerHTML = rows.map(row => {
+      const files = Array.isArray(row.files) ? row.files : [];
+      const mediaFiles = files.filter(file => file.role === "media");
+      const totalSize = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+      const platformName = PF_NAME[row.platform] || (row.platform === "generic" ? "通用站点" : row.platform || "—");
+      const typeName = row.media_type === "images" ? "图文" : row.media_type === "video" ? "视频" : (row.media_type || "媒体");
+      const status = row.status === "done"
+        ? `<span class="pill bare" style="color:var(--ok)">成功</span>`
+        : `<span class="pill bare" style="color:var(--danger)" title="${esc(row.error || "")}">失败</span>`;
+      const workSub = [row.author, row.item_id ? `ID ${row.item_id}` : ""].filter(Boolean).join(" · ");
+      const path = row.output_dir || ((files[0] || {}).path || "");
+      return `<tr>
+        <td>${esc(fmtShareHistoryTime(row.created_at))}</td>
+        <td>${esc(platformName)}</td>
+        <td style="white-space:normal;min-width:220px;max-width:420px">
+          <div style="font-weight:650">${esc(row.title || (row.status === "failed" ? "下载失败" : "未命名作品"))}</div>
+          <div class="mut" style="margin-top:3px">${esc(workSub || row.source_url || "")}</div>
+        </td>
+        <td>${esc(typeName)} · ${mediaFiles.length || row.media_count || 0} 个媒体<br><span class="mut">${files.length} 个文件${totalSize ? ` · ${fmtShareSize(totalSize)}` : ""}</span></td>
+        <td>${status}${row.error ? `<div class="mut" style="max-width:220px;white-space:normal;margin-top:4px">${esc(row.error)}</div>` : ""}</td>
+        <td style="white-space:normal;max-width:300px"><code style="overflow-wrap:anywhere">${esc(path || "—")}</code></td>
+        <td>
+          <div class="row" style="gap:6px;flex-wrap:nowrap">
+            ${path ? `<button class="ghost sm" data-path="${esc(path)}" onclick="copySharePath(this)">复制路径</button>` : ""}
+            <button class="ghost sm danger" onclick="deleteShareHistory(${Number(row.id)})">删除记录</button>
+          </div>
+        </td>
+      </tr>`;
+    }).join("") || empty(7, "暂无下载历史", "i-download", "开始下载后会自动记录；旧下载会从元数据文件补录");
+  } catch (e) {
+    $("sd-history-count").textContent = "读取失败";
+    body.innerHTML = empty(7, "历史记录读取失败", "i-info", e.message);
+  }
+}
+
+async function deleteShareHistory(id) {
+  const ok = await uiConfirm({
+    title: "删除下载历史",
+    message: "只删除这条历史记录，本地媒体文件会保留。",
+    okText: "删除记录",
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api(`/api/share-download/history/${id}`, { method: "DELETE" });
+    toast("历史记录已删除，本地文件未删除", "ok");
+    refreshShareHistory();
+  } catch (e) {
+    toast("删除历史失败：" + e.message, "err");
+  }
+}
+
+function renderShareResult(response, download) {
+  const card = $("sd-result-card"), box = $("sd-result");
+  const results = response.results || [];
+  card.style.display = "block";
+  $("sd-result-summary").textContent = `${results.filter(x => x.ok).length}/${results.length} 成功`;
+  box.innerHTML = results.map((item, index) => {
+    if (!item.ok) return `<div class="hint" style="margin-bottom:10px;border-color:var(--danger)">
+      <b>第 ${index + 1} 条处理失败</b><br><span style="color:var(--danger)">${esc(item.error || "未知错误")}</span>
+      <br><code style="word-break:break-all">${esc(item.url || "")}</code></div>`;
+    const m = item.metadata || {};
+    const files = item.files || [];
+    const warnings = item.warnings || [];
+    const dataBits = [
+      m.uploader ? `作者：${esc(m.uploader)}` : "",
+      m.duration ? `时长：${esc(fmtDur(Math.round(m.duration)))}` : "",
+      m.width && m.height ? `画面：${m.width}×${m.height}` : "",
+      m.view_count != null ? `播放：${fmtNum(m.view_count)}` : "",
+      m.like_count != null ? `点赞：${fmtNum(m.like_count)}` : "",
+    ].filter(Boolean).join(" · ");
+    const fileHtml = files.length ? files.map(file => `
+      <div style="display:flex;gap:10px;align-items:center;padding:7px 0;border-top:1px solid var(--line-soft)">
+        <span class="pill bare">${esc(file.role || "file")}</span>
+        <code style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(file.relative_path || file.name)}</code>
+        <span class="mut">${fmtShareSize(file.size)}</span>
+        <button class="ghost sm" data-path="${esc(file.path || "")}" onclick="copySharePath(this)">复制路径</button>
+      </div>`).join("") : "";
+    return `<div style="margin-bottom:${index + 1 < results.length ? "18px" : "0"}">
+      <div style="font-size:16px;font-weight:700;margin-bottom:5px">${esc(m.title || "作品信息")}</div>
+      <div class="mut">${dataBits || esc(item.input_platform || "")}</div>
+      ${m.description ? `<div class="hint" style="margin-top:9px;white-space:pre-wrap;max-height:130px;overflow:auto">${esc(m.description)}</div>` : ""}
+      ${warnings.length ? `<div class="hint" style="margin-top:9px;color:var(--warn)">${warnings.map(esc).join("<br>")}</div>` : ""}
+      ${download ? `<div class="mut" style="margin-top:10px">保存目录：<code>${esc(item.output_dir || "")}</code></div>${fileHtml}` : ""}
+    </div>`;
+  }).join("") || `<div class="hint">没有返回处理结果</div>`;
+  card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function runShareDownload(download) {
+  const btn = evtBtn();
+  const text = $("sd-text").value.trim();
+  if (!text) { toast("请粘贴分享链接或完整分享文案", "err"); return; }
+  // 文案发生变化时先在本地重新识别，确保单选下标对应当前输入。
+  if (SHARE_SOURCE !== text || !SHARE_LINKS.length) {
+    const parsed = await parseShareLinks(null);
+    if (!parsed || !parsed.count) return;
+  }
+  $("sd-msg").textContent = download ? "正在解析并下载，较大视频需要等待…" : "正在读取远端作品信息…";
+  await withBusy(btn, download ? "下载中" : "读取中", async () => {
+    try {
+      const response = await api("/api/share-download", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(shareRequestBody(download)),
+      });
+      renderShareResult(response, download);
+      if (download) refreshShareHistory();
+      if (response.ok) {
+        $("sd-msg").textContent = download ? "下载完成 ✓" : "作品信息读取完成 ✓";
+        toast(download ? "链接作品下载完成" : "作品信息读取完成", "ok");
+      } else {
+        const first = (response.results || []).find(x => !x.ok);
+        $("sd-msg").textContent = "处理完成，但有失败项：" + ((first && first.error) || "");
+        toast("有链接处理失败，请查看结果", "err", 7000);
+      }
+    } catch (e) {
+      $("sd-msg").textContent = "处理失败：" + e.message;
+      toast("处理失败：" + e.message, "err", 7000);
+    }
+  });
+}
+
+function inspectShareLink() { return runShareDownload(false); }
+function downloadShareLink() { return runShareDownload(true); }
 
 // ─── 通知渠道 ───
 const N_TEMPLATES = {
@@ -2617,7 +2897,7 @@ $("watch-table").innerHTML = skeleton(8);
 $("comment-table").innerHTML = skeleton(6);
 
 // restore last-selected section (default: 总览);旧版四个独立页已并入「账号管理」
-const VALID_TABS = ["overview", "accounts", "monitors", "comments", "hub", "publish", "autocomment", "notifications", "settings"];
+const VALID_TABS = ["overview", "accounts", "monitors", "comments", "hub", "publish", "autocomment", "share-download", "notifications", "settings"];
 const LEGACY_HUB_TABS = ["myworks", "following", "fans", "dm"];
 switchTab((() => {
   try {

@@ -343,3 +343,23 @@ class AccountActionTask(SQLModel, table=True):
     min_gap_seconds: int = 60      # 同账号两次写操作最小间隔
     created_at: datetime = Field(default_factory=datetime.utcnow)
     done_at: Optional[datetime] = None
+
+
+class ShareDownloadRecord(SQLModel, table=True):
+    """分享链接下载历史。只读作品信息不会写入，实际下载成功或失败都会记录。"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    platform: str = Field(default="generic", index=True)
+    source_url: str = ""
+    account_id: Optional[int] = Field(default=None, index=True)
+    item_id: str = Field(default="", index=True)
+    title: str = ""
+    author: str = ""
+    media_type: str = ""
+    media_count: int = 0
+    cover_url: str = ""
+    status: str = Field(default="done", index=True)  # done | failed
+    output_dir: str = ""
+    files_json: str = "[]"
+    metadata_json: str = "{}"
+    error: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)

@@ -52,8 +52,30 @@ def check_node() -> bool:
     return True
 
 
+def check_share_downloader() -> bool:
+    try:
+        import yt_dlp
+        from app.engine.share_downloader import extract_share_urls
+
+        links = extract_share_urls(
+            "中文分享：https%3A%2F%2Fv.douyin.com%2Fexample%2F 😄"
+        )
+        assert links and links[0].host == "v.douyin.com"
+        print(f"[链接下载] OK: yt-dlp {yt_dlp.version.__version__}，分享文案解析正常")
+        return True
+    except Exception as e:
+        print(f"[链接下载] FAIL: {e}")
+        print("   运行: python -m pip install -r requirements.txt")
+        return False
+
+
 if __name__ == "__main__":
-    checks = (check_primitives(), check_playwright(), check_node())
+    checks = (
+        check_primitives(),
+        check_playwright(),
+        check_node(),
+        check_share_downloader(),
+    )
     if all(checks):
         print("\n自检通过。启动:  python creatorhub.py")
         raise SystemExit(0)

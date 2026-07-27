@@ -793,6 +793,7 @@
     <div class="nav-sep">工具</div>
     <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish')"><svg><use href="#i-send"/></svg><span class="nav-label">发布</span><span class="nav-badge" id="tb-pub">0</span></button>
     <button class="navitem notsh-only" data-tab="autocomment" onclick="switchTab('autocomment')"><svg><use href="#i-msg"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
+    <button class="navitem" data-tab="share-download" onclick="switchTab('share-download')"><svg><use href="#i-download"/></svg><span class="nav-label">链接下载</span></button>
     <button class="navitem" data-tab="notifications" onclick="switchTab('notifications')"><svg><use href="#i-bell"/></svg><span class="nav-label">通知</span></button>
     <button class="navitem" data-tab="settings" onclick="switchTab('settings')"><svg><use href="#i-download"/></svg><span class="nav-label">设置</span></button>
   </nav>
@@ -931,6 +932,66 @@
         <button onclick="addMonitor()"><svg><use href="#i-target"/></svg>开始监控</button>
         <div class="mut" id="add-msg"></div>
       </div>
+    </div>
+  </section>
+
+  <section data-panel="share-download">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-download"/></svg></span>
+        <h2>通用链接下载 <span class="sub">整段分享文案直接粘贴</span></h2>
+      </div>
+      <div class="stack">
+        <div>
+          <label class="field" for="sd-text">分享链接 / 分享口令 / 含中文和符号的完整文案</label>
+          <textarea id="sd-text" rows="5" placeholder="例如：复制这段内容，打开对应平台查看作品 https://v.douyin.com/xxxx/ 😄&#10;支持全角符号、HTML 实体、URL 编码、Unicode 转义和一段文字中的多个链接"></textarea>
+        </div>
+        <div class="row" style="flex-wrap:wrap">
+          <select id="sd-quality" aria-label="下载画质" style="flex:0 0 170px">
+            <option value="highest">画质：原画/最高</option>
+            <option value="1080">画质：1080P</option>
+            <option value="720">画质：720P</option>
+            <option value="540">画质：540P</option>
+            <option value="lowest">画质：最低省流</option>
+            <option value="audio">仅音频</option>
+          </select>
+          <select id="sd-account" aria-label="复用账号登录态" style="min-width:220px">
+            <option value="">先识别链接，再选择对应平台账号</option>
+          </select>
+          <input id="sd-dir" placeholder="下载目录（留空使用全局目录/share）" aria-label="下载目录" style="min-width:260px">
+          <input id="sd-max-size" type="number" min="0" max="102400" value="0" placeholder="文件上限 MB，0=不限" aria-label="文件大小上限" style="flex:0 0 190px">
+        </div>
+        <div class="row" style="justify-content:flex-start;flex-wrap:wrap;gap:16px">
+          <label class="mut" style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="sd-metadata" style="width:auto">保存作品元数据 JSON</label>
+          <label class="mut" style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="sd-thumbnail" checked style="width:auto">保存封面</label>
+          <label class="mut" style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="sd-subtitles" style="width:auto">保存字幕</label>
+          <label class="mut" style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="sd-all-links" style="width:auto">下载文案中的全部链接</label>
+        </div>
+        <div class="row" style="justify-content:flex-start;flex-wrap:wrap">
+          <button class="ghost" onclick="parseShareLinks()"><svg><use href="#i-bolt"/></svg>识别链接</button>
+          <button class="ghost" onclick="inspectShareLink()"><svg><use href="#i-eye"/></svg>只读取作品信息</button>
+          <button onclick="downloadShareLink()"><svg><use href="#i-download"/></svg>开始下载</button>
+          <span class="mut" id="sd-msg"></span>
+        </div>
+        <div id="sd-links" class="hint" style="display:none"></div>
+      </div>
+    </div>
+    <div class="card" id="sd-result-card" style="display:none">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-film"/></svg></span>
+        <h2>处理结果 <span class="sub" id="sd-result-summary"></span></h2>
+      </div>
+      <div id="sd-result"></div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-download"/></svg></span>
+        <h2>下载历史 <span class="sub" id="sd-history-count">0 条</span></h2>
+        <button class="ghost sm" onclick="refreshShareHistory()"><svg><use href="#i-clock"/></svg>刷新</button>
+      </div>
+      <div class="table-wrap"><table><thead><tr>
+        <th>下载时间</th><th>平台</th><th>作品</th><th>媒体/文件</th><th>状态</th><th>保存目录</th><th>操作</th>
+      </tr></thead><tbody id="sd-history-body"></tbody></table></div>
     </div>
   </section>
 

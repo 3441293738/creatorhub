@@ -62,6 +62,8 @@
 
 1. **内容监控**：轮询目标的新作品/新笔记，发现即入库、可自动下载并推送通知。新增博主默认从订阅时间开始监控，不下载历史作品。
 2. **下载**：自动落地到本地。抖音可选画质档位；小红书取原图/原视频；`.part` 断点续传 + 失败自动重试（≤3 次）。
+   - 左侧 **链接下载** 可直接粘贴任意平台的完整分享文案：自动清洗中文/Emoji/全角符号、HTML 实体、URL 编码和 Unicode 转义，支持一段文字中的多个链接。
+   - 通用下载可保存视频/音频、封面、字幕和作品元数据 JSON；需要登录态的链接可选择复用 CreatorHub 内已登录账号的 Cookie、UA 与代理。
 3. **通知**：发现新内容时推送到 Bark / 钉钉（加签+关键词）/ Telegram（可自建 api_base）。
 4. **评论监控**（独立模块，不依赖作品监控）：盯单条作品或某账号近期作品的公开评论区；抖音另有「创作中心」模式（仅自有账号、按时间、更全，实验性）。
 5. **自动评论**（规则 → 任务队列）：
@@ -198,6 +200,20 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - **目录**：全局默认 + 单目标自定义，优先级 `目标 > 全局 > 配置兜底`，按作者建子文件夹。
 - **断点续传**：`.part` 临时文件跨尝试保留，用 HTTP Range 续传，按 Content-Length 校验完整。
 - **失败重试**：入库时存媒体直链快照，失败的作品后台自动重试（≤3 次），也可手动「重试」。
+- **分享链接通用下载**：`链接下载` 页面或 `POST /api/share-download` 接收完整分享文案，由 `yt-dlp` 适配已支持站点及通用媒体页。每次任务写入独立的 `share_时间_随机码` 目录，避免重名覆盖。
+- **ffmpeg（可选但推荐）**：装好并加入 `PATH` 后，可合并 B 站/YouTube 等站点分离的最高画质视频流与音频流；未安装时自动选择平台提供的音视频合一格式。
+
+只清洗并查看链接（不访问网络）：
+
+```bash
+python -m app.engine.share_downloader --links-only "复制文案 https%3A%2F%2Fv.douyin.com%2Fxxxx%2F"
+```
+
+命令行下载：
+
+```bash
+python -m app.engine.share_downloader "完整分享文案或链接" -o ./data/media/share -q 1080
+```
 
 ### 评论监控
 - **盯单条作品**：粘贴作品链接 / 短链 / 数字 id，周期抓该作品评论区。
@@ -264,7 +280,7 @@ creatorhub/
 │  │  ├─ kuaishou/      快手:解析 / 发布
 │  │  └─ channels/      视频号:解析 / 发布(本账号;助手接口需校准)
 │  ├─ browser/          Playwright:manager / login / fetcher / account_hub
-│  ├─ engine/           监控引擎(扫描·下载·评论·账号体检) + 下载器
+│  ├─ engine/           监控引擎 + 下载器 + share_downloader 通用分享链接下载
 │  ├─ notifier/         Bark / 钉钉 / Telegram
 │  ├─ web/              前端单页(标签页 / toast / 批量选择)
 │  └─ main.py config.py models.py db.py settings.py profiles.py

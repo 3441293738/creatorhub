@@ -5,6 +5,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import traceback
 import uuid
@@ -32,7 +33,13 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       fetch_channels_self_profile,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
                       fetch_dm_history)
-from .platforms.douyin import parse_self_user
+from .platforms.douyin import (
+    DouyinClient,
+    cookie_from_state as douyin_cookie_from_state,
+    parse_aweme,
+    parse_self_user,
+    safe_title,
+)
 from .config import load_config
 from .db import get_session, init_db
 from .platforms.douyin import resolve_sec_uid, resolve_aweme_id, looks_like_video
@@ -46,12 +53,22 @@ from .platforms.kuaishou import (resolve_ks_user_id, resolve_ks_photo_id,
                   looks_like_photo as ks_looks_like_photo,
                   parse_self_user as parse_ks_self_user)
 from .platforms.channels import parse_self_user as parse_channels_self_user
-from .engine import MonitorEngine
+from .engine import Downloader, MonitorEngine
+from .engine.share_downloader import (
+    ShareDownloadError,
+    ShareDownloader,
+    ShareLinkError,
+    detect_platform,
+    extract_share_urls,
+    normalize_share_text,
+    require_share_urls,
+)
 from .models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
                      CommentWatch, DouyinAccount, MonitorTarget,
                      NotificationChannel, ProxyPool, PublishTask,
                      AccountWork, FollowEdge, DmConversation, DmMessage,
-                     AccountActionTask, AccountStatSnapshot)
+                     AccountActionTask, AccountStatSnapshot,
+                     ShareDownloadRecord)
 from .notifier import CHANNEL_TYPES, send_one
 from .profiles import (ensure_identity, migrate_identities, assign_proxy_from_pool,
                        seed_proxy_pool)
@@ -69,12 +86,19 @@ login_tasks: Dict[str, dict] = {}
 # 用户手动打开的账号浏览器窗口(account_id -> BrowserContext),留引用防 GC、便于复用/清理
 open_browsers: Dict[int, Any] = {}
 _file_manager_lock = threading.Lock()
+_share_download_sem = asyncio.Semaphore(2)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global browser, engine, im_receiver
     init_db(cfg.db_path)
+    try:
+        restored = _backfill_share_download_history()
+        if restored:
+            print(f"[startup] 已从本地下载目录补录 {restored} 条链接下载历史")
+    except Exception as e:
+        print(f"[startup] 链接下载历史补录失败（不影响启动）: {e!r}")
     # config.yaml 里配的 proxies 导入数据库代理池(之后统一在页面管理)
     try:
         seeded = seed_proxy_pool(cfg)
@@ -1653,6 +1677,572 @@ async def ai_test(body: AiTestIn):
     except Exception as e:
         msg = str(e) or e.__class__.__name__
         return {"ok": False, "error": f"{msg}(检查 Base URL / Key / 模型 / 网络/代理)"}
+
+
+# ─────────── 通用分享链接下载 ───────────
+class ShareLinksIn(BaseModel):
+    share_text: str
+    limit: int = 10
+
+
+class ShareDownloadIn(BaseModel):
+    share_text: str
+    download: bool = True             # False = 只请求远端并解析作品信息
+    all_links: bool = False           # False = 只处理 link_index 指定的一条
+    link_index: int = 0
+    quality: str = "highest"
+    output_dir: str | None = None
+    save_metadata: bool = True
+    save_thumbnail: bool = True
+    save_subtitles: bool = False
+    max_filesize_mb: int = 0          # 0 = 不限制
+    account_id: int | None = None     # 可选：复用已登录账号 Cookie / UA / 代理
+    proxy: str = ""                   # 显式填写时优先于账号代理
+
+
+def _share_input(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise HTTPException(400, "请粘贴分享链接或完整分享文案")
+    if len(value) > 100_000:
+        raise HTTPException(400, "分享内容过长（最多 100000 个字符）")
+    return value
+
+
+def _write_account_cookie_file(account_id: int | None) -> tuple[str, str, str]:
+    """把 Playwright storage_state 临时转换为 yt-dlp 可读的 Netscape Cookie 文件。
+
+    返回 (cookie_file, account_proxy, account_ua)。调用方必须在使用后删除 cookie_file。
+    """
+    if account_id is None:
+        return "", "", ""
+    with get_session() as s:
+        acc = s.get(DouyinAccount, account_id)
+        if not acc:
+            raise HTTPException(404, "下载所选账号不存在")
+        state_text = acc.storage_state or acc.creator_storage_state or ""
+        raw_cookie = acc.cookie or ""
+        platform = acc.platform
+        account_proxy = acc.proxy or ""
+        account_ua = acc.ua or ""
+
+    try:
+        state = json.loads(state_text or "{}")
+    except Exception:
+        state = {}
+    cookies = list(state.get("cookies") or [])
+    if not cookies and raw_cookie:
+        default_domain = {
+            "xhs": ".xiaohongshu.com",
+            "kuaishou": ".kuaishou.com",
+            "shipinhao": ".weixin.qq.com",
+        }.get(platform, ".douyin.com")
+        for part in raw_cookie.split(";"):
+            name, sep, value = part.strip().partition("=")
+            if sep and name:
+                cookies.append({
+                    "name": name, "value": value, "domain": default_domain,
+                    "path": "/", "secure": True, "expires": 0,
+                })
+    if not cookies:
+        raise HTTPException(400, "所选账号没有可复用的 Cookie 登录态")
+
+    fh = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="\n",
+        prefix="creatorhub-share-", suffix=".cookies.txt", delete=False,
+    )
+    try:
+        fh.write("# Netscape HTTP Cookie File\n")
+        for cookie in cookies:
+            name = str(cookie.get("name") or "").replace("\t", "").replace("\n", "")
+            value = str(cookie.get("value") or "").replace("\t", "").replace("\n", "")
+            domain = str(cookie.get("domain") or "").strip()
+            if not name or not domain:
+                continue
+            include_subdomains = "TRUE" if domain.startswith(".") else "FALSE"
+            path = str(cookie.get("path") or "/").replace("\t", "")
+            secure = "TRUE" if cookie.get("secure") else "FALSE"
+            expires_raw = cookie.get("expires") or cookie.get("expirationDate") or 0
+            try:
+                expires = max(0, int(float(expires_raw)))
+            except (TypeError, ValueError):
+                expires = 0
+            fh.write(
+                f"{domain}\t{include_subdomains}\t{path}\t{secure}\t"
+                f"{expires}\t{name}\t{value}\n"
+            )
+    finally:
+        fh.close()
+    return fh.name, account_proxy, account_ua
+
+
+def _share_file_role(path: Path) -> str:
+    name = path.name.lower()
+    suffix = path.suffix.lower()
+    if name.endswith(".info.json"):
+        return "metadata"
+    if ".cover." in name:
+        return "thumbnail"
+    if suffix in {".jpg", ".jpeg", ".png", ".webp", ".avif"}:
+        return "media"
+    if suffix in {".srt", ".vtt", ".ass", ".lrc", ".ttml"}:
+        return "subtitle"
+    if suffix in {
+        ".mp4", ".mkv", ".webm", ".mov", ".flv", ".avi", ".m4v",
+        ".mp3", ".m4a", ".aac", ".opus", ".ogg", ".wav", ".flac",
+    }:
+        return "media"
+    if suffix in {".json", ".description"}:
+        return "metadata"
+    return "other"
+
+
+_SHARE_HISTORY_META_KEYS = {
+    "id", "title", "description", "uploader", "uploader_id", "channel",
+    "duration", "timestamp", "upload_date", "view_count", "like_count",
+    "comment_count", "thumbnail", "webpage_url", "original_url",
+    "extractor", "extractor_key", "ext", "format", "format_id",
+    "width", "height", "platform", "media_type", "media_count",
+}
+
+
+def _compact_share_metadata(metadata: Any) -> dict:
+    """只保留历史列表需要的字段，避免把 yt-dlp 的完整响应重复写进数据库。"""
+    if not isinstance(metadata, dict):
+        return {}
+    return {
+        key: value for key, value in metadata.items()
+        if key in _SHARE_HISTORY_META_KEYS
+    }
+
+
+def _save_share_download_history(
+    *,
+    source_url: str,
+    platform: str,
+    account_id: int | None,
+    item: dict,
+) -> int:
+    metadata = _compact_share_metadata(item.get("metadata"))
+    files = item.get("files") if isinstance(item.get("files"), list) else []
+    media_files = [file for file in files if file.get("role") == "media"]
+    status = "done" if item.get("ok") else "failed"
+    record = ShareDownloadRecord(
+        platform=platform or str(metadata.get("platform") or detect_platform(source_url)),
+        source_url=source_url,
+        account_id=account_id,
+        item_id=str(metadata.get("id") or ""),
+        title=str(metadata.get("title") or ""),
+        author=str(metadata.get("uploader") or metadata.get("channel") or ""),
+        media_type=str(metadata.get("media_type") or ""),
+        media_count=int(metadata.get("media_count") or len(media_files)),
+        cover_url=str(metadata.get("thumbnail") or ""),
+        status=status,
+        output_dir=str(item.get("output_dir") or ""),
+        files_json=json.dumps(files, ensure_ascii=False, default=str),
+        metadata_json=json.dumps(metadata, ensure_ascii=False, default=str),
+        error=str(item.get("error") or ""),
+    )
+    with get_session() as s:
+        s.add(record)
+        s.commit()
+        s.refresh(record)
+        return int(record.id or 0)
+
+
+def _backfill_share_download_history() -> int:
+    """从已有的 ``*.info.json`` 补录旧下载，升级后历史列表不会是空的。"""
+    default_root = get_setting("download_dir", cfg.engine.media_dir) or cfg.engine.media_dir
+    share_root = Path(default_root).expanduser() / "share"
+    if not share_root.is_dir():
+        return 0
+
+    restored = 0
+    # 防止用户把超大归档目录设成下载目录时启动扫描失控。
+    for info_path in list(share_root.rglob("*.info.json"))[:5000]:
+        try:
+            metadata_raw = json.loads(info_path.read_text(encoding="utf-8"))
+            if not isinstance(metadata_raw, dict):
+                continue
+            metadata = _compact_share_metadata(metadata_raw)
+            item_id = str(metadata.get("id") or "")
+            source_url = str(
+                metadata.get("webpage_url")
+                or metadata.get("original_url")
+                or ""
+            )
+            if not item_id and not source_url:
+                continue
+
+            with get_session() as s:
+                query = select(ShareDownloadRecord.id)
+                if item_id:
+                    query = query.where(ShareDownloadRecord.item_id == item_id)
+                else:
+                    query = query.where(ShareDownloadRecord.source_url == source_url)
+                if s.exec(query.limit(1)).first() is not None:
+                    continue
+
+            prefix = f"{item_id}_" if item_id else info_path.name[:-10]
+            files = []
+            for path in sorted(info_path.parent.iterdir()):
+                if not path.is_file() or path.suffix.lower() in {".part", ".ytdl"}:
+                    continue
+                # 原生抖音目录可能含多个作品，只关联相同作品 ID 前缀的文件。
+                if item_id and not path.name.startswith(prefix):
+                    continue
+                try:
+                    relative = path.relative_to(share_root).as_posix()
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                files.append({
+                    "name": path.name,
+                    "path": str(path.resolve()),
+                    "relative_path": relative,
+                    "size": size,
+                    "role": _share_file_role(path),
+                })
+
+            platform = str(metadata.get("platform") or detect_platform(source_url))
+            _save_share_download_history(
+                source_url=source_url,
+                platform=platform,
+                account_id=None,
+                item={
+                    "ok": True,
+                    "output_dir": str(info_path.parent.resolve()),
+                    "metadata": metadata,
+                    "files": files,
+                },
+            )
+            restored += 1
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+    return restored
+
+
+def _share_history_dict(record: ShareDownloadRecord) -> dict:
+    try:
+        files = json.loads(record.files_json or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        files = []
+    try:
+        metadata = json.loads(record.metadata_json or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        metadata = {}
+    return {
+        "id": record.id,
+        "platform": record.platform,
+        "source_url": record.source_url,
+        "account_id": record.account_id,
+        "item_id": record.item_id,
+        "title": record.title,
+        "author": record.author,
+        "media_type": record.media_type,
+        "media_count": record.media_count,
+        "cover_url": record.cover_url,
+        "status": record.status,
+        "output_dir": record.output_dir,
+        "files": files if isinstance(files, list) else [],
+        "metadata": metadata if isinstance(metadata, dict) else {},
+        "error": record.error,
+        "created_at": record.created_at.isoformat() if record.created_at else "",
+    }
+
+
+def _native_aweme_metadata(aweme, source_url: str) -> dict:
+    return {
+        "id": aweme.aweme_id,
+        "title": aweme.desc or aweme.aweme_id,
+        "description": aweme.desc,
+        "uploader": aweme.author_name,
+        "duration": aweme.duration,
+        "timestamp": aweme.create_time,
+        "like_count": aweme.like_count,
+        "comment_count": aweme.comment_count,
+        "thumbnail": aweme.cover,
+        "webpage_url": source_url,
+        "original_url": source_url,
+        "extractor": "creatorhub:douyin",
+        "extractor_key": "CreatorHubDouyin",
+        "ext": "jpg" if aweme.media_type == "images" else "mp4",
+        "format": aweme.quality_label,
+        "platform": "douyin",
+        "media_type": aweme.media_type,
+        "media_count": len(aweme.medias),
+    }
+
+
+async def _douyin_native_share(
+    source_url: str,
+    *,
+    account_id: int | None,
+    output_root: Path,
+    quality: str,
+    should_download: bool,
+    save_metadata: bool,
+    save_thumbnail: bool,
+    proxy: str,
+    user_agent: str,
+) -> dict | None:
+    """用 CreatorHub 自带抖音接口兜底 yt-dlp 尚未支持的 /note/、/slides/。
+
+    返回 None 表示它不是可解析的抖音单作品链接，应继续走通用提取器。
+    """
+    if account_id is None:
+        return None
+    aweme_id = await resolve_aweme_id(source_url, user_agent)
+    if not aweme_id:
+        return None
+
+    with get_session() as s:
+        account = s.get(DouyinAccount, account_id)
+        if not account or account.platform != "douyin":
+            return None
+        state = account.storage_state or account.creator_storage_state or ""
+        raw_cookie = account.cookie or ""
+    cookie = douyin_cookie_from_state(state) or raw_cookie
+    client = DouyinClient(cookie, user_agent, timeout=cfg.engine.request_timeout_seconds)
+    raw = await client.fetch_video_detail(aweme_id)
+    if not raw:
+        raise ShareDownloadError(
+            "已识别到抖音作品 ID，但所选账号未能读取作品详情；"
+            "请检查账号登录态或更换抖音账号"
+        )
+    aweme = parse_aweme(raw, quality if quality != "audio" else "highest")
+    if not aweme:
+        raise ShareDownloadError("抖音作品详情已读取，但没有找到可下载的视频或图片")
+
+    # 原生直链下载器不做音频转码；仅音频请求继续交给 yt-dlp/ffmpeg。
+    if quality == "audio" and aweme.media_type == "video":
+        return None
+
+    metadata = _native_aweme_metadata(aweme, source_url)
+    if not should_download:
+        return {
+            "ok": True,
+            "url": source_url,
+            "metadata": metadata,
+            "warnings": [],
+        }
+
+    downloader = Downloader(
+        str(output_root),
+        user_agent,
+        timeout=max(30.0, cfg.engine.request_timeout_seconds),
+    )
+    ok, _local_path, error = await downloader.download_aweme(
+        aweme, base_dir=str(output_root), proxy=proxy
+    )
+    if not ok:
+        raise ShareDownloadError(error or "抖音媒体下载失败")
+
+    target_dir = output_root / safe_title(aweme.author_name or "unknown")
+    title = safe_title(aweme.desc) or aweme.aweme_id
+    if save_metadata:
+        info_path = target_dir / f"{aweme.aweme_id}_{title}.info.json"
+        payload = {
+            **metadata,
+            "media": [
+                {"url": media.url, "kind": media.kind, "ext": media.ext,
+                 "index": media.index}
+                for media in aweme.medias
+            ],
+            "raw": raw,
+        }
+        info_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+
+    # 视频封面单独保存；图文作品的图片本身已经全部下载。
+    if save_thumbnail and aweme.media_type == "video" and aweme.cover:
+        import httpx
+        from .browser.manager import normalize_proxy
+
+        cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
+        headers = {"User-Agent": user_agent, "Referer": "https://www.douyin.com/"}
+        try:
+            async with httpx.AsyncClient(
+                timeout=max(30.0, cfg.engine.request_timeout_seconds),
+                follow_redirects=True,
+                headers=headers,
+                proxy=normalize_proxy(proxy) or None,
+            ) as http:
+                await downloader._download_one(http, aweme.cover, cover_path)
+        except Exception:
+            pass
+
+    files = []
+    for path in sorted(target_dir.glob(f"{aweme.aweme_id}_*")):
+        if not path.is_file() or path.suffix.lower() in {".part", ".ytdl"}:
+            continue
+        files.append({
+            "name": path.name,
+            "path": str(path.resolve()),
+            "relative_path": path.relative_to(output_root).as_posix(),
+            "size": path.stat().st_size,
+            "role": _share_file_role(path),
+        })
+    if not any(item["role"] == "media" for item in files):
+        raise ShareDownloadError("抖音作品解析成功，但本地没有生成媒体文件")
+    return {
+        "ok": True,
+        "job_id": f"douyin_{aweme.aweme_id}",
+        "url": source_url,
+        "output_dir": str(target_dir.resolve()),
+        "metadata": metadata,
+        "files": files,
+        "progress": {"status": "finished"},
+        "warnings": [],
+    }
+
+
+@app.post("/api/share-download/links")
+async def parse_share_links(body: ShareLinksIn):
+    """只做本地文本清洗和链接提取，不访问分享站点。"""
+    text = _share_input(body.share_text)
+    limit = max(1, min(int(body.limit or 10), 20))
+    normalized = normalize_share_text(text)
+    links = extract_share_urls(normalized, limit=limit)
+    return {
+        "ok": bool(links),
+        "normalized_text": normalized,
+        "links": [item.to_dict() for item in links],
+        "count": len(links),
+    }
+
+
+@app.post("/api/share-download")
+async def share_download(body: ShareDownloadIn):
+    """解析分享文案，并下载媒体/封面/字幕/元数据，或只读取作品信息。"""
+    text = _share_input(body.share_text)
+    try:
+        normalized = normalize_share_text(text)
+        links = require_share_urls(normalized, limit=10)
+    except ShareLinkError as exc:
+        raise HTTPException(400, str(exc))
+
+    if body.all_links:
+        selected = links
+    else:
+        if body.link_index < 0 or body.link_index >= len(links):
+            raise HTTPException(400, f"link_index 超出范围（共识别到 {len(links)} 条链接）")
+        selected = [links[body.link_index]]
+    if body.max_filesize_mb < 0 or body.max_filesize_mb > 1024 * 100:
+        raise HTTPException(400, "max_filesize_mb 需为 0～102400")
+
+    default_root = get_setting("download_dir", cfg.engine.media_dir) or cfg.engine.media_dir
+    output_root = Path(body.output_dir.strip()).expanduser() if body.output_dir and body.output_dir.strip() \
+        else Path(default_root).expanduser() / "share"
+    try:
+        output_root.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        raise HTTPException(400, f"下载目录不可用：{exc}")
+
+    cookie_file = ""
+    try:
+        cookie_file, account_proxy, account_ua = _write_account_cookie_file(body.account_id)
+        proxy = body.proxy.strip() or account_proxy
+        user_agent = account_ua or cfg.engine.user_agent
+        downloader = ShareDownloader(
+            output_root,
+            user_agent=user_agent,
+            timeout=cfg.engine.request_timeout_seconds,
+        )
+        results = []
+        async with _share_download_sem:
+            for link in selected:
+                try:
+                    item = None
+                    if link.platform == "douyin":
+                        item = await _douyin_native_share(
+                            link.url,
+                            account_id=body.account_id,
+                            output_root=output_root,
+                            quality=body.quality,
+                            should_download=body.download,
+                            save_metadata=body.save_metadata,
+                            save_thumbnail=body.save_thumbnail,
+                            proxy=proxy,
+                            user_agent=user_agent,
+                        )
+                    if item is not None:
+                        pass
+                    elif body.download:
+                        item = await downloader.download(
+                            link.url,
+                            quality=body.quality,
+                            save_metadata=body.save_metadata,
+                            save_thumbnail=body.save_thumbnail,
+                            save_subtitles=body.save_subtitles,
+                            proxy=proxy,
+                            cookie_file=cookie_file,
+                            max_filesize_mb=body.max_filesize_mb,
+                        )
+                    else:
+                        item = await downloader.inspect(
+                            link.url, proxy=proxy, cookie_file=cookie_file
+                        )
+                    item["input_platform"] = link.platform
+                except ShareDownloadError as exc:
+                    item = {
+                        "ok": False,
+                        "url": link.url,
+                        "input_platform": link.platform,
+                        "error": str(exc),
+                    }
+                if body.download:
+                    try:
+                        item["history_id"] = _save_share_download_history(
+                            source_url=link.url,
+                            platform=link.platform,
+                            account_id=body.account_id,
+                            item=item,
+                        )
+                    except Exception as exc:
+                        item.setdefault("warnings", []).append(
+                            f"下载已处理，但历史记录写入失败：{exc}"
+                        )
+                results.append(item)
+    finally:
+        if cookie_file:
+            try:
+                Path(cookie_file).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    return {
+        "ok": bool(results) and all(item.get("ok") for item in results),
+        "normalized_text": normalized,
+        "links": [item.to_dict() for item in links],
+        "results": results,
+    }
+
+
+@app.get("/api/share-download/history")
+async def get_share_download_history(limit: int = 100, platform: str = ""):
+    limit = max(1, min(int(limit or 100), 500))
+    with get_session() as s:
+        query = select(ShareDownloadRecord)
+        if platform.strip():
+            query = query.where(ShareDownloadRecord.platform == platform.strip())
+        rows = s.exec(
+            query.order_by(ShareDownloadRecord.created_at.desc()).limit(limit)
+        ).all()
+        return [_share_history_dict(row) for row in rows]
+
+
+@app.delete("/api/share-download/history/{record_id}")
+async def delete_share_download_history(record_id: int):
+    """只删除历史行，不删除磁盘里的媒体文件。"""
+    with get_session() as s:
+        record = s.get(ShareDownloadRecord, record_id)
+        if not record:
+            raise HTTPException(404, "下载历史不存在")
+        s.delete(record)
+        s.commit()
+    return {"ok": True}
 
 
 # ─────────── 监控目标 ───────────
