@@ -1,303 +1,223 @@
 # CreatorHub
 
-> 多平台内容监控 · 采集 · 搬运 —— 纯 Python，一个 Web 面板管起 **抖音 / 小红书 / 快手 / 视频号**。
+> 本地运行的多平台内容管理面板，支持 **抖音 / 小红书 / 快手 / 视频号**。
 
-用真实浏览器（Playwright）驱动，**免手写签名**：登录态由浏览器持有，抓取靠拦截平台自己发出的接口响应。顶部一键切换平台，每个平台各自独立的账号、监控目标、内容与评论数据；通知渠道与下载设置全局共用。
+CreatorHub 使用 Python + FastAPI 提供统一 Web 界面，用于管理账号、监控作品与评论、下载内容、发布作品和接收通知。账号登录态、数据库及媒体文件均保存在本地。
 
-平台代码统一收纳在 `app/platforms/<平台>/` 下，新增平台只需在此目录加一个子包。
+## 平台能力
 
----
+| 功能 | 抖音 | 小红书 | 快手 | 视频号 |
+|---|:---:|:---:|:---:|:---:|
+| 登录 | 扫码 / 创作者 / Cookie | 扫码 | 扫码 / 创作者 | 扫码 |
+| 作品监控 | ✅ | ✅ 创作者 / 关键词 | ✅ | 仅本账号 |
+| 评论监控 | ✅ | ✅ | ✅ | 仅本账号 |
+| 内容下载 | ✅ 可选画质 | ✅ 图集 / 视频 | ✅ | — |
+| 发布 | ✅ | ✅ | ✅ | ✅ |
+| 自动评论 / 回复 | ✅ | ✅ | ✅ | — |
+| 本账号管理 | 作品 / 关注 / 粉丝 / 私信 | 作品 / 关注 / 粉丝 / 私信 | 作品 / 关注 / 粉丝 | 作品 / 数据 / 评论 |
+| 通知 | Bark / 钉钉 / Telegram | Bark / 钉钉 / Telegram | Bark / 钉钉 / Telegram | Bark / 钉钉 / Telegram |
 
-## 界面预览
-
-**总览面板** —— 顶部一键切换 **抖音 / 小红书 / 快手**，深浅主题随平台自动切换，近 7 天采集趋势与关键指标一屏看全：
-
-![总览面板 · 抖音（深色）](assets/screenshots/overview-douyin.png)
-
-![总览面板 · 小红书（浅色）](assets/screenshots/overview-xiaohongshu.png)
-
-**账号 + 代理池** —— 扫码 / 创作者 / Cookie 多方式登录，多账号登录态检测与一键重登；一号一代理固定绑定防关联，支持批量导入与自动分配：
-
-![账号登录与代理池](assets/screenshots/accounts-proxy.png)
-
-**作品监控** —— 粘贴主页链接即可轮询新作品并自动下载，可选画质与下载目录；最新作品列表带下载状态，支持一键搬运到小红书：
-
-![作品监控与下载](assets/screenshots/monitor-posts.png)
-
-**评论监控** —— 订阅单条视频或整个账号的评论区，定时抓取新评论并落库，支持公开评论区来源与自动识别：
-
-![评论监控](assets/screenshots/monitor-comments.png)
-
-**本账号管理** —— 打通本账号的作品 / 关注 / 粉丝 / 私信；私信支持无头历史拉取与浏览器实时收发（imapi protobuf，纯 Cookie 免签名）：
-
-![本账号管理与私信](assets/screenshots/account-hub-dm.png)
-
----
-
-## 功能一览
-
-| 能力 | 抖音 | 小红书 | 快手 |
-|---|:---:|:---:|:---:|
-| 登录 | 扫码 / 创作者 / Cookie | 扫码（读取态 + 创作态） | 扫码 / 创作者 |
-| 作品监控（新作品轮询） | ✅ 用户作品 | ✅ 创作者笔记 / 关键词 | ✅ 用户作品 |
-| 自动下载（含断点续传/重试） | ✅ 可选画质 | ✅ 图集/视频原图原视频 | ✅ |
-| 评论监控 | ✅ 公开 / 创作中心 | ✅ 单条笔记 / 创作者近期 | ✅ |
-| 自动评论 / 自动回复 | ✅ | ✅ | ✅ |
-| 发布 | ✅ 浏览器自动化 / 转发到小红书 | ✅ API 直连 / 转发到抖音 | ✅ 浏览器自动化 |
-| 本账号管理（作品/关注/粉丝/私信） | ✅ | ✅ | ✅ 关注/粉丝 |
-| 通知推送（Bark/钉钉/Telegram） | 全局共用 | 全局共用 | 全局共用 |
-
-> **视频号（微信视频号 / Channels）** 是第 4 个平台，但与前三者不同：其数据只能从**创作者助手**
-> （channels.weixin.qq.com）拿到，且**只有本账号自己的数据**（平台无对外公开作品接口），视频视频号
-> 走加密 CDN **不可下载搬运**。因此视频号只做 **登录 / 本账号作品 / 数据 / 评论 / 发布**，不做「监控他人作品」。
-> 助手接口路径、评论页与 wujie 发布页选择器需用**真实视频号账号**跑一遍、照服务端 `[channels_*]` 的
-> `api_seen` 日志校准（同下方关注/粉丝的「接口标定」流程），常量集中在 `app/browser/channels_fetcher.py`
-> 与 `app/platforms/channels/`。
-
-### 本账号数据分析 & 作品健康监控（新）
-- **数据**（本账号 → 数据）：后台引擎在账号体检时逐日快照粉丝/作品/互动，画粉丝趋势 + 单篇明细；数据来自已同步的本账号作品，不额外抓取。
-- **作品健康监控**：盯**自己**作品的流量，发现「发布满 N 小时仍 0 播」（限流信号）或「状态含违规/下架」即推通知。默认关，`config.yaml` 里 `engine.work_health_enabled: true` 开启。
-
-### 核心功能说明
-
-1. **内容监控**：轮询目标的新作品/新笔记，发现即入库、可自动下载并推送通知。新增博主默认从订阅时间开始监控，不下载历史作品。
-2. **下载**：自动落地到本地。抖音可选画质档位；小红书取原图/原视频；`.part` 断点续传 + 失败自动重试（≤3 次）。
-   - 左侧 **链接下载** 可直接粘贴任意平台的完整分享文案：自动清洗中文/Emoji/全角符号、HTML 实体、URL 编码和 Unicode 转义，支持一段文字中的多个链接。
-   - 通用下载可保存视频/音频、封面、字幕和作品元数据 JSON；需要登录态的链接可选择复用 CreatorHub 内已登录账号的 Cookie、UA 与代理。
-3. **通知**：发现新内容时推送到 Bark / 钉钉（加签+关键词）/ Telegram（可自建 api_base）。
-4. **评论监控**（独立模块，不依赖作品监控）：盯单条作品或某账号近期作品的公开评论区；抖音另有「创作中心」模式（仅自有账号、按时间、更全，实验性）。
-5. **自动评论**（规则 → 任务队列）：
-   - **自动回复**（低风险）：自动回复自己作品下收到的评论。
-   - **自动评论**（高风险）：去指定博主或关键词（关键词仅小红书）的帖子下评论。
-   - 文案 = 模板库 + 同义随机 `{a|b|c}` + `{nick}`/`{kw}` 变量；**可选接大模型**（OpenAI 兼容：DeepSeek/通义/月之暗面/智谱/OpenAI 等，在「设置」配 key，失败回退模板）。
-   - 规则默认关闭、可「试跑」预览、可随时编辑。
-6. **账号管理**：真实资料、登录态失效检测、一键重登。
-7. **本账号管理**（左侧「本账号」分组，多平台通用）：
-   - **我的作品**：同步展示登录账号自己发布的作品。
-   - **关注 / 粉丝**：同步列表，支持 **取关 / 回关**。
-   - **私信**：展示会话/消息，支持 **发送私信**。
-   - 写操作（取关/回关/发私信）统一进 `AccountActionTask` 队列，由引擎按 `min_gap_seconds` 节流、每账号每轮一条；也可在前端「立即执行」。
-8. **多账号风控隔离**：每账号独立持久化浏览器 profile + 一号一代理（sticky）+ 活跃账号错峰 + 扫描抖动，降低多号关联特征（见[配置](#配置)）。
-   - **防 IP 泄漏**：禁用 WebRTC 非代理 UDP，避免真实出口 IP 绕过代理暴露（多号同 IP = 强关联信号）；体检时探测代理出口国家，与账号时区不一致则告警。
-   - **指纹自洽**：账号 UA 的 Chrome 版本自动对齐真实内核，`Sec-CH-UA` / `navigator.userAgentData` / `platform` / WebGL 三方一致；canvas / Audio 加同账号固定微噪声；WebGL renderer 从数十条真实 GPU 串池里按账号确定性挑一条（避免多号撞同一 GPU 指纹）。
-   - **位置伪造**：`navigator.geolocation` 按账号伪造坐标（预授权定位权限），坐标优先取代理 IP 归属地（体检时写回），无则按种子从主要城市池派生 + 抖动 —— 避免真实定位与代理 IP 地区冲突。
-   - **写操作限流**：取关/回关/私信/自动评论受「每日 + 每小时上限 + 全局最小间隔 + 夜间静默（活跃时段外暂停）」多重闸约束，评论排期为「突发+休息」而非匀速，更像真人。
-
-> ⚠️ **关注/粉丝/私信需要接口标定**：这三类在三个平台都**没有可直接调用的公开接口**，
-> 靠登录态浏览器打开对应页面**拦截抓包** + 启发式抽取自适应。若「同步」抓不到数据，
-> 把服务端控制台打印的 `[follow]` / `[dm]` 那行（含它看到的 `api_seen` 接口清单）
-> 反馈到 issue，据此把真实接口/字段固化进 `app/browser/account_hub.py`。
-> 写操作的按钮选择器集中在 `account_hub.py` 的 `_FOLLOW_BTN` / `_DM_INPUT` 等常量，平台改版时改这里。
-
----
+> 视频号只支持创作者助手中的本账号数据，不支持监控或下载他人作品。
 
 ## 快速开始
 
-### 一键启动（推荐）
+### 环境要求
 
-**Windows**
+- Python 3.10+
+- 桌面环境（扫码登录时需要弹出浏览器）
+- Node.js 18+（仅小红书发布需要）
+- ffmpeg（可选，用于合并部分站点的音视频流）
+
+### 一键启动
+
+克隆项目：
+
+```bash
+git clone https://github.com/3441293738/creatorhub.git
+cd creatorhub
+```
+
+Windows：
 
 ```bat
 .\start.cmd
 ```
 
-也可以直接双击根目录的 `start.cmd`。
-
-**macOS / Linux**
+macOS / Linux：
 
 ```bash
 chmod +x start.sh
 ./start.sh
 ```
 
-第一次运行会自动完成以下工作，后续启动不会重复安装：
+首次运行会自动创建虚拟环境、安装依赖和 Chromium、生成 `config.yaml`，随后打开：
 
-1. 创建 `.venv` Python 隔离环境；
-2. 安装 `requirements.txt`；
-3. 安装 Playwright Chromium；
-4. 安装小红书发布所需的 Node.js 依赖（未装 Node.js 时自动跳过，不影响其他功能）；
-5. 从示例生成 `config.yaml`；
-6. 启动服务并打开 `http://127.0.0.1:8000`。
-
-常用维护命令：
-
-```bash
-# Windows（macOS / Linux 将 start.cmd 换成 ./start.sh）
-.\start.cmd install             # 重新安装/更新依赖
-.\start.cmd check               # 环境自检
-.\start.cmd --no-open           # 启动但不自动打开浏览器
-.\start.cmd --port 8080         # 临时使用其他端口
-.\start.cmd --reload            # 开发模式，修改代码后自动重载
+```text
+http://127.0.0.1:8000
 ```
 
-> 环境要求：Python 3.10+。Node.js 18+ 只在使用「小红书发布」时需要。
-> 扫码/创作者登录会弹出真实浏览器窗口，因此需要桌面环境。
-
-### 手动安装
+常用命令：
 
 ```bash
-git clone <this-repo> && cd creatorhub
-
-python -m venv .venv && .venv\Scripts\activate      # Windows(其他平台用 source .venv/bin/activate)
-pip install -r requirements.txt
-playwright install chromium                          # ★ 必须:装浏览器内核
-npm install crypto-js                                # ★ 小红书发布用:签名 JS 依赖(需先装 Node.js)
-cp config.example.yaml config.yaml                   # 按需改
-
-python selftest.py                                   # 自检(含 Playwright 可用性)
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-# 打开 http://localhost:8000
+.\start.cmd install        # 重新安装或更新依赖
+.\start.cmd check          # 环境自检
+.\start.cmd --no-open      # 启动后不自动打开页面
+.\start.cmd --port 8080    # 使用其他端口
+.\start.cmd --reload       # 开发模式
 ```
 
-> ⚠️ 扫码/创作者登录会**弹出真实浏览器窗口**，需在**有桌面的机器**上跑。
-> 纯无桌面服务器请用「Cookie 粘贴」登录（抖音）。
-> Windows 下用单 worker 启动（默认即是），别加 `--workers`，否则 Playwright 子进程会出错。
+> macOS / Linux 将 `.\start.cmd` 换成 `./start.sh`。
 
-### 小红书账号:一次扫码 = 读取态 + 创作态
-
-小红书有两套登录态，**一次「小红书扫码登录」会同时拿到两者**：
-
-- **读取态（www.xiaohongshu.com）**：监控、浏览自己笔记、预览、评论用。
-- **创作态（creator.xiaohongshu.com）**：发布用。
-
-点「小红书扫码登录」→ 扫码后窗口**自动跳到创作平台**：只看/评论/预览的扫完 www 即可；还要**发布**的，在创作平台完成登录/同意（**完成前别关窗口**）。拿到创作 cookie 的账号显示 🎬 徽章。
-
-> 小红书很多接口需要 URL 携带 `xsec_token`。盯单条笔记/创作者时尽量粘贴含 `xsec_token=` 的完整链接；令牌过期后重新粘贴新链接即可。
-
----
-
-## 界面
-
-顶部 **抖音 / 小红书 / 快手** 切换平台；左侧导航分区，每个分区是「列表 + 添加」的管理面板：
-
-- **总览**：当前平台的 账号 / 监控 / 下载 / 评论 数量概览。
-- **账号**：登录方式随平台不同（见上表）。账号列表含真实资料、失效检测、重登；🪪 抓取号 / 🎬 创作者号。
-- **作品监控**：粘贴主页/短链/id；抖音需选择已登录账号，并可选“不下载历史 / 最近 5 条 / 最近 20 条 / 尽可能全量”；小红书可选「创作者笔记」或「关键词」。下方为监控列表 + 下载记录。
-- **评论监控**：独立模块，粘贴作品链接或创作者主页。
-- **发布**：小红书上传图集/视频发笔记、定时发布；抖音 / 快手发布走浏览器自动化(创作平台)。**跨平台转发**：抖音作品一键转发到小红书、小红书作品一键转发到抖音(已下载作品上点「发小红书 / 发抖音」,发布前可改标题/正文/话题)。
-- **本账号**：我的作品 / 关注 / 粉丝 / 私信。
-- **通知**：Bark / 钉钉 / Telegram 渠道管理（全局共用）。
-- **设置**：全局下载目录 + 默认画质 + 大模型 key。
-
----
-
-## 功能细节
-
-### 下载
-- **画质**（抖音）：从作品自带多档码率里选 `原画(最高) / 1080 / 720 / 540 / 省流(最低)`。全局默认 + 单目标覆盖；"原画" = web 端可拿到的最高码率（**非创作者母带**）。
-- **目录**：全局默认 + 单目标自定义，优先级 `目标 > 全局 > 配置兜底`，按作者建子文件夹。
-- **断点续传**：`.part` 临时文件跨尝试保留，用 HTTP Range 续传，按 Content-Length 校验完整。
-- **失败重试**：入库时存媒体直链快照，失败的作品后台自动重试（≤3 次），也可手动「重试」。
-- **分享链接通用下载**：`链接下载` 页面或 `POST /api/share-download` 接收完整分享文案，由 `yt-dlp` 适配已支持站点及通用媒体页。每次任务写入独立的 `share_时间_随机码` 目录，避免重名覆盖。
-- **ffmpeg（可选但推荐）**：装好并加入 `PATH` 后，可合并 B 站/YouTube 等站点分离的最高画质视频流与音频流；未安装时自动选择平台提供的音视频合一格式。
-
-只清洗并查看链接（不访问网络）：
+<details>
+<summary>手动安装</summary>
 
 ```bash
-python -m app.engine.share_downloader --links-only "复制文案 https%3A%2F%2Fv.douyin.com%2Fxxxx%2F"
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# macOS / Linux
+source .venv/bin/activate
+
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+
+# 复制 config.example.yaml 为 config.yaml 后启动
+python selftest.py
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-命令行下载：
+使用小红书发布功能时，还需安装 Node.js 依赖：
+
+```bash
+npm install
+```
+
+</details>
+
+## 界面预览
+
+### 总览
+
+![总览面板](assets/screenshots/overview-douyin.png)
+
+### 账号与代理
+
+![账号登录与代理池](assets/screenshots/accounts-proxy.png)
+
+### 作品监控
+
+![作品监控与下载](assets/screenshots/monitor-posts.png)
+
+### 评论监控
+
+![评论监控](assets/screenshots/monitor-comments.png)
+
+## 基本使用
+
+### 1. 添加账号
+
+1. 在顶部选择平台。
+2. 打开左侧「账号」。
+3. 选择扫码、创作者登录或 Cookie 登录。
+4. 登录完成后，可在账号列表中刷新资料、检测状态或重新登录。
+
+小红书扫码会依次获取读取态和创作态；需要发布时，请在跳转到创作平台后完成登录再关闭窗口。添加笔记或创作者监控时，建议使用包含 `xsec_token` 的完整链接。
+
+### 2. 监控与下载
+
+- **作品监控**：添加创作者主页、作品链接、短链或平台 ID，发现新作品后自动入库。
+- **评论监控**：可订阅单条作品，也可监控账号近期作品的评论。
+- **链接下载**：粘贴完整分享文案或链接，自动提取地址并下载。
+- **历史内容**：新增目标默认只监控订阅后的作品，也可选择回填最近若干条。
+
+下载支持断点续传和失败重试；抖音可选画质，小红书支持图集和视频。
+
+### 3. 发布与转发
+
+- 小红书支持图集、视频和定时发布。
+- 抖音、快手和视频号通过对应创作平台发布。
+- 已下载作品可在抖音与小红书之间转发，并在发布前修改标题、正文和话题。
+
+### 4. 本账号与通知
+
+- 「本账号」中可同步自己的作品、关注、粉丝和私信，具体能力因平台而异。
+- 可启用作品健康监控，对零播放、违规或下架状态发送提醒。
+- 通知渠道支持 Bark、钉钉和 Telegram。
+
+> 自动评论、回复、私信及关注操作受平台风控影响，建议低频使用。
+
+## 配置
+
+首次启动会从 `config.example.yaml` 生成 `config.yaml`。大部分常用选项也可以在 Web 面板的「设置」中修改。
+
+```yaml
+engine:
+  scan_interval_seconds: 300         # 默认轮询间隔
+  monitor_initial_backfill_count: 0  # 0=只监控新作品，-1=尽可能回填
+  worker_pool_size: 2                # 下载并发数
+  scan_concurrency: 2                # 抓取并发数
+  account_check_interval_seconds: 1800
+  media_dir: ./data/media
+  work_health_enabled: false
+
+storage:
+  db_path: ./data/creatorhub.db
+
+proxies: []
+  # - http://user:pass@host:port
+  # - socks5://user:pass@host:port
+```
+
+完整配置及说明见 [`config.example.yaml`](config.example.yaml)。
+
+- `config.yaml`、数据库、登录态和媒体文件默认不会提交到 Git。
+- 每个账号使用独立浏览器配置目录；如使用代理，建议为账号绑定稳定的独立代理。
+- 数据库字段会在启动时自动迁移，升级后通常无需删除旧数据库。
+
+## 分享链接命令行下载
+
+只解析链接，不访问网络：
+
+```bash
+python -m app.engine.share_downloader --links-only "完整分享文案或链接"
+```
+
+下载内容：
 
 ```bash
 python -m app.engine.share_downloader "完整分享文案或链接" -o ./data/media/share -q 1080
 ```
 
-### 评论监控
-- **盯单条作品**：粘贴作品链接 / 短链 / 数字 id，周期抓该作品评论区。
-- **盯账号近期作品**：粘贴主页，抓该账号最近 N 条作品（N/天数受 config 限制）的评论。
-- **公开模式**：打开作品详情页，滚动评论容器翻页、拦截评论接口、去重入库。抖音评论按热度排（非时间序），只能稳定抓到前若干页里的新评论。
-- **创作中心模式（抖音，实验性）**：监控自己的号时，从创作中心评论管理页抓——按时间、含刚发的、更全。需先「创作者登录」。
-- 用「时间水位线」判新：深翻翻出的旧评论只入库不推送。
+在 Web 面板中也可以直接使用「链接下载」。
 
-### 账号
-- **真实资料**：头像、昵称、平台号、uid、作品数、粉丝数。
-- **登录态失效检测**：后台每 `account_check_interval_seconds` 体检；失效标红 + 「重新登录」（更新原账号登录态，不新建）。
+## 常见问题
 
-### 批量删除
-- 作品 / 评论表支持勾选 + 全选 + 批量删除；作品删除连带清理本地文件。
-
----
-
-## 配置
-
-复制 `config.example.yaml` 为 `config.yaml` 后按需改。关键项：
-
-```yaml
-engine:
-  scan_interval_seconds: 300      # 目标默认轮询间隔(每目标可单独设)
-  worker_pool_size: 2             # 下载并发(跨作品)
-  monitor_initial_backfill_count: 0  # 首次回填数;0=只下载订阅后的作品,-1=尽可能全量
-  scan_concurrency: 2             # 同时抓取的目标数(并发浏览器上下文)
-  comment_recent_works: 5         # 监控评论只看最近 N 条作品
-  comment_recent_days: 7          # 且仅限最近多少天内发布
-  comment_max_scrolls: 6          # 评论区翻页深度
-  account_check_interval_seconds: 1800   # 账号登录态体检间隔(0=关闭)
-  media_dir: ./data/media         # 默认下载目录
-
-  # ── 多账号风控隔离 ──
-  profiles_dir: ./data/profiles   # 每账号独立持久化浏览器 profile 根目录
-  max_live_contexts: 6            # 同时常驻浏览器 context 上限(LRU 驱逐,控内存)
-  active_accounts: 3              # 同一时刻最多并发活跃账号数(错峰)
-  scan_jitter: 0.15              # 扫描间隔随机抖动比例(±15%),消除整点齐发特征
-  route_download_via_proxy: true  # 媒体下载走账号代理(避免 CDN 拉流暴露真实 IP)
-
-storage:
-  db_path: ./data/creatorhub.db
-
-# 代理池:建号时一号一代理 sticky 分配。务必用住宅/4G 长效代理,
-# IP 地区与账号时区/locale 一致;切勿机房 IP、切勿多号共享一个 IP。留空则走宿主真实 IP。
-proxies: []
-  # - http://user:pass@gateway.example.com:8000
-  # - socks5://user:pass@1.2.3.4:1080
-```
-
-> 数据库结构变化走**自动迁移**（SQLite ADD COLUMN），老库不用删，重启即可。
-> `config.yaml`、`data/`（登录态/媒体/数据库）已在 `.gitignore` 中，不会进版本库。
-
----
-
-## 目录结构
-
-```
-creatorhub/
-├─ app/
-│  ├─ platforms/        各平台插件(新增平台在此加子包)
-│  │  ├─ douyin/        sec_uid 解析 + JSON 解析;signing/=签名原语(参考)
-│  │  ├─ xhs/           小红书:解析 / 客户端 / 发布 / 签名 JS
-│  │  ├─ kuaishou/      快手:解析 / 发布
-│  │  └─ channels/      视频号:解析 / 发布(本账号;助手接口需校准)
-│  ├─ browser/          Playwright:manager / login / fetcher / account_hub
-│  ├─ engine/           监控引擎 + 下载器 + share_downloader 通用分享链接下载
-│  ├─ notifier/         Bark / 钉钉 / Telegram
-│  ├─ web/              前端单页(标签页 / toast / 批量选择)
-│  └─ main.py config.py models.py db.py settings.py profiles.py
-├─ selftest.py  config.example.yaml  requirements.txt
-```
-
----
-
-## 排错
-
-| 现象 | 原因 / 处理 |
+| 问题 | 处理方式 |
 |---|---|
-| `playwright` 启动失败 / 找不到浏览器 | `playwright install chromium` |
-| 点扫码没弹窗 | 需在有桌面的机器跑;无头服务器改用 Cookie 粘贴(抖音) |
-| Windows 下 Playwright 子进程报错 | 用 `uvicorn app.main:app`(单 worker),别加 `--workers` |
-| 抓取报"未拦截到作品数据" | 该账号登录态失效→重登;或目标无公开作品;或被风控→降低频率 |
-| 账号显示「登录失效」 | 点「重新登录」更新登录态 |
-| 评论只有十几条 / 抓不动 | 公开模式靠滚动翻页;若选择器失效改 `app/browser/fetcher.py: _SCROLL_COMMENTS` |
-| 关注/粉丝/私信同步抓不到 | 需接口标定,见上方 ⚠️,把控制台 `[follow]`/`[dm]` 日志反馈到 issue |
+| Playwright 启动失败或找不到浏览器 | 运行 `python -m playwright install chromium` |
+| 扫码登录没有弹窗 | 确认当前机器有桌面环境；抖音也可使用 Cookie 登录 |
+| Windows 下出现 Playwright 子进程错误 | 使用单 worker 启动，不要添加 `--workers` |
+| 抓取不到作品或评论 | 检查登录态、目标链接和网络状态，必要时重新登录并降低频率 |
+| 小红书链接解析失败 | 重新复制包含有效 `xsec_token` 的完整链接 |
+| 下载的视频没有声音或画质受限 | 安装 ffmpeg 并加入系统 `PATH` |
 
----
-## 友链
+仍有问题可提交 [Issue](https://github.com/3441293738/creatorhub/issues)，并附上平台、操作步骤和服务端错误日志。
 
-  感谢 [LINUXDO](https://linux.do/) 社区提供的帮助与支持。
+## 数据目录
 
-## 合规声明
+```text
+data/
+├─ creatorhub.db   # SQLite 数据库
+├─ media/          # 下载内容
+└─ profiles/       # 账号浏览器配置与登录态
+```
 
-本项目仅供**技术学习与个人内容备份**，不提供任何账号、Cookie、代理或数据。
+备份项目前，建议一并备份 `config.yaml` 和 `data/`。
 
-使用者须自行遵守目标平台的用户协议、`robots` 规则及所在地法律法规，尊重原作者的版权与隐私，
-**不得高频请求、批量爬取或商业分发**。自动评论/私信等写操作有账号风控风险，请谨慎、低频使用。
-一切使用风险与法律责任由使用者自负，作者不对任何滥用行为负责。
+## 使用说明
+
+本项目用于技术学习和个人内容管理，不提供账号、Cookie、代理或平台数据。使用时请遵守目标平台规则及所在地法律法规，并尊重内容版权和个人隐私。
+
+感谢 [LINUX DO](https://linux.do/) 社区提供的帮助与支持。
