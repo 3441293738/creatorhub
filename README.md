@@ -216,6 +216,22 @@ data/
 
 备份项目前，建议一并备份 `config.yaml` 和 `data/`。
 
+## 赞助商
+
+<p align="center">
+  <a href="https://www.ipwo.net/?code=PPBFE3E2F">
+    <img src="assets/sponsors/ipwo-banner.svg" alt="IPWO 爬虫住宅代理" width="100%">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://www.ipwo.net/?code=PPBFE3E2F">IPWO</a>
+  提供稳定的住宅代理网络，适用于公开数据采集、接口调试、自动化测试与多地区访问验证等合规场景。
+  支持 HTTP / HTTPS / SOCKS5，优惠码：<code>0201</code>。
+  <br>
+  请在合法授权并遵守目标站点条款的前提下使用。
+</p>
+
 ## 友链
 
 - [LINUX DO](https://linux.do/) — 感谢社区提供的帮助与支持。

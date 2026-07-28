@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2048" height="243" viewBox="0 0 2048 243" role="img" aria-labelledby="title desc">
+  <title id="title">IPWO 爬虫住宅代理</title>
+  <desc id="desc">稳定连接、全球节点、多协议支持</desc>
+
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d8f8ff"/>
+      <stop offset="0.42" stop-color="#edf6ff"/>
+      <stop offset="0.72" stop-color="#eee4ff"/>
+      <stop offset="1" stop-color="#ffd7f4"/>
+    </linearGradient>
+    <radialGradient id="glow-left" cx="0" cy="0" r="1" gradientTransform="translate(250 0) rotate(45) scale(620 300)">
+      <stop stop-color="#b7efff" stop-opacity=".72"/>
+      <stop offset="1" stop-color="#b7efff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow-right" cx="0" cy="0" r="1" gradientTransform="translate(1840 20) rotate(135) scale(550 270)">
+      <stop stop-color="#f2b6ff" stop-opacity=".62"/>
+      <stop offset="1" stop-color="#f2b6ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="pill" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#cd64ee"/>
+      <stop offset=".52" stop-color="#9776f5"/>
+      <stop offset="1" stop-color="#5f91f4"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#186fd1"/>
+      <stop offset="1" stop-color="#1c52b5"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-40%" width="140%" height="200%">
+      <feDropShadow dx="0" dy="7" stdDeviation="7" flood-color="#5d67d9" flood-opacity=".3"/>
+    </filter>
+  </defs>
+
+  <rect width="2048" height="243" fill="url(#background)"/>
+  <rect width="2048" height="243" fill="url(#glow-left)"/>
+  <rect width="2048" height="243" fill="url(#glow-right)"/>
+
+  <g transform="translate(305 31)">
+    <rect width="365" height="89" rx="22" fill="#fff" fill-opacity=".76" stroke="#fff" stroke-opacity=".9" stroke-width="2"/>
+    <g transform="translate(34 22)" fill="url(#brand)">
+      <path d="M0 1h39l24 35c6 9 19 9 25 0l9-13h25L98 58c-17 24-52 24-69 0L0 16Z"/>
+      <path d="M56 1h39l20 29-22 32L56 10Z" opacity=".96"/>
+      <circle cx="126" cy="13" r="13"/>
+    </g>
+    <text x="177" y="63" fill="#30333a" font-family="Arial, Helvetica, sans-serif" font-size="50" font-weight="800" letter-spacing="-2">IPWO</text>
+  </g>
+
+  <text x="700" y="103" fill="#050608" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="78" font-weight="900" letter-spacing="1">IPWO爬虫住宅代理</text>
+
+  <g filter="url(#shadow)" font-family="'Microsoft YaHei', 'Noto Sans SC', sans-serif" font-size="36" font-weight="700" fill="#fff" text-anchor="middle">
+    <rect x="305" y="143" width="505" height="69" rx="35" fill="url(#pill)"/>
+    <text x="558" y="189">稳定连接，减少请求失败</text>
+
+    <rect x="850" y="143" width="520" height="69" rx="35" fill="url(#pill)"/>
+    <text x="1110" y="189">全球节点，多地区访问测试</text>
+
+    <rect x="1410" y="143" width="510" height="69" rx="35" fill="url(#pill)"/>
+    <text x="1665" y="189">多协议支持，适配开发场景</text>
+  </g>
+</svg>
