@@ -21,7 +21,7 @@ import uuid as _uuid
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import select
 
 from .browser import (BrowserManager, cookie_string_to_state,
@@ -2246,6 +2246,54 @@ async def delete_share_download_history(record_id: int):
 
 
 # ─────────── 监控目标 ───────────
+def _meta_text(value: str | None, max_len: int) -> str:
+    """清理用于界面管理的分组名/别名。"""
+    return " ".join((value or "").strip().split())[:max_len]
+
+
+def _meta_tags(value: list[str] | None) -> list[str] | None:
+    """清理、去重标签；None 表示更新时不修改。"""
+    if value is None:
+        return None
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        tag = " ".join(str(raw or "").strip().split())[:24]
+        key = tag.casefold()
+        if not tag or key in seen:
+            continue
+        seen.add(key)
+        result.append(tag)
+        if len(result) >= 12:
+            break
+    return result
+
+
+def _load_meta_tags(raw: str | None) -> list[str]:
+    """兼容 JSON 与早期手工逗号分隔格式。"""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return _meta_tags([str(item) for item in data]) or []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return _meta_tags(str(raw).replace("，", ",").split(",")) or []
+
+
+def _dump_meta_tags(tags: list[str] | None) -> str:
+    return json.dumps(tags or [], ensure_ascii=False, separators=(",", ":"))
+
+
+def _meta_matches(item: MonitorTarget | CommentWatch, group_name: str, tag: str) -> bool:
+    if group_name and item.group_name != group_name:
+        return False
+    if tag and tag not in _load_meta_tags(item.tags):
+        return False
+    return True
+
+
 class TargetIn(BaseModel):
     url_or_secuid: str                       # 抖音/小红书主页链接 或 小红书关键词
     platform: str = "douyin"                # douyin | xhs
@@ -2255,6 +2303,9 @@ class TargetIn(BaseModel):
     initial_backfill_count: int | None = None
     download_dir: str = ""
     video_quality: str = ""
+    alias: str = ""
+    group_name: str = ""
+    tags: list[str] = PydanticField(default_factory=list)
 
 
 class TargetUpdate(BaseModel):
@@ -2263,6 +2314,9 @@ class TargetUpdate(BaseModel):
     video_quality: str | None = None
     account_id: int | None = None
     relay_to_xhs_account_id: int | None = None   # -1 清除;>0 设为该小红书账号
+    alias: str | None = None
+    group_name: str | None = None
+    tags: list[str] | None = None
 
 
 @app.post("/api/monitors")
@@ -2328,6 +2382,9 @@ async def add_monitor(body: TargetIn):
         t = MonitorTarget(platform=platform, target_kind=kind, keyword=keyword,
                           sec_uid=sec_uid, xsec_token=xsec_token,
                           nickname=("#" + keyword) if kind == "keyword" else "",
+                          alias=_meta_text(body.alias, 60),
+                          group_name=_meta_text(body.group_name, 40),
+                          tags=_dump_meta_tags(_meta_tags(body.tags)),
                           account_id=body.account_id,
                           interval_seconds=body.interval_seconds, download_dir=dl,
                           initial_backfill_count=backfill_count, video_quality=q)
@@ -2371,6 +2428,12 @@ async def update_monitor(tid: int, body: TargetUpdate):
                 t.relay_to_xhs_account_id = body.relay_to_xhs_account_id
             else:
                 t.relay_to_xhs_account_id = None
+        if body.alias is not None:
+            t.alias = _meta_text(body.alias, 60)
+        if body.group_name is not None:
+            t.group_name = _meta_text(body.group_name, 40)
+        if body.tags is not None:
+            t.tags = _dump_meta_tags(_meta_tags(body.tags))
         s.add(t); s.commit(); s.refresh(t)
         return _target_dict(t)
 
@@ -2429,13 +2492,25 @@ async def target_contents(tid: int):
 
 @app.get("/api/contents")
 async def all_contents(limit: int = 100, platform: str | None = None,
-                       target_id: int | None = None):
+                       target_id: int | None = None, group_name: str = "",
+                       tag: str = ""):
     with get_session() as s:
         q = select(ContentRecord)
         if platform:
             q = q.where(ContentRecord.platform == platform)
         if target_id is not None:
             q = q.where(ContentRecord.target_id == target_id)
+        group_name, tag = _meta_text(group_name, 40), _meta_text(tag, 24)
+        if group_name or tag:
+            target_query = select(MonitorTarget)
+            if platform:
+                target_query = target_query.where(MonitorTarget.platform == platform)
+            targets = s.exec(target_query).all()
+            eligible_ids = [t.id for t in targets if t.id is not None
+                            and _meta_matches(t, group_name, tag)]
+            if not eligible_ids:
+                return []
+            q = q.where(ContentRecord.target_id.in_(eligible_ids))
         # 按作品发布时间倒序(回填时多条同批入库,用 id 排序会乱;create_time 才是真实时间序)
         rows = s.exec(q.order_by(ContentRecord.create_time.desc(),
                                  ContentRecord.id.desc()).limit(limit)).all()
@@ -2475,6 +2550,8 @@ def _target_dict(t: MonitorTarget) -> dict:
         "id": t.id, "platform": t.platform, "target_kind": t.target_kind,
         "keyword": t.keyword,
         "sec_uid": t.sec_uid, "nickname": t.nickname, "avatar": t.avatar,
+        "alias": t.alias, "group_name": t.group_name,
+        "tags": _load_meta_tags(t.tags),
         "enabled": t.enabled, "interval_seconds": t.interval_seconds,
         "initial_backfill_count": t.initial_backfill_count,
         "download_dir": t.download_dir, "video_quality": t.video_quality,
@@ -2679,12 +2756,18 @@ class WatchIn(BaseModel):
     mode: str = "public"               # public | creator(仅抖音 user)
     account_id: int | None = None
     interval_seconds: int = 600
+    alias: str = ""
+    group_name: str = ""
+    tags: list[str] = PydanticField(default_factory=list)
 
 
 class WatchUpdate(BaseModel):
     enabled: bool | None = None
     interval_seconds: int | None = None
     mode: str | None = None
+    alias: str | None = None
+    group_name: str | None = None
+    tags: list[str] | None = None
 
 
 def _watch_dict(w: CommentWatch) -> dict:
@@ -2692,6 +2775,8 @@ def _watch_dict(w: CommentWatch) -> dict:
         "id": w.id, "platform": w.platform,
         "kind": w.kind, "aweme_id": w.aweme_id, "sec_uid": w.sec_uid,
         "title": w.title, "avatar": w.avatar, "mode": w.mode,
+        "alias": w.alias, "group_name": w.group_name,
+        "tags": _load_meta_tags(w.tags),
         "account_id": w.account_id, "interval_seconds": w.interval_seconds,
         "enabled": w.enabled, "comment_count": w.comment_count,
         "last_scan_at": w.last_scan_at.isoformat() if w.last_scan_at else None,
@@ -2778,8 +2863,11 @@ async def add_watch(body: WatchIn):
         if dup:
             raise HTTPException(409, "已存在相同的评论监控")
         w = CommentWatch(platform=platform, kind=kind, aweme_id=aweme_id, sec_uid=sec_uid,
-                         xsec_token=xsec_token, mode=mode, account_id=body.account_id,
-                         interval_seconds=body.interval_seconds, title=title)
+                          xsec_token=xsec_token, mode=mode, account_id=body.account_id,
+                          interval_seconds=body.interval_seconds, title=title,
+                          alias=_meta_text(body.alias, 60),
+                          group_name=_meta_text(body.group_name, 40),
+                          tags=_dump_meta_tags(_meta_tags(body.tags)))
         s.add(w); s.commit(); s.refresh(w)
         return _watch_dict(w)
 
@@ -2796,6 +2884,12 @@ async def update_watch(wid: int, body: WatchUpdate):
             w.interval_seconds = body.interval_seconds
         if body.mode is not None and body.mode in ("public", "creator"):
             w.mode = body.mode
+        if body.alias is not None:
+            w.alias = _meta_text(body.alias, 60)
+        if body.group_name is not None:
+            w.group_name = _meta_text(body.group_name, 40)
+        if body.tags is not None:
+            w.tags = _dump_meta_tags(_meta_tags(body.tags))
         s.add(w); s.commit(); s.refresh(w)
         return _watch_dict(w)
 
@@ -2832,7 +2926,8 @@ def _comment_dict(c: CommentRecord) -> dict:
 
 @app.get("/api/comments")
 async def list_comments(limit: int = 100, watch_id: int | None = None,
-                        aweme_id: str | None = None, platform: str | None = None):
+                        aweme_id: str | None = None, platform: str | None = None,
+                        group_name: str = "", tag: str = ""):
     with get_session() as s:
         q = select(CommentRecord)
         if platform is not None:
@@ -2841,6 +2936,17 @@ async def list_comments(limit: int = 100, watch_id: int | None = None,
             q = q.where(CommentRecord.watch_id == watch_id)
         if aweme_id is not None:
             q = q.where(CommentRecord.aweme_id == aweme_id)
+        group_name, tag = _meta_text(group_name, 40), _meta_text(tag, 24)
+        if group_name or tag:
+            watch_query = select(CommentWatch)
+            if platform:
+                watch_query = watch_query.where(CommentWatch.platform == platform)
+            watches = s.exec(watch_query).all()
+            eligible_ids = [w.id for w in watches if w.id is not None
+                            and _meta_matches(w, group_name, tag)]
+            if not eligible_ids:
+                return []
+            q = q.where(CommentRecord.watch_id.in_(eligible_ids))
         rows = s.exec(q.order_by(CommentRecord.id.desc()).limit(limit)).all()
         return [_comment_dict(c) for c in rows]
 

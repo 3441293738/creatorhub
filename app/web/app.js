@@ -82,6 +82,7 @@ const skeleton = (cols, rows = 3) => {
 // ─── 通用模态(替代原生 prompt / confirm:下拉 / 文本输入 / 确认)───
 let _uiResolve = null, _uiGetVal = null, _uiCancelVal = null;
 function _uiClose(val) {
+  if (typeof OPEN_META_COMBO !== "undefined" && OPEN_META_COMBO) OPEN_META_COMBO.close();
   $("uimodal").style.display = "none";
   document.removeEventListener("keydown", _uiKey);
   const r = _uiResolve; _uiResolve = null; _uiGetVal = null;
@@ -372,6 +373,16 @@ function pfIsChannels(pf) { return pf === "shipinhao"; }
 function switchPlatform(pf) {
   if (!["douyin", "xhs", "kuaishou", "shipinhao"].includes(pf)) pf = "douyin";
   PLATFORM = pf;
+  CONTENT_SRC = CONTENT_GROUP = CONTENT_TAG = "";
+  COMMENT_SRC = COMMENT_GROUP = COMMENT_TAG = "";
+  if (OPEN_META_COMBO) OPEN_META_COMBO.close();
+  ["t-group", "t-tags", "w-group", "w-tags"].forEach(id => setMetaValue(id, ""));
+  ["mon-search", "watch-search"].forEach(id => { if ($(id)) $(id).value = ""; });
+  ["mon-group", "mon-tag", "content-group", "content-tag", "content-src",
+   "watch-group", "watch-tag", "comment-group", "comment-tag", "comment-src"].forEach(id => {
+    const select = $(id);
+    if (select) { select.value = ""; if (select._csSync) select._csSync(); }
+  });
   try { localStorage.setItem("dym-pf", pf); } catch (e) {}
   applyPlatformUI();
   // 切换后立刻刷新该平台数据
@@ -393,6 +404,9 @@ function applyPlatformUI() {
   document.querySelectorAll(".ks-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "kuaishou"));
   document.querySelectorAll(".sh-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "shipinhao"));
   document.querySelectorAll(".notsh-only").forEach(e => e.classList.toggle("hidden", pfIsChannels(PLATFORM)));
+  document.querySelectorAll(".meta-scope").forEach(e => {
+    e.textContent = (PF_NAME[PLATFORM] || "当前平台") + "内独立";
+  });
   // 发布面板入口:抖音 / 小红书 / 快手均显示
   document.querySelectorAll(".pub-only").forEach(e => e.classList.toggle("hidden", !pfHasPublish(PLATFORM)));
   // 发布面板文案随平台切换
@@ -660,18 +674,292 @@ async function saveCookie() {
 
 // ─── 账号 ───
 let ACCOUNTS = [];
-let MONITORS = [], WATCHES = [], CONTENT_SRC = "", COMMENT_SRC = "", CONTENTS = [];
-function monitorName(t) { return t.target_kind === "keyword" ? "#" + t.keyword : (t.nickname || (t.sec_uid || "").slice(0, 12)); }
-function watchName(w) { return w.title || w.aweme_id || (w.sec_uid || "").slice(0, 12); }
+let MONITORS = [], WATCHES = [], CONTENTS = [];
+let CONTENT_SRC = "", CONTENT_GROUP = "", CONTENT_TAG = "";
+let COMMENT_SRC = "", COMMENT_GROUP = "", COMMENT_TAG = "";
+function parseTags(raw) {
+  const seen = new Set();
+  return String(raw || "").split(/[,，、;；\s]+/).map(x => x.trim()).filter(x => {
+    const key = x.toLocaleLowerCase();
+    if (!x || seen.has(key)) return false;
+    seen.add(key); return true;
+  }).slice(0, 12);
+}
+function itemTags(item) { return Array.isArray(item && item.tags) ? item.tags : []; }
+let OPEN_META_COMBO = null;
+function metaCatalog(kind) {
+  // 两类监控共享当前平台的分类词库；切换平台后不会带入其他平台的数据。
+  const items = [...MONITORS, ...WATCHES].filter(item => item.platform === PLATFORM);
+  const values = kind === "group"
+    ? items.map(item => item.group_name)
+    : items.flatMap(itemTags);
+  return [...new Set(values.filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, "zh-CN"));
+}
+function getMetaValue(id) {
+  const input = typeof id === "string" ? $(id) : id;
+  if (!input) return "";
+  if (input._metaControl) return input._metaControl.value();
+  return input.value || "";
+}
+function setMetaValue(id, value) {
+  const input = typeof id === "string" ? $(id) : id;
+  if (!input) return;
+  if (input._metaControl) input._metaControl.set(value);
+  else input.value = value || "";
+}
+function enhanceMetaControl(input, kind) {
+  if (!input || input._metaControl) return;
+  kind = kind || input.dataset.metaCombo || "group";
+  const initial = input.value || "";
+  const wrap = document.createElement("div");
+  wrap.className = "meta-combo";
+  input.parentNode.insertBefore(wrap, input);
+  wrap.appendChild(input);
+  input.type = "hidden";
+
+  const box = document.createElement("div");
+  box.className = "meta-combo-box";
+  const query = document.createElement("input");
+  query.type = "text";
+  query.className = "meta-combo-query";
+  query.autocomplete = "off";
+  query.maxLength = kind === "group" ? 40 : 24;
+  query.placeholder = input.getAttribute("placeholder") || (kind === "group" ? "选择或输入新分组" : "选择或输入新标签");
+  query.setAttribute("aria-label", kind === "group" ? "选择或新建分组" : "选择或新建标签");
+  const arrow = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  arrow.setAttribute("class", "meta-combo-arr");
+  arrow.setAttribute("viewBox", "0 0 24 24");
+  arrow.setAttribute("fill", "none");
+  arrow.setAttribute("stroke", "currentColor");
+  arrow.setAttribute("stroke-width", "2");
+  arrow.innerHTML = '<path d="m6 9 6 6 6-6"/>';
+  const panel = document.createElement("div");
+  panel.className = "meta-combo-panel";
+  panel.hidden = true;
+  panel.setAttribute("role", "listbox");
+  if (kind === "tags") panel.setAttribute("aria-multiselectable", "true");
+  box.appendChild(query);
+  wrap.appendChild(box);
+  wrap.appendChild(arrow);
+  wrap.appendChild(panel);
+
+  let selected = kind === "tags" ? parseTags(initial) : String(initial || "").trim();
+  function syncHidden() {
+    input.value = kind === "tags" ? selected.join(",") : selected;
+  }
+  function renderTokens() {
+    box.querySelectorAll(".meta-token").forEach(node => node.remove());
+    if (kind !== "tags") return;
+    selected.forEach(tag => {
+      const chip = document.createElement("span");
+      chip.className = "meta-token";
+      const label = document.createElement("span");
+      label.textContent = tag;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", "移除标签 " + tag);
+      remove.addEventListener("click", event => {
+        event.stopPropagation();
+        selected = selected.filter(value => value !== tag);
+        syncHidden(); renderTokens(); renderPanel();
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      chip.append(label, remove);
+      box.insertBefore(chip, query);
+    });
+  }
+  function choose(value, create = false) {
+    value = String(value || "").trim().slice(0, kind === "group" ? 40 : 24);
+    if (kind === "group") {
+      selected = value;
+      query.value = value;
+      syncHidden();
+      close();
+    } else if (value) {
+      selected = selected.includes(value)
+        ? selected.filter(item => item !== value)
+        : [...selected, value].slice(0, 12);
+      query.value = "";
+      syncHidden(); renderTokens(); renderPanel();
+      query.focus();
+    }
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  function addOption(value, label, { isSelected = false, create = false, clear = false } = {}) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "meta-combo-opt" + (isSelected ? " selected" : "") + (create ? " create" : "");
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", isSelected ? "true" : "false");
+    const mark = document.createElement("span");
+    mark.className = "mark";
+    mark.textContent = clear ? "×" : create ? "+" : isSelected ? "✓" : "";
+    const text = document.createElement("span");
+    text.textContent = label;
+    option.append(mark, text);
+    option.addEventListener("mousedown", event => event.preventDefault());
+    option.addEventListener("click", () => choose(value, create));
+    panel.appendChild(option);
+  }
+  function renderPanel() {
+    panel.innerHTML = "";
+    const rawQuery = query.value.trim();
+    const needle = (kind === "group" && rawQuery === selected)
+      ? "" : rawQuery.toLocaleLowerCase();
+    let values = metaCatalog(kind);
+    if (kind === "tags") values = [...new Set([...selected, ...values])];
+    values = values.filter(value => !needle || value.toLocaleLowerCase().includes(needle));
+    if (kind === "group" && !needle && selected) {
+      addOption("", "不设置分组", { clear: true });
+    }
+    values.forEach(value => addOption(value, value, {
+      isSelected: kind === "group" ? selected === value : selected.includes(value),
+    }));
+    const raw = rawQuery;
+    const exact = metaCatalog(kind).some(value => value.toLocaleLowerCase() === raw.toLocaleLowerCase());
+    if (raw && !exact && (kind === "group" ? raw !== selected : !selected.includes(raw))) {
+      addOption(raw, `新建${kind === "group" ? "分组" : "标签"}“${raw}”`, { create: true });
+    }
+    if (!panel.children.length) {
+      const empty = document.createElement("div");
+      empty.className = "meta-combo-empty";
+      empty.textContent = `暂无可选${kind === "group" ? "分组" : "标签"}，输入名称即可新建`;
+      panel.appendChild(empty);
+    }
+  }
+  function open() {
+    if (OPEN_META_COMBO && OPEN_META_COMBO !== control) OPEN_META_COMBO.close();
+    OPEN_META_COMBO = control;
+    renderPanel();
+    panel.hidden = false;
+    wrap.classList.add("open");
+  }
+  function close() {
+    panel.hidden = true;
+    wrap.classList.remove("open");
+    if (OPEN_META_COMBO === control) OPEN_META_COMBO = null;
+  }
+  function commit() {
+    const raw = query.value.trim();
+    if (kind === "tags" && raw) {
+      const tag = raw.slice(0, 24);
+      if (!selected.includes(tag) && selected.length < 12) selected.push(tag);
+      query.value = "";
+      syncHidden(); renderTokens();
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    else if (kind === "group") {
+      selected = raw.slice(0, 40);
+      syncHidden();
+    }
+  }
+  const control = {
+    close,
+    value() { commit(); return input.value || ""; },
+    set(value) {
+      selected = kind === "tags" ? parseTags(value) : String(value || "").trim().slice(0, 40);
+      query.value = kind === "group" ? selected : "";
+      syncHidden(); renderTokens();
+      if (!panel.hidden) renderPanel();
+    },
+  };
+  input._metaControl = control;
+  query.addEventListener("focus", open);
+  query.addEventListener("input", () => {
+    if (kind === "group") {
+      selected = query.value.trim().slice(0, 40);
+      syncHidden();
+    } else if (/[,，、;；]$/.test(query.value)) {
+      parseTags(query.value).forEach(tag => {
+        if (!selected.includes(tag) && selected.length < 12) selected.push(tag);
+      });
+      query.value = ""; syncHidden(); renderTokens();
+    }
+    open();
+  });
+  query.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      event.preventDefault(); event.stopPropagation();
+      const raw = query.value.trim();
+      if (raw) choose(raw, true);
+      else if (kind === "group") close();
+    } else if (event.key === "Backspace" && kind === "tags" && !query.value && selected.length) {
+      selected.pop(); syncHidden(); renderTokens(); renderPanel();
+    } else if (event.key === "Escape") {
+      close();
+    }
+  });
+  box.addEventListener("mousedown", event => {
+    if (event.target !== query && !event.target.closest(".meta-token button")) {
+      event.preventDefault(); query.focus(); open();
+    }
+  });
+  if (input.id) {
+    const label = document.querySelector(`label[for="${input.id}"]`);
+    if (label) label.addEventListener("click", event => {
+      event.preventDefault(); query.focus(); open();
+    });
+  }
+  control.set(initial);
+}
+function enhanceAllMetaControls(root) {
+  (root || document).querySelectorAll("input[data-meta-combo]").forEach(input =>
+    enhanceMetaControl(input, input.dataset.metaCombo));
+}
+document.addEventListener("mousedown", event => {
+  if (OPEN_META_COMBO && !event.target.closest(".meta-combo")) OPEN_META_COMBO.close();
+}, true);
+function monitorBaseName(t) { return t.target_kind === "keyword" ? "#" + t.keyword : (t.nickname || (t.sec_uid || "").slice(0, 12)); }
+function watchBaseName(w) { return w.title || w.aweme_id || (w.sec_uid || "").slice(0, 12); }
+function monitorName(t) { const base = monitorBaseName(t); return t.alias ? `${t.alias} · ${base}` : base; }
+function watchName(w) { const base = watchBaseName(w); return w.alias ? `${w.alias} · ${base}` : base; }
 function monitorById(id) { return MONITORS.find(t => t.id === id); }
 function watchById(id) { return WATCHES.find(w => w.id === id); }
 function srcChip(name) { return `<span class="src-chip" title="来源监控:${esc(name)}">${ic("i-target")}${esc(name)}</span>`; }
+function metaChips(item, limit = 2) {
+  const tags = itemTags(item), shown = tags.slice(0, limit), rest = tags.length - shown.length;
+  const parts = [];
+  if (item && item.group_name) parts.push(`<span class="meta-chip group" title="分组:${esc(item.group_name)}">${esc(item.group_name)}</span>`);
+  shown.forEach(tag => parts.push(`<span class="meta-chip tag" title="标签:${esc(tag)}">#${esc(tag)}</span>`));
+  if (rest > 0) parts.push(`<span class="meta-chip more" title="${esc(tags.slice(limit).join("、"))}">+${rest}</span>`);
+  return parts.length ? `<div class="meta-stack">${parts.join("")}</div>` : `<span class="meta-empty">未分组</span>`;
+}
+function sourceMeta(item) {
+  if (!item) return "";
+  const meta = (item.group_name || itemTags(item).length) ? metaChips(item, 1) : "";
+  return `<div style="margin-top:4px">${srcChip(item.alias || (item.target_kind !== undefined ? monitorBaseName(item) : watchBaseName(item)))}</div>${meta ? `<div style="margin-top:4px">${meta}</div>` : ""}`;
+}
+function setFacetOptions(id, emptyLabel, values) {
+  const sel = $(id); if (!sel) return "";
+  const old = sel.value;
+  const unique = [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
+  sel.innerHTML = `<option value="">${emptyLabel}</option>` +
+    unique.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  sel.value = unique.includes(old) ? old : "";
+  if (sel._csSync) sel._csSync();
+  return sel.value;
+}
+function populateMonitorFacets() {
+  setFacetOptions("mon-group", "全部分组", MONITORS.map(x => x.group_name));
+  setFacetOptions("mon-tag", "全部标签", MONITORS.flatMap(itemTags));
+  CONTENT_GROUP = setFacetOptions("content-group", "全部分组", MONITORS.map(x => x.group_name));
+  CONTENT_TAG = setFacetOptions("content-tag", "全部标签", MONITORS.flatMap(itemTags));
+}
+function populateWatchFacets() {
+  setFacetOptions("watch-group", "全部分组", WATCHES.map(x => x.group_name));
+  setFacetOptions("watch-tag", "全部标签", WATCHES.flatMap(itemTags));
+  COMMENT_GROUP = setFacetOptions("comment-group", "全部分组", WATCHES.map(x => x.group_name));
+  COMMENT_TAG = setFacetOptions("comment-tag", "全部标签", WATCHES.flatMap(itemTags));
+}
 function populateContentSrc() {
   const sel = $("content-src"); if (!sel) return;
   sel.innerHTML = `<option value="">全部来源</option>` +
     MONITORS.map(t => `<option value="${t.id}">${esc(monitorName(t))}</option>`).join("");
   if (!MONITORS.some(t => String(t.id) === CONTENT_SRC)) CONTENT_SRC = "";
   sel.value = CONTENT_SRC;
+  if (sel._csSync) sel._csSync();
 }
 function populateCommentSrc() {
   const sel = $("comment-src"); if (!sel) return;
@@ -679,9 +967,23 @@ function populateCommentSrc() {
     WATCHES.map(w => `<option value="${w.id}">${esc(watchName(w))}</option>`).join("");
   if (!WATCHES.some(w => String(w.id) === COMMENT_SRC)) COMMENT_SRC = "";
   sel.value = COMMENT_SRC;
+  if (sel._csSync) sel._csSync();
 }
 function onContentSrc() { CONTENT_SRC = $("content-src").value; selContent.clear(); refreshContents(); }
 function onCommentSrc() { COMMENT_SRC = $("comment-src").value; selComment.clear(); refreshComments(); }
+function onContentMetaFilter() {
+  CONTENT_GROUP = $("content-group").value; CONTENT_TAG = $("content-tag").value;
+  selContent.clear(); refreshContents();
+}
+function onCommentMetaFilter() {
+  COMMENT_GROUP = $("comment-group").value; COMMENT_TAG = $("comment-tag").value;
+  selComment.clear(); refreshComments();
+}
+function matchesMeta(item, groupName, tag) {
+  return (!groupName || item.group_name === groupName) && (!tag || itemTags(item).includes(tag));
+}
+function onMonitorFilter() { renderMonitorRows(); }
+function onWatchFilter() { renderWatchRows(); }
 async function refreshAccounts() {
   const accs = await api("/api/accounts?platform=" + PLATFORM);
   ACCOUNTS = accs;
@@ -1573,6 +1875,30 @@ async function parseShareLinks(button = null) {
   });
 }
 
+// 监控管理信息编辑。返回 {alias,group_name,tags} 或 null。
+function uiMetaPrompt({ title, item }) {
+  return new Promise(res => {
+    _uiResolve = res; _uiCancelVal = null;
+    _uiGetVal = () => ({
+      alias: ($("ui-meta-alias").value || "").trim(),
+      group_name: getMetaValue("ui-meta-group").trim(),
+      tags: parseTags(getMetaValue("ui-meta-tags")),
+    });
+    $("ui-body").innerHTML = `
+      <div><label class="field" for="ui-meta-alias">管理别名</label>
+        <input id="ui-meta-alias" maxlength="60" value="${esc(item.alias || "")}" placeholder="便于快速识别"></div>
+      <div><label class="field" for="ui-meta-group">分组名<span class="field-scope">${esc(PF_NAME[PLATFORM])}内独立</span></label>
+        <input id="ui-meta-group" maxlength="40" autocomplete="off" data-meta-combo="group" placeholder="选择或输入新分组"></div>
+      <div><label class="field" for="ui-meta-tags">标签<span class="field-scope">${esc(PF_NAME[PLATFORM])}内独立</span></label>
+        <input id="ui-meta-tags" autocomplete="off" data-meta-combo="tags" placeholder="选择或输入新标签"></div>`;
+    enhanceMetaControl($("ui-meta-group"), "group");
+    enhanceMetaControl($("ui-meta-tags"), "tags");
+    setMetaValue("ui-meta-group", item.group_name || "");
+    setMetaValue("ui-meta-tags", (item.tags || []).join(","));
+    _uiOpen(title, "分组用于归属，标签可多选；输入新名称后按回车即可新增。");
+  });
+}
+
 function shareRequestBody(download) {
   const text = $("sd-text").value.trim();
   const maxSize = Number($("sd-max-size").value || 0);
@@ -1806,9 +2132,20 @@ async function addMonitor() {
     try {
       await api("/api/monitors", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url_or_secuid, platform: PLATFORM, target_kind, account_id: $("t-acc").value ? +$("t-acc").value : null, interval_seconds: +$("t-interval").value, initial_backfill_count: PLATFORM === "douyin" ? +$("t-backfill").value : 0, download_dir: $("t-dir").value.trim(), video_quality: PLATFORM === "xhs" ? "" : $("t-quality").value }),
+        body: JSON.stringify({
+          url_or_secuid, platform: PLATFORM, target_kind,
+          account_id: $("t-acc").value ? +$("t-acc").value : null,
+          interval_seconds: +$("t-interval").value,
+          initial_backfill_count: PLATFORM === "douyin" ? +$("t-backfill").value : 0,
+          download_dir: $("t-dir").value.trim(),
+          video_quality: PLATFORM === "xhs" ? "" : $("t-quality").value,
+          alias: $("t-alias").value.trim(), group_name: getMetaValue("t-group").trim(),
+          tags: parseTags(getMetaValue("t-tags")),
+        }),
       });
-      $("t-url").value = ""; $("t-dir").value = ""; $("add-msg").textContent = "已添加 ✓";
+      ["t-url", "t-dir", "t-alias"].forEach(id => $(id).value = "");
+      setMetaValue("t-group", ""); setMetaValue("t-tags", "");
+      $("add-msg").textContent = "已添加 ✓";
       toast("已开始监控", "ok");
     } catch (e) { $("add-msg").textContent = "失败: " + e.message; toast("添加失败:" + e.message, "err"); }
   });
@@ -1834,6 +2171,18 @@ async function editQuality(id, cur) {
   try { await api("/api/monitors/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ video_quality: v.trim() }) }); toast("画质已更新", "ok"); refreshMonitors(); }
   catch (e) { toast("失败:" + e.message, "err"); }
 }
+async function editMonitorMeta(id) {
+  const item = monitorById(id); if (!item) return;
+  const value = await uiMetaPrompt({ title: "管理作品监控", item });
+  if (value === null) return;
+  try {
+    await api("/api/monitors/" + id, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(value),
+    });
+    toast("分组、别名和标签已更新", "ok"); refreshMonitors(); refreshContents();
+  } catch (e) { toast("更新失败:" + e.message, "err"); }
+}
 function monRow(t) {
   const label = t.target_kind === "keyword"
     ? `<span class="ic-text">${ic("i-hash")}${esc(t.keyword)}</span>` : esc(t.nickname || (t.sec_uid || "").slice(0, 12));
@@ -1846,7 +2195,8 @@ function monRow(t) {
     ? `<button class="ghost sm" onclick="bindAccount(${t.id})">换账号</button>`
     : `<button class="sm" style="background:var(--warn);border-color:transparent;color:#1a1a1a" onclick="bindAccount(${t.id})">绑定账号</button>`;
   return `<tr>
-    <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${t.avatar}" alt="" referrerpolicy="no-referrer">` : ""}<div><span>${label}</span>${accTag}</div></div></td>
+    <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${t.avatar}" alt="" referrerpolicy="no-referrer">` : ""}<div><span>${label}</span>${t.alias ? `<div class="alias-line">${esc(t.alias)}</div>` : ""}${accTag}</div></div></td>
+    <td>${metaChips(t)}</td>
     <td class="num">${t.content_count}</td>
     <td class="num">${Math.round(t.interval_seconds / 60)} 分</td>
     <td class="wrap" style="max-width:230px">
@@ -1858,11 +2208,26 @@ function monRow(t) {
       <button class="ghost sm" onclick="runNow(${t.id})">立即抓取</button>
       <button class="ghost sm" onclick="editDir(${t.id}, ${JSON.stringify(t.download_dir || "").replace(/"/g, "&quot;")})">目录</button>
       ${t.platform === "xhs" ? "" : `<button class="ghost sm" onclick="editQuality(${t.id}, ${JSON.stringify(t.video_quality || "").replace(/"/g, "&quot;")})">画质</button>`}
+      <button class="ghost sm" onclick="editMonitorMeta(${t.id})">管理</button>
       ${bindBtn}
       ${t.platform === "douyin" ? `<button class="ghost sm" onclick="relayMon(${t.id})" title="${t.relay_to_xhs_account_id ? "下载后自动转发到小红书(已开启)" : "下载后自动转发到小红书"}">转发${t.relay_to_xhs_account_id ? " ✓" : ""}</button>` : ""}
       <button class="ghost sm" onclick="toggleMon(${t.id})">${t.enabled ? "暂停" : "启用"}</button>
       <button class="ghost sm" onclick="delMon(${t.id})">删除</button>
     </td></tr>`;
+}
+function renderMonitorRows() {
+  const groupName = $("mon-group") ? $("mon-group").value : "";
+  const tag = $("mon-tag") ? $("mon-tag").value : "";
+  const query = (($("mon-search") && $("mon-search").value) || "").trim().toLocaleLowerCase();
+  const rows = MONITORS.filter(t => {
+    if (!matchesMeta(t, groupName, tag)) return false;
+    if (!query) return true;
+    return [monitorBaseName(t), t.alias, t.group_name, ...itemTags(t)]
+      .join(" ").toLocaleLowerCase().includes(query);
+  });
+  if ($("mon-filter-count")) $("mon-filter-count").textContent = `显示 ${rows.length} / ${MONITORS.length}`;
+  $("mon-table").innerHTML = rows.map(monRow).join("")
+    || empty(8, "没有匹配的监控", "i-target", MONITORS.length ? "调整分组、标签或搜索条件" : "在上方添加一个作品监控");
 }
 async function bindAccount(id) {
   const pName = PLATFORM === "xhs" ? "小红书" : "抖音";
@@ -1879,11 +2244,10 @@ async function bindAccount(id) {
 }
 async function refreshMonitors() {
   const ts = await api("/api/monitors?platform=" + PLATFORM);
-  MONITORS = ts; populateContentSrc();
+  MONITORS = ts; populateMonitorFacets(); populateContentSrc();
   $("stat-mon").textContent = ts.filter(t => t.enabled).length;
   if ($("tb-mon")) $("tb-mon").textContent = ts.length;
-  $("mon-table").innerHTML = ts.map(monRow).join("")
-    || empty(7, "暂无监控", "i-target", "在上方粘贴主页链接或 sec_uid,开始监控一个账号的新作品");
+  renderMonitorRows();
 }
 async function runNow(id) {
   const btn = evtBtn();
@@ -1999,7 +2363,7 @@ async function commentBatchDelete() {
 
 function srcOf(r) {
   const t = monitorById(r.target_id);
-  return t ? `<div style="margin:0 0 8px">${srcChip(monitorName(t))}</div>` : "";
+  return t ? `<div style="margin:0 0 8px">${sourceMeta(t)}</div>` : "";
 }
 function noteCard(r) {
   const typeIc = r.media_type === "images" ? "i-image" : "i-play";
@@ -2028,8 +2392,11 @@ function noteCard(r) {
   </div>`;
 }
 async function refreshContents() {
-  const rows = await api("/api/contents?limit=60&platform=" + PLATFORM +
-    (CONTENT_SRC ? "&target_id=" + CONTENT_SRC : ""));
+  const params = new URLSearchParams({ limit: "60", platform: PLATFORM });
+  if (CONTENT_SRC) params.set("target_id", CONTENT_SRC);
+  if (CONTENT_GROUP) params.set("group_name", CONTENT_GROUP);
+  if (CONTENT_TAG) params.set("tag", CONTENT_TAG);
+  const rows = await api("/api/contents?" + params.toString());
   CONTENTS = rows;
   $("stat-dl").textContent = rows.filter(r => r.download_status === "done").length;
   const xhs = PLATFORM === "xhs";
@@ -2045,7 +2412,7 @@ async function refreshContents() {
   $("content-table").innerHTML = rows.map(r => `<tr>
     <td><input type="checkbox" data-id="${r.id}" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></td>
     <td>${r.cover_url ? `<img class="thumb" src="${r.cover_url}" alt="封面" referrerpolicy="no-referrer" onclick="openPreview(${r.id})">` : ""}</td>
-    <td class="wrap" style="max-width:260px">${esc(r.desc || "(无描述)").slice(0, 50)}${(() => { const t = monitorById(r.target_id); return t ? `<div style="margin-top:4px">${srcChip(monitorName(t))}</div>` : ""; })()}</td>
+    <td class="wrap" style="max-width:260px">${esc(r.desc || "(无描述)").slice(0, 50)}${(() => { const t = monitorById(r.target_id); return t ? sourceMeta(t) : ""; })()}</td>
     <td>${r.media_type === "images" ? "图集" : "视频"}${r.quality ? ` <span class="mut">${esc(r.quality)}</span>` : ""}</td>
     <td class="mut num">${fmtTime(r.create_time)}</td>
     <td class="num"><span class="metric like">${ic("i-heart")}${fmtNum(r.like_count)}</span>${r.duration ? `<span class="metric">${ic("i-clock")}${fmtDur(r.duration)}</span>` : ""}</td>
@@ -2087,19 +2454,27 @@ async function addWatch() {
     try {
       await api("/api/comment-watches", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url_or_id, platform: PLATFORM, kind: $("w-kind").value, mode: PLATFORM === "xhs" ? "public" : $("w-mode").value, account_id: $("w-acc").value ? +$("w-acc").value : null, interval_seconds: +$("w-interval").value }),
+        body: JSON.stringify({
+          url_or_id, platform: PLATFORM, kind: $("w-kind").value,
+          mode: PLATFORM === "xhs" ? "public" : $("w-mode").value,
+          account_id: $("w-acc").value ? +$("w-acc").value : null,
+          interval_seconds: +$("w-interval").value,
+          alias: $("w-alias").value.trim(), group_name: getMetaValue("w-group").trim(),
+          tags: parseTags(getMetaValue("w-tags")),
+        }),
       });
-      $("w-url").value = ""; $("w-msg").textContent = "已添加 ✓"; toast("已开始监控评论", "ok");
+      ["w-url", "w-alias"].forEach(id => $(id).value = "");
+      setMetaValue("w-group", ""); setMetaValue("w-tags", "");
+      $("w-msg").textContent = "已添加 ✓"; toast("已开始监控评论", "ok");
     } catch (e) { $("w-msg").textContent = "失败: " + e.message; toast("添加失败:" + e.message, "err"); }
   });
   refreshWatches();
 }
-async function refreshWatches() {
-  const ws = await api("/api/comment-watches?platform=" + PLATFORM);
-  WATCHES = ws; populateCommentSrc();
-  if ($("tb-watch")) $("tb-watch").textContent = ws.length;
-  $("watch-table").innerHTML = ws.map(w => `<tr>
-    <td><div class="user-cell">${w.avatar ? `<img class="avatar" src="${w.avatar}" referrerpolicy="no-referrer">` : ""}<span>${esc(w.title || w.aweme_id || (w.sec_uid || "").slice(0, 12))}</span></div></td>
+function watchRow(w) {
+  const base = esc(watchBaseName(w));
+  return `<tr>
+    <td><div class="user-cell">${w.avatar ? `<img class="avatar" src="${w.avatar}" referrerpolicy="no-referrer">` : ""}<div><span>${base}</span>${w.alias ? `<div class="alias-line">${esc(w.alias)}</div>` : ""}</div></div></td>
+    <td>${metaChips(w)}</td>
     <td>${w.kind === "video" ? (w.platform === "xhs" ? "笔记" : "视频") : (w.platform === "xhs" ? "创作者" : "账号")}</td>
     <td>${w.platform === "xhs" ? "公开" : (SRC[w.mode] || w.mode)}</td>
     <td class="num">${w.comment_count}</td>
@@ -2108,9 +2483,42 @@ async function refreshWatches() {
     <td><span class="pill ${w.enabled ? "active" : "invalid"}">${w.enabled ? "监控中" : "已暂停"}</span></td>
     <td class="acttd">
       <button class="ghost sm" onclick="scanWatch(${w.id})">立即抓取</button>
+      <button class="ghost sm" onclick="editWatchMeta(${w.id})">管理</button>
       <button class="ghost sm" onclick="toggleWatch(${w.id}, ${!w.enabled})">${w.enabled ? "暂停" : "启用"}</button>
       <button class="ghost sm" onclick="delWatch(${w.id})">删除</button>
-    </td></tr>`).join("") || empty(8, "暂无评论监控", "i-msg", "粘贴一条视频/笔记链接盯单条,或粘贴主页盯创作者近期作品的评论");
+    </td></tr>`;
+}
+function renderWatchRows() {
+  const groupName = $("watch-group") ? $("watch-group").value : "";
+  const tag = $("watch-tag") ? $("watch-tag").value : "";
+  const query = (($("watch-search") && $("watch-search").value) || "").trim().toLocaleLowerCase();
+  const rows = WATCHES.filter(w => {
+    if (!matchesMeta(w, groupName, tag)) return false;
+    if (!query) return true;
+    return [watchBaseName(w), w.alias, w.group_name, ...itemTags(w)]
+      .join(" ").toLocaleLowerCase().includes(query);
+  });
+  if ($("watch-filter-count")) $("watch-filter-count").textContent = `显示 ${rows.length} / ${WATCHES.length}`;
+  $("watch-table").innerHTML = rows.map(watchRow).join("")
+    || empty(9, "没有匹配的评论监控", "i-msg", WATCHES.length ? "调整分组、标签或搜索条件" : "在上方添加一个评论监控");
+}
+async function refreshWatches() {
+  const ws = await api("/api/comment-watches?platform=" + PLATFORM);
+  WATCHES = ws; populateWatchFacets(); populateCommentSrc();
+  if ($("tb-watch")) $("tb-watch").textContent = ws.length;
+  renderWatchRows();
+}
+async function editWatchMeta(id) {
+  const item = watchById(id); if (!item) return;
+  const value = await uiMetaPrompt({ title: "管理评论监控", item });
+  if (value === null) return;
+  try {
+    await api("/api/comment-watches/" + id, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(value),
+    });
+    toast("分组、别名和标签已更新", "ok"); refreshWatches(); refreshComments();
+  } catch (e) { toast("更新失败:" + e.message, "err"); }
 }
 async function scanWatch(id) {
   const btn = evtBtn();
@@ -2125,12 +2533,15 @@ async function toggleWatch(id, on) { try { await api("/api/comment-watches/" + i
 async function delWatch(id) { if (await uiConfirm({ title: "删除评论监控", message: "删除该评论监控及其抓到的评论?", okText: "删除", danger: true })) { try { await api("/api/comment-watches/" + id, { method: "DELETE" }); toast("已删除", "ok"); refreshWatches(); refreshComments(); } catch (e) { toast("删除失败:" + e.message, "err"); } } }
 
 async function refreshComments() {
-  const rows = await api("/api/comments?limit=80&platform=" + PLATFORM +
-    (COMMENT_SRC ? "&watch_id=" + COMMENT_SRC : ""));
+  const params = new URLSearchParams({ limit: "80", platform: PLATFORM });
+  if (COMMENT_SRC) params.set("watch_id", COMMENT_SRC);
+  if (COMMENT_GROUP) params.set("group_name", COMMENT_GROUP);
+  if (COMMENT_TAG) params.set("tag", COMMENT_TAG);
+  const rows = await api("/api/comments?" + params.toString());
   $("stat-cmt").textContent = rows.length;
   $("comment-table").innerHTML = rows.map(r => {
     const w = watchById(r.watch_id);
-    const src = w ? `<div style="margin-top:4px">${srcChip(watchName(w))}</div>` : "";
+    const src = w ? sourceMeta(w) : "";
     return `<tr>
     <td><input type="checkbox" data-id="${r.id}" onchange="commentToggleOne(${r.id}, this.checked)" ${selComment.has(r.id) ? "checked" : ""}></td>
     <td class="wrap" style="max-width:360px">${r.is_reply ? '<span class="mut">↳</span> ' : ""}${esc(r.text || "").slice(0, 60)}${src}</td>
@@ -2891,9 +3302,9 @@ function loop() {
 }
 
 // initial skeletons while data loads
-$("mon-table").innerHTML = skeleton(7);
+$("mon-table").innerHTML = skeleton(8);
 $("content-table").innerHTML = skeleton(8);
-$("watch-table").innerHTML = skeleton(8);
+$("watch-table").innerHTML = skeleton(9);
 $("comment-table").innerHTML = skeleton(6);
 
 // restore last-selected section (default: 总览);旧版四个独立页已并入「账号管理」
@@ -2914,5 +3325,6 @@ applyPlatformUI();
 
 onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); onAcMode(); loadSettings(); refreshAccounts(); refreshProxies(); refreshChannels(); loop();
 enhanceAllSelects();   // 把所有原生 <select> 升级为美化下拉
+enhanceAllMetaControls(); // 分组/标签：当前平台词库下拉，可搜索并新增
 enhanceAllDateTime();  // 把 datetime-local 升级为自定义日期选择器
 setInterval(loop, 8000);

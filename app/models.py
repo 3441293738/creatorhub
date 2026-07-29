@@ -48,6 +48,9 @@ class MonitorTarget(SQLModel, table=True):
     xsec_token: str = ""          # 小红书:打开主页所需令牌(可选,缺失时靠登录态)
     nickname: str = ""
     avatar: str = ""
+    alias: str = ""               # 管理别名,用于大量监控时快速识别
+    group_name: str = Field(default="", index=True)  # 单一业务分组
+    tags: str = ""                # JSON 字符串数组,用于多维筛选
     enabled: bool = True
     interval_seconds: int = 300
     initial_backfill_count: int = 0            # 首扫历史回填数;0=仅订阅后,-1=尽可能全量
@@ -129,6 +132,9 @@ class CommentWatch(SQLModel, table=True):
     xsec_token: str = ""          # 小红书:打开笔记/主页所需的安全令牌(可能过期)
     title: str = ""               # 展示名(视频描述 / 账号昵称)
     avatar: str = ""
+    alias: str = ""               # 管理别名
+    group_name: str = Field(default="", index=True)  # 单一业务分组
+    tags: str = ""                # JSON 字符串数组,用于多维筛选
     mode: str = "public"           # public(公开评论区) | creator(创作中心,仅抖音自有账号)
     account_id: Optional[int] = None
     interval_seconds: int = 600

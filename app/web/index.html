@@ -502,8 +502,16 @@
   .row { display:flex; gap:10px; align-items:center; }
   .monitor-options { display:grid; grid-template-columns:minmax(190px,1.4fr) repeat(3,minmax(130px,1fr)); }
   .monitor-options select { width:100%; min-width:0; }
+  .meta-fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+  .meta-fields > div { min-width:0; }
+  .field-scope {
+    display:inline-flex; align-items:center; margin-left:5px; padding:1px 5px;
+    border-radius:999px; color:var(--info); background:color-mix(in srgb,var(--info) 10%,transparent);
+    font-size:9.5px; line-height:1.35; vertical-align:1px;
+  }
   @media(max-width:820px){ .monitor-options{grid-template-columns:1fr 1fr} }
-  @media(max-width:480px){ .monitor-options{grid-template-columns:1fr} }
+  @media(max-width:820px){ .meta-fields{grid-template-columns:1fr 1fr} }
+  @media(max-width:480px){ .monitor-options,.meta-fields{grid-template-columns:1fr} }
   .row > * { flex:1; }
   .row > button { flex:0 0 auto; }
 
@@ -606,6 +614,89 @@
   button.local-path-action:hover { color:var(--fg-strong); }
   button.local-path-action.reveal { color:var(--info); }
   .local-path-empty { color:var(--mut-2); }
+
+  /* ── 监控分组 / 标签 / 别名 ── */
+  .manage-toolbar {
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    margin:-4px 0 12px; padding:10px;
+    background:var(--bg); border:1px solid var(--line-soft); border-radius:var(--r-sm);
+  }
+  .manage-toolbar .toolbar-spacer { flex:1 1 12px; }
+  .manage-toolbar input, .manage-toolbar select, .manage-toolbar .cs {
+    width:auto; min-width:132px; max-width:190px; flex:0 1 190px;
+  }
+  .manage-toolbar input[type="search"] { min-width:190px; }
+  .meta-stack { display:flex; flex-wrap:wrap; align-items:center; gap:5px; max-width:260px; }
+  .meta-chip {
+    display:inline-flex; align-items:center; max-width:150px; padding:3px 8px;
+    border-radius:999px; border:1px solid var(--line); background:var(--surface-2);
+    color:var(--mut); font-size:10.5px; line-height:1.2;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .meta-chip.group { color:var(--info); border-color:color-mix(in srgb,var(--info) 34%,var(--line)); background:color-mix(in srgb,var(--info) 9%,transparent); }
+  .meta-chip.tag { color:var(--fg); }
+  .meta-chip.more { color:var(--mut-2); cursor:help; }
+  .alias-line { margin-top:3px; color:var(--acc); font-size:11px; line-height:1.25; }
+  .alias-line::before { content:"别名 · "; color:var(--mut-2); }
+  .meta-empty { color:var(--mut-2); font-size:12px; }
+
+  /* 可搜索、可新建的分组 / 多标签下拉 */
+  .meta-combo { position:relative; min-width:0; }
+  .meta-combo-box {
+    min-height:37px; display:flex; align-items:center; flex-wrap:wrap; gap:5px;
+    width:100%; padding:5px 30px 5px 7px; background:var(--bg); border:1px solid var(--line);
+    border-radius:var(--r-sm); transition:border-color .18s var(--ease), box-shadow .18s var(--ease);
+  }
+  .meta-combo-box:hover { border-color:#333a47; }
+  .meta-combo.open .meta-combo-box,
+  .meta-combo:focus-within .meta-combo-box { border-color:var(--acc); box-shadow:0 0 0 3px var(--acc-ring); }
+  .meta-combo-query {
+    flex:1 1 84px; min-width:70px; width:auto; padding:2px 3px; border:0; border-radius:4px;
+    background:transparent; box-shadow:none!important; line-height:1.35;
+  }
+  .meta-combo-query:hover, .meta-combo-query:focus { border:0; box-shadow:none; }
+  .meta-combo-arr {
+    position:absolute; right:10px; top:11px; width:15px; height:15px; color:var(--mut);
+    pointer-events:none; transition:transform .18s var(--ease);
+  }
+  .meta-combo.open .meta-combo-arr { transform:rotate(180deg); }
+  .meta-token {
+    display:inline-flex; align-items:center; gap:3px; max-width:130px; padding:3px 6px 3px 8px;
+    border:1px solid var(--line); border-radius:999px; background:var(--surface-2);
+    color:var(--fg); font-size:10.5px; white-space:nowrap;
+  }
+  .meta-token span { overflow:hidden; text-overflow:ellipsis; }
+  .meta-token button {
+    width:15px; height:15px; padding:0; border:0; border-radius:50%; background:transparent;
+    color:var(--mut); box-shadow:none; font-size:12px; line-height:1;
+  }
+  .meta-token button:hover { color:var(--danger); background:var(--danger-soft); }
+  .meta-combo-panel {
+    position:absolute; left:0; right:0; top:calc(100% + 5px); z-index:340;
+    max-height:230px; overflow:auto; padding:5px; background:var(--surface);
+    border:1px solid var(--line); border-radius:var(--r-sm); box-shadow:var(--sh);
+    animation:csIn .15s var(--ease);
+  }
+  .meta-combo-opt {
+    width:100%; display:flex; align-items:center; justify-content:flex-start; gap:8px;
+    padding:8px 9px; border:0; border-radius:8px; background:transparent; color:var(--fg);
+    box-shadow:none!important; font-size:12.5px; font-weight:450; text-align:left;
+  }
+  .meta-combo-opt:hover, .meta-combo-opt.active { background:var(--surface-2); filter:none; }
+  .meta-combo-opt .mark {
+    width:16px; height:16px; flex:0 0 auto; display:grid; place-items:center;
+    border:1px solid var(--line); border-radius:5px; color:transparent; font-size:11px;
+  }
+  .meta-combo-opt.selected .mark { color:#fff; border-color:var(--acc); background:var(--acc); }
+  .meta-combo-opt.create { color:var(--acc); }
+  .meta-combo-opt.create .mark { color:var(--acc); border-color:var(--acc-ring); border-radius:50%; }
+  .meta-combo-empty { padding:12px 9px; color:var(--mut-2); font-size:12px; text-align:center; }
+  #uimodal .rp-box { overflow:visible; }
+  @media(max-width:600px) {
+    .manage-toolbar input, .manage-toolbar select, .manage-toolbar .cs { flex:1 1 calc(50% - 8px); max-width:none; }
+    .manage-toolbar input[type="search"] { min-width:0; }
+    .manage-toolbar .toolbar-spacer { display:none; }
+  }
 
   /* table inside a card without extra border for the small acc/notif tables */
   .mini-table { margin-top:14px; }
@@ -905,6 +996,20 @@
         <div>
           <label class="field" for="t-dir">下载目录(可选)</label>
           <input id="t-dir" placeholder="留空使用全局默认目录">
+        </div>
+        <div class="meta-fields">
+          <div>
+            <label class="field" for="t-alias">管理别名(可选)</label>
+            <input id="t-alias" maxlength="60" placeholder="如：体育主号">
+          </div>
+          <div>
+            <label class="field" for="t-group">分组名(可选)<span class="field-scope meta-scope">当前平台独立</span></label>
+            <input id="t-group" maxlength="40" autocomplete="off" data-meta-combo="group" placeholder="选择或输入新分组">
+          </div>
+          <div>
+            <label class="field" for="t-tags">标签(可选)<span class="field-scope meta-scope">当前平台独立</span></label>
+            <input id="t-tags" autocomplete="off" data-meta-combo="tags" placeholder="选择或输入新标签">
+          </div>
         </div>
         <div class="row monitor-options">
           <select id="t-acc" aria-label="使用账号"></select>
@@ -1246,8 +1351,14 @@
       <span class="card-ic"><svg><use href="#i-target"/></svg></span>
       <h2>监控列表 <span class="sub">运行中</span></h2>
     </div>
+    <div class="manage-toolbar">
+      <input type="search" id="mon-search" placeholder="搜索用户或别名" oninput="onMonitorFilter()">
+      <select id="mon-group" aria-label="按分组筛选监控" onchange="onMonitorFilter()"><option value="">全部分组</option></select>
+      <select id="mon-tag" aria-label="按标签筛选监控" onchange="onMonitorFilter()"><option value="">全部标签</option></select>
+      <span class="mut" id="mon-filter-count"></span>
+    </div>
     <div class="table-wrap"><table><thead><tr>
-      <th>用户</th><th>作品数</th><th>间隔</th><th>下载设置</th><th>上次扫描</th><th>状态</th><th></th>
+      <th>用户</th><th>分组 / 标签</th><th>作品数</th><th>间隔</th><th>下载设置</th><th>上次扫描</th><th>状态</th><th></th>
     </tr></thead><tbody id="mon-table"></tbody></table></div>
   </div>
 
@@ -1256,9 +1367,14 @@
     <div class="card-head">
       <span class="card-ic"><svg><use href="#i-film"/></svg></span>
       <h2 id="content-title">最新作品 / 下载状态</h2>
-      <select id="content-src" onchange="onContentSrc()" aria-label="按来源监控筛选" style="margin-left:auto;max-width:220px;flex:0 0 auto">
+    </div>
+    <div class="manage-toolbar">
+      <select id="content-group" onchange="onContentMetaFilter()" aria-label="按分组筛选作品"><option value="">全部分组</option></select>
+      <select id="content-tag" onchange="onContentMetaFilter()" aria-label="按标签筛选作品"><option value="">全部标签</option></select>
+      <select id="content-src" onchange="onContentSrc()" aria-label="按来源监控筛选">
         <option value="">全部来源</option>
       </select>
+      <span class="toolbar-spacer"></span>
       <button class="ghost sm" id="content-selall-btn" onclick="contentSelAllToggle()">全选</button>
       <span id="content-selbar" style="display:none;align-items:center;gap:8px">
         <span class="mut" id="content-selcount">已选 0</span>
@@ -1303,6 +1419,20 @@
             <option value="3600">每小时</option>
           </select>
         </div>
+        <div class="meta-fields">
+          <div>
+            <label class="field" for="w-alias">管理别名(可选)</label>
+            <input id="w-alias" maxlength="60" placeholder="如：618活动评论">
+          </div>
+          <div>
+            <label class="field" for="w-group">分组名(可选)<span class="field-scope meta-scope">当前平台独立</span></label>
+            <input id="w-group" maxlength="40" autocomplete="off" data-meta-combo="group" placeholder="选择或输入新分组">
+          </div>
+          <div>
+            <label class="field" for="w-tags">标签(可选)<span class="field-scope meta-scope">当前平台独立</span></label>
+            <input id="w-tags" autocomplete="off" data-meta-combo="tags" placeholder="选择或输入新标签">
+          </div>
+        </div>
         <button onclick="addWatch()"><svg><use href="#i-msg"/></svg>开始监控评论</button>
         <div class="mut" id="w-msg"></div>
       </div>
@@ -1314,8 +1444,14 @@
         <span class="card-ic"><svg><use href="#i-list"/></svg></span>
         <h2>评论监控列表</h2>
       </div>
+      <div class="manage-toolbar">
+        <input type="search" id="watch-search" placeholder="搜索对象或别名" oninput="onWatchFilter()">
+        <select id="watch-group" aria-label="按分组筛选评论监控" onchange="onWatchFilter()"><option value="">全部分组</option></select>
+        <select id="watch-tag" aria-label="按标签筛选评论监控" onchange="onWatchFilter()"><option value="">全部标签</option></select>
+        <span class="mut" id="watch-filter-count"></span>
+      </div>
       <div class="table-wrap"><table><thead><tr>
-        <th>对象</th><th>类型</th><th>来源</th><th>评论数</th><th>间隔</th><th>上次扫描</th><th>状态</th><th>操作</th>
+        <th>对象</th><th>分组 / 标签</th><th>类型</th><th>来源</th><th>评论数</th><th>间隔</th><th>上次扫描</th><th>状态</th><th>操作</th>
       </tr></thead><tbody id="watch-table"></tbody></table></div>
     </div>
 
@@ -1324,15 +1460,18 @@
     <div class="card-head">
       <span class="card-ic"><svg><use href="#i-msg"/></svg></span>
       <h2>抓到的评论</h2>
-      <span class="right" style="display:flex;align-items:center;gap:8px">
-        <select id="comment-src" onchange="onCommentSrc()" aria-label="按来源评论监控筛选" style="max-width:200px">
+    </div>
+    <div class="manage-toolbar">
+        <select id="comment-group" onchange="onCommentMetaFilter()" aria-label="按分组筛选评论"><option value="">全部分组</option></select>
+        <select id="comment-tag" onchange="onCommentMetaFilter()" aria-label="按标签筛选评论"><option value="">全部标签</option></select>
+        <select id="comment-src" onchange="onCommentSrc()" aria-label="按来源评论监控筛选">
           <option value="">全部来源</option>
         </select>
+        <span class="toolbar-spacer"></span>
         <button class="ghost sm" id="comment-selall-btn" onclick="commentSelAllToggle()">全选</button>
         <span class="mut" id="comment-selcount" style="display:none">已选 0</span>
         <button class="sm" id="comment-batchbtn" style="display:none;background:var(--danger);border-color:transparent" onclick="commentBatchDelete()">批量删除</button>
         <button class="ghost sm" onclick="clearComments()">清空评论</button>
-      </span>
     </div>
     <div class="table-wrap"><table><thead><tr>
       <th style="width:30px"><input type="checkbox" id="comment-selall" onchange="commentToggleAll(this.checked)" aria-label="全选"></th>
