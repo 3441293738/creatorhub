@@ -26,7 +26,7 @@ CreatorHub 使用 Python + FastAPI 提供统一 Web 界面，用于管理账号�
 - Python 3.10+
 - 桌面环境（扫码登录时需要弹出浏览器）
 - Node.js 18+（仅小红书发布需要）
-- ffmpeg（可选，用于合并部分站点的音视频流）
+- 系统 ffmpeg（可选；未安装时自动使用 Python 依赖附带的 ffmpeg）
 
 ### 一键启动
 
@@ -201,7 +201,7 @@ python -m app.engine.share_downloader "完整分享文案或链接" -o ./data/me
 | Windows 下出现 Playwright 子进程错误 | 使用单 worker 启动，不要添加 `--workers` |
 | 抓取不到作品或评论 | 检查登录态、目标链接和网络状态，必要时重新登录并降低频率 |
 | 小红书链接解析失败 | 重新复制包含有效 `xsec_token` 的完整链接 |
-| 下载的视频没有声音或画质受限 | 安装 ffmpeg 并加入系统 `PATH` |
+| 仅音频仍得到 MP4，或视频没有声音/画质受限 | 重新运行安装命令更新依赖；也可安装系统 ffmpeg 并加入 `PATH` |
 
 仍有问题可提交 [Issue](https://github.com/3441293738/creatorhub/issues)，并附上平台、操作步骤和服务端错误日志。
 

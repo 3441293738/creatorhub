@@ -371,7 +371,9 @@ def _quality_format(quality: str, *, allow_merge: bool = True) -> str:
     if q in {"lowest", "worst", "省流"}:
         return "wv*+wa/w" if allow_merge else "w/wv*"
     if q in {"audio", "音频"}:
-        return "ba/b"
+        # 有 ffmpeg 时允许回退到音视频合一流，随后由后处理器提取音轨；
+        # 没有 ffmpeg 时只能选择平台提供的独立音频，不能把 MP4 当成“仅音频”返回。
+        return "ba/b" if allow_merge else "ba"
     height_match = re.fullmatch(r"(\d{3,4})(?:p)?", q)
     if height_match:
         height = int(height_match.group(1))
@@ -384,6 +386,43 @@ def _quality_format(quality: str, *, allow_merge: bool = True) -> str:
             )
         return f"b[height<={height}]/bv*[height<={height}]/b/bv*"
     raise ShareDownloadError(f"不支持的画质：{quality}")
+
+
+def _is_audio_quality(quality: str) -> bool:
+    return (quality or "").lower().strip() in {"audio", "音频"}
+
+
+def _find_ffmpeg() -> str:
+    """优先使用系统 ffmpeg，找不到时使用 Python 依赖附带的可执行文件。"""
+    executable = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if executable:
+        return executable
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe  # type: ignore
+        executable = get_ffmpeg_exe()
+    except Exception:
+        return ""
+    return executable if executable and Path(executable).is_file() else ""
+
+
+def _download_format_options(quality: str, ffmpeg_location: str = "") -> dict[str, Any]:
+    """构建格式和后处理参数，保证“仅音频”不会直接产出带画面的文件。"""
+    audio_only = _is_audio_quality(quality)
+    options: dict[str, Any] = {
+        "format": _quality_format(quality, allow_merge=bool(ffmpeg_location)),
+    }
+    if ffmpeg_location:
+        options["ffmpeg_location"] = ffmpeg_location
+    if audio_only:
+        if ffmpeg_location:
+            options["postprocessors"] = [{
+                "key": "FFmpegExtractAudio",
+                # best 会尽量复制原音频编码，只更换为合适的纯音频容器。
+                "preferredcodec": "best",
+            }]
+    else:
+        options["merge_output_format"] = "mp4"
+    return options
 
 
 def _json_value(value: Any) -> Any:
@@ -593,7 +632,8 @@ class ShareDownloader:
         temp_dir.mkdir(parents=True, exist_ok=True)
 
         progress: dict[str, Any] = {"status": "starting"}
-        has_ffmpeg = bool(shutil.which("ffmpeg") or shutil.which("ffmpeg.exe"))
+        ffmpeg_location = _find_ffmpeg()
+        has_ffmpeg = bool(ffmpeg_location)
 
         def hook(data: dict[str, Any]) -> None:
             status = str(data.get("status") or "")
@@ -608,7 +648,6 @@ class ShareDownloader:
         options = self._base_options(logger=logger, proxy=proxy, cookie_file=cookie_file)
         options.update({
             # 没有 ffmpeg 时只选自带音视频的单文件格式，避免下载完两条流却合并失败。
-            "format": _quality_format(quality, allow_merge=has_ffmpeg),
             "paths": {"home": str(job_dir), "temp": str(temp_dir)},
             "outtmpl": {
                 "default": (
@@ -633,9 +672,9 @@ class ShareDownloader:
             "writesubtitles": bool(save_subtitles),
             "writeautomaticsub": bool(save_subtitles),
             "subtitleslangs": ["zh-Hans", "zh-Hant", "zh", "en"],
-            "merge_output_format": "mp4",
             "progress_hooks": [hook],
         })
+        options.update(_download_format_options(quality, ffmpeg_location))
         if max_filesize_mb:
             if max_filesize_mb < 1:
                 raise ShareDownloadError("max_filesize_mb 必须大于 0")

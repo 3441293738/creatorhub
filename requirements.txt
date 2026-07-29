@@ -13,3 +13,4 @@ numpy>=1.24               # opencv 依赖
 
 websockets>=12
 yt-dlp>=2025.1.15        # 通用分享链接解析/下载（抖音、B站、YouTube 等及通用媒体页）
+imageio-ffmpeg>=0.5.1    # 内置 ffmpeg 兜底：仅音频提取与分离音视频流合并

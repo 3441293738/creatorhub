@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 from app.engine.share_downloader import (
     _clean_ydl_error,
+    _download_format_options,
+    _quality_format,
     ShareDownloader,
     ShareLinkError,
     detect_platform,
@@ -128,6 +130,26 @@ class ShareURLTests(unittest.TestCase):
         )
         self.assertIn("图文作品", message)
         self.assertIn("抖音账号", message)
+
+    def test_audio_format_never_falls_back_to_video_without_ffmpeg(self):
+        self.assertEqual(_quality_format("audio", allow_merge=False), "ba")
+        self.assertEqual(_download_format_options("audio"), {"format": "ba"})
+
+    def test_audio_format_extracts_track_when_ffmpeg_is_available(self):
+        options = _download_format_options("audio", "/tools/ffmpeg")
+        self.assertEqual(options["format"], "ba/b")
+        self.assertEqual(options["ffmpeg_location"], "/tools/ffmpeg")
+        self.assertEqual(options["postprocessors"], [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "best",
+        }])
+        self.assertNotIn("merge_output_format", options)
+
+    def test_video_format_keeps_mp4_merge_behavior(self):
+        options = _download_format_options("highest", "/tools/ffmpeg")
+        self.assertEqual(options["format"], "bv*+ba/b")
+        self.assertEqual(options["merge_output_format"], "mp4")
+        self.assertNotIn("postprocessors", options)
 
 
 if __name__ == "__main__":
