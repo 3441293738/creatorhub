@@ -16,6 +16,9 @@ POST_API = "aweme/v1/web/aweme/post"
 PROFILE_API = "aweme/v1/web/user/profile/other"
 SELF_PROFILE_API = "aweme/v1/web/user/profile/self"
 COMMENT_API = "aweme/v1/web/comment/list"
+# 与 login.py 的登录成功判据保持一致。资料接口改版时不能再只靠页面“登录”按钮
+# 判断登录态：按钮可能未渲染，或者被 AB 页面隐藏。
+_LOGIN_COOKIES = {"sessionid", "sessionid_ss", "sid_tt", "uid_tt", "sid_guard"}
 # 重发时必须去掉的一次性签名/风控参数,让抖音的 fetch 拦截器重新签
 _SIGN_PARAMS = ("a_bogus", "X-Bogus", "x-bogus", "msToken", "_signature", "verifyFp")
 
@@ -451,10 +454,105 @@ def _extract_user(data) -> Optional[dict]:
     """从 profile 响应里挖出 user 对象(多结构兜底)。"""
     if not isinstance(data, dict):
         return None
-    for u in (data.get("user"), data.get("user_info"), data):
+    nested = data.get("data")
+    for u in (data.get("user"), data.get("user_info"),
+              nested.get("user") if isinstance(nested, dict) else None,
+              nested.get("user_info") if isinstance(nested, dict) else None,
+              data):
         if isinstance(u, dict) and u.get("sec_uid"):
             return u
     return None
+
+
+def _extract_post_author(data, expected_sec_uid: str = "") -> Optional[dict]:
+    """从本人作品接口里取作者。
+
+    /user/profile/self 偶尔会因页面缓存而不发，但同一页面通常仍会请求
+    /aweme/post。只有作者 sec_uid 与本地登录用户一致时才接纳，避免把
+    精选页或其它主页的作者误绑到当前账号。
+    """
+    if not isinstance(data, dict):
+        return None
+    for item in data.get("aweme_list") or []:
+        if not isinstance(item, dict):
+            continue
+        user = item.get("author")
+        if not isinstance(user, dict) or not user.get("sec_uid"):
+            continue
+        if expected_sec_uid and str(user.get("sec_uid")) != expected_sec_uid:
+            continue
+        return user
+    return None
+
+
+def _user_from_web_storage(value) -> Optional[dict]:
+    """把网页 localStorage 的 user_info 归一成抖音 user 形状。
+
+    2026 版网页会稳定写入：
+      {uid: <sec_uid>, nickname: ..., avatarUrl: ...}
+    即使 profile/self 被缓存而未发，这份登录用户身份仍可用于打开显式主页。
+    数字 uid 是内部账号号，不当作 sec_uid，防止构造错误主页。
+    """
+    if not isinstance(value, dict):
+        return None
+    sec_uid = str(value.get("sec_uid") or value.get("secUid") or "")
+    if not sec_uid:
+        uid = str(value.get("uid") or "")
+        if len(uid) >= 24 and not uid.isdigit():
+            sec_uid = uid
+    if not sec_uid:
+        return None
+    user = {
+        "sec_uid": sec_uid,
+        "nickname": value.get("nickname") or value.get("name") or "",
+    }
+    avatar = value.get("avatarUrl") or value.get("avatar_url") or value.get("avatar")
+    if isinstance(avatar, str) and avatar:
+        user["avatar_thumb"] = {"url_list": [avatar]}
+    return user
+
+
+_READ_SELF_STORAGE_JS = """() => {
+  const out = [];
+  const keys = ['user_info', 'userInfo', 'user_info_passport'];
+  for (const store of [window.localStorage, window.sessionStorage]) {
+    for (const key of keys) {
+      try {
+        const raw = store.getItem(key);
+        if (!raw) continue;
+        let value = JSON.parse(raw);
+        if (typeof value === 'string') value = JSON.parse(value);
+        if (value && typeof value === 'object') out.push(value);
+      } catch (_) {}
+    }
+  }
+  return out;
+}"""
+
+
+async def _read_self_from_web_storage(page) -> Optional[dict]:
+    try:
+        values = await page.evaluate(_READ_SELF_STORAGE_JS)
+    except Exception:
+        return None
+    merged: dict = {}
+    for value in values or []:
+        user = _user_from_web_storage(value)
+        if not user:
+            continue
+        if merged.get("sec_uid") and user["sec_uid"] != merged["sec_uid"]:
+            continue
+        for key, item in user.items():
+            if item not in (None, "", [], {}):
+                merged[key] = item
+    return merged or None
+
+
+def _fill_missing_user_fields(target: dict, source: Optional[dict]) -> None:
+    """用弱来源补空字段，不覆盖 profile/self 已返回的权威字段。"""
+    for key, value in (source or {}).items():
+        if key not in target or target[key] in (None, "", [], {}):
+            target[key] = value
 
 
 async def _refetch_in_page(page, full_url: str) -> Optional[dict]:
@@ -481,18 +579,25 @@ async def _refetch_in_page(page, full_url: str) -> Optional[dict]:
 async def fetch_self_profile(mgr: BrowserManager, identity: Identity,
                              timeout_ms: int = 15000, block_media: bool = False
                              ) -> Tuple[dict, str]:
-    """打开自己的主页,显式等待并拦截 user/profile/self 拿登录账号真实资料。
+    """打开自己的主页,拦截 user/profile/self 拿登录账号真实资料。
     返回 (user dict, error)。error == "logged_out" 表示登录态失效。
 
-    ⚠️ /user/self 常被重定向到 /jingxuan,但 profile/self 仍会发出;拦截时若页面正在
-    跳转,Playwright 读 body 会失败,故再补一发页内 refetch(抖音自己的 fetch 拦截器
-    会补 a_bogus 签名,同 _fetch_im_user_info 的做法)。
+    新版网页可能把 /user/self 重定向到 /jingxuan，且因 user_self_cache AB
+    不再发 profile/self。此时从 localStorage.user_info 取得本人 sec_uid，
+    再打开 /user/<sec_uid> 触发资料请求；仍未触发时，用同页 aweme/post 中
+    sec_uid 完全匹配的 author 兜底。无作品账号至少可返回昵称、头像和 sec_uid。
+
+    拦截时若页面正在跳转，Playwright 读 body 会失败，故再补一发页内 refetch
+    （抖音自己的 fetch 拦截器会补 a_bogus 签名）。
     注:query/user 不是资料接口,它返回的是设备会话记录(user_uid/browser_name),无 sec_uid。"""
     result: dict = {}
     api_seen = []                   # 看到的抖音 API 请求(诊断用)
     hit_apis = []                   # 命中的 profile/self(判断是"没发"还是"读不到")
     shapes = []                     # 命中但挖不出 user 时的响应结构/读取异常(标定用)
     self_urls: List[str] = []       # profile/self 的完整 URL(带 query),供页内 refetch 复用
+    post_users: List[dict] = []     # profile/self 不发时，用本人作品 author 兜底
+    storage_uid = ""
+    profile_user_seen = False
     error = ""
     page = await mgr.new_page(identity, block_media)
 
@@ -501,6 +606,7 @@ async def fetch_self_profile(mgr: BrowserManager, identity: Identity,
         return SELF_PROFILE_API in resp.url
 
     async def on_response(resp):
+        nonlocal profile_user_seen
         url = resp.url
         if ("douyin.com" in url and ("/aweme/v1/web/" in url or "/web/api/" in url)
                 and len(api_seen) < 40):
@@ -520,34 +626,73 @@ async def fetch_self_profile(mgr: BrowserManager, identity: Identity,
             u = _extract_user(data)
             if u:
                 result.update(u)
+                profile_user_seen = True
             elif isinstance(data, dict) and len(shapes) < 4:
                 shapes.append(f"{path} keys={sorted(data)[:12]}")
+        elif POST_API in url and resp.status == 200:
+            try:
+                data = await resp.json()
+            except Exception:
+                return
+            # 此时可能还没读到 localStorage，先暂存；稍后按本人 sec_uid 严格筛选。
+            u = _extract_post_author(data)
+            if u:
+                post_users.append(u)
 
     page.on("response", on_response)
     logged_out = False
     final_url = ""
     has_login_btn = None
+    has_login_cookie = None
     try:
+        # 先走本人路由；它即使重定向，登录页脚本通常也已经写好 user_info。
         for url in ("https://www.douyin.com/user/self", "https://www.douyin.com/"):
-            await page.goto(url, wait_until="load", timeout=30000)
-            try:                    # 主动等待 profile XHR(而不是死等固定时间)
-                await page.wait_for_response(
-                    lambda r: is_profile(r) and r.status == 200, timeout=timeout_ms)
-            except Exception:
-                pass
-            await page.wait_for_timeout(1500)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # 等 hydrate/XHR；wait_for_response 若在 goto 后调用会漏掉已经返回的响应，
+            # 因此统一由上面的 response handler 收集。
+            await page.wait_for_timeout(min(max(timeout_ms // 4, 1800), 4000))
             final_url = page.url
             if "passport" in final_url or "/login" in final_url:
                 logged_out = True
                 break
+
+            storage_user = await _read_self_from_web_storage(page)
+            if storage_user:
+                storage_uid = str(storage_user.get("sec_uid") or "")
+                _fill_missing_user_fields(result, storage_user)
+                # aweme/post 可能比 localStorage 更早返回；现在才能安全确认它是本人。
+                post_user = next(
+                    (u for u in post_users
+                     if str(u.get("sec_uid") or "") == storage_uid),
+                    None,
+                )
+                if post_user:
+                    result.update(post_user)
             if result:
                 break
-        if not result and self_urls:
+
+        # profile/self 被缓存/路由改写时，显式本人 sec_uid 路由会重新触发它。
+        # 已经命中过权威资料接口则无需多跳一次。
+        if storage_uid and not profile_user_seen:
+            await page.goto(f"https://www.douyin.com/user/{storage_uid}",
+                            wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(min(max(timeout_ms // 3, 2200), 5000))
+            final_url = page.url
+            post_user = next(
+                (u for u in reversed(post_users)
+                 if str(u.get("sec_uid") or "") == storage_uid),
+                None,
+            )
+            if post_user:
+                result.update(post_user)
+
+        if not profile_user_seen and self_urls:
             # 拦到了但 body 读不到:页内重发一次(此时页面已静止,不会再丢 body)
             data = await _refetch_in_page(page, self_urls[-1])
             u = _extract_user(data)
             if u:
                 result.update(u)
+                profile_user_seen = True
             elif isinstance(data, dict) and len(shapes) < 6:
                 shapes.append(f"refetch keys={sorted(data)[:12]}")
         # 是否能看到“登录”按钮(看到=其实没登录进去)
@@ -556,6 +701,16 @@ async def fetch_self_profile(mgr: BrowserManager, identity: Identity,
                 timeout=1500)
         except Exception:
             has_login_btn = None
+        try:
+            cookies = await page.context.cookies("https://www.douyin.com/")
+            has_login_cookie = any(c.get("name") in _LOGIN_COOKIES for c in cookies)
+        except Exception:
+            has_login_cookie = None
+
+        # localStorage 退出后可能残留。只有仍有登录 Cookie，弱来源资料才算有效。
+        if result and not profile_user_seen and has_login_cookie is False:
+            result.clear()
+            logged_out = True
     except Exception as e:
         error = f"{e!r}"
     finally:
@@ -567,11 +722,14 @@ async def fetch_self_profile(mgr: BrowserManager, identity: Identity,
     if not result:
         if logged_out:
             error = "logged_out"
+        elif has_login_cookie is False:
+            error = "logged_out"
         elif not error:
             # 区分「接口没发出来」和「发了但取不到 user」——之前一律报后者,误导排查
             error = ("profile/self 命中但取不到 user" if hit_apis else "no_profile_xhr")
         print(f"[self_profile] 未拿到资料; err={error}; final_url={final_url}; "
-              f"login_btn_visible={has_login_btn}; hit={hit_apis}; shapes={shapes}; "
+              f"login_btn_visible={has_login_btn}; login_cookie={has_login_cookie}; "
+              f"storage_uid={bool(storage_uid)}; hit={hit_apis}; shapes={shapes}; "
               f"api_seen({len(api_seen)})={api_seen[:25]}")
     return result, error
 
