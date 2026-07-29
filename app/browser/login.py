@@ -50,7 +50,7 @@ async def interactive_login(mgr: BrowserManager, identity: Identity,
                 continue
 
         # 轮询登录态(用户关窗 -> 立即视为未登录,不抛错)
-        waited = 0
+        waited = 0.0
         while waited < timeout_seconds:
             if page.is_closed():
                 break
@@ -62,11 +62,13 @@ async def interactive_login(mgr: BrowserManager, identity: Identity,
             if names & _LOGIN_COOKIES:
                 logged = True
                 break
-            await asyncio.sleep(2)
-            waited += 2
+            # 扫码确认后尽快通知主页面；Cookie 查询很轻量，500ms 足够且比原来的
+            # 2 秒轮询明显更跟手。
+            await asyncio.sleep(0.5)
+            waited += 0.5
 
         if logged:
-            await page.wait_for_timeout(1500)   # 等登录态写全
+            await page.wait_for_timeout(800)   # 给登录跳转/localStorage 一次落盘机会
             state = await ctx.storage_state()
             state_json = json.dumps(state)
             nickname = await _read_nickname(page)
@@ -416,10 +418,35 @@ async def _read_xhs_nickname(page) -> str:
 
 
 async def _read_nickname(page) -> str:
+    # 新版抖音会把登录用户写进 localStorage；优先读它，避免三个 DOM 选择器
+    # 逐个超时（旧实现最坏会额外等待 4.5 秒）。
+    try:
+        nickname = await page.evaluate(
+            """() => {
+              for (const store of [window.localStorage, window.sessionStorage]) {
+                for (const key of ['user_info', 'userInfo', 'user_info_passport']) {
+                  try {
+                    const raw = store.getItem(key);
+                    if (!raw) continue;
+                    let value = JSON.parse(raw);
+                    if (typeof value === 'string') value = JSON.parse(value);
+                    const name = value && (value.nickname || value.name);
+                    if (name) return String(name).trim().slice(0, 40);
+                  } catch (_) {}
+                }
+              }
+              return '';
+            }"""
+        )
+        if nickname and str(nickname).strip():
+            return str(nickname).strip()[:40]
+    except Exception:
+        pass
+
     for sel in ('[data-e2e="user-info-nickname"]', 'span.nickname',
                 '[data-e2e="live-avatar"] + * span'):
         try:
-            t = await page.inner_text(sel, timeout=1500)
+            t = await page.inner_text(sel, timeout=600)
             if t and t.strip():
                 return t.strip()[:40]
         except Exception:

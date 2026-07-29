@@ -551,21 +551,36 @@ async function startLogin() {
 }
 function pollLogin(tid) {
   clearInterval(qrTimer);
-  qrTimer = setInterval(async () => {
+  clearTimeout(qrTimer);
+  let accountShown = false;
+  const tick = async () => {
     try {
       const res = await api("/api/login/browser/poll?task_id=" + tid);
-      if (res.status === "confirmed") {
-        clearInterval(qrTimer);
+      if (res.status === "persisted") {
+        $("qrstatus").textContent = "登录成功 ✓ 正在同步账号资料…";
+        if (!accountShown) {
+          accountShown = true;
+          toast("扫码确认成功，账号已添加", "ok");
+          refreshAccounts();
+        }
+      } else if (res.status === "confirmed") {
+        clearTimeout(qrTimer);
         $("qrstatus").textContent = "登录成功 ✓ " + (res.nickname || "");
         toast("登录成功 " + (res.nickname || ""), "ok");
-        setTimeout(() => { $("qrbox").style.display = "none"; refreshAccounts(); }, 1200);
+        refreshAccounts();
+        setTimeout(() => { $("qrbox").style.display = "none"; }, 650);
+        return;
       } else if (res.status === "expired") {
-        clearInterval(qrTimer); $("qrstatus").textContent = "超时未登录,请重试"; toast("二维码超时,请重试", "err");
+        clearTimeout(qrTimer); $("qrstatus").textContent = "超时未登录,请重试"; toast("二维码超时,请重试", "err");
+        return;
       } else if (res.status === "error") {
-        clearInterval(qrTimer); $("qrstatus").textContent = "出错: " + (res.error || ""); toast("登录出错:" + (res.error || ""), "err");
+        clearTimeout(qrTimer); $("qrstatus").textContent = "出错: " + (res.error || ""); toast("登录出错:" + (res.error || ""), "err");
+        return;
       }
-    } catch (e) { clearInterval(qrTimer); $("qrstatus").textContent = e.message; }
-  }, 2000);
+      qrTimer = setTimeout(tick, 600);
+    } catch (e) { clearTimeout(qrTimer); $("qrstatus").textContent = e.message; }
+  };
+  tick();
 }
 
 // ─── 创作者登录(自有账号评论模式用) ───
@@ -1691,14 +1706,26 @@ async function relogin(id) {
   });
 }
 function pollReloginTask(tid) {
-  const t = setInterval(async () => {
+  let t = null;
+  let persistedShown = false;
+  const tick = async () => {
     try {
       const r = await api("/api/login/browser/poll?task_id=" + tid);
-      if (r.status === "confirmed") { clearInterval(t); toast("重新登录成功 " + (r.nickname || ""), "ok"); refreshAccounts(); }
-      else if (r.status === "expired") { clearInterval(t); toast("超时未登录,请重试", "err"); }
-      else if (r.status === "error") { clearInterval(t); toast("出错:" + (r.error || ""), "err"); }
-    } catch (e) { clearInterval(t); }
-  }, 2000);
+      if (r.status === "persisted" && !persistedShown) {
+        persistedShown = true;
+        toast("扫码确认成功，正在同步账号资料", "ok");
+        refreshAccounts();
+      } else if (r.status === "confirmed") {
+        clearTimeout(t); toast("重新登录成功 " + (r.nickname || ""), "ok"); refreshAccounts(); return;
+      } else if (r.status === "expired") {
+        clearTimeout(t); toast("超时未登录,请重试", "err"); return;
+      } else if (r.status === "error") {
+        clearTimeout(t); toast("出错:" + (r.error || ""), "err"); return;
+      }
+      t = setTimeout(tick, 600);
+    } catch (e) { clearTimeout(t); }
+  };
+  tick();
 }
 async function delAccount(id) {
   const a = ACCOUNTS.find(x => x.id === id);

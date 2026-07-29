@@ -344,11 +344,22 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     acc.nickname = nickname
                 acc.status = "active"
                 s.add(acc); s.commit()
-            await _enrich_account_profile(acc_id, state_json)   # best-effort
+
+            # 登录态已经持久化且账号已经落库：立即通知前端把账号显示出来。
+            # 完整资料抓取可能还需数秒，不能让它阻塞“扫码成功”的交互反馈。
+            login_tasks[task_id] = {
+                "status": "persisted",
+                "account_id": acc_id,
+                "nickname": nickname or nm,
+                "hint": "登录成功，正在同步账号资料",
+            }
+
+            profile_status = await _enrich_account_profile(acc_id, state_json)   # best-effort
             with get_session() as s:
                 acc = s.get(DouyinAccount, acc_id)
                 login_tasks[task_id] = {"status": "confirmed", "account_id": acc_id,
-                                        "nickname": acc.nickname}
+                                        "nickname": acc.nickname if acc else (nickname or nm),
+                                        "profile_status": profile_status}
         else:
             if fresh_account and tmp_profile:   # 没建账号,清理临时 profile
                 try:
