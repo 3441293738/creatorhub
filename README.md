@@ -219,13 +219,13 @@ data/
 ## 赞助商
 
 <p align="center">
-  <a href="https://www.ipwo.net/?code=PPBFE3E2F">
+  <a href="https://www.ipwo.net/?code=PPBFE3E2F" target="_blank" rel="noopener noreferrer">
     <img src="assets/sponsors/ipwo-banner.svg" alt="IPWO 爬虫住宅代理" width="100%">
   </a>
 </p>
 
 <p align="center">
-  <a href="https://www.ipwo.net/?code=PPBFE3E2F">IPWO</a>
+  <a href="https://www.ipwo.net/?code=PPBFE3E2F" target="_blank" rel="noopener noreferrer">IPWO</a>
   提供稳定的住宅代理网络，适用于公开数据采集、接口调试、自动化测试与多地区访问验证等合规场景。
   支持 HTTP / HTTPS / SOCKS5，优惠码：<code>0201</code>。
   <br>
