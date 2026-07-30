@@ -336,9 +336,49 @@ async def interactive_ks_creator_login(mgr: BrowserManager, identity: Identity,
 
 # ── 视频号(微信视频号 / finder)登录 ──
 # 视频号助手登录后写入的 Cookie(挂在 channels.weixin.qq.com / .weixin.qq.com)。
-# sessionid 是权威信号(游客态没有);_finder_auth / wxuin 兜底。
-# ⚠️ Cookie 名以真实抓包为准,变化时改这里。
-_CHANNELS_LOGIN_COOKIES = {"sessionid", "_finder_auth", "wxuin"}
+# sessionid / _finder_auth 才能作为强登录信号。wxuin 在扫码授权过程尚未完成时
+# 也可能提前出现，不能单独据此判定登录成功，否则会出现“刚提示成功又登录失效”。
+_CHANNELS_STRONG_LOGIN_COOKIES = {"sessionid", "_finder_auth"}
+_CHANNELS_AUTH_APIS = (
+    "mmfinderassistant-bin/auth/get_auth_info",
+    "mmfinderassistant-bin/auth/auth_data",
+)
+
+
+def _channels_auth_response_ok(payload: dict) -> bool:
+    """判断视频号 auth/* 响应是否明确表示已认证。
+
+    当前接口常见形态为 ``{errCode: 0, data: {...}}``。只接受明确的成功码，
+    避免 HTTP 201 但业务层未登录的响应被当成登录成功。
+    """
+    if not isinstance(payload, dict):
+        return False
+    code = None
+    for key in ("errCode", "err_code", "ret", "retCode", "code"):
+        if key in payload:
+            code = payload.get(key)
+            break
+    if code is None:
+        base = payload.get("baseResponse") or payload.get("base_response") or {}
+        if isinstance(base, dict):
+            for key in ("errCode", "err_code", "ret", "retCode", "code"):
+                if key in base:
+                    code = base.get(key)
+                    break
+    if code is None:
+        return False
+    try:
+        return int(code) == 0
+    except (TypeError, ValueError):
+        return str(code).strip().lower() in {"ok", "success"}
+
+
+def _channels_login_ready(cookie_names, auth_verified: bool, on_platform: bool) -> bool:
+    """登录页跳转后，必须有强 Cookie 或成功的 auth/* 业务响应。"""
+    return bool(
+        on_platform
+        and (auth_verified or (_CHANNELS_STRONG_LOGIN_COOKIES & set(cookie_names or ())))
+    )
 
 
 async def interactive_channels_login(mgr: BrowserManager, identity: Identity,
@@ -355,11 +395,25 @@ async def interactive_channels_login(mgr: BrowserManager, identity: Identity,
     logged = False
     nickname = ""
     state_json = ""
+    auth_verified = asyncio.Event()
+
+    async def on_response(resp):
+        if not any(api in resp.url for api in _CHANNELS_AUTH_APIS) or resp.status >= 400:
+            return
+        try:
+            payload = await resp.json()
+        except Exception:
+            return
+        if _channels_auth_response_ok(payload):
+            auth_verified.set()
+
+    page.on("response", on_response)
     try:
         await page.goto("https://channels.weixin.qq.com/login.html",
                         wait_until="domcontentloaded", timeout=30000)
         await _focus(page)
         waited = 0
+        stable_cookie_hits = 0
         while waited < timeout_seconds:
             if page.is_closed():
                 break
@@ -368,17 +422,33 @@ async def interactive_channels_login(mgr: BrowserManager, identity: Identity,
             except Exception:
                 break
             names = {c["name"] for c in cookies}
-            # 登录成功:出现 sessionid 且已跳离 login.html(进入 /platform)
+            # 登录成功:进入 /platform 后，auth/* 业务响应成功，或强登录 Cookie
+            # 连续两轮仍存在。wxuin 单独出现只说明微信身份已写入，不代表助手已登录。
             on_platform = "channels.weixin.qq.com" in page.url \
                 and "login.html" not in page.url
-            if (names & _CHANNELS_LOGIN_COOKIES) and on_platform:
+            ready = _channels_login_ready(names, auth_verified.is_set(), on_platform)
+            if ready and auth_verified.is_set():
                 logged = True
                 break
+            if ready:
+                stable_cookie_hits += 1
+                if stable_cookie_hits >= 2:
+                    logged = True
+                    break
+            else:
+                stable_cookie_hits = 0
             await asyncio.sleep(2)
             waited += 2
         if logged:
-            await page.wait_for_timeout(2000)   # 等登录态/跳转写全
-            state_json = json.dumps(await ctx.storage_state())
+            await page.wait_for_timeout(2500)   # 等登录态/跳转写全
+            # 落库前再确认页面没有回跳登录页，过滤授权过程中的瞬时假成功。
+            names = {c["name"] for c in await ctx.cookies()}
+            still_on_platform = "channels.weixin.qq.com" in page.url \
+                and "login.html" not in page.url
+            logged = _channels_login_ready(
+                names, auth_verified.is_set(), still_on_platform)
+            if logged:
+                state_json = json.dumps(await ctx.storage_state())
     finally:
         try:
             await ctx.close()

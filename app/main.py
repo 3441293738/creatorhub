@@ -161,6 +161,19 @@ async def _xhs_profile(state: str, proxy: str = ""):
     return merged, ""
 
 
+async def _fetch_channels_profile_with_retry(identity, attempts: int = 3) -> tuple[dict, str]:
+    """视频号扫码后的会话传播窗口内重试，避免一次跳登录页就误判失效。"""
+    result: tuple[dict, str] = ({}, "logged_out")
+    for attempt in range(max(1, attempts)):
+        if attempt:
+            await asyncio.sleep(1.5 * attempt)
+        result = await fetch_channels_self_profile(browser, identity)
+        profile, error = result
+        if profile or error != "logged_out":
+            break
+    return result
+
+
 async def _enrich_account_profile(account_id: int, state: str) -> str:
     """用登录态拉取账号资料并顺带判断登录态。返回 ok | invalid | error。"""
     if browser is None or not state:
@@ -213,7 +226,9 @@ async def _enrich_account_profile(account_id: int, state: str) -> str:
         elif platform == "kuaishou":
             u, err = await fetch_ks_self_profile(browser, identity)
         elif platform == "shipinhao":
-            u, err = await fetch_channels_self_profile(browser, identity)
+            # 视频号扫码授权后，服务端会话偶尔要数秒才在新页面中生效。
+            # 单次打开被重定向到登录页不能立即把刚添加的账号判为失效。
+            u, err = await _fetch_channels_profile_with_retry(identity)
         else:
             u, err = await fetch_self_profile(browser, identity)
     except Exception:
@@ -351,7 +366,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 "status": "persisted",
                 "account_id": acc_id,
                 "nickname": nickname or nm,
-                "hint": "登录成功，正在同步账号资料",
+                "hint": "扫码已确认，正在校验登录态并同步账号资料",
             }
 
             profile_status = await _enrich_account_profile(acc_id, state_json)   # best-effort

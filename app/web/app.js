@@ -557,18 +557,24 @@ function pollLogin(tid) {
     try {
       const res = await api("/api/login/browser/poll?task_id=" + tid);
       if (res.status === "persisted") {
-        $("qrstatus").textContent = "登录成功 ✓ 正在同步账号资料…";
+        $("qrstatus").textContent = "扫码已确认，正在校验登录态并同步账号资料…";
         if (!accountShown) {
           accountShown = true;
-          toast("扫码确认成功，账号已添加", "ok");
+          toast("扫码已确认，正在校验登录态", "info");
           refreshAccounts();
         }
       } else if (res.status === "confirmed") {
         clearTimeout(qrTimer);
-        $("qrstatus").textContent = "登录成功 ✓ " + (res.nickname || "");
-        toast("登录成功 " + (res.nickname || ""), "ok");
+        if (res.profile_status === "invalid") {
+          $("qrstatus").textContent = "登录校验未通过，请重新扫码";
+          toast((PF_NAME[PLATFORM] || "账号") + "登录校验未通过，请重新扫码", "err");
+        } else {
+          const suffix = res.profile_status === "error" ? "（资料稍后同步）" : "";
+          $("qrstatus").textContent = "登录成功 ✓ " + (res.nickname || "") + suffix;
+          toast("登录成功 " + (res.nickname || "") + suffix, res.profile_status === "error" ? "info" : "ok");
+          setTimeout(() => { $("qrbox").style.display = "none"; }, 650);
+        }
         refreshAccounts();
-        setTimeout(() => { $("qrbox").style.display = "none"; }, 650);
         return;
       } else if (res.status === "expired") {
         clearTimeout(qrTimer); $("qrstatus").textContent = "超时未登录,请重试"; toast("二维码超时,请重试", "err");
@@ -1006,8 +1012,9 @@ async function refreshAccounts() {
   $("acc-table").querySelector("tbody").innerHTML = accs.map(a => {
     const isXhs = a.platform === "xhs";
     const isKs = a.platform === "kuaishou";
-    const idName = isXhs ? "小红书号 " : isKs ? "快手号 " : "抖音号 ";
-    const secName = (isXhs || isKs) ? "user_id " : "sec_uid ";
+    const isChannels = a.platform === "shipinhao";
+    const idName = isXhs ? "小红书号 " : isKs ? "快手号 " : isChannels ? "视频号 " : "抖音号 ";
+    const secName = isChannels ? "finder_id " : (isXhs || isKs) ? "user_id " : "sec_uid ";
     const idline = [
       a.douyin_id ? idName + esc(a.douyin_id) : null,
       a.sec_uid ? secName + esc(a.sec_uid).slice(0, 16) + "…" : null,
@@ -1016,7 +1023,9 @@ async function refreshAccounts() {
       a.aweme_count ? a.aweme_count + (isXhs ? " 笔记" : " 作品") : null,
       a.follower_count ? fmtNum(a.follower_count) + " 粉丝" : null,
       isXhs ? "扫码登录" : (a.login_type === "cookie" ? "Cookie 登录" : "扫码登录"),
-      a.has_storage ? "登录态有效" : "无登录态",
+      a.has_storage
+        ? (a.status === "invalid" ? "登录态已保存但校验失效" : "登录态有效")
+        : "无登录态",
       `被 ${a.monitor_count} 个监控使用`,
       a.created_at ? "登录于 " + new Date(a.created_at + "Z").toLocaleString() : null,
     ].filter(Boolean).join(" · ");
@@ -1713,10 +1722,17 @@ function pollReloginTask(tid) {
       const r = await api("/api/login/browser/poll?task_id=" + tid);
       if (r.status === "persisted" && !persistedShown) {
         persistedShown = true;
-        toast("扫码确认成功，正在同步账号资料", "ok");
+        toast("扫码已确认，正在校验登录态", "info");
         refreshAccounts();
       } else if (r.status === "confirmed") {
-        clearTimeout(t); toast("重新登录成功 " + (r.nickname || ""), "ok"); refreshAccounts(); return;
+        clearTimeout(t);
+        if (r.profile_status === "invalid") {
+          toast("登录校验未通过，请重新扫码", "err");
+        } else {
+          const suffix = r.profile_status === "error" ? "（资料稍后同步）" : "";
+          toast("重新登录成功 " + (r.nickname || "") + suffix, r.profile_status === "error" ? "info" : "ok");
+        }
+        refreshAccounts(); return;
       } else if (r.status === "expired") {
         clearTimeout(t); toast("超时未登录,请重试", "err"); return;
       } else if (r.status === "error") {
