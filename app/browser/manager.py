@@ -84,6 +84,49 @@ def _sanitize_cookies(cookies: List[dict]) -> List[dict]:
     return out
 
 
+def _cookie_key(cookie: dict) -> tuple[str, str, str]:
+    """Cookie identity used when merging DB storage_state into a profile."""
+    return (
+        str(cookie.get("name") or ""),
+        str(cookie.get("domain") or "").lstrip(".").lower(),
+        str(cookie.get("path") or "/"),
+    )
+
+
+def _bridge_cookies(states: tuple, existing: List[dict] | None = None) -> List[dict]:
+    """Return usable storage_state cookies missing from the live profile.
+
+    Chromium removes session cookies when a persistent context is closed.  A
+    profile can therefore be non-empty while an auth cookie captured in
+    ``storage_state`` is already absent.  This is common for Channels'
+    ``_finder_auth``/``sessionid`` hand-off from the headed login context to
+    the background context.
+
+    Existing profile cookies win so an older DB snapshot never overwrites a
+    cookie Chromium has refreshed since the last snapshot.
+    """
+    existing_keys = {_cookie_key(c) for c in (existing or [])}
+    candidates: Dict[tuple[str, str, str], dict] = {}
+    now = time.time()
+    for raw_state in states or ():
+        try:
+            cookies = json.loads(raw_state or "{}").get("cookies") or []
+        except Exception:
+            continue
+        for cookie in _sanitize_cookies(cookies):
+            key = _cookie_key(cookie)
+            if not key[0] or key in existing_keys:
+                continue
+            expires = cookie.get("expires")
+            try:
+                if expires is not None and float(expires) > 0 and float(expires) <= now:
+                    continue
+            except (TypeError, ValueError):
+                pass
+            candidates[key] = cookie
+    return list(candidates.values())
+
+
 class BrowserManager:
     def __init__(self, default_ua: str, profiles_root: str = "./data/profiles",
                  max_live: int = 6):
@@ -202,19 +245,19 @@ class BrowserManager:
                 await ctx.add_init_script(fingerprint_script(identity.fp_seed, ua))
             except Exception:
                 pass
-        # 迁移桥:全新 profile 首次创建时,把存量登录态 Cookie 注入进去(免重新登录)
-        if was_empty and identity.bridge_states:
-            cookies: List[dict] = []
-            for st in identity.bridge_states:
-                try:
-                    cookies.extend((json.loads(st or "{}").get("cookies")) or [])
-                except Exception:
-                    pass
-            if cookies:
-                try:
-                    await ctx.add_cookies(_sanitize_cookies(cookies))
-                except Exception:
-                    pass
+        # 登录态桥接:
+        # 1) 全新 profile 注入 DB storage_state，兼容旧账号迁移；
+        # 2) 非空 profile 也补回“磁盘中缺失”的 Cookie。Chromium 关闭 context
+        #    时会丢弃 session cookie，视频号刚扫码成功后从有头切到无头 context
+        #    正好会经过这条路径。只补缺失项，不覆盖 profile 中更新过的 Cookie。
+        if identity.bridge_states:
+            try:
+                existing = [] if was_empty else await ctx.cookies()
+                cookies = _bridge_cookies(identity.bridge_states, existing)
+                if cookies:
+                    await ctx.add_cookies(cookies)
+            except Exception:
+                pass
         return ctx
 
     async def _evict_if_needed(self):
