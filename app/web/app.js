@@ -2295,6 +2295,16 @@ async function delMon(id) { if (await uiConfirm({ title: "删除监控", message
 function fmtTime(unix) { return unix ? new Date(unix * 1000).toLocaleString() : "—"; }
 function fmtDur(sec) { if (!sec) return ""; const m = Math.floor(sec / 60), s = sec % 60; return `${m}:${String(s).padStart(2, "0")}`; }
 function fmtNum(n) { return n >= 10000 ? (n / 10000).toFixed(1) + "w" : (n || 0); }
+function contentTimeCell(unix) {
+  if (!unix) return `<span class="mut">—</span>`;
+  const date = new Date(unix * 1000);
+  const day = date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
+  const time = date.toLocaleTimeString("zh-CN", { hour12: false });
+  return `<div class="content-time"><span>${esc(day)}</span><span>${esc(time)}</span></div>`;
+}
+function contentStatusLabel(status) {
+  return ({ pending: "等待中", downloading: "下载中", done: "已下载", failed: "失败" })[status] || status || "未知";
+}
 
 function contentPathMeta(r) {
   const raw = String(r.local_path || "").trim();
@@ -2436,22 +2446,31 @@ async function refreshContents() {
     pruneSel(selContent, rows.map(r => r.id)); updateContentSelBar();
     return;
   }
-  $("content-table").innerHTML = rows.map(r => `<tr>
-    <td><input type="checkbox" data-id="${r.id}" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></td>
-    <td>${r.cover_url ? `<img class="thumb" src="${r.cover_url}" alt="封面" referrerpolicy="no-referrer" onclick="openPreview(${r.id})">` : ""}</td>
-    <td class="wrap" style="max-width:260px">${esc(r.desc || "(无描述)").slice(0, 50)}${(() => { const t = monitorById(r.target_id); return t ? sourceMeta(t) : ""; })()}</td>
-    <td>${r.media_type === "images" ? "图集" : "视频"}${r.quality ? ` <span class="mut">${esc(r.quality)}</span>` : ""}</td>
-    <td class="mut num">${fmtTime(r.create_time)}</td>
-    <td class="num"><span class="metric like">${ic("i-heart")}${fmtNum(r.like_count)}</span>${r.duration ? `<span class="metric">${ic("i-clock")}${fmtDur(r.duration)}</span>` : ""}</td>
-    <td class="acttd">
-      <span class="pill ${r.download_status}">${r.download_status}</span>${r.error ? ` <span class="warn-ic" title="${esc(r.error)}">${ic("i-info")}</span>` : ""}
-      ${r.download_status === "failed" ? ` <button class="ghost sm" onclick="retryDl(${r.id})">重试</button>` : ""}
-      ${(PLATFORM === "douyin" && r.download_status === "done") ? ` <button class="ghost sm" onclick="repostXhs(${r.id})">发小红书</button>` : ""}
-      ${(PLATFORM === "xhs" && r.download_status === "done") ? ` <button class="ghost sm" onclick="repostDouyin(${r.id})">发抖音</button>` : ""}
-      <button class="ghost sm" onclick="delContent(${r.id})">删除</button>
-    </td>
-    <td class="local-path-cell">${contentPathCell(r)}</td>
-  </tr>`).join("") || empty(8, "暂无作品", "i-film", "监控目标有新作品时会自动抓取并下载,显示在这里");
+  $("content-table").innerHTML = rows.map(r => {
+    const monitor = monitorById(r.target_id);
+    const description = esc(r.desc || "(无描述)");
+    return `<tr>
+      <td class="content-check-cell"><input type="checkbox" data-id="${r.id}" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></td>
+      <td class="content-cover-cell">${r.cover_url ? `<img class="thumb" src="${r.cover_url}" alt="封面" referrerpolicy="no-referrer" onclick="openPreview(${r.id})">` : `<span class="content-cover-empty">${ic(r.media_type === "images" ? "i-image" : "i-film")}</span>`}</td>
+      <td class="content-desc-cell">
+        <div class="content-desc-text" title="${description}">${description}</div>
+        ${monitor ? `<div class="content-desc-meta">${sourceMeta(monitor)}</div>` : ""}
+      </td>
+      <td><span class="content-kind">${r.media_type === "images" ? "图集" : "视频"}</span>${r.quality ? `<span class="content-quality">${esc(r.quality)}</span>` : ""}</td>
+      <td class="mut num">${contentTimeCell(r.create_time)}</td>
+      <td class="content-metrics num"><span class="metric like">${ic("i-heart")}${fmtNum(r.like_count)}</span>${r.duration ? `<span class="metric">${ic("i-clock")}${fmtDur(r.duration)}</span>` : ""}</td>
+      <td class="content-action-cell">
+        <div class="content-status-row"><span class="pill ${r.download_status}">${contentStatusLabel(r.download_status)}</span>${r.error ? `<span class="warn-ic" data-tip="${esc(r.error)}">${ic("i-info")}</span>` : ""}</div>
+        <div class="content-action-buttons">
+          ${r.download_status === "failed" ? `<button class="ghost sm" onclick="retryDl(${r.id})">重试</button>` : ""}
+          ${(PLATFORM === "douyin" && r.download_status === "done") ? `<button class="ghost sm content-action-primary" onclick="pickRepostTarget(${r.id})">${ic("i-send")}转发</button>` : ""}
+          ${(PLATFORM === "xhs" && r.download_status === "done") ? `<button class="ghost sm content-action-primary" onclick="repostDouyin(${r.id})">${ic("i-send")}发抖音</button>` : ""}
+          <button class="ghost sm content-action-delete" onclick="delContent(${r.id})" data-tip="删除作品" aria-label="删除作品">${ic("i-trash")}</button>
+        </div>
+      </td>
+      <td class="local-path-cell">${contentPathCell(r)}</td>
+    </tr>`;
+  }).join("") || empty(8, "暂无作品", "i-film", "监控目标有新作品时会自动抓取并下载,显示在这里");
   pruneSel(selContent, rows.map(r => r.id)); updateContentSelBar();
 }
 async function retryDl(id) {
@@ -2892,27 +2911,48 @@ async function _pickXhsAccount(withOff) {
   return +v;
 }
 let REPOST_ID = null;
-let REPOST_TARGET = "xhs";           // 转发目标平台:xhs(抖音→小红书) | douyin(小红书→抖音)
+let REPOST_TARGET = "xhs";           // xhs / douyin / shipinhao
 const repostXhs = (id) => openRepost(id, "xhs");
 const repostDouyin = (id) => openRepost(id, "douyin");
+const repostChannels = (id) => openRepost(id, "shipinhao");
+async function pickRepostTarget(id) {
+  const target = await uiSelect({
+    title: "转发作品",
+    hint: "选择要发布到的平台，下一步可以继续编辑标题、文案和发布时间。",
+    options: [
+      { value: "xhs", label: "小红书" },
+      { value: "shipinhao", label: "视频号" },
+    ],
+    value: "shipinhao",
+  });
+  if (target === null) return;
+  openRepost(id, target);
+}
 async function openRepost(id, target) {
   const rec = CONTENTS.find(r => r.id === id);
-  // 拉取目标平台可发布账号:小红书需创作号;抖音需任一登录态(走浏览器自动化)
+  // 拉取目标平台可发布账号:小红书需创作号;抖音/视频号需任一登录态
   const all = await api("/api/accounts?platform=" + target);
   const accs = target === "xhs"
     ? all.filter(a => a.has_creator)
     : all.filter(a => a.has_storage || a.has_creator);
   if (!accs.length) {
-    toast(target === "xhs" ? "请先在小红书账号页完成「创作者登录」(发布用)"
-      : "请先在抖音账号页完成登录(扫码/创作者/Cookie)", "err");
+    const loginHint = target === "xhs"
+      ? "请先在小红书账号页完成「创作者登录」(发布用)"
+      : target === "shipinhao"
+        ? "请先在视频号账号页完成「视频号登录」"
+        : "请先在抖音账号页完成登录(扫码/创作者/Cookie)";
+    toast(loginHint, "err");
     return;
   }
   REPOST_ID = id; REPOST_TARGET = target;
-  const isDy = target === "douyin", cap = isDy ? 30 : 20;
-  $("rp-head").textContent = (isDy ? "发抖音" : "发小红书") + " · 编辑后推送";
+  const isDy = target === "douyin";
+  const isChannels = target === "shipinhao";
+  const cap = isDy ? 30 : isChannels ? 16 : 20;
+  const pname = isDy ? "抖音" : isChannels ? "视频号" : "小红书";
+  $("rp-head").textContent = "发" + pname + " · 编辑后推送";
   $("rp-title-label").textContent = `标题(≤${cap} 字)`;
   $("rp-title").maxLength = cap;
-  $("rp-title").placeholder = isDy ? "给作品起个标题" : "给笔记起个标题";
+  $("rp-title").placeholder = target === "xhs" ? "给笔记起个标题" : "给作品起个标题";
   $("rp-acc").innerHTML = accs.map(a => `<option value="${a.id}">${esc(a.nickname)}</option>`).join("");
   const desc = (rec && rec.desc) || "";
   $("rp-title").value = desc.slice(0, cap);   // 默认用作品描述前若干字当标题
@@ -3028,7 +3068,8 @@ async function submitRepost() {
     allow_save: $("rp-allowsave") ? $("rp-allowsave").value !== "0" : true,
     media_order: rpMediaOrder(),
   };
-  const pname = REPOST_TARGET === "douyin" ? "抖音" : "小红书";
+  const pname = REPOST_TARGET === "douyin" ? "抖音"
+    : REPOST_TARGET === "shipinhao" ? "视频号" : "小红书";
   try {
     const r = await api("/api/contents/" + REPOST_ID + "/repost-" + REPOST_TARGET, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),

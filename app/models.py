@@ -146,12 +146,12 @@ class CommentWatch(SQLModel, table=True):
 
 
 class PublishTask(SQLModel, table=True):
-    """发布任务:把图集/视频发到小红书创作平台(可定时、可来自抖音监控转发)。"""
+    """多平台发布任务(可定时、可来自跨平台作品转发)。"""
     id: Optional[int] = Field(default=None, primary_key=True)
-    platform: str = Field(default="xhs", index=True)   # 目前仅 xhs 发布
+    platform: str = Field(default="xhs", index=True)   # xhs | douyin | kuaishou | shipinhao
     account_id: Optional[int] = None                   # 用哪个已登录账号发布
     media_type: str = "images"                         # images | video
-    title: str = ""                                    # 标题(小红书上限 20 字)
+    title: str = ""                                    # 标题(各平台上限不同)
     desc: str = ""                                     # 正文
     topics: str = ""                                   # 话题,逗号分隔(不带 #)
     location: str = ""                                 # 视频号:位置 POI(可选,best-effort)

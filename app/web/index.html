@@ -615,6 +615,55 @@
   button.local-path-action.reveal { color:var(--info); }
   .local-path-empty { color:var(--mut-2); }
 
+  /* 作品列表：描述优先，状态与操作分层，避免多个发布按钮挤在一行 */
+  .content-record-table { table-layout:fixed; min-width:920px; }
+  .content-record-table .content-col-check { width:44px; }
+  .content-record-table .content-col-cover { width:72px; }
+  .content-record-table .content-col-type { width:72px; }
+  .content-record-table .content-col-time { width:108px; }
+  .content-record-table .content-col-data { width:84px; }
+  .content-record-table .content-col-actions { width:126px; }
+  .content-record-table .content-col-local { width:172px; }
+  .content-record-table th, .content-record-table td { padding:12px 10px; }
+  .content-record-table tbody tr { height:96px; }
+  .content-check-cell { text-align:center; }
+  .content-cover-cell { text-align:center; }
+  .content-cover-cell .thumb { width:46px; height:62px; }
+  .content-cover-empty {
+    display:inline-grid; place-items:center; width:46px; height:62px;
+    color:var(--mut-2); background:var(--surface-2); border:1px solid var(--line-soft); border-radius:7px;
+  }
+  .content-cover-empty svg { width:18px; height:18px; }
+  .content-desc-cell { white-space:normal; min-width:0; }
+  .content-desc-text {
+    display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:3;
+    color:var(--fg-strong); font-size:13px; font-weight:550; line-height:1.5;
+    word-break:break-word;
+  }
+  .content-desc-meta { margin-top:6px; }
+  .content-desc-meta > div { margin-top:3px !important; }
+  .content-desc-meta .meta-stack { max-width:100%; }
+  .content-kind {
+    display:block; color:var(--fg); font-size:12px; font-weight:600;
+  }
+  .content-quality {
+    display:block; margin-top:4px; color:var(--mut-2); font:400 10.5px/1.2 var(--mono);
+  }
+  .content-time { display:grid; gap:4px; color:var(--mut); line-height:1.2; }
+  .content-time span:last-child { color:var(--mut-2); }
+  .content-metrics { white-space:normal; }
+  .content-metrics .metric { display:flex; width:max-content; margin:0 0 6px; }
+  .content-metrics .metric:last-child { margin-bottom:0; }
+  .content-action-cell { white-space:normal; }
+  .content-status-row { display:flex; align-items:center; gap:5px; min-height:24px; }
+  .content-status-row .warn-ic { display:inline-flex; }
+  .content-action-buttons { display:flex; align-items:center; gap:6px; margin-top:8px; }
+  .content-action-buttons button { margin:0; }
+  .content-action-buttons .content-action-primary { color:var(--fg-strong); }
+  button.content-action-delete { width:30px; padding:5px; color:var(--mut-2); }
+  button.content-action-delete:hover { color:var(--danger); border-color:color-mix(in srgb,var(--danger) 45%,var(--line)); }
+  .content-record-table .local-path-cell { width:auto; min-width:0; max-width:none; }
+
   /* ── 监控分组 / 标签 / 别名 ── */
   .manage-toolbar {
     display:flex; align-items:center; gap:8px; flex-wrap:wrap;
@@ -855,6 +904,7 @@
   <symbol id="i-card" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20M6 15h4"/></symbol>
   <symbol id="i-heart-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v11M2 13l2-3h11l-1.4 7a2 2 0 0 1-2 1.7H7"/><path d="M7 10 11 2a2 2 0 0 1 2.7 2.3L13 10"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 10v7M14 10v7"/></symbol>
 </svg>
 
 <header>
@@ -1382,10 +1432,17 @@
         <button class="sm" style="background:var(--danger);border-color:transparent" onclick="contentBatchDelete()">批量删除</button>
       </span>
     </div>
-    <div class="table-wrap" id="content-table-wrap"><table><thead><tr>
-      <th style="width:30px"><input type="checkbox" id="content-selall" onchange="contentToggleAll(this.checked)" aria-label="全选"></th>
-      <th>封面</th><th>描述</th><th>类型</th><th>发布时间</th><th>数据</th><th>下载 / 操作</th><th>本地文件</th>
-    </tr></thead><tbody id="content-table"></tbody></table></div>
+    <div class="table-wrap" id="content-table-wrap"><table class="content-record-table">
+      <colgroup>
+        <col class="content-col-check"><col class="content-col-cover"><col class="content-col-desc">
+        <col class="content-col-type"><col class="content-col-time"><col class="content-col-data">
+        <col class="content-col-actions"><col class="content-col-local">
+      </colgroup>
+      <thead><tr>
+        <th><input type="checkbox" id="content-selall" onchange="contentToggleAll(this.checked)" aria-label="全选"></th>
+        <th>封面</th><th>作品描述</th><th>类型</th><th>发布时间</th><th>数据</th><th>状态 / 操作</th><th>本地文件</th>
+      </tr></thead><tbody id="content-table"></tbody>
+    </table></div>
     <div id="content-cards" class="xhs-grid" style="display:none"></div>
   </div>
   </section>
@@ -1563,7 +1620,7 @@
   </div>
 </div>
 
-<!-- 发小红书 · 编辑后推送 -->
+<!-- 跨平台转发 · 编辑后推送 -->
 <div id="repost" class="pv-overlay" style="display:none" onclick="if(event.target.id==='repost')hideRepost()" role="dialog" aria-modal="true">
   <div class="rp-box">
     <button class="pv-close" onclick="hideRepost()" aria-label="关闭"><svg><use href="#i-x"/></svg></button>

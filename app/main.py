@@ -3283,7 +3283,7 @@ class RepostIn(BaseModel):
 
 
 async def _repost_content(cid: int, body: RepostIn, target_platform: str):
-    """把一条已下载的作品转成目标平台(xhs / douyin)的发布任务。跨平台转发共用。"""
+    """把已下载作品转成目标平台(xhs / douyin / shipinhao)的发布任务。"""
     if not engine:
         raise HTTPException(503, "引擎未就绪")
     # 1) 只在会话内做校验,取出需要的值后退出会话,不把 ORM 对象带出去
@@ -3295,12 +3295,15 @@ async def _repost_content(cid: int, body: RepostIn, target_platform: str):
             raise HTTPException(400, "该作品尚未下载完成,无法转发")
         acc = s.get(DouyinAccount, body.account_id)
         if not acc or acc.platform != target_platform:
-            pname = "抖音" if target_platform == "douyin" else "小红书"
+            pname = {"douyin": "抖音", "shipinhao": "视频号"}.get(
+                target_platform, "小红书")
             raise HTTPException(400, f"请选择一个已登录的{pname}账号")
-        if target_platform == "douyin":
-            # 抖音发布走浏览器自动化,有任一登录态即可(需创作者/登录态)
+        if target_platform in ("douyin", "shipinhao"):
+            # 抖音/视频号发布走浏览器自动化，有任一持久登录态即可。
             if not (acc.creator_storage_state or acc.storage_state):
-                raise HTTPException(400, "该抖音账号不可发布:请先在账号页完成「创作者登录」")
+                pname = "视频号" if target_platform == "shipinhao" else "抖音"
+                action = "视频号登录" if target_platform == "shipinhao" else "创作者登录"
+                raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成「{action}」")
         elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
             raise HTTPException(400, "该账号不可发布:请对该号完成「小红书扫码登录」或「创作者登录」")
     # 2) 退出会话后再创建发布任务(create_relay_publish 内部自开会话)
@@ -3333,6 +3336,12 @@ async def repost_to_xhs(cid: int, body: RepostIn):
 async def repost_to_douyin(cid: int, body: RepostIn):
     """把一条已下载的小红书作品转成抖音发布任务(反向转发)。"""
     return await _repost_content(cid, body, "douyin")
+
+
+@app.post("/api/contents/{cid}/repost-shipinhao")
+async def repost_to_channels(cid: int, body: RepostIn):
+    """把一条已下载的抖音作品转成视频号发布任务。"""
+    return await _repost_content(cid, body, "shipinhao")
 
 
 # ─────────── 自动评论(规则 + 任务)───────────

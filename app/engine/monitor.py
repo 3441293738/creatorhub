@@ -1236,10 +1236,10 @@ class MonitorEngine:
                              visibility: str = "public", allow_save: bool = True,
                              media_order: Optional[list] = None
                              ) -> Optional[int]:
-        """从一条已下载的作品创建一个发往目标平台(小红书 / 抖音)的发布任务。返回任务 id。
+        """从已下载作品创建发往目标平台(小红书/抖音/视频号)的发布任务。返回任务 id。
 
         只接收作品 id,内部自开会话取记录,避免跨会话传入已绑定的 ORM 对象。
-        target_platform:发布目标平台(xhs 默认;douyin 为小红书→抖音的反向转发)。
+        target_platform: xhs / douyin / shipinhao。
         title/desc/topics 为 None 时沿用作品原始内容;传了则用编辑后的值(发布前可改)。
         """
         with get_session() as s:
@@ -1256,7 +1256,7 @@ class MonitorEngine:
                           if isinstance(i, int) and 0 <= i < len(files)]
                 if picked:
                     files = picked
-            title_cap = 30 if target_platform == "douyin" else 20   # 抖音标题上限更宽
+            title_cap = {"douyin": 30, "shipinhao": 16}.get(target_platform, 20)
             t_title = (title if title is not None else (rec.desc or ""))[:title_cap]
             t_desc = desc if desc is not None else (rec.desc or "")
             t_topics = topics if topics is not None else ""
