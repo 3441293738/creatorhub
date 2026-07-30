@@ -21,7 +21,13 @@ from .manager import BrowserManager
 
 BASE = "https://channels.weixin.qq.com"
 PLATFORM_URL = BASE + "/platform"
-POST_LIST_URL = BASE + "/platform/post/list"
+# 视频和图文在助手里是两个独立路由，且都会请求 post/post_list，只是
+# userpageType 分别为 Video(11) / Photo(10)。只打开 /post/list 会漏掉
+# 账号的全部图文作品。
+POST_VIDEO_LIST_URL = BASE + "/platform/post/list"
+POST_IMAGE_LIST_URL = BASE + "/platform/post/finderNewLifePostList"
+POST_LIST_URL = POST_VIDEO_LIST_URL  # 向后兼容旧引用
+POST_LIST_URLS = (POST_VIDEO_LIST_URL, POST_IMAGE_LIST_URL)
 
 # 拦截用的接口 URL 片段(子串匹配;micro/content、micro/statistic 前缀也一并覆盖)
 AUTH_API = "mmfinderassistant-bin/auth/"          # get_auth_info / auth_data
@@ -125,26 +131,40 @@ async def fetch_channels_works(mgr: BrowserManager, identity: Identity,
                                known_ids: Set[str], max_scrolls: int = 8,
                                settle_ms: int = 1800, block_media: bool = True
                                ) -> Tuple[List[dict], Optional[dict], str]:
-    """打开视频号助手作品管理页并翻页,拦截 post/post_list 收集本账号作品。
+    """依次打开视频号助手的视频/图文管理页，拦截 post/post_list 收集作品。
     返回 (新作品列表, author(视频号无独立 author,返回 None), error)。"""
     collected: Dict[str, dict] = {}
     error = ""
     api_seen: list = []
     sample: list = []
+    post_response_count = 0
+    post_totals: list = []
+    post_errors: list = []
     page = await mgr.new_page(identity, block_media)
 
     async def on_response(resp):
+        nonlocal post_response_count
         url = resp.url
         if "mmfinderassistant-bin" in url and len(api_seen) < 40:
             p = url.split("?")[0].split("mmfinderassistant-bin")[-1]
             api_seen.append(f"{resp.status} {p}")
         if POST_LIST_API not in url and STAT_API not in url:
             return
+        post_response_count += 1
         try:
             data = await resp.json()
-        except Exception:
+        except Exception as e:
+            post_errors.append(f"json:{type(e).__name__}")
             return
-        for it in _dig_posts(data):
+        d = _dig_data(data)
+        total = _rf(d, "totalCount", "total_count", default=None)
+        if total is not None:
+            post_totals.append(total)
+        err_code = _rf(data, "errCode", "err_code", default=0)
+        if err_code not in (0, "0", None, ""):
+            post_errors.append(str(err_code))
+        posts = _dig_posts(data)
+        for it in posts:
             if not isinstance(it, dict):
                 continue
             oid = _obj_id(it)
@@ -160,33 +180,47 @@ async def fetch_channels_works(mgr: BrowserManager, identity: Identity,
 
     page.on("response", on_response)
     final_url = ""
+    final_urls: list = []
+    navigation_errors: list = []
     try:
-        await page.goto(POST_LIST_URL, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(settle_ms)
-        stagnant = 0
-        for _ in range(max_scrolls):
-            if known_ids & set(collected.keys()):
-                break
-            before = len(collected)
+        # 视频和图文是两套列表。即使第一套已经遇到 known_ids，也必须继续打开
+        # 第二套，否则“只有图文”的账号会被误判为没有作品。
+        for list_url in POST_LIST_URLS:
             try:
-                await page.mouse.wheel(0, 4000)
-            except Exception:
-                pass
-            await page.wait_for_timeout(settle_ms)
-            if len(collected) == before:
-                stagnant += 1
-                if stagnant >= 2:
-                    break
-            else:
+                await page.goto(list_url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(settle_ms)
                 stagnant = 0
-        final_url = page.url
+                for _ in range(max_scrolls):
+                    before = len(collected)
+                    try:
+                        await page.mouse.wheel(0, 4000)
+                    except Exception:
+                        pass
+                    await page.wait_for_timeout(settle_ms)
+                    if len(collected) == before:
+                        stagnant += 1
+                        if stagnant >= 2:
+                            break
+                    else:
+                        stagnant = 0
+                final_url = page.url
+                final_urls.append(final_url)
+            except Exception as e:
+                navigation_errors.append(f"{list_url}: {e!r}")
+                continue
+
         if not collected:
-            if "/login" in final_url or "login.html" in final_url:
+            if any("/login" in u or "login.html" in u for u in final_urls):
                 error = "logged_out:登录态失效,请重新登录"
+            elif (post_response_count and post_totals
+                  and all(str(n) in ("0", "0.0") for n in post_totals)):
+                error = "当前账号没有已发布的视频或图文作品"
+            elif post_response_count:
+                error = "作品接口已响应但未解析到作品数据(见 channels_works 日志)"
+            elif navigation_errors:
+                error = "打开作品页失败: " + "; ".join(navigation_errors)
             else:
                 error = "未拦截到作品数据(视频号只支持本账号;或未登录/页面改版)"
-    except Exception as e:
-        error = f"打开作品页失败: {e!r}"
     finally:
         try:
             await page.close()
@@ -194,7 +228,9 @@ async def fetch_channels_works(mgr: BrowserManager, identity: Identity,
             pass
 
     if not collected:
-        print(f"[channels_works] final_url={final_url} "
+        print(f"[channels_works] final_urls={final_urls or [final_url]} "
+              f"post_responses={post_response_count} totals={post_totals} "
+              f"post_errors={post_errors} "
               f"api_seen({len(api_seen)})={api_seen[:40]}")
     elif sample:
         print(f"[channels_works] sample={sample[0]}")

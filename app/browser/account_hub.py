@@ -192,16 +192,26 @@ def _norm_channels_work(it: dict) -> Optional[dict]:
     oid = str(_first(it, "objectId", "exportId", "id", default="") or "")
     if not oid:
         return None
-    od = _first(it, "objectDesc", default={}) or {}
+    # 助手当前 post_list 使用 desc；旧版/部分接口使用 objectDesc。
+    od = _first(it, "objectDesc", "desc", default={}) or {}
+    if not isinstance(od, dict):
+        od = {}
     media = (od.get("media") or it.get("media") or [])
     m0 = media[0] if media and isinstance(media[0], dict) else {}
     fmt = str(_first(m0, "fileFormat", "mediaType", default="")).lower()
+    media_type_code = _first(od, "mediaType", default=None)
     ts = _num(_first(it, "createtime", "createTime", default=0))
+    description = (_first(od, "description", "shortTitle", default="")
+                   or _first(it, "title", "description", default="") or "")
+    if not isinstance(description, str):
+        description = str(description)
     return {
         "item_id": oid,
-        "desc": (_first(od, "description", default="")
-                 or _first(it, "desc", "title", default="") or "").strip(),
-        "media_type": "images" if ("pic" in fmt or "image" in fmt) else "video",
+        "desc": description.strip(),
+        "media_type": ("images"
+                       if media_type_code == 2 or fmt == "2"
+                       or "pic" in fmt or "image" in fmt
+                       else "video"),
         "cover_url": _first(m0, "coverUrl", "thumbUrl", default="")
                      or _first(it, "coverUrl", default=""),
         "create_time": int(ts / 1000) if ts > 1e12 else ts,

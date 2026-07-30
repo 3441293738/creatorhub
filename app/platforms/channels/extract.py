@@ -40,7 +40,9 @@ def _to_int(v) -> int:
 
 def _media_list(obj: dict) -> list:
     """视频号作品的媒体数组:objectDesc.media[] / media[]。"""
-    od = _first(obj, "objectDesc", default={}) or {}
+    od = _first(obj, "objectDesc", "desc", default={}) or {}
+    if not isinstance(od, dict):
+        od = {}
     ml = _first(od, "media", default=None) or _first(obj, "media", default=None) or []
     return ml if isinstance(ml, list) else []
 
@@ -55,9 +57,14 @@ def parse_channels_feed(item: dict, quality: str = "highest") -> Optional[Aweme]
     if not oid:
         return None
 
-    od = _first(item, "objectDesc", default={}) or {}
-    desc = (_first(od, "description", default="")
-            or _first(item, "desc", "description", "title", default="") or "").strip()
+    od = _first(item, "objectDesc", "desc", default={}) or {}
+    if not isinstance(od, dict):
+        od = {}
+    desc = (_first(od, "description", "shortTitle", default="")
+            or _first(item, "description", "title", default="") or "")
+    if not isinstance(desc, str):
+        desc = str(desc)
+    desc = desc.strip()
     # 视频号 createtime 多为秒级
     ts = _to_int(_first(item, "createtime", "createTime", "create_time", "postTime",
                         default=0))
@@ -70,7 +77,9 @@ def parse_channels_feed(item: dict, quality: str = "highest") -> Optional[Aweme]
     # fileFormat / mediaType 判定图文还是视频
     mtype = "video"
     fmt = str(_first(first_media, "fileFormat", "mediaType", default="")).lower()
-    if fmt and ("pic" in fmt or "image" in fmt or "img" in fmt):
+    media_type_code = _first(od, "mediaType", default=None)
+    if (media_type_code == 2 or fmt == "2"
+            or "pic" in fmt or "image" in fmt or "img" in fmt):
         mtype = "images"
 
     aw = Aweme(
