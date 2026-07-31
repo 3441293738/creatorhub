@@ -518,6 +518,8 @@ class MonitorEngine:
             monitor_since = int(target.created_at.timestamp())
             scan_since = _douyin_scan_since(monitor_since, known_create_times)
             backfill_count = target.initial_backfill_count
+            auto_download = target.download_enabled
+            media_filter = target.media_filter or "all"
 
         items, author, error = await fetch_videos(
             self.browser, identity, sec_uid, known,
@@ -529,6 +531,8 @@ class MonitorEngine:
         selected = _select_douyin_awemes(
             items, quality, first_scan, scan_since, backfill_count)
         for aw in selected:
+            should_download = auto_download and (
+                media_filter == "all" or aw.media_type == media_filter)
             media_json = json.dumps([{"url": m.url, "kind": m.kind, "ext": m.ext,
                                       "index": m.index} for m in aw.medias])
             rec = ContentRecord(
@@ -537,13 +541,13 @@ class MonitorEngine:
                 create_time=aw.create_time, cover_url=aw.cover or "",
                 like_count=aw.like_count, comment_count=aw.comment_count,
                 duration=aw.duration, media_json=media_json,
-                download_status="pending",
+                download_status="pending" if should_download else "skipped",
             )
-            new_records.append((rec, aw))
+            new_records.append((rec, aw, should_download))
 
         target_name = ""
         with get_session() as s:
-            for rec, _ in new_records:
+            for rec, _, _ in new_records:
                 s.add(rec)
             t = s.get(MonitorTarget, target_id)
             if t:
@@ -558,14 +562,15 @@ class MonitorEngine:
                 s.add(t)
                 target_name = t.nickname or t.sec_uid[:12]
             s.commit()
-            for rec, _ in new_records:
+            for rec, _, _ in new_records:
                 s.refresh(rec)
 
         if new_records and not first_scan:
-            await self._notify_new(target_name, [aw for _, aw in new_records])
+            await self._notify_new(target_name, [aw for _, aw, _ in new_records])
 
         await asyncio.gather(*(self._download(rec.id, aw, base_dir, proxy)
-                               for rec, aw in new_records))
+                               for rec, aw, should_download in new_records
+                               if should_download))
         return {"ok": not error, "new": len(new_records), "error": error}
 
     # ── 快手:创作者作品监控(浏览器拦截 GraphQL,与抖音同范式)──
@@ -591,6 +596,8 @@ class MonitorEngine:
             base_dir = target.download_dir or get_setting(
                 "download_dir", self.cfg.engine.media_dir)
             quality = target.video_quality or get_setting("video_quality", "highest")
+            auto_download = target.download_enabled
+            media_filter = target.media_filter or "all"
 
         items, author, error = await fetch_ks_videos(
             self.browser, identity, user_id, known,
@@ -603,6 +610,8 @@ class MonitorEngine:
             if not aw or aw.aweme_id in seen:
                 continue
             seen.add(aw.aweme_id)
+            should_download = auto_download and (
+                media_filter == "all" or aw.media_type == media_filter)
             media_json = json.dumps([{"url": m.url, "kind": m.kind, "ext": m.ext,
                                       "index": m.index} for m in aw.medias])
             rec = ContentRecord(
@@ -611,13 +620,13 @@ class MonitorEngine:
                 create_time=aw.create_time, cover_url=aw.cover or "",
                 like_count=aw.like_count, comment_count=aw.comment_count,
                 duration=aw.duration, media_json=media_json,
-                download_status="pending",
+                download_status="pending" if should_download else "skipped",
             )
-            new_records.append((rec, aw))
+            new_records.append((rec, aw, should_download))
 
         target_name = ""
         with get_session() as s:
-            for rec, _ in new_records:
+            for rec, _, _ in new_records:
                 s.add(rec)
             t = s.get(MonitorTarget, target_id)
             if t:
@@ -632,14 +641,15 @@ class MonitorEngine:
                 s.add(t)
                 target_name = t.nickname or (user_id[:12] if user_id else "kuaishou")
             s.commit()
-            for rec, _ in new_records:
+            for rec, _, _ in new_records:
                 s.refresh(rec)
 
         if new_records and not first_scan:
-            await self._notify_new(target_name, [aw for _, aw in new_records])
+            await self._notify_new(target_name, [aw for _, aw, _ in new_records])
 
         await asyncio.gather(*(self._download(rec.id, aw, base_dir, proxy)
-                               for rec, aw in new_records))
+                               for rec, aw, should_download in new_records
+                               if should_download))
         return {"ok": not error, "new": len(new_records), "error": error}
 
     def _mark_target_skip(self, target_id: int, msg: str) -> dict:
@@ -677,6 +687,8 @@ class MonitorEngine:
                 .where(ContentRecord.target_id == target_id)).all())
             base_dir = target.download_dir or get_setting(
                 "download_dir", self.cfg.engine.media_dir)
+            auto_download = target.download_enabled
+            media_filter = target.media_filter or "all"
 
         # 小红书签名直连需要登录态里的 a1 / web_session 等 Cookie
         cookie_str = cookie_str_from_state(state)
@@ -739,6 +751,8 @@ class MonitorEngine:
                            create_time=0, author_name="", media_type="images")
                 aw.platform = "xhs"
                 aw.cover = brief.get("cover", "")
+            should_download = bool(aw.medias) and auto_download and (
+                media_filter == "all" or aw.media_type == media_filter)
             media_json = json.dumps([{"url": m.url, "kind": m.kind, "ext": m.ext,
                                       "index": m.index} for m in aw.medias])
             rec = ContentRecord(
@@ -747,18 +761,19 @@ class MonitorEngine:
                 create_time=aw.create_time, cover_url=aw.cover or "",
                 like_count=aw.like_count, comment_count=aw.comment_count,
                 duration=aw.duration, media_json=media_json, xsec_token=note_tok,
-                download_status="pending" if aw.medias else "failed",
+                download_status=("pending" if should_download
+                                 else ("skipped" if aw.medias else "failed")),
                 error="" if aw.medias else (derr or "未取到媒体直链"),
             )
-            new_records.append((rec, aw))
+            new_records.append((rec, aw, should_download))
 
         print(f"[xhs_scan] kind={kind} key={keyword or user_id} briefs={len(briefs_raw)} "
               f"new_records={len(new_records)} "
-              f"with_media={sum(1 for _, a in new_records if a.medias)} error={error!r}")
+              f"with_media={sum(1 for _, a, _ in new_records if a.medias)} error={error!r}")
 
         target_name = ""
         with get_session() as s:
-            for rec, _ in new_records:
+            for rec, _, _ in new_records:
                 s.add(rec)
             t = s.get(MonitorTarget, target_id)
             if t:
@@ -774,14 +789,15 @@ class MonitorEngine:
                 target_name = t.nickname or (("#" + keyword) if kind == "keyword"
                                              else (user_id[:12] if user_id else "xhs"))
             s.commit()
-            for rec, _ in new_records:
+            for rec, _, _ in new_records:
                 s.refresh(rec)
 
         if new_records and not first_scan:
-            await self._notify_new(target_name, [aw for _, aw in new_records])
+            await self._notify_new(target_name, [aw for _, aw, _ in new_records])
 
         await asyncio.gather(*(self._download(rec.id, aw, base_dir, proxy)
-                               for rec, aw in new_records if aw.medias))
+                               for rec, aw, should_download in new_records
+                               if should_download))
         return {"ok": not error, "new": len(new_records), "error": error}
 
     # ── 独立评论监控(CommentWatch)──
@@ -1029,14 +1045,28 @@ class MonitorEngine:
             await self._notify_comments(name, work_desc, newer)
         return len(fresh)
 
+    def _comment_watch_settings(self, watch_id: int) -> dict:
+        cfg = self.cfg.engine
+        with get_session() as s:
+            watch = s.get(CommentWatch, watch_id)
+            return {
+                "recent_works": ((watch.recent_works if watch else 0)
+                                 or cfg.comment_recent_works),
+                "recent_days": ((watch.recent_days if watch else 0)
+                                or cfg.comment_recent_days),
+                "max_scrolls": ((watch.max_scrolls if watch else 0)
+                                or cfg.comment_max_scrolls),
+            }
+
     async def _cw_video(self, watch_id, identity, aweme_id, name, first_scan):
         cfg = self.cfg.engine
+        settings = self._comment_watch_settings(watch_id)
         with get_session() as s:
             known = set(s.exec(select(CommentRecord.comment_id)
                                .where(CommentRecord.watch_id == watch_id)
                                .where(CommentRecord.aweme_id == aweme_id)).all())
         raw, err = await fetch_comments(self.browser, identity, aweme_id, known,
-                                        max_scrolls=cfg.comment_max_scrolls,
+                                        max_scrolls=settings["max_scrolls"],
                                         block_media=cfg.block_media_resources)
         if err:
             log.info("评论监控(视频)%s: %s", aweme_id, err)
@@ -1046,19 +1076,20 @@ class MonitorEngine:
 
     async def _cw_user_public(self, watch_id, identity, sec_uid, name, first_scan):
         cfg = self.cfg.engine
+        settings = self._comment_watch_settings(watch_id)
         items, author, err = await fetch_videos(self.browser, identity, sec_uid, set(),
                                                 max_scrolls=4,
                                                 block_media=cfg.block_media_resources)
         if err:
             log.info("评论监控(账号)%s: %s", sec_uid, err)
-        cutoff = int(time.time()) - cfg.comment_recent_days * 86400
+        cutoff = int(time.time()) - settings["recent_days"] * 86400
         works = []
         for it in items:
             aid = str(it.get("aweme_id") or "")
             ct = int(it.get("create_time") or 0)
             if aid and ct >= cutoff:
                 works.append((aid, (it.get("desc") or "")))
-        works = works[:cfg.comment_recent_works]
+        works = works[:settings["recent_works"]]
         total = 0
         for aid, desc in works:
             with get_session() as s:
@@ -1066,7 +1097,7 @@ class MonitorEngine:
                                    .where(CommentRecord.watch_id == watch_id)
                                    .where(CommentRecord.aweme_id == aid)).all())
             raw, _e = await fetch_comments(self.browser, identity, aid, known,
-                                           max_scrolls=cfg.comment_max_scrolls,
+                                           max_scrolls=settings["max_scrolls"],
                                            block_media=cfg.block_media_resources)
             fresh = [c for c in (parse_comment(rc) for rc in raw) if c]
             total += await self._ingest(watch_id, aid, fresh, name, desc, first_scan)
@@ -1075,12 +1106,13 @@ class MonitorEngine:
     # ── 快手评论监控(浏览器拦截 GraphQL)──
     async def _cw_ks_video(self, watch_id, identity, photo_id, name, first_scan):
         cfg = self.cfg.engine
+        settings = self._comment_watch_settings(watch_id)
         with get_session() as s:
             known = set(s.exec(select(CommentRecord.comment_id)
                                .where(CommentRecord.watch_id == watch_id)
                                .where(CommentRecord.aweme_id == photo_id)).all())
         raw, err = await fetch_ks_comments(self.browser, identity, photo_id, known,
-                                           max_scrolls=cfg.comment_max_scrolls,
+                                           max_scrolls=settings["max_scrolls"],
                                            block_media=cfg.block_media_resources)
         if err:
             log.info("评论监控(快手作品)%s: %s", photo_id, err)
@@ -1091,16 +1123,20 @@ class MonitorEngine:
 
     async def _cw_ks_user(self, watch_id, identity, user_id, name, first_scan):
         cfg = self.cfg.engine
+        settings = self._comment_watch_settings(watch_id)
         items, author, err = await fetch_ks_videos(self.browser, identity, user_id, set(),
                                                    max_scrolls=4,
                                                    block_media=cfg.block_media_resources)
         if err:
             log.info("评论监控(快手账号)%s: %s", user_id, err)
         works = []
-        for feed in items[:cfg.comment_recent_works]:
+        cutoff = int(time.time()) - settings["recent_days"] * 86400
+        for feed in items:
             aw = parse_ks_feed(feed)
-            if aw:
+            if aw and (not aw.create_time or aw.create_time >= cutoff):
                 works.append((aw.aweme_id, aw.desc))
+                if len(works) >= settings["recent_works"]:
+                    break
         total = 0
         for pid, desc in works:
             with get_session() as s:
@@ -1108,7 +1144,7 @@ class MonitorEngine:
                                    .where(CommentRecord.watch_id == watch_id)
                                    .where(CommentRecord.aweme_id == pid)).all())
             raw, _e = await fetch_ks_comments(self.browser, identity, pid, known,
-                                              max_scrolls=cfg.comment_max_scrolls,
+                                              max_scrolls=settings["max_scrolls"],
                                               block_media=cfg.block_media_resources)
             fresh = [c for c in (parse_ks_comment(rc) for rc in flatten_ks_comments(raw)) if c]
             total += await self._ingest(watch_id, pid, fresh, name, desc, first_scan,
@@ -1123,6 +1159,7 @@ class MonitorEngine:
             log.warning("评论监控 %s 选创作中心,但账号无创作者登录态", watch_id)
             return 0, None
         cfg = self.cfg.engine
+        settings = self._comment_watch_settings(watch_id)
         with get_session() as s:
             known = set(s.exec(select(CommentRecord.comment_id)
                                .where(CommentRecord.watch_id == watch_id)).all())
@@ -1131,7 +1168,7 @@ class MonitorEngine:
             prev_max = max([t for t in times if t] or [0])
         raw, err = await fetch_creator_comments(self.browser, identity, known,
                                                 page_url=cfg.creator_comment_url,
-                                                max_scrolls=cfg.comment_max_scrolls,
+                                                max_scrolls=settings["max_scrolls"],
                                                 block_media=cfg.block_media_resources)
         if err:
             log.info("评论监控(创作中心): %s", err)
@@ -1181,7 +1218,7 @@ class MonitorEngine:
 
     async def _cw_xhs_creator(self, watch_id, state, user_id, xsec_token, name, first_scan,
                               proxy=""):
-        cfg = self.cfg.engine
+        settings = self._comment_watch_settings(watch_id)
         client = self._xhs_client(state, proxy)
         if client is None:
             return 0, None
@@ -1193,7 +1230,10 @@ class MonitorEngine:
             log.info("评论监控(小红书创作者)%s: %s", user_id, e)
             briefs_raw, author = [], None
         briefs = [b for b in (parse_note_brief(r) for r in briefs_raw) if b]
-        briefs = briefs[:cfg.comment_recent_works]
+        cutoff = int(time.time()) - settings["recent_days"] * 86400
+        briefs = [b for b in briefs
+                  if not b.get("create_time") or b["create_time"] >= cutoff]
+        briefs = briefs[:settings["recent_works"]]
         total = 0
         for b in briefs:
             nid = b["note_id"]
@@ -2095,7 +2135,7 @@ class MonitorEngine:
             channels = [{"type": c.type, "config": _loads(c.config)} for c in chans]
         if not channels:
             return
-        title = f"抖音监控 · {target_name} 作品有 {len(comments)} 条新评论"
+        title = f"评论监控 · {target_name} 有 {len(comments)} 条新评论"
         head = (work_desc or "")[:20]
         lines = [f"作品:{head}"]
         for c in comments[:6]:
@@ -2115,7 +2155,7 @@ class MonitorEngine:
             channels = [{"type": c.type, "config": _loads(c.config)} for c in chans]
         if not channels:
             return
-        title = f"抖音监控 · {target_name} 新增 {len(awemes)} 个作品"
+        title = f"作品监控 · {target_name} 新增 {len(awemes)} 个作品"
         lines = []
         for aw in awemes[:6]:
             tag = "图集" if aw.media_type == "images" else "视频"
@@ -2136,7 +2176,6 @@ class MonitorEngine:
                     s.add(rec); s.commit()
             ok, path, err = await self.downloader.download_aweme(
                 aweme, base_dir, self._dl_proxy(proxy))
-            relay_to = None
             with get_session() as s:
                 rec = s.get(ContentRecord, record_id)
                 if rec:
@@ -2144,14 +2183,6 @@ class MonitorEngine:
                     rec.local_path = path
                     rec.error = err
                     s.add(rec); s.commit()
-                    if ok:
-                        t = s.get(MonitorTarget, rec.target_id)
-                        relay_to = t.relay_to_xhs_account_id if t else None
-            # 跨平台转发:抖音作品下载完成后,自动建一个发往小红书的发布任务
-            if ok and relay_to:
-                tid = self.create_relay_publish(record_id, relay_to)
-                if tid:
-                    log.info("已创建跨平台发布任务 #%s(来源作品 #%s)", tid, record_id)
 
     # ── 失败重试 ──
     def _rebuild_aweme(self, rec: ContentRecord, author_name: str) -> Aweme:

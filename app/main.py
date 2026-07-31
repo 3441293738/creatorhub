@@ -2329,6 +2329,8 @@ class TargetIn(BaseModel):
     initial_backfill_count: int | None = None
     download_dir: str = ""
     video_quality: str = ""
+    download_enabled: bool = True
+    media_filter: str = "all"
     alias: str = ""
     group_name: str = ""
     tags: list[str] = PydanticField(default_factory=list)
@@ -2337,13 +2339,14 @@ class TargetIn(BaseModel):
 class TargetUpdate(BaseModel):
     download_dir: str | None = None
     interval_seconds: int | None = None
+    initial_backfill_count: int | None = None
     video_quality: str | None = None
+    download_enabled: bool | None = None
+    media_filter: str | None = None
     account_id: int | None = None
-    relay_to_xhs_account_id: int | None = None   # -1 清除;>0 设为该小红书账号
     alias: str | None = None
     group_name: str | None = None
     tags: list[str] | None = None
-
 
 @app.post("/api/monitors")
 async def add_monitor(body: TargetIn):
@@ -2371,6 +2374,10 @@ async def add_monitor(body: TargetIn):
             raise HTTPException(400, "无法解析 sec_uid,请粘贴主页链接 / v.douyin.com 短链 / sec_uid")
 
     dl = body.download_dir.strip()
+    if not 60 <= body.interval_seconds <= 86400:
+        raise HTTPException(400, "监控间隔须为 60~86400 秒")
+    if body.media_filter not in ("all", "video", "images"):
+        raise HTTPException(400, "媒体筛选须为 all、video 或 images")
     if dl:
         try:
             Path(dl).expanduser().mkdir(parents=True, exist_ok=True)
@@ -2413,7 +2420,9 @@ async def add_monitor(body: TargetIn):
                           tags=_dump_meta_tags(_meta_tags(body.tags)),
                           account_id=body.account_id,
                           interval_seconds=body.interval_seconds, download_dir=dl,
-                          initial_backfill_count=backfill_count, video_quality=q)
+                          initial_backfill_count=backfill_count, video_quality=q,
+                          download_enabled=body.download_enabled,
+                          media_filter=body.media_filter)
         s.add(t); s.commit(); s.refresh(t)
         return _target_dict(t)
 
@@ -2433,27 +2442,31 @@ async def update_monitor(tid: int, body: TargetUpdate):
                     raise HTTPException(400, f"下载目录不可用: {e}")
             t.download_dir = dl
         if body.interval_seconds is not None:
+            if not 60 <= body.interval_seconds <= 86400:
+                raise HTTPException(400, "监控间隔须为 60~86400 秒")
             t.interval_seconds = body.interval_seconds
+        if body.initial_backfill_count is not None:
+            if t.last_scan_at is not None:
+                raise HTTPException(400, "首次历史回填仅能在第一次扫描前修改")
+            if body.initial_backfill_count < -1 or body.initial_backfill_count > 1000:
+                raise HTTPException(400, "首次回填数须为 -1 或 0~1000")
+            t.initial_backfill_count = body.initial_backfill_count
         if body.video_quality is not None:
             q = body.video_quality.strip()
             if q and q not in QUALITY_CHOICES:
                 raise HTTPException(400, f"画质取值无效: {q}")
             t.video_quality = q
+        if body.download_enabled is not None:
+            t.download_enabled = body.download_enabled
+        if body.media_filter is not None:
+            if body.media_filter not in ("all", "video", "images"):
+                raise HTTPException(400, "媒体筛选须为 all、video 或 images")
+            t.media_filter = body.media_filter
         if body.account_id is not None:
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != t.platform or acc.status != "active":
                 raise HTTPException(400, "账号不存在、登录态失效或与监控平台不匹配")
             t.account_id = body.account_id
-        if body.relay_to_xhs_account_id is not None:
-            if body.relay_to_xhs_account_id and body.relay_to_xhs_account_id > 0:
-                acc = s.get(DouyinAccount, body.relay_to_xhs_account_id)
-                if not acc or acc.platform != "xhs":
-                    raise HTTPException(400, "转发目标须为已登录的小红书账号")
-                if not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
-                    raise HTTPException(400, "转发目标账号不可发布:请对该号完成「小红书扫码登录」或「创作者登录」")
-                t.relay_to_xhs_account_id = body.relay_to_xhs_account_id
-            else:
-                t.relay_to_xhs_account_id = None
         if body.alias is not None:
             t.alias = _meta_text(body.alias, 60)
         if body.group_name is not None:
@@ -2581,8 +2594,8 @@ def _target_dict(t: MonitorTarget) -> dict:
         "enabled": t.enabled, "interval_seconds": t.interval_seconds,
         "initial_backfill_count": t.initial_backfill_count,
         "download_dir": t.download_dir, "video_quality": t.video_quality,
+        "download_enabled": t.download_enabled, "media_filter": t.media_filter,
         "account_id": t.account_id,
-        "relay_to_xhs_account_id": t.relay_to_xhs_account_id,
         "last_scan_at": t.last_scan_at.isoformat() if t.last_scan_at else None,
         "last_error": t.last_error,
     }
@@ -2782,6 +2795,9 @@ class WatchIn(BaseModel):
     mode: str = "public"               # public | creator(仅抖音 user)
     account_id: int | None = None
     interval_seconds: int = 600
+    recent_works: int = 0
+    recent_days: int = 0
+    max_scrolls: int = 0
     alias: str = ""
     group_name: str = ""
     tags: list[str] = PydanticField(default_factory=list)
@@ -2791,6 +2807,10 @@ class WatchUpdate(BaseModel):
     enabled: bool | None = None
     interval_seconds: int | None = None
     mode: str | None = None
+    account_id: int | None = None
+    recent_works: int | None = None
+    recent_days: int | None = None
+    max_scrolls: int | None = None
     alias: str | None = None
     group_name: str | None = None
     tags: list[str] | None = None
@@ -2804,6 +2824,8 @@ def _watch_dict(w: CommentWatch) -> dict:
         "alias": w.alias, "group_name": w.group_name,
         "tags": _load_meta_tags(w.tags),
         "account_id": w.account_id, "interval_seconds": w.interval_seconds,
+        "recent_works": w.recent_works, "recent_days": w.recent_days,
+        "max_scrolls": w.max_scrolls,
         "enabled": w.enabled, "comment_count": w.comment_count,
         "last_scan_at": w.last_scan_at.isoformat() if w.last_scan_at else None,
         "last_error": w.last_error,
@@ -2825,6 +2847,14 @@ async def add_watch(body: WatchIn):
     aweme_id = sec_uid = xsec_token = ""
     title = ""
 
+    if not 60 <= body.interval_seconds <= 86400:
+        raise HTTPException(400, "监控间隔须为 60~86400 秒")
+    if not 0 <= body.recent_works <= 50:
+        raise HTTPException(400, "近期作品数须为 0~50，0 表示跟随全局设置")
+    if not 0 <= body.recent_days <= 365:
+        raise HTTPException(400, "近期天数须为 0~365，0 表示跟随全局设置")
+    if not 0 <= body.max_scrolls <= 50:
+        raise HTTPException(400, "抓取深度须为 0~50，0 表示跟随全局设置")
     if platform == "xhs":
         kind = body.kind
         if kind == "auto":
@@ -2891,6 +2921,9 @@ async def add_watch(body: WatchIn):
         w = CommentWatch(platform=platform, kind=kind, aweme_id=aweme_id, sec_uid=sec_uid,
                           xsec_token=xsec_token, mode=mode, account_id=body.account_id,
                           interval_seconds=body.interval_seconds, title=title,
+                          recent_works=body.recent_works,
+                          recent_days=body.recent_days,
+                          max_scrolls=body.max_scrolls,
                           alias=_meta_text(body.alias, 60),
                           group_name=_meta_text(body.group_name, 40),
                           tags=_dump_meta_tags(_meta_tags(body.tags)))
@@ -2904,12 +2937,41 @@ async def update_watch(wid: int, body: WatchUpdate):
         w = s.get(CommentWatch, wid)
         if not w:
             raise HTTPException(404)
+        if body.interval_seconds is not None and not 60 <= body.interval_seconds <= 86400:
+            raise HTTPException(400, "监控间隔须为 60~86400 秒")
         if body.enabled is not None:
             w.enabled = body.enabled
         if body.interval_seconds is not None:
             w.interval_seconds = body.interval_seconds
-        if body.mode is not None and body.mode in ("public", "creator"):
-            w.mode = body.mode
+        if body.recent_works is not None:
+            if not 0 <= body.recent_works <= 50:
+                raise HTTPException(400, "近期作品数须为 0~50")
+            w.recent_works = body.recent_works
+        if body.recent_days is not None:
+            if not 0 <= body.recent_days <= 365:
+                raise HTTPException(400, "近期天数须为 0~365")
+            w.recent_days = body.recent_days
+        if body.max_scrolls is not None:
+            if not 0 <= body.max_scrolls <= 50:
+                raise HTTPException(400, "抓取深度须为 0~50")
+            w.max_scrolls = body.max_scrolls
+        if body.mode is not None and body.mode not in ("public", "creator"):
+            raise HTTPException(400, "评论来源须为 public 或 creator")
+        new_mode = body.mode if body.mode is not None else w.mode
+        new_account_id = body.account_id if body.account_id is not None else w.account_id
+        if body.account_id is not None:
+            acc = s.get(DouyinAccount, body.account_id)
+            if not acc or acc.platform != w.platform or acc.status != "active":
+                raise HTTPException(400, "账号不存在、登录态失效或与评论监控平台不匹配")
+            w.account_id = body.account_id
+        if new_mode == "creator":
+            if w.platform != "douyin" or w.kind != "user":
+                raise HTTPException(400, "创作中心模式仅支持抖音账号类型评论监控")
+            acc = s.get(DouyinAccount, new_account_id) if new_account_id else None
+            if not acc or not acc.creator_storage_state:
+                raise HTTPException(400, "创作中心模式需要绑定已完成创作者登录的抖音账号")
+        if body.mode is not None:
+            w.mode = new_mode
         if body.alias is not None:
             w.alias = _meta_text(body.alias, 60)
         if body.group_name is not None:
@@ -3044,11 +3106,23 @@ class PublishIn(BaseModel):
     scheduled_at: str | None = None       # ISO 时间(本地),空=尽快发
 
 
+class PublishUpdate(BaseModel):
+    account_id: int | None = None
+    title: str | None = None
+    desc: str | None = None
+    topics: str | None = None
+    location: str | None = None
+    visibility: str | None = None
+    allow_save: bool | None = None
+    scheduled_at: str | None = None
+
+
 def _publish_dict(t: PublishTask) -> dict:
     return {
         "id": t.id, "platform": t.platform, "account_id": t.account_id,
         "media_type": t.media_type, "title": t.title, "desc": t.desc,
-        "topics": t.topics, "status": t.status, "result_url": t.result_url,
+        "topics": t.topics, "location": t.location,
+        "status": t.status, "result_url": t.result_url,
         "visibility": t.visibility, "allow_save": t.allow_save,
         "error": t.error, "media_count": len(json.loads(t.media_json or "[]")),
         "source_platform": t.source_platform, "source_content_id": t.source_content_id,
@@ -3103,6 +3177,44 @@ async def add_publish(body: PublishIn):
             visibility=vis, allow_save=bool(body.allow_save),
             media_json=json.dumps(paths), scheduled_at=_parse_when(body.scheduled_at),
         )
+        s.add(t); s.commit(); s.refresh(t)
+        return _publish_dict(t)
+
+
+@app.put("/api/publish/{tid}")
+async def update_publish(tid: int, body: PublishUpdate):
+    with get_session() as s:
+        t = s.get(PublishTask, tid)
+        if not t:
+            raise HTTPException(404)
+        if t.status not in ("pending", "failed", "canceled"):
+            raise HTTPException(400, f"任务状态为 {t.status},不可编辑")
+        if body.account_id is not None:
+            acc = s.get(DouyinAccount, body.account_id)
+            if not acc or acc.platform != t.platform or acc.status != "active":
+                raise HTTPException(400, "发布账号不存在、登录态失效或与任务平台不匹配")
+            t.account_id = body.account_id
+        if body.title is not None:
+            t.title = body.title.strip()[:20]
+        if body.desc is not None:
+            t.desc = body.desc
+        if body.topics is not None:
+            t.topics = body.topics.strip()
+        if body.location is not None:
+            t.location = body.location.strip()[:60]
+        if body.visibility is not None:
+            if body.visibility not in ("public", "friends", "private"):
+                raise HTTPException(400, "可见范围须为 public、friends 或 private")
+            t.visibility = body.visibility
+        if body.allow_save is not None:
+            t.allow_save = body.allow_save
+        if "scheduled_at" in body.model_fields_set:
+            if body.scheduled_at and _parse_when(body.scheduled_at) is None:
+                raise HTTPException(400, "定时发布时间格式无效")
+            t.scheduled_at = _parse_when(body.scheduled_at)
+        if t.status in ("failed", "canceled"):
+            t.status = "pending"
+            t.error = ""
         s.add(t); s.commit(); s.refresh(t)
         return _publish_dict(t)
 

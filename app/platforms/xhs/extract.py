@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import time
 from typing import List, Optional
 
 from ..douyin.extract import Aweme, MediaItem
@@ -47,12 +48,25 @@ def parse_note_brief(item: dict) -> Optional[dict]:
     cov_url = _first(cover, "url_default", "url_pre", "url") or ""
     if not cov_url and isinstance(cover.get("info_list"), list) and cover["info_list"]:
         cov_url = cover["info_list"][0].get("url", "")
+    create_time = _num(_first(card, "time", "create_time", "createTime", "timestamp",
+                              default=0))
+    if create_time > 10_000_000_000:
+        create_time //= 1000
+    if not create_time and len(note_id) >= 8:
+        # 小红书 ObjectId 风格 note_id 的前 8 位通常为发布时间戳。
+        try:
+            candidate = int(note_id[:8], 16)
+            if 946684800 <= candidate <= int(time.time()) + 86400:
+                create_time = candidate
+        except ValueError:
+            pass
     return {
         "note_id": note_id,
         "xsec_token": xsec_token,
         "type": card.get("type") or "normal",       # normal | video
         "title": _first(card, "display_title", "title", "desc", default="") or "",
         "cover": cov_url,
+        "create_time": create_time,
     }
 
 
@@ -103,13 +117,15 @@ def parse_note_detail(note_card: dict, brief: dict | None = None) -> Optional[Aw
         or (brief or {}).get("title", "")
     interact = note_card.get("interact_info") or {}
     ntype = note_card.get("type") or (brief or {}).get("type") or "normal"
+    created = int(_first(note_card, "time", "create_time",
+                         default=(brief or {}).get("create_time", 0)) or 0)
+    if created > 10_000_000_000:
+        created //= 1000
 
     aw = Aweme(
         aweme_id=note_id,
         desc=full_desc,
-        create_time=int(_first(note_card, "time", "create_time", default=0) or 0) // 1000
-        if int(_first(note_card, "time", "create_time", default=0) or 0) > 10_000_000_000
-        else int(_first(note_card, "time", "create_time", default=0) or 0),
+        create_time=created,
         author_name=_first(user, "nickname", "nick_name", "name", default="") or "",
         media_type="video" if ntype == "video" else "images",
     )

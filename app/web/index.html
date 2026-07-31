@@ -33,7 +33,7 @@
     --mono:"Fira Code",ui-monospace,"SFMono-Regular","JetBrains Mono",Consolas,monospace;
   }
   * { box-sizing:border-box; }
-  html { scroll-behavior:smooth; }
+  html { scroll-behavior:smooth; scrollbar-gutter:stable; }
   body {
     margin:0; min-height:100vh;
     font:14px/1.6 var(--sans);
@@ -63,10 +63,13 @@
   /* ── header ── */
   header {
     position:sticky; top:0; z-index:30;
-    display:flex; align-items:center; gap:14px;
-    padding:14px 24px;
+    padding:0 24px;
     background:rgba(10,12,16,.72); backdrop-filter:blur(14px);
     border-bottom:1px solid var(--line-soft);
+  }
+  .header-inner {
+    width:100%; max-width:1480px; min-height:62px; margin:0 auto;
+    display:flex; align-items:center; gap:14px;
   }
   .brand { display:flex; align-items:center; gap:11px; }
   .brand-mark {
@@ -407,7 +410,7 @@
   .num, td.num, .tab-badge, .nav-badge, .pv-counter, .stat-v { font-variant-numeric:tabular-nums; }
 
   /* ── layout ── */
-  main { max-width:1120px; margin:0 auto; padding:24px; display:grid; gap:18px; }
+  main { max-width:1280px; margin:0 auto; padding:24px; display:grid; gap:18px; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; align-items:start; }
 
   /* ── tabs ── */
@@ -436,8 +439,12 @@
   @media(max-width:600px){ main{padding:16px} header{padding:12px 16px} .stats{grid-template-columns:repeat(2,1fr)} }
 
   /* ── shell + sidebar ── */
-  .shell { display:flex; align-items:flex-start; max-width:1240px; margin:0 auto; }
-  .sidebar { position:sticky; top:62px; flex:0 0 204px; padding:18px 12px; align-self:flex-start; }
+  .shell { display:flex; align-items:flex-start; max-width:1480px; margin:0 auto; }
+  .sidebar {
+    position:sticky; top:62px; flex:0 0 220px; padding:18px 12px; align-self:flex-start;
+    max-height:calc(100vh - 62px); overflow-y:auto; scrollbar-width:none;
+  }
+  .sidebar::-webkit-scrollbar { display:none; }
   .nav { display:flex; flex-direction:column; gap:4px; }
   .navitem { width:100%; background:transparent; border:1px solid transparent; color:var(--mut); font-weight:550; font-size:13.5px; padding:10px 12px; border-radius:10px; }
   .navitem:hover { background:var(--surface-2); color:var(--fg); }
@@ -450,7 +457,20 @@
   .navitem.active .nav-badge { color:var(--acc); border-color:var(--acc-ring); background:var(--acc-soft); }
   .shell main { flex:1; min-width:0; max-width:none; margin:0; }
   [data-panel] { display:grid; gap:18px; }
-  @media(max-width:760px){ .shell{flex-direction:column} .sidebar{position:static; flex:0 0 auto; width:100%; padding:8px 16px} .nav{flex-direction:row; overflow-x:auto} }
+  @media(max-width:860px){
+    .shell{flex-direction:column}
+    .sidebar{
+      position:sticky; top:62px; z-index:24; flex:0 0 auto; width:100%; max-height:none;
+      padding:8px 16px; overflow-x:auto; overflow-y:hidden;
+      background:color-mix(in srgb,var(--bg) 88%,transparent);
+      border-bottom:1px solid var(--line-soft); backdrop-filter:blur(14px);
+    }
+    .nav{flex-direction:row; overflow:visible; width:max-content; min-width:100%}
+    .nav-sep{display:none}
+    .navitem{width:auto; flex:0 0 auto; padding:9px 12px}
+    .nav-label{flex:0 0 auto}
+    .shell main{width:100%}
+  }
 
   /* ── cards ── */
   .card {
@@ -465,6 +485,29 @@
   .card h2 { margin:0; font-size:14.5px; font-weight:600; color:var(--fg-strong); display:flex; align-items:baseline; gap:8px; }
   .card h2 .sub { font-size:12px; font-weight:400; color:var(--mut); }
   .card-head .right { margin-left:auto; }
+
+  /* ── page context / orientation ── */
+  .page-context {
+    display:flex; align-items:flex-end; gap:18px; min-width:0;
+    padding:4px 2px 2px;
+  }
+  .page-context-main { min-width:0; flex:1; }
+  .page-kicker {
+    display:flex; align-items:center; gap:8px; margin-bottom:5px;
+    color:var(--mut); font-size:11.5px; font-weight:600;
+  }
+  .page-platform {
+    display:inline-flex; align-items:center; gap:6px;
+    padding:2px 8px; border:1px solid var(--acc-ring); border-radius:999px;
+    color:var(--acc); background:var(--acc-soft);
+  }
+  .page-platform::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .page-context h2 {
+    margin:0; color:var(--fg-strong); font-size:22px; line-height:1.25;
+    font-weight:680; letter-spacing:-.2px;
+  }
+  .page-desc { margin:5px 0 0; color:var(--mut); font-size:13px; line-height:1.5; }
+  [data-panel] { scroll-margin-top:82px; }
 
   /* ── buttons ── */
   button {
@@ -482,6 +525,7 @@
   button.ghost:hover { background:var(--surface-3); border-color:#333a47; }
   button.sm { padding:5px 10px; font-size:12px; border-radius:var(--r-xs); }
   button:disabled { opacity:.5; cursor:default; }
+  button:disabled:hover { filter:none; }
   button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
     outline:none; box-shadow:0 0 0 3px var(--acc-ring); border-radius:var(--r-sm);
   }
@@ -515,6 +559,30 @@
   .row > * { flex:1; }
   .row > button { flex:0 0 auto; }
 
+  /* 发布页权限设置：标签在上、控件在下，避免自定义下拉挤压标签换行 */
+  .publish-permissions {
+    display:grid; grid-template-columns:repeat(2,minmax(180px,240px)); gap:12px;
+    justify-content:start; margin:0; padding:12px;
+    background:var(--bg); border:1px solid var(--line-soft); border-radius:var(--r-sm);
+  }
+  .publish-permissions legend {
+    padding:0 6px; color:var(--mut); font-size:11.5px; font-weight:600;
+  }
+  .publish-permission { min-width:0; }
+  .publish-permission label { white-space:nowrap; }
+  .publish-permission select, .publish-permission .cs { width:100%; }
+  .monitor-config-group {
+    display:grid; gap:12px; margin:0; padding:14px;
+    background:var(--bg); border:1px solid var(--line-soft); border-radius:var(--r-sm);
+  }
+  .monitor-config-group legend {
+    padding:0 6px; color:var(--mut); font-size:11.5px; font-weight:650;
+  }
+  .monitor-config-group .row { align-items:end; }
+  @media(max-width:520px) {
+    .publish-permissions { grid-template-columns:1fr; }
+  }
+
   /* 自定义下拉(渐进增强原生 select) */
   .cs { position:relative; display:block; width:100%; }
   .cs-native { position:absolute !important; width:1px; height:1px; opacity:0; pointer-events:none; padding:0; margin:0; border:0; }
@@ -524,6 +592,7 @@
     border-radius:var(--r-sm); padding:9px 11px; font-size:13px; font-family:inherit; line-height:1.4;
     cursor:pointer; text-align:left; transition:border-color .18s var(--ease), box-shadow .18s var(--ease); }
   .cs-trg:hover { border-color:#333a47; background:var(--bg); }
+  .cs-native:disabled + .cs-trg { opacity:.48; cursor:not-allowed; }
   .cs.open .cs-trg { border-color:var(--acc); box-shadow:0 0 0 3px var(--acc-ring); }
   .cs-trg .cs-lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .cs-trg.ph .cs-lbl { color:var(--mut-2); }
@@ -537,6 +606,7 @@
   .cs-opt { padding:8px 10px; border-radius:8px; font-size:13px; cursor:pointer; white-space:nowrap;
     color:var(--fg); transition:background .12s var(--ease); }
   .cs-opt:hover { background:var(--bg); }
+  .cs-opt:focus-visible { outline:none; background:var(--surface-2); box-shadow:inset 0 0 0 2px var(--acc-ring); }
   .cs-opt.sel { background:var(--bg); color:var(--acc); font-weight:600; }
   .cs-opt.dis { color:var(--mut-2); cursor:not-allowed; }
   .cs-opt.dis:hover { background:transparent; }
@@ -740,7 +810,8 @@
   .meta-combo-opt.create { color:var(--acc); }
   .meta-combo-opt.create .mark { color:var(--acc); border-color:var(--acc-ring); border-radius:50%; }
   .meta-combo-empty { padding:12px 9px; color:var(--mut-2); font-size:12px; text-align:center; }
-  #uimodal .rp-box { overflow:visible; }
+  #uimodal { overflow-y:auto; }
+  #uimodal .rp-box { overflow:visible; margin:auto; }
   @media(max-width:600px) {
     .manage-toolbar input, .manage-toolbar select, .manage-toolbar .cs { flex:1 1 calc(50% - 8px); max-width:none; }
     .manage-toolbar input[type="search"] { min-width:0; }
@@ -762,6 +833,7 @@
   .downloading { background:var(--info-soft); color:var(--info);    border-color:rgba(56,189,248,.25); }
   .done     { background:var(--success-soft); color:var(--success); border-color:rgba(52,211,153,.25); }
   .failed   { background:var(--danger-soft);  color:var(--danger);  border-color:rgba(248,113,113,.25); }
+  .skipped  { background:var(--panel2); color:var(--mut); border-color:var(--line); }
   .active   { background:var(--success-soft); color:var(--success); border-color:rgba(52,211,153,.25); }
   .invalid  { background:var(--danger-soft);  color:var(--danger);  border-color:rgba(248,113,113,.25); }
   .pill.q { background:var(--info-soft); color:var(--info); border-color:rgba(56,189,248,.22); cursor:default; }
@@ -825,7 +897,7 @@
   @keyframes shimmer { to { background-position:-200% 0; } }
 
   /* ── toasts ── */
-  #toasts { position:fixed; right:18px; bottom:18px; z-index:90; display:flex; flex-direction:column; gap:10px; max-width:340px; }
+  #toasts { position:fixed; right:18px; bottom:70px; z-index:90; display:flex; flex-direction:column; gap:10px; max-width:340px; }
   .toast {
     display:flex; align-items:flex-start; gap:10px;
     background:var(--surface-3); border:1px solid var(--line); border-left-width:3px;
@@ -837,6 +909,13 @@
   .toast.info { border-left-color:var(--info); }
   .toast svg { width:17px; height:17px; flex:0 0 auto; margin-top:1px; }
   .toast.ok svg { color:var(--success); } .toast.err svg { color:var(--danger); } .toast.info svg { color:var(--info); }
+  .toast > span { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .toast-close {
+    width:24px; height:24px; flex:0 0 auto; padding:0; margin:-3px -5px -3px 2px;
+    border:0; background:transparent; color:var(--mut); box-shadow:none!important;
+  }
+  .toast-close:hover { color:var(--fg); background:var(--line); filter:none; }
+  .toast-close svg { width:14px; height:14px; margin:0; color:currentColor!important; }
   .toast.hide { animation:slideOut .25s var(--ease) forwards; }
   @keyframes slideIn { from{opacity:0; transform:translateX(16px)} to{opacity:1; transform:none} }
   @keyframes slideOut { to{opacity:0; transform:translateX(16px)} }
@@ -860,6 +939,79 @@
   /* 行/卡片刷新时的轻微"陈旧"提示:配合 INFLIGHT 暂停轮询,这里给手动刷新一个柔和过渡 */
   .table-wrap.stale { opacity:.55; transition:opacity .2s var(--ease); }
 
+  /* ── navigation helpers ── */
+  .skip-link {
+    position:fixed; left:16px; top:10px; z-index:500; padding:9px 13px;
+    color:#fff; background:var(--acc); border-radius:var(--r-sm);
+    transform:translateY(-150%); transition:transform .16s var(--ease);
+  }
+  .skip-link:focus { transform:none; text-decoration:none; }
+  #backtop {
+    position:fixed; right:18px; bottom:18px; z-index:70;
+    width:40px; height:40px; padding:0; border-radius:12px;
+    background:var(--surface-3); color:var(--fg); border:1px solid var(--line);
+    box-shadow:var(--sh); opacity:0; pointer-events:none; transform:translateY(8px);
+  }
+  #backtop.show { opacity:1; pointer-events:auto; transform:none; }
+  #backtop svg { transform:rotate(-90deg); }
+  body.modal-open { overflow:hidden; }
+
+  /* 桌面窄屏与移动端统一收口：导航始终可见，表单不横向挤压 */
+  @media(max-width:860px) {
+    main { padding:20px 18px; }
+    .page-context { align-items:center; }
+    .page-context h2 { font-size:20px; }
+  }
+  @media(max-width:700px) {
+    header { padding:0 14px; }
+    .header-inner { min-height:104px; flex-wrap:wrap; gap:8px 10px; padding:10px 0; }
+    .brand { flex:1; }
+    .engine { margin-left:auto; }
+    .pswitch {
+      order:3; width:100%; min-width:0; overflow-x:auto;
+      justify-content:space-between;
+    }
+    .pswitch button { flex:1 1 25%; padding:7px 8px; }
+    .sidebar { top:104px; padding:7px 12px; }
+    .page-context { align-items:flex-start; }
+    .card { padding:17px; }
+    .card-head { flex-wrap:wrap; align-items:flex-start; }
+    .card-head .right { width:100%; margin-left:41px; }
+    .card-head .right > .cs, .card-head .right > select { width:100%!important; max-width:none!important; }
+    .row { flex-wrap:wrap; align-items:stretch; }
+    .row > * { min-width:0; }
+  }
+  @media(max-width:520px) {
+    main { padding:16px 12px 24px; gap:14px; }
+    [data-panel] { gap:14px; }
+    .sidebar { padding-left:8px; padding-right:8px; }
+    .navitem { padding:9px 10px; }
+    .nav-badge { display:none; }
+    .page-context { display:grid; gap:12px; }
+    .page-context h2 { font-size:19px; }
+    .page-desc { font-size:12px; }
+    .stats { gap:10px; }
+    .stat { padding:12px; gap:9px; }
+    .stat-ic { width:34px; height:34px; }
+    .stat-v { font-size:18px; }
+    .card { padding:15px; border-radius:var(--r); }
+    .card h2 { align-items:flex-start; flex-direction:column; gap:2px; }
+    .card h2 .sub { line-height:1.35; }
+    .card-head .right { margin-left:0; }
+    .row > input, .row > textarea, .row > select, .row > .cs, .row > .dt { flex:1 1 100%!important; max-width:none!important; }
+    .row > button { min-height:40px; }
+    .manage-toolbar input, .manage-toolbar select, .manage-toolbar .cs { flex:1 1 100%; }
+    #toasts { left:12px; right:12px; bottom:64px; max-width:none; }
+    #backtop { right:12px; bottom:12px; }
+    .pv-overlay { padding:12px; }
+    .rp-box { padding:18px; }
+  }
+  @media(max-width:420px) {
+    .badge-lite, .engine-label { display:none; }
+    .engine { padding:8px; }
+    .brand-mark { width:32px; height:32px; }
+  }
+
   @media (prefers-reduced-motion:reduce) {
     *, *::before, *::after { animation-duration:.001ms !important; transition-duration:.001ms !important; scroll-behavior:auto !important; }
   }
@@ -873,7 +1025,8 @@
 </style>
 </head>
 <body>
-<div id="busy-spinner" aria-hidden="true"><span class="bs-ring"></span><span class="bs-label" id="bs-label">处理中</span></div>
+<a class="skip-link" href="#main-content">跳到主要内容</a>
+<div id="busy-spinner" role="status" aria-live="polite" aria-hidden="true"><span class="bs-ring"></span><span class="bs-label" id="bs-label">处理中</span></div>
 
 <!-- icon sprite -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -905,41 +1058,51 @@
   <symbol id="i-heart-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v11M2 13l2-3h11l-1.4 7a2 2 0 0 1-2 1.7H7"/><path d="M7 10 11 2a2 2 0 0 1 2.7 2.3L13 10"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 10v7M14 10v7"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.97 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.52-1H3v-4h.08A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.97 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08A1.7 1.7 0 0 0 15.03 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.12.38.46.76 1.52 1H21v4h-.08c-1.06.24-1.4.62-1.52 1Z"/></symbol>
 </svg>
 
 <header>
+  <div class="header-inner">
   <div class="brand">
     <span class="brand-mark"><svg><use href="#i-logo"/></svg></span>
     <h1>CreatorHub<span class="badge-lite">LITE</span></h1>
   </div>
   <div class="pswitch" role="tablist" aria-label="平台切换">
-    <button data-pf="douyin" onclick="switchPlatform('douyin')">抖音</button>
-    <button data-pf="xhs" onclick="switchPlatform('xhs')">小红书</button>
-    <button data-pf="kuaishou" onclick="switchPlatform('kuaishou')">快手</button>
-    <button data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
+    <button role="tab" data-pf="douyin" onclick="switchPlatform('douyin')">抖音</button>
+    <button role="tab" data-pf="xhs" onclick="switchPlatform('xhs')">小红书</button>
+    <button role="tab" data-pf="kuaishou" onclick="switchPlatform('kuaishou')">快手</button>
+    <button role="tab" data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
   </div>
   <span class="spacer"></span>
-  <span class="engine" id="engine-status"><span class="dot live"></span>引擎运行中</span>
+  <span class="engine" id="engine-status" title="后台任务引擎正在运行"><span class="dot live"></span><span class="engine-label">引擎运行中</span></span>
+  </div>
 </header>
 
 <div class="shell">
 <aside class="sidebar">
   <nav class="nav">
-    <button class="navitem" data-tab="overview" onclick="switchTab('overview')"><svg><use href="#i-bolt"/></svg><span class="nav-label">总览</span></button>
-    <button class="navitem" data-tab="accounts" onclick="switchTab('accounts')"><svg><use href="#i-user"/></svg><span class="nav-label">账号</span><span class="nav-badge" id="tb-acc">0</span></button>
-    <button class="navitem notsh-only" data-tab="monitors" onclick="switchTab('monitors')"><svg><use href="#i-target"/></svg><span class="nav-label">作品监控</span><span class="nav-badge" id="tb-mon">0</span></button>
-    <button class="navitem notsh-only" data-tab="comments" onclick="switchTab('comments')"><svg><use href="#i-msg"/></svg><span class="nav-label">评论监控</span><span class="nav-badge" id="tb-watch">0</span></button>
+    <button class="navitem" data-tab="overview" onclick="switchTab('overview', true)"><svg><use href="#i-bolt"/></svg><span class="nav-label">总览</span></button>
+    <button class="navitem" data-tab="accounts" onclick="switchTab('accounts', true)"><svg><use href="#i-card"/></svg><span class="nav-label">账号</span><span class="nav-badge" id="tb-acc">0</span></button>
+    <button class="navitem notsh-only" data-tab="monitors" onclick="switchTab('monitors', true)"><svg><use href="#i-target"/></svg><span class="nav-label">作品监控</span><span class="nav-badge" id="tb-mon">0</span></button>
+    <button class="navitem notsh-only" data-tab="comments" onclick="switchTab('comments', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">评论监控</span><span class="nav-badge" id="tb-watch">0</span></button>
     <div class="nav-sep">本账号</div>
-    <button class="navitem" data-tab="hub" onclick="switchTab('hub')"><svg><use href="#i-user"/></svg><span class="nav-label">账号管理</span></button>
+    <button class="navitem" data-tab="hub" onclick="switchTab('hub', true)"><svg><use href="#i-user"/></svg><span class="nav-label">账号管理</span></button>
     <div class="nav-sep">工具</div>
-    <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish')"><svg><use href="#i-send"/></svg><span class="nav-label">发布</span><span class="nav-badge" id="tb-pub">0</span></button>
-    <button class="navitem notsh-only" data-tab="autocomment" onclick="switchTab('autocomment')"><svg><use href="#i-msg"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
-    <button class="navitem" data-tab="share-download" onclick="switchTab('share-download')"><svg><use href="#i-download"/></svg><span class="nav-label">链接下载</span></button>
-    <button class="navitem" data-tab="notifications" onclick="switchTab('notifications')"><svg><use href="#i-bell"/></svg><span class="nav-label">通知</span></button>
-    <button class="navitem" data-tab="settings" onclick="switchTab('settings')"><svg><use href="#i-download"/></svg><span class="nav-label">设置</span></button>
+    <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish', true)"><svg><use href="#i-send"/></svg><span class="nav-label">发布</span><span class="nav-badge" id="tb-pub">0</span></button>
+    <button class="navitem notsh-only" data-tab="autocomment" onclick="switchTab('autocomment', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
+    <button class="navitem" data-tab="share-download" onclick="switchTab('share-download', true)"><svg><use href="#i-download"/></svg><span class="nav-label">链接下载</span></button>
+    <button class="navitem" data-tab="notifications" onclick="switchTab('notifications', true)"><svg><use href="#i-bell"/></svg><span class="nav-label">通知</span></button>
+    <button class="navitem" data-tab="settings" onclick="switchTab('settings', true)"><svg><use href="#i-settings"/></svg><span class="nav-label">设置</span></button>
   </nav>
 </aside>
-<main>
+<main id="main-content" tabindex="-1">
+  <div class="page-context" id="page-context">
+    <div class="page-context-main">
+      <div class="page-kicker"><span class="page-platform" id="page-platform">抖音</span><span id="page-kicker">工作台</span></div>
+      <h2 id="page-title">总览</h2>
+      <p class="page-desc" id="page-desc">查看账号、监控、作品与评论的最新状态。</p>
+    </div>
+  </div>
   <section data-panel="overview">
   <section class="stats" aria-label="概览统计">
     <div class="stat"><span class="stat-ic a"><svg><use href="#i-user"/></svg></span><div><div class="stat-v" id="stat-acc">—</div><div class="stat-l">已登录账号</div></div></div>
@@ -1009,7 +1172,7 @@
       </p>
       <div class="row" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
         <input id="px-label" placeholder="备注(如 住宅-广东-01)" style="max-width:180px">
-        <select id="px-proto" style="max-width:120px" title="裸 ip:port 按此协议补全;已带 http://、socks5:// 则忽略">
+        <select id="px-proto" style="max-width:120px" aria-label="代理协议" title="裸 ip:port 按此协议补全;已带 http://、socks5:// 则忽略">
           <option value="http">HTTP</option>
           <option value="socks5">SOCKS5</option>
         </select>
@@ -1082,6 +1245,12 @@
             <option value="5">历史:最近 5 条</option>
             <option value="20">历史:最近 20 条</option>
             <option value="-1">历史:尽可能全量</option>
+          </select>
+          <select id="t-download" aria-label="自动下载范围">
+            <option value="all">下载:全部作品</option>
+            <option value="video">下载:仅视频</option>
+            <option value="images">下载:仅图集</option>
+            <option value="none">下载:仅记录不下载</option>
           </select>
         </div>
         <button onclick="addMonitor()"><svg><use href="#i-target"/></svg>开始监控</button>
@@ -1242,21 +1411,24 @@
         <div class="row sh-only">
           <input id="pub-location" placeholder="位置(视频号,可选):填城市/地点名,如 东莞市 / 杭州西湖">
         </div>
-        <div class="row dy-only" id="pub-dy-opts" style="justify-content:flex-start;gap:18px;align-items:center">
-          <label class="field" style="flex:0 0 auto;margin:0;display:flex;align-items:center;gap:6px">谁可以看
+        <fieldset class="publish-permissions dy-only" id="pub-dy-opts">
+          <legend>互动与权限</legend>
+          <div class="publish-permission">
+            <label class="field" for="pub-visibility">谁可以看</label>
             <select id="pub-visibility" aria-label="谁可以看">
               <option value="public">公开</option>
               <option value="friends">好友可见</option>
               <option value="private">仅自己可见</option>
             </select>
-          </label>
-          <label class="field" style="flex:0 0 auto;margin:0;display:flex;align-items:center;gap:6px">保存权限
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-allowsave">保存权限</label>
             <select id="pub-allowsave" aria-label="保存权限">
               <option value="1">允许他人保存</option>
               <option value="0">不允许</option>
             </select>
-          </label>
-        </div>
+          </div>
+        </fieldset>
         <div class="row" style="justify-content:flex-start">
           <button onclick="addPublish()" style="flex:0 0 auto"><svg><use href="#i-send"/></svg>加入发布队列</button>
           <span class="mut" id="pub-msg" style="flex:1"></span>
@@ -1351,7 +1523,7 @@
     <!-- 任务列表 -->
     <div class="card">
       <div class="card-head"><span class="card-ic"><svg><use href="#i-msg"/></svg></span><h2>评论任务 / 记录</h2>
-        <select id="ac-task-filter" onchange="refreshCommentTasks()" style="margin-left:auto;max-width:160px;flex:0 0 auto">
+        <select id="ac-task-filter" onchange="refreshCommentTasks()" style="margin-left:auto;max-width:160px;flex:0 0 auto" aria-label="按状态筛选评论任务">
           <option value="">全部状态</option>
           <option value="draft">草稿待审</option>
           <option value="pending">排队中</option>
@@ -1490,6 +1662,29 @@
             <input id="w-tags" autocomplete="off" data-meta-combo="tags" placeholder="选择或输入新标签">
           </div>
         </div>
+        <div class="row monitor-options">
+          <select id="w-recent" aria-label="账号型监控的近期作品数">
+            <option value="0">作品数:跟随全局</option>
+            <option value="3">最近 3 个作品</option>
+            <option value="5">最近 5 个作品</option>
+            <option value="10">最近 10 个作品</option>
+            <option value="20">最近 20 个作品</option>
+          </select>
+          <select id="w-days" aria-label="账号型监控的作品时间范围">
+            <option value="0">时间范围:跟随全局</option>
+            <option value="3">最近 3 天</option>
+            <option value="7">最近 7 天</option>
+            <option value="14">最近 14 天</option>
+            <option value="30">最近 30 天</option>
+          </select>
+          <select id="w-depth" aria-label="评论区抓取深度">
+            <option value="0">抓取深度:跟随全局</option>
+            <option value="3">浅层抓取</option>
+            <option value="6">标准抓取</option>
+            <option value="12">深度抓取</option>
+            <option value="20">最大抓取</option>
+          </select>
+        </div>
         <button onclick="addWatch()"><svg><use href="#i-msg"/></svg>开始监控评论</button>
         <div class="mut" id="w-msg"></div>
       </div>
@@ -1612,7 +1807,7 @@
 </div>
 
 <!-- 预览 lightbox -->
-<div id="preview" class="pv-overlay" style="display:none" onclick="if(event.target.id==='preview')hidePreview()" role="dialog" aria-modal="true">
+<div id="preview" class="pv-overlay" style="display:none" onclick="if(event.target.id==='preview')hidePreview()" role="dialog" aria-modal="true" aria-label="作品预览">
   <div class="pv-box">
     <button class="pv-close" onclick="hidePreview()" aria-label="关闭预览"><svg><use href="#i-x"/></svg></button>
     <div class="pv-media" id="pv-media"></div>
@@ -1621,7 +1816,7 @@
 </div>
 
 <!-- 跨平台转发 · 编辑后推送 -->
-<div id="repost" class="pv-overlay" style="display:none" onclick="if(event.target.id==='repost')hideRepost()" role="dialog" aria-modal="true">
+<div id="repost" class="pv-overlay" style="display:none" onclick="if(event.target.id==='repost')hideRepost()" role="dialog" aria-modal="true" aria-labelledby="rp-head">
   <div class="rp-box">
     <button class="pv-close" onclick="hideRepost()" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
     <h2 id="rp-head">发小红书 · 编辑后推送</h2>
@@ -1672,7 +1867,7 @@
 
 <!-- 作品评论(弹窗) -->
 <div id="wcmodal" class="pv-overlay" style="display:none" role="dialog" aria-modal="true"
-     onclick="if(event.target.id==='wcmodal')hideWorkComments()">
+     aria-labelledby="wc-title" onclick="if(event.target.id==='wcmodal')hideWorkComments()">
   <div class="rp-box" style="width:min(94vw,560px);max-height:86vh;display:flex;flex-direction:column">
     <button class="pv-close" onclick="hideWorkComments()" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
     <h2 id="wc-title">作品评论</h2>
@@ -1686,7 +1881,7 @@
 
 <!-- 通用模态(下拉选择 / 文本输入),替代浏览器原生 prompt -->
 <div id="uimodal" class="pv-overlay" style="display:none" role="dialog" aria-modal="true"
-     onclick="if(event.target.id==='uimodal')uiModalCancel()">
+     aria-labelledby="ui-title" aria-describedby="ui-hint" onclick="if(event.target.id==='uimodal')uiModalCancel()">
   <div class="rp-box" style="width:min(94vw,480px)">
     <button class="pv-close" onclick="uiModalCancel()" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
     <h2 id="ui-title">选择</h2>
@@ -1700,6 +1895,7 @@
 </div>
 
 <div id="toasts" aria-live="polite" aria-atomic="false"></div>
+<button id="backtop" class="ghost" type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="返回顶部" title="返回顶部"><svg><use href="#i-next"/></svg></button>
 
 <script src="/static/app.js"></script>
 </body>

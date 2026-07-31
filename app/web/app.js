@@ -7,7 +7,10 @@ let INFLIGHT = 0;
 // 判忙 = 有未完成请求(_apiActive)或有用户慢操作(INFLIGHT);并发数用 INFLIGHT(用户点的操作数)。
 let _apiActive = 0, _barTimer = null, _busyStart = 0, _busyTick = null;
 function _isBusy() { return _apiActive > 0 || INFLIGHT > 0; }
-function _busyShow() { const sp = $("busy-spinner"); if (sp && _isBusy()) sp.classList.add("on"); }
+function _busyShow() {
+  const sp = $("busy-spinner");
+  if (sp && _isBusy()) { sp.classList.add("on"); sp.setAttribute("aria-hidden", "false"); }
+}
 function _busyLabel() {
   const l = $("bs-label"); if (!l) return;
   const sec = Math.floor((Date.now() - _busyStart) / 1000);
@@ -23,7 +26,7 @@ function _barSync() {
   } else {                            // 全部结束:清理并隐藏
     clearTimeout(_barTimer); _barTimer = null;
     clearInterval(_busyTick); _busyTick = null;
-    const sp = $("busy-spinner"); if (sp) sp.classList.remove("on");
+    const sp = $("busy-spinner"); if (sp) { sp.classList.remove("on"); sp.setAttribute("aria-hidden", "true"); }
     const l = $("bs-label"); if (l) l.textContent = "处理中";
   }
 }
@@ -60,10 +63,18 @@ function toast(msg, type = "info", ms = 3600) {
   const box = $("toasts");
   const el = document.createElement("div");
   el.className = `toast ${type}`;
+  el.setAttribute("role", type === "err" ? "alert" : "status");
   const sym = type === "ok" ? "i-check" : type === "err" ? "i-x" : "i-info";
-  el.innerHTML = `${ic(sym)}<span>${esc(msg)}</span>`;
+  el.innerHTML = `${ic(sym)}<span>${esc(msg)}</span>` +
+    `<button class="toast-close" type="button" aria-label="关闭提示">${ic("i-x")}</button>`;
   box.appendChild(el);
-  setTimeout(() => { el.classList.add("hide"); setTimeout(() => el.remove(), 250); }, ms);
+  let timer = null;
+  const dismiss = () => {
+    if (!el.isConnected || el.classList.contains("hide")) return;
+    clearTimeout(timer); el.classList.add("hide"); setTimeout(() => el.remove(), 250);
+  };
+  el.querySelector(".toast-close").addEventListener("click", dismiss);
+  timer = setTimeout(dismiss, ms);
 }
 const empty = (cols, text, icon = "i-inbox", sub = "") =>
   `<tr><td colspan="${cols}"><div class="empty">` +
@@ -79,11 +90,40 @@ const skeleton = (cols, rows = 3) => {
   return out;
 };
 
+// ─── dialog focus / scroll management ───
+const _modalTriggers = new WeakMap();
+function _visibleModal() {
+  return [...document.querySelectorAll(".pv-overlay[role='dialog']")].reverse()
+    .find(el => getComputedStyle(el).display !== "none");
+}
+function modalOpened(el) {
+  if (!el) return;
+  const active = document.activeElement;
+  if (active && active !== document.body) _modalTriggers.set(el, active);
+  document.body.classList.add("modal-open");
+}
+function modalClosed(el) {
+  if (!el) return;
+  if (!_visibleModal()) document.body.classList.remove("modal-open");
+  const trigger = _modalTriggers.get(el);
+  _modalTriggers.delete(el);
+  if (trigger && trigger.isConnected && typeof trigger.focus === "function") {
+    setTimeout(() => trigger.focus({ preventScroll: true }), 0);
+  }
+}
+function _modalFocusables(el) {
+  return [...el.querySelectorAll(
+    'button:not([disabled]),a[href],input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])'
+  )].filter(node => node.offsetParent !== null);
+}
+
 // ─── 通用模态(替代原生 prompt / confirm:下拉 / 文本输入 / 确认)───
 let _uiResolve = null, _uiGetVal = null, _uiCancelVal = null;
 function _uiClose(val) {
   if (typeof OPEN_META_COMBO !== "undefined" && OPEN_META_COMBO) OPEN_META_COMBO.close();
-  $("uimodal").style.display = "none";
+  const modal = $("uimodal");
+  modal.style.display = "none";
+  modalClosed(modal);
   document.removeEventListener("keydown", _uiKey);
   const r = _uiResolve; _uiResolve = null; _uiGetVal = null;
   if (r) r(val);
@@ -94,16 +134,23 @@ function _uiKey(e) {
 }
 function uiModalCancel() { _uiClose(_uiCancelVal); }
 function uiModalOk() { _uiClose(_uiGetVal ? _uiGetVal() : ""); }
-function _uiOpen(title, hint, { okText = "确定", danger = false } = {}) {
+function _uiOpen(title, hint, { okText = "确定", danger = false, wide = false } = {}) {
   $("ui-title").textContent = title || "";
   $("ui-hint").textContent = hint || "";
   const ok = $("ui-ok");
   ok.innerHTML = (danger ? "" : `<svg aria-hidden="true"><use href="#i-check"/></svg>`) + esc(okText);
   ok.classList.toggle("danger", !!danger);
   ok.style.cssText = danger ? "flex:0 0 auto;background:var(--danger);border-color:transparent" : "flex:0 0 auto";
-  $("uimodal").style.display = "flex";
+  const modal = $("uimodal");
+  modal.querySelector(".rp-box").style.width = wide ? "min(94vw,680px)" : "min(94vw,480px)";
+  modal.style.display = "flex";
+  modalOpened(modal);
   document.addEventListener("keydown", _uiKey);
-  setTimeout(() => { const el = $("ui-body").querySelector("select,input,textarea,button"); if (el && el.tagName !== "BUTTON") el.focus(); }, 30);
+  setTimeout(() => {
+    const el = [...$("ui-body").querySelectorAll("input,textarea,.cs-trg,.dt-trg,select,button")]
+      .find(node => node.offsetParent !== null && !node.classList.contains("cs-native") && !node.classList.contains("dt-native"));
+    if (el) el.focus();
+  }, 30);
 }
 // 确认框。返回 true / false。danger=true 时确定按钮红色(危险操作)
 function uiConfirm({ title = "确认", message = "", okText = "确定", danger = false } = {}) {
@@ -156,6 +203,11 @@ function enhanceSelect(sel) {
   trg.className = "cs-trg";
   trg.innerHTML = `<span class="cs-lbl"></span>` +
     `<svg class="cs-arr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`;
+  trg.setAttribute("aria-haspopup", "listbox");
+  trg.setAttribute("aria-expanded", "false");
+  const selectLabel = sel.getAttribute("aria-label") ||
+    ((sel.id && document.querySelector(`label[for="${sel.id}"]`)) || {}).textContent || "选择选项";
+  trg.setAttribute("aria-label", selectLabel.trim());
   wrap.appendChild(trg);
   let panel = null;
 
@@ -167,23 +219,47 @@ function enhanceSelect(sel) {
   function close() {
     if (panel) { panel.remove(); panel = null; }
     wrap.classList.remove("open");
+    trg.setAttribute("aria-expanded", "false");
+    trg.removeAttribute("aria-controls");
     window.removeEventListener("scroll", close, true);
     window.removeEventListener("resize", close);
     document.removeEventListener("mousedown", onDoc, true);
   }
   function onDoc(e) { if (!wrap.contains(e.target) && (!panel || !panel.contains(e.target))) close(); }
-  function open() {
+  function open(focusSelected = false) {
     if (sel.disabled) return;
     panel = document.createElement("div");
     panel.className = "cs-panel";
+    panel.id = `cs-panel-${sel.id || Math.random().toString(36).slice(2)}`;
+    panel.setAttribute("role", "listbox");
+    panel.setAttribute("aria-label", selectLabel.trim());
     Array.from(sel.options).forEach((o, i) => {
       const it = document.createElement("div");
       it.className = "cs-opt" + (i === sel.selectedIndex ? " sel" : "") + (o.disabled ? " dis" : "");
       it.textContent = o.textContent;
+      it.setAttribute("role", "option");
+      it.setAttribute("aria-selected", i === sel.selectedIndex ? "true" : "false");
+      it.tabIndex = o.disabled ? -1 : 0;
       if (!o.disabled) it.addEventListener("mousedown", ev => {
         ev.preventDefault();
         if (sel.selectedIndex !== i) { sel.selectedIndex = i; sel.dispatchEvent(new Event("change", { bubbles: true })); }
-        sync(); close();
+        sync(); close(); trg.focus();
+      });
+      if (!o.disabled) it.addEventListener("keydown", ev => {
+        const options = [...panel.querySelectorAll('.cs-opt:not(.dis)')];
+        const index = options.indexOf(it);
+        if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+          ev.preventDefault();
+          options[(index + (ev.key === "ArrowDown" ? 1 : -1) + options.length) % options.length].focus();
+        } else if (ev.key === "Home" || ev.key === "End") {
+          ev.preventDefault(); options[ev.key === "Home" ? 0 : options.length - 1].focus();
+        } else if (ev.key === "Enter" || ev.key === " ") {
+          ev.preventDefault();
+          if (sel.selectedIndex !== i) { sel.selectedIndex = i; sel.dispatchEvent(new Event("change", { bubbles: true })); }
+          sync(); close(); trg.focus();
+        } else if (ev.key === "Escape" || ev.key === "Tab") {
+          ev.preventDefault(); close(); trg.focus();
+        }
       });
       panel.appendChild(it);
     });
@@ -195,11 +271,24 @@ function enhanceSelect(sel) {
     if (below < 280 && r.top > below) panel.style.bottom = (window.innerHeight - r.top + 5) + "px";
     else panel.style.top = (r.bottom + 5) + "px";
     wrap.classList.add("open");
+    trg.setAttribute("aria-expanded", "true");
+    trg.setAttribute("aria-controls", panel.id);
     window.addEventListener("scroll", close, true);
     window.addEventListener("resize", close);
     setTimeout(() => document.addEventListener("mousedown", onDoc, true), 0);
+    if (focusSelected) setTimeout(() => {
+      const target = panel && (panel.querySelector(".cs-opt.sel:not(.dis)") || panel.querySelector(".cs-opt:not(.dis)"));
+      if (target) target.focus();
+    }, 0);
   }
-  trg.addEventListener("click", e => { e.preventDefault(); panel ? close() : open(); });
+  trg.addEventListener("click", e => { e.preventDefault(); panel ? close() : open(false); });
+  trg.addEventListener("keydown", e => {
+    if (["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) {
+      e.preventDefault(); if (!panel) open(true);
+    } else if (e.key === "Escape" && panel) {
+      e.preventDefault(); close();
+    }
+  });
   sel.addEventListener("change", sync);
   sel._csSync = sync;
   new MutationObserver(sync).observe(sel, { childList: true });
@@ -239,6 +328,19 @@ document.addEventListener("mouseover", e => {
 });
 document.addEventListener("mouseout", e => {
   if (_tipTarget && (!e.relatedTarget || !_tipTarget.contains(e.relatedTarget))) _tipHide();
+});
+document.addEventListener("focusin", e => {
+  const el = e.target.closest && e.target.closest("[title],[data-tip]");
+  if (!el) return;
+  if (el.hasAttribute("title")) {
+    const t = el.getAttribute("title");
+    if (t) { el.setAttribute("data-tip", t); if (!el.hasAttribute("aria-label")) el.setAttribute("aria-label", t); }
+    el.removeAttribute("title");
+  }
+  _tipTarget = el; clearTimeout(_tipTimer); _tipTimer = setTimeout(() => _tipShow(el), 120);
+});
+document.addEventListener("focusout", e => {
+  if (_tipTarget === e.target) _tipHide();
 });
 window.addEventListener("scroll", _tipHide, true);
 document.addEventListener("click", _tipHide);
@@ -366,6 +468,47 @@ async function refreshOverviewChart() {
 // ─── 平台切换(抖音 / 小红书) ───
 let PLATFORM = "douyin";
 const PF_NAME = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号" };
+let CURRENT_TAB = "overview";
+const PAGE_META = {
+  overview: {
+    title: "总览", desc: "集中查看账号状态、采集规模与近 7 天数据变化。"
+  },
+  accounts: {
+    title: "账号与网络", desc: "管理登录状态、账号资料与独立代理绑定。"
+  },
+  monitors: {
+    title: "作品监控", desc: "添加采集目标，管理下载策略并追踪作品状态。"
+  },
+  comments: {
+    title: "评论监控", desc: "订阅作品或账号评论，按来源、分组和标签筛选。"
+  },
+  hub: {
+    title: "本账号管理", desc: "同步自己的作品、关系、私信与账号数据。"
+  },
+  publish: {
+    title: "内容发布", desc: "准备素材与文案，创建立即或定时发布任务。"
+  },
+  autocomment: {
+    title: "自动评论", desc: "配置评论与回复规则，并审核待发布文案。"
+  },
+  "share-download": {
+    title: "链接下载", desc: "从分享文案识别链接，检查媒体信息并下载到本地。"
+  },
+  notifications: {
+    title: "通知渠道", desc: "配置 Bark、钉钉或 Telegram，及时接收任务提醒。"
+  },
+  settings: {
+    title: "系统设置", desc: "调整下载偏好与 AI 文案服务配置。"
+  },
+};
+function updatePageContext(name = CURRENT_TAB) {
+  const meta = PAGE_META[name] || PAGE_META.overview;
+  if ($("page-title")) $("page-title").textContent = meta.title;
+  if ($("page-desc")) $("page-desc").textContent = meta.desc;
+  if ($("page-platform")) $("page-platform").textContent = PF_NAME[PLATFORM] || "当前平台";
+  if ($("page-kicker")) $("page-kicker").textContent = pfIsChannels(PLATFORM) ? "本账号工作台" : "多平台工作台";
+  document.title = `${meta.title} · ${PF_NAME[PLATFORM] || ""} | CreatorHub`;
+}
 // 是否支持「发布」面板(四平台均有)
 function pfHasPublish(pf) { return pf === "xhs" || pf === "kuaishou" || pf === "douyin" || pf === "shipinhao"; }
 // 视频号只有「本账号」数据(助手接口本账号),不支持监控他人作品/评论
@@ -397,8 +540,12 @@ function applyPlatformUI() {
   document.body.classList.toggle("pf-shipinhao", PLATFORM === "shipinhao");
   // 视频号:只有本账号数据,隐藏「监控他人作品/评论」相关入口(.notsh-only)
   document.body.classList.toggle("pf-channels", pfIsChannels(PLATFORM));
-  document.querySelectorAll(".pswitch button").forEach(b =>
-    b.classList.toggle("active", b.dataset.pf === PLATFORM));
+  document.querySelectorAll(".pswitch button").forEach(b => {
+    const active = b.dataset.pf === PLATFORM;
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-selected", active ? "true" : "false");
+    b.tabIndex = active ? 0 : -1;
+  });
   document.querySelectorAll(".dy-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "douyin"));
   document.querySelectorAll(".xhs-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "xhs"));
   document.querySelectorAll(".ks-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "kuaishou"));
@@ -465,6 +612,7 @@ function applyPlatformUI() {
     if (pub && pub.style.display !== "none") switchTab("overview");
   }
   csSyncAll();   // 平台切换可能改了下拉选项/值,同步自定义下拉显示
+  updatePageContext();
 }
 function applyMonitorForm() {
   const title = $("mon-add-title");
@@ -492,12 +640,24 @@ function applyMonitorForm() {
 }
 
 // ─── 标签页切换 ───
-function switchTab(name) {
+function switchTab(name, pushHistory = false) {
+  if (!PAGE_META[name]) name = "overview";
+  const changed = CURRENT_TAB !== name;
+  CURRENT_TAB = name;
   document.querySelectorAll("[data-panel]").forEach(p => { p.style.display = p.dataset.panel === name ? "" : "none"; });
   document.querySelectorAll(".navitem").forEach(t => {
-    t.classList.toggle("active", t.dataset.tab === name);
+    const active = t.dataset.tab === name;
+    t.classList.toggle("active", active);
+    if (active) t.setAttribute("aria-current", "page");
+    else t.removeAttribute("aria-current");
   });
   try { localStorage.setItem("dym-tab", name); } catch (e) {}
+  try {
+    if (pushHistory && changed) history.pushState(null, "", "#" + name);
+    else if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+  } catch (e) {}
+  updatePageContext(name);
+  window.scrollTo({ top: 0, behavior: "auto" });
   if (name === "hub") { refreshHubSummary(); refreshHubPanel(); }
   else stopDmStream();   // 离开本账号管理即断开私信实时流
   if (name === "share-download") {
@@ -696,6 +856,7 @@ async function saveCookie() {
 // ─── 账号 ───
 let ACCOUNTS = [];
 let MONITORS = [], WATCHES = [], CONTENTS = [];
+let CHANNELS = [], PUBLISH_TASKS = [];
 let CONTENT_SRC = "", CONTENT_GROUP = "", CONTENT_TAG = "";
 let COMMENT_SRC = "", COMMENT_GROUP = "", COMMENT_TAG = "";
 function parseTags(raw) {
@@ -1262,9 +1423,14 @@ async function openWorkComments(workId, platform, title) {
   $("wc-count").textContent = "加载中…";
   $("wc-list").innerHTML = "";
   $("wcmodal").style.display = "flex";
+  modalOpened($("wcmodal"));
+  setTimeout(() => $("wcmodal").querySelector(".pv-close").focus(), 0);
   await loadWorkComments();
 }
-function hideWorkComments() { $("wcmodal").style.display = "none"; WC_WORK = null; }
+function hideWorkComments() {
+  $("wcmodal").style.display = "none"; WC_WORK = null;
+  modalClosed($("wcmodal"));
+}
 async function loadWorkComments() {
   if (!WC_WORK) return;
   try {
@@ -1918,30 +2084,6 @@ async function parseShareLinks(button = null) {
   });
 }
 
-// 监控管理信息编辑。返回 {alias,group_name,tags} 或 null。
-function uiMetaPrompt({ title, item }) {
-  return new Promise(res => {
-    _uiResolve = res; _uiCancelVal = null;
-    _uiGetVal = () => ({
-      alias: ($("ui-meta-alias").value || "").trim(),
-      group_name: getMetaValue("ui-meta-group").trim(),
-      tags: parseTags(getMetaValue("ui-meta-tags")),
-    });
-    $("ui-body").innerHTML = `
-      <div><label class="field" for="ui-meta-alias">管理别名</label>
-        <input id="ui-meta-alias" maxlength="60" value="${esc(item.alias || "")}" placeholder="便于快速识别"></div>
-      <div><label class="field" for="ui-meta-group">分组名<span class="field-scope">${esc(PF_NAME[PLATFORM])}内独立</span></label>
-        <input id="ui-meta-group" maxlength="40" autocomplete="off" data-meta-combo="group" placeholder="选择或输入新分组"></div>
-      <div><label class="field" for="ui-meta-tags">标签<span class="field-scope">${esc(PF_NAME[PLATFORM])}内独立</span></label>
-        <input id="ui-meta-tags" autocomplete="off" data-meta-combo="tags" placeholder="选择或输入新标签"></div>`;
-    enhanceMetaControl($("ui-meta-group"), "group");
-    enhanceMetaControl($("ui-meta-tags"), "tags");
-    setMetaValue("ui-meta-group", item.group_name || "");
-    setMetaValue("ui-meta-tags", (item.tags || []).join(","));
-    _uiOpen(title, "分组用于归属，标签可多选；输入新名称后按回车即可新增。");
-  });
-}
-
 function shareRequestBody(download) {
   const text = $("sd-text").value.trim();
   const maxSize = Number($("sd-max-size").value || 0);
@@ -2141,14 +2283,47 @@ async function addChannel() {
 }
 async function refreshChannels() {
   const cs = await api("/api/notifications");
+  CHANNELS = cs;
   $("n-table").querySelector("tbody").innerHTML = cs.map(c => `<tr>
     <td>${esc(c.name)} <span class="mut">${c.type}</span></td>
     <td><span class="pill ${c.enabled ? "active" : "invalid"}">${c.enabled ? "启用" : "停用"}</span></td>
     <td class="acttd">
+      <button class="ghost sm" onclick="editChannel(${c.id})">编辑</button>
       <button class="ghost sm" onclick="testChannel(${c.id})">测试</button>
       <button class="ghost sm" onclick="toggleChannel(${c.id}, ${!c.enabled})">${c.enabled ? "停用" : "启用"}</button>
       <button class="ghost sm" onclick="delChannel(${c.id})">删除</button>
-    </td></tr>`).join("") || empty(3, "还没有通知渠道", "i-bell", "添加 Bark / 飞书 / Webhook 等渠道,有新作品或新评论时推送给你");
+    </td></tr>`).join("") || empty(3, "还没有通知渠道", "i-bell", "添加 Bark / 钉钉 / Telegram 渠道，有新作品或新评论时推送给你");
+}
+async function editChannel(id, draft = null) {
+  const c = CHANNELS.find(x => x.id === id); if (!c) return;
+  const initial = draft || { name: c.name || "", raw: JSON.stringify(c.config || {}, null, 2) };
+  const value = await new Promise(res => {
+    _uiResolve = res; _uiCancelVal = null;
+    _uiGetVal = () => ({
+      name: $("ec-name").value.trim(),
+      raw: $("ec-config").value.trim(),
+    });
+    $("ui-body").innerHTML = `
+      <div><label class="field" for="ec-name">渠道名称</label>
+        <input id="ec-name" value="${esc(initial.name)}" maxlength="60"></div>
+      <div><label class="field" for="ec-config">配置 JSON</label>
+        <textarea id="ec-config" rows="9" spellcheck="false">${esc(initial.raw)}</textarea></div>`;
+    _uiOpen("编辑通知渠道", `类型：${c.type} · 修改密钥或地址后建议立即发送测试通知。`, { okText: "保存修改", wide: true });
+  });
+  if (value === null) return;
+  let config;
+  try { config = JSON.parse(value.raw || "{}"); }
+  catch (e) {
+    toast("配置不是合法 JSON，请修正后再保存", "err");
+    return editChannel(id, value);
+  }
+  try {
+    await api("/api/notifications/" + id, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: value.name || c.type, config }),
+    });
+    toast("通知渠道已更新", "ok"); refreshChannels();
+  } catch (e) { toast("更新失败:" + e.message, "err"); }
 }
 async function testChannel(id) {
   const btn = event.target.closest("button"); btn.disabled = true; btn.textContent = "发送中…";
@@ -2170,6 +2345,7 @@ async function addMonitor() {
     toast(`${platformName}监控必须选择一个已登录账号`, "err"); return;
   }
   const btn = evtBtn();
+  const downloadMode = $("t-download").value;
   $("add-msg").textContent = "解析中…";
   await withBusy(btn, "解析中", async () => {
     try {
@@ -2182,6 +2358,8 @@ async function addMonitor() {
           initial_backfill_count: PLATFORM === "douyin" ? +$("t-backfill").value : 0,
           download_dir: $("t-dir").value.trim(),
           video_quality: PLATFORM === "xhs" ? "" : $("t-quality").value,
+          download_enabled: downloadMode !== "none",
+          media_filter: downloadMode === "none" ? "all" : downloadMode,
           alias: $("t-alias").value.trim(), group_name: getMetaValue("t-group").trim(),
           tags: parseTags(getMetaValue("t-tags")),
         }),
@@ -2194,36 +2372,94 @@ async function addMonitor() {
   });
   refreshMonitors();
 }
-async function editDir(id, cur) {
-  const v = await uiPrompt({ title: "下载目录", hint: "留空=用默认目录", value: cur || "",
-    placeholder: "例如 D:\\downloads\\抖音" });
-  if (v === null) return;
-  try { await api("/api/monitors/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ download_dir: v.trim() }) }); toast("目录已更新", "ok"); refreshMonitors(); }
-  catch (e) { toast("失败:" + e.message, "err"); }
+function numericSelectOptions(current, choices, unit = "") {
+  const values = choices.map(([value]) => String(value));
+  const rows = values.includes(String(current)) || current == null
+    ? choices : [[current, `${current}${unit}（当前）`], ...choices];
+  return rows.map(([value, label]) =>
+    `<option value="${value}">${esc(label)}</option>`).join("");
 }
-async function editQuality(id, cur) {
-  const v = await uiSelect({
-    title: "视频画质", hint: "留空=跟随全局默认",
-    options: [
-      { value: "", label: "跟随全局默认" },
-      { value: "highest", label: "highest(原画)" },
-      { value: "1080", label: "1080" }, { value: "720", label: "720" },
-      { value: "540", label: "540" }, { value: "lowest", label: "lowest(省流)" },
-    ], value: cur || "" });
-  if (v === null) return;
-  try { await api("/api/monitors/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ video_quality: v.trim() }) }); toast("画质已更新", "ok"); refreshMonitors(); }
-  catch (e) { toast("失败:" + e.message, "err"); }
-}
-async function editMonitorMeta(id) {
+async function editMonitor(id) {
   const item = monitorById(id); if (!item) return;
-  const value = await uiMetaPrompt({ title: "管理作品监控", item });
+  const accounts = ACCOUNTS.filter(a => a.platform === item.platform && a.status !== "invalid");
+  const accountOptions = [
+    `<option value="">${item.account_id ? "保持当前绑定" : "不指定账号"}</option>`,
+    ...accounts.map(a => `<option value="${a.id}">${esc(a.nickname)}${a.has_creator ? " · 创作号" : ""}</option>`),
+  ].join("");
+  const intervalOptions = numericSelectOptions(item.interval_seconds || 300, [
+    [60, "每 1 分钟"], [300, "每 5 分钟"], [600, "每 10 分钟"],
+    [1800, "每 30 分钟"], [3600, "每小时"], [21600, "每 6 小时"], [86400, "每天"],
+  ], " 秒");
+  const backfillOptions = numericSelectOptions(item.initial_backfill_count ?? 0, [
+    [0, "不回填历史"], [5, "最近 5 条"], [20, "最近 20 条"], [-1, "尽可能全量"],
+  ], " 条");
+  const value = await new Promise(res => {
+    _uiResolve = res; _uiCancelVal = null;
+    _uiGetVal = () => {
+      const downloadMode = $("em-download").value;
+      const result = {
+        alias: $("em-alias").value.trim(),
+        group_name: getMetaValue("em-group").trim(),
+        tags: parseTags(getMetaValue("em-tags")),
+        interval_seconds: +$("em-interval").value,
+        account_id: $("em-account").value ? +$("em-account").value : null,
+        download_dir: $("em-dir").value.trim(),
+        video_quality: $("em-quality") ? $("em-quality").value : "",
+        download_enabled: downloadMode !== "none",
+        media_filter: downloadMode === "none" ? "all" : downloadMode,
+      };
+      if ($("em-backfill")) result.initial_backfill_count = +$("em-backfill").value;
+      return result;
+    };
+    $("ui-body").innerHTML = `
+      <fieldset class="monitor-config-group">
+        <legend>标识与归类</legend>
+        <div><label class="field" for="em-alias">管理别名</label>
+          <input id="em-alias" maxlength="60" value="${esc(item.alias || "")}" placeholder="便于快速识别"></div>
+        <div class="row">
+          <div><label class="field" for="em-group">分组</label><input id="em-group" data-meta-combo="group"></div>
+          <div><label class="field" for="em-tags">标签</label><input id="em-tags" data-meta-combo="tags"></div>
+        </div>
+      </fieldset>
+      <fieldset class="monitor-config-group">
+        <legend>抓取策略</legend>
+        <div class="row">
+          <div><label class="field" for="em-interval">抓取频率</label>
+            <select id="em-interval">${intervalOptions}</select></div>
+          <div><label class="field" for="em-account">抓取账号</label><select id="em-account">${accountOptions}</select></div>
+        </div>
+        ${item.last_scan_at ? "" : `<div><label class="field" for="em-backfill">首次历史回填</label>
+          <select id="em-backfill">${backfillOptions}</select></div>`}
+      </fieldset>
+      <fieldset class="monitor-config-group">
+        <legend>记录与下载</legend>
+        <div class="row">
+          <div><label class="field" for="em-download">自动下载范围</label>
+            <select id="em-download"><option value="all">全部作品</option><option value="video">仅视频</option><option value="images">仅图集</option><option value="none">仅记录，不下载</option></select></div>
+          ${item.platform === "xhs" ? "" : `<div><label class="field" for="em-quality">视频画质</label>
+            <select id="em-quality"><option value="">跟随全局默认</option><option value="highest">原画/最高</option><option value="1080">1080P</option><option value="720">720P</option><option value="540">540P</option><option value="lowest">最低省流</option></select></div>`}
+        </div>
+        <div><label class="field" for="em-dir">下载目录</label>
+          <input id="em-dir" value="${esc(item.download_dir || "")}" placeholder="留空跟随全局默认"></div>
+      </fieldset>`;
+    enhanceMetaControl($("em-group"), "group"); enhanceMetaControl($("em-tags"), "tags");
+    setMetaValue("em-group", item.group_name || ""); setMetaValue("em-tags", itemTags(item).join(","));
+    $("em-interval").value = String(item.interval_seconds || 300);
+    $("em-account").value = item.account_id ? String(item.account_id) : "";
+    if ($("em-backfill")) $("em-backfill").value = String(item.initial_backfill_count ?? 0);
+    if ($("em-quality")) $("em-quality").value = item.video_quality || "";
+    $("em-download").value = item.download_enabled === false ? "none" : (item.media_filter || "all");
+    ["em-interval", "em-account", "em-backfill", "em-quality", "em-download"]
+      .forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
+    _uiOpen("编辑作品监控", "监控对象不可修改；需要更换主页、创作者或关键词时，请新建监控。", { okText: "保存修改", wide: true });
+  });
   if (value === null) return;
   try {
     await api("/api/monitors/" + id, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(value),
     });
-    toast("分组、别名和标签已更新", "ok"); refreshMonitors(); refreshContents();
+    toast("作品监控配置已更新", "ok"); refreshMonitors(); refreshContents();
   } catch (e) { toast("更新失败:" + e.message, "err"); }
 }
 function monRow(t) {
@@ -2234,26 +2470,22 @@ function monRow(t) {
   const accTag = acc
     ? `<div class="mut" style="font-size:11px;margin-top:2px">账号:${esc(acc.nickname)}</div>`
     : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--danger)">${ic("i-info")}未绑定账号</div>`;
-  const bindBtn = acc
-    ? `<button class="ghost sm" onclick="bindAccount(${t.id})">换账号</button>`
-    : `<button class="sm" style="background:var(--warn);border-color:transparent;color:#1a1a1a" onclick="bindAccount(${t.id})">绑定账号</button>`;
+  const downloadLabel = t.download_enabled === false ? "仅记录"
+    : ({ all: "全部下载", video: "仅视频", images: "仅图集" }[t.media_filter] || "全部下载");
   return `<tr>
     <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${t.avatar}" alt="" referrerpolicy="no-referrer">` : ""}<div><span>${label}</span>${t.alias ? `<div class="alias-line">${esc(t.alias)}</div>` : ""}${accTag}</div></div></td>
     <td>${metaChips(t)}</td>
     <td class="num">${t.content_count}</td>
     <td class="num">${Math.round(t.interval_seconds / 60)} 分</td>
     <td class="wrap" style="max-width:230px">
-      ${t.platform === "xhs" ? "" : `<span class="pill q bare">${QMAP[t.video_quality] || "默认"}</span> `}
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px"><span class="pill q bare">${downloadLabel}</span></div>
+      ${t.platform === "xhs" ? "" : `<span class="pill q bare">${QMAP[t.video_quality] || "默认画质"}</span> `}
       <span class="mut" title="${esc(t.download_dir || "默认目录")}" style="display:inline-block;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${esc(t.download_dir || "默认")}</span></td>
     <td class="mut">${t.last_scan_at ? new Date(t.last_scan_at + "Z").toLocaleString() : "—"}${t.last_error ? ` <span class="warn-ic" title="${esc(t.last_error)}">${ic("i-info")}</span>` : ""}</td>
     <td><span class="pill ${t.enabled ? "active" : "invalid"}">${t.enabled ? "监控中" : "已暂停"}</span></td>
     <td class="acttd">
       <button class="ghost sm" onclick="runNow(${t.id})">立即抓取</button>
-      <button class="ghost sm" onclick="editDir(${t.id}, ${JSON.stringify(t.download_dir || "").replace(/"/g, "&quot;")})">目录</button>
-      ${t.platform === "xhs" ? "" : `<button class="ghost sm" onclick="editQuality(${t.id}, ${JSON.stringify(t.video_quality || "").replace(/"/g, "&quot;")})">画质</button>`}
-      <button class="ghost sm" onclick="editMonitorMeta(${t.id})">管理</button>
-      ${bindBtn}
-      ${t.platform === "douyin" ? `<button class="ghost sm" onclick="relayMon(${t.id})" title="${t.relay_to_xhs_account_id ? "下载后自动转发到小红书(已开启)" : "下载后自动转发到小红书"}">转发${t.relay_to_xhs_account_id ? " ✓" : ""}</button>` : ""}
+      <button class="ghost sm" onclick="editMonitor(${t.id})">编辑</button>
       <button class="ghost sm" onclick="toggleMon(${t.id})">${t.enabled ? "暂停" : "启用"}</button>
       <button class="ghost sm" onclick="delMon(${t.id})">删除</button>
     </td></tr>`;
@@ -2271,19 +2503,6 @@ function renderMonitorRows() {
   if ($("mon-filter-count")) $("mon-filter-count").textContent = `显示 ${rows.length} / ${MONITORS.length}`;
   $("mon-table").innerHTML = rows.map(monRow).join("")
     || empty(8, "没有匹配的监控", "i-target", MONITORS.length ? "调整分组、标签或搜索条件" : "在上方添加一个作品监控");
-}
-async function bindAccount(id) {
-  const pName = PLATFORM === "xhs" ? "小红书" : "抖音";
-  if (!ACCOUNTS.length) { toast(`请先在「账号」里完成${pName}登录`, "err"); switchTab("accounts"); return; }
-  const v = await uiSelect({
-    title: `绑定${pName}账号`,
-    hint: "选择用哪个已登录账号的登录态来抓取该目标。",
-    options: ACCOUNTS.map(a => ({ value: String(a.id), label: a.nickname + (a.has_creator ? " · 创作号" : "") })),
-    value: String(ACCOUNTS[0].id),
-  });
-  if (v === null) return;
-  try { await api("/api/monitors/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account_id: +v }) }); toast("已绑定账号,可点「立即抓取」试试", "ok"); refreshMonitors(); }
-  catch (e) { toast("绑定失败:" + e.message, "err"); }
 }
 async function refreshMonitors() {
   const ts = await api("/api/monitors?platform=" + PLATFORM);
@@ -2319,7 +2538,7 @@ function contentTimeCell(unix) {
   return `<div class="content-time"><span>${esc(day)}</span><span>${esc(time)}</span></div>`;
 }
 function contentStatusLabel(status) {
-  return ({ pending: "等待中", downloading: "下载中", done: "已下载", failed: "失败" })[status] || status || "未知";
+  return ({ pending: "等待中", downloading: "下载中", done: "已下载", failed: "失败", skipped: "仅记录" })[status] || status || "未知";
 }
 
 function contentPathMeta(r) {
@@ -2437,7 +2656,7 @@ function noteCard(r) {
       </div>
       <div class="ncard-actions">
         <span class="pill ${r.download_status}" style="flex:1;justify-content:center" title="${esc(r.error || "")}">${r.download_status}${r.error ? " ⓘ" : ""}</span>
-        ${r.download_status === "failed" ? `<button class="ghost sm" onclick="retryDl(${r.id})">重试</button>` : ""}
+        ${["failed", "skipped"].includes(r.download_status) ? `<button class="ghost sm" onclick="retryDl(${r.id})">${r.download_status === "skipped" ? "下载" : "重试"}</button>` : ""}
         ${(PLATFORM === "xhs" && r.download_status === "done") ? `<button class="ghost sm" onclick="repostDouyin(${r.id})">发抖音</button>` : ""}
         <button class="ghost sm" onclick="delContent(${r.id})">删除</button>
       </div>
@@ -2478,7 +2697,7 @@ async function refreshContents() {
       <td class="content-action-cell">
         <div class="content-status-row"><span class="pill ${r.download_status}">${contentStatusLabel(r.download_status)}</span>${r.error ? `<span class="warn-ic" data-tip="${esc(r.error)}">${ic("i-info")}</span>` : ""}</div>
         <div class="content-action-buttons">
-          ${r.download_status === "failed" ? `<button class="ghost sm" onclick="retryDl(${r.id})">重试</button>` : ""}
+          ${["failed", "skipped"].includes(r.download_status) ? `<button class="ghost sm" onclick="retryDl(${r.id})">${r.download_status === "skipped" ? "下载" : "重试"}</button>` : ""}
           ${(PLATFORM === "douyin" && r.download_status === "done") ? `<button class="ghost sm content-action-primary" onclick="pickRepostTarget(${r.id})">${ic("i-send")}转发</button>` : ""}
           ${(PLATFORM === "xhs" && r.download_status === "done") ? `<button class="ghost sm content-action-primary" onclick="repostDouyin(${r.id})">${ic("i-send")}发抖音</button>` : ""}
           <button class="ghost sm content-action-delete" onclick="delContent(${r.id})" data-tip="删除作品" aria-label="删除作品">${ic("i-trash")}</button>
@@ -2521,6 +2740,9 @@ async function addWatch() {
           mode: PLATFORM === "xhs" ? "public" : $("w-mode").value,
           account_id: $("w-acc").value ? +$("w-acc").value : null,
           interval_seconds: +$("w-interval").value,
+          recent_works: +$("w-recent").value,
+          recent_days: +$("w-days").value,
+          max_scrolls: +$("w-depth").value,
           alias: $("w-alias").value.trim(), group_name: getMetaValue("w-group").trim(),
           tags: parseTags(getMetaValue("w-tags")),
         }),
@@ -2540,12 +2762,13 @@ function watchRow(w) {
     <td>${w.kind === "video" ? (w.platform === "xhs" ? "笔记" : "视频") : (w.platform === "xhs" ? "创作者" : "账号")}</td>
     <td>${w.platform === "xhs" ? "公开" : (SRC[w.mode] || w.mode)}</td>
     <td class="num">${w.comment_count}</td>
-    <td class="num">${Math.round(w.interval_seconds / 60)} 分</td>
+    <td class="num">${Math.round(w.interval_seconds / 60)} 分
+      ${w.kind === "user" && (w.recent_works || w.recent_days) ? `<div class="mut" style="font-size:11px">${w.recent_works ? `近 ${w.recent_works} 个` : "全局作品数"} · ${w.recent_days ? `${w.recent_days} 天` : "全局天数"}</div>` : ""}</td>
     <td class="mut">${w.last_scan_at ? new Date(w.last_scan_at + "Z").toLocaleString() : "—"}${w.last_error ? ` <span class="warn-ic" title="${esc(w.last_error)}">${ic("i-info")}</span>` : ""}</td>
     <td><span class="pill ${w.enabled ? "active" : "invalid"}">${w.enabled ? "监控中" : "已暂停"}</span></td>
     <td class="acttd">
       <button class="ghost sm" onclick="scanWatch(${w.id})">立即抓取</button>
-      <button class="ghost sm" onclick="editWatchMeta(${w.id})">管理</button>
+      <button class="ghost sm" onclick="editWatchMeta(${w.id})">编辑</button>
       <button class="ghost sm" onclick="toggleWatch(${w.id}, ${!w.enabled})">${w.enabled ? "暂停" : "启用"}</button>
       <button class="ghost sm" onclick="delWatch(${w.id})">删除</button>
     </td></tr>`;
@@ -2572,14 +2795,86 @@ async function refreshWatches() {
 }
 async function editWatchMeta(id) {
   const item = watchById(id); if (!item) return;
-  const value = await uiMetaPrompt({ title: "管理评论监控", item });
+  const accounts = ACCOUNTS.filter(a => a.platform === item.platform && a.status !== "invalid");
+  const canCreator = item.platform === "douyin" && item.kind === "user";
+  const accountOptions = [
+    `<option value="">${item.account_id ? "保持当前绑定" : "不指定账号"}</option>`,
+    ...accounts.map(a => `<option value="${a.id}">${esc(a.nickname)}${a.has_creator ? " · 创作号" : ""}</option>`),
+  ].join("");
+  const intervalOptions = numericSelectOptions(item.interval_seconds || 600, [
+    [60, "每 1 分钟"], [300, "每 5 分钟"], [600, "每 10 分钟"],
+    [1800, "每 30 分钟"], [3600, "每小时"], [21600, "每 6 小时"], [86400, "每天"],
+  ], " 秒");
+  const recentOptions = numericSelectOptions(item.recent_works || 0, [
+    [0, "跟随全局设置"], [3, "最近 3 个作品"], [5, "最近 5 个作品"],
+    [10, "最近 10 个作品"], [20, "最近 20 个作品"], [50, "最近 50 个作品"],
+  ]);
+  const dayOptions = numericSelectOptions(item.recent_days || 0, [
+    [0, "跟随全局设置"], [3, "最近 3 天"], [7, "最近 7 天"],
+    [14, "最近 14 天"], [30, "最近 30 天"], [90, "最近 90 天"],
+  ]);
+  const depthOptions = numericSelectOptions(item.max_scrolls || 0, [
+    [0, "跟随全局设置"], [3, "浅层抓取"], [6, "标准抓取"],
+    [12, "深度抓取"], [20, "最大抓取"],
+  ]);
+  const value = await new Promise(res => {
+    _uiResolve = res; _uiCancelVal = null;
+    _uiGetVal = () => ({
+      alias: $("ew-alias").value.trim(),
+      group_name: getMetaValue("ew-group").trim(),
+      tags: parseTags(getMetaValue("ew-tags")),
+      interval_seconds: +$("ew-interval").value,
+      account_id: $("ew-account").value ? +$("ew-account").value : null,
+      mode: $("ew-mode").value,
+      recent_works: $("ew-recent") ? +$("ew-recent").value : item.recent_works || 0,
+      recent_days: $("ew-days") ? +$("ew-days").value : item.recent_days || 0,
+      max_scrolls: $("ew-depth") ? +$("ew-depth").value : item.max_scrolls || 0,
+    });
+    $("ui-body").innerHTML = `
+      <fieldset class="monitor-config-group">
+        <legend>标识与归类</legend>
+        <div><label class="field" for="ew-alias">管理别名</label>
+          <input id="ew-alias" maxlength="60" value="${esc(item.alias || "")}" placeholder="便于快速识别"></div>
+        <div class="row">
+          <div><label class="field" for="ew-group">分组</label><input id="ew-group" data-meta-combo="group"></div>
+          <div><label class="field" for="ew-tags">标签</label><input id="ew-tags" data-meta-combo="tags"></div>
+        </div>
+      </fieldset>
+      <fieldset class="monitor-config-group">
+        <legend>抓取策略</legend>
+        <div class="row">
+          <div><label class="field" for="ew-interval">抓取频率</label>
+            <select id="ew-interval">${intervalOptions}</select></div>
+          <div><label class="field" for="ew-account">抓取账号</label><select id="ew-account">${accountOptions}</select></div>
+        </div>
+        <div><label class="field" for="ew-mode">评论来源</label>
+          <select id="ew-mode"><option value="public">公开评论区</option>${canCreator ? '<option value="creator">创作中心（仅自有账号）</option>' : ""}</select></div>
+        ${item.kind === "user" ? `<div class="row">
+          <div><label class="field" for="ew-recent">检查近期作品数</label><select id="ew-recent">${recentOptions}</select></div>
+          <div><label class="field" for="ew-days">作品时间范围</label><select id="ew-days">${dayOptions}</select></div>
+        </div>` : ""}
+        ${item.platform === "xhs" ? "" : `<div><label class="field" for="ew-depth">评论区抓取深度</label>
+          <select id="ew-depth">${depthOptions}</select></div>`}
+      </fieldset>`;
+    enhanceMetaControl($("ew-group"), "group"); enhanceMetaControl($("ew-tags"), "tags");
+    setMetaValue("ew-group", item.group_name || ""); setMetaValue("ew-tags", itemTags(item).join(","));
+    $("ew-interval").value = String(item.interval_seconds || 600);
+    $("ew-account").value = item.account_id ? String(item.account_id) : "";
+    $("ew-mode").value = canCreator ? (item.mode || "public") : "public";
+    if ($("ew-recent")) $("ew-recent").value = String(item.recent_works || 0);
+    if ($("ew-days")) $("ew-days").value = String(item.recent_days || 0);
+    if ($("ew-depth")) $("ew-depth").value = String(item.max_scrolls || 0);
+    ["ew-interval", "ew-account", "ew-mode", "ew-recent", "ew-days", "ew-depth"]
+      .forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
+    _uiOpen("编辑评论监控", "监控目标保持不变；需要更换作品或被监控的创作者时，请新建评论监控。", { okText: "保存修改", wide: true });
+  });
   if (value === null) return;
   try {
     await api("/api/comment-watches/" + id, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(value),
     });
-    toast("分组、别名和标签已更新", "ok"); refreshWatches(); refreshComments();
+    toast("评论监控配置已更新", "ok"); refreshWatches(); refreshComments();
   } catch (e) { toast("更新失败:" + e.message, "err"); }
 }
 async function scanWatch(id) {
@@ -2673,6 +2968,8 @@ async function _pvOpen(fetcher, startIdx) {
   PV_N = 0; PV_I = 0;
   box.innerHTML = `<div class="pv-loading">加载中…</div>`; $("pv-cap").textContent = "";
   ov.style.display = "flex";
+  modalOpened(ov);
+  setTimeout(() => ov.querySelector(".pv-close").focus(), 0);
   try {
     const data = await fetcher();
     if (req !== PV_REQ) return;
@@ -2694,6 +2991,8 @@ async function openPubComments(accId, noteId, tok, src) {
   const req = ++PV_REQ;
   PV_N = 0; PV_I = 0;
   box.innerHTML = `<div class="pv-loading">加载评论…</div>`; cap.textContent = ""; ov.style.display = "flex";
+  modalOpened(ov);
+  setTimeout(() => ov.querySelector(".pv-close").focus(), 0);
   try {
     const d = await api(`/api/publish/note-comments?account_id=${accId}&note_id=${encodeURIComponent(noteId)}&xsec_token=${encodeURIComponent(tok || "")}&xsec_source=${encodeURIComponent(src || "")}`);
     if (req !== PV_REQ) return;
@@ -2737,13 +3036,29 @@ function hidePreview() {
   const v = $("pv-media").querySelector("video"); if (v) { try { v.pause(); } catch (e) {} }
   $("preview").style.display = "none"; $("pv-media").innerHTML = ""; $("pv-cap").textContent = "";
   PV_N = 0; PV_I = 0;
+  modalClosed($("preview"));
 }
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && $("repost") && $("repost").style.display !== "none") { hideRepost(); return; }
-  if ($("preview").style.display === "none") return;
-  if (e.key === "Escape") hidePreview();
-  else if (e.key === "ArrowLeft") pvNav(-1);
-  else if (e.key === "ArrowRight") pvNav(1);
+  const modal = _visibleModal();
+  if (!modal) return;
+  if (e.key === "Tab") {
+    const items = _modalFocusables(modal);
+    if (!items.length) { e.preventDefault(); modal.focus(); return; }
+    const first = items[0], last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    return;
+  }
+  if (modal === $("uimodal")) return; // 通用模态由 _uiKey 处理确认与取消
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (modal === $("repost")) hideRepost();
+    else if (modal === $("wcmodal")) hideWorkComments();
+    else if (modal === $("preview")) hidePreview();
+    return;
+  }
+  if (modal === $("preview") && e.key === "ArrowLeft") pvNav(-1);
+  else if (modal === $("preview") && e.key === "ArrowRight") pvNav(1);
 });
 
 // ─── 发布到小红书 ───
@@ -2830,19 +3145,77 @@ async function addPublish() {
 }
 const PUB_ST = { pending: "排队中", publishing: "发布中", done: "已发布", failed: "失败", canceled: "已取消" };
 const PUB_PILL = { pending: "pending", publishing: "downloading", done: "done", failed: "failed", canceled: "invalid" };
+async function editPublish(id) {
+  const task = PUBLISH_TASKS.find(x => x.id === id); if (!task) return;
+  const accounts = ACCOUNTS.filter(a => a.platform === task.platform);
+  const accountOptions = accounts.map(a =>
+    `<option value="${a.id}">${esc(a.nickname)}${a.has_creator ? " · 创作号" : ""}</option>`
+  ).join("");
+  const value = await new Promise(res => {
+    _uiResolve = res; _uiCancelVal = null;
+    _uiGetVal = () => ({
+      account_id: +$("ep-account").value,
+      title: $("ep-title").value.trim(),
+      desc: $("ep-desc").value,
+      topics: $("ep-topics").value.trim(),
+      scheduled_at: $("ep-when").value || null,
+      location: $("ep-location") ? $("ep-location").value.trim() : "",
+      visibility: $("ep-visibility") ? $("ep-visibility").value : "public",
+      allow_save: $("ep-allowsave") ? $("ep-allowsave").value !== "0" : true,
+    });
+    $("ui-body").innerHTML = `
+      <div><label class="field" for="ep-account">发布账号</label>
+        <select id="ep-account">${accountOptions}</select></div>
+      <div><label class="field" for="ep-title">标题（≤20 字）</label>
+        <input id="ep-title" maxlength="20" value="${esc(task.title || "")}"></div>
+      <div><label class="field" for="ep-desc">正文</label>
+        <textarea id="ep-desc" rows="4">${esc(task.desc || "")}</textarea></div>
+      <div><label class="field" for="ep-topics">话题</label>
+        <input id="ep-topics" value="${esc(task.topics || "")}" placeholder="逗号分隔，不用带 #"></div>
+      <div><label class="field" for="ep-when">定时发布</label>
+        <input type="datetime-local" id="ep-when" aria-label="定时发布（留空=尽快发）"></div>
+      ${task.platform === "shipinhao" ? `<div><label class="field" for="ep-location">位置</label>
+        <input id="ep-location" value="${esc(task.location || "")}" placeholder="城市或地点名"></div>` : ""}
+      ${task.platform === "douyin" ? `<fieldset class="publish-permissions">
+        <legend>互动与权限</legend>
+        <div class="publish-permission"><label class="field" for="ep-visibility">谁可以看</label>
+          <select id="ep-visibility"><option value="public">公开</option><option value="friends">好友可见</option><option value="private">仅自己可见</option></select></div>
+        <div class="publish-permission"><label class="field" for="ep-allowsave">保存权限</label>
+          <select id="ep-allowsave"><option value="1">允许他人保存</option><option value="0">不允许</option></select></div>
+      </fieldset>` : ""}`;
+    $("ep-account").value = task.account_id ? String(task.account_id) : "";
+    $("ep-when").value = task.scheduled_at ? task.scheduled_at.slice(0, 16) : "";
+    if ($("ep-visibility")) $("ep-visibility").value = task.visibility || "public";
+    if ($("ep-allowsave")) $("ep-allowsave").value = task.allow_save === false ? "0" : "1";
+    ["ep-account", "ep-visibility", "ep-allowsave"].forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
+    enhanceDateTime($("ep-when"));
+    _uiOpen("编辑发布任务", `可修改文案、账号、时间和权限；${task.media_count} 个附件如需更换，请删除任务后重建。`, { okText: "保存修改", wide: true });
+  });
+  if (value === null) return;
+  if (!value.account_id) { toast("请选择发布账号", "err"); return; }
+  try {
+    await api("/api/publish/" + id, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(value),
+    });
+    toast("发布任务已更新", "ok"); refreshPublish();
+  } catch (e) { toast("更新失败:" + e.message, "err"); }
+}
 async function refreshPublish() {
   if (!$("pub-table")) return;
   const rows = await api("/api/publish?platform=" + (pfHasPublish(PLATFORM) ? PLATFORM : "xhs"));
+  PUBLISH_TASKS = rows;
   if ($("tb-pub")) $("tb-pub").textContent = rows.length;
   $("pub-table").innerHTML = rows.map(t => `<tr>
     <td class="wrap" style="max-width:220px">${esc(t.title || "(无标题)")}</td>
     <td>${t.media_type === "video" ? "视频" : "图文"}</td>
     <td class="num">${t.media_count}</td>
     <td>${t.source_platform ? esc(t.source_platform) + " 转发" : "手动"}</td>
-    <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at + "Z").toLocaleString() : "尽快"}</td>
+    <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}</td>
     <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? (t.platform === "shipinhao" ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${t.account_id}, '${esc(t.result_url)}')">查看</a>` : ` <a href="${esc(t.result_url)}" target="_blank">查看</a>`) : ""}</td>
     <td class="acttd">
-      ${(t.status !== "done" && t.status !== "publishing") ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
+      ${["pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">编辑</button>` : ""}
+      ${["pending", "failed"].includes(t.status) ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
       <button class="ghost sm" onclick="delPublish(${t.id})">删除</button>
     </td></tr>`).join("") || empty(7, "暂无发布任务", "i-send",
       PLATFORM === "kuaishou" ? "上传图集/视频加入队列(发布到快手创作平台)"
@@ -2912,20 +3285,6 @@ function pubComments(i) {
 }
 
 // ─── 跨平台:抖音作品 → 小红书 ───
-async function _pickXhsAccount(withOff) {
-  const all = await api("/api/accounts?platform=xhs");
-  const accs = all.filter(a => a.has_creator);   // 发布需创作者号
-  if (!accs.length) { toast("请先在小红书账号页完成「创作者登录」(发布用)", "err"); return undefined; }
-  if (!withOff && accs.length === 1) return accs[0].id;
-  const options = (withOff ? [{ value: "-1", label: "🚫 关闭转发" }] : [])
-    .concat(accs.map(a => ({ value: String(a.id), label: a.nickname })));
-  const v = await uiSelect({
-    title: withOff ? "下载后自动转发到…" : "发布到哪个小红书账号",
-    options, value: withOff ? "-1" : String(accs[0].id),
-  });
-  if (v === null) return undefined;
-  return +v;
-}
 let REPOST_ID = null;
 let REPOST_TARGET = "xhs";           // xhs / douyin / shipinhao
 const repostXhs = (id) => openRepost(id, "xhs");
@@ -2983,6 +3342,7 @@ async function openRepost(id, target) {
   renderRepostThumbs(id);   // 异步拉媒体缩略图,不阻塞弹窗
   $("rp-submit").disabled = false;
   $("repost").style.display = "flex";
+  modalOpened($("repost"));
   $("rp-title").focus();
 }
 let RP_MEDIA = [];         // 可编辑图集:[{url, idx}](idx=原始序号,提交时回传)
@@ -3067,7 +3427,10 @@ function rpMediaOrder() {
   const unchanged = order.length === RP_MEDIA_LEN && order.every((v, i) => v === i);
   return unchanged ? null : order;
 }
-function hideRepost() { $("repost").style.display = "none"; REPOST_ID = null; }
+function hideRepost() {
+  $("repost").style.display = "none"; REPOST_ID = null;
+  modalClosed($("repost"));
+}
 async function submitRepost() {
   if (REPOST_ID === null) return;
   const accId = +$("rp-acc").value;
@@ -3095,13 +3458,6 @@ async function submitRepost() {
     if (typeof refreshPublish === "function") refreshPublish();
   } catch (e) { $("rp-msg").textContent = "失败:" + e.message; toast("转发失败:" + e.message, "err"); btn.disabled = false; }
 }
-async function relayMon(id) {
-  const accId = await _pickXhsAccount(true);
-  if (accId === undefined) return;
-  try { await api("/api/monitors/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ relay_to_xhs_account_id: accId }) }); toast(accId === -1 ? "已关闭自动转发" : "已设置:下载后自动转发到小红书", "ok"); refreshMonitors(); }
-  catch (e) { toast("设置失败:" + e.message, "err"); }
-}
-
 // ─── 自动评论 ───
 let AC_RULES = [];
 const AC_MODE_T = { auto_reply: "自动回复", auto_comment: "自动评论" };
@@ -3251,7 +3607,7 @@ function editRule(id) {
     $("em-cap").value = r.daily_cap; $("em-gap").value = r.min_gap_seconds;
     $("em-max").value = r.max_per_run;
     if ([...$("em-interval").options].some(o => o.value === String(r.interval_seconds))) $("em-interval").value = String(r.interval_seconds);
-    _uiOpen("编辑规则 #" + id, "改了「目标/关键词」会重新解析;账号需与规则平台一致", { okText: "保存修改" });
+    _uiOpen("编辑规则 #" + id, "改了「目标/关键词」会重新解析;账号需与规则平台一致", { okText: "保存修改", wide: true });
     ["em-mode", "em-kind", "em-acc", "em-interval"].forEach(idd => { const el = $(idd); if (el) enhanceSelect(el); });
   }).then(async val => {
     if (!val) return;   // 取消
@@ -3381,7 +3737,7 @@ async function delTask(id) {
 function esc(s) { return (s || "").toString().replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 function loop() {
-  if (INFLIGHT > 0) return;   // 有慢操作进行中,别重渲染(保住按钮加载态)
+  if (INFLIGHT > 0 || document.hidden) return;   // 慢操作/后台标签页不刷新,减少干扰与无效请求
   refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshOverviewChart(); refreshCommentRules(); refreshCommentTasks(); if (pfHasPublish(PLATFORM)) refreshPublish();
 }
 
@@ -3396,6 +3752,8 @@ const VALID_TABS = ["overview", "accounts", "monitors", "comments", "hub", "publ
 const LEGACY_HUB_TABS = ["myworks", "following", "fans", "dm"];
 switchTab((() => {
   try {
+    const hashTab = decodeURIComponent(location.hash.replace(/^#/, ""));
+    if (VALID_TABS.includes(hashTab)) return hashTab;
     const t = localStorage.getItem("dym-tab");
     if (LEGACY_HUB_TABS.includes(t)) { HUB_TAB = t; return "hub"; }
     return VALID_TABS.includes(t) ? t : "overview";
@@ -3411,4 +3769,31 @@ onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); onAcMo
 enhanceAllSelects();   // 把所有原生 <select> 升级为美化下拉
 enhanceAllMetaControls(); // 分组/标签：当前平台词库下拉，可搜索并新增
 enhanceAllDateTime();  // 把 datetime-local 升级为自定义日期选择器
+
+// shell 交互：浏览器前进/后退、平台键盘切换、长页面返回顶部。
+window.addEventListener("hashchange", () => {
+  const tab = decodeURIComponent(location.hash.replace(/^#/, ""));
+  if (VALID_TABS.includes(tab) && tab !== CURRENT_TAB) switchTab(tab);
+});
+document.querySelector(".pswitch").addEventListener("keydown", e => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+  e.preventDefault();
+  const buttons = [...document.querySelectorAll(".pswitch button")];
+  let index = buttons.indexOf(document.activeElement);
+  if (e.key === "Home") index = 0;
+  else if (e.key === "End") index = buttons.length - 1;
+  else index = (index + (e.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
+  buttons[index].focus();
+  switchPlatform(buttons[index].dataset.pf);
+});
+let _backTopTick = false;
+window.addEventListener("scroll", () => {
+  if (_backTopTick) return;
+  _backTopTick = true;
+  requestAnimationFrame(() => {
+    $("backtop").classList.toggle("show", window.scrollY > 520);
+    _backTopTick = false;
+  });
+}, { passive: true });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loop(); });
 setInterval(loop, 8000);

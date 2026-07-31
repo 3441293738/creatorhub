@@ -56,9 +56,8 @@ class MonitorTarget(SQLModel, table=True):
     initial_backfill_count: int = 0            # 首扫历史回填数;0=仅订阅后,-1=尽可能全量
     download_dir: str = ""                  # 自定义下载目录(空=用全局默认)
     video_quality: str = ""                 # 画质偏好(空=用全局默认)
-    monitor_comments: bool = False          # 是否同时监控评论
-    comment_mode: str = "public"            # public(公开作品页) | creator(自有账号·创作中心)
-    relay_to_xhs_account_id: Optional[int] = None  # 抖音作品下载完后自动发到此小红书账号(空=不转发)
+    download_enabled: bool = True           # 新作品是否自动下载；关闭时仍保留作品记录
+    media_filter: str = "all"               # all | video | images
     account_id: Optional[int] = None       # 用哪个登录账号的 Cookie 抓取
     last_scan_at: Optional[datetime] = None
     last_error: str = ""
@@ -138,6 +137,9 @@ class CommentWatch(SQLModel, table=True):
     mode: str = "public"           # public(公开评论区) | creator(创作中心,仅抖音自有账号)
     account_id: Optional[int] = None
     interval_seconds: int = 600
+    recent_works: int = 0          # 账号型监控检查最近 N 个作品；0=全局默认
+    recent_days: int = 0           # 账号型监控只检查最近 N 天；0=全局默认
+    max_scrolls: int = 0           # 单个评论区抓取深度；0=全局默认
     enabled: bool = True
     last_scan_at: Optional[datetime] = None
     last_error: str = ""
