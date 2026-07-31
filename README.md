@@ -220,7 +220,7 @@ data/
 
 <p align="center">
   <a href="https://www.ipwo.net/?code=PPBFE3E2F" target="_blank" rel="noopener noreferrer">
-    <img src="assets/sponsors/ipwo-banner.svg" alt="IPWO 爬虫住宅代理" width="100%">
+    <img src="assets/sponsors/ipwo-banner.png" alt="IPWO 爬虫住宅代理" width="100%">
   </a>
 </p>
 
