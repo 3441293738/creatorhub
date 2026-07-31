@@ -1,9 +1,9 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 httpx[socks]==0.28.1     # [socks]=socksio,支持 SOCKS5 代理(多账号隔离用)
-pyyaml==6.0.2
+pyyaml==6.0.3
 sqlmodel==0.0.22
-playwright==1.49.1
+playwright==1.61.0
 xhshow>=0.2.0          # 小红书请求签名(X-S/X-T/x-S-Common)纯算法库
 curl_cffi>=0.7         # 小红书签名直连的 TLS 指纹复刻(impersonate=chrome,绕 JA3 风控)
 python-multipart>=0.0.9   # 发布:上传图集/视频文件

@@ -133,6 +133,11 @@ def install(*, skip_browser: bool = False, skip_node: bool = False) -> None:
     ensure_config()
     python = ensure_venv()
 
+    # macOS 上旧版 pip 可能识别不到当前 Python/架构对应的 wheel，继而退回
+    # clang/clang++ 本地编译。先更新构建工具，尽量直接安装官方 wheel。
+    log("正在更新 Python 安装工具")
+    run([python, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
+
     log("正在安装 Python 依赖")
     run([python, "-m", "pip", "install", "-r", ROOT / "requirements.txt"])
 
