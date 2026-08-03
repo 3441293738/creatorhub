@@ -90,6 +90,75 @@ const skeleton = (cols, rows = 3) => {
   return out;
 };
 
+// ─── form interaction helpers ───
+function setFieldError(el, message = "") {
+  if (!el) return false;
+  const field = el.closest(".form-field") || el.parentElement;
+  let error = field && field.querySelector(".field-error");
+  if (message) {
+    el.setAttribute("aria-invalid", "true");
+    if (!error && field) {
+      error = document.createElement("p");
+      error.className = "field-error";
+      error.setAttribute("role", "alert");
+      field.appendChild(error);
+    }
+    if (error) error.textContent = message;
+    return false;
+  }
+  el.removeAttribute("aria-invalid");
+  if (error) error.remove();
+  return true;
+}
+function toggleSecretInput(id, btn) {
+  const input = $(id);
+  if (!input) return;
+  const show = input.type === "password";
+  input.type = show ? "text" : "password";
+  if (btn) {
+    btn.setAttribute("aria-pressed", show ? "true" : "false");
+    btn.setAttribute("aria-label", show ? "隐藏 API Key" : "显示 API Key");
+  }
+  input.focus({ preventScroll: true });
+}
+function validateAiField(el, required = false) {
+  if (!el) return true;
+  const value = el.value.trim();
+  if (required && !value) return setFieldError(el, el.id === "ai-model" ? "请输入模型名称" : "请输入接口地址");
+  if (el.id === "ai-base" && value) {
+    try {
+      const url = new URL(value);
+      if (!/^https?:$/.test(url.protocol)) throw new Error("protocol");
+    } catch (e) { return setFieldError(el, "请输入以 http:// 或 https:// 开头的有效地址"); }
+  }
+  if (el.id === "ai-temp" && value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0 || n > 2) return setFieldError(el, "温度需填写 0–2 之间的数字");
+  }
+  return setFieldError(el, "");
+}
+function validateAiSettings(requireConfigured = false) {
+  const required = requireConfigured || $("ai-enabled").checked;
+  const fields = [$("ai-base"), $("ai-model"), $("ai-temp")];
+  const valid = fields.map(el => validateAiField(el, required && (el.id === "ai-base" || el.id === "ai-model"))).every(Boolean);
+  if (!valid) {
+    const first = fields.find(el => el.getAttribute("aria-invalid") === "true");
+    if (first) first.focus({ preventScroll: false });
+    $("ai-msg").textContent = "请先修正标红的配置项";
+  }
+  return valid;
+}
+function validateNotificationConfig() {
+  const el = $("n-config");
+  try {
+    const value = JSON.parse(el.value || "{}");
+    if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("object");
+    return setFieldError(el, "");
+  } catch (e) {
+    return setFieldError(el, "请输入合法的 JSON 对象，例如 {\"token\":\"...\"}");
+  }
+}
+
 // ─── dialog focus / scroll management ───
 const _modalTriggers = new WeakMap();
 function _visibleModal() {
@@ -138,9 +207,9 @@ function _uiOpen(title, hint, { okText = "确定", danger = false, wide = false 
   $("ui-title").textContent = title || "";
   $("ui-hint").textContent = hint || "";
   const ok = $("ui-ok");
-  ok.innerHTML = (danger ? "" : `<svg aria-hidden="true"><use href="#i-check"/></svg>`) + esc(okText);
+  ok.innerHTML = `<svg aria-hidden="true"><use href="#${danger ? "i-trash" : "i-check"}"/></svg>` + esc(okText);
   ok.classList.toggle("danger", !!danger);
-  ok.style.cssText = danger ? "flex:0 0 auto;background:var(--danger);border-color:transparent" : "flex:0 0 auto";
+  ok.style.cssText = "flex:0 0 auto";
   const modal = $("uimodal");
   modal.querySelector(".rp-box").style.width = wide ? "min(94vw,680px)" : "min(94vw,480px)";
   modal.style.display = "flex";
@@ -197,6 +266,8 @@ function enhanceSelect(sel) {
   wrap.appendChild(sel);
   sel.className = "cs-native";
   sel.removeAttribute("style");
+  sel.tabIndex = -1;
+  sel.setAttribute("aria-hidden", "true");
 
   const trg = document.createElement("button");
   trg.type = "button";
@@ -205,9 +276,13 @@ function enhanceSelect(sel) {
     `<svg class="cs-arr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`;
   trg.setAttribute("aria-haspopup", "listbox");
   trg.setAttribute("aria-expanded", "false");
-  const selectLabel = sel.getAttribute("aria-label") ||
-    ((sel.id && document.querySelector(`label[for="${sel.id}"]`)) || {}).textContent || "选择选项";
-  trg.setAttribute("aria-label", selectLabel.trim());
+  const labelEl = sel.id ? document.querySelector(`label[for="${sel.id}"]`) : null;
+  const selectLabel = sel.getAttribute("aria-label") || (labelEl || {}).textContent || "选择选项";
+  if (labelEl) {
+    if (!labelEl.id) labelEl.id = `label-${sel.id}`;
+    trg.setAttribute("aria-labelledby", labelEl.id);
+    labelEl.addEventListener("click", e => { e.preventDefault(); trg.focus(); });
+  } else trg.setAttribute("aria-label", selectLabel.trim());
   wrap.appendChild(trg);
   let panel = null;
 
@@ -215,6 +290,8 @@ function enhanceSelect(sel) {
     const o = sel.options[sel.selectedIndex];
     trg.querySelector(".cs-lbl").textContent = o ? o.textContent : "";
     trg.classList.toggle("ph", !o || o.value === "");
+    trg.disabled = !!sel.disabled;
+    trg.setAttribute("aria-disabled", sel.disabled ? "true" : "false");
   }
   function close() {
     if (panel) { panel.remove(); panel = null; }
@@ -291,7 +368,7 @@ function enhanceSelect(sel) {
   });
   sel.addEventListener("change", sync);
   sel._csSync = sync;
-  new MutationObserver(sync).observe(sel, { childList: true });
+  new MutationObserver(sync).observe(sel, { childList: true, attributes: true, attributeFilter: ["disabled"] });
   sync();
 }
 function enhanceAllSelects(root) { (root || document).querySelectorAll("select:not([data-cs])").forEach(enhanceSelect); }
@@ -357,15 +434,23 @@ function enhanceDateTime(inp) {
   const st = inp.getAttribute("style"); if (st) wrap.setAttribute("style", st);
   inp.parentNode.insertBefore(wrap, inp); wrap.appendChild(inp);
   inp.className = "dt-native"; inp.removeAttribute("style");
-  const ph = inp.getAttribute("aria-label") || "选择日期时间";
+  inp.tabIndex = -1; inp.setAttribute("aria-hidden", "true");
+  const labelEl = inp.id ? document.querySelector(`label[for="${inp.id}"]`) : null;
+  const ph = inp.getAttribute("aria-label") || (labelEl || {}).textContent || "选择日期时间";
   const trg = document.createElement("button");
   trg.type = "button"; trg.className = "dt-trg";
   trg.innerHTML = `<span class="dt-lbl"></span>` +
     `<svg class="dt-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>`;
+  trg.setAttribute("aria-haspopup", "dialog"); trg.setAttribute("aria-expanded", "false");
+  if (labelEl) {
+    if (!labelEl.id) labelEl.id = `label-${inp.id}`;
+    trg.setAttribute("aria-labelledby", labelEl.id);
+    labelEl.addEventListener("click", e => { e.preventDefault(); trg.focus(); });
+  } else trg.setAttribute("aria-label", ph.trim());
   wrap.appendChild(trg);
   let panel = null;
-  function sync() { const d = _dtParse(inp.value); trg.querySelector(".dt-lbl").textContent = d ? _dtDisp(d) : ph; trg.classList.toggle("ph", !d); }
-  function close() { if (panel) { panel.remove(); panel = null; } wrap.classList.remove("open"); window.removeEventListener("scroll", close, true); window.removeEventListener("resize", close); document.removeEventListener("mousedown", onDoc, true); }
+  function sync() { const d = _dtParse(inp.value); trg.querySelector(".dt-lbl").textContent = d ? _dtDisp(d) : ph; trg.classList.toggle("ph", !d); trg.disabled = !!inp.disabled; }
+  function close() { if (panel) { panel.remove(); panel = null; } wrap.classList.remove("open"); trg.setAttribute("aria-expanded", "false"); trg.removeAttribute("aria-controls"); window.removeEventListener("scroll", close, true); window.removeEventListener("resize", close); document.removeEventListener("mousedown", onDoc, true); }
   function onDoc(e) { if (!wrap.contains(e.target) && (!panel || !panel.contains(e.target))) close(); }
   function open() {
     const init = _dtParse(inp.value) || new Date();
@@ -373,6 +458,8 @@ function enhanceDateTime(inp) {
     let chosen = _dtParse(inp.value);
     let h = init.getHours(), mi = init.getMinutes();
     panel = document.createElement("div"); panel.className = "dt-panel";
+    panel.id = `dt-panel-${inp.id || Math.random().toString(36).slice(2)}`;
+    panel.setAttribute("role", "dialog"); panel.setAttribute("aria-label", ph.trim());
     const getH = () => { const v = parseInt(panel.querySelector(".dt-h").value, 10); return isNaN(v) ? 0 : Math.max(0, Math.min(23, v)); };
     const getM = () => { const v = parseInt(panel.querySelector(".dt-m").value, 10); return isNaN(v) ? 0 : Math.max(0, Math.min(59, v)); };
     function render() {
@@ -381,22 +468,26 @@ function enhanceDateTime(inp) {
       const days = new Date(y, m + 1, 0).getDate();
       const t = new Date();
       let cells = "";
-      for (let i = 0; i < lead; i++) cells += `<div class="dt-day off"></div>`;
+      for (let i = 0; i < lead; i++) cells += `<span class="dt-day off"></span>`;
       for (let d = 1; d <= days; d++) {
         const today = t.getFullYear() === y && t.getMonth() === m && t.getDate() === d;
         const sel = chosen && chosen.getFullYear() === y && chosen.getMonth() === m && chosen.getDate() === d;
-        cells += `<div class="dt-day${today ? " today" : ""}${sel ? " sel" : ""}" data-d="${d}">${d}</div>`;
+        cells += `<button type="button" class="dt-day${today ? " today" : ""}${sel ? " sel" : ""}" data-d="${d}" aria-label="${y} 年 ${m + 1} 月 ${d} 日${today ? "，今天" : ""}"${sel ? ' aria-current="date"' : ""}>${d}</button>`;
       }
       panel.innerHTML =
-        `<div class="dt-head"><button type="button" class="dt-nav" data-nav="-1">‹</button>` +
+        `<div class="dt-head"><button type="button" class="dt-nav" data-nav="-1" aria-label="上个月">${ic("i-prev")}</button>` +
         `<span class="dt-title">${y} 年 ${m + 1} 月</span>` +
-        `<button type="button" class="dt-nav" data-nav="1">›</button></div>` +
+        `<button type="button" class="dt-nav" data-nav="1" aria-label="下个月">${ic("i-next")}</button></div>` +
         `<div class="dt-wk"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>` +
         `<div class="dt-grid">${cells}</div>` +
-        `<div class="dt-time"><span>时间</span><input type="number" class="dt-h" min="0" max="23" value="${_pad2(h)}"><b>:</b><input type="number" class="dt-m" min="0" max="59" value="${_pad2(mi)}"></div>` +
+        `<div class="dt-time"><span>时间</span><input type="number" class="dt-h" min="0" max="23" value="${_pad2(h)}" aria-label="小时"><b>:</b><input type="number" class="dt-m" min="0" max="59" value="${_pad2(mi)}" aria-label="分钟"></div>` +
         `<div class="dt-foot"><button type="button" class="ghost sm" data-act="clear">清除</button><button type="button" class="ghost sm" data-act="now">现在</button><button type="button" class="sm" data-act="ok">确定</button></div>`;
       panel.querySelectorAll(".dt-nav").forEach(b => b.onclick = () => { h = getH(); mi = getM(); view.setMonth(view.getMonth() + (+b.dataset.nav)); render(); });
       panel.querySelectorAll(".dt-day[data-d]").forEach(c => c.onclick = () => { h = getH(); mi = getM(); chosen = new Date(view.getFullYear(), view.getMonth(), +c.dataset.d, h, mi); render(); });
+      if (panel.isConnected) requestAnimationFrame(() => {
+        const day = panel && (panel.querySelector(".dt-day.sel") || panel.querySelector(".dt-day[data-d]"));
+        if (day) day.focus();
+      });
     }
     function commit(d) { inp.value = d ? _dtFmt(d) : ""; inp.dispatchEvent(new Event("change", { bubbles: true })); sync(); close(); }
     render();
@@ -413,12 +504,16 @@ function enhanceDateTime(inp) {
     if (below < 360 && r.top > below) panel.style.bottom = (window.innerHeight - r.top + 5) + "px";
     else panel.style.top = (r.bottom + 5) + "px";
     wrap.classList.add("open");
+    trg.setAttribute("aria-expanded", "true"); trg.setAttribute("aria-controls", panel.id);
+    panel.addEventListener("keydown", e => { if (e.key === "Escape") { e.preventDefault(); close(); trg.focus(); } });
     window.addEventListener("scroll", close, true); window.addEventListener("resize", close);
     setTimeout(() => document.addEventListener("mousedown", onDoc, true), 0);
+    setTimeout(() => { const day = panel && (panel.querySelector(".dt-day.sel") || panel.querySelector(".dt-day[data-d]")); if (day) day.focus(); }, 0);
   }
   trg.addEventListener("click", e => { e.preventDefault(); panel ? close() : open(); });
   inp.addEventListener("change", sync);
   inp._dtSync = sync;
+  new MutationObserver(sync).observe(inp, { attributes: true, attributeFilter: ["disabled"] });
   sync();
 }
 function enhanceAllDateTime(root) { (root || document).querySelectorAll("input[type=datetime-local]:not([data-dt])").forEach(enhanceDateTime); }
@@ -564,13 +659,19 @@ function applyPlatformUI() {
     : sph ? "上传视频到视频号助手(实验性)" : "上传图集 / 视频到小红书(实验性)";
   if ($("pub-head-lead")) $("pub-head-lead").textContent = (ks || dy || sph) ? "发布作品" : "发布笔记";
   if ($("pub-title")) $("pub-title").placeholder = (ks || dy || sph) ? "给作品起个标题" : "给笔记起个标题";
-  if ($("pub-hint")) $("pub-hint").textContent = dy
-    ? "发布通过自动化抖音创作平台(creator.douyin.com)完成,会弹出浏览器窗口。首次或触发风控时抖音会要求「短信验证码/扫码」验证,请在弹出窗口里手动完成(最多等 5 分钟,验证通过后自动继续发布);视频上传后需等转码,发布稍慢。⚠️ 因需本人验证,定时/无人值守发布可能被此步骤挡住,建议发布时在场。"
+  const pubHintText = dy
+    ? "发布通过自动化抖音创作平台完成。首次登录或触发验证时，请在弹出窗口中完成短信验证或扫码；视频上传后还需等待转码。注意：定时发布可能因本人验证而暂停，建议发布时在场。"
     : ks
-    ? "发布通过自动化快手创作平台(cp.kuaishou.com)完成,会弹出浏览器窗口;若遇验证码/需补封面可在窗口里手动处理。定时任务由后台引擎到点执行。"
+    ? "发布通过自动化快手创作平台完成。若遇验证码或需要补充封面，请在弹出窗口中手动处理；定时任务由后台引擎按计划执行。"
     : sph
-    ? "发布通过自动化视频号助手(channels.weixin.qq.com)完成,会弹出浏览器窗口。视频号视频上传需转码、发布前可能要求封面/实名/过脸验证,请在弹出窗口里手动处理(建议发布时在场)。⚠️ 发布页在 wujie 微前端里,选择器随视频号改版可能失效。"
-    : "发布通过自动化小红书创作平台完成,会弹出浏览器窗口;若遇验证码/需补封面可在窗口里手动处理。定时任务由后台引擎到点执行。";
+    ? "发布通过自动化视频号助手完成。视频需等待转码，发布前可能要求补充封面、实名或人脸验证，请在弹出窗口中处理。注意：平台页面改版后可能需要重新适配。"
+    : "发布通过自动化小红书创作平台完成。若遇验证码或需要补充封面，请在弹出窗口中手动处理；定时任务由后台引擎按计划执行。";
+  const pubHint = $("pub-hint");
+  if (pubHint) {
+    const copy = pubHint.querySelector("span");
+    if (copy) copy.textContent = pubHintText;
+    else pubHint.textContent = pubHintText;
+  }
   // 评论监控「类型」下拉随平台改写文案
   const wk = $("w-kind");
   if (wk) {
@@ -658,6 +759,10 @@ function switchTab(name, pushHistory = false) {
   } catch (e) {}
   updatePageContext(name);
   window.scrollTo({ top: 0, behavior: "auto" });
+  if (changed) requestAnimationFrame(() => {
+    const title = $("page-title");
+    if (title) title.focus({ preventScroll: true });
+  });
   if (name === "hub") { refreshHubSummary(); refreshHubPanel(); }
   else stopDmStream();   // 离开本账号管理即断开私信实时流
   if (name === "share-download") {
@@ -673,10 +778,10 @@ async function choosePreLoginProxy() {
   let opts = [];
   try { opts = await api("/api/proxies/options"); } catch (e) { }
   const options = [
-    { value: "auto", label: opts.length ? "🔀 自动分配(占用最少)" : "🔀 自动分配(池为空→不用代理)" },
+    { value: "auto", label: opts.length ? "自动分配（占用最少）" : "自动分配（池为空时不用代理）" },
     ...opts.map(p => ({ value: p.url, label: `${p.label} · ${p.status} · 占用${p.used_by} · ${p.masked}${p.enabled ? "" : " · 已停用"}` })),
     { value: "__custom__", label: "✎ 手动输入指定代理…" },
-    { value: "", label: "🚫 不用代理(走本机真实 IP)" },
+    { value: "", label: "不用代理（使用本机网络）" },
   ];
   const v = await uiSelect({
     title: "选择本次登录使用的代理",
@@ -705,7 +810,7 @@ async function startLogin() {
   $("qrstatus").textContent = "正在打开浏览器窗口…";
   try {
     const res = await api(loginStartUrl("/api/login/browser/start", proxy), { method: "POST" });
-    $("qrstatus").innerHTML = "🪟 已弹出浏览器窗口,请在<b>那个窗口</b>里点击「登录」并用抖音 App 扫码。<br>完成后这里会自动刷新。";
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>浏览器窗口已打开</b>，请在该窗口点击「登录」并使用抖音 App 扫码。<br>完成后这里会自动刷新。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("登录启动失败:" + e.message, "err"); }
 }
@@ -758,7 +863,7 @@ async function startCreatorLogin() {
   $("qrstatus").textContent = "正在打开创作中心窗口…";
   try {
     const res = await api(loginStartUrl("/api/login/creator/start", proxy), { method: "POST" });
-    $("qrstatus").innerHTML = "🪟 已弹出<b>创作中心</b>窗口,请在那个窗口里扫码登录你的抖音号。<br>登录态同样可用于公开抓取。";
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>创作中心窗口已打开</b>，请在该窗口扫码登录抖音账号。<br>此登录态也可用于公开抓取。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
 }
@@ -772,7 +877,7 @@ async function startXhsLogin() {
   $("qrstatus").textContent = "正在打开小红书窗口…";
   try {
     const res = await api(loginStartUrl("/api/login/xhs/start", proxy), { method: "POST" });
-    $("qrstatus").innerHTML = "🪟 已弹出<b>小红书</b>窗口,扫码登录后会<b>自动跳到创作平台</b>:<br>· 只看/评论/预览 → 扫完 www 即可,不用管创作平台;<br>· 还要<b>发布</b> → 若创作平台提示登录/同意,请在窗口里<b>完成它</b>(拿到后会自动收尾)。<br>整个过程<b>别急着关窗口</b>,完成后这里自动刷新。";
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书窗口已打开</b>，扫码后会自动进入创作平台：<br>· 只需查看、评论或预览：完成主站登录即可；<br>· 还需发布：请在创作平台完成登录或授权。<br>处理完成前请保持窗口开启，本页会自动刷新。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("小红书登录启动失败:" + e.message, "err"); }
 }
@@ -786,7 +891,7 @@ async function startXhsCreatorLogin() {
   $("qrstatus").textContent = "正在打开小红书创作平台窗口…";
   try {
     const res = await api(loginStartUrl("/api/login/xhs-creator/start", proxy), { method: "POST" });
-    $("qrstatus").innerHTML = "🪟 已弹出<b>小红书创作平台</b>窗口,请扫码登录(此登录态用于<b>发布</b>)。<br>登录成功后稍等一两秒再关窗口。";
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书创作平台窗口已打开</b>，请扫码登录，此登录态用于发布。<br>登录成功后请稍等片刻再关闭窗口。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
 }
@@ -800,7 +905,7 @@ async function startKsLogin() {
   $("qrstatus").textContent = "正在打开快手窗口…";
   try {
     const res = await api(loginStartUrl("/api/login/kuaishou/start", proxy), { method: "POST" });
-    $("qrstatus").innerHTML = "🪟 已弹出<b>快手</b>窗口,请在那个窗口里点击「登录」并用<b>快手 App</b> 扫码。<br>完成后这里会自动刷新。";
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>快手窗口已打开</b>，请在该窗口点击「登录」并使用快手 App 扫码。<br>完成后这里会自动刷新。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("快手登录启动失败:" + e.message, "err"); }
 }
@@ -814,7 +919,7 @@ async function startKsCreatorLogin() {
   $("qrstatus").textContent = "正在打开快手创作平台窗口…";
   try {
     const res = await api(loginStartUrl("/api/login/kuaishou-creator/start", proxy), { method: "POST" });
-    $("qrstatus").innerHTML = "🪟 已弹出<b>快手创作平台</b>窗口(cp.kuaishou.com),请扫码登录(此登录态用于<b>发布</b>)。<br>登录成功后稍等一两秒再关窗口。";
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>快手创作平台窗口已打开</b>，请扫码登录，此登录态用于发布。<br>登录成功后请稍等片刻再关闭窗口。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
 }
@@ -828,7 +933,7 @@ async function startChannelsLogin() {
   $("qrstatus").textContent = "正在打开视频号助手窗口…";
   try {
     const res = await api(loginStartUrl("/api/login/shipinhao/start", proxy), { method: "POST" });
-    $("qrstatus").innerHTML = "🪟 已弹出<b>视频号助手</b>窗口(channels.weixin.qq.com),请用<b>微信</b>扫码登录(读取/发布共用一套登录态)。<br>登录成功后稍等一两秒再关窗口。";
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>视频号助手窗口已打开</b>，请使用微信扫码登录，读取和发布共用此登录态。<br>登录成功后请稍等片刻再关闭窗口。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("视频号登录启动失败:" + e.message, "err"); }
 }
@@ -1223,7 +1328,7 @@ async function refreshAccounts() {
         <button class="ghost sm" onclick="openAccountBrowser(${a.id})" title="用该账号登录态弹出真实浏览器窗口,手动收发私信 / 维护 / 抓接口(关窗即保存)">打开浏览器</button>
         <button class="ghost sm" onclick="setProxy(${a.id})" title="设置/分配该账号专属代理(防多账号关联)">代理</button>
         ${a.has_proxy ? `<button class="ghost sm" onclick="testProxy(${a.id})" title="经该代理实连一次,验证可用">测代理</button>` : ""}
-        <button class="ghost sm" onclick="delAccount(${a.id})" aria-label="删除账号">删除</button>
+        <button class="ghost sm danger" onclick="delAccount(${a.id})" aria-label="删除账号">${ic("i-trash")}删除</button>
       </td>
     </tr>`;
   }).join("") || empty(3, "还没有账号", "i-user", "用上方按钮扫码登录,或粘贴 Cookie 添加一个账号");
@@ -1322,19 +1427,24 @@ function refreshHubPanel() {
 // ── 本账号数据分析(B4)──
 function _kpiCard(label, val, delta) {
   const d = (delta === undefined || delta === null || delta === 0) ? ""
-    : `<span style="font-size:12px;color:${delta > 0 ? "var(--success)" : "var(--danger)"}">${delta > 0 ? "▲+" : "▼"}${Math.abs(delta)}</span>`;
-  return `<div class="card" style="flex:1;min-width:120px;padding:12px 14px">
-    <div class="mut" style="font-size:12px">${esc(label)}</div>
-    <div style="font-size:22px;font-weight:700;margin-top:2px">${val} ${d}</div></div>`;
+    : `<span class="kpi-delta ${delta > 0 ? "pos" : "neg"}">较上次 ${delta > 0 ? "+" : "−"}${fmtNum(Math.abs(delta))}</span>`;
+  return `<div class="kpi-card"><div class="kpi-label">${esc(label)}</div>`
+    + `<div class="kpi-value">${fmtNum(val)}${d}</div></div>`;
 }
 function _spark(vals) {
   // 极简 SVG 折线(粉丝趋势),无外部依赖
   vals = vals.filter(v => typeof v === "number");
-  if (vals.length < 2) return '<div class="mut" style="font-size:12px">趋势数据不足(运行几天后出多点曲线)</div>';
+  if (vals.length < 2) return '<div class="empty" style="padding:18px 8px"><div class="empty-t">趋势数据不足</div><div class="empty-sub">运行几天后会生成连续曲线</div></div>';
   const w = 480, h = 60, mn = Math.min(...vals), mx = Math.max(...vals), rng = (mx - mn) || 1;
-  const pts = vals.map((v, i) => `${(i / (vals.length - 1) * w).toFixed(1)},${(h - (v - mn) / rng * (h - 8) - 4).toFixed(1)}`).join(" ");
-  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:60px" preserveAspectRatio="none">
-    <polyline fill="none" stroke="var(--acc)" stroke-width="2" points="${pts}"/></svg>`;
+  const points = vals.map((v, i) => ({ x: +(i / (vals.length - 1) * w).toFixed(1), y: +(h - (v - mn) / rng * (h - 10) - 5).toFixed(1) }));
+  const pts = points.map(p => `${p.x},${p.y}`).join(" "), last = points[points.length - 1];
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+    <defs><linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--acc)" stop-opacity=".24"/><stop offset="1" stop-color="var(--acc)" stop-opacity="0"/></linearGradient></defs>
+    <line x1="0" y1="${h - 5}" x2="${w}" y2="${h - 5}" stroke="var(--line-soft)" stroke-width="1"/>
+    <polygon points="0,${h} ${pts} ${w},${h}" fill="url(#spark-fill)"/>
+    <polyline fill="none" stroke="var(--acc)" stroke-width="2.4" vector-effect="non-scaling-stroke" points="${pts}"/>
+    <circle cx="${last.x}" cy="${last.y}" r="3.5" fill="var(--surface)" stroke="var(--acc)" stroke-width="2" vector-effect="non-scaling-stroke"/>
+  </svg>`;
 }
 async function loadHubStats() {
   const kpi = $("stats-kpi"), tr = $("stats-trend"), wb = $("stats-works");
@@ -1346,12 +1456,16 @@ async function loadHubStats() {
     kpi.innerHTML = _kpiCard("粉丝", d.account.follower_count || 0, d.fans_delta)
       + _kpiCard("作品数", d.account.aweme_count || 0)
       + _kpiCard("近30天快照", (d.trend || []).length);
-    if (tr) tr.innerHTML = `<div class="mut" style="font-size:12px;margin-bottom:4px">粉丝趋势</div>`
-      + _spark((d.trend || []).map(x => x.follower_count));
+    if (tr) {
+      const vals = (d.trend || []).map(x => x.follower_count);
+      const summary = vals.length > 1 ? `粉丝数从 ${fmtNum(vals[0])} 变化到 ${fmtNum(vals[vals.length - 1])}` : "粉丝趋势数据不足";
+      tr.innerHTML = `<div class="trend-panel"><div class="trend-head"><b>粉丝趋势</b><span>近 30 天</span></div>`
+        + `<div class="spark-wrap" role="img" aria-label="${summary}">${_spark(vals)}</div></div>`;
+    }
     if (wb) wb.innerHTML = (d.works || []).length
       ? d.works.map(w => `<tr><td>${esc((w.desc || w.item_id || "").slice(0, 30))}</td>`
-        + `<td>${w.play_count || 0}</td><td>${w.like_count || 0}</td><td>${w.comment_count || 0}</td>`
-        + `<td>${esc(w.status || "")}</td></tr>`).join("")
+        + `<td class="num">${fmtNum(w.play_count || 0)}</td><td class="num">${fmtNum(w.like_count || 0)}</td><td class="num">${fmtNum(w.comment_count || 0)}</td>`
+        + `<td><span class="pill bare">${esc(w.status || "—")}</span></td></tr>`).join("")
       : `<tr><td colspan="5" class="mut">暂无作品数据,先到「我的作品」点「同步作品」</td></tr>`;
   } catch (e) {
     kpi.innerHTML = `<div class="mut">加载失败:${esc(e.message)}</div>`;
@@ -1745,7 +1859,7 @@ async function refreshProxies() {
         <button class="ghost sm" onclick="editPoolProxy(${p.id})">编辑</button>
         <button class="ghost sm" onclick="testPoolProxy(${p.id})">测试</button>
         <button class="ghost sm" onclick="togglePoolProxy(${p.id},${p.enabled})">${p.enabled ? "停用" : "启用"}</button>
-        <button class="ghost sm" onclick="delPoolProxy(${p.id},${p.used_by})">删除</button>
+        <button class="ghost sm danger" onclick="delPoolProxy(${p.id},${p.used_by})">${ic("i-trash")}删除</button>
       </td>
     </tr>`).join("") || empty(4, "代理池为空", "i-shield", "添加住宅/4G 代理,账号即可一号一代理关联使用");
 }
@@ -1935,6 +2049,7 @@ async function loadSettings() {
   } catch (e) {}
 }
 async function saveAiSettings() {
+  if (!validateAiSettings(false)) return;
   $("ai-msg").textContent = "保存中…";
   const body = {
     ai_enabled: $("ai-enabled").checked, ai_base_url: $("ai-base").value.trim(),
@@ -1952,6 +2067,7 @@ async function saveAiSettings() {
 }
 async function testAi() {
   const btn = evtBtn();
+  if (!validateAiSettings(true)) return;
   $("ai-msg").textContent = "测试中…";
   // 用当前表单值测(key 留空则用已保存的),方便保存前先验证
   const body = {
@@ -2159,7 +2275,7 @@ async function refreshShareHistory() {
         <td>
           <div class="row" style="gap:6px;flex-wrap:nowrap">
             ${path ? `<button class="ghost sm" data-path="${esc(path)}" onclick="copySharePath(this)">复制路径</button>` : ""}
-            <button class="ghost sm danger" onclick="deleteShareHistory(${Number(row.id)})">删除记录</button>
+            <button class="ghost sm danger" onclick="deleteShareHistory(${Number(row.id)})">${ic("i-trash")}删除记录</button>
           </div>
         </td>
       </tr>`;
@@ -2266,8 +2382,12 @@ const N_TEMPLATES = {
   dingtalk: '{\n  "webhook": "https://oapi.dingtalk.com/robot/send?access_token=xxx",\n  "secret": "加签密钥(可选)",\n  "keyword": "关键词(可选)"\n}',
   telegram: '{\n  "bot_token": "123:abc",\n  "chat_id": "你的chat_id"\n}',
 };
-function onTypeChange() { $("n-config").value = N_TEMPLATES[$("n-type").value] || ""; }
+function onTypeChange() {
+  $("n-config").value = N_TEMPLATES[$("n-type").value] || "";
+  setFieldError($("n-config"), "");
+}
 async function addChannel() {
+  if (!validateNotificationConfig()) { $("n-msg").textContent = "请先修正渠道配置"; return; }
   let config;
   try { config = JSON.parse($("n-config").value || "{}"); }
   catch (e) { $("n-msg").textContent = "配置不是合法 JSON"; toast("配置不是合法 JSON", "err"); return; }
@@ -2291,7 +2411,7 @@ async function refreshChannels() {
       <button class="ghost sm" onclick="editChannel(${c.id})">编辑</button>
       <button class="ghost sm" onclick="testChannel(${c.id})">测试</button>
       <button class="ghost sm" onclick="toggleChannel(${c.id}, ${!c.enabled})">${c.enabled ? "停用" : "启用"}</button>
-      <button class="ghost sm" onclick="delChannel(${c.id})">删除</button>
+      <button class="ghost sm danger" onclick="delChannel(${c.id})">${ic("i-trash")}删除</button>
     </td></tr>`).join("") || empty(3, "还没有通知渠道", "i-bell", "添加 Bark / 钉钉 / Telegram 渠道，有新作品或新评论时推送给你");
 }
 async function editChannel(id, draft = null) {
@@ -2487,7 +2607,7 @@ function monRow(t) {
       <button class="ghost sm" onclick="runNow(${t.id})">立即抓取</button>
       <button class="ghost sm" onclick="editMonitor(${t.id})">编辑</button>
       <button class="ghost sm" onclick="toggleMon(${t.id})">${t.enabled ? "暂停" : "启用"}</button>
-      <button class="ghost sm" onclick="delMon(${t.id})">删除</button>
+      <button class="ghost sm danger" onclick="delMon(${t.id})">${ic("i-trash")}删除</button>
     </td></tr>`;
 }
 function renderMonitorRows() {
@@ -2658,7 +2778,7 @@ function noteCard(r) {
         <span class="pill ${r.download_status}" style="flex:1;justify-content:center" title="${esc(r.error || "")}">${r.download_status}${r.error ? " ⓘ" : ""}</span>
         ${["failed", "skipped"].includes(r.download_status) ? `<button class="ghost sm" onclick="retryDl(${r.id})">${r.download_status === "skipped" ? "下载" : "重试"}</button>` : ""}
         ${(PLATFORM === "xhs" && r.download_status === "done") ? `<button class="ghost sm" onclick="repostDouyin(${r.id})">发抖音</button>` : ""}
-        <button class="ghost sm" onclick="delContent(${r.id})">删除</button>
+        <button class="ghost sm danger" onclick="delContent(${r.id})">${ic("i-trash")}删除</button>
       </div>
     </div>
   </div>`;
@@ -2700,7 +2820,7 @@ async function refreshContents() {
           ${["failed", "skipped"].includes(r.download_status) ? `<button class="ghost sm" onclick="retryDl(${r.id})">${r.download_status === "skipped" ? "下载" : "重试"}</button>` : ""}
           ${(PLATFORM === "douyin" && r.download_status === "done") ? `<button class="ghost sm content-action-primary" onclick="pickRepostTarget(${r.id})">${ic("i-send")}转发</button>` : ""}
           ${(PLATFORM === "xhs" && r.download_status === "done") ? `<button class="ghost sm content-action-primary" onclick="repostDouyin(${r.id})">${ic("i-send")}发抖音</button>` : ""}
-          <button class="ghost sm content-action-delete" onclick="delContent(${r.id})" data-tip="删除作品" aria-label="删除作品">${ic("i-trash")}</button>
+          <button class="ghost sm content-action-delete danger" onclick="delContent(${r.id})" data-tip="删除作品" aria-label="删除作品">${ic("i-trash")}</button>
         </div>
       </td>
       <td class="local-path-cell">${contentPathCell(r)}</td>
@@ -2770,7 +2890,7 @@ function watchRow(w) {
       <button class="ghost sm" onclick="scanWatch(${w.id})">立即抓取</button>
       <button class="ghost sm" onclick="editWatchMeta(${w.id})">编辑</button>
       <button class="ghost sm" onclick="toggleWatch(${w.id}, ${!w.enabled})">${w.enabled ? "暂停" : "启用"}</button>
-      <button class="ghost sm" onclick="delWatch(${w.id})">删除</button>
+      <button class="ghost sm danger" onclick="delWatch(${w.id})">${ic("i-trash")}删除</button>
     </td></tr>`;
 }
 function renderWatchRows() {
@@ -2905,7 +3025,7 @@ async function refreshComments() {
     <td class="mut">${esc(r.user_nickname || "")}</td>
     <td class="mut num">${fmtNum(r.like_count)}</td>
     <td class="mut num">${fmtTime(r.create_time)}</td>
-    <td class="acttd"><button class="ghost sm" onclick="delComment(${r.id})">删除</button></td>
+    <td class="acttd"><button class="ghost sm danger" onclick="delComment(${r.id})">${ic("i-trash")}删除</button></td>
   </tr>`;
   }).join("") || empty(6, "暂无评论", "i-msg", "添加评论监控后,抓到的新评论会显示在这里,并可推送通知");
   pruneSel(selComment, rows.map(r => r.id)); updateCommentSelBar();
@@ -3103,7 +3223,7 @@ function renderPubFiles() {
     const thumb = f.type.startsWith("image/")
       ? `<img src="${URL.createObjectURL(f)}" alt="">`
       : `<span class="fp-ph">${ic("i-play")}</span>`;
-    return `<span class="fp-chip">${thumb}<span title="${esc(f.name)}">${esc(f.name)}</span><button type="button" onclick="pubRemoveFile(${i})" aria-label="移除">✕</button></span>`;
+    return `<span class="fp-chip">${thumb}<span title="${esc(f.name)}">${esc(f.name)}</span><button type="button" onclick="pubRemoveFile(${i})" aria-label="移除">${ic("i-x")}</button></span>`;
   }).join("");
 }
 function bindPubFilePicker() {
@@ -3216,7 +3336,7 @@ async function refreshPublish() {
     <td class="acttd">
       ${["pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">编辑</button>` : ""}
       ${["pending", "failed"].includes(t.status) ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
-      <button class="ghost sm" onclick="delPublish(${t.id})">删除</button>
+      <button class="ghost sm danger" onclick="delPublish(${t.id})">${ic("i-trash")}删除</button>
     </td></tr>`).join("") || empty(7, "暂无发布任务", "i-send",
       PLATFORM === "kuaishou" ? "上传图集/视频加入队列(发布到快手创作平台)"
       : PLATFORM === "douyin" ? "上传图集/视频加入队列(发布到抖音创作平台)"
@@ -3379,10 +3499,10 @@ function rpDrawThumbs() {
          ondragleave="rpDragLeave(event)" ondrop="rpDrop(${pos},event)" ondragend="rpDragEnd()">
       <img src="${esc(m.url)}" referrerpolicy="no-referrer" draggable="false" alt="" title="点击看大图" onclick="openPreview(${REPOST_ID},${m.idx})">
       <span class="rp-th-badge${pos === 0 ? " cover" : ""}">${pos === 0 ? "封面" : pos + 1}</span>
-      <button type="button" class="rp-th-x" title="移除这张" onclick="rpImgRemove(${pos})">✕</button>
+      <button type="button" class="rp-th-x" title="移除这张" aria-label="移除这张" onclick="rpImgRemove(${pos})">${ic("i-x")}</button>
       <div class="rp-th-mv">
-        <button type="button" onclick="rpImgMove(${pos},-1)" ${pos === 0 ? "disabled" : ""} title="前移(移到最前=封面)">‹</button>
-        <button type="button" onclick="rpImgMove(${pos},1)" ${pos === n - 1 ? "disabled" : ""} title="后移">›</button>
+        <button type="button" onclick="rpImgMove(${pos},-1)" ${pos === 0 ? "disabled" : ""} title="前移(移到最前=封面)" aria-label="前移">${ic("i-prev")}</button>
+        <button type="button" onclick="rpImgMove(${pos},1)" ${pos === n - 1 ? "disabled" : ""} title="后移" aria-label="后移">${ic("i-next")}</button>
       </div>
     </div>`).join("") + `<span class="rp-th-more">共 ${n} 张 · 拖拽排序 · 首图为封面</span>`;
   box.style.display = "flex";
@@ -3642,7 +3762,7 @@ async function refreshCommentRules() {
         <button class="ghost sm" onclick="toggleRule(${r.id}, ${r.enabled ? "false" : "true"})">${r.enabled ? "停用" : "启用"}</button>
         <button class="ghost sm" onclick="editRule(${r.id})">编辑</button>
         <button class="ghost sm" onclick="runRule(${r.id})">试跑</button>
-        <button class="ghost sm" onclick="delRule(${r.id})">删除</button>
+        <button class="ghost sm danger" onclick="delRule(${r.id})">${ic("i-trash")}删除</button>
       </td></tr>`;
   }).join("") || empty(8, "暂无评论规则", "i-msg", "在上方创建一条自动回复或自动评论规则");
 }
@@ -3692,7 +3812,7 @@ async function refreshCommentTasks() {
       ${(isDraft || canSend) ? `<button class="ghost sm" onclick="editTaskContent(${t.id})">编辑</button>` : ""}
       ${canSend ? `<button class="ghost sm" onclick="runTask(${t.id})">立即发</button>` : ""}
       ${(isDraft || canSend) ? `<button class="ghost sm" onclick="cancelTask(${t.id})">${isDraft ? "弃用" : "取消"}</button>` : ""}
-      <button class="ghost sm" onclick="delTask(${t.id})">删除</button>
+      <button class="ghost sm danger" onclick="delTask(${t.id})">${ic("i-trash")}删除</button>
     </td></tr>`;
   }).join("") || empty(7, "暂无评论任务", "i-msg", "启用规则或点「试跑」后,这里会出现待发评论");
 }

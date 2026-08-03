@@ -10,12 +10,14 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap">
 <style>
   :root {
+    /* shell sizing */
+    --header-h:68px; --sidebar-w:232px; --content-max:1260px;
     /* surfaces */
-    --bg:#0a0c10; --bg-grad:#0d1018;
-    --surface:#13161d; --surface-2:#191d27; --surface-3:#202531;
-    --line:#262b36; --line-soft:#1d212b;
+    --bg:#090b10; --bg-grad:#0d1018;
+    --surface:#12161e; --surface-2:#181d27; --surface-3:#202632;
+    --line:#29303c; --line-soft:#1d232d;
     /* text */
-    --fg:#e7eaf0; --fg-strong:#f6f8fb; --mut:#8b94a3; --mut-2:#697082;
+    --fg:#e7eaf0; --fg-strong:#f6f8fb; --mut:#8b94a3; --mut-2:#778094;
     /* brand + semantic */
     --acc:#fe2c55; --acc-hover:#ff4b6e; --acc-soft:rgba(254,44,85,.14); --acc-ring:rgba(254,44,85,.35);
     --xhs:#ff2442; --xhs-hover:#ff4359; --xhs-soft:rgba(255,36,66,.14); --xhs-ring:rgba(255,36,66,.35);
@@ -63,22 +65,24 @@
   /* ── header ── */
   header {
     position:sticky; top:0; z-index:30;
-    padding:0 24px;
-    background:rgba(10,12,16,.72); backdrop-filter:blur(14px);
+    padding:0 20px;
+    background:rgba(9,11,16,.82); backdrop-filter:blur(18px) saturate(135%);
     border-bottom:1px solid var(--line-soft);
   }
   .header-inner {
-    width:100%; max-width:1480px; min-height:62px; margin:0 auto;
+    width:100%; max-width:1540px; min-height:var(--header-h); margin:0 auto;
     display:flex; align-items:center; gap:14px;
   }
-  .brand { display:flex; align-items:center; gap:11px; }
+  .brand { display:flex; align-items:center; gap:11px; flex:0 0 calc(var(--sidebar-w) - 20px); min-width:0; }
   .brand-mark {
     display:grid; place-items:center; width:34px; height:34px; border-radius:10px;
     background:linear-gradient(135deg,var(--acc),#ff6a85); color:#fff;
     box-shadow:0 4px 14px -4px var(--acc-ring);
   }
   .brand-mark svg { width:19px; height:19px; }
+  .brand-copy { min-width:0; display:grid; gap:1px; }
   header h1 { font-size:16px; font-weight:650; margin:0; letter-spacing:.2px; color:var(--fg-strong); }
+  .brand-sub { color:var(--mut-2); font-size:10.5px; line-height:1.2; letter-spacing:.15px; white-space:nowrap; }
   .badge-lite { font-size:10px; font-weight:600; color:var(--acc); background:var(--acc-soft); padding:2px 7px; border-radius:6px; vertical-align:middle; margin-left:6px; letter-spacing:.5px; }
   .spacer { flex:1; }
   .engine {
@@ -106,7 +110,7 @@
     --surface:#ffffff; --surface-2:#fdf4f2; --surface-3:#f8e7e2;
     --line:#f2ddd7; --line-soft:#f8e9e4;
     /* text — 暖近黑,保证对比度 */
-    --fg:#2b2226; --fg-strong:#181113; --mut:#6e5e62; --mut-2:#a08c90;
+    --fg:#2b2226; --fg-strong:#181113; --mut:#6e5e62; --mut-2:#806f73;
     /* brand — 小红书招牌红 */
     --acc:#ff2442; --acc-hover:#ff3d57; --acc-soft:rgba(255,36,66,.10); --acc-ring:rgba(255,36,66,.30);
     /* 语义色在浅底上压暗一档,确保可读 */
@@ -254,6 +258,7 @@
   .fp-ph svg { width:15px; height:15px; }
   .fp-chip button { width:18px; height:18px; padding:0; border-radius:50%; background:var(--surface-3); color:var(--mut); border:none; font-size:11px; line-height:1; flex:0 0 auto; }
   .fp-chip button:hover { background:var(--danger-soft); color:var(--danger); }
+  .fp-chip button svg { width:11px; height:11px; }
 
   /* ── 预览 lightbox ── */
   .pv-overlay {
@@ -297,8 +302,10 @@
   .rp-th-badge.cover { background:var(--brand, #ff2e51); }
   .rp-th-x { position:absolute; top:2px; right:2px; width:18px; height:18px; border:none; border-radius:50%; background:rgba(0,0,0,.6); color:#fff; font-size:11px; line-height:1; cursor:pointer; padding:0; display:flex; align-items:center; justify-content:center; }
   .rp-th-x:hover { background:#e0245e; }
+  .rp-th-x svg { width:11px; height:11px; }
   .rp-th-mv { position:absolute; bottom:2px; left:2px; right:2px; display:flex; justify-content:space-between; }
   .rp-th-mv button { width:22px; height:18px; border:none; border-radius:5px; background:rgba(0,0,0,.55); color:#fff; cursor:pointer; font-size:13px; line-height:1; padding:0; }
+  .rp-th-mv button svg { width:12px; height:12px; }
   .rp-th-mv button:disabled { opacity:.3; cursor:default; }
   .rp-th-more { flex:0 0 auto; align-self:center; color:var(--mut); font-size:12px; white-space:nowrap; padding:0 4px; }
 
@@ -389,12 +396,18 @@
   /* ── stats strip ── */
   .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
   .stat {
+    position:relative; overflow:hidden;
     display:flex; align-items:center; gap:12px;
-    background:var(--surface); border:1px solid var(--line); border-radius:var(--r); padding:14px 16px;
-    box-shadow:var(--sh-sm);
+    min-height:92px; background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg); padding:16px 17px;
+    box-shadow:var(--sh-sm), inset 0 1px 0 rgba(255,255,255,.025);
     transition:border-color .2s var(--ease), transform .2s var(--ease), box-shadow .2s var(--ease);
   }
-  .stat:hover { border-color:var(--surface-3); transform:translateY(-2px); box-shadow:var(--sh); }
+  .stat::after { content:""; position:absolute; left:0; top:0; width:100%; height:2px; opacity:.9; background:var(--stat-color,var(--acc)); }
+  .stat:nth-child(1) { --stat-color:var(--acc); }
+  .stat:nth-child(2) { --stat-color:var(--info); }
+  .stat:nth-child(3) { --stat-color:var(--success); }
+  .stat:nth-child(4) { --stat-color:var(--warn); }
+  .stat:hover { border-color:color-mix(in srgb,var(--line) 60%,var(--stat-color)); transform:translateY(-2px); box-shadow:var(--sh); }
   .stat-ic {
     display:grid; place-items:center; width:38px; height:38px; border-radius:10px; flex:0 0 auto;
     box-shadow:inset 0 1px 0 rgba(255,255,255,.07);
@@ -404,18 +417,18 @@
   .stat-ic.b { background:linear-gradient(140deg,var(--info-soft),transparent 85%); color:var(--info); }
   .stat-ic.c { background:linear-gradient(140deg,var(--success-soft),transparent 85%); color:var(--success); }
   .stat-ic.d { background:linear-gradient(140deg,var(--warn-soft),transparent 85%); color:var(--warn); }
-  .stat-v { font:650 20px/1.1 var(--mono); color:var(--fg-strong); font-variant-numeric:tabular-nums; letter-spacing:-.3px; }
-  .stat-l { font-size:11.5px; color:var(--mut); margin-top:2px; }
+  .stat-v { font:650 24px/1.1 var(--mono); color:var(--fg-strong); font-variant-numeric:tabular-nums; letter-spacing:-.6px; }
+  .stat-l { font-size:12px; color:var(--mut); margin-top:4px; }
   /* 数字列等宽对齐(看板质感)*/
   .num, td.num, .tab-badge, .nav-badge, .pv-counter, .stat-v { font-variant-numeric:tabular-nums; }
 
   /* ── layout ── */
-  main { max-width:1280px; margin:0 auto; padding:24px; display:grid; gap:18px; }
+  main { max-width:var(--content-max); margin:0 auto; padding:28px 32px 48px; display:grid; gap:20px; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; align-items:start; }
 
   /* ── tabs ── */
   .tabbar {
-    position:sticky; top:62px; z-index:20;
+    position:sticky; top:calc(var(--header-h) + 8px); z-index:20;
     display:flex; gap:4px; align-items:center;
     background:rgba(10,12,16,.72); backdrop-filter:blur(14px);
     border:1px solid var(--line); border-radius:14px; padding:5px;
@@ -434,53 +447,57 @@
     background:var(--bg); border:1px solid var(--line); padding:2px 6px; border-radius:999px;
   }
   .tab.active .tab-badge { color:var(--acc); border-color:var(--acc-ring); background:var(--acc-soft); }
-  @media(max-width:600px){ .tabbar{top:54px} .tab{padding:8px 11px} }
+  @media(max-width:600px){ .tab{padding:8px 11px} }
   @media(max-width:820px){ .grid2{grid-template-columns:1fr} }
   @media(max-width:600px){ main{padding:16px} header{padding:12px 16px} .stats{grid-template-columns:repeat(2,1fr)} }
 
   /* ── shell + sidebar ── */
-  .shell { display:flex; align-items:flex-start; max-width:1480px; margin:0 auto; }
+  .shell { display:flex; align-items:flex-start; max-width:1540px; min-height:calc(100vh - var(--header-h)); margin:0 auto; }
   .sidebar {
-    position:sticky; top:62px; flex:0 0 220px; padding:18px 12px; align-self:flex-start;
-    max-height:calc(100vh - 62px); overflow-y:auto; scrollbar-width:none;
+    position:sticky; top:var(--header-h); flex:0 0 var(--sidebar-w); padding:22px 14px; align-self:flex-start;
+    min-height:calc(100vh - var(--header-h)); max-height:calc(100vh - var(--header-h)); overflow-y:auto; scrollbar-width:none;
+    border-right:1px solid var(--line-soft);
+    background:linear-gradient(180deg,color-mix(in srgb,var(--surface) 48%,transparent),transparent 76%);
   }
   .sidebar::-webkit-scrollbar { display:none; }
-  .nav { display:flex; flex-direction:column; gap:4px; }
-  .navitem { width:100%; background:transparent; border:1px solid transparent; color:var(--mut); font-weight:550; font-size:13.5px; padding:10px 12px; border-radius:10px; }
+  .nav { display:flex; flex-direction:column; gap:5px; }
+  .navitem { position:relative; width:100%; min-height:42px; background:transparent; border:1px solid transparent; color:var(--mut); font-weight:550; font-size:13.5px; padding:10px 12px; border-radius:10px; }
   .navitem:hover { background:var(--surface-2); color:var(--fg); }
-  .navitem.active { background:var(--surface-3); color:var(--fg-strong); border-color:var(--line); }
+  .navitem.active { background:var(--acc-soft); color:var(--fg-strong); border-color:var(--acc-ring); }
+  .navitem.active::before { content:""; position:absolute; left:-1px; top:9px; bottom:9px; width:3px; border-radius:0 3px 3px 0; background:var(--acc); box-shadow:0 0 12px var(--acc-ring); }
   .navitem svg { width:17px; height:17px; }
   .nav-sep { font-size:10.5px; font-weight:600; letter-spacing:.6px; color:var(--mut-2); text-transform:uppercase; padding:14px 12px 5px; }
   @media(max-width:760px){ .nav-sep{ padding:10px 8px; } }
   .nav-label { flex:1; text-align:left; }
   .nav-badge { font:600 11px/1 var(--mono); color:var(--mut); background:var(--bg); border:1px solid var(--line); padding:2px 6px; border-radius:999px; }
   .navitem.active .nav-badge { color:var(--acc); border-color:var(--acc-ring); background:var(--acc-soft); }
-  .shell main { flex:1; min-width:0; max-width:none; margin:0; }
+  .shell main { flex:1; min-width:0; max-width:var(--content-max); margin:0 auto; }
   [data-panel] { display:grid; gap:18px; }
   @media(max-width:860px){
     .shell{flex-direction:column}
     .sidebar{
-      position:sticky; top:62px; z-index:24; flex:0 0 auto; width:100%; max-height:none;
+      position:sticky; top:var(--header-h); z-index:24; flex:0 0 auto; width:100%; min-height:0; max-height:none;
       padding:8px 16px; overflow-x:auto; overflow-y:hidden;
       background:color-mix(in srgb,var(--bg) 88%,transparent);
-      border-bottom:1px solid var(--line-soft); backdrop-filter:blur(14px);
+      border-right:0; border-bottom:1px solid var(--line-soft); backdrop-filter:blur(14px);
     }
     .nav{flex-direction:row; overflow:visible; width:max-content; min-width:100%}
     .nav-sep{display:none}
     .navitem{width:auto; flex:0 0 auto; padding:9px 12px}
     .nav-label{flex:0 0 auto}
     .shell main{width:100%}
+    .tabbar{top:calc(var(--header-h) + 58px)}
   }
 
   /* ── cards ── */
   .card {
     background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg);
-    padding:20px; box-shadow:var(--sh-sm);
+    padding:20px; box-shadow:var(--sh-sm), inset 0 1px 0 rgba(255,255,255,.025);
     transition:border-color .2s var(--ease), box-shadow .2s var(--ease);
   }
-  .card:hover { border-color:#2d3340; box-shadow:var(--sh); }
+  .card:hover { border-color:color-mix(in srgb,var(--line) 55%,var(--acc)); box-shadow:var(--sh); }
   .card-head { display:flex; align-items:center; gap:11px; margin:0 0 16px; }
-  .card-ic { display:grid; place-items:center; width:30px; height:30px; border-radius:9px; background:var(--surface-2); color:var(--mut); flex:0 0 auto; }
+  .card-ic { display:grid; place-items:center; width:32px; height:32px; border-radius:9px; background:var(--acc-soft); color:var(--acc); border:1px solid color-mix(in srgb,var(--acc) 22%,transparent); flex:0 0 auto; }
   .card-ic svg { width:17px; height:17px; }
   .card h2 { margin:0; font-size:14.5px; font-weight:600; color:var(--fg-strong); display:flex; align-items:baseline; gap:8px; }
   .card h2 .sub { font-size:12px; font-weight:400; color:var(--mut); }
@@ -489,7 +506,7 @@
   /* ── page context / orientation ── */
   .page-context {
     display:flex; align-items:flex-end; gap:18px; min-width:0;
-    padding:4px 2px 2px;
+    padding:2px 2px 18px; border-bottom:1px solid var(--line-soft);
   }
   .page-context-main { min-width:0; flex:1; }
   .page-kicker {
@@ -503,17 +520,19 @@
   }
   .page-platform::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
   .page-context h2 {
-    margin:0; color:var(--fg-strong); font-size:22px; line-height:1.25;
+    margin:0; color:var(--fg-strong); font-size:24px; line-height:1.2;
     font-weight:680; letter-spacing:-.2px;
   }
+  #page-title:focus { outline:none; }
   .page-desc { margin:5px 0 0; color:var(--mut); font-size:13px; line-height:1.5; }
-  [data-panel] { scroll-margin-top:82px; }
+  [data-panel] { scroll-margin-top:calc(var(--header-h) + 18px); }
 
   /* ── buttons ── */
   button {
     display:inline-flex; align-items:center; justify-content:center; gap:6px;
     background:linear-gradient(180deg,var(--acc-hover),var(--acc)); color:#fff; border:1px solid transparent; border-radius:var(--r-sm);
     padding:8px 14px; cursor:pointer; font-size:13px; font-weight:550; line-height:1;
+    touch-action:manipulation;
     transition:background .18s var(--ease), border-color .18s var(--ease), opacity .18s var(--ease), filter .18s var(--ease), box-shadow .18s var(--ease), transform .06s var(--ease);
   }
   button svg { width:15px; height:15px; }
@@ -523,6 +542,11 @@
   button:not([class]):not([data-pf]):not([data-tab]) { box-shadow:0 6px 16px -11px var(--acc-ring), inset 0 1px 0 rgba(255,255,255,.13); }
   button.ghost { background:var(--surface-2); border-color:var(--line); color:var(--fg); }
   button.ghost:hover { background:var(--surface-3); border-color:#333a47; }
+  button.danger, button.ghost.danger {
+    color:var(--danger); background:var(--danger-soft);
+    border-color:color-mix(in srgb,var(--danger) 34%,var(--line)); box-shadow:none;
+  }
+  button.danger:hover, button.ghost.danger:hover { color:#fff; background:var(--danger); border-color:var(--danger); filter:none; }
   button.sm { padding:5px 10px; font-size:12px; border-radius:var(--r-xs); }
   button:disabled { opacity:.5; cursor:default; }
   button:disabled:hover { filter:none; }
@@ -534,12 +558,13 @@
   label.field { display:block; font-size:12px; color:var(--mut); margin-bottom:6px; }
   input, textarea, select {
     width:100%; background:var(--bg); border:1px solid var(--line); color:var(--fg);
-    border-radius:var(--r-sm); padding:9px 11px; font-size:13px; font-family:inherit;
+    border-radius:var(--r-sm); padding:10px 12px; font-size:13px; font-family:inherit;
     transition:border-color .18s var(--ease), background .18s var(--ease);
   }
   input::placeholder, textarea::placeholder { color:var(--mut-2); }
   input:hover, textarea:hover, select:hover { border-color:#333a47; }
   input:focus, textarea:focus, select:focus { outline:none; border-color:var(--acc); box-shadow:0 0 0 3px var(--acc-ring); }
+  input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color:var(--danger); box-shadow:0 0 0 3px var(--danger-soft); }
   textarea { resize:vertical; min-height:62px; line-height:1.5; }
   select { appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%238b94a3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 9px center; padding-right:30px; cursor:pointer; }
 
@@ -558,6 +583,53 @@
   @media(max-width:480px){ .monitor-options,.meta-fields{grid-template-columns:1fr} }
   .row > * { flex:1; }
   .row > button { flex:0 0 auto; }
+
+  /* ── forms: visible labels, responsive field grids and stable action hierarchy ── */
+  .form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; align-items:start; }
+  .form-grid.cols-auto { grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); }
+  .form-grid.cols-4 { grid-template-columns:minmax(140px,.7fr) minmax(190px,1fr) minmax(240px,1.5fr) minmax(150px,.7fr); }
+  .form-grid.download-grid { grid-template-columns:minmax(0,1fr) minmax(170px,.28fr); }
+  .form-field { min-width:0; }
+  .form-field > label, .form-label { display:flex; align-items:center; gap:6px; margin:0 0 6px; color:var(--mut); font-size:12px; font-weight:550; }
+  .form-field > input, .form-field > textarea, .form-field > select, .form-field > .cs, .form-field > .input-affix { width:100%; }
+  .field-help { margin-top:5px; color:var(--mut-2); font-size:11.5px; line-height:1.45; }
+  .field-error { margin:5px 0 0; color:var(--danger); font-size:11.5px; line-height:1.4; }
+  .input-affix { position:relative; }
+  .input-affix > input { padding-right:44px; }
+  button.input-action {
+    position:absolute; top:50%; right:5px; transform:translateY(-50%); width:32px; height:32px; min-height:0; padding:0;
+    color:var(--mut); background:transparent; border:0; box-shadow:none;
+  }
+  button.input-action:hover { color:var(--fg); background:var(--surface-2); filter:none; }
+  button.input-action:active { transform:translateY(-50%); }
+  .switch-row {
+    display:flex; align-items:flex-start; gap:11px; padding:12px 13px;
+    color:var(--fg); background:var(--bg); border:1px solid var(--line-soft); border-radius:var(--r-sm); cursor:pointer;
+  }
+  .switch-row:hover { border-color:var(--line); background:var(--surface-2); }
+  .switch-row input { width:17px; height:17px; flex:0 0 auto; margin:2px 0 0; }
+  .switch-copy { display:grid; gap:2px; min-width:0; }
+  .switch-copy b { color:var(--fg); font-size:12.5px; font-weight:600; }
+  .switch-copy span { color:var(--mut); font-size:11.5px; line-height:1.4; }
+  .option-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+  .option-grid .switch-row { padding:10px 11px; }
+  .form-actions {
+    display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap;
+    padding-top:14px; margin-top:2px; border-top:1px solid var(--line-soft);
+  }
+  .form-actions .status-text { flex:1 1 220px; margin-right:auto; color:var(--mut); font-size:12px; }
+  .form-actions .status-text:empty { display:none; }
+  .form-actions .actions-spacer { flex:1 1 24px; }
+  .form-note { display:flex; align-items:flex-start; gap:9px; padding:10px 12px; color:var(--mut); background:var(--bg); border:1px solid var(--line-soft); border-radius:var(--r-sm); font-size:11.5px; line-height:1.55; }
+  .form-note > svg { width:15px; height:15px; flex:0 0 auto; margin-top:1px; color:var(--info); }
+  .form-note.warn { border-color:color-mix(in srgb,var(--warn) 28%,var(--line)); background:var(--warn-soft); }
+  .form-note.warn > svg { color:var(--warn); }
+  .section-divider { height:1px; margin:18px 0; background:var(--line-soft); }
+  .data-section-head { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; margin:0 0 10px; }
+  .data-section-head b { color:var(--fg); font-size:12.5px; font-weight:600; }
+  .data-section-head span { color:var(--mut); font-size:11.5px; }
+  .code-input { font-family:var(--mono); font-size:12.5px; tab-size:2; }
+  .notification-config { margin-top:14px; }
 
   /* 发布页权限设置：标签在上、控件在下，避免自定义下拉挤压标签换行 */
   .publish-permissions {
@@ -645,9 +717,10 @@
   .dt-wk { display:grid; grid-template-columns:repeat(7,1fr); gap:2px; margin-bottom:4px; }
   .dt-wk span { text-align:center; font-size:11px; color:var(--mut); padding:3px 0; }
   .dt-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:2px; }
-  .dt-day { text-align:center; font-size:12.5px; padding:6px 0; border-radius:7px; cursor:pointer; color:var(--fg);
+  .dt-day { width:100%; min-height:30px; text-align:center; font-size:12.5px; padding:6px 0; border:0; border-radius:7px; cursor:pointer; color:var(--fg); background:transparent; box-shadow:none;
     transition:background .12s var(--ease); }
-  .dt-day:hover { background:var(--bg); }
+  .dt-day:hover { background:var(--bg); filter:none; }
+  .dt-day:focus-visible { outline:none; background:var(--surface-2); box-shadow:inset 0 0 0 2px var(--acc-ring); }
   .dt-day.off { visibility:hidden; cursor:default; }
   .dt-day.today { color:var(--acc); font-weight:700; }
   .dt-day.sel { background:var(--acc); color:#fff; font-weight:600; }
@@ -661,11 +734,11 @@
   .check input { width:16px; height:16px; flex:0 0 auto; accent-color:var(--acc); cursor:pointer; }
 
   /* ── tables ── */
-  .table-wrap { overflow-x:auto; border-radius:var(--r); border:1px solid var(--line-soft); }
+  .table-wrap { overflow-x:auto; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; border-radius:var(--r); border:1px solid var(--line-soft); background:var(--surface); }
   table { width:100%; border-collapse:collapse; }
   thead th { position:sticky; top:0; z-index:1; }
   th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line-soft); font-size:13px; vertical-align:middle; white-space:nowrap; }
-  th { color:var(--mut); font-weight:500; font-size:11.5px; text-transform:uppercase; letter-spacing:.4px; background:var(--surface-2); }
+  th { color:var(--mut); font-weight:600; font-size:11.5px; text-transform:uppercase; letter-spacing:.35px; background:var(--surface-2); box-shadow:inset 0 -1px 0 var(--line-soft); }
   tbody tr { transition:background .15s var(--ease); }
   tbody tr:hover { background:var(--surface-2); }
   tbody tr:last-child td { border-bottom:0; }
@@ -732,6 +805,7 @@
   .content-action-buttons .content-action-primary { color:var(--fg-strong); }
   button.content-action-delete { width:30px; padding:5px; color:var(--mut-2); }
   button.content-action-delete:hover { color:var(--danger); border-color:color-mix(in srgb,var(--danger) 45%,var(--line)); }
+  button.content-action-delete.danger:hover { color:#fff; border-color:var(--danger); }
   .content-record-table .local-path-cell { width:auto; min-width:0; max-width:none; }
 
   /* ── 监控分组 / 标签 / 别名 ── */
@@ -857,6 +931,7 @@
   /* ── login ── */
   #qrbox { background:var(--surface-2); border:1px dashed var(--line); border-radius:var(--r); padding:16px; }
   #qrbox img { width:180px; height:180px; background:#fff; border-radius:8px; }
+  #qrstatus > svg { width:15px; height:15px; color:var(--info); vertical-align:-3px; }
   .mut { color:var(--mut); font-size:12px; }
   .hint { color:var(--mut-2); font-size:12px; line-height:1.55; }
   a { color:var(--info); text-decoration:none; }
@@ -881,18 +956,57 @@
   .empty-sub { font-size:12px; color:var(--mut); margin-top:4px; max-width:340px; line-height:1.55; }
 
   /* ── 总览迷你图表(纯 SVG)── */
+  .overview-grid { display:grid; grid-template-columns:minmax(0,2fr) minmax(280px,.8fr); gap:18px; align-items:stretch; }
+  .overview-grid > * { min-width:0; }
   .chart-card .card-head { margin-bottom:6px; }
   .chart-legend { display:flex; gap:16px; margin-left:auto; }
   .chart-legend span { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--mut); }
   .chart-legend i { width:9px; height:9px; border-radius:3px; flex:0 0 auto; }
   .lg-a { background:var(--acc); } .lg-b { background:var(--info); }
-  .chart-wrap { width:100%; overflow:hidden; }
+  .chart-wrap { width:100%; min-height:220px; overflow:hidden; display:grid; align-items:end; }
   .chart-wrap svg { width:100%; height:auto; display:block; }
   .chart-wrap .bar { transition:opacity .15s var(--ease); }
   .chart-wrap .bar:hover { opacity:.78; }
   .chart-wrap .gl { stroke:var(--line-soft); stroke-width:1; }
   .chart-wrap .axt { fill:var(--mut-2); font:500 10px/1 var(--mono); }
-  .chart-empty { text-align:center; color:var(--mut); font-size:12.5px; padding:30px 0; }
+  .chart-empty { align-self:center; text-align:center; color:var(--mut); font-size:12.5px; padding:30px 0; }
+  .quick-card { display:flex; flex-direction:column; }
+  .quick-card .card-head { margin-bottom:10px; }
+  .quick-actions { display:grid; gap:8px; flex:1; }
+  button.quick-action {
+    width:100%; min-height:62px; justify-content:flex-start; gap:11px; padding:10px 11px;
+    color:var(--fg); background:var(--bg); border:1px solid var(--line-soft); border-radius:var(--r-sm);
+    box-shadow:none; text-align:left; filter:none;
+  }
+  button.quick-action:hover { color:var(--fg-strong); background:var(--surface-2); border-color:var(--acc-ring); filter:none; }
+  .quick-action .qa-ic { display:grid; place-items:center; width:34px; height:34px; flex:0 0 auto; border-radius:9px; color:var(--acc); background:var(--acc-soft); }
+  .quick-action .qa-ic svg { width:16px; height:16px; }
+  .quick-action .qa-copy { display:grid; flex:1; min-width:0; gap:3px; }
+  .quick-action .qa-copy b { color:inherit; font-size:12.5px; font-weight:650; }
+  .quick-action .qa-copy span { overflow:hidden; color:var(--mut); font-size:11.5px; font-weight:400; line-height:1.3; text-overflow:ellipsis; white-space:nowrap; }
+  .quick-action > svg { width:15px; height:15px; flex:0 0 auto; color:var(--mut-2); }
+  .platform-callout {
+    display:flex; align-items:flex-start; gap:11px; padding:13px 15px;
+    color:var(--mut); background:color-mix(in srgb,var(--info) 6%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--info) 18%,var(--line)); border-radius:var(--r);
+    font-size:12px; line-height:1.6;
+  }
+  .platform-callout > svg { width:17px; height:17px; flex:0 0 auto; margin-top:1px; color:var(--info); }
+  .platform-callout b { color:var(--fg); font-weight:600; }
+  .platform-callout p { margin:2px 0 0; }
+  .kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:14px; }
+  .kpi-card { min-width:0; padding:13px 14px; background:var(--bg); border:1px solid var(--line-soft); border-radius:var(--r-sm); }
+  .kpi-label { color:var(--mut); font-size:11.5px; font-weight:550; }
+  .kpi-value { display:flex; align-items:baseline; gap:8px; margin-top:4px; color:var(--fg-strong); font:650 23px/1.2 var(--mono); letter-spacing:-.4px; }
+  .kpi-delta { font:550 11px/1.2 var(--sans); }
+  .kpi-delta.pos { color:var(--success); }
+  .kpi-delta.neg { color:var(--danger); }
+  .trend-panel { margin-bottom:14px; padding:12px 14px 8px; background:var(--bg); border:1px solid var(--line-soft); border-radius:var(--r-sm); }
+  .trend-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:5px; }
+  .trend-head b { color:var(--fg); font-size:12px; font-weight:600; }
+  .trend-head span { color:var(--mut); font-size:11px; }
+  .spark-wrap { min-height:64px; }
+  .spark-wrap svg { display:block; width:100%; height:64px; overflow:visible; }
   .sk { display:inline-block; height:12px; border-radius:6px; background:linear-gradient(90deg,var(--surface-2) 25%,var(--surface-3) 50%,var(--surface-2) 75%); background-size:200% 100%; animation:shimmer 1.3s linear infinite; }
   @keyframes shimmer { to { background-position:-200% 0; } }
 
@@ -957,22 +1071,33 @@
   body.modal-open { overflow:hidden; }
 
   /* 桌面窄屏与移动端统一收口：导航始终可见，表单不横向挤压 */
+  @media(max-width:1100px) {
+    .overview-grid { grid-template-columns:1fr; }
+    .quick-actions { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    button.quick-action { min-width:0; }
+    .quick-action .qa-copy span { white-space:normal; }
+    .form-grid.cols-4 { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .option-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  }
   @media(max-width:860px) {
     main { padding:20px 18px; }
     .page-context { align-items:center; }
     .page-context h2 { font-size:20px; }
+    .navitem.active::before { left:10px; right:10px; top:auto; bottom:-9px; width:auto; height:2px; border-radius:2px 2px 0 0; }
   }
   @media(max-width:700px) {
+    :root { --header-h:104px; }
     header { padding:0 14px; }
-    .header-inner { min-height:104px; flex-wrap:wrap; gap:8px 10px; padding:10px 0; }
+    .header-inner { min-height:var(--header-h); flex-wrap:wrap; gap:8px 10px; padding:10px 0; }
     .brand { flex:1; }
+    .spacer { display:none; }
     .engine { margin-left:auto; }
     .pswitch {
       order:3; width:100%; min-width:0; overflow-x:auto;
       justify-content:space-between;
     }
     .pswitch button { flex:1 1 25%; padding:7px 8px; }
-    .sidebar { top:104px; padding:7px 12px; }
+    .sidebar { top:var(--header-h); padding:7px 12px; }
     .page-context { align-items:flex-start; }
     .card { padding:17px; }
     .card-head { flex-wrap:wrap; align-items:flex-start; }
@@ -980,6 +1105,14 @@
     .card-head .right > .cs, .card-head .right > select { width:100%!important; max-width:none!important; }
     .row { flex-wrap:wrap; align-items:stretch; }
     .row > * { min-width:0; }
+    .quick-actions { grid-template-columns:1fr; }
+    .form-grid, .form-grid.cols-4, .form-grid.download-grid, .option-grid { grid-template-columns:1fr; }
+    .form-actions { justify-content:stretch; }
+    .form-actions .status-text { flex-basis:100%; order:3; }
+    .form-actions .actions-spacer { display:none; }
+    .form-actions > button { flex:1 1 auto; min-height:44px; }
+    input:not([type="checkbox"]):not([type="radio"]), textarea, select, .cs-trg, .dt-trg { min-height:44px; font-size:16px; }
+    .pswitch button { min-height:40px; }
   }
   @media(max-width:520px) {
     main { padding:16px 12px 24px; gap:14px; }
@@ -1007,7 +1140,7 @@
     .rp-box { padding:18px; }
   }
   @media(max-width:420px) {
-    .badge-lite, .engine-label { display:none; }
+    .badge-lite, .brand-sub, .engine-label { display:none; }
     .engine { padding:8px; }
     .brand-mark { width:32px; height:32px; }
   }
@@ -1064,8 +1197,11 @@
 <header>
   <div class="header-inner">
   <div class="brand">
-    <span class="brand-mark"><svg><use href="#i-logo"/></svg></span>
-    <h1>CreatorHub<span class="badge-lite">LITE</span></h1>
+    <span class="brand-mark" aria-hidden="true"><svg><use href="#i-logo"/></svg></span>
+    <div class="brand-copy">
+      <h1>CreatorHub<span class="badge-lite">LITE</span></h1>
+      <span class="brand-sub">多平台内容工作台</span>
+    </div>
   </div>
   <div class="pswitch" role="tablist" aria-label="平台切换">
     <button role="tab" data-pf="douyin" onclick="switchPlatform('douyin')">抖音</button>
@@ -1074,13 +1210,13 @@
     <button role="tab" data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
   </div>
   <span class="spacer"></span>
-  <span class="engine" id="engine-status" title="后台任务引擎正在运行"><span class="dot live"></span><span class="engine-label">引擎运行中</span></span>
+  <span class="engine" id="engine-status" role="status" aria-live="polite" title="后台任务引擎正在运行"><span class="dot live"></span><span class="engine-label">引擎运行中</span></span>
   </div>
 </header>
 
 <div class="shell">
 <aside class="sidebar">
-  <nav class="nav">
+  <nav class="nav" aria-label="主导航">
     <button class="navitem" data-tab="overview" onclick="switchTab('overview', true)"><svg><use href="#i-bolt"/></svg><span class="nav-label">总览</span></button>
     <button class="navitem" data-tab="accounts" onclick="switchTab('accounts', true)"><svg><use href="#i-card"/></svg><span class="nav-label">账号</span><span class="nav-badge" id="tb-acc">0</span></button>
     <button class="navitem notsh-only" data-tab="monitors" onclick="switchTab('monitors', true)"><svg><use href="#i-target"/></svg><span class="nav-label">作品监控</span><span class="nav-badge" id="tb-mon">0</span></button>
@@ -1099,7 +1235,7 @@
   <div class="page-context" id="page-context">
     <div class="page-context-main">
       <div class="page-kicker"><span class="page-platform" id="page-platform">抖音</span><span id="page-kicker">工作台</span></div>
-      <h2 id="page-title">总览</h2>
+      <h2 id="page-title" tabindex="-1">总览</h2>
       <p class="page-desc" id="page-desc">查看账号、监控、作品与评论的最新状态。</p>
     </div>
   </div>
@@ -1110,18 +1246,46 @@
     <div class="stat"><span class="stat-ic c"><svg><use href="#i-download"/></svg></span><div><div class="stat-v" id="stat-dl">—</div><div class="stat-l">已下载作品</div></div></div>
     <div class="stat"><span class="stat-ic d"><svg><use href="#i-msg"/></svg></span><div><div class="stat-v" id="stat-cmt">—</div><div class="stat-l">抓取评论</div></div></div>
   </section>
-  <div class="card chart-card">
-    <div class="card-head">
-      <span class="card-ic"><svg><use href="#i-bolt"/></svg></span>
-      <h2>近 7 天采集 <span class="sub">每日新增作品 / 评论</span></h2>
-      <div class="chart-legend">
-        <span><i class="lg-a"></i>作品</span>
-        <span><i class="lg-b"></i>评论</span>
+  <div class="overview-grid">
+    <div class="card chart-card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-bolt"/></svg></span>
+        <h2>近 7 天采集 <span class="sub">每日新增作品 / 评论</span></h2>
+        <div class="chart-legend">
+          <span><i class="lg-a"></i>作品</span>
+          <span><i class="lg-b"></i>评论</span>
+        </div>
       </div>
+      <div class="chart-wrap" id="overview-chart" role="img" aria-label="近七天每日新增作品与评论数量柱状图"><div class="chart-empty">加载中…</div></div>
     </div>
-    <div class="chart-wrap" id="overview-chart"><div class="chart-empty">加载中…</div></div>
+    <aside class="card quick-card" aria-labelledby="quick-title">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-bolt"/></svg></span>
+        <h2 id="quick-title">快捷操作 <span class="sub">常用入口</span></h2>
+      </div>
+      <div class="quick-actions">
+        <button class="quick-action" type="button" onclick="switchTab('accounts', true)">
+          <span class="qa-ic"><svg><use href="#i-user"/></svg></span>
+          <span class="qa-copy"><b>管理平台账号</b><span>登录、检查状态与配置代理</span></span>
+          <svg><use href="#i-next"/></svg>
+        </button>
+        <button class="quick-action notsh-only" type="button" onclick="switchTab('monitors', true)">
+          <span class="qa-ic"><svg><use href="#i-target"/></svg></span>
+          <span class="qa-copy"><b>添加作品监控</b><span>设置目标与自动下载策略</span></span>
+          <svg><use href="#i-next"/></svg>
+        </button>
+        <button class="quick-action" type="button" onclick="switchTab('share-download', true)">
+          <span class="qa-ic"><svg><use href="#i-download"/></svg></span>
+          <span class="qa-copy"><b>解析分享链接</b><span>识别作品并保存到本地</span></span>
+          <svg><use href="#i-next"/></svg>
+        </button>
+      </div>
+    </aside>
   </div>
-  <div class="card"><div class="hint">顶部切换 <b>抖音 / 小红书 / 快手 / 视频号</b> 平台,各平台拥有独立的账号、监控与评论数据;左侧切换模块进行管理。小红书支持 <b>创作者笔记</b> 与 <b>关键词</b> 两种监控;快手支持 <b>创作者作品</b> 监控、自动评论与发布。<b>视频号</b>因助手接口只有本账号数据,仅支持 <b>账号 / 本账号作品·数据 / 发布</b>,不做监控他人。通知与下载设置为全局共用。</div></div>
+  <div class="platform-callout" role="note">
+    <svg aria-hidden="true"><use href="#i-info"/></svg>
+    <div><b>平台数据彼此独立</b><p>切换平台后，账号、监控与评论数据会独立展示；通知和下载设置全局共用。视频号仅提供本账号作品、数据与发布，其余能力以导航中可见入口为准。</p></div>
+  </div>
   </section>
 
   <section data-panel="accounts">
@@ -1157,7 +1321,7 @@
         </div>
         <button onclick="saveCookie()"><svg><use href="#i-check"/></svg>保存</button>
       </div>
-      <div class="table-wrap mini-table"><table id="acc-table"><tbody></tbody></table></div>
+      <div class="table-wrap mini-table"><table id="acc-table" aria-label="平台账号列表"><tbody></tbody></table></div>
     </div>
 
     <!-- 代理池(提前配置好,账号从池里关联) -->
@@ -1170,20 +1334,22 @@
         住宅/4G 长效代理,一号一代理固定绑定(防多账号同 IP 关联)。
         添加后在上方账号点「代理」→ 选池里的一条;或点账号「代理」填 <code>auto</code> 自动分配占用最少的一条。
       </p>
-      <div class="row" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
-        <input id="px-label" placeholder="备注(如 住宅-广东-01)" style="max-width:180px">
-        <select id="px-proto" style="max-width:120px" aria-label="代理协议" title="裸 ip:port 按此协议补全;已带 http://、socks5:// 则忽略">
-          <option value="http">HTTP</option>
-          <option value="socks5">SOCKS5</option>
-        </select>
-        <input id="px-url" placeholder="1.2.3.4:8080 或 user:pass@host:port" style="flex:1;min-width:240px">
-        <button class="ghost sm" onclick="detectProxy()" title="自动判别 HTTP/SOCKS5 与是否需要认证">判别</button>
-        <button onclick="addProxy()"><svg><use href="#i-check"/></svg>加入池</button>
+      <div class="form-grid cols-auto">
+        <div class="form-field"><label for="px-label">代理备注</label><input id="px-label" placeholder="例如：住宅-广东-01"></div>
+        <div class="form-field"><label for="px-proto">默认协议</label><select id="px-proto" title="裸 IP:端口按此协议补全；已带协议时忽略">
+            <option value="http">HTTP</option><option value="socks5">SOCKS5</option>
+        </select></div>
+        <div class="form-field"><label for="px-url">代理地址</label><input id="px-url" inputmode="url" placeholder="1.2.3.4:8080 或 user:pass@host:port"></div>
+      </div>
+      <div class="form-actions">
+        <button class="ghost" onclick="detectProxy()" title="自动判别 HTTP/SOCKS5 与是否需要认证"><svg><use href="#i-eye"/></svg>自动判别</button>
         <button class="ghost sm" onclick="importProxies()" title="多行粘贴批量导入">批量导入</button>
         <button class="ghost sm" onclick="testAllProxies()" title="逐个测试池内代理连通性">全部测试</button>
         <button class="ghost sm" onclick="assignAllProxies()" title="给所有未配代理的账号自动分配(均衡)">给账号批量分配</button>
+        <span class="actions-spacer"></span>
+        <button onclick="addProxy()"><svg><use href="#i-plus"/></svg>加入代理池</button>
       </div>
-      <div class="table-wrap mini-table"><table id="proxy-table"><tbody></tbody></table></div>
+      <div class="table-wrap mini-table"><table id="proxy-table" aria-label="代理池列表"><tbody></tbody></table></div>
     </div>
   </section>
 
@@ -1224,37 +1390,30 @@
             <input id="t-tags" autocomplete="off" data-meta-combo="tags" placeholder="选择或输入新标签">
           </div>
         </div>
-        <div class="row monitor-options">
-          <select id="t-acc" aria-label="使用账号"></select>
-          <select id="t-interval" aria-label="监控间隔">
-            <option value="300">每 5 分钟</option>
-            <option value="600">每 10 分钟</option>
-            <option value="1800">每 30 分钟</option>
-            <option value="3600">每小时</option>
-          </select>
-          <select id="t-quality" class="dy-only" aria-label="画质">
-            <option value="">画质:默认</option>
-            <option value="highest">原画/最高</option>
-            <option value="1080">1080P</option>
-            <option value="720">720P</option>
-            <option value="540">540P</option>
-            <option value="lowest">最低省流</option>
-          </select>
-          <select id="t-backfill" class="dy-only" aria-label="首次历史回填">
-            <option value="0">历史:不下载</option>
-            <option value="5">历史:最近 5 条</option>
-            <option value="20">历史:最近 20 条</option>
-            <option value="-1">历史:尽可能全量</option>
-          </select>
-          <select id="t-download" aria-label="自动下载范围">
-            <option value="all">下载:全部作品</option>
-            <option value="video">下载:仅视频</option>
-            <option value="images">下载:仅图集</option>
-            <option value="none">下载:仅记录不下载</option>
-          </select>
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="t-acc">使用账号</label><select id="t-acc"></select></div>
+          <div class="form-field"><label for="t-interval">检查频率</label><select id="t-interval">
+              <option value="300">每 5 分钟</option><option value="600">每 10 分钟</option>
+              <option value="1800">每 30 分钟</option><option value="3600">每小时</option>
+          </select></div>
+          <div class="form-field dy-only"><label for="t-quality">视频画质</label><select id="t-quality">
+              <option value="">跟随全局设置</option><option value="highest">原画 / 最高</option>
+              <option value="1080">1080P</option><option value="720">720P</option>
+              <option value="540">540P</option><option value="lowest">最低省流</option>
+          </select></div>
+          <div class="form-field dy-only"><label for="t-backfill">首次历史回填</label><select id="t-backfill">
+              <option value="0">不下载历史作品</option><option value="5">最近 5 条</option>
+              <option value="20">最近 20 条</option><option value="-1">尽可能全量</option>
+          </select></div>
+          <div class="form-field"><label for="t-download">自动下载范围</label><select id="t-download">
+              <option value="all">全部作品</option><option value="video">仅视频</option>
+              <option value="images">仅图集</option><option value="none">仅记录，不下载</option>
+          </select></div>
         </div>
-        <button onclick="addMonitor()"><svg><use href="#i-target"/></svg>开始监控</button>
-        <div class="mut" id="add-msg"></div>
+        <div class="form-actions">
+          <span class="status-text" id="add-msg" role="status" aria-live="polite"></span>
+          <button onclick="addMonitor()"><svg><use href="#i-target"/></svg>开始监控</button>
+        </div>
       </div>
     </div>
   </section>
@@ -1270,32 +1429,45 @@
           <label class="field" for="sd-text">分享链接 / 分享口令 / 含中文和符号的完整文案</label>
           <textarea id="sd-text" rows="5" placeholder="例如：复制这段内容，打开对应平台查看作品 https://v.douyin.com/xxxx/ 😄&#10;支持全角符号、HTML 实体、URL 编码、Unicode 转义和一段文字中的多个链接"></textarea>
         </div>
-        <div class="row" style="flex-wrap:wrap">
-          <select id="sd-quality" aria-label="下载画质" style="flex:0 0 170px">
-            <option value="highest">画质：原画/最高</option>
-            <option value="1080">画质：1080P</option>
-            <option value="720">画质：720P</option>
-            <option value="540">画质：540P</option>
-            <option value="lowest">画质：最低省流</option>
-            <option value="audio">仅音频</option>
-          </select>
-          <select id="sd-account" aria-label="复用账号登录态" style="min-width:220px">
-            <option value="">先识别链接，再选择对应平台账号</option>
-          </select>
-          <input id="sd-dir" placeholder="下载目录（留空使用全局目录/share）" aria-label="下载目录" style="min-width:260px">
-          <input id="sd-max-size" type="number" min="0" max="102400" value="0" placeholder="文件上限 MB，0=不限" aria-label="文件大小上限" style="flex:0 0 190px">
+        <div class="form-grid cols-4">
+          <div class="form-field">
+            <label for="sd-quality">下载画质</label>
+            <select id="sd-quality">
+              <option value="highest">原画 / 最高</option>
+              <option value="1080">1080P</option>
+              <option value="720">720P</option>
+              <option value="540">540P</option>
+              <option value="lowest">最低省流</option>
+              <option value="audio">仅音频</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="sd-account">复用登录账号</label>
+            <select id="sd-account">
+              <option value="">先识别链接，再选择账号</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="sd-dir">保存目录</label>
+            <input id="sd-dir" placeholder="留空使用全局目录 / share">
+          </div>
+          <div class="form-field">
+            <label for="sd-max-size">文件上限</label>
+            <input id="sd-max-size" type="number" min="0" max="102400" value="0" placeholder="0 = 不限">
+            <div class="field-help">单位 MB，填 0 表示不限</div>
+          </div>
         </div>
-        <div class="row" style="justify-content:flex-start;flex-wrap:wrap;gap:16px">
-          <label class="mut" style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="sd-metadata" style="width:auto">保存作品元数据 JSON</label>
-          <label class="mut" style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="sd-thumbnail" checked style="width:auto">保存封面</label>
-          <label class="mut" style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="sd-subtitles" style="width:auto">保存字幕</label>
-          <label class="mut" style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="sd-all-links" style="width:auto">下载文案中的全部链接</label>
+        <div class="option-grid" aria-label="附加下载选项">
+          <label class="switch-row"><input type="checkbox" id="sd-metadata"><span class="switch-copy"><b>元数据 JSON</b><span>保存作品详细信息</span></span></label>
+          <label class="switch-row"><input type="checkbox" id="sd-thumbnail" checked><span class="switch-copy"><b>作品封面</b><span>保存原始封面图片</span></span></label>
+          <label class="switch-row"><input type="checkbox" id="sd-subtitles"><span class="switch-copy"><b>字幕文件</b><span>有字幕时一并保存</span></span></label>
+          <label class="switch-row"><input type="checkbox" id="sd-all-links"><span class="switch-copy"><b>全部链接</b><span>处理文案里的每个链接</span></span></label>
         </div>
-        <div class="row" style="justify-content:flex-start;flex-wrap:wrap">
+        <div class="form-actions">
+          <span class="status-text" id="sd-msg" role="status" aria-live="polite"></span>
           <button class="ghost" onclick="parseShareLinks()"><svg><use href="#i-bolt"/></svg>识别链接</button>
           <button class="ghost" onclick="inspectShareLink()"><svg><use href="#i-eye"/></svg>只读取作品信息</button>
           <button onclick="downloadShareLink()"><svg><use href="#i-download"/></svg>开始下载</button>
-          <span class="mut" id="sd-msg"></span>
         </div>
         <div id="sd-links" class="hint" style="display:none"></div>
       </div>
@@ -1313,7 +1485,7 @@
         <h2>下载历史 <span class="sub" id="sd-history-count">0 条</span></h2>
         <button class="ghost sm" onclick="refreshShareHistory()"><svg><use href="#i-clock"/></svg>刷新</button>
       </div>
-      <div class="table-wrap"><table><thead><tr>
+      <div class="table-wrap"><table aria-label="链接下载历史"><thead><tr>
         <th>下载时间</th><th>平台</th><th>作品</th><th>媒体/文件</th><th>状态</th><th>保存目录</th><th>操作</th>
       </tr></thead><tbody id="sd-history-body"></tbody></table></div>
     </div>
@@ -1326,19 +1498,28 @@
       <span class="card-ic"><svg><use href="#i-download"/></svg></span>
       <h2>下载设置 <span class="sub">全局默认</span></h2>
     </div>
-    <div class="row" style="margin-bottom:10px">
-      <input id="dl-dir" placeholder="下载目录,例如 D:\douyin\downloads(留空用 ./data/media)" aria-label="下载目录">
-      <select id="dl-quality" style="flex:0 0 170px" aria-label="默认画质">
-        <option value="highest">画质:原画/最高</option>
-        <option value="1080">画质:1080P</option>
-        <option value="720">画质:720P</option>
-        <option value="540">画质:540P</option>
-        <option value="lowest">画质:最低省流</option>
-      </select>
-      <button onclick="saveSettings()"><svg><use href="#i-check"/></svg>保存</button>
+    <div class="form-grid download-grid">
+      <div class="form-field">
+        <label for="dl-dir">默认下载目录</label>
+        <input id="dl-dir" placeholder="例如 D:\douyin\downloads；留空使用 ./data/media">
+        <div class="field-help">系统会在该目录下按作者昵称自动创建子文件夹</div>
+      </div>
+      <div class="form-field">
+        <label for="dl-quality">默认视频画质</label>
+        <select id="dl-quality">
+          <option value="highest">原画 / 最高</option>
+          <option value="1080">1080P</option>
+          <option value="720">720P</option>
+          <option value="540">540P</option>
+          <option value="lowest">最低省流</option>
+        </select>
+        <div class="field-help">单个监控目标可单独覆盖</div>
+      </div>
     </div>
-    <div class="hint">目录下按作者昵称建子文件夹。画质从作品自带的多档码率里选(原画 = 最高可用码率)。单个目标可在列表里覆盖。</div>
-    <div class="mut" id="dl-msg" style="margin-top:6px"></div>
+    <div class="form-actions">
+      <span class="status-text" id="dl-msg" role="status" aria-live="polite"></span>
+      <button onclick="saveSettings()"><svg><use href="#i-check"/></svg>保存下载设置</button>
+    </div>
   </div>
 
   <!-- 大模型 API(自动评论文案)-->
@@ -1348,27 +1529,47 @@
       <h2>大模型 API <span class="sub">自动评论文案生成(OpenAI 兼容接口)</span></h2>
     </div>
     <div class="stack">
-      <label class="mut" style="display:flex;align-items:center;gap:8px">
-        <input type="checkbox" id="ai-enabled" style="width:auto"> 启用大模型生成文案(关闭=只用模板库)
+      <label class="switch-row">
+        <input type="checkbox" id="ai-enabled">
+        <span class="switch-copy"><b>启用大模型生成文案</b><span>关闭后只使用规则中的本地模板库</span></span>
       </label>
-      <div class="row">
-        <input id="ai-base" placeholder="Base URL,如 https://api.deepseek.com/v1" aria-label="Base URL">
-        <input id="ai-model" placeholder="模型名,如 deepseek-chat / qwen-plus / gpt-4o-mini" style="flex:0 0 280px" aria-label="模型">
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="ai-base">接口地址</label>
+          <input id="ai-base" type="url" inputmode="url" autocomplete="url" placeholder="https://api.deepseek.com/v1" onblur="validateAiField(this,$('ai-enabled').checked)">
+        </div>
+        <div class="form-field">
+          <label for="ai-model">模型名称</label>
+          <input id="ai-model" autocomplete="off" placeholder="deepseek-chat / qwen-plus / gpt-4o-mini" onblur="validateAiField(this,$('ai-enabled').checked)">
+        </div>
+        <div class="form-field">
+          <label for="ai-key">API Key</label>
+          <div class="input-affix">
+            <input id="ai-key" type="password" autocomplete="new-password" placeholder="留空则不修改已保存的 Key">
+            <button class="input-action" type="button" onclick="toggleSecretInput('ai-key',this)" aria-label="显示 API Key" aria-pressed="false" title="显示或隐藏 API Key"><svg><use href="#i-eye"/></svg></button>
+          </div>
+          <div class="field-help">仅保存在本地数据库，不会回显</div>
+        </div>
+        <div class="form-field">
+          <label for="ai-temp">生成温度</label>
+          <input id="ai-temp" type="number" inputmode="decimal" min="0" max="2" step="0.1" placeholder="0.9" onblur="validateAiField(this)">
+          <div class="field-help">建议 0.7–1.0；数值越高，表达越多样</div>
+        </div>
       </div>
-      <div class="row">
-        <input id="ai-key" type="password" placeholder="API Key(留空=不修改已保存的 key)" aria-label="API Key">
-        <input id="ai-temp" placeholder="temperature 0.9" style="flex:0 0 160px" aria-label="温度">
-      </div>
-      <div>
-        <label class="field" for="ai-prompt">提示词模板(可用 {source_text} 对方内容、{nick}、{kw}、{platform}、{kind_label};留空用内置)</label>
+      <div class="form-field">
+        <label for="ai-prompt">提示词模板</label>
         <textarea id="ai-prompt" rows="3" placeholder="留空使用内置提示词"></textarea>
+        <div class="field-help">可用变量：{source_text}、{nick}、{kw}、{platform}、{kind_label}</div>
       </div>
-      <div class="row" style="justify-content:flex-start">
-        <button onclick="saveAiSettings()" style="flex:0 0 auto"><svg><use href="#i-check"/></svg>保存 AI 设置</button>
-        <button class="ghost" onclick="testAi()" style="flex:0 0 auto"><svg><use href="#i-bolt"/></svg>测试连通性</button>
-        <span class="mut" id="ai-msg" style="flex:1"></span>
+      <div class="form-note">
+        <svg aria-hidden="true"><use href="#i-info"/></svg>
+        <span>兼容 OpenAI <code>/chat/completions</code> 的服务。调用失败时会自动回退到当前规则的模板库。</span>
       </div>
-      <div class="hint">兼容 OpenAI <code>/chat/completions</code> 的服务都能接(DeepSeek / 通义千问 / 月之暗面 / 智谱 / OpenAI 等)。在「自动评论」规则里勾选「用 AI 生成文案」才会调用;调用失败会自动回退该规则的模板库。Key 仅存本地数据库,不回显。</div>
+      <div class="form-actions">
+        <span class="status-text" id="ai-msg" role="status" aria-live="polite"></span>
+        <button class="ghost" onclick="testAi()"><svg><use href="#i-bolt"/></svg>测试连通性</button>
+        <button onclick="saveAiSettings()"><svg><use href="#i-check"/></svg>保存 AI 设置</button>
+      </div>
     </div>
   </div>
   </section>
@@ -1381,15 +1582,14 @@
         <h2 id="pub-head"><span id="pub-head-lead">发布笔记</span> <span class="sub" id="pub-head-sub">上传图集 / 视频到小红书(实验性)</span></h2>
       </div>
       <div class="stack">
-        <div class="row">
-          <select id="pub-acc" aria-label="发布账号"></select>
-          <select id="pub-type" aria-label="类型" onchange="onPubType()">
-            <option value="images">图文(图集)</option>
-            <option value="video">视频</option>
-          </select>
+        <div class="form-grid">
+          <div class="form-field"><label for="pub-acc">发布账号</label><select id="pub-acc"></select></div>
+          <div class="form-field"><label for="pub-type">作品类型</label><select id="pub-type" onchange="onPubType()">
+              <option value="images">图文（图集）</option><option value="video">视频</option>
+          </select></div>
         </div>
         <div>
-          <label class="field" id="pub-files-label">选择图片(可多选)</label>
+          <label class="field" id="pub-files-label" for="pub-files">选择图片（可多选）</label>
           <div class="filepick" id="pub-drop">
             <input type="file" id="pub-files" class="filepick-input" multiple accept="image/*" aria-label="选择文件">
             <div class="filepick-cta"><svg><use href="#i-download"/></svg><span><b>点击选择</b> 或拖拽文件到此</span></div>
@@ -1404,12 +1604,12 @@
           <label class="field" for="pub-desc">正文</label>
           <textarea id="pub-desc" rows="3" placeholder="正文内容…"></textarea>
         </div>
-        <div class="row">
-          <input id="pub-topics" placeholder="话题(逗号分隔,不用带 #),如:露营,户外">
-          <input type="datetime-local" id="pub-when" aria-label="定时发布(留空=尽快发)" style="flex:0 0 220px">
+        <div class="form-grid">
+          <div class="form-field"><label for="pub-topics">话题</label><input id="pub-topics" placeholder="逗号分隔，不用带 #；例如：露营,户外"></div>
+          <div class="form-field"><label for="pub-when">发布时间</label><input type="datetime-local" id="pub-when" aria-label="定时发布（留空则尽快发布）"><div class="field-help">留空表示尽快发布</div></div>
         </div>
-        <div class="row sh-only">
-          <input id="pub-location" placeholder="位置(视频号,可选):填城市/地点名,如 东莞市 / 杭州西湖">
+        <div class="form-field sh-only">
+          <label for="pub-location">位置（可选）</label><input id="pub-location" placeholder="城市或地点名，例如：东莞市 / 杭州西湖">
         </div>
         <fieldset class="publish-permissions dy-only" id="pub-dy-opts">
           <legend>互动与权限</legend>
@@ -1429,11 +1629,11 @@
             </select>
           </div>
         </fieldset>
-        <div class="row" style="justify-content:flex-start">
-          <button onclick="addPublish()" style="flex:0 0 auto"><svg><use href="#i-send"/></svg>加入发布队列</button>
-          <span class="mut" id="pub-msg" style="flex:1"></span>
+        <div class="form-actions">
+          <span class="status-text" id="pub-msg" role="status" aria-live="polite"></span>
+          <button onclick="addPublish()"><svg><use href="#i-send"/></svg>加入发布队列</button>
         </div>
-        <div class="hint" id="pub-hint">发布通过自动化创作平台完成,会弹出浏览器窗口;若遇验证码/需补封面可在窗口里手动处理。定时任务由后台引擎到点执行。</div>
+        <div class="form-note" id="pub-hint"><svg aria-hidden="true"><use href="#i-info"/></svg><span>发布通过自动化创作平台完成，遇到验证码或需补充封面时，可在弹出的浏览器窗口中手动处理。定时任务由后台引擎按计划执行。</span></div>
       </div>
     </div>
 
@@ -1443,7 +1643,7 @@
         <span class="card-ic"><svg><use href="#i-list"/></svg></span>
         <h2>发布记录 / 队列</h2>
       </div>
-      <div class="table-wrap"><table><thead><tr>
+      <div class="table-wrap"><table aria-label="发布任务列表"><thead><tr>
         <th>标题</th><th>类型</th><th>媒体</th><th>来源</th><th>计划时间</th><th>状态</th><th>操作</th>
       </tr></thead><tbody id="pub-table"></tbody></table></div>
     </div>
@@ -1508,14 +1708,14 @@
           <button onclick="addCommentRule()" style="flex:0 0 auto"><svg><use href="#i-msg"/></svg>创建规则(默认关闭)</button>
           <span class="mut" id="ac-msg" style="flex:1"></span>
         </div>
-        <div class="hint" style="border-left:3px solid var(--warn);padding-left:10px">⚠️ 自动评论是平台最敏感的动作:同质化文案会被判垃圾营销(评论「仅自己可见」甚至禁言)。规则<b>默认关闭</b>,建议先点「试跑」看看生成的任务文案,确认无误再启用。每账号每日总量另受设置上限约束。</div>
+        <div class="form-note warn"><svg aria-hidden="true"><use href="#i-info"/></svg><span>自动评论是平台较敏感的动作：同质化文案可能被判定为垃圾营销。规则<b>默认关闭</b>，建议先「试跑」检查生成内容，再手动启用。每个账号仍受每日总量限制。</span></div>
       </div>
     </div>
 
     <!-- 规则列表 -->
     <div class="card">
       <div class="card-head"><span class="card-ic"><svg><use href="#i-list"/></svg></span><h2>评论规则</h2></div>
-      <div class="table-wrap"><table><thead><tr>
+      <div class="table-wrap"><table aria-label="自动评论规则列表"><thead><tr>
         <th>名称</th><th>模式</th><th>目标</th><th>账号</th><th>每日/间隔</th><th>上次运行</th><th>状态</th><th>操作</th>
       </tr></thead><tbody id="ac-rule-table"></tbody></table></div>
     </div>
@@ -1536,7 +1736,7 @@
         <span id="ac-draft-count" style="flex:1"></span>
         <button class="sm" onclick="approveAllDrafts()"><svg><use href="#i-check"/></svg>全部通过</button>
       </div>
-      <div class="table-wrap"><table><thead><tr>
+      <div class="table-wrap"><table aria-label="自动评论任务记录"><thead><tr>
         <th>文案</th><th>目标作品</th><th>对象</th><th>计划时间</th><th>通道</th><th>状态</th><th>操作</th>
       </tr></thead><tbody id="ac-task-table"></tbody></table></div>
     </div>
@@ -1549,20 +1749,32 @@
       <span class="card-ic"><svg><use href="#i-bell"/></svg></span>
       <h2>通知推送 <span class="sub">新作品 / 新评论时提醒</span></h2>
     </div>
-    <div class="row" style="margin-bottom:10px">
-      <input id="n-name" placeholder="备注名(可选)" style="flex:1" aria-label="渠道备注名">
-      <select id="n-type" style="flex:0 0 140px" onchange="onTypeChange()" aria-label="渠道类型">
-        <option value="bark">Bark</option>
-        <option value="dingtalk">钉钉</option>
-        <option value="telegram">Telegram</option>
-      </select>
+    <div class="form-grid download-grid">
+      <div class="form-field">
+        <label for="n-name">渠道备注</label>
+        <input id="n-name" placeholder="例如：运营群通知（可选）">
+      </div>
+      <div class="form-field">
+        <label for="n-type">渠道类型</label>
+        <select id="n-type" onchange="onTypeChange()">
+          <option value="bark">Bark</option>
+          <option value="dingtalk">钉钉</option>
+          <option value="telegram">Telegram</option>
+        </select>
+      </div>
     </div>
-    <textarea id="n-config" rows="3" style="margin-bottom:10px;font-family:var(--mono)" aria-label="渠道配置 JSON"></textarea>
-    <div class="row" style="justify-content:flex-start">
-      <button onclick="addChannel()" style="flex:0 0 auto"><svg><use href="#i-plus"/></svg>添加渠道</button>
-      <span class="mut" id="n-msg" style="flex:1"></span>
+    <div class="form-field notification-config">
+      <label for="n-config">渠道配置 JSON</label>
+      <textarea id="n-config" class="code-input" rows="4" spellcheck="false" aria-describedby="n-config-help" onblur="validateNotificationConfig()"></textarea>
+      <div class="field-help" id="n-config-help">切换渠道类型时会自动填入所需字段模板</div>
     </div>
-    <div class="table-wrap mini-table"><table id="n-table"><tbody></tbody></table></div>
+    <div class="form-actions">
+      <span class="status-text" id="n-msg" role="status" aria-live="polite"></span>
+      <button onclick="addChannel()"><svg><use href="#i-plus"/></svg>添加通知渠道</button>
+    </div>
+    <div class="section-divider"></div>
+    <div class="data-section-head"><b>已配置渠道</b><span>可单独测试、停用或编辑</span></div>
+    <div class="table-wrap mini-table"><table id="n-table" aria-label="通知渠道列表"><tbody></tbody></table></div>
   </div>
   </section>
 
@@ -1574,12 +1786,12 @@
       <h2>监控列表 <span class="sub">运行中</span></h2>
     </div>
     <div class="manage-toolbar">
-      <input type="search" id="mon-search" placeholder="搜索用户或别名" oninput="onMonitorFilter()">
+      <input type="search" id="mon-search" placeholder="搜索用户或别名" aria-label="搜索监控目标" oninput="onMonitorFilter()">
       <select id="mon-group" aria-label="按分组筛选监控" onchange="onMonitorFilter()"><option value="">全部分组</option></select>
       <select id="mon-tag" aria-label="按标签筛选监控" onchange="onMonitorFilter()"><option value="">全部标签</option></select>
-      <span class="mut" id="mon-filter-count"></span>
+      <span class="mut" id="mon-filter-count" role="status" aria-live="polite"></span>
     </div>
-    <div class="table-wrap"><table><thead><tr>
+    <div class="table-wrap"><table aria-label="作品监控列表"><thead><tr>
       <th>用户</th><th>分组 / 标签</th><th>作品数</th><th>间隔</th><th>下载设置</th><th>上次扫描</th><th>状态</th><th></th>
     </tr></thead><tbody id="mon-table"></tbody></table></div>
   </div>
@@ -1601,10 +1813,10 @@
       <span id="content-selbar" style="display:none;align-items:center;gap:8px">
         <span class="mut" id="content-selcount">已选 0</span>
         <button class="ghost sm" onclick="contentSelClear()">取消</button>
-        <button class="sm" style="background:var(--danger);border-color:transparent" onclick="contentBatchDelete()">批量删除</button>
+        <button class="sm danger" onclick="contentBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
       </span>
     </div>
-    <div class="table-wrap" id="content-table-wrap"><table class="content-record-table">
+    <div class="table-wrap" id="content-table-wrap"><table class="content-record-table" aria-label="最新作品与下载状态">
       <colgroup>
         <col class="content-col-check"><col class="content-col-cover"><col class="content-col-desc">
         <col class="content-col-type"><col class="content-col-time"><col class="content-col-data">
@@ -1631,22 +1843,17 @@
           <label class="field" for="w-url" id="w-url-label">视频链接 / 账号主页 / sec_uid / 视频 id</label>
           <input id="w-url" placeholder="作品链接=盯单条视频;主页链接或 sec_uid=盯账号近期作品">
         </div>
-        <div class="row">
-          <select id="w-kind" aria-label="类型">
-            <option value="auto">类型:自动识别</option>
-            <option value="video">单条视频</option>
-            <option value="user">账号近期作品</option>
-          </select>
-          <select id="w-mode" class="dy-only" aria-label="评论来源" onchange="populateWatchAccount()">
-            <option value="public">来源:公开评论区</option>
-            <option value="creator">来源:创作中心(仅自有账号)</option>
-          </select>
-          <select id="w-acc" aria-label="使用账号"></select>
-          <select id="w-interval" aria-label="间隔">
-            <option value="600">每 10 分钟</option>
-            <option value="1800">每 30 分钟</option>
-            <option value="3600">每小时</option>
-          </select>
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="w-kind">监控对象类型</label><select id="w-kind">
+              <option value="auto">自动识别</option><option value="video">单条视频</option><option value="user">账号近期作品</option>
+          </select></div>
+          <div class="form-field dy-only"><label for="w-mode">评论来源</label><select id="w-mode" onchange="populateWatchAccount()">
+              <option value="public">公开评论区</option><option value="creator">创作中心（仅自有账号）</option>
+          </select></div>
+          <div class="form-field"><label for="w-acc">使用账号</label><select id="w-acc"></select></div>
+          <div class="form-field"><label for="w-interval">检查频率</label><select id="w-interval">
+              <option value="600">每 10 分钟</option><option value="1800">每 30 分钟</option><option value="3600">每小时</option>
+          </select></div>
         </div>
         <div class="meta-fields">
           <div>
@@ -1662,31 +1869,24 @@
             <input id="w-tags" autocomplete="off" data-meta-combo="tags" placeholder="选择或输入新标签">
           </div>
         </div>
-        <div class="row monitor-options">
-          <select id="w-recent" aria-label="账号型监控的近期作品数">
-            <option value="0">作品数:跟随全局</option>
-            <option value="3">最近 3 个作品</option>
-            <option value="5">最近 5 个作品</option>
-            <option value="10">最近 10 个作品</option>
-            <option value="20">最近 20 个作品</option>
-          </select>
-          <select id="w-days" aria-label="账号型监控的作品时间范围">
-            <option value="0">时间范围:跟随全局</option>
-            <option value="3">最近 3 天</option>
-            <option value="7">最近 7 天</option>
-            <option value="14">最近 14 天</option>
-            <option value="30">最近 30 天</option>
-          </select>
-          <select id="w-depth" aria-label="评论区抓取深度">
-            <option value="0">抓取深度:跟随全局</option>
-            <option value="3">浅层抓取</option>
-            <option value="6">标准抓取</option>
-            <option value="12">深度抓取</option>
-            <option value="20">最大抓取</option>
-          </select>
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="w-recent">近期作品数</label><select id="w-recent">
+              <option value="0">跟随全局设置</option><option value="3">最近 3 个作品</option>
+              <option value="5">最近 5 个作品</option><option value="10">最近 10 个作品</option><option value="20">最近 20 个作品</option>
+          </select></div>
+          <div class="form-field"><label for="w-days">作品时间范围</label><select id="w-days">
+              <option value="0">跟随全局设置</option><option value="3">最近 3 天</option>
+              <option value="7">最近 7 天</option><option value="14">最近 14 天</option><option value="30">最近 30 天</option>
+          </select></div>
+          <div class="form-field"><label for="w-depth">评论抓取深度</label><select id="w-depth">
+              <option value="0">跟随全局设置</option><option value="3">浅层抓取</option>
+              <option value="6">标准抓取</option><option value="12">深度抓取</option><option value="20">最大抓取</option>
+          </select></div>
         </div>
-        <button onclick="addWatch()"><svg><use href="#i-msg"/></svg>开始监控评论</button>
-        <div class="mut" id="w-msg"></div>
+        <div class="form-actions">
+          <span class="status-text" id="w-msg" role="status" aria-live="polite"></span>
+          <button onclick="addWatch()"><svg><use href="#i-msg"/></svg>开始监控评论</button>
+        </div>
       </div>
     </div>
 
@@ -1697,12 +1897,12 @@
         <h2>评论监控列表</h2>
       </div>
       <div class="manage-toolbar">
-        <input type="search" id="watch-search" placeholder="搜索对象或别名" oninput="onWatchFilter()">
+        <input type="search" id="watch-search" placeholder="搜索对象或别名" aria-label="搜索评论监控" oninput="onWatchFilter()">
         <select id="watch-group" aria-label="按分组筛选评论监控" onchange="onWatchFilter()"><option value="">全部分组</option></select>
         <select id="watch-tag" aria-label="按标签筛选评论监控" onchange="onWatchFilter()"><option value="">全部标签</option></select>
-        <span class="mut" id="watch-filter-count"></span>
+        <span class="mut" id="watch-filter-count" role="status" aria-live="polite"></span>
       </div>
-      <div class="table-wrap"><table><thead><tr>
+      <div class="table-wrap"><table aria-label="评论监控列表"><thead><tr>
         <th>对象</th><th>分组 / 标签</th><th>类型</th><th>来源</th><th>评论数</th><th>间隔</th><th>上次扫描</th><th>状态</th><th>操作</th>
       </tr></thead><tbody id="watch-table"></tbody></table></div>
     </div>
@@ -1722,10 +1922,10 @@
         <span class="toolbar-spacer"></span>
         <button class="ghost sm" id="comment-selall-btn" onclick="commentSelAllToggle()">全选</button>
         <span class="mut" id="comment-selcount" style="display:none">已选 0</span>
-        <button class="sm" id="comment-batchbtn" style="display:none;background:var(--danger);border-color:transparent" onclick="commentBatchDelete()">批量删除</button>
-        <button class="ghost sm" onclick="clearComments()">清空评论</button>
+        <button class="sm danger" id="comment-batchbtn" style="display:none" onclick="commentBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
+        <button class="ghost sm danger" onclick="clearComments()"><svg><use href="#i-trash"/></svg>清空评论</button>
     </div>
-    <div class="table-wrap"><table><thead><tr>
+    <div class="table-wrap"><table aria-label="已抓取评论列表"><thead><tr>
       <th style="width:30px"><input type="checkbox" id="comment-selall" onchange="commentToggleAll(this.checked)" aria-label="全选"></th>
       <th>评论</th><th>用户</th><th>赞</th><th>评论时间</th><th>操作</th>
     </tr></thead><tbody id="comment-table"></tbody></table></div>
@@ -1763,7 +1963,7 @@
           <div class="hint" style="margin:0;flex:1">关注/粉丝无公开接口,通过该账号登录态打开关注页拦截抓取。首次抓不到时请把服务端控制台的 <code>[follow]</code> 日志发我以标定接口。</div>
           <button class="ghost sm" style="flex:0 0 auto" onclick="syncFollows('following')"><svg><use href="#i-download"/></svg>同步关注</button>
         </div>
-        <div class="table-wrap"><table><thead><tr><th>用户</th><th>关系</th><th>操作</th></tr></thead><tbody id="following-table"></tbody></table></div>
+        <div class="table-wrap"><table aria-label="关注列表"><thead><tr><th>用户</th><th>关系</th><th>操作</th></tr></thead><tbody id="following-table"></tbody></table></div>
       </div>
 
       <div data-hubpanel="fans" style="display:none">
@@ -1771,12 +1971,12 @@
           <div class="hint" style="margin:0;flex:1">粉丝列表通过该账号登录态打开粉丝页拦截抓取。可对未回关的粉丝发起「回关」。</div>
           <button class="ghost sm" style="flex:0 0 auto" onclick="syncFollows('fan')"><svg><use href="#i-download"/></svg>同步粉丝</button>
         </div>
-        <div class="table-wrap"><table><thead><tr><th>用户</th><th>关系</th><th>操作</th></tr></thead><tbody id="fans-table"></tbody></table></div>
+        <div class="table-wrap"><table aria-label="粉丝列表"><thead><tr><th>用户</th><th>关系</th><th>操作</th></tr></thead><tbody id="fans-table"></tbody></table></div>
       </div>
 
       <div data-hubpanel="dm" style="display:none">
         <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:12px">
-          <div class="hint" style="margin:0;flex:1">💬 <b>抖音私信</b>点「<b>同步</b>」拉会话列表;点开任一会话自动拉完整聊天记录(imapi protobuf,纯 cookie 无签名)。发消息用「<b>打开浏览器收发</b>」。小红书网页端未开放私信(仅 App);快手待测。</div>
+          <div class="hint" style="margin:0;flex:1"><span class="ic-text"><svg aria-hidden="true"><use href="#i-msg"/></svg><b>抖音私信</b></span>：点「<b>同步</b>」拉取会话列表，打开会话后自动加载完整聊天记录。发消息使用「<b>打开浏览器收发</b>」。小红书网页端暂未开放私信，快手能力待验证。</div>
           <button class="ghost sm" style="flex:0 0 auto" onclick="syncDm()"><svg><use href="#i-download"/></svg>同步</button>
           <button style="flex:0 0 auto" onclick="openHubAccountBrowser()"><svg><use href="#i-send"/></svg>打开浏览器收发</button>
         </div>
@@ -1785,7 +1985,7 @@
           <div class="dm-main">
             <div class="dm-thread" id="dm-thread"><div class="empty"><div class="empty-ic"><svg><use href="#i-send"/></svg></div><div class="empty-t">选择左侧会话查看消息</div></div></div>
             <div class="dm-composer">
-              <input id="dm-input" placeholder="输入私信内容…" onkeydown="if(event.key==='Enter')sendDm()">
+              <input id="dm-input" placeholder="输入私信内容…" aria-label="私信内容" onkeydown="if(event.key==='Enter')sendDm()">
               <button onclick="sendDm()"><svg><use href="#i-send"/></svg>发送</button>
             </div>
           </div>
@@ -1797,9 +1997,9 @@
           <div class="hint" style="margin:0;flex:1">本账号数据趋势(粉丝 / 作品互动)由后台引擎在账号体检时逐日快照;单篇明细来自「我的作品」。作品健康监控(持续0播/违规告警)可在 <code>config.yaml</code> 打开 <code>engine.work_health_enabled</code>。趋势需运行若干天才有多点。</div>
           <button class="ghost sm" style="flex:0 0 auto" onclick="loadHubStats()"><svg><use href="#i-download"/></svg>刷新数据</button>
         </div>
-        <div id="stats-kpi" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px"></div>
-        <div id="stats-trend" style="margin-bottom:14px"></div>
-        <div class="table-wrap"><table><thead><tr><th>作品</th><th>播放</th><th>点赞</th><th>评论</th><th>状态</th></tr></thead><tbody id="stats-works"></tbody></table></div>
+        <div id="stats-kpi" class="kpi-grid"></div>
+        <div id="stats-trend"></div>
+        <div class="table-wrap"><table aria-label="账号作品数据"><thead><tr><th>作品</th><th>播放</th><th>点赞</th><th>评论</th><th>状态</th></tr></thead><tbody id="stats-works"></tbody></table></div>
       </div>
     </div>
   </section>
@@ -1853,7 +2053,7 @@
         <textarea id="rp-desc" rows="4" placeholder="正文内容…"></textarea>
       </div>
       <div class="row">
-        <input id="rp-topics" placeholder="话题(逗号分隔,不用带 #)">
+        <input id="rp-topics" placeholder="话题(逗号分隔,不用带 #)" aria-label="话题">
         <input type="datetime-local" id="rp-when" aria-label="定时发布(留空=尽快发)" style="flex:0 0 210px">
       </div>
       <div class="row" style="justify-content:flex-end">
