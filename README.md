@@ -98,9 +98,18 @@ npm install
 
 ## 界面预览
 
+> 截图使用脱敏示例数据；界面配色会跟随当前平台切换。
+
 ### 总览
 
 ![总览面板](assets/screenshots/overview-douyin.png)
+
+<details>
+<summary>查看小红书浅色主题</summary>
+
+![小红书总览面板](assets/screenshots/overview-xiaohongshu.png)
+
+</details>
 
 ### 账号与代理
 
@@ -113,6 +122,22 @@ npm install
 ### 评论监控
 
 ![评论监控](assets/screenshots/monitor-comments.png)
+
+### 内容发布
+
+![内容发布与任务队列](assets/screenshots/publish-workflow.png)
+
+### 链接下载
+
+![分享链接解析与下载历史](assets/screenshots/share-download.png)
+
+### 自动评论
+
+![自动评论规则与任务记录](assets/screenshots/autocomment-rules.png)
+
+### 本账号管理与私信
+
+![本账号数据与私信管理](assets/screenshots/account-hub-dm.png)
 
 ## 基本使用
 
