@@ -523,7 +523,8 @@
     margin:0; color:var(--fg-strong); font-size:24px; line-height:1.2;
     font-weight:680; letter-spacing:-.2px;
   }
-  #page-title:focus { outline:none; }
+  /* 页面切换时会聚焦标题供读屏器播报；标题本身不是交互控件，不显示焦点框。 */
+  #page-title:focus { outline:none; box-shadow:none; }
   .page-desc { margin:5px 0 0; color:var(--mut); font-size:13px; line-height:1.5; }
   [data-panel] { scroll-margin-top:calc(var(--header-h) + 18px); }
 
