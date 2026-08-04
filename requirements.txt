@@ -7,6 +7,7 @@ playwright==1.61.0
 xhshow>=0.2.0          # 小红书请求签名(X-S/X-T/x-S-Common)纯算法库
 curl_cffi>=0.7         # 小红书签名直连的 TLS 指纹复刻(impersonate=chrome,绕 JA3 风控)
 python-multipart>=0.0.9   # 发布:上传图集/视频文件
+openpyxl>=3.1.5          # 监控报告:Excel 导出
 PyExecJS>=1.5.1           # 发布:运行小红书创作平台签名 JS(需 Node.js)
 opencv-python-headless>=4.8  # 发布:图片尺寸 / 视频封面与元数据
 numpy>=1.24               # opencv 依赖

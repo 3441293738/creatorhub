@@ -561,6 +561,182 @@ async function refreshOverviewChart() {
 }
 
 // ─── 平台切换(抖音 / 小红书) ───
+
+async function exportMonitorReport(explicitBtn = null) {
+  const btn = explicitBtn || evtBtn();
+  const params = new URLSearchParams({ platform: PLATFORM });
+  await withBusy(btn, "导出中", async () => {
+    try {
+      const response = await fetch("/api/reports/monitor.xlsx?" + params.toString());
+      if (!response.ok) {
+        let message = response.status;
+        try {
+          const body = await response.json();
+          message = body.detail || message;
+        } catch (e) { }
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("content-disposition") || "";
+      const matched = disposition.match(/filename="?([^";]+)"?/i);
+      const filename = matched ? matched[1] :
+        `creatorhub_monitor_report_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}.xlsx`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast("Excel 监控报告已导出", "ok");
+    } catch (e) {
+      toast("报告导出失败: " + e.message, "err");
+    }
+  });
+}
+
+
+async function _downloadExcelReport(path, fallbackName) {
+  const response = await fetch(path);
+  if (!response.ok) {
+    let message = response.status;
+    try {
+      const body = await response.json();
+      message = body.detail || message;
+    } catch (e) { }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") || "";
+  const matched = disposition.match(/filename="?([^";]+)"?/i);
+  const filename = matched ? matched[1] : fallbackName;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function _moduleReportParams(module, full) {
+  const params = new URLSearchParams({ platform: PLATFORM });
+  if (full) {
+    params.set("full", "true");
+    return params;
+  }
+  const put = (key, value) => {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      params.set(key, String(value).trim());
+    }
+  };
+  if (module === "monitors") {
+    put("q", $("mon-search") && $("mon-search").value);
+    put("group_name", $("mon-group") && $("mon-group").value);
+    put("tag", $("mon-tag") && $("mon-tag").value);
+  } else if (module === "contents") {
+    put("target_id", CONTENT_SRC);
+    put("group_name", CONTENT_GROUP);
+    put("tag", CONTENT_TAG);
+    put("q", $("content-search") && $("content-search").value);
+    put("media_type", $("content-type") && $("content-type").value);
+    put("download_status", $("content-status") && $("content-status").value);
+    put("min_like_count", $("content-min-likes") && $("content-min-likes").value);
+    put("min_comment_count", $("content-min-comments") && $("content-min-comments").value);
+    put("sort", $("content-sort") && $("content-sort").value);
+  } else if (module === "comment-watches") {
+    put("q", $("watch-search") && $("watch-search").value);
+    put("group_name", $("watch-group") && $("watch-group").value);
+    put("tag", $("watch-tag") && $("watch-tag").value);
+  } else if (module === "comments") {
+    put("watch_id", COMMENT_SRC);
+    put("group_name", COMMENT_GROUP);
+    put("tag", COMMENT_TAG);
+    put("q", $("comment-query") && $("comment-query").value);
+    put("reply_type", $("comment-type") && $("comment-type").value);
+    put("min_like_count", $("comment-min-likes") && $("comment-min-likes").value);
+    put("sort", $("comment-sort") && $("comment-sort").value);
+  } else if (module === "danmaku-watches") {
+    put("q", $("danmaku-watch-search") && $("danmaku-watch-search").value);
+    put("group_name", $("danmaku-watch-group") && $("danmaku-watch-group").value);
+    put("tag", $("danmaku-watch-tag") && $("danmaku-watch-tag").value);
+  } else if (module === "danmaku") {
+    put("watch_id", DANMAKU_SRC);
+    put("q", $("danmaku-query") && $("danmaku-query").value);
+    const start = +(($("danmaku-time-start") && $("danmaku-time-start").value) || 0);
+    const end = +(($("danmaku-time-end") && $("danmaku-time-end").value) || 0);
+    if (start > 0) put("min_video_time_ms", Math.round(start * 1000));
+    if (end > 0) put("max_video_time_ms", Math.round(end * 1000));
+    put("sort", $("danmaku-sort") && $("danmaku-sort").value);
+  }
+  return params;
+}
+
+const _reportLabels = {
+  monitors: "监控列表",
+  contents: "作品数据",
+  "comment-watches": "评论监控",
+  comments: "评论数据",
+  "danmaku-watches": "弹幕监控",
+  danmaku: "弹幕数据",
+};
+const _reportCountIds = {
+  monitors: "mon-filter-count",
+  contents: "content-filter-count",
+  "comment-watches": "watch-filter-count",
+  comments: "comment-filter-count",
+  "danmaku-watches": "danmaku-watch-filter-count",
+  danmaku: "danmaku-filter-count",
+};
+function _lockExportGroup(group, active) {
+  if (!group) return () => {};
+  const siblings = [...group.querySelectorAll("button")].filter(button => button !== active);
+  const states = siblings.map(button => button.disabled);
+  siblings.forEach(button => { button.disabled = true; });
+  group.classList.add("is-busy");
+  group.setAttribute("aria-busy", "true");
+  return () => {
+    siblings.forEach((button, index) => { button.disabled = states[index]; });
+    group.classList.remove("is-busy");
+    group.removeAttribute("aria-busy");
+  };
+}
+
+async function exportModuleReport(module, full = false, explicitBtn = null) {
+  const paths = {
+    monitors: "/api/reports/monitors.xlsx",
+    contents: "/api/reports/contents.xlsx",
+    "comment-watches": "/api/reports/comment-watches.xlsx",
+    comments: "/api/reports/comments.xlsx",
+    "danmaku-watches": "/api/reports/danmaku-watches.xlsx",
+    danmaku: "/api/reports/danmaku.xlsx",
+  };
+  const path = paths[module];
+  if (!path) return;
+  const btn = explicitBtn || evtBtn();
+  const group = btn && btn.closest(".export-actions");
+  const unlock = _lockExportGroup(group, btn);
+  const label = _reportLabels[module] || "模块数据";
+  const params = _moduleReportParams(module, full);
+  await withBusy(btn, full ? "全量导出" : "筛选导出", async () => {
+    try {
+      await _downloadExcelReport(
+        path + "?" + params.toString(),
+        "creatorhub_" + module + "_report.xlsx",
+      );
+      const count = $( _reportCountIds[module] )?.textContent?.trim();
+      const scope = full ? "全量" : "筛选结果";
+      toast(`${label} ${scope} Excel 已导出${!full && count ? `（${count}）` : ""}`, "ok");
+    } catch (e) {
+      toast("报告导出失败: " + e.message, "err");
+    } finally {
+      unlock();
+    }
+  });
+}
+
 let PLATFORM = "douyin";
 const PF_NAME = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号" };
 let CURRENT_TAB = "overview";
@@ -3289,6 +3465,9 @@ async function refreshDanmaku(resetPage = false) {
     return refreshDanmaku();
   }
   const rows = Array.isArray(meta.items) ? meta.items : [];
+  if ($("danmaku-filter-count")) {
+    $("danmaku-filter-count").textContent = `显示 ${rows.length} / ${Number(meta.total || rows.length)}`;
+  }
   $("danmaku-table").innerHTML = rows.map(r => '<tr>' +
     '<td class="wrap" style="max-width:360px">' + esc(r.text || "") + "</td>" +
     '<td class="mut" title="' + esc(r.user_id || "") + '">' +
