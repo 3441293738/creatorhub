@@ -838,15 +838,20 @@
 
   /* ── 监控分组 / 标签 / 别名 ── */
   .manage-toolbar {
-    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-    margin:-4px 0 12px; padding:10px;
+    display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); align-items:center; gap:8px;
+    margin:-4px 0 12px; padding:12px;
     background:var(--bg); border:1px solid var(--line-soft); border-radius:var(--r-sm);
   }
-  .manage-toolbar .toolbar-spacer { flex:1 1 12px; }
-  .manage-toolbar input, .manage-toolbar select, .manage-toolbar .cs {
-    width:auto; min-width:132px; max-width:190px; flex:0 1 190px;
+  .manage-toolbar::before {
+    content:"筛选条件"; grid-column:1 / -1; display:flex; align-items:center;
+    min-height:16px; padding-bottom:1px; color:var(--mut-2); font-size:11px; font-weight:650;
+    letter-spacing:.08em;
   }
-  .manage-toolbar input[type="search"] { min-width:190px; }
+  .manage-toolbar .toolbar-spacer { display:none; }
+  .manage-toolbar input, .manage-toolbar select, .manage-toolbar .cs {
+    width:100%; min-width:0; max-width:none; flex:none;
+  }
+  .manage-toolbar input[type="search"] { min-width:0; }
   .filter-count {
     display:inline-flex; align-items:center; gap:6px; min-height:26px; padding:4px 9px;
     border:1px solid var(--line-soft); border-radius:999px; background:var(--surface-2);
@@ -857,6 +862,16 @@
     background:var(--acc); box-shadow:0 0 0 3px var(--acc-soft);
   }
   .filter-count:empty { display:none; }
+  .toolbar-actions {
+    grid-column:1 / -1; display:flex; align-items:center; flex-wrap:wrap; gap:8px;
+    min-width:0; padding-top:10px; margin-top:2px; border-top:1px solid var(--line-soft);
+  }
+  .toolbar-actions-label { color:var(--mut-2); font-size:11px; font-weight:650; white-space:nowrap; }
+  .toolbar-actions .export-actions { margin-left:0; }
+  .toolbar-actions > button { margin:0; }
+  .toolbar-actions > span[id$="selbar"] {
+    display:inline-flex; align-items:center; flex-wrap:wrap; gap:8px;
+  }
   .export-actions {
     display:inline-flex; align-items:center; gap:3px; min-height:34px; padding:3px;
     border:1px solid var(--line); border-radius:10px; background:var(--surface-2);
@@ -1165,6 +1180,7 @@
     .card-head { flex-wrap:wrap; align-items:flex-start; }
     .card-head .right { width:100%; margin-left:41px; }
     .card-head .right > .cs, .card-head .right > select { width:100%!important; max-width:none!important; }
+    .manage-toolbar { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .manage-toolbar .export-actions { margin-left:0; }
     .row { flex-wrap:wrap; align-items:stretch; }
     .row > * { min-width:0; }
@@ -1196,7 +1212,10 @@
     .card-head .right { margin-left:0; }
     .row > input, .row > textarea, .row > select, .row > .cs, .row > .dt { flex:1 1 100%!important; max-width:none!important; }
     .row > button { min-height:40px; }
+    .manage-toolbar { grid-template-columns:1fr; }
     .manage-toolbar input, .manage-toolbar select, .manage-toolbar .cs { flex:1 1 100%; }
+    .toolbar-actions { align-items:stretch; }
+    .toolbar-actions-label { display:none; }
     .manage-toolbar .export-actions { width:100%; min-height:42px; }
     .export-caption { flex:1; padding-left:8px; }
     button.export-btn { flex:1; min-height:34px; }
@@ -1865,7 +1884,7 @@
       <select id="mon-group" aria-label="按分组筛选监控" onchange="onMonitorFilter()"><option value="">全部分组</option></select>
       <select id="mon-tag" aria-label="按标签筛选监控" onchange="onMonitorFilter()"><option value="">全部标签</option></select>
       <span class="filter-count" id="mon-filter-count" role="status" aria-live="polite"></span>
-      <span class="toolbar-spacer"></span> <div class="export-actions" role="group" aria-label="监控列表 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('monitors', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出监控列表筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('monitors', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出监控列表全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div>
+      <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="监控列表 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('monitors', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出监控列表筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('monitors', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出监控列表全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div></div>
     </div>
     <div class="table-wrap"><table aria-label="作品监控列表"><thead><tr>
       <th>用户</th><th>分组 / 标签</th><th>作品数</th><th>间隔</th><th>下载设置</th><th>上次扫描</th><th>状态</th><th></th>
@@ -1899,14 +1918,15 @@
         <option value="likes_desc">点赞最多</option><option value="comments_desc">评论最多</option>
       </select>
       <span class="filter-count" id="content-filter-count" role="status" aria-live="polite"></span>
-      <span class="toolbar-spacer"></span>
-      <div class="export-actions" role="group" aria-label="作品数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('contents', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出作品数据筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('contents', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出作品数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div>
-      <button class="ghost sm" id="content-selall-btn" onclick="contentSelAllToggle()">全选</button>
-      <span id="content-selbar" style="display:none;align-items:center;gap:8px">
-        <span class="mut" id="content-selcount">已选 0</span>
-        <button class="ghost sm" onclick="contentSelClear()">取消</button>
-        <button class="sm danger" onclick="contentBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
-      </span>
+      <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
+        <div class="export-actions" role="group" aria-label="作品数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('contents', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出作品数据筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('contents', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出作品数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div>
+        <button class="ghost sm" id="content-selall-btn" onclick="contentSelAllToggle()">全选</button>
+        <span id="content-selbar" style="display:none;align-items:center;gap:8px">
+          <span class="mut" id="content-selcount">已选 0</span>
+          <button class="ghost sm" onclick="contentSelClear()">取消</button>
+          <button class="sm danger" onclick="contentBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
+        </span>
+      </div>
     </div>
     <div class="table-wrap" id="content-table-wrap"><table class="content-record-table" aria-label="最新作品与下载状态">
       <colgroup>
@@ -2007,11 +2027,11 @@
         <h2>评论监控列表</h2>
       </div>
       <div class="manage-toolbar">
-        <input type="search" id="watch-search" placeholder="搜索对象或别名" aria-label="搜索评论监控" oninput="onWatchFilter()">
-        <select id="watch-group" aria-label="按分组筛选评论监控" onchange="onWatchFilter()"><option value="">全部分组</option></select>
-        <select id="watch-tag" aria-label="按标签筛选评论监控" onchange="onWatchFilter()"><option value="">全部标签</option></select>
-        <span class="filter-count" id="watch-filter-count" role="status" aria-live="polite"></span>
-        <span class="toolbar-spacer"></span> <div class="export-actions" role="group" aria-label="评论监控 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('comment-watches', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出评论监控筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('comment-watches', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出评论监控全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div>
+      <input type="search" id="watch-search" placeholder="搜索对象或别名" aria-label="搜索评论监控" oninput="onWatchFilter()">
+      <select id="watch-group" aria-label="按分组筛选评论监控" onchange="onWatchFilter()"><option value="">全部分组</option></select>
+      <select id="watch-tag" aria-label="按标签筛选评论监控" onchange="onWatchFilter()"><option value="">全部标签</option></select>
+      <span class="filter-count" id="watch-filter-count" role="status" aria-live="polite"></span>
+      <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="评论监控 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('comment-watches', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出评论监控筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('comment-watches', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出评论监控全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div></div>
       </div>
       <div class="table-wrap"><table aria-label="评论监控列表"><thead><tr>
         <th>对象</th><th>分组 / 标签</th><th>类型</th><th>来源</th><th>评论数</th><th>间隔</th><th>上次扫描</th><th>状态</th><th>操作</th>
@@ -2039,12 +2059,13 @@
           <option value="latest">最新评论</option><option value="oldest">最早评论</option><option value="likes_desc">点赞最多</option>
         </select>
         <span class="filter-count" id="comment-filter-count" role="status" aria-live="polite"></span>
-        <span class="toolbar-spacer"></span>
-        <div class="export-actions" role="group" aria-label="评论数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('comments', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出评论数据筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('comments', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出评论数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div>
-        <button class="ghost sm" id="comment-selall-btn" onclick="commentSelAllToggle()">全选</button>
-        <span class="mut" id="comment-selcount" style="display:none">已选 0</span>
-        <button class="sm danger" id="comment-batchbtn" style="display:none" onclick="commentBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
-        <button class="ghost sm danger" onclick="clearComments()"><svg><use href="#i-trash"/></svg>清空评论</button>
+        <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
+          <div class="export-actions" role="group" aria-label="评论数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('comments', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出评论数据筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('comments', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出评论数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div>
+          <button class="ghost sm" id="comment-selall-btn" onclick="commentSelAllToggle()">全选</button>
+          <span class="mut" id="comment-selcount" style="display:none">已选 0</span>
+          <button class="sm danger" id="comment-batchbtn" style="display:none" onclick="commentBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
+          <button class="ghost sm danger" onclick="clearComments()"><svg><use href="#i-trash"/></svg>清空评论</button>
+        </div>
     </div>
     <div class="table-wrap"><table aria-label="已抓取评论列表"><thead><tr>
       <th style="width:30px"><input type="checkbox" id="comment-selall" onchange="commentToggleAll(this.checked)" aria-label="全选"></th>
@@ -2148,7 +2169,7 @@
         <select id="danmaku-watch-group" onchange="renderDanmakuWatchRows()"><option value="">全部分组</option></select>
         <select id="danmaku-watch-tag" onchange="renderDanmakuWatchRows()"><option value="">全部标签</option></select>
         <span class="filter-count" id="danmaku-watch-filter-count"></span>
-        <span class="toolbar-spacer"></span> <div class="export-actions" role="group" aria-label="弹幕监控 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('danmaku-watches', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出弹幕监控筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('danmaku-watches', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出弹幕监控全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div>
+        <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="弹幕监控 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('danmaku-watches', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出弹幕监控筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('danmaku-watches', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出弹幕监控全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div></div>
       </div>
       <div class="table-wrap"><table aria-label="弹幕监控列表"><thead><tr>
         <th>对象</th><th>类型</th><th>来源</th><th>弹幕数</th><th>间隔</th><th>上次扫描</th><th>状态</th><th>操作</th>
@@ -2163,16 +2184,17 @@
       <div class="manage-toolbar">
         <select id="danmaku-src" onchange="onDanmakuSrc()"><option value="">全部来源</option></select>
         <input id="danmaku-query" type="search" placeholder="筛选文本 / 用户 ID" aria-label="筛选弹幕文本或用户" oninput="refreshDanmaku(true)">
-        <input id="danmaku-time-start" type="number" min="0" step="0.1" placeholder="起点秒" aria-label="视频内起点秒" onchange="refreshDanmaku(true)" style="width:90px">
-        <input id="danmaku-time-end" type="number" min="0" step="0.1" placeholder="终点秒" aria-label="视频内终点秒" onchange="refreshDanmaku(true)" style="width:90px">
+        <input id="danmaku-time-start" type="number" min="0" step="0.1" placeholder="起点秒" aria-label="视频内起点秒" onchange="refreshDanmaku(true)">
+        <input id="danmaku-time-end" type="number" min="0" step="0.1" placeholder="终点秒" aria-label="视频内终点秒" onchange="refreshDanmaku(true)">
         <select id="danmaku-sort" onchange="refreshDanmaku(true)" aria-label="弹幕排序">
           <option value="video_asc">视频内时间正序</option><option value="video_desc">视频内时间倒序</option>
           <option value="captured_desc">最新采集</option><option value="captured_asc">最早采集</option>
         </select>
         <span class="filter-count" id="danmaku-filter-count" role="status" aria-live="polite"></span>
-        <span class="toolbar-spacer"></span>
-        <div class="export-actions" role="group" aria-label="弹幕数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('danmaku', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出弹幕数据筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('danmaku', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出弹幕数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div>
-        <button class="ghost sm danger" onclick="clearDanmaku()"><svg><use href="#i-trash"/></svg>清空弹幕</button>
+        <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
+          <div class="export-actions" role="group" aria-label="弹幕数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('danmaku', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出弹幕数据筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('danmaku', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出弹幕数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div>
+          <button class="ghost sm danger" onclick="clearDanmaku()"><svg><use href="#i-trash"/></svg>清空弹幕</button>
+        </div>
       </div>
       <div class="hint" style="margin:8px 0 10px">同一轮抓取的弹幕会共享采集批次时间；“视频内时间”表示弹幕在视频中的出现位置。</div>
       <div class="table-wrap"><table aria-label="已抓取弹幕列表"><thead><tr>
