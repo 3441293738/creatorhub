@@ -1834,11 +1834,26 @@
       <h2 id="content-title">最新作品 / 下载状态</h2>
     </div>
     <div class="manage-toolbar">
+      <input type="search" id="content-search" placeholder="搜索作品描述 / ID" aria-label="搜索作品" oninput="refreshContents(true)">
       <select id="content-group" onchange="onContentMetaFilter()" aria-label="按分组筛选作品"><option value="">全部分组</option></select>
       <select id="content-tag" onchange="onContentMetaFilter()" aria-label="按标签筛选作品"><option value="">全部标签</option></select>
       <select id="content-src" onchange="onContentSrc()" aria-label="按来源监控筛选">
         <option value="">全部来源</option>
       </select>
+      <select id="content-type" onchange="refreshContents(true)" aria-label="按作品类型筛选">
+        <option value="">全部类型</option><option value="video">视频</option><option value="images">图集 / 图文</option>
+      </select>
+      <select id="content-status" onchange="refreshContents(true)" aria-label="按下载状态筛选">
+        <option value="">全部状态</option><option value="pending">等待中</option><option value="downloading">下载中</option>
+        <option value="done">已下载</option><option value="failed">失败</option><option value="skipped">仅记录</option>
+      </select>
+      <input id="content-min-likes" type="number" min="0" step="1" placeholder="最低点赞" aria-label="最低点赞数" onchange="refreshContents(true)">
+      <input id="content-min-comments" type="number" min="0" step="1" placeholder="最低评论" aria-label="最低评论数" onchange="refreshContents(true)">
+      <select id="content-sort" onchange="refreshContents(true)" aria-label="作品排序">
+        <option value="create_desc">最新发布</option><option value="create_asc">最早发布</option>
+        <option value="likes_desc">点赞最多</option><option value="comments_desc">评论最多</option>
+      </select>
+      <span class="mut" id="content-filter-count" role="status" aria-live="polite"></span>
       <span class="toolbar-spacer"></span>
       <button class="ghost sm" id="content-selall-btn" onclick="contentSelAllToggle()">全选</button>
       <span id="content-selbar" style="display:none;align-items:center;gap:8px">
@@ -1857,8 +1872,26 @@
         <th><input type="checkbox" id="content-selall" onchange="contentToggleAll(this.checked)" aria-label="全选"></th>
         <th>封面</th><th>作品描述</th><th>类型</th><th>发布时间</th><th>数据</th><th>状态 / 操作</th><th>本地文件</th>
       </tr></thead><tbody id="content-table"></tbody>
-    </table></div>
+     </table></div>
     <div id="content-cards" class="xhs-grid" style="display:none"></div>
+    <div id="content-pager" class="danmaku-pager" hidden>
+      <div class="danmaku-pager-left">
+        <button id="content-first" class="ghost sm danmaku-page-icon" onclick="goContentPage(1)" title="第一页" aria-label="第一页"><svg aria-hidden="true"><use href="#i-first"/></svg></button>
+        <button id="content-prev" class="ghost sm" onclick="changeContentPage(-1)"><svg aria-hidden="true"><use href="#i-prev"/></svg>上一页</button>
+      </div>
+      <div class="danmaku-pager-center">
+        <span id="content-page-info" class="mut danmaku-page-info"></span>
+        <label class="danmaku-page-jump">跳至 <input id="content-page-input" type="number" min="1" step="1" inputmode="numeric" aria-label="跳转作品页码" onkeydown="handleContentPageInput(event)"> 页 <button class="ghost sm" onclick="jumpContentPage()">确定</button></label>
+      </div>
+      <div class="danmaku-pager-right">
+        <button id="content-next" class="ghost sm" onclick="changeContentPage(1)">下一页<svg aria-hidden="true"><use href="#i-next"/></svg></button>
+        <button id="content-last" class="ghost sm danmaku-page-icon" onclick="goContentPage(0)" title="最后一页" aria-label="最后一页"><svg aria-hidden="true"><use href="#i-last"/></svg></button>
+        <select id="content-page-size" class="ghost sm danmaku-page-size" onchange="setContentPageSize()" aria-label="每页作品数">
+          <option value="10" selected>每页 10 条</option><option value="20">每页 20 条</option>
+          <option value="50">每页 50 条</option><option value="100">每页 100 条</option><option value="200">每页 200 条</option>
+        </select>
+      </div>
+    </div>
   </div>
   </section>
 
@@ -1945,11 +1978,20 @@
       <h2>抓到的评论</h2>
     </div>
     <div class="manage-toolbar">
+        <input type="search" id="comment-query" placeholder="搜索评论 / 用户 / 作品 ID" aria-label="搜索评论内容" oninput="refreshComments(true)">
         <select id="comment-group" onchange="onCommentMetaFilter()" aria-label="按分组筛选评论"><option value="">全部分组</option></select>
         <select id="comment-tag" onchange="onCommentMetaFilter()" aria-label="按标签筛选评论"><option value="">全部标签</option></select>
         <select id="comment-src" onchange="onCommentSrc()" aria-label="按来源评论监控筛选">
           <option value="">全部来源</option>
         </select>
+        <select id="comment-type" onchange="refreshComments(true)" aria-label="按评论类型筛选">
+          <option value="">全部评论</option><option value="top">仅主评论</option><option value="reply">仅回复</option>
+        </select>
+        <input id="comment-min-likes" type="number" min="0" step="1" placeholder="最低点赞" aria-label="评论最低点赞数" onchange="refreshComments(true)">
+        <select id="comment-sort" onchange="refreshComments(true)" aria-label="评论排序">
+          <option value="latest">最新评论</option><option value="oldest">最早评论</option><option value="likes_desc">点赞最多</option>
+        </select>
+        <span class="mut" id="comment-filter-count" role="status" aria-live="polite"></span>
         <span class="toolbar-spacer"></span>
         <button class="ghost sm" id="comment-selall-btn" onclick="commentSelAllToggle()">全选</button>
         <span class="mut" id="comment-selcount" style="display:none">已选 0</span>
@@ -1960,6 +2002,24 @@
       <th style="width:30px"><input type="checkbox" id="comment-selall" onchange="commentToggleAll(this.checked)" aria-label="全选"></th>
       <th>评论</th><th>用户</th><th>赞</th><th>评论时间</th><th>操作</th>
     </tr></thead><tbody id="comment-table"></tbody></table></div>
+    <div id="comment-pager" class="danmaku-pager" hidden>
+      <div class="danmaku-pager-left">
+        <button id="comment-first" class="ghost sm danmaku-page-icon" onclick="goCommentPage(1)" title="第一页" aria-label="第一页"><svg aria-hidden="true"><use href="#i-first"/></svg></button>
+        <button id="comment-prev" class="ghost sm" onclick="changeCommentPage(-1)"><svg aria-hidden="true"><use href="#i-prev"/></svg>上一页</button>
+      </div>
+      <div class="danmaku-pager-center">
+        <span id="comment-page-info" class="mut danmaku-page-info"></span>
+        <label class="danmaku-page-jump">跳至 <input id="comment-page-input" type="number" min="1" step="1" inputmode="numeric" aria-label="跳转评论页码" onkeydown="handleCommentPageInput(event)"> 页 <button class="ghost sm" onclick="jumpCommentPage()">确定</button></label>
+      </div>
+      <div class="danmaku-pager-right">
+        <button id="comment-next" class="ghost sm" onclick="changeCommentPage(1)">下一页<svg aria-hidden="true"><use href="#i-next"/></svg></button>
+        <button id="comment-last" class="ghost sm danmaku-page-icon" onclick="goCommentPage(0)" title="最后一页" aria-label="最后一页"><svg aria-hidden="true"><use href="#i-last"/></svg></button>
+        <select id="comment-page-size" class="ghost sm danmaku-page-size" onchange="setCommentPageSize()" aria-label="每页评论数">
+          <option value="10" selected>每页 10 条</option><option value="20">每页 20 条</option>
+          <option value="50">每页 50 条</option><option value="100">每页 100 条</option><option value="200">每页 200 条</option>
+        </select>
+      </div>
+    </div>
   </div>
   </section>
 

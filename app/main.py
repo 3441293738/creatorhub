@@ -2571,13 +2571,38 @@ async def target_contents(tid: int):
 @app.get("/api/contents")
 async def all_contents(limit: int = 100, platform: str | None = None,
                        target_id: int | None = None, group_name: str = "",
-                       tag: str = ""):
+                       tag: str = "", q: str = "", media_type: str = "",
+                       download_status: str = "", min_like_count: int = 0,
+                       min_comment_count: int = 0, sort: str = "create_desc",
+                       page: int = 1, page_size: int = 10,
+                       paginate: bool = False):
+    """Return monitored works, optionally as a filtered paginated result.
+
+    The legacy list response remains the default for older callers.  The web
+    UI opts into the object response with ``paginate=true`` so it can show a
+    stable total while filters are applied in SQL rather than in the browser.
+    """
+    limit = max(1, min(limit, 1000))
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
     with get_session() as s:
-        q = select(ContentRecord)
+        stmt = select(ContentRecord)
         if platform:
-            q = q.where(ContentRecord.platform == platform)
+            stmt = stmt.where(ContentRecord.platform == platform)
         if target_id is not None:
-            q = q.where(ContentRecord.target_id == target_id)
+            stmt = stmt.where(ContentRecord.target_id == target_id)
+        text_query = q.strip()
+        if text_query:
+            stmt = stmt.where(or_(ContentRecord.desc.contains(text_query),
+                                  ContentRecord.aweme_id.contains(text_query)))
+        if media_type in ("video", "images"):
+            stmt = stmt.where(ContentRecord.media_type == media_type)
+        if download_status:
+            stmt = stmt.where(ContentRecord.download_status == download_status)
+        if min_like_count > 0:
+            stmt = stmt.where(ContentRecord.like_count >= min_like_count)
+        if min_comment_count > 0:
+            stmt = stmt.where(ContentRecord.comment_count >= min_comment_count)
         group_name, tag = _meta_text(group_name, 40), _meta_text(tag, 24)
         if group_name or tag:
             target_query = select(MonitorTarget)
@@ -2587,12 +2612,36 @@ async def all_contents(limit: int = 100, platform: str | None = None,
             eligible_ids = [t.id for t in targets if t.id is not None
                             and _meta_matches(t, group_name, tag)]
             if not eligible_ids:
-                return []
-            q = q.where(ContentRecord.target_id.in_(eligible_ids))
-        # 按作品发布时间倒序(回填时多条同批入库,用 id 排序会乱;create_time 才是真实时间序)
-        rows = s.exec(q.order_by(ContentRecord.create_time.desc(),
-                                 ContentRecord.id.desc()).limit(limit)).all()
-        return [_content_dict(r) for r in rows]
+                if not paginate:
+                    return []
+                return {"items": [], "total": 0, "page": page,
+                        "page_size": page_size, "pages": 1,
+                        "has_prev": page > 1, "has_next": False}
+            stmt = stmt.where(ContentRecord.target_id.in_(eligible_ids))
+
+        if sort == "create_asc":
+            ordering = (ContentRecord.create_time.asc(), ContentRecord.id.asc())
+        elif sort == "likes_desc":
+            ordering = (ContentRecord.like_count.desc(), ContentRecord.id.desc())
+        elif sort == "comments_desc":
+            ordering = (ContentRecord.comment_count.desc(), ContentRecord.id.desc())
+        else:
+            # 按作品发布时间倒序(回填时多条同批入库,用 id 排序会乱;create_time 才是真实时间序)
+            ordering = (ContentRecord.create_time.desc(), ContentRecord.id.desc())
+        if not paginate:
+            rows = s.exec(stmt.order_by(*ordering).limit(limit)).all()
+            return [_content_dict(r) for r in rows]
+
+        total = int(s.exec(select(func.count()).select_from(stmt.subquery())).one())
+        pages = max(1, (total + page_size - 1) // page_size)
+        rows = s.exec(stmt.order_by(*ordering)
+                      .offset((page - 1) * page_size)
+                      .limit(page_size)).all()
+        return {
+            "items": [_content_dict(r) for r in rows],
+            "total": total, "page": page, "page_size": page_size,
+            "pages": pages, "has_prev": page > 1, "has_next": page < pages,
+        }
 
 
 @app.get("/api/stats/series")
@@ -3054,15 +3103,33 @@ def _comment_dict(c: CommentRecord) -> dict:
 @app.get("/api/comments")
 async def list_comments(limit: int = 100, watch_id: int | None = None,
                         aweme_id: str | None = None, platform: str | None = None,
-                        group_name: str = "", tag: str = ""):
+                        group_name: str = "", tag: str = "", q: str = "",
+                        reply_type: str = "", min_like_count: int = 0,
+                        sort: str = "latest", page: int = 1,
+                        page_size: int = 10, paginate: bool = False):
+    """Return captured comments with optional SQL filters and pagination."""
+    limit = max(1, min(limit, 1000))
+    page = max(1, page)
+    page_size = max(1, min(page_size, 200))
     with get_session() as s:
-        q = select(CommentRecord)
+        stmt = select(CommentRecord)
         if platform is not None:
-            q = q.where(CommentRecord.platform == platform)
+            stmt = stmt.where(CommentRecord.platform == platform)
         if watch_id is not None:
-            q = q.where(CommentRecord.watch_id == watch_id)
+            stmt = stmt.where(CommentRecord.watch_id == watch_id)
         if aweme_id is not None:
-            q = q.where(CommentRecord.aweme_id == aweme_id)
+            stmt = stmt.where(CommentRecord.aweme_id == aweme_id)
+        text_query = q.strip()
+        if text_query:
+            stmt = stmt.where(or_(CommentRecord.text.contains(text_query),
+                                  CommentRecord.user_nickname.contains(text_query),
+                                  CommentRecord.aweme_id.contains(text_query)))
+        if reply_type == "top":
+            stmt = stmt.where(CommentRecord.reply_to == "")
+        elif reply_type == "reply":
+            stmt = stmt.where(CommentRecord.reply_to != "")
+        if min_like_count > 0:
+            stmt = stmt.where(CommentRecord.like_count >= min_like_count)
         group_name, tag = _meta_text(group_name, 40), _meta_text(tag, 24)
         if group_name or tag:
             watch_query = select(CommentWatch)
@@ -3072,10 +3139,32 @@ async def list_comments(limit: int = 100, watch_id: int | None = None,
             eligible_ids = [w.id for w in watches if w.id is not None
                             and _meta_matches(w, group_name, tag)]
             if not eligible_ids:
-                return []
-            q = q.where(CommentRecord.watch_id.in_(eligible_ids))
-        rows = s.exec(q.order_by(CommentRecord.id.desc()).limit(limit)).all()
-        return [_comment_dict(c) for c in rows]
+                if not paginate:
+                    return []
+                return {"items": [], "total": 0, "page": page,
+                        "page_size": page_size, "pages": 1,
+                        "has_prev": page > 1, "has_next": False}
+            stmt = stmt.where(CommentRecord.watch_id.in_(eligible_ids))
+        if sort == "oldest":
+            ordering = (CommentRecord.create_time.asc(), CommentRecord.id.asc())
+        elif sort == "likes_desc":
+            ordering = (CommentRecord.like_count.desc(), CommentRecord.id.desc())
+        else:
+            ordering = (CommentRecord.create_time.desc(), CommentRecord.id.desc())
+        if not paginate:
+            rows = s.exec(stmt.order_by(*ordering).limit(limit)).all()
+            return [_comment_dict(c) for c in rows]
+
+        total = int(s.exec(select(func.count()).select_from(stmt.subquery())).one())
+        pages = max(1, (total + page_size - 1) // page_size)
+        rows = s.exec(stmt.order_by(*ordering)
+                      .offset((page - 1) * page_size)
+                      .limit(page_size)).all()
+        return {
+            "items": [_comment_dict(c) for c in rows],
+            "total": total, "page": page, "page_size": page_size,
+            "pages": pages, "has_prev": page > 1, "has_next": page < pages,
+        }
 
 
 @app.delete("/api/comments/{cmid}")

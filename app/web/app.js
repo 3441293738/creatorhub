@@ -974,6 +974,8 @@ let CHANNELS = [], PUBLISH_TASKS = [];
 let CONTENT_SRC = "", CONTENT_GROUP = "", CONTENT_TAG = "";
 let COMMENT_SRC = "", COMMENT_GROUP = "", COMMENT_TAG = "";
 let DANMAKU_SRC = "";
+let CONTENT_PAGE = 1, CONTENT_PAGE_SIZE = 10, CONTENT_TOTAL = 0;
+let COMMENT_PAGE = 1, COMMENT_PAGE_SIZE = 10, COMMENT_TOTAL = 0;
 let DANMAKU_PAGE = 1, DANMAKU_PAGE_SIZE = 10, DANMAKU_TOTAL = 0;
 function parseTags(raw) {
   const seen = new Set();
@@ -1275,15 +1277,15 @@ function populateCommentSrc() {
   sel.value = COMMENT_SRC;
   if (sel._csSync) sel._csSync();
 }
-function onContentSrc() { CONTENT_SRC = $("content-src").value; selContent.clear(); refreshContents(); }
-function onCommentSrc() { COMMENT_SRC = $("comment-src").value; selComment.clear(); refreshComments(); }
+function onContentSrc() { CONTENT_SRC = $("content-src").value; selContent.clear(); refreshContents(true); }
+function onCommentSrc() { COMMENT_SRC = $("comment-src").value; selComment.clear(); refreshComments(true); }
 function onContentMetaFilter() {
   CONTENT_GROUP = $("content-group").value; CONTENT_TAG = $("content-tag").value;
-  selContent.clear(); refreshContents();
+  selContent.clear(); refreshContents(true);
 }
 function onCommentMetaFilter() {
   COMMENT_GROUP = $("comment-group").value; COMMENT_TAG = $("comment-tag").value;
-  selComment.clear(); refreshComments();
+  selComment.clear(); refreshComments(true);
 }
 function matchesMeta(item, groupName, tag) {
   return (!groupName || item.group_name === groupName) && (!tag || itemTags(item).includes(tag));
@@ -2851,14 +2853,90 @@ function noteCard(r) {
     </div>
   </div>`;
 }
-async function refreshContents() {
-  const params = new URLSearchParams({ limit: "60", platform: PLATFORM });
+function renderContentPager(meta) {
+  const pager = $("content-pager");
+  if (!pager) return;
+  const total = Math.max(0, Number(meta && meta.total || 0));
+  const pageSize = Math.max(1, Number(meta && meta.page_size || CONTENT_PAGE_SIZE));
+  const pages = Math.max(1, Number(meta && meta.pages || Math.ceil(total / pageSize) || 1));
+  const page = Math.max(1, Number(meta && meta.page || CONTENT_PAGE));
+  CONTENT_TOTAL = total;
+  CONTENT_PAGE_SIZE = pageSize;
+  CONTENT_PAGE = page;
+  if ($("content-page-size")) $("content-page-size").value = String(pageSize);
+  if ($("content-page-input")) {
+    $("content-page-input").value = String(page);
+    $("content-page-input").max = String(pages);
+  }
+  if ($("content-page-info")) $("content-page-info").textContent =
+    "第 " + page + " / " + pages + " 页 · 共 " + fmtNum(total) + " 条";
+  if ($("content-first")) $("content-first").disabled = page <= 1;
+  if ($("content-prev")) $("content-prev").disabled = page <= 1;
+  if ($("content-next")) $("content-next").disabled = page >= pages;
+  if ($("content-last")) $("content-last").disabled = page >= pages;
+  pager.hidden = total <= pageSize;
+}
+function contentPageCount() {
+  return Math.max(1, Math.ceil(CONTENT_TOTAL / CONTENT_PAGE_SIZE));
+}
+function goContentPage(page) {
+  const pages = contentPageCount();
+  const target = page <= 0 ? pages : Math.min(pages, Math.max(1, Math.round(Number(page) || 1)));
+  if (target === CONTENT_PAGE) return;
+  CONTENT_PAGE = target;
+  refreshContents();
+}
+function changeContentPage(delta) { goContentPage(CONTENT_PAGE + Number(delta || 0)); }
+function jumpContentPage() {
+  const input = $("content-page-input");
+  const value = input ? Number(input.value) : 1;
+  if (!Number.isFinite(value) || value < 1) {
+    if (input) { input.value = String(CONTENT_PAGE); input.focus(); }
+    return;
+  }
+  goContentPage(value);
+}
+function handleContentPageInput(event) {
+  if (event && event.key === "Enter") { event.preventDefault(); jumpContentPage(); }
+}
+function setContentPageSize() {
+  const value = +(($('content-page-size') && $('content-page-size').value) || 10);
+  CONTENT_PAGE_SIZE = [10, 20, 50, 100, 200].includes(value) ? value : 10;
+  CONTENT_PAGE = 1;
+  refreshContents();
+}
+async function refreshContents(resetPage = false) {
+  if (resetPage) CONTENT_PAGE = 1;
+  const params = new URLSearchParams({
+    platform: PLATFORM, page: String(CONTENT_PAGE),
+    page_size: String(CONTENT_PAGE_SIZE), paginate: "true",
+  });
   if (CONTENT_SRC) params.set("target_id", CONTENT_SRC);
   if (CONTENT_GROUP) params.set("group_name", CONTENT_GROUP);
   if (CONTENT_TAG) params.set("tag", CONTENT_TAG);
-  const rows = await api("/api/contents?" + params.toString());
+  const query = (($('content-search') && $('content-search').value) || "").trim();
+  const mediaType = ($('content-type') && $('content-type').value) || "";
+  const status = ($('content-status') && $('content-status').value) || "";
+  const minLikes = +(($('content-min-likes') && $('content-min-likes').value) || 0);
+  const minComments = +(($('content-min-comments') && $('content-min-comments').value) || 0);
+  if (query) params.set("q", query);
+  if (mediaType) params.set("media_type", mediaType);
+  if (status) params.set("download_status", status);
+  if (Number.isFinite(minLikes) && minLikes > 0) params.set("min_like_count", String(Math.floor(minLikes)));
+  if (Number.isFinite(minComments) && minComments > 0) params.set("min_comment_count", String(Math.floor(minComments)));
+  params.set("sort", ($('content-sort') && $('content-sort').value) || "create_desc");
+  const payload = await api("/api/contents?" + params.toString());
+  const meta = Array.isArray(payload)
+    ? { items: payload, total: payload.length, page: 1, page_size: CONTENT_PAGE_SIZE,
+        pages: Math.max(1, Math.ceil(payload.length / CONTENT_PAGE_SIZE)) }
+    : (payload || {});
+  const pages = Math.max(1, Number(meta.pages || 1));
+  if (CONTENT_PAGE > pages) { CONTENT_PAGE = pages; return refreshContents(); }
+  const rows = Array.isArray(meta.items) ? meta.items : [];
   CONTENTS = rows;
   $("stat-dl").textContent = rows.filter(r => r.download_status === "done").length;
+  if ($("content-filter-count")) $("content-filter-count").textContent =
+    `显示 ${rows.length} / ${Number(meta.total || rows.length)}`;
   const xhs = PLATFORM === "xhs";
   $("content-title").textContent = xhs ? "最新笔记 / 下载状态" : "最新作品 / 下载状态";
   $("content-table-wrap").style.display = xhs ? "none" : "";
@@ -2866,7 +2944,7 @@ async function refreshContents() {
   if (xhs) {
     $("content-cards").innerHTML = rows.map(noteCard).join("")
       || `<div class="empty" style="columns:1">${ic("i-image")}<div class="empty-t">暂无笔记</div></div>`;
-    pruneSel(selContent, rows.map(r => r.id)); updateContentSelBar();
+    updateContentSelBar(); renderContentPager(meta);
     return;
   }
   $("content-table").innerHTML = rows.map(r => {
@@ -2894,7 +2972,7 @@ async function refreshContents() {
       <td class="local-path-cell">${contentPathCell(r)}</td>
     </tr>`;
   }).join("") || empty(8, "暂无作品", "i-film", "监控目标有新作品时会自动抓取并下载,显示在这里");
-  pruneSel(selContent, rows.map(r => r.id)); updateContentSelBar();
+  updateContentSelBar(); renderContentPager(meta);
 }
 async function retryDl(id) {
   const btn = event.target.closest("button"); btn.disabled = true; btn.textContent = "重试中…";
@@ -3441,13 +3519,85 @@ async function scanWatch(id) {
 async function toggleWatch(id, on) { try { await api("/api/comment-watches/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: on }) }); refreshWatches(); } catch (e) { toast("操作失败:" + e.message, "err"); } }
 async function delWatch(id) { if (await uiConfirm({ title: "删除评论监控", message: "删除该评论监控及其抓到的评论?", okText: "删除", danger: true })) { try { await api("/api/comment-watches/" + id, { method: "DELETE" }); toast("已删除", "ok"); refreshWatches(); refreshComments(); } catch (e) { toast("删除失败:" + e.message, "err"); } } }
 
-async function refreshComments() {
-  const params = new URLSearchParams({ limit: "80", platform: PLATFORM });
+function renderCommentPager(meta) {
+  const pager = $("comment-pager");
+  if (!pager) return;
+  const total = Math.max(0, Number(meta && meta.total || 0));
+  const pageSize = Math.max(1, Number(meta && meta.page_size || COMMENT_PAGE_SIZE));
+  const pages = Math.max(1, Number(meta && meta.pages || Math.ceil(total / pageSize) || 1));
+  const page = Math.max(1, Number(meta && meta.page || COMMENT_PAGE));
+  COMMENT_TOTAL = total;
+  COMMENT_PAGE_SIZE = pageSize;
+  COMMENT_PAGE = page;
+  if ($("comment-page-size")) $("comment-page-size").value = String(pageSize);
+  if ($("comment-page-input")) {
+    $("comment-page-input").value = String(page);
+    $("comment-page-input").max = String(pages);
+  }
+  if ($("comment-page-info")) $("comment-page-info").textContent =
+    "第 " + page + " / " + pages + " 页 · 共 " + fmtNum(total) + " 条";
+  if ($("comment-first")) $("comment-first").disabled = page <= 1;
+  if ($("comment-prev")) $("comment-prev").disabled = page <= 1;
+  if ($("comment-next")) $("comment-next").disabled = page >= pages;
+  if ($("comment-last")) $("comment-last").disabled = page >= pages;
+  pager.hidden = total <= pageSize;
+}
+function commentPageCount() {
+  return Math.max(1, Math.ceil(COMMENT_TOTAL / COMMENT_PAGE_SIZE));
+}
+function goCommentPage(page) {
+  const pages = commentPageCount();
+  const target = page <= 0 ? pages : Math.min(pages, Math.max(1, Math.round(Number(page) || 1)));
+  if (target === COMMENT_PAGE) return;
+  COMMENT_PAGE = target;
+  refreshComments();
+}
+function changeCommentPage(delta) { goCommentPage(COMMENT_PAGE + Number(delta || 0)); }
+function jumpCommentPage() {
+  const input = $("comment-page-input");
+  const value = input ? Number(input.value) : 1;
+  if (!Number.isFinite(value) || value < 1) {
+    if (input) { input.value = String(COMMENT_PAGE); input.focus(); }
+    return;
+  }
+  goCommentPage(value);
+}
+function handleCommentPageInput(event) {
+  if (event && event.key === "Enter") { event.preventDefault(); jumpCommentPage(); }
+}
+function setCommentPageSize() {
+  const value = +(($('comment-page-size') && $('comment-page-size').value) || 10);
+  COMMENT_PAGE_SIZE = [10, 20, 50, 100, 200].includes(value) ? value : 10;
+  COMMENT_PAGE = 1;
+  refreshComments();
+}
+async function refreshComments(resetPage = false) {
+  if (resetPage) COMMENT_PAGE = 1;
+  const params = new URLSearchParams({
+    platform: PLATFORM, page: String(COMMENT_PAGE),
+    page_size: String(COMMENT_PAGE_SIZE), paginate: "true",
+  });
   if (COMMENT_SRC) params.set("watch_id", COMMENT_SRC);
   if (COMMENT_GROUP) params.set("group_name", COMMENT_GROUP);
   if (COMMENT_TAG) params.set("tag", COMMENT_TAG);
-  const rows = await api("/api/comments?" + params.toString());
+  const query = (($('comment-query') && $('comment-query').value) || "").trim();
+  const replyType = ($('comment-type') && $('comment-type').value) || "";
+  const minLikes = +(($('comment-min-likes') && $('comment-min-likes').value) || 0);
+  if (query) params.set("q", query);
+  if (replyType) params.set("reply_type", replyType);
+  if (Number.isFinite(minLikes) && minLikes > 0) params.set("min_like_count", String(Math.floor(minLikes)));
+  params.set("sort", ($('comment-sort') && $('comment-sort').value) || "latest");
+  const payload = await api("/api/comments?" + params.toString());
+  const meta = Array.isArray(payload)
+    ? { items: payload, total: payload.length, page: 1, page_size: COMMENT_PAGE_SIZE,
+        pages: Math.max(1, Math.ceil(payload.length / COMMENT_PAGE_SIZE)) }
+    : (payload || {});
+  const pages = Math.max(1, Number(meta.pages || 1));
+  if (COMMENT_PAGE > pages) { COMMENT_PAGE = pages; return refreshComments(); }
+  const rows = Array.isArray(meta.items) ? meta.items : [];
   $("stat-cmt").textContent = rows.length;
+  if ($("comment-filter-count")) $("comment-filter-count").textContent =
+    `显示 ${rows.length} / ${Number(meta.total || rows.length)}`;
   $("comment-table").innerHTML = rows.map(r => {
     const w = watchById(r.watch_id);
     const src = w ? sourceMeta(w) : "";
@@ -3460,7 +3610,7 @@ async function refreshComments() {
     <td class="acttd"><button class="ghost sm danger" onclick="delComment(${r.id})">${ic("i-trash")}删除</button></td>
   </tr>`;
   }).join("") || empty(6, "暂无评论", "i-msg", "添加评论监控后,抓到的新评论会显示在这里,并可推送通知");
-  pruneSel(selComment, rows.map(r => r.id)); updateCommentSelBar();
+  updateCommentSelBar(); renderCommentPager(meta);
 }
 async function delComment(id) {
   try { await api("/api/comments/" + id, { method: "DELETE" }); refreshComments(); }

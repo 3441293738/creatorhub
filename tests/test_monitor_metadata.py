@@ -109,6 +109,47 @@ class MonitorMetadataTests(unittest.TestCase):
         self.assertEqual([row["aweme_id"] for row in contents], ["a1"])
         self.assertEqual([row["comment_id"] for row in comments], ["c1"])
 
+    def test_content_and_comment_pagination_and_record_filters(self):
+        with db.get_session() as session:
+            target = MonitorTarget(platform="douyin", sec_uid="paged-target")
+            session.add(target)
+            session.commit()
+            session.refresh(target)
+            for index in range(3):
+                session.add(ContentRecord(
+                    platform="douyin", target_id=target.id,
+                    aweme_id=f"needle-{index}", desc=f"needle {index}",
+                    create_time=index + 1, like_count=index,
+                    media_type="images" if index == 0 else "video",
+                    download_status="done" if index == 2 else "failed",
+                ))
+            watch = CommentWatch(platform="douyin", aweme_id="paged-video")
+            session.add(watch)
+            session.commit()
+            session.refresh(watch)
+            for index in range(3):
+                session.add(CommentRecord(
+                    platform="douyin", watch_id=watch.id,
+                    aweme_id="paged-video", comment_id=f"paged-{index}",
+                    text=f"needle comment {index}", create_time=index + 1,
+                    like_count=index, reply_to="" if index != 1 else "parent",
+                ))
+            session.commit()
+
+        contents = asyncio.run(all_contents(
+            platform="douyin", q="needle", media_type="video",
+            sort="likes_desc", page=2, page_size=1, paginate=True,
+        ))
+        comments = asyncio.run(list_comments(
+            platform="douyin", q="needle", reply_type="top",
+            min_like_count=1, sort="oldest", page=1, page_size=1,
+            paginate=True,
+        ))
+        self.assertEqual((contents["total"], contents["pages"]), (2, 2))
+        self.assertEqual([row["aweme_id"] for row in contents["items"]], ["needle-1"])
+        self.assertEqual((comments["total"], comments["pages"]), (1, 1))
+        self.assertEqual([row["comment_id"] for row in comments["items"]], ["paged-2"])
+
 
 class MonitorMetadataMigrationTests(unittest.TestCase):
     def test_existing_tables_receive_metadata_columns(self):
