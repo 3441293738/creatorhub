@@ -570,6 +570,28 @@
   select { appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%238b94a3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 9px center; padding-right:30px; cursor:pointer; }
 
   .row { display:flex; gap:10px; align-items:center; }
+  .danmaku-pager {
+    display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);
+    align-items:center; gap:16px; margin-top:12px; padding:2px 0;
+  }
+  .danmaku-pager-left, .danmaku-pager-center, .danmaku-pager-right {
+    display:flex; align-items:center; gap:7px; min-width:0;
+  }
+  .danmaku-pager-right { justify-content:flex-end; }
+  .danmaku-pager button { white-space:nowrap; }
+  .danmaku-page-icon {
+    width:30px; height:30px; padding:0; flex:0 0 30px;
+  }
+  .danmaku-page-icon svg { width:15px; height:15px; }
+  .danmaku-page-info { white-space:nowrap; font-size:12px; }
+  .danmaku-page-jump {
+    display:inline-flex; align-items:center; gap:6px; color:var(--mut);
+    font-size:12px; white-space:nowrap;
+  }
+  .danmaku-page-jump input {
+    width:58px; padding:5px 7px; text-align:center; font-size:12px;
+  }
+  .danmaku-page-size { width:auto; min-width:128px; padding-top:6px; padding-bottom:6px; }
   .monitor-options { display:grid; grid-template-columns:minmax(190px,1.4fr) repeat(3,minmax(130px,1fr)); }
   .monitor-options select { width:100%; min-width:0; }
   .meta-fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
@@ -582,6 +604,11 @@
   @media(max-width:820px){ .monitor-options{grid-template-columns:1fr 1fr} }
   @media(max-width:820px){ .meta-fields{grid-template-columns:1fr 1fr} }
   @media(max-width:480px){ .monitor-options,.meta-fields{grid-template-columns:1fr} }
+  @media(max-width:760px) {
+    .danmaku-pager { grid-template-columns:1fr; gap:10px; }
+    .danmaku-pager-left, .danmaku-pager-center, .danmaku-pager-right { justify-content:center; }
+    .danmaku-pager-center { flex-wrap:wrap; }
+  }
   .row > * { flex:1; }
   .row > button { flex:0 0 auto; }
 
@@ -1185,6 +1212,8 @@
   <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></symbol>
   <symbol id="i-prev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></symbol>
   <symbol id="i-next" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></symbol>
+  <symbol id="i-first" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m11 18-6-6 6-6M19 18l-6-6 6-6"/></symbol>
+  <symbol id="i-last" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 18 6-6-6-6M13 18l6-6-6-6"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
   <symbol id="i-hash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></symbol>
   <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></symbol>
@@ -1222,6 +1251,7 @@
     <button class="navitem" data-tab="accounts" onclick="switchTab('accounts', true)"><svg><use href="#i-card"/></svg><span class="nav-label">账号</span><span class="nav-badge" id="tb-acc">0</span></button>
     <button class="navitem notsh-only" data-tab="monitors" onclick="switchTab('monitors', true)"><svg><use href="#i-target"/></svg><span class="nav-label">作品监控</span><span class="nav-badge" id="tb-mon">0</span></button>
     <button class="navitem notsh-only" data-tab="comments" onclick="switchTab('comments', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">评论监控</span><span class="nav-badge" id="tb-watch">0</span></button>
+    <button class="navitem dy-only" data-tab="danmaku" onclick="switchTab('danmaku', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">弹幕监控</span><span class="nav-badge" id="tb-danmaku">0</span></button>
     <div class="nav-sep">本账号</div>
     <button class="navitem" data-tab="hub" onclick="switchTab('hub', true)"><svg><use href="#i-user"/></svg><span class="nav-label">账号管理</span></button>
     <div class="nav-sep">工具</div>
@@ -1931,6 +1961,132 @@
       <th>评论</th><th>用户</th><th>赞</th><th>评论时间</th><th>操作</th>
     </tr></thead><tbody id="comment-table"></tbody></table></div>
   </div>
+  </section>
+
+  <section data-panel="danmaku" class="dy-only">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-msg"/></svg></span>
+        <h2>添加弹幕监控 <span class="sub">监控视频内时间点弹幕，不是评论区评论</span></h2>
+      </div>
+      <div class="hint" style="margin-bottom:14px">
+        自己的视频选择「创作中心」并绑定创作者账号；别人的公开视频选择「播放页」。首次扫描会建立历史基线，后续只推送新增弹幕。
+      </div>
+      <div class="stack">
+        <div>
+          <label class="field" for="d-w-url" id="d-w-url-label">视频链接 / 账号主页 / aweme_id</label>
+          <input id="d-w-url" placeholder="作品链接=单条视频；主页链接=账号近期作品">
+        </div>
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="d-w-kind">监控对象</label><select id="d-w-kind" onchange="applyDanmakuForm()">
+            <option value="auto">自动识别</option><option value="video">单条视频</option><option value="user">账号近期作品</option>
+          </select></div>
+          <div class="form-field"><label for="d-w-mode">弹幕来源</label><select id="d-w-mode" onchange="applyDanmakuForm()">
+            <option value="public">公开视频播放页</option><option value="creator">创作中心（自己的视频）</option>
+          </select></div>
+          <div class="form-field"><label for="d-w-acc" id="d-w-acc-label">播放页账号（可选）</label><select id="d-w-acc"></select></div>
+          <div class="form-field"><label for="d-w-interval">检查频率</label><select id="d-w-interval">
+            <option value="0" selected>跟随全局设置</option><option value="300">每 5 分钟</option><option value="600">每 10 分钟</option><option value="1800">每 30 分钟</option><option value="3600">每小时</option>
+          </select></div>
+        </div>
+        <div class="meta-fields">
+          <div><label class="field" for="d-w-alias">管理别名(可选)</label><input id="d-w-alias" maxlength="60" placeholder="如：新品视频弹幕"></div>
+          <div><label class="field" for="d-w-group">分组(可选)</label><input id="d-w-group" data-meta-combo="group" placeholder="选择或输入新分组"></div>
+          <div><label class="field" for="d-w-tags">标签(可选)</label><input id="d-w-tags" data-meta-combo="tags" placeholder="选择或输入标签"></div>
+        </div>
+        <div class="form-grid cols-auto">
+          <div class="form-field" id="d-w-recent-wrap"><label for="d-w-recent">账号模式作品数</label><select id="d-w-recent">
+            <option value="0" selected>跟随全局设置</option><option value="3">最近 3 个作品</option><option value="5">最近 5 个作品</option><option value="10">最近 10 个作品</option><option value="20">最近 20 个作品</option>
+          </select></div>
+          <div class="form-field" id="d-w-days-wrap"><label for="d-w-days">作品时间范围</label><select id="d-w-days">
+            <option value="0" selected>跟随全局设置</option><option value="3">最近 3 天</option><option value="7">最近 7 天</option><option value="14">最近 14 天</option><option value="30">最近 30 天</option>
+          </select></div>
+          <div class="form-field"><label for="d-w-depth" id="d-w-depth-label">弹幕加载轮次</label><select id="d-w-depth">
+            <option value="0" selected>跟随全局设置</option><option value="3">浅层</option><option value="6">标准</option><option value="12">深度</option><option value="20">最大</option>
+          </select></div>
+        </div>
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="d-w-time-start">视频内起点(秒)</label><input id="d-w-time-start" type="number" min="0" max="86400" step="0.1" value="0" placeholder="0=从头"></div>
+          <div class="form-field"><label for="d-w-time-end">视频内终点(秒)</label><input id="d-w-time-end" type="number" min="0" max="86400" step="0.1" value="0" placeholder="0=到结尾"></div>
+          <div class="form-field" id="d-w-probe-wrap"><label for="d-w-probe-step">时间轴扫描步长</label><select id="d-w-probe-step">
+            <option value="0" selected>跟随全局设置</option><option value="0.5">每 0.5 秒</option><option value="1">每 1 秒</option><option value="2">每 2 秒</option><option value="5">每 5 秒</option>
+          </select></div>
+          <div class="form-field"><label for="d-w-min-like">最少点赞数</label><input id="d-w-min-like" type="number" min="0" max="1000000" value="0" placeholder="0=不限"></div>
+        </div>
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="d-w-min-len">最短文本长度</label><input id="d-w-min-len" type="number" min="0" max="200" value="0" placeholder="0=不限"></div>
+          <div class="form-field"><label for="d-w-max-len">最长文本长度</label><input id="d-w-max-len" type="number" min="0" max="200" value="0" placeholder="0=不限"></div>
+          <div class="form-field"><label for="d-w-scan-cap">单轮入库上限</label><input id="d-w-scan-cap" type="number" min="0" max="100000" value="0" placeholder="0=跟随全局"></div>
+          <div class="form-field"><label for="d-w-total-cap">总保留上限</label><input id="d-w-total-cap" type="number" min="0" max="1000000" value="0" placeholder="0=跟随全局"></div>
+        </div>
+        <div class="meta-fields">
+          <div><label class="field" for="d-w-include">包含关键词(可选)</label><input id="d-w-include" placeholder="逗号分隔，命中任一项才保留"></div>
+          <div><label class="field" for="d-w-exclude">排除关键词(可选)</label><input id="d-w-exclude" placeholder="逗号分隔，命中任一项则丢弃"></div>
+        </div>
+        <div class="form-actions">
+          <span class="status-text" id="d-w-msg" role="status" aria-live="polite"></span>
+          <button onclick="addDanmakuWatch()"><svg><use href="#i-msg"/></svg>开始监控弹幕</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-list"/></svg></span>
+        <h2>弹幕监控列表</h2>
+      </div>
+      <div class="manage-toolbar">
+        <input type="search" id="danmaku-watch-search" placeholder="搜索对象或别名" aria-label="搜索弹幕监控" oninput="renderDanmakuWatchRows()">
+        <select id="danmaku-watch-group" onchange="renderDanmakuWatchRows()"><option value="">全部分组</option></select>
+        <select id="danmaku-watch-tag" onchange="renderDanmakuWatchRows()"><option value="">全部标签</option></select>
+        <span class="mut" id="danmaku-watch-filter-count"></span>
+      </div>
+      <div class="table-wrap"><table aria-label="弹幕监控列表"><thead><tr>
+        <th>对象</th><th>类型</th><th>来源</th><th>弹幕数</th><th>间隔</th><th>上次扫描</th><th>状态</th><th>操作</th>
+      </tr></thead><tbody id="danmaku-watch-table"></tbody></table></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-msg"/></svg></span>
+        <h2>抓到的弹幕</h2>
+      </div>
+      <div class="manage-toolbar">
+        <select id="danmaku-src" onchange="onDanmakuSrc()"><option value="">全部来源</option></select>
+        <input id="danmaku-query" type="search" placeholder="筛选文本 / 用户 ID" aria-label="筛选弹幕文本或用户" oninput="refreshDanmaku(true)">
+        <input id="danmaku-time-start" type="number" min="0" step="0.1" placeholder="起点秒" aria-label="视频内起点秒" onchange="refreshDanmaku(true)" style="width:90px">
+        <input id="danmaku-time-end" type="number" min="0" step="0.1" placeholder="终点秒" aria-label="视频内终点秒" onchange="refreshDanmaku(true)" style="width:90px">
+        <select id="danmaku-sort" onchange="refreshDanmaku(true)" aria-label="弹幕排序">
+          <option value="video_asc">视频内时间正序</option><option value="video_desc">视频内时间倒序</option>
+          <option value="captured_desc">最新采集</option><option value="captured_asc">最早采集</option>
+        </select>
+        <span class="toolbar-spacer"></span>
+        <button class="ghost sm danger" onclick="clearDanmaku()"><svg><use href="#i-trash"/></svg>清空弹幕</button>
+      </div>
+      <div class="hint" style="margin:8px 0 10px">同一轮抓取的弹幕会共享采集批次时间；“视频内时间”表示弹幕在视频中的出现位置。</div>
+      <div class="table-wrap"><table aria-label="已抓取弹幕列表"><thead><tr>
+        <th>弹幕</th><th>用户</th><th>视频内时间</th><th>来源</th><th>采集批次时间</th><th>操作</th>
+      </tr></thead><tbody id="danmaku-table"></tbody></table></div>
+      <div id="danmaku-pager" class="danmaku-pager" hidden>
+        <div class="danmaku-pager-left">
+          <button id="danmaku-first" class="ghost sm danmaku-page-icon" onclick="goDanmakuPage(1)" title="第一页" aria-label="第一页"><svg aria-hidden="true"><use href="#i-first"/></svg></button>
+          <button id="danmaku-prev" class="ghost sm" onclick="changeDanmakuPage(-1)"><svg aria-hidden="true"><use href="#i-prev"/></svg>上一页</button>
+        </div>
+        <div class="danmaku-pager-center">
+          <span id="danmaku-page-info" class="mut danmaku-page-info"></span>
+          <label class="danmaku-page-jump">跳至 <input id="danmaku-page-input" type="number" min="1" step="1" inputmode="numeric" aria-label="跳转页码" onkeydown="handleDanmakuPageInput(event)"> 页 <button class="ghost sm" onclick="jumpDanmakuPage()">确定</button></label>
+        </div>
+        <div class="danmaku-pager-right">
+          <button id="danmaku-next" class="ghost sm" onclick="changeDanmakuPage(1)">下一页<svg aria-hidden="true"><use href="#i-next"/></svg></button>
+          <button id="danmaku-last" class="ghost sm danmaku-page-icon" onclick="goDanmakuPage(0)" title="最后一页" aria-label="最后一页"><svg aria-hidden="true"><use href="#i-last"/></svg></button>
+          <select id="danmaku-page-size" class="ghost sm danmaku-page-size" onchange="setDanmakuPageSize()" aria-label="每页条数">
+            <option value="10" selected>每页 10 条</option><option value="20">每页 20 条</option>
+            <option value="50">每页 50 条</option><option value="100">每页 100 条</option>
+            <option value="200">每页 200 条</option>
+          </select>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- ───────── 账号管理(独立面板:本账号的作品/关注/粉丝/私信,数据按所选账号隔离) ───────── -->

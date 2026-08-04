@@ -12,9 +12,17 @@ engine:
   comment_recent_works: 5         # 监控评论时,只看每个目标最近 N 条作品
   comment_recent_days: 7          # 且仅限最近多少天内发布的作品
   comment_max_scrolls: 6          # 评论区翻页深度(滚动容器次数,越大扫得越深)
+  danmaku_recent_works: 5         # 弹幕监控账号模式默认扫描的近期作品数
+  danmaku_recent_days: 7          # 弹幕监控账号模式默认作品时间范围
+  danmaku_max_scrolls: 6          # 弹幕抓取默认翻页/加载轮次
+  danmaku_probe_step_seconds: 1.0 # 播放页按视频时间轴探测的步长(秒)
+  danmaku_max_probe_points: 120   # 单条视频最多探测的时间点数
+  danmaku_max_records_per_scan: 1000 # 单轮最多入库弹幕数,0=不限
+  danmaku_max_records_total: 0    # 每个监控最多保留记录数,0=不限
   account_check_interval_seconds: 1800   # 账号登录态定时体检间隔(秒,0=关闭)
   # 自有账号评论模式(创作中心)页面 URL —— 实验性,抖音改版/字段变了改这里
   creator_comment_url: https://creator.douyin.com/creator-micro/interaction/comment-management
+  creator_danmaku_url: https://creator.douyin.com/creator-micro/interaction/danmaku-management
   request_timeout_seconds: 20
   download_timeout_seconds: 120
   media_dir: ./data/media         # 下载文件落地目录

@@ -11,11 +11,13 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from .identity import Identity
 from .manager import BrowserManager
+from ..platforms.douyin.extract import danmaku_key
 
 POST_API = "aweme/v1/web/aweme/post"
 PROFILE_API = "aweme/v1/web/user/profile/other"
 SELF_PROFILE_API = "aweme/v1/web/user/profile/self"
 COMMENT_API = "aweme/v1/web/comment/list"
+DANMAKU_API = "aweme/v1/web/danmaku"
 # 与 login.py 的登录成功判据保持一致。资料接口改版时不能再只靠页面“登录”按钮
 # 判断登录态：按钮可能未渲染，或者被 AB 页面隐藏。
 _LOGIN_COOKIES = {"sessionid", "sessionid_ss", "sid_tt", "uid_tt", "sid_guard"}
@@ -266,6 +268,242 @@ async def fetch_comments(mgr: BrowserManager, identity: Identity, aweme_id: str,
     if not collected and not error:
         error = "未拦截到评论(可能未登录/评论区未加载/作品无评论)"
     new = [c for cid, c in collected.items() if cid not in known_cids]
+    return new, error
+
+
+def _dig_danmaku_list(data, depth: int = 0) -> list:
+    """从播放页/创作中心响应中递归提取弹幕数组。"""
+    if depth > 5:
+        return []
+    if isinstance(data, list):
+        rows = [x for x in data if isinstance(x, dict)]
+        if rows and any(any(k in x for k in (
+                 "danmaku_id", "barrage_id", "bullet_id", "content",
+                 "text", "danmaku_text", "time_point", "video_time", "offset_time"))
+                for x in rows):
+            return rows
+        for value in data:
+            found = _dig_danmaku_list(value, depth + 1)
+            if found:
+                return found
+        return []
+    if not isinstance(data, dict):
+        return []
+    for key in ("danmaku_list", "barrage_list", "bullet_list", "danmakus",
+                "barrages", "items", "list", "data"):
+        value = data.get(key)
+        found = _dig_danmaku_list(value, depth + 1)
+        if found:
+            return found
+    for value in data.values():
+        if isinstance(value, (dict, list)):
+            found = _dig_danmaku_list(value, depth + 1)
+            if found:
+                return found
+    return []
+
+
+_PROBE_DANMAKU_JS = """async (options) => {
+  const video = document.querySelector('video');
+  if (!video) {
+    window.scrollBy(0, 800);
+    return { ok: false, duration: 0 };
+  }
+  const cfg = (options && typeof options === 'object') ? options : {};
+  try { await video.play(); } catch (_) {}
+  await new Promise(resolve => setTimeout(resolve, 180));
+  const durationHint = Number(cfg.duration || 0);
+  const duration = Number.isFinite(video.duration) && video.duration > 0
+    ? video.duration : durationHint;
+  const start = Math.max(0, Number(cfg.start_ms || 0) / 1000);
+  const requestedEnd = Number(cfg.end_ms || 0) / 1000;
+  const end = Math.max(start, Math.min(duration || requestedEnd || start, requestedEnd > 0 ? requestedEnd : (duration || start)));
+  const step = Math.max(0.25, Number(cfg.step_seconds || 1));
+  const maxPoints = Math.max(1, Number(cfg.max_points || 120));
+  const span = Math.max(0, end - start);
+  const actualStep = span > 0 ? Math.max(step, span / Math.max(1, maxPoints - 1)) : step;
+  const points = [];
+  if (span <= 0) {
+    points.push(start);
+  } else {
+    for (let point = start; point <= end + 0.01 && points.length < maxPoints; point += actualStep) {
+      points.push(Math.min(end, point));
+    }
+    if (points[points.length - 1] < end - 0.01 && points.length < maxPoints) points.push(end);
+  }
+  try { await video.play(); } catch (_) {}
+  for (const point of points) {
+    try {
+      if (duration > 0) video.currentTime = Math.max(0, Math.min(duration - .05, point));
+      video.dispatchEvent(new Event('timeupdate'));
+    } catch (_) {}
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  try { video.pause(); } catch (_) {}
+  return { ok: true, duration, points: points.length, start, end };
+}"""
+
+
+def _is_danmaku_url(url: str, creator: bool = False) -> bool:
+    low = (url or "").lower()
+    if creator and "creator.douyin.com" not in low:
+        return False
+    return (DANMAKU_API in low or "/danmaku/" in low
+            or "danmaku/get" in low or "barrage" in low)
+
+
+def _danmaku_position_ms(row: dict) -> int:
+    for key in ("video_time_ms", "position_ms", "time_ms", "offset_time",
+                "offsetTime", "video_offset"):
+        value = row.get(key)
+        if value not in (None, ""):
+            try:
+                return max(0, int(float(value)))
+            except (TypeError, ValueError):
+                pass
+    for key in ("time_point", "video_time", "timepoint", "position"):
+        value = row.get(key)
+        if value not in (None, ""):
+            try:
+                return max(0, int(float(value) * 1000))
+            except (TypeError, ValueError):
+                pass
+    return 0
+
+
+async def fetch_danmaku(mgr: BrowserManager, identity: Identity, aweme_id: str,
+                        known_ids: Set[str], duration: int = 0,
+                        max_rounds: int = 4, settle_ms: int = 1800,
+                        block_media: bool = False, start_ms: int = 0,
+                        end_ms: int = 0, step_seconds: float = 1.0,
+                        max_points: int = 120, max_items: int = 0
+                        ) -> Tuple[List[dict], str]:
+    """打开公开视频页，拦截播放器弹幕接口并按视频时间点收集弹幕。"""
+    collected: Dict[str, dict] = {}
+    error = ""
+    page = await mgr.new_page(identity, block_media)
+
+    async def on_response(resp):
+        if not _is_danmaku_url(resp.url):
+            return
+        try:
+            data = await resp.json()
+        except Exception:
+            return
+        for row in _dig_danmaku_list(data):
+            key = danmaku_key(row)
+            if key:
+                collected[key] = row
+
+    page.on("response", on_response)
+    try:
+        await page.goto(f"https://www.douyin.com/video/{aweme_id}",
+                        wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(settle_ms)
+        stagnant = 0
+        attempts = max(1, min(max_rounds, 2 if step_seconds > 0 else 8))
+        for _ in range(attempts):
+            before = len(collected)
+            try:
+                await page.evaluate(_PROBE_DANMAKU_JS, {
+                    "duration": duration, "start_ms": max(0, start_ms),
+                    "end_ms": max(0, end_ms),
+                    "step_seconds": max(0.25, float(step_seconds or 1)),
+                    "max_points": max(1, int(max_points or 120)),
+                })
+            except Exception:
+                pass
+            await page.wait_for_timeout(settle_ms)
+            if len(collected) == before:
+                stagnant += 1
+                if stagnant >= 2:
+                    break
+            else:
+                stagnant = 0
+            if step_seconds > 0 and collected:
+                break
+    except Exception as e:
+        error = f"打开作品页失败: {e!r}"
+    finally:
+        try:
+            await page.close()
+        except Exception:
+            pass
+
+    if not collected and not error:
+        error = "未拦截到视频弹幕(可能未开启弹幕/页面未加载/接口已改版)"
+    new = [row for key, row in collected.items() if key not in known_ids]
+    new.sort(key=lambda row: (_danmaku_position_ms(row), danmaku_key(row)))
+    if max_items > 0:
+        new = new[:max_items]
+    return new, error
+
+
+async def fetch_creator_danmaku(mgr: BrowserManager, identity: Identity,
+                                known_ids: Set[str], page_url: str,
+                                aweme_id: str = "", max_scrolls: int = 8,
+                                settle_ms: int = 1600,
+                                block_media: bool = True, max_items: int = 0
+                                ) -> Tuple[List[dict], str]:
+    """打开创作中心弹幕管理页，拦截弹幕列表接口。
+
+    创作中心页面/接口属于实验性网页能力，页面地址和字段变化集中在此处适配。
+    aweme_id 非空时只保留目标作品；为空时返回账号范围内的弹幕。
+    """
+    collected: Dict[str, dict] = {}
+    error = ""
+    page = await mgr.new_page(identity, block_media)
+
+    async def on_response(resp):
+        if not _is_danmaku_url(resp.url, creator=True):
+            return
+        try:
+            data = await resp.json()
+        except Exception:
+            return
+        for row in _dig_danmaku_list(data):
+            if max_items > 0 and len(collected) >= max_items:
+                break
+            row_aweme = str(row.get("aweme_id") or row.get("item_id")
+                            or row.get("group_id") or row.get("object_id") or "")
+            if aweme_id and row_aweme and row_aweme != str(aweme_id):
+                continue
+            key = danmaku_key(row)
+            if key:
+                collected[key] = row
+
+    page.on("response", on_response)
+    try:
+        await page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(settle_ms)
+        if "/login" in page.url or "passport" in page.url:
+            error = "创作者登录态已失效,请重新创作者登录"
+        else:
+            stagnant = 0
+            for _ in range(max(1, min(max_scrolls, 20))):
+                before = len(collected)
+                try:
+                    await page.evaluate("() => window.scrollBy(0, document.body.scrollHeight)")
+                except Exception:
+                    pass
+                await page.wait_for_timeout(settle_ms)
+                if len(collected) == before:
+                    stagnant += 1
+                    if stagnant >= 2:
+                        break
+                else:
+                    stagnant = 0
+            if not collected:
+                error = error or "未拦截到创作中心弹幕(页面/接口可能已改版)"
+    except Exception as e:
+        error = f"打开创作中心弹幕页失败: {e!r}"
+    finally:
+        try:
+            await page.close()
+        except Exception:
+            pass
+
+    new = [row for key, row in collected.items() if key not in known_ids]
     return new, error
 
 

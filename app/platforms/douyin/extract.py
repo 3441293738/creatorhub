@@ -1,6 +1,8 @@
 """从抖音作品 JSON 提取可下载媒体。对应逆向 engine.ContentChecker.processVideo 的解析部分。"""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -138,6 +140,96 @@ def parse_comment(raw: dict) -> Optional[dict]:
         "like_count": int(raw.get("digg_count") or 0),
         "create_time": int(raw.get("create_time") or 0),
         "reply_to": str(raw.get("reply_id") or "") if raw.get("reply_id") not in (None, "0") else "",
+    }
+
+
+def _first_value(d: dict, *keys, default=None):
+    for key in keys:
+        value = d.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _number(value, default=0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_bool(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "blocked"}
+    return bool(value)
+
+
+def danmaku_key(raw: dict) -> str:
+    """返回稳定弹幕主键，兼容播放页/创作中心的不同字段名。"""
+    value = _first_value(raw, "danmaku_id", "barrage_id", "bullet_id",
+                         "id", "cid", "comment_id")
+    if value not in (None, ""):
+        return str(value)
+    stable = {
+        "text": _first_value(raw, "content", "text", "danmaku_text", "body", default=""),
+        "user": str(_first_value(raw, "user_id", "uid", default="")),
+        "time": str(_first_value(raw, "video_time_ms", "offset_time", "time_point", "video_time",
+                                 "timepoint", "position", default="")),
+    }
+    return "hash:" + hashlib.sha1(
+        json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def parse_danmaku(raw: dict, default_aweme_id: str = "") -> Optional[dict]:
+    """解析短视频弹幕 JSON，返回与数据库字段对应的规范化字典。"""
+    if not isinstance(raw, dict):
+        return None
+    text = str(_first_value(raw, "content", "text", "danmaku_text", "body",
+                            default="") or "").strip()
+    if not text:
+        return None
+    did = danmaku_key(raw)
+    user = (raw.get("user") or raw.get("user_info") or raw.get("author")
+            or raw.get("commenter") or {})
+    if not isinstance(user, dict):
+        user = {}
+    user_id = str(_first_value(raw, "user_id", "uid", "user_uid", default="") or
+                  _first_value(user, "uid", "user_id", "sec_uid", default="") or "")
+    nickname = str(_first_value(raw, "user_nickname", "nickname", "user_name",
+                               default="") or
+                   _first_value(user, "nickname", "name", "user_name", default="") or "")
+
+    # 播放页当前返回 offset_time(毫秒),不是 time_point(秒)。保留两套字段兼容旧接口。
+    ms_value = _first_value(raw, "video_time_ms", "position_ms", "time_ms",
+                            "offset_time", "offsetTime", "video_offset")
+    if ms_value not in (None, ""):
+        video_time_ms = int(max(0, _number(ms_value)))
+    else:
+        sec_value = _first_value(raw, "time_point", "video_time", "timepoint",
+                                 "position", "start_time", "startTime", default=0)
+        video_time_ms = int(max(0, _number(sec_value) * 1000))
+
+    create_value = _first_value(raw, "create_time", "createTime", "send_time",
+                                "timestamp", "server_time", default=0)
+    create_time = int(max(0, _number(create_value)))
+    if create_time > 100_000_000_000:
+        create_time //= 1000
+    aweme_id = str(_first_value(raw, "aweme_id", "item_id", "group_id", "object_id",
+                                default=default_aweme_id) or default_aweme_id)
+    return {
+        "aweme_id": aweme_id,
+        "danmaku_id": did,
+        "text": text,
+        "user_id": user_id,
+        "user_nickname": nickname,
+        "video_time_ms": video_time_ms,
+        "create_time": create_time,
+        "like_count": int(max(0, _number(_first_value(
+            raw, "digg_count", "like_count", "likes", default=0)))),
+        "is_blocked": _as_bool(_first_value(
+            raw, "is_blocked", "blocked", "is_block", default=False)),
+        "raw_json": json.dumps(raw, ensure_ascii=False, separators=(",", ":")),
     }
 
 

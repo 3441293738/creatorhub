@@ -577,6 +577,9 @@ const PAGE_META = {
   comments: {
     title: "评论监控", desc: "订阅作品或账号评论，按来源、分组和标签筛选。"
   },
+  danmaku: {
+    title: "弹幕监控", desc: "监控短视频播放器内的弹幕，保留每条弹幕在视频中的时间点。"
+  },
   hub: {
     title: "本账号管理", desc: "同步自己的作品、关系、私信与账号数据。"
   },
@@ -613,18 +616,21 @@ function switchPlatform(pf) {
   PLATFORM = pf;
   CONTENT_SRC = CONTENT_GROUP = CONTENT_TAG = "";
   COMMENT_SRC = COMMENT_GROUP = COMMENT_TAG = "";
+  DANMAKU_SRC = "";
+  DANMAKU_PAGE = 1;
   if (OPEN_META_COMBO) OPEN_META_COMBO.close();
-  ["t-group", "t-tags", "w-group", "w-tags"].forEach(id => setMetaValue(id, ""));
-  ["mon-search", "watch-search"].forEach(id => { if ($(id)) $(id).value = ""; });
+  ["t-group", "t-tags", "w-group", "w-tags", "d-w-group", "d-w-tags"].forEach(id => setMetaValue(id, ""));
+  ["mon-search", "watch-search", "danmaku-query", "danmaku-time-start", "danmaku-time-end"].forEach(id => { if ($(id)) $(id).value = ""; });
   ["mon-group", "mon-tag", "content-group", "content-tag", "content-src",
-   "watch-group", "watch-tag", "comment-group", "comment-tag", "comment-src"].forEach(id => {
+    "watch-group", "watch-tag", "comment-group", "comment-tag", "comment-src",
+    "danmaku-watch-group", "danmaku-watch-tag", "danmaku-src"].forEach(id => {
     const select = $(id);
     if (select) { select.value = ""; if (select._csSync) select._csSync(); }
   });
   try { localStorage.setItem("dym-pf", pf); } catch (e) {}
   applyPlatformUI();
   // 切换后立刻刷新该平台数据
-  refreshAccounts(); refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshOverviewChart();
+  refreshAccounts(); refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku();
   populateAcAccount(); onAcMode(); refreshCommentRules(); refreshCommentTasks();
   if (pfHasPublish(PLATFORM)) refreshPublish();
 }
@@ -635,6 +641,7 @@ function applyPlatformUI() {
   document.body.classList.toggle("pf-shipinhao", PLATFORM === "shipinhao");
   // 视频号:只有本账号数据,隐藏「监控他人作品/评论」相关入口(.notsh-only)
   document.body.classList.toggle("pf-channels", pfIsChannels(PLATFORM));
+  if (PLATFORM !== "douyin" && CURRENT_TAB === "danmaku") switchTab("overview");
   document.querySelectorAll(".pswitch button").forEach(b => {
     const active = b.dataset.pf === PLATFORM;
     b.classList.toggle("active", active);
@@ -699,6 +706,7 @@ function applyPlatformUI() {
     : PLATFORM === "kuaishou" ? "从 www.kuaishou.com 登录后复制完整 Cookie"
     : "从浏览器开发者工具复制完整 Cookie";
   applyMonitorForm();
+  if (PLATFORM === "douyin") applyDanmakuForm();
   if ($("t-kind") && PLATFORM !== "xhs") $("t-kind").value = "creator";
   // 视频号只有本账号数据,不支持「监控他人」:若正停在这些面板,自动切到「账号管理」
   if (pfIsChannels(PLATFORM)) {
@@ -961,12 +969,23 @@ async function saveCookie() {
 // ─── 账号 ───
 let ACCOUNTS = [];
 let MONITORS = [], WATCHES = [], CONTENTS = [];
+let DANMAKU_WATCHES = [];
 let CHANNELS = [], PUBLISH_TASKS = [];
 let CONTENT_SRC = "", CONTENT_GROUP = "", CONTENT_TAG = "";
 let COMMENT_SRC = "", COMMENT_GROUP = "", COMMENT_TAG = "";
+let DANMAKU_SRC = "";
+let DANMAKU_PAGE = 1, DANMAKU_PAGE_SIZE = 10, DANMAKU_TOTAL = 0;
 function parseTags(raw) {
   const seen = new Set();
   return String(raw || "").split(/[,，、;；\s]+/).map(x => x.trim()).filter(x => {
+    const key = x.toLocaleLowerCase();
+    if (!x || seen.has(key)) return false;
+    seen.add(key); return true;
+  }).slice(0, 12);
+}
+function parseDanmakuKeywords(raw) {
+  const seen = new Set();
+  return String(raw || "").split(/[,，、;；\n]+/).map(x => x.trim()).filter(x => {
     const key = x.toLocaleLowerCase();
     if (!x || seen.has(key)) return false;
     seen.add(key); return true;
@@ -976,7 +995,7 @@ function itemTags(item) { return Array.isArray(item && item.tags) ? item.tags : 
 let OPEN_META_COMBO = null;
 function metaCatalog(kind) {
   // 两类监控共享当前平台的分类词库；切换平台后不会带入其他平台的数据。
-  const items = [...MONITORS, ...WATCHES].filter(item => item.platform === PLATFORM);
+  const items = [...MONITORS, ...WATCHES, ...DANMAKU_WATCHES].filter(item => item.platform === PLATFORM);
   const values = kind === "group"
     ? items.map(item => item.group_name)
     : items.flatMap(itemTags);
@@ -1335,6 +1354,8 @@ async function refreshAccounts() {
   if ($("tb-acc")) $("tb-acc").textContent = accs.length;
   populateAccountSelect();
   populateWatchAccount();
+  if (PLATFORM === "douyin") applyDanmakuForm();
+  else populateDanmakuAccount();
   populatePubAcc();
   populateAcAccount();
   populateHubAccounts();
@@ -1496,7 +1517,7 @@ function workLink(platform, id) {
 }
 function openWork(platform, id) { try { window.open(workLink(platform, id), "_blank", "noopener"); } catch (e) {} }
 function workCard(w) {
-  const oc = `onclick="openWork('${esc(w.platform)}','${esc(w.item_id).replace(/'/g, "\\'")}')"`;
+  const oc = `onclick="openWork('${esc(w.platform)}','${esc(w.item_id).replace(/'/g, "\'")}')"`;
   // 图裂时回退占位(onerror 换成灰底图标),避免绝对角标压到标题
   const cover = w.cover_url
     ? `<img class="ncard-cover" src="${w.cover_url}" referrerpolicy="no-referrer" loading="lazy" alt="" ${oc}
@@ -1515,10 +1536,21 @@ function workCard(w) {
         <span class="like">${fmtTime(w.create_time)}</span>
       </div>
       <div class="ncard-actions">
-        <button class="ghost sm" onclick="openWorkComments(${w.id},'${esc(w.platform)}','${title.replace(/'/g, "\\'")}')">${ic("i-msg")}评论</button>
+        ${w.platform === "douyin" ? '<button class="ghost sm" onclick="monitorOwnWorkDanmaku(\'' + esc(w.item_id) + '\',' + (w.account_id || "null") + ')">' + ic("i-msg") + '弹幕</button>' : ""}
+        <button class="ghost sm" onclick="openWorkComments(${w.id},'${esc(w.platform)}','${title.replace(/'/g, "\'")}')">${ic("i-msg")}评论</button>
       </div>
     </div>
   </div>`;
+}
+function monitorOwnWorkDanmaku(itemId, accountId) {
+  if (PLATFORM !== "douyin") switchPlatform("douyin");
+  switchTab("danmaku");
+  if ($("d-w-url")) $("d-w-url").value = itemId || "";
+  if ($("d-w-kind")) $("d-w-kind").value = "video";
+  if ($("d-w-mode")) $("d-w-mode").value = "creator";
+  applyDanmakuForm();
+  if ($("d-w-acc") && accountId) $("d-w-acc").value = String(accountId);
+  toast("已填入作品 ID，请确认后开始弹幕监控", "info", 5000);
 }
 async function syncMyWorks() {
   if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
@@ -1676,7 +1708,7 @@ async function refreshDmConvs() {
 }
 function cssAttr(s) { return (s || "").toString().replace(/"/g, '\\"'); }
 function convRow(c) {
-  return `<div class="dm-conv" data-conv="${esc(c.conv_id)}" onclick="openDmConv('${esc(c.conv_id).replace(/'/g, "\\'")}')">
+  return `<div class="dm-conv" data-conv="${esc(c.conv_id)}" onclick="openDmConv('${esc(c.conv_id).replace(/'/g, "\'")}')">
     ${c.peer_avatar ? `<img class="avatar" src="${c.peer_avatar}" referrerpolicy="no-referrer" alt="">` : `<span class="avatar"></span>`}
     <div class="meta"><b>${esc(c.peer_nickname)}</b><div class="last">${esc(c.last_text || "")}</div></div>
     ${c.unread_count ? `<span class="unread">${c.unread_count}</span>` : ""}
@@ -1780,6 +1812,42 @@ function populateWatchAccount() {
     : (creatorOnly && list.length === 0 ? "无创作者账号,请先创作者登录" : "不指定账号");
   sel.innerHTML = accOptions(list, ph);
   if (xhs && list.length) sel.value = String(list[0].id);
+}
+function populateDanmakuAccount() {
+  const sel = $("d-w-acc"); if (!sel) return;
+  const creatorOnly = $("d-w-mode") && $("d-w-mode").value === "creator";
+  const list = creatorOnly
+    ? ACCOUNTS.filter(a => a.platform === "douyin" && a.has_creator)
+    : ACCOUNTS.filter(a => a.platform === "douyin");
+  const ph = creatorOnly && !list.length ? "无创作者账号,请先创作者登录" : "不指定账号";
+  sel.innerHTML = accOptions(list, ph);
+  if (creatorOnly && list.length) sel.value = String(list[0].id);
+}
+function applyDanmakuForm() {
+  const kind = $("d-w-kind") ? $("d-w-kind").value : "auto";
+  const mode = $("d-w-mode") ? $("d-w-mode").value : "public";
+  const isVideo = kind === "video";
+  const recentWrap = $("d-w-recent-wrap");
+  const daysWrap = $("d-w-days-wrap");
+  if (recentWrap) recentWrap.hidden = isVideo;
+  if (daysWrap) daysWrap.hidden = isVideo;
+  const urlLabel = $("d-w-url-label");
+  if (urlLabel) urlLabel.textContent = isVideo
+    ? "视频链接 / aweme_id"
+    : kind === "user" ? "账号主页 / sec_uid" : "视频链接 / 账号主页 / aweme_id";
+  if ($("d-w-url")) $("d-w-url").placeholder = isVideo
+    ? "作品链接或 aweme_id=监控单条视频弹幕"
+    : kind === "user" ? "账号主页或 sec_uid=监控账号近期作品"
+    : "作品链接=单条视频；主页链接=账号近期作品";
+  const accLabel = $("d-w-acc-label");
+  if (accLabel) accLabel.textContent = mode === "creator"
+    ? "创作中心账号（必选）" : "播放页账号（可选）";
+  const depthLabel = $("d-w-depth-label");
+  if (depthLabel) depthLabel.textContent = mode === "creator"
+    ? "创作中心翻页深度" : "弹幕加载轮次";
+  const probeWrap = $("d-w-probe-wrap");
+  if (probeWrap) probeWrap.hidden = mode === "creator";
+  populateDanmakuAccount();
 }
 async function refreshProfile(id) {
   const btn = evtBtn();
@@ -2840,6 +2908,370 @@ async function delContent(id) {
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 
+// ─── 短视频弹幕监控(独立) ───
+function danmakuWatchBaseName(w) {
+  return w.title || w.aweme_id || (w.sec_uid || "").slice(0, 12);
+}
+function populateDanmakuFacets() {
+  setFacetOptions("danmaku-watch-group", "全部分组", DANMAKU_WATCHES.map(x => x.group_name));
+  setFacetOptions("danmaku-watch-tag", "全部标签", DANMAKU_WATCHES.flatMap(itemTags));
+  const sel = $("danmaku-src"); if (!sel) return;
+  const old = DANMAKU_SRC;
+  sel.innerHTML = '<option value="">全部来源</option>' +
+    DANMAKU_WATCHES.map(x => x.id ? '<option value="' + x.id + '">' +
+      esc(danmakuWatchBaseName(x)) + '</option>' : "").join("");
+  DANMAKU_SRC = [...sel.options].some(o => o.value === old) ? old : "";
+  sel.value = DANMAKU_SRC;
+}
+function danmakuWatchRow(w) {
+  const base = esc(danmakuWatchBaseName(w));
+  const source = w.mode === "creator" ? "创作中心" : "公开视频";
+  const error = w.last_error
+    ? ' <span class="warn-ic" title="' + esc(w.last_error) + '">' + ic("i-info") + "</span>" : "";
+  const avatar = w.avatar
+    ? '<img class="avatar" src="' + esc(w.avatar) + '" referrerpolicy="no-referrer">' : "";
+  const alias = w.alias ? '<div class="alias-line">' + esc(w.alias) + "</div>" : "";
+  const interval = w.interval_seconds
+    ? Math.round(w.interval_seconds / 60) + " 分"
+    : "跟随全局" + (w.effective_interval_seconds ? "（" + Math.round(w.effective_interval_seconds / 60) + " 分）" : "");
+  const scope = w.kind === "user"
+    ? '<div class="mut" style="font-size:11px;margin-top:2px">' +
+      (w.recent_works ? "近 " + w.recent_works + " 个" : "全局 " + (w.effective_recent_works || "") + " 个") +
+      " · " + (w.recent_days ? "近 " + w.recent_days + " 天" : "全局 " + (w.effective_recent_days || "") + " 天") +
+      "</div>" : "";
+  return '<tr>' +
+    '<td><div class="user-cell">' + avatar + '<div><span>' + base + "</span>" + alias + scope + "</div></div></td>" +
+    "<td>" + (w.kind === "video" ? "单条视频" : "账号作品") + "</td>" +
+    "<td>" + source + "</td>" +
+    '<td class="num">' + fmtNum(w.danmaku_count || 0) + "</td>" +
+    '<td class="num">' + interval + "</td>" +
+    '<td class="mut">' + (w.last_scan_at ? new Date(w.last_scan_at + "Z").toLocaleString() : "—") + error + "</td>" +
+    '<td><span class="pill ' + (w.enabled ? "active" : "invalid") + '">' +
+      (w.enabled ? "监控中" : "已暂停") + "</span></td>" +
+    '<td class="acttd">' +
+      '<button class="ghost sm" onclick="editDanmakuWatch(' + w.id + ')">编辑</button>' +
+      '<button class="ghost sm" onclick="scanDanmakuWatch(' + w.id + ')">立即抓取</button>' +
+      '<button class="ghost sm" onclick="toggleDanmakuWatch(' + w.id + ", " + (!w.enabled) + ')">' +
+        (w.enabled ? "暂停" : "启用") + "</button>" +
+      '<button class="ghost sm danger" onclick="delDanmakuWatch(' + w.id + ')">' +
+        ic("i-trash") + "删除</button></td></tr>";
+}
+function renderDanmakuWatchRows() {
+  const group = $("danmaku-watch-group") ? $("danmaku-watch-group").value : "";
+  const tag = $("danmaku-watch-tag") ? $("danmaku-watch-tag").value : "";
+  const query = (($("danmaku-watch-search") && $("danmaku-watch-search").value) || "").trim().toLocaleLowerCase();
+  const rows = DANMAKU_WATCHES.filter(w => {
+    if (!matchesMeta(w, group, tag)) return false;
+    if (!query) return true;
+    return [danmakuWatchBaseName(w), w.alias, w.group_name, ...itemTags(w)]
+      .join(" ").toLocaleLowerCase().includes(query);
+  });
+  if ($("danmaku-watch-filter-count")) {
+    $("danmaku-watch-filter-count").textContent =
+      "显示 " + rows.length + " / " + DANMAKU_WATCHES.length;
+  }
+  $("danmaku-watch-table").innerHTML = rows.map(danmakuWatchRow).join("") ||
+    empty(8, "没有匹配的弹幕监控", "i-msg",
+          DANMAKU_WATCHES.length ? "调整筛选条件" : "在上方添加一个弹幕监控");
+}
+async function addDanmakuWatch() {
+  const url = $("d-w-url").value.trim();
+  if (!url) { toast("请粘贴视频链接 / 账号主页 / aweme_id", "err"); return; }
+  const mode = $("d-w-mode").value;
+  if (mode === "creator" && !$("d-w-acc").value) {
+    toast("创作中心模式需要选择创作者账号", "err"); return;
+  }
+  const btn = evtBtn();
+  $("d-w-msg").textContent = "解析中…";
+  await withBusy(btn, "解析中", async () => {
+    try {
+      await api("/api/danmaku-watches", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url_or_id: url, platform: "douyin", kind: $("d-w-kind").value, mode: mode,
+          account_id: $("d-w-acc").value ? +$("d-w-acc").value : null,
+          interval_seconds: +$("d-w-interval").value,
+          recent_works: +$("d-w-recent").value, recent_days: +$("d-w-days").value,
+          max_scrolls: +$("d-w-depth").value, alias: $("d-w-alias").value.trim(),
+          time_start_ms: Math.round(Math.max(0, +$("d-w-time-start").value || 0) * 1000),
+          time_end_ms: Math.round(Math.max(0, +$("d-w-time-end").value || 0) * 1000),
+          probe_step_seconds: +$("d-w-probe-step").value || 0,
+          include_keywords: parseDanmakuKeywords($("d-w-include").value),
+          exclude_keywords: parseDanmakuKeywords($("d-w-exclude").value),
+          min_text_length: Math.max(0, +$("d-w-min-len").value || 0),
+          max_text_length: Math.max(0, +$("d-w-max-len").value || 0),
+          min_like_count: Math.max(0, +$("d-w-min-like").value || 0),
+          max_records_per_scan: Math.max(0, +$("d-w-scan-cap").value || 0),
+          max_records_total: Math.max(0, +$("d-w-total-cap").value || 0),
+          group_name: getMetaValue("d-w-group").trim(),
+          tags: parseTags(getMetaValue("d-w-tags")),
+        }),
+      });
+      ["d-w-url", "d-w-alias", "d-w-include", "d-w-exclude"].forEach(id => $(id).value = "");
+      ["d-w-time-start", "d-w-time-end", "d-w-min-len", "d-w-max-len", "d-w-min-like", "d-w-scan-cap", "d-w-total-cap"].forEach(id => $(id).value = "0");
+      setMetaValue("d-w-group", ""); setMetaValue("d-w-tags", "");
+      $("d-w-msg").textContent = "已添加 ✓";
+      toast("已开始监控弹幕", "ok");
+    } catch (e) {
+      $("d-w-msg").textContent = "失败: " + e.message;
+      toast("添加失败:" + e.message, "err");
+    }
+  });
+  refreshDanmakuWatches();
+}
+async function refreshDanmakuWatches() {
+  if (PLATFORM !== "douyin") return;
+  const rows = await api("/api/danmaku-watches?platform=douyin");
+  DANMAKU_WATCHES = rows;
+  populateDanmakuFacets();
+  if ($("tb-danmaku")) $("tb-danmaku").textContent = rows.length;
+  renderDanmakuWatchRows();
+}
+function onDanmakuSrc() {
+  DANMAKU_SRC = $("danmaku-src").value;
+  DANMAKU_PAGE = 1;
+  refreshDanmaku();
+}
+async function editDanmakuWatch(id) {
+  const item = DANMAKU_WATCHES.find(x => x.id === id);
+  if (!item) return;
+  const intervalOptions = numericSelectOptions(item.interval_seconds || 0, [
+    [0, "跟随全局设置"], [60, "每 1 分钟"], [300, "每 5 分钟"],
+    [600, "每 10 分钟"], [1800, "每 30 分钟"], [3600, "每小时"], [86400, "每天"],
+  ]);
+  const recentOptions = numericSelectOptions(item.recent_works || 0, [
+    [0, "跟随全局设置"], [3, "最近 3 个作品"], [5, "最近 5 个作品"],
+    [10, "最近 10 个作品"], [20, "最近 20 个作品"], [50, "最近 50 个作品"],
+  ]);
+  const dayOptions = numericSelectOptions(item.recent_days || 0, [
+    [0, "跟随全局设置"], [3, "最近 3 天"], [7, "最近 7 天"],
+    [14, "最近 14 天"], [30, "最近 30 天"], [90, "最近 90 天"],
+  ]);
+  const depthOptions = numericSelectOptions(item.max_scrolls || 0, [
+    [0, "跟随全局设置"], [3, "浅层"], [6, "标准"], [12, "深度"], [20, "最大"],
+  ]);
+  const probeOptions = numericSelectOptions(item.probe_step_seconds || 0, [
+    [0, "跟随全局设置"], [0.5, "每 0.5 秒"], [1, "每 1 秒"], [2, "每 2 秒"], [5, "每 5 秒"],
+  ], " 秒");
+  const value = await new Promise(res => {
+    _uiResolve = res; _uiCancelVal = null;
+    _uiGetVal = () => ({
+      interval_seconds: +$("edw-interval").value,
+      recent_works: +$("edw-recent").value,
+      recent_days: +$("edw-days").value,
+      max_scrolls: +$("edw-depth").value,
+      time_start_ms: Math.round(Math.max(0, +$("edw-start").value || 0) * 1000),
+      time_end_ms: Math.round(Math.max(0, +$("edw-end").value || 0) * 1000),
+      probe_step_seconds: +$("edw-probe").value || 0,
+      include_keywords: parseDanmakuKeywords($("edw-include").value),
+      exclude_keywords: parseDanmakuKeywords($("edw-exclude").value),
+      min_text_length: Math.max(0, +$("edw-min-len").value || 0),
+      max_text_length: Math.max(0, +$("edw-max-len").value || 0),
+      min_like_count: Math.max(0, +$("edw-min-like").value || 0),
+      max_records_per_scan: Math.max(0, +$("edw-scan-cap").value || 0),
+      max_records_total: Math.max(0, +$("edw-total-cap").value || 0),
+    });
+    $("ui-body").innerHTML = `
+      <fieldset class="monitor-config-group"><legend>扫描范围</legend>
+        <div class="row">
+          <div><label class="field" for="edw-start">视频内起点(秒)</label><input id="edw-start" type="number" min="0" step="0.1" value="${(item.time_start_ms || 0) / 1000}"></div>
+          <div><label class="field" for="edw-end">视频内终点(秒)</label><input id="edw-end" type="number" min="0" step="0.1" value="${(item.time_end_ms || 0) / 1000}"></div>
+          <div><label class="field" for="edw-probe">时间轴扫描步长</label><select id="edw-probe">${probeOptions}</select></div>
+          <div><label class="field" for="edw-interval">检查频率</label><select id="edw-interval">${intervalOptions}</select></div>
+        </div>
+      </fieldset>
+      <fieldset class="monitor-config-group"><legend>账号模式与容量</legend>
+        <div class="row">
+          <div><label class="field" for="edw-recent">近期作品数</label><select id="edw-recent">${recentOptions}</select></div>
+          <div><label class="field" for="edw-days">作品时间范围</label><select id="edw-days">${dayOptions}</select></div>
+          <div><label class="field" for="edw-depth">加载轮次</label><select id="edw-depth">${depthOptions}</select></div>
+        </div>
+        <div class="row">
+          <div><label class="field" for="edw-scan-cap">单轮入库上限</label><input id="edw-scan-cap" type="number" min="0" value="${item.max_records_per_scan || 0}"></div>
+          <div><label class="field" for="edw-total-cap">总保留上限</label><input id="edw-total-cap" type="number" min="0" value="${item.max_records_total || 0}"></div>
+          <div><label class="field" for="edw-min-like">最少点赞数</label><input id="edw-min-like" type="number" min="0" value="${item.min_like_count || 0}"></div>
+        </div>
+      </fieldset>
+      <fieldset class="monitor-config-group"><legend>内容过滤</legend>
+        <div class="row">
+          <div><label class="field" for="edw-min-len">最短文本长度</label><input id="edw-min-len" type="number" min="0" max="200" value="${item.min_text_length || 0}"></div>
+          <div><label class="field" for="edw-max-len">最长文本长度</label><input id="edw-max-len" type="number" min="0" max="200" value="${item.max_text_length || 0}"></div>
+        </div>
+        <div><label class="field" for="edw-include">包含关键词</label><input id="edw-include" value="${esc((item.include_keywords || []).join(","))}" placeholder="逗号分隔，命中任一项才保留"></div>
+        <div><label class="field" for="edw-exclude">排除关键词</label><input id="edw-exclude" value="${esc((item.exclude_keywords || []).join(","))}" placeholder="逗号分隔，命中任一项则丢弃"></div>
+      </fieldset>`;
+    ["edw-interval", "edw-recent", "edw-days", "edw-depth", "edw-probe"].forEach(key => {
+      const el = $(key); if (el) enhanceSelect(el);
+    });
+    $("edw-interval").value = String(item.interval_seconds || 0);
+    $("edw-recent").value = String(item.recent_works || 0);
+    $("edw-days").value = String(item.recent_days || 0);
+    $("edw-depth").value = String(item.max_scrolls || 0);
+    $("edw-probe").value = String(item.probe_step_seconds || 0);
+    ["edw-interval", "edw-recent", "edw-days", "edw-depth", "edw-probe"].forEach(key => {
+      const el = $(key); if (el && el._csSync) el._csSync();
+    });
+    _uiOpen("编辑弹幕监控", "监控对象保持不变；可调整视频内时间范围、过滤条件和容量上限。", { okText: "保存修改", wide: true });
+  });
+  if (value === null) return;
+  try {
+    await api("/api/danmaku-watches/" + id, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
+    });
+    toast("弹幕监控配置已更新", "ok"); refreshDanmakuWatches(); refreshDanmaku();
+  } catch (e) { toast("更新失败:" + e.message, "err"); }
+}
+async function scanDanmakuWatch(id) {
+  const btn = evtBtn();
+  toast("抓取中…正在加载视频弹幕", "info", 7000);
+  await withBusy(btn, "抓取中", async () => {
+    try {
+      const result = await api("/api/danmaku-watches/" + id + "/scan-now", { method: "POST" });
+      toast("弹幕抓取完成,新增 " + (result.new_danmaku ?? 0) + " 条", "ok");
+    } catch (e) { toast("抓取失败:" + e.message, "err"); }
+  });
+  refreshDanmakuWatches(); refreshDanmaku();
+}
+async function toggleDanmakuWatch(id, on) {
+  try {
+    await api("/api/danmaku-watches/" + id, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: on }),
+    });
+    refreshDanmakuWatches();
+  } catch (e) { toast("操作失败:" + e.message, "err"); }
+}
+async function delDanmakuWatch(id) {
+  if (!await uiConfirm({ title: "删除弹幕监控", message: "删除该监控及其抓到的弹幕?",
+                         okText: "删除", danger: true })) return;
+  try {
+    await api("/api/danmaku-watches/" + id, { method: "DELETE" });
+    toast("已删除", "ok"); refreshDanmakuWatches(); refreshDanmaku();
+  } catch (e) { toast("删除失败:" + e.message, "err"); }
+}
+function danmakuTime(ms) {
+  const value = Math.max(0, Math.floor(ms || 0));
+  const sec = Math.floor(value / 1000);
+  const base = Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+  const fraction = value % 1000;
+  return fraction ? base + "." + String(fraction).padStart(3, "0") : base;
+}
+function danmakuCapturedAt(value) {
+  if (!value) return "—";
+  const raw = String(value);
+  const d = new Date(/[zZ]$/.test(raw) ? raw : raw + "Z");
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString() + "." + String(d.getMilliseconds()).padStart(3, "0");
+}
+function renderDanmakuPager(meta) {
+  const pager = $("danmaku-pager");
+  if (!pager) return;
+  const total = Math.max(0, Number(meta && meta.total || 0));
+  const pageSize = Math.max(1, Number(meta && meta.page_size || DANMAKU_PAGE_SIZE));
+  const pages = Math.max(1, Number(meta && meta.pages || Math.ceil(total / pageSize) || 1));
+  const page = Math.max(1, Number(meta && meta.page || DANMAKU_PAGE));
+  DANMAKU_TOTAL = total;
+  DANMAKU_PAGE_SIZE = pageSize;
+  DANMAKU_PAGE = page;
+  if ($("danmaku-page-size")) $("danmaku-page-size").value = String(pageSize);
+  if ($("danmaku-page-input")) {
+    $("danmaku-page-input").value = String(page);
+    $("danmaku-page-input").max = String(pages);
+  }
+  $("danmaku-page-info").textContent = "第 " + page + " / " + pages + " 页 · 共 " + fmtNum(total) + " 条";
+  if ($("danmaku-first")) $("danmaku-first").disabled = page <= 1;
+  $("danmaku-prev").disabled = page <= 1;
+  $("danmaku-next").disabled = page >= pages;
+  if ($("danmaku-last")) $("danmaku-last").disabled = page >= pages;
+  pager.hidden = total <= pageSize;
+}
+async function refreshDanmaku(resetPage = false) {
+  if (PLATFORM !== "douyin" || !$("danmaku-table")) return;
+  if (resetPage) DANMAKU_PAGE = 1;
+  const params = new URLSearchParams({
+    platform: "douyin", page: String(DANMAKU_PAGE),
+    page_size: String(DANMAKU_PAGE_SIZE), paginate: "true",
+  });
+  if (DANMAKU_SRC) params.set("watch_id", DANMAKU_SRC);
+  const query = ($("danmaku-query") && $("danmaku-query").value || "").trim();
+  const start = +(($('danmaku-time-start') && $('danmaku-time-start').value) || 0);
+  const end = +(($('danmaku-time-end') && $('danmaku-time-end').value) || 0);
+  if (query) params.set("q", query);
+  if (start > 0) params.set("min_video_time_ms", String(Math.round(start * 1000)));
+  if (end > 0) params.set("max_video_time_ms", String(Math.round(end * 1000)));
+  params.set("sort", ($("danmaku-sort") && $("danmaku-sort").value) || "video_asc");
+  const payload = await api("/api/danmaku?" + params.toString());
+  const meta = Array.isArray(payload)
+    ? { items: payload, total: payload.length, page: 1, page_size: DANMAKU_PAGE_SIZE,
+        pages: Math.max(1, Math.ceil(payload.length / DANMAKU_PAGE_SIZE)) }
+    : (payload || {});
+  const pages = Math.max(1, Number(meta.pages || 1));
+  if (DANMAKU_PAGE > pages && Number(meta.total || 0) > 0) {
+    DANMAKU_PAGE = pages;
+    return refreshDanmaku();
+  }
+  const rows = Array.isArray(meta.items) ? meta.items : [];
+  $("danmaku-table").innerHTML = rows.map(r => '<tr>' +
+    '<td class="wrap" style="max-width:360px">' + esc(r.text || "") + "</td>" +
+    '<td class="mut" title="' + esc(r.user_id || "") + '">' +
+      esc(r.user_nickname || (r.user_id ? "用户 ID " + r.user_id : "用户")) + "</td>" +
+    '<td class="num"><code>' + danmakuTime(r.video_time_ms) + "</code></td>" +
+    "<td>" + (r.source === "creator" ? "创作中心" : "播放页") + "</td>" +
+    '<td class="mut">' + (r.created_at ? danmakuCapturedAt(r.created_at) :
+      (r.create_time ? fmtTime(r.create_time) : "—")) + "</td>" +
+    '<td class="acttd"><button class="ghost sm danger" onclick="deleteDanmaku(' + r.id + ')">' +
+      ic("i-trash") + "删除</button></td></tr>").join("") ||
+    empty(6, "暂无弹幕", "i-msg", "添加弹幕监控后，带视频时间点的弹幕会显示在这里");
+  renderDanmakuPager(meta);
+}
+function danmakuPageCount() {
+  return Math.max(1, Math.ceil(DANMAKU_TOTAL / DANMAKU_PAGE_SIZE));
+}
+function goDanmakuPage(page) {
+  const pages = danmakuPageCount();
+  const target = page <= 0 ? pages : Math.min(pages, Math.max(1, Math.round(Number(page) || 1)));
+  if (target === DANMAKU_PAGE) return;
+  DANMAKU_PAGE = target;
+  refreshDanmaku();
+}
+function changeDanmakuPage(delta) {
+  goDanmakuPage(DANMAKU_PAGE + Number(delta || 0));
+}
+function jumpDanmakuPage() {
+  const input = $("danmaku-page-input");
+  const value = input ? Number(input.value) : 1;
+  if (!Number.isFinite(value) || value < 1) {
+    if (input) { input.value = String(DANMAKU_PAGE); input.focus(); }
+    return;
+  }
+  goDanmakuPage(value);
+}
+function handleDanmakuPageInput(event) {
+  if (event && event.key === "Enter") {
+    event.preventDefault();
+    jumpDanmakuPage();
+  }
+}
+function setDanmakuPageSize() {
+  const value = +(($('danmaku-page-size') && $('danmaku-page-size').value) || 10);
+  DANMAKU_PAGE_SIZE = [10, 20, 50, 100, 200].includes(value) ? value : 10;
+  DANMAKU_PAGE = 1;
+  refreshDanmaku();
+}
+async function deleteDanmaku(id) {
+  try { await api("/api/danmaku/" + id, { method: "DELETE" }); refreshDanmaku(); }
+  catch (e) { toast("删除失败:" + e.message, "err"); }
+}
+async function clearDanmaku() {
+  if (!await uiConfirm({ title: "清空弹幕", message: "清空所有弹幕记录?",
+                         okText: "清空", danger: true })) return;
+  try {
+    const result = await api("/api/danmaku", { method: "DELETE" });
+    toast("已清空 " + result.deleted + " 条弹幕", "ok");
+    refreshDanmaku(); refreshDanmakuWatches();
+  } catch (e) { toast("清空失败:" + e.message, "err"); }
+}
+
 // ─── 评论监控(独立) ───
 const SRC = { public: "公开", creator: "创作中心" };
 async function addWatch() {
@@ -3858,7 +4290,7 @@ function esc(s) { return (s || "").toString().replace(/[&<>"]/g, c => ({ "&": "&
 
 function loop() {
   if (INFLIGHT > 0 || document.hidden) return;   // 慢操作/后台标签页不刷新,减少干扰与无效请求
-  refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshOverviewChart(); refreshCommentRules(); refreshCommentTasks(); if (pfHasPublish(PLATFORM)) refreshPublish();
+  refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshOverviewChart(); refreshCommentRules(); refreshCommentTasks(); if (pfHasPublish(PLATFORM)) refreshPublish();
 }
 
 // initial skeletons while data loads
@@ -3866,9 +4298,11 @@ $("mon-table").innerHTML = skeleton(8);
 $("content-table").innerHTML = skeleton(8);
 $("watch-table").innerHTML = skeleton(9);
 $("comment-table").innerHTML = skeleton(6);
+$("danmaku-watch-table").innerHTML = skeleton(8);
+$("danmaku-table").innerHTML = skeleton(6);
 
 // restore last-selected section (default: 总览);旧版四个独立页已并入「账号管理」
-const VALID_TABS = ["overview", "accounts", "monitors", "comments", "hub", "publish", "autocomment", "share-download", "notifications", "settings"];
+const VALID_TABS = ["overview", "accounts", "monitors", "comments", "danmaku", "hub", "publish", "autocomment", "share-download", "notifications", "settings"];
 const LEGACY_HUB_TABS = ["myworks", "following", "fans", "dm"];
 switchTab((() => {
   try {
@@ -3885,7 +4319,7 @@ switchHubTab(HUB_TAB);   // 恢复上次停留的子标签(我的作品/关注/�
 PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "douyin", "kuaishou", "shipinhao"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
 applyPlatformUI();
 
-onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); onAcMode(); loadSettings(); refreshAccounts(); refreshProxies(); refreshChannels(); loop();
+onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshProxies(); refreshChannels(); loop();
 enhanceAllSelects();   // 把所有原生 <select> 升级为美化下拉
 enhanceAllMetaControls(); // 分组/标签：当前平台词库下拉，可搜索并新增
 enhanceAllDateTime();  // 把 datetime-local 升级为自定义日期选择器

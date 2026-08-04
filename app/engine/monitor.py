@@ -16,7 +16,8 @@ from typing import Optional
 from sqlmodel import select
 
 from ..browser import (BrowserManager, fetch_videos, fetch_comments,
-                       fetch_creator_comments, fetch_self_profile,
+                       fetch_creator_comments, fetch_danmaku, fetch_creator_danmaku,
+                       fetch_self_profile,
                        fetch_xhs_notes, fetch_xhs_search, fetch_xhs_note_detail,
                        fetch_xhs_comments, fetch_xhs_self_profile,
                        post_comment_browser,
@@ -30,7 +31,8 @@ from . import compose
 from ..config import Config
 from ..db import get_session
 from ..platforms.douyin import (parse_aweme, parse_comment, parse_creator_comment,
-                      parse_self_user, DouyinClient, publish_douyin,
+                       parse_danmaku,
+                       parse_self_user, DouyinClient, publish_douyin,
                       cookie_from_state as dy_cookie_from_state)
 from ..platforms.douyin.extract import Aweme, MediaItem
 from ..platforms.xhs import (parse_note_brief, parse_note_detail,
@@ -46,7 +48,8 @@ from ..platforms.channels import (parse_channels_feed, parse_channels_comment,
                    flatten_channels_comments, parse_self_user as parse_channels_self_user,
                    publish_channels)
 from ..models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
-                      CommentWatch, DouyinAccount, MonitorTarget,
+                      CommentWatch, DanmakuWatch, DanmakuRecord,
+                      DouyinAccount, MonitorTarget,
                       NotificationChannel, PublishTask, AccountActionTask,
                       FollowEdge, DmConversation, AccountWork, AccountStatSnapshot)
 from ..notifier import notify_all
@@ -78,6 +81,33 @@ def _loads_list(s: str) -> list:
         return v if isinstance(v, list) else []
     except Exception:
         return []
+
+
+def _danmaku_matches(item: dict, settings: dict) -> bool:
+    text = str(item.get("text") or "")
+    folded = text.casefold()
+    point = max(0, int(item.get("video_time_ms") or 0))
+    start_ms = settings.get("time_start_ms", 0)
+    end_ms = settings.get("time_end_ms", 0)
+    if start_ms and point < start_ms:
+        return False
+    if end_ms and point > end_ms:
+        return False
+    includes = settings.get("include_keywords") or []
+    excludes = settings.get("exclude_keywords") or []
+    if includes and not any(str(k).casefold() in folded for k in includes):
+        return False
+    if excludes and any(str(k).casefold() in folded for k in excludes):
+        return False
+    min_len = settings.get("min_text_length", 0)
+    max_len = settings.get("max_text_length", 0)
+    if min_len and len(text) < min_len:
+        return False
+    if max_len and len(text) > max_len:
+        return False
+    if int(item.get("like_count") or 0) < settings.get("min_like_count", 0):
+        return False
+    return True
 
 
 def _select_douyin_awemes(items: list, quality: str, first_scan: bool,
@@ -179,6 +209,7 @@ class MonitorEngine:
             try:
                 await self._scan_once()
                 await self._scan_comment_watches()
+                await self._scan_danmaku_watches()
                 await self._retry_failed()
                 await self._check_accounts()
                 await self._check_work_health()
@@ -799,6 +830,293 @@ class MonitorEngine:
                                for rec, aw, should_download in new_records
                                if should_download))
         return {"ok": not error, "new": len(new_records), "error": error}
+
+    # ── 独立弹幕监控(DanmakuWatch)──
+    async def _scan_danmaku_watches(self):
+        due = []
+        with get_session() as s:
+            watches = s.exec(select(DanmakuWatch).where(
+                DanmakuWatch.enabled == True)).all()  # noqa: E712
+            for watch in watches:
+                interval = watch.interval_seconds or self.cfg.engine.scan_interval_seconds
+                if self._due(watch.last_scan_at, interval):
+                    due.append(watch.id)
+        for watch_id in due:
+            await self.scan_danmaku_watch(watch_id)
+
+    async def sync_work_danmaku(self, account_id: int, platform: str,
+                                item_id: str) -> dict:
+        """抓取本账号某条作品的弹幕，watch_id=0 表示账号管理入口。"""
+        key = f"wd:{account_id}:{item_id}"
+        if key in self._inflight:
+            return {"ok": True, "fetched": 0, "added": 0, "skipped": "正在抓取中"}
+        self._inflight.add(key)
+        try:
+            async with self._account_guard(account_id, fallback_key=key):
+                with get_session() as s:
+                    acc = s.get(DouyinAccount, account_id)
+                    if not acc:
+                        return {"ok": False, "error": "账号不存在"}
+                    if platform != "douyin":
+                        return {"ok": False, "error": "当前仅支持抖音短视频弹幕"}
+                    if not acc.creator_storage_state:
+                        return {"ok": False, "error": "需要先完成抖音创作者登录"}
+                    identity = self.browser.identity_for(acc)
+                    known = set(s.exec(select(DanmakuRecord.danmaku_id).where(
+                        DanmakuRecord.watch_id == 0,
+                        DanmakuRecord.aweme_id == item_id)).all())
+                raw, err = await fetch_creator_danmaku(
+                    self.browser, identity, known,
+                    page_url=self.cfg.engine.creator_danmaku_url,
+                    aweme_id=item_id,
+                    max_scrolls=self.cfg.engine.danmaku_max_scrolls,
+                    block_media=self.cfg.engine.block_media_resources,
+                )
+                fresh = [p for p in (parse_danmaku(row, item_id) for row in raw) if p]
+                added = 0
+                with get_session() as s:
+                    for item in fresh:
+                        did = item.get("danmaku_id") or ""
+                        if not did:
+                            continue
+                        exists = s.exec(select(DanmakuRecord).where(
+                            DanmakuRecord.watch_id == 0,
+                            DanmakuRecord.aweme_id == item_id,
+                            DanmakuRecord.danmaku_id == did)).first()
+                        if exists:
+                            continue
+                        s.add(DanmakuRecord(platform=platform, watch_id=0,
+                                            aweme_id=item_id, source="creator",
+                                            **{k: v for k, v in item.items()
+                                               if k != "aweme_id"}))
+                        added += 1
+                    s.commit()
+                return {"ok": bool(added or not err), "fetched": len(fresh),
+                        "added": added, "error": err}
+        except Exception as e:
+            log.warning("本账号作品弹幕抓取失败 %s/%s: %s", platform, item_id, e)
+            return {"ok": False, "fetched": 0, "added": 0, "error": repr(e)}
+        finally:
+            self._inflight.discard(key)
+
+    async def scan_danmaku_watch(self, watch_id: int) -> dict:
+        key = f"dw:{watch_id}"
+        if key in self._inflight:
+            return {"ok": True, "new_danmaku": 0, "skipped": "正在抓取中"}
+        self._inflight.add(key)
+        try:
+            with get_session() as s:
+                watch = s.get(DanmakuWatch, watch_id)
+                account_id = watch.account_id if watch else None
+            async with self._account_guard(account_id, fallback_key=key):
+                return await self._scan_danmaku_watch_locked(watch_id)
+        finally:
+            self._inflight.discard(key)
+
+    async def _scan_danmaku_watch_locked(self, watch_id: int) -> dict:
+        with get_session() as s:
+            watch = s.get(DanmakuWatch, watch_id)
+            if not watch:
+                return {"ok": False, "error": "watch not found"}
+            first_scan = watch.last_scan_at is None
+            kind, mode = watch.kind, watch.mode
+            aweme_id, sec_uid = watch.aweme_id, watch.sec_uid
+            name = watch.title or aweme_id or (sec_uid[:12] if sec_uid else "watch")
+            identity = self.browser.anon_identity()
+            has_creator = False
+            if watch.account_id:
+                acc = s.get(DouyinAccount, watch.account_id)
+                if acc:
+                    if self._proxy_bad(acc):
+                        msg = "账号代理标记为不可用(proxy bad),已跳过"
+                        watch.last_scan_at = datetime.utcnow()
+                        watch.last_error = msg
+                        s.add(watch)
+                        s.commit()
+                        return {"ok": False, "new_danmaku": 0, "error": msg, "skipped": True}
+                    has_creator = bool(acc.creator_storage_state)
+                    identity = self.browser.identity_for(acc)
+
+        if mode == "creator" and not has_creator:
+            msg = "创作中心弹幕监控需要绑定已完成创作者登录的抖音账号"
+            with get_session() as s:
+                watch = s.get(DanmakuWatch, watch_id)
+                if watch:
+                    watch.last_scan_at = datetime.utcnow()
+                    watch.last_error = msg
+                    s.add(watch)
+                    s.commit()
+            return {"ok": False, "new_danmaku": 0, "error": msg}
+
+        error = ""
+        total_new = 0
+        try:
+            settings = {
+                "recent_works": watch.recent_works or self.cfg.engine.danmaku_recent_works,
+                "recent_days": watch.recent_days or self.cfg.engine.danmaku_recent_days,
+                "max_scrolls": watch.max_scrolls or self.cfg.engine.danmaku_max_scrolls,
+                "time_start_ms": max(0, watch.time_start_ms or 0),
+                "time_end_ms": max(0, watch.time_end_ms or 0),
+                "probe_step_seconds": watch.probe_step_seconds or self.cfg.engine.danmaku_probe_step_seconds,
+                "max_probe_points": max(1, self.cfg.engine.danmaku_max_probe_points),
+                "include_keywords": [str(x).strip() for x in _loads_list(watch.include_keywords) if str(x).strip()],
+                "exclude_keywords": [str(x).strip() for x in _loads_list(watch.exclude_keywords) if str(x).strip()],
+                "min_text_length": max(0, watch.min_text_length or 0),
+                "max_text_length": max(0, watch.max_text_length or 0),
+                "min_like_count": max(0, watch.min_like_count or 0),
+                "max_records_per_scan": watch.max_records_per_scan or self.cfg.engine.danmaku_max_records_per_scan,
+                "max_records_total": watch.max_records_total or self.cfg.engine.danmaku_max_records_total,
+            }
+            remaining = [settings["max_records_per_scan"] if settings["max_records_per_scan"] > 0 else None]
+
+            def normalize_rows(raw_rows: list, default_id: str = "") -> list:
+                parsed = [parse_danmaku(row, default_id)
+                          for row in raw_rows if isinstance(row, dict)]
+                parsed = [row for row in parsed if row and _danmaku_matches(row, settings)]
+                parsed.sort(key=lambda row: (int(row.get("video_time_ms") or 0),
+                                             str(row.get("danmaku_id") or "")))
+                if remaining[0] is not None:
+                    parsed = parsed[:remaining[0]]
+                    remaining[0] -= len(parsed)
+                return parsed
+
+            raw_cap = (settings["max_records_per_scan"] * 5
+                       if settings["max_records_per_scan"] else 0)
+            source = "creator" if mode == "creator" else "public"
+            if kind == "video":
+                with get_session() as s:
+                    known = set(s.exec(select(DanmakuRecord.danmaku_id).where(
+                        DanmakuRecord.watch_id == watch_id,
+                        DanmakuRecord.aweme_id == aweme_id)).all())
+                if mode == "creator":
+                    raw, error = await fetch_creator_danmaku(
+                        self.browser, identity, known,
+                        page_url=self.cfg.engine.creator_danmaku_url,
+                        aweme_id=aweme_id,
+                        max_scrolls=settings["max_scrolls"],
+                        max_items=raw_cap,
+                        block_media=self.cfg.engine.block_media_resources,
+                    )
+                else:
+                    raw, error = await fetch_danmaku(
+                        self.browser, identity, aweme_id, known,
+                        max_rounds=max(1, min(settings["max_scrolls"], 2)),
+                        start_ms=settings["time_start_ms"],
+                        end_ms=settings["time_end_ms"],
+                        step_seconds=settings["probe_step_seconds"],
+                        max_points=settings["max_probe_points"],
+                        max_items=raw_cap,
+                        block_media=False,
+                    )
+                fresh = normalize_rows(raw, aweme_id)
+                total_new = await self._ingest_danmaku(
+                    watch_id, aweme_id, fresh, name, name, first_scan, source,
+                    max_records_total=settings["max_records_total"])
+            elif mode == "creator":
+                with get_session() as s:
+                    known = set(s.exec(select(DanmakuRecord.danmaku_id).where(
+                        DanmakuRecord.watch_id == watch_id)).all())
+                raw, error = await fetch_creator_danmaku(
+                    self.browser, identity, known,
+                    page_url=self.cfg.engine.creator_danmaku_url,
+                    max_scrolls=settings["max_scrolls"],
+                    max_items=raw_cap,
+                    block_media=self.cfg.engine.block_media_resources,
+                )
+                grouped = {}
+                for parsed in normalize_rows(raw):
+                    if parsed and parsed.get("aweme_id"):
+                        grouped.setdefault(parsed["aweme_id"], []).append(parsed)
+                for aid, fresh in grouped.items():
+                    total_new += await self._ingest_danmaku(
+                        watch_id, aid, fresh, name, aid, first_scan, source,
+                        max_records_total=settings["max_records_total"])
+            else:
+                items, _author, error = await fetch_videos(
+                    self.browser, identity, sec_uid, set(),
+                    max_scrolls=4, block_media=True)
+                cutoff = int(time.time()) - settings["recent_days"] * 86400
+                works = []
+                for item in items:
+                    aid = str(item.get("aweme_id") or "")
+                    create_time = int(item.get("create_time") or 0)
+                    if aid and (not cutoff or not create_time or create_time >= cutoff):
+                        works.append((aid, item.get("desc") or ""))
+                for aid, desc in works[:settings["recent_works"]]:
+                    if remaining[0] is not None and remaining[0] <= 0:
+                        break
+                    with get_session() as s:
+                        known = set(s.exec(select(DanmakuRecord.danmaku_id).where(
+                            DanmakuRecord.watch_id == watch_id,
+                            DanmakuRecord.aweme_id == aid)).all())
+                    raw, item_error = await fetch_danmaku(
+                        self.browser, identity, aid, known,
+                        max_rounds=max(1, min(settings["max_scrolls"], 2)),
+                        start_ms=settings["time_start_ms"],
+                        end_ms=settings["time_end_ms"],
+                        step_seconds=settings["probe_step_seconds"],
+                        max_points=settings["max_probe_points"],
+                        max_items=raw_cap,
+                        block_media=False)
+                    if item_error and not error:
+                        error = item_error
+                    fresh = normalize_rows(raw, aid)
+                    total_new += await self._ingest_danmaku(
+                        watch_id, aid, fresh, name, desc, first_scan, source,
+                        max_records_total=settings["max_records_total"])
+        except Exception as e:
+            error = repr(e)
+            log.warning("弹幕监控 %s 失败: %s", watch_id, e)
+
+        with get_session() as s:
+            watch = s.get(DanmakuWatch, watch_id)
+            if watch:
+                watch.last_scan_at = datetime.utcnow()
+                watch.last_error = error
+                watch.danmaku_count = len(s.exec(select(DanmakuRecord.id).where(
+                    DanmakuRecord.watch_id == watch_id)).all())
+                s.add(watch)
+                s.commit()
+        return {"ok": not error or total_new > 0,
+                "new_danmaku": total_new, "error": error}
+
+    async def _ingest_danmaku(self, watch_id: int, aweme_id: str, fresh: list,
+                              name: str, work_desc: str, first_scan: bool,
+                              source: str = "public",
+                              max_records_total: int = 0) -> int:
+        if not fresh and max_records_total <= 0:
+            return 0
+        added = []
+        with get_session() as s:
+            for item in fresh:
+                aid = item.get("aweme_id") or aweme_id
+                did = item.get("danmaku_id") or ""
+                if not aid or not did:
+                    continue
+                exists = s.exec(select(DanmakuRecord).where(
+                    DanmakuRecord.watch_id == watch_id,
+                    DanmakuRecord.aweme_id == aid,
+                    DanmakuRecord.danmaku_id == did)).first()
+                if exists:
+                    continue
+                row = dict(item)
+                row.pop("aweme_id", None)
+                s.add(DanmakuRecord(platform="douyin", watch_id=watch_id,
+                                    aweme_id=aid, source=source, **row))
+                added.append(dict(item, aweme_id=aid))
+            if max_records_total > 0:
+                old_ids = s.exec(select(DanmakuRecord.id).where(
+                    DanmakuRecord.watch_id == watch_id).order_by(
+                        DanmakuRecord.created_at.desc(),
+                        DanmakuRecord.id.desc()).offset(max_records_total)).all()
+                for old_id in old_ids:
+                    old = s.get(DanmakuRecord, old_id)
+                    if old:
+                        s.delete(old)
+            s.commit()
+        if not first_scan and added:
+            await self._notify_danmaku(name, work_desc, added)
+        return len(added)
 
     # ── 独立评论监控(CommentWatch)──
     async def _scan_comment_watches(self):
@@ -2146,6 +2464,28 @@ class MonitorEngine:
             await notify_all(channels, title, "\n".join(lines))
         except Exception as e:
             log.warning("评论通知失败: %s", e)
+
+    async def _notify_danmaku(self, target_name: str, work_desc: str,
+                              danmakus: list):
+        with get_session() as s:
+            chans = s.exec(select(NotificationChannel).where(
+                NotificationChannel.enabled == True)).all()  # noqa: E712
+            channels = [{"type": c.type, "config": _loads(c.config)} for c in chans]
+        if not channels:
+            return
+        title = f"弹幕监控 · {target_name} 有 {len(danmakus)} 条新弹幕"
+        lines = [f"作品:{(work_desc or '')[:20]}"]
+        for item in danmakus[:6]:
+            point = int(item.get("video_time_ms") or 0) // 1000
+            stamp = f"{point // 60}:{point % 60:02d}"
+            lines.append(f"· [{stamp}] {item.get('user_nickname') or '用户'}: "
+                         f"{(item.get('text') or '')[:40]}")
+        if len(danmakus) > 6:
+            lines.append(f"… 等共 {len(danmakus)} 条")
+        try:
+            await notify_all(channels, title, "\n".join(lines))
+        except Exception as e:
+            log.warning("弹幕通知失败: %s", e)
 
     async def _notify_new(self, target_name: str, awemes: list):
         """有新作品时推送到所有启用的通知渠道。"""

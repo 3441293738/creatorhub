@@ -223,6 +223,23 @@ class DouyinClient:
             cursor = page.get("cursor") or 0
         return out
 
+    # ── 短视频弹幕(播放页接口,与 comment/list 分开)──
+    async def fetch_danmaku_page(self, aweme_id: str, start_time: int = 0,
+                                 end_time: int = 0, duration: int = 0) -> dict:
+        """请求一个视频时间窗口的弹幕页，浏览器拦截器是主路径。"""
+        data = await self._get_json(
+            "/aweme/v1/web/danmaku/get_v2/",
+            {
+                "item_id": aweme_id,
+                "aweme_id": aweme_id,
+                "start_time": max(0, int(start_time or 0)),
+                "end_time": max(0, int(end_time or 0)),
+                "duration": max(0, int(duration or 0)),
+            },
+            referer=f"{BASE}/video/{aweme_id}",
+        )
+        return data or {}
+
     # ── 关注 / 粉丝(直连 following/follower list;offset + max_time 分页)──
     #    ⚠️ 参数按抖音 web 常见形态实现;拿不到时上层回退浏览器拦截,故失败无副作用。
     async def _follow_page(self, path: str, user_id: str, sec_uid: str, offset: int,
