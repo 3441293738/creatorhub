@@ -835,6 +835,21 @@
   button.content-action-delete:hover { color:var(--danger); border-color:color-mix(in srgb,var(--danger) 45%,var(--line)); }
   button.content-action-delete.danger:hover { color:#fff; border-color:var(--danger); }
   .content-record-table .local-path-cell { width:auto; min-width:0; max-width:none; }
+  .share-history-table { min-width:920px; }
+  .share-history-meta { display:flex; align-items:center; flex-wrap:wrap; gap:5px; margin-top:6px; color:var(--mut); font-size:11px; line-height:1.35; }
+  .share-history-meta .src-chip { max-width:120px; }
+  .share-history-meta .share-history-author,
+  .share-history-meta .share-history-id,
+  .share-history-meta .share-history-download-time { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .share-history-meta .share-history-id,
+  .share-history-meta .share-history-download-time { color:var(--mut-2); }
+  .share-history-file-count { display:block; margin-top:5px; color:var(--mut-2); font-size:10.5px; line-height:1.25; }
+  /* 分享历史与作品表共用固定列宽；长格式名/指标必须在列内收口，不能挤到相邻列。 */
+  .share-history-table .content-kind,
+  .share-history-table .content-quality { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .share-history-table .content-metrics { min-width:0; overflow:hidden; }
+  .share-history-table .content-metrics .metric { width:100%; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .share-history-table .content-time { min-width:0; overflow:hidden; }
 
   /* ── 监控分组 / 标签 / 别名 ── */
   .manage-toolbar {
@@ -1579,9 +1594,61 @@
         <h2>下载历史 <span class="sub" id="sd-history-count">0 条</span></h2>
         <button class="ghost sm" onclick="refreshShareHistory()"><svg><use href="#i-clock"/></svg>刷新</button>
       </div>
-      <div class="table-wrap"><table aria-label="链接下载历史"><thead><tr>
-        <th>下载时间</th><th>平台</th><th>作品</th><th>媒体/文件</th><th>状态</th><th>保存目录</th><th>操作</th>
-      </tr></thead><tbody id="sd-history-body"></tbody></table></div>
+      <div class="manage-toolbar share-history-toolbar">
+        <input type="search" id="sd-history-search" placeholder="搜索作品描述 / 作者 / ID" aria-label="搜索链接下载历史" oninput="renderShareHistoryRows(true)">
+        <select id="sd-history-platform" aria-label="按平台筛选链接下载历史" onchange="renderShareHistoryRows(true)">
+          <option value="">全部平台</option>
+        </select>
+        <select id="sd-history-type" aria-label="按作品类型筛选链接下载历史" onchange="renderShareHistoryRows(true)">
+          <option value="">全部类型</option><option value="video">视频</option><option value="images">图文</option>
+        </select>
+        <select id="sd-history-status" aria-label="按下载状态筛选链接下载历史" onchange="renderShareHistoryRows(true)">
+          <option value="">全部状态</option><option value="done">已下载</option><option value="failed">失败</option>
+        </select>
+        <span class="filter-count" id="sd-history-filter-count" role="status" aria-live="polite"></span>
+        <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
+          <button class="ghost sm" onclick="refreshShareHistory()"><svg><use href="#i-clock"/></svg>刷新</button>
+          <button class="ghost sm" id="sd-history-selall-btn" onclick="shareHistorySelAllToggle()">全选</button>
+          <span id="sd-history-selbar" style="display:none;align-items:center;gap:8px">
+            <span class="mut" id="sd-history-selcount">已选 0</span>
+            <button class="ghost sm" onclick="shareHistorySelClear()">取消</button>
+            <button class="sm danger" onclick="shareHistoryBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
+          </span>
+          <div class="export-actions" role="group" aria-label="链接下载历史 Excel 导出">
+            <span class="export-caption" title="导出链接下载历史"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span>
+            <button type="button" class="export-btn filtered" onclick="exportShareHistoryReport(false, this)" title="按当前筛选条件导出链接下载历史" aria-label="导出链接下载历史筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button>
+            <button type="button" class="export-btn full" onclick="exportShareHistoryReport(true, this)" title="忽略筛选，导出当前平台全部链接下载历史" aria-label="导出链接下载历史全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button>
+          </div>
+        </div>
+      </div>
+      <div class="table-wrap" id="sd-history-table-wrap"><table class="content-record-table share-history-table" aria-label="链接下载历史">
+        <colgroup>
+          <col class="content-col-check"><col class="content-col-cover"><col class="content-col-desc">
+          <col class="content-col-type"><col class="content-col-time"><col class="content-col-data">
+          <col class="content-col-actions"><col class="content-col-local">
+        </colgroup>
+        <thead><tr>
+          <th><input type="checkbox" id="sd-history-selall" onchange="shareHistoryToggleAll(this.checked)" aria-label="全选"></th>
+          <th>封面</th><th>作品描述</th><th>类型</th><th>发布时间</th><th>数据</th><th>状态 / 操作</th><th>本地文件</th>
+        </tr></thead><tbody id="sd-history-body"></tbody>
+      </table></div>
+      <div id="sd-history-pager" class="danmaku-pager" hidden>
+        <div class="danmaku-pager-left">
+          <button id="sd-history-first" class="ghost sm danmaku-page-icon" onclick="goShareHistoryPage(1)" title="第一页" aria-label="第一页"><svg aria-hidden="true"><use href="#i-first"/></svg></button>
+          <button id="sd-history-prev" class="ghost sm" onclick="changeShareHistoryPage(-1)"><svg aria-hidden="true"><use href="#i-prev"/></svg>上一页</button>
+        </div>
+        <div class="danmaku-pager-center">
+          <span id="sd-history-page-info" class="mut danmaku-page-info"></span>
+          <label class="danmaku-page-jump">跳至 <input id="sd-history-page-input" type="number" min="1" step="1" inputmode="numeric" aria-label="跳转链接下载历史页码" onkeydown="handleShareHistoryPageInput(event)"> 页 <button class="ghost sm" onclick="jumpShareHistoryPage()">确定</button></label>
+        </div>
+        <div class="danmaku-pager-right">
+          <button id="sd-history-next" class="ghost sm" onclick="changeShareHistoryPage(1)">下一页<svg aria-hidden="true"><use href="#i-next"/></svg></button>
+          <button id="sd-history-last" class="ghost sm danmaku-page-icon" onclick="goShareHistoryPage(0)" title="最后一页" aria-label="最后一页"><svg aria-hidden="true"><use href="#i-last"/></svg></button>
+          <select id="sd-history-page-size" class="ghost sm danmaku-page-size" onchange="setShareHistoryPageSize()" aria-label="每页链接下载历史数">
+            <option value="10" selected>每页 10 条</option><option value="20">每页 20 条</option><option value="50">每页 50 条</option>
+          </select>
+        </div>
+      </div>
     </div>
   </section>
 

@@ -19,6 +19,7 @@ from app.reporting import (
     build_danmaku_report,
     build_danmaku_watches_report,
     build_monitor_report,
+    build_share_history_report,
     build_targets_report,
     build_watches_report,
 )
@@ -180,6 +181,38 @@ class MonitorReportTests(unittest.TestCase):
         self.assertIsNone(data["N2"].hyperlink)
         self.assertEqual(data["O2"].hyperlink.target, "https://example.test/cover.jpg")
         self.assertEqual(data["M2"].fill.fgColor.rgb, "00ECFDF5")
+
+    def test_share_history_report_contains_download_fields(self):
+        captured_at = datetime(2026, 8, 4, 10, 30)
+        workbook = load_workbook(BytesIO(build_share_history_report([
+            {
+                "id": 7,
+                "platform": "douyin",
+                "item_id": "aweme-7",
+                "title": "Sample download",
+                "author": "Sample author",
+                "media_type": "video",
+                "media_count": 1,
+                "create_time": 1_700_000_000,
+                "created_at": captured_at,
+                "like_count": 12,
+                "comment_count": 3,
+                "duration": 42,
+                "quality": "1080P",
+                "status": "done",
+                "output_dir": "data/media/share",
+                "files": [{"role": "media", "path": "data/media/share/sample.mp4"}],
+                "source_url": "https://example.test/share/7",
+            }
+        ], generated_at=captured_at)))
+        summary, data = workbook.worksheets
+        self.assertEqual(summary["B4"].value, 1)
+        self.assertEqual(data["A2"].value, 7)
+        self.assertEqual(data["N2"].value, "done")
+        self.assertEqual(data["I2"].value, captured_at)
+        self.assertTrue(str(data["O2"].value).startswith("=HYPERLINK("))
+        self.assertTrue(str(data["P2"].value).startswith("=HYPERLINK("))
+        self.assertEqual(data["Q2"].hyperlink.target, "https://example.test/share/7")
 
 
 if __name__ == "__main__":

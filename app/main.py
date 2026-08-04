@@ -1991,10 +1991,34 @@ def _share_history_dict(record: ShareDownloadRecord) -> dict:
         files = json.loads(record.files_json or "[]")
     except (TypeError, ValueError, json.JSONDecodeError):
         files = []
+    if not isinstance(files, list):
+        files = []
     try:
         metadata = json.loads(record.metadata_json or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
         metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    media_files = [item for item in files if isinstance(item, dict) and item.get("role") == "media"]
+    first_file = media_files[0] if media_files else (files[0] if files and isinstance(files[0], dict) else {})
+
+    def number(value: Any) -> int:
+        try:
+            return int(float(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    description = str(record.title or metadata.get("title") or metadata.get("description") or "")
+    create_time = number(metadata.get("timestamp"))
+    if not create_time:
+        upload_date = str(metadata.get("upload_date") or "")
+        if len(upload_date) == 8 and upload_date.isdigit():
+            try:
+                create_time = int(datetime.strptime(upload_date, "%Y%m%d").timestamp())
+            except ValueError:
+                create_time = 0
+    local_path = str(first_file.get("path") or "") if isinstance(first_file, dict) else ""
+    quality = str(metadata.get("format") or metadata.get("format_id") or "")
     return {
         "id": record.id,
         "platform": record.platform,
@@ -2012,6 +2036,16 @@ def _share_history_dict(record: ShareDownloadRecord) -> dict:
         "metadata": metadata if isinstance(metadata, dict) else {},
         "error": record.error,
         "created_at": record.created_at.isoformat() if record.created_at else "",
+        # 与「作品监控」列表兼容的展示字段，方便链接下载历史复用同一套作品表格。
+        "aweme_id": record.item_id,
+        "desc": description,
+        "create_time": create_time,
+        "quality": quality,
+        "like_count": number(metadata.get("like_count")),
+        "comment_count": number(metadata.get("comment_count")),
+        "duration": number(metadata.get("duration")),
+        "download_status": record.status,
+        "local_path": local_path,
     }
 
 
@@ -2296,6 +2330,167 @@ async def get_share_download_history(limit: int = 100, platform: str = ""):
             query.order_by(ShareDownloadRecord.created_at.desc()).limit(limit)
         ).all()
         return [_share_history_dict(row) for row in rows]
+
+
+class ShareHistoryBatchDeleteIn(BaseModel):
+    ids: list[int]
+
+
+@app.post("/api/share-download/history/batch-delete")
+async def delete_share_download_history_batch(body: ShareHistoryBatchDeleteIn):
+    """批量删除链接下载历史记录，不清理本地媒体文件。"""
+    ids = {int(value) for value in (body.ids or []) if int(value) > 0}
+    if len(ids) > 200:
+        raise HTTPException(400, "单次最多删除 200 条历史记录")
+    if not ids:
+        return {"ok": True, "deleted": 0}
+    with get_session() as s:
+        rows = s.exec(
+            select(ShareDownloadRecord).where(ShareDownloadRecord.id.in_(ids))
+        ).all()
+        for record in rows:
+            s.delete(record)
+        s.commit()
+    return {"ok": True, "deleted": len(rows)}
+
+
+def _share_history_files(record: ShareDownloadRecord) -> list[dict]:
+    try:
+        files = json.loads(record.files_json or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        files = []
+    return [item for item in files if isinstance(item, dict)] if isinstance(files, list) else []
+
+
+def _share_history_local_path(
+    record: ShareDownloadRecord,
+    media_index: int | None = None,
+) -> Path | None:
+    files = _share_history_files(record)
+    candidates = [item for item in files if item.get("role") == "media"]
+    if media_index is not None:
+        if media_index < 0 or media_index >= len(candidates):
+            return None
+        candidates = [candidates[media_index]]
+    if not candidates:
+        candidates = files
+    for item in candidates:
+        raw = str(item.get("path") or "").strip()
+        if not raw:
+            continue
+        try:
+            path = Path(raw).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if path.is_file() or path.is_dir():
+            return path
+    if media_index is None and record.output_dir:
+        try:
+            path = Path(record.output_dir).expanduser().resolve(strict=True)
+            if path.is_dir():
+                return path
+        except (OSError, RuntimeError):
+            pass
+    return None
+
+
+def _require_local_action(request: Request) -> None:
+    """仅允许本机 CreatorHub 页面触发文件管理器操作。"""
+    def is_loopback(host: str) -> bool:
+        host = host.split("%", 1)[0].casefold()
+        if host == "localhost":
+            return True
+        try:
+            return ip_address(host).is_loopback
+        except ValueError:
+            return False
+
+    client_host = request.client.host if request.client else ""
+    page_host = request.url.hostname or ""
+    try:
+        origin = urlsplit(request.headers.get("origin", ""))
+        same_origin = (origin.scheme == request.url.scheme and
+                       (origin.hostname or "").casefold() == page_host.casefold() and
+                       origin.port == request.url.port)
+    except ValueError:
+        same_origin = False
+    local_action = request.headers.get("x-creatorhub-local-action") == "reveal"
+    if not is_loopback(client_host) or not is_loopback(page_host) or \
+            not same_origin or not local_action:
+        raise HTTPException(403, "仅允许从本机 CreatorHub 页面打开文件夹")
+
+
+@app.get("/api/share-download/history/{record_id}/media/{media_index}")
+async def share_download_history_media(record_id: int, media_index: int):
+    """返回链接下载历史中的本地媒体，供作品预览复用。"""
+    with get_session() as s:
+        record = s.get(ShareDownloadRecord, record_id)
+        if not record:
+            raise HTTPException(404, "下载历史不存在")
+        path = _share_history_local_path(record, media_index)
+    if not path or not path.is_file():
+        raise HTTPException(404, "本地媒体不存在")
+    return FileResponse(
+        path,
+        filename=path.name,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, no-cache"},
+    )
+
+
+@app.get("/api/share-download/history/{record_id}/preview")
+async def share_download_history_preview(record_id: int):
+    """返回链接下载历史的本地媒体地址，供前端复用作品预览弹窗。"""
+    with get_session() as s:
+        record = s.get(ShareDownloadRecord, record_id)
+        if not record:
+            raise HTTPException(404, "下载历史不存在")
+        files = _share_history_files(record)
+        media_files = [item for item in files if item.get("role") == "media"]
+        medias = []
+        for index, item in enumerate(media_files):
+            raw = str(item.get("path") or "").strip()
+            if not raw:
+                continue
+            try:
+                path = Path(raw).expanduser().resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue
+            if not path.is_file():
+                continue
+            kind = "image" if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".avif"} else "video"
+            medias.append({
+                "kind": kind,
+                "url": f"/api/share-download/history/{record_id}/media/{index}",
+            })
+        media_type = record.media_type or ("images" if medias and medias[0]["kind"] == "image" else "video")
+        video = next((item for item in medias if item["kind"] == "video"), None)
+        return {
+            "id": record.id,
+            "desc": record.title or record.item_id,
+            "media_type": media_type,
+            "cover_url": record.cover_url,
+            "medias": medias,
+            "local_url": video["url"] if video else "",
+        }
+
+
+@app.post("/api/share-download/history/{record_id}/reveal")
+async def reveal_share_download_history(record_id: int, request: Request):
+    """在服务所在电脑的文件管理器中打开链接下载目录或定位文件。"""
+    _require_local_action(request)
+    with get_session() as s:
+        record = s.get(ShareDownloadRecord, record_id)
+        if not record:
+            raise HTTPException(404, "下载历史不存在")
+        path = _share_history_local_path(record)
+    if not path:
+        raise HTTPException(404, "本地文件不存在")
+    try:
+        await asyncio.to_thread(_reveal_in_file_manager, path)
+    except OSError as e:
+        raise HTTPException(500, f"打开文件夹失败:{e}") from e
+    return {"ok": True}
 
 
 @app.delete("/api/share-download/history/{record_id}")
@@ -2837,6 +3032,66 @@ def _report_download(payload: bytes, prefix: str):
             "Content-Length": str(len(payload)),
         },
     )
+
+
+@app.get("/api/reports/share-download-history.xlsx")
+async def export_share_download_history_report(
+    platform: str | None = None,
+    q: str = "",
+    media_type: str = "",
+    status: str = "",
+    full: bool = False,
+):
+    from .reporting import build_share_history_report
+
+    platform = platform.strip() if platform else None
+    q, media_type, status = q.strip(), media_type.strip(), status.strip()
+    if full:
+        q = media_type = status = ""
+    if media_type not in {"", "video", "images"}:
+        media_type = ""
+    if status not in {"", "done", "failed"}:
+        status = ""
+
+    with get_session() as s:
+        statement = select(ShareDownloadRecord).order_by(
+            ShareDownloadRecord.created_at.desc(), ShareDownloadRecord.id.desc()
+        )
+        if platform:
+            statement = statement.where(ShareDownloadRecord.platform == platform)
+        if media_type:
+            statement = statement.where(ShareDownloadRecord.media_type == media_type)
+        if status:
+            statement = statement.where(ShareDownloadRecord.status == status)
+        source_rows = s.exec(statement).all()
+
+    needle = q.casefold()
+    records = []
+    for record in source_rows:
+        item = _share_history_dict(record)
+        if needle:
+            searchable = " ".join(
+                str(item.get(key) or "")
+                for key in ("title", "desc", "author", "item_id", "source_url", "error")
+            ).casefold()
+            if needle not in searchable:
+                continue
+        # _share_history_dict serializes this field for the JSON API; keep the
+        # datetime object here so Excel receives a real date cell.
+        item["created_at"] = record.created_at
+        records.append(item)
+
+    payload = build_share_history_report(
+        records,
+        filters=_report_filter_pairs([
+            ("导出范围", "当前平台全部记录" if full else "当前筛选结果"),
+            ("平台", platform),
+            ("搜索", q),
+            ("媒体类型", media_type),
+            ("下载状态", status),
+        ]),
+    )
+    return _report_download(payload, "share_download_history")
 
 
 def _report_filter_pairs(pairs: list[tuple[str, Any]]) -> list[tuple[str, Any]]:

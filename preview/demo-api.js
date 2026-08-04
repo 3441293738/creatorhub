@@ -60,8 +60,8 @@
   }
 
   const shareHistory = [
-    { id: 81, created_at: iso(1200), platform: "douyin", title: "示例作品 · 城市漫游", author: "示例创作者", item_id: "DEMO_001", media_type: "video", media_count: 1, status: "done", source_url: "https://v.douyin.com/DEMO/", output_dir: "data/media/demo", files: [{ role: "media", path: "data/media/demo/demo.mp4", size: 18_600_000 }] },
-    { id: 82, created_at: iso(7200), platform: "xhs", title: "示例笔记 · 周末记录", author: "示例创作者", item_id: "DEMO_002", media_type: "images", media_count: 6, status: "done", source_url: "https://www.xiaohongshu.com/explore/DEMO", output_dir: "data/media/demo", files: [{ role: "media", path: "data/media/demo/01.jpg", size: 2_100_000 }] },
+    { id: 81, created_at: iso(1200), platform: "douyin", title: "示例作品 · 城市漫游", author: "示例创作者", item_id: "DEMO_001", media_type: "video", create_time: now - 1800, like_count: 9829, comment_count: 126, duration: 42, quality: "1080P", status: "done", source_url: "https://v.douyin.com/DEMO/", output_dir: "data/media/demo", files: [{ role: "media", path: "data/media/demo/demo.mp4", size: 18_600_000 }] },
+    { id: 82, created_at: iso(7200), platform: "xhs", title: "示例笔记 · 周末记录", author: "示例创作者", item_id: "DEMO_002", media_type: "images", create_time: now - 7200, like_count: 2840, comment_count: 64, duration: 0, media_count: 6, status: "done", source_url: "https://www.xiaohongshu.com/explore/DEMO", output_dir: "data/media/demo", files: [{ role: "media", path: "data/media/demo/01.jpg", size: 2_100_000 }] },
   ];
 
   function series() {
@@ -86,6 +86,7 @@
     if (path === "/api/comment-rules") return platform === "shipinhao" ? [] : commentRules(platform);
     if (path === "/api/comment-tasks") return platform === "shipinhao" ? [] : commentTasks(platform);
     if (path === "/api/share-download/history") return shareHistory;
+    if (/^\/api\/share-download\/history\/\d+\/preview$/.test(path)) return { media_type: "video", cover_url: "", medias: [] };
     if (path === "/api/notifications") return [{ id: 91, name: "演示通知渠道", type: "bark", enabled: true, config: {} }];
     if (path === "/api/settings") return { download_dir: "data/media", video_quality: "highest", ai_enabled: false, ai_base_url: "", ai_model: "", ai_temperature: "0.9", ai_prompt: "", ai_api_key_set: false };
     if (path === "/api/hub/summary") return { works: 3, following: 20, fans: 168, dm: 4 };
@@ -114,6 +115,15 @@
     if (!url.pathname.startsWith("/api/")) return realFetch(input, init);
     await new Promise((resolve) => setTimeout(resolve, 90));
     const method = String((init && init.method) || "GET").toUpperCase();
+    if (method === "GET" && url.pathname === "/api/reports/share-download-history.xlsx") {
+      return new Response("CreatorHub demo share-download history export", {
+        status: 200,
+        headers: {
+          "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "Content-Disposition": 'attachment; filename="creatorhub_share_download_history_demo.xlsx"',
+        },
+      });
+    }
     const data = method === "GET" ? getData(url) : actionData(url.pathname);
     return new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json; charset=utf-8" } });
   };

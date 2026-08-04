@@ -2348,6 +2348,8 @@ const QMAP = { "": "默认", highest: "原画", "1080": "1080P", "720": "720P", 
 
 // ─── 通用分享链接下载 ───
 let SHARE_LINKS = [], SHARE_LINK_INDEX = 0, SHARE_SOURCE = "", SHARE_ACCOUNTS = [];
+let SHARE_HISTORY = [], SHARE_HISTORY_PAGE = 1, SHARE_HISTORY_PAGE_SIZE = 10, SHARE_HISTORY_TOTAL = 0;
+const selShareHistory = new Set();
 
 async function loadShareAccounts() {
   const sel = $("sd-account");
@@ -2490,48 +2492,300 @@ function fmtShareHistoryTime(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
+function shareHistoryMetadata(row) {
+  return row && row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+}
+function shareHistoryNumber(row, key) {
+  const raw = row && row[key] != null ? row[key] : shareHistoryMetadata(row)[key];
+  const value = Number(raw || 0);
+  return Number.isFinite(value) ? value : 0;
+}
+function shareHistoryTitle(row) {
+  const metadata = shareHistoryMetadata(row);
+  return String((row && (row.desc || row.title)) || metadata.title || metadata.description ||
+    ((row && row.status) === "failed" ? "下载失败" : "未命名作品"));
+}
+function shareHistoryType(row) {
+  const value = String((row && (row.media_type || row.type)) || shareHistoryMetadata(row).media_type || "").toLowerCase();
+  return value === "images" || value === "image" || value === "图文" ? "images" : value === "video" || value === "视频" ? "video" : value;
+}
+function shareHistoryCreateTime(row) {
+  const direct = Number(row && row.create_time || 0);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const metadata = shareHistoryMetadata(row);
+  const timestamp = Number(metadata.timestamp || 0);
+  if (Number.isFinite(timestamp) && timestamp > 0) return timestamp;
+  const uploadDate = String(metadata.upload_date || "");
+  if (/^\d{8}$/.test(uploadDate)) {
+    const date = new Date(`${uploadDate.slice(0, 4)}-${uploadDate.slice(4, 6)}-${uploadDate.slice(6, 8)}T00:00:00`);
+    if (!Number.isNaN(date.getTime())) return Math.floor(date.getTime() / 1000);
+  }
+  return 0;
+}
+function shareHistoryQuality(row) {
+  const metadata = shareHistoryMetadata(row);
+  const raw = String((row && row.quality) || metadata.format || metadata.format_id || "").replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+  const width = Number(row && row.width || metadata.width || 0);
+  const height = Number(row && row.height || metadata.height || 0);
+  if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) return `${width}×${height}`;
+  const level = raw.match(/(?:^|[_\s-])(\d{3,4})p(?:$|[_\s-])/i);
+  if (level) return `${level[1]}P`;
+  return raw.length > 14 ? `${raw.slice(0, 13)}…` : raw;
+}
+function shareHistoryPlatform(row) {
+  return String((row && row.platform) || shareHistoryMetadata(row).platform || "generic");
+}
+function shareHistoryFiles(row) {
+  return Array.isArray(row && row.files) ? row.files.filter(file => file && typeof file === "object") : [];
+}
+function shareHistoryMediaFiles(row) {
+  return shareHistoryFiles(row).filter(file => file.role === "media");
+}
+function shareHistoryFirstPath(row) {
+  const files = shareHistoryMediaFiles(row);
+  const first = files[0] || shareHistoryFiles(row)[0] || {};
+  return String(first.path || first.relative_path || "");
+}
+function shareHistoryPathCell(row) {
+  const path = shareHistoryFirstPath(row);
+  if (!path) return `<span class="local-path-empty">—</span>`;
+  const p = contentPathMeta({ local_path: path, aweme_id: row.item_id });
+  const files = shareHistoryFiles(row);
+  const totalSize = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+  const fileHint = files.length > 1
+    ? `${files.length} 个文件${totalSize ? ` · ${fmtShareSize(totalSize)}` : ""}`
+    : (totalSize ? fmtShareSize(totalSize) : "");
+  return `<div class="local-path">
+    <div class="local-path-info">
+      <div class="local-path-file"><span class="local-path-name">${esc(p ? p.name : path)}</span>${p && p.ext ? `<span class="local-path-ext">${esc(p.ext)}</span>` : ""}</div>
+      <div class="local-path-dir">${esc(p ? (p.dir || "当前目录") : "当前目录")}</div>
+      ${fileHint ? `<span class="share-history-file-count">${esc(fileHint)}</span>` : ""}
+    </div>
+    <button type="button" class="ghost local-path-action reveal" onclick="revealShareHistoryPath(${Number(row.id)},this)" data-tip="在文件夹中显示" aria-label="在文件夹中显示">${ic("i-folder")}</button>
+  </div>`;
+}
+function populateShareHistoryFacets() {
+  const select = $("sd-history-platform");
+  if (!select) return;
+  const old = select.value;
+  const platforms = [...new Set(SHARE_HISTORY.map(shareHistoryPlatform).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
+  select.innerHTML = `<option value="">全部平台</option>` + platforms.map(platform =>
+    `<option value="${esc(platform)}">${esc(PF_NAME[platform] || (platform === "generic" ? "通用站点" : platform))}</option>`).join("");
+  select.value = platforms.includes(old) ? old : "";
+  if (select._csSync) select._csSync();
+}
+function shareHistoryFilteredRows() {
+  const query = (($('sd-history-search') && $('sd-history-search').value) || "").trim().toLocaleLowerCase();
+  const platform = ($('sd-history-platform') && $('sd-history-platform').value) || "";
+  const type = ($('sd-history-type') && $('sd-history-type').value) || "";
+  const status = ($('sd-history-status') && $('sd-history-status').value) || "";
+  return SHARE_HISTORY.filter(row => {
+    if (platform && shareHistoryPlatform(row) !== platform) return false;
+    if (type && shareHistoryType(row) !== type) return false;
+    if (status && (row.status || row.download_status) !== status) return false;
+    if (!query) return true;
+    const metadata = shareHistoryMetadata(row);
+    return [shareHistoryTitle(row), row.author, row.item_id, row.source_url, metadata.uploader, metadata.channel]
+      .filter(Boolean).join(" ").toLocaleLowerCase().includes(query);
+  });
+}
+function shareHistoryStatus(row) {
+  const value = String((row && (row.status || row.download_status)) || "failed");
+  return ["done", "failed"].includes(value) ? value : "failed";
+}
+function shareHistoryRow(row) {
+  const metadata = shareHistoryMetadata(row);
+  const type = shareHistoryType(row);
+  const typeName = type === "images" ? "图文" : type === "video" ? "视频" : (row.media_type || "媒体");
+  const status = shareHistoryStatus(row);
+  const platform = shareHistoryPlatform(row);
+  const platformName = PF_NAME[platform] || (platform === "generic" ? "通用站点" : platform || "通用站点");
+  const cover = row.cover_url || metadata.thumbnail || "";
+  const title = shareHistoryTitle(row);
+  const author = row.author || metadata.uploader || metadata.channel || "";
+  const itemId = row.item_id || row.aweme_id || metadata.id || "";
+  const createTime = shareHistoryCreateTime(row);
+  const likeCount = shareHistoryNumber(row, "like_count");
+  const commentCount = shareHistoryNumber(row, "comment_count");
+  const duration = shareHistoryNumber(row, "duration");
+  const mediaCount = shareHistoryMediaFiles(row).length || Number(row.media_count || 0);
+  const files = shareHistoryFiles(row);
+  const error = row.error ? `<span class="warn-ic" data-tip="${esc(row.error)}">${ic("i-info")}</span>` : "";
+  const downloadTime = row.created_at ? fmtShareHistoryTime(row.created_at) : "";
+  const descriptionMeta = `<div class="share-history-meta">
+    <span class="src-chip" title="${esc(platformName)}">${ic("i-link")}${esc(platformName)}</span>
+    ${author ? `<span class="share-history-author" title="${esc(author)}">${esc(author)}</span>` : ""}
+    ${itemId ? `<span class="share-history-id" title="ID ${esc(itemId)}">ID ${esc(itemId)}</span>` : ""}
+    ${downloadTime ? `<span class="share-history-download-time" title="下载于 ${esc(downloadTime)}">下载于 ${esc(downloadTime)}</span>` : ""}
+  </div>`;
+  const quality = shareHistoryQuality(row);
+  return `<tr>
+    <td class="content-check-cell"><input type="checkbox" data-id="${Number(row.id)}" onchange="shareHistoryToggleOne(${Number(row.id)},this.checked)" ${selShareHistory.has(row.id) ? "checked" : ""} aria-label="选择下载记录"></td>
+    <td class="content-cover-cell">${cover ? `<img class="thumb" src="${esc(cover)}" alt="${esc(title.slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy" onclick="openShareHistoryPreview(${Number(row.id)})">` : `<span class="content-cover-empty" onclick="openShareHistoryPreview(${Number(row.id)})">${ic(type === "images" ? "i-image" : "i-film")}</span>`}</td>
+    <td class="content-desc-cell"><div class="content-desc-text" title="${esc(title)}">${esc(title)}</div>${descriptionMeta}</td>
+    <td><span class="content-kind">${esc(typeName)}</span>${quality ? `<span class="content-quality">${esc(quality)}</span>` : ""}${mediaCount ? `<span class="content-quality">${mediaCount} 个媒体</span>` : ""}</td>
+    <td class="mut num">${contentTimeCell(createTime)}</td>
+    <td class="content-metrics num"><span class="metric like">${ic("i-heart")}${fmtNum(likeCount)}</span>${commentCount ? `<span class="metric">${ic("i-msg")}${fmtNum(commentCount)}</span>` : ""}${duration ? `<span class="metric">${ic("i-clock")}${fmtDur(duration)}</span>` : ""}${!files.length && mediaCount ? `<span class="metric">${ic("i-film")}${mediaCount}</span>` : ""}</td>
+    <td class="content-action-cell"><div class="content-status-row"><span class="pill ${status}">${contentStatusLabel(status)}</span>${error}</div><div class="content-action-buttons"><button class="ghost sm content-action-delete danger" onclick="deleteShareHistory(${Number(row.id)})" data-tip="删除记录" aria-label="删除下载记录">${ic("i-trash")}</button></div>${row.error ? `<div class="mut" style="max-width:180px;white-space:normal;margin-top:5px">${esc(row.error)}</div>` : ""}</td>
+    <td class="local-path-cell">${shareHistoryPathCell(row)}</td>
+  </tr>`;
+}
+function renderShareHistoryPager(total) {
+  const pager = $("sd-history-pager");
+  if (!pager) return;
+  const pages = Math.max(1, Math.ceil(total / SHARE_HISTORY_PAGE_SIZE));
+  if ($("sd-history-page-size")) $("sd-history-page-size").value = String(SHARE_HISTORY_PAGE_SIZE);
+  if ($("sd-history-page-input")) {
+    $("sd-history-page-input").value = String(SHARE_HISTORY_PAGE);
+    $("sd-history-page-input").max = String(pages);
+  }
+  $("sd-history-page-info").textContent = `第 ${SHARE_HISTORY_PAGE} / ${pages} 页 · 共 ${fmtNum(total)} 条`;
+  $("sd-history-first").disabled = SHARE_HISTORY_PAGE <= 1;
+  $("sd-history-prev").disabled = SHARE_HISTORY_PAGE <= 1;
+  $("sd-history-next").disabled = SHARE_HISTORY_PAGE >= pages;
+  $("sd-history-last").disabled = SHARE_HISTORY_PAGE >= pages;
+  pager.hidden = total <= SHARE_HISTORY_PAGE_SIZE;
+}
+function updateShareHistorySelBar() {
+  const count = selShareHistory.size;
+  $("sd-history-selcount").textContent = "已选 " + count;
+  $("sd-history-selbar").style.display = count ? "inline-flex" : "none";
+  const ids = [...document.querySelectorAll('#sd-history-body input[type="checkbox"]')].map(cb => +cb.dataset.id).filter(Boolean);
+  const allSelected = ids.length > 0 && ids.every(id => selShareHistory.has(id));
+  const toggle = $("sd-history-selall-btn"); if (toggle) toggle.textContent = allSelected ? "取消全选" : "全选";
+  const checkbox = $("sd-history-selall"); if (checkbox) checkbox.checked = allSelected;
+}
+function renderShareHistoryRows(resetPage = false) {
+  if (resetPage) SHARE_HISTORY_PAGE = 1;
+  const body = $("sd-history-body");
+  if (!body) return;
+  const rows = shareHistoryFilteredRows();
+  const pages = Math.max(1, Math.ceil(rows.length / SHARE_HISTORY_PAGE_SIZE));
+  if (SHARE_HISTORY_PAGE > pages) { SHARE_HISTORY_PAGE = pages; return renderShareHistoryRows(); }
+  SHARE_HISTORY_TOTAL = rows.length;
+  const start = (SHARE_HISTORY_PAGE - 1) * SHARE_HISTORY_PAGE_SIZE;
+  const pageRows = rows.slice(start, start + SHARE_HISTORY_PAGE_SIZE);
+  $("sd-history-count").textContent = `${SHARE_HISTORY.length} 条`;
+  if ($("sd-history-filter-count")) $("sd-history-filter-count").textContent = `显示 ${rows.length} / ${SHARE_HISTORY.length}`;
+  body.innerHTML = pageRows.map(shareHistoryRow).join("") || empty(8, rows.length ? "暂无下载历史" : (SHARE_HISTORY.length ? "没有匹配的下载历史" : "暂无下载历史"), "i-download", SHARE_HISTORY.length ? "调整筛选条件" : "开始下载后会自动记录；旧下载会从元数据文件补录");
+  updateShareHistorySelBar();
+  renderShareHistoryPager(rows.length);
+}
 async function refreshShareHistory() {
   const body = $("sd-history-body");
   if (!body) return;
-  body.innerHTML = skeleton(7, 3);
+  body.innerHTML = skeleton(8, 3);
   try {
-    const rows = await api("/api/share-download/history?limit=100");
-    $("sd-history-count").textContent = `${rows.length} 条`;
-    body.innerHTML = rows.map(row => {
-      const files = Array.isArray(row.files) ? row.files : [];
-      const mediaFiles = files.filter(file => file.role === "media");
-      const totalSize = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
-      const platformName = PF_NAME[row.platform] || (row.platform === "generic" ? "通用站点" : row.platform || "—");
-      const typeName = row.media_type === "images" ? "图文" : row.media_type === "video" ? "视频" : (row.media_type || "媒体");
-      const status = row.status === "done"
-        ? `<span class="pill bare" style="color:var(--ok)">成功</span>`
-        : `<span class="pill bare" style="color:var(--danger)" title="${esc(row.error || "")}">失败</span>`;
-      const workSub = [row.author, row.item_id ? `ID ${row.item_id}` : ""].filter(Boolean).join(" · ");
-      const path = row.output_dir || ((files[0] || {}).path || "");
-      return `<tr>
-        <td>${esc(fmtShareHistoryTime(row.created_at))}</td>
-        <td>${esc(platformName)}</td>
-        <td style="white-space:normal;min-width:220px;max-width:420px">
-          <div style="font-weight:650">${esc(row.title || (row.status === "failed" ? "下载失败" : "未命名作品"))}</div>
-          <div class="mut" style="margin-top:3px">${esc(workSub || row.source_url || "")}</div>
-        </td>
-        <td>${esc(typeName)} · ${mediaFiles.length || row.media_count || 0} 个媒体<br><span class="mut">${files.length} 个文件${totalSize ? ` · ${fmtShareSize(totalSize)}` : ""}</span></td>
-        <td>${status}${row.error ? `<div class="mut" style="max-width:220px;white-space:normal;margin-top:4px">${esc(row.error)}</div>` : ""}</td>
-        <td style="white-space:normal;max-width:300px"><code style="overflow-wrap:anywhere">${esc(path || "—")}</code></td>
-        <td>
-          <div class="row" style="gap:6px;flex-wrap:nowrap">
-            ${path ? `<button class="ghost sm" data-path="${esc(path)}" onclick="copySharePath(this)">复制路径</button>` : ""}
-            <button class="ghost sm danger" onclick="deleteShareHistory(${Number(row.id)})">${ic("i-trash")}删除记录</button>
-          </div>
-        </td>
-      </tr>`;
-    }).join("") || empty(7, "暂无下载历史", "i-download", "开始下载后会自动记录；旧下载会从元数据文件补录");
+    const rows = await api("/api/share-download/history?limit=500");
+    SHARE_HISTORY = Array.isArray(rows) ? rows : [];
+    populateShareHistoryFacets();
+    const validIds = new Set(SHARE_HISTORY.map(row => row.id));
+    [...selShareHistory].forEach(id => { if (!validIds.has(id)) selShareHistory.delete(id); });
+    renderShareHistoryRows();
   } catch (e) {
     $("sd-history-count").textContent = "读取失败";
-    body.innerHTML = empty(7, "历史记录读取失败", "i-info", e.message);
+    if ($("sd-history-filter-count")) $("sd-history-filter-count").textContent = "";
+    body.innerHTML = empty(8, "历史记录读取失败", "i-info", e.message);
   }
 }
 
+function _shareHistoryReportParams(full) {
+  const params = new URLSearchParams({ platform: PLATFORM });
+  if (full) {
+    params.set("full", "true");
+    return params;
+  }
+  const put = (key, value) => {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      params.set(key, String(value).trim());
+    }
+  };
+  put("q", $("sd-history-search") && $("sd-history-search").value);
+  put("platform", $("sd-history-platform") && $("sd-history-platform").value);
+  put("media_type", $("sd-history-type") && $("sd-history-type").value);
+  put("status", $("sd-history-status") && $("sd-history-status").value);
+  return params;
+}
+
+async function exportShareHistoryReport(full = false, explicitBtn = null) {
+  const btn = explicitBtn || evtBtn();
+  const group = btn && btn.closest(".export-actions");
+  const unlock = _lockExportGroup(group, btn);
+  await withBusy(btn, full ? "全量导出" : "筛选导出", async () => {
+    try {
+      await _downloadExcelReport(
+        "/api/reports/share-download-history.xlsx?" + _shareHistoryReportParams(full).toString(),
+        "creatorhub_share_download_history.xlsx",
+      );
+      const count = $("sd-history-filter-count")?.textContent?.trim();
+      toast(`链接下载历史 ${full ? "全量" : "筛选结果"} Excel 已导出${!full && count ? `（${count}）` : ""}`, "ok");
+    } catch (e) {
+      toast("下载历史导出失败: " + e.message, "err");
+    } finally {
+      unlock();
+    }
+  });
+}
+
+function shareHistoryToggleOne(id, on) { on ? selShareHistory.add(id) : selShareHistory.delete(id); updateShareHistorySelBar(); }
+function shareHistoryToggleAll(on) {
+  document.querySelectorAll('#sd-history-body input[type="checkbox"]').forEach(cb => {
+    const id = +cb.dataset.id; if (!id) return;
+    cb.checked = on; on ? selShareHistory.add(id) : selShareHistory.delete(id);
+  });
+  updateShareHistorySelBar();
+}
+function shareHistorySelAllToggle() {
+  const ids = [...document.querySelectorAll('#sd-history-body input[type="checkbox"]')].map(cb => +cb.dataset.id).filter(Boolean);
+  const allSelected = ids.length > 0 && ids.every(id => selShareHistory.has(id));
+  shareHistoryToggleAll(!allSelected);
+}
+function shareHistorySelClear() { selShareHistory.clear(); renderShareHistoryRows(); }
+async function shareHistoryBatchDelete() {
+  if (!selShareHistory.size) return;
+  if (!await uiConfirm({ title: "批量删除下载历史", message: `删除选中的 ${selShareHistory.size} 条历史记录?本地媒体文件会保留。`, okText: "删除记录", danger: true })) return;
+  try {
+    const result = await api("/api/share-download/history/batch-delete", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [...selShareHistory] }),
+    });
+    toast(`已删除 ${result.deleted || 0} 条历史记录，本地文件未删除`, "ok");
+    selShareHistory.clear();
+    refreshShareHistory();
+  } catch (e) { toast("批量删除失败:" + e.message, "err"); }
+}
+function goShareHistoryPage(page) {
+  const pages = Math.max(1, Math.ceil(SHARE_HISTORY_TOTAL / SHARE_HISTORY_PAGE_SIZE));
+  const target = page <= 0 ? pages : Math.min(pages, Math.max(1, Math.round(Number(page) || 1)));
+  if (target === SHARE_HISTORY_PAGE) return;
+  SHARE_HISTORY_PAGE = target; renderShareHistoryRows();
+}
+function changeShareHistoryPage(delta) { goShareHistoryPage(SHARE_HISTORY_PAGE + Number(delta || 0)); }
+function jumpShareHistoryPage() {
+  const input = $("sd-history-page-input");
+  const value = input ? Number(input.value) : 1;
+  if (!Number.isFinite(value) || value < 1) { if (input) input.value = String(SHARE_HISTORY_PAGE); return; }
+  goShareHistoryPage(value);
+}
+function handleShareHistoryPageInput(event) { if (event && event.key === "Enter") { event.preventDefault(); jumpShareHistoryPage(); } }
+function setShareHistoryPageSize() {
+  const value = +(($('sd-history-page-size') && $('sd-history-page-size').value) || 10);
+  SHARE_HISTORY_PAGE_SIZE = [10, 20, 50].includes(value) ? value : 10;
+  SHARE_HISTORY_PAGE = 1; renderShareHistoryRows();
+}
+async function revealShareHistoryPath(id, btn) {
+  const old = btn && btn.innerHTML;
+  if (btn) { btn.disabled = true; btn.innerHTML = `<span class="spin"></span>`; }
+  try {
+    await api(`/api/share-download/history/${id}/reveal`, { method: "POST", headers: { "X-CreatorHub-Local-Action": "reveal" } });
+    toast("已在文件夹中显示", "ok", 1800);
+  } catch (e) { toast("打开文件夹失败:" + e.message, "err"); }
+  finally { if (btn && btn.isConnected) { btn.disabled = false; btn.innerHTML = old; } }
+}
+function openShareHistoryPreview(id, startIdx) {
+  return _pvOpen(() => api(`/api/share-download/history/${id}/preview`), startIdx || 0);
+}
 async function deleteShareHistory(id) {
   const ok = await uiConfirm({
     title: "删除下载历史",
@@ -2543,6 +2797,7 @@ async function deleteShareHistory(id) {
   try {
     await api(`/api/share-download/history/${id}`, { method: "DELETE" });
     toast("历史记录已删除，本地文件未删除", "ok");
+    selShareHistory.delete(id);
     refreshShareHistory();
   } catch (e) {
     toast("删除历史失败：" + e.message, "err");
@@ -2586,8 +2841,8 @@ function renderShareResult(response, download) {
   card.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
-async function runShareDownload(download) {
-  const btn = evtBtn();
+async function runShareDownload(download, button = null) {
+  const btn = button || evtBtn();
   const text = $("sd-text").value.trim();
   if (!text) { toast("请粘贴分享链接或完整分享文案", "err"); return; }
   // 文案发生变化时先在本地重新识别，确保单选下标对应当前输入。
@@ -2619,8 +2874,8 @@ async function runShareDownload(download) {
   });
 }
 
-function inspectShareLink() { return runShareDownload(false); }
-function downloadShareLink() { return runShareDownload(true); }
+function inspectShareLink(button = null) { return runShareDownload(false, button); }
+function downloadShareLink(button = null) { return runShareDownload(true, button); }
 
 // ─── 通知渠道 ───
 const N_TEMPLATES = {
@@ -4625,6 +4880,7 @@ function loop() {
 // initial skeletons while data loads
 $("mon-table").innerHTML = skeleton(8);
 $("content-table").innerHTML = skeleton(8);
+$("sd-history-body").innerHTML = skeleton(8);
 $("watch-table").innerHTML = skeleton(9);
 $("comment-table").innerHTML = skeleton(6);
 $("danmaku-watch-table").innerHTML = skeleton(8);

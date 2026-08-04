@@ -300,7 +300,7 @@ def _write_table(
                 if value.startswith(("http://", "https://", "file://")):
                     cell.hyperlink = value
                     link_ready = True
-                elif headers[col - 1] in {"本地文件", "文件路径"}:
+                elif headers[col - 1] in {"保存目录", "本地文件", "文件路径"}:
                     try:
                         target = str(Path(value).expanduser().resolve())
                         cell.value = _local_hyperlink_formula(target)
@@ -512,6 +512,11 @@ _DANMAKU_HEADERS = (
     "ID", "弹幕监控", "平台", "作品ID", "弹幕ID", "弹幕内容", "用户ID",
     "用户昵称", "视频内时间(秒)", "发送时间", "采集时间", "点赞数", "来源", "已屏蔽",
 )
+_SHARE_HISTORY_HEADERS = (
+    "ID", "平台", "作品ID", "作品描述", "作者", "媒体类型", "媒体数量",
+    "发布时间", "下载时间", "点赞数", "评论数", "时长(秒)", "画质", "下载状态",
+    "保存目录", "本地文件", "来源链接", "错误",
+)
 _TARGET_HEADERS = (
     "ID", "平台", "类型", "目标名称", "别名", "分组", "标签", "启用",
     "检查间隔(秒)", "最后扫描", "作品数", "最近错误",
@@ -633,6 +638,47 @@ def _danmaku_watch_row(row: Any) -> tuple[Any, ...]:
         _value(row, "interval_seconds", 0),
         _excel_datetime(_value(row, "last_scan_at")),
         _text(_value(row, "last_error")),
+    )
+
+
+def _share_history_row(row: Any) -> tuple[Any, ...]:
+    metadata = _value(row, "metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    files = _value(row, "files", [])
+    if not isinstance(files, list):
+        files = []
+    media_files = [item for item in files if isinstance(item, dict) and item.get("role") == "media"]
+    media_count = _value(row, "media_count", 0) or metadata.get("media_count") or len(media_files)
+    try:
+        media_count = int(media_count or 0)
+    except (TypeError, ValueError):
+        media_count = 0
+    local_paths = [
+        _local_path_text(item.get("path"))
+        for item in media_files
+        if isinstance(item, dict) and item.get("path")
+    ]
+    local_path = _value(row, "local_path", "") or "\n".join(local_paths)
+    return (
+        _value(row, "id"),
+        _text(_value(row, "platform")),
+        _text(_value(row, "item_id") or _value(row, "aweme_id")),
+        _text(_value(row, "title") or _value(row, "desc") or metadata.get("title")),
+        _text(_value(row, "author") or metadata.get("uploader") or metadata.get("channel")),
+        _text(_value(row, "media_type") or metadata.get("media_type")),
+        media_count,
+        _timestamp(_value(row, "create_time") or metadata.get("timestamp")),
+        _excel_datetime(_value(row, "created_at")),
+        _value(row, "like_count", 0) or metadata.get("like_count", 0) or 0,
+        _value(row, "comment_count", 0) or metadata.get("comment_count", 0) or 0,
+        _value(row, "duration", 0) or metadata.get("duration", 0) or 0,
+        _text(_value(row, "quality") or metadata.get("format") or metadata.get("format_id")),
+        _text(_value(row, "status") or _value(row, "download_status")),
+        _local_path_text(_value(row, "output_dir")),
+        _local_path_text(local_path),
+        _text(_value(row, "source_url")),
+        _text(_value(row, "error")),
     )
 
 
@@ -785,6 +831,31 @@ def build_danmaku_watches_report(
         tab_color="8B5CF6",
         freeze_panes="D2",
         row_height=32,
+        generated_at=generated_at,
+    )
+
+
+def build_share_history_report(
+    records: Sequence[Any],
+    *,
+    filters: Sequence[tuple[str, Any]] = (),
+    generated_at: datetime | None = None,
+) -> bytes:
+    return build_module_report(
+        report_title="CreatorHub 链接下载历史报告",
+        module_name="链接下载历史",
+        sheet_title="链接下载历史",
+        headers=_SHARE_HISTORY_HEADERS,
+        rows=(_share_history_row(row) for row in records),
+        filters=filters,
+        widths=(10, 12, 24, 48, 22, 14, 12, 20, 20, 12, 12, 12, 14, 14, 40, 50, 50, 50),
+        date_columns={8, 9},
+        number_columns={1, 7, 10, 11, 12},
+        number_formats={1: "0", 7: "#,##0", 10: "#,##0", 11: "#,##0", 12: "0.0"},
+        link_columns={15, 16, 17},
+        tab_color="FE2C55",
+        freeze_panes="D2",
+        row_height=36,
         generated_at=generated_at,
     )
 
