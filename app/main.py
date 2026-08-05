@@ -543,6 +543,9 @@ async def list_accounts(platform: str | None = None):
                 "proxy": _mask_proxy(a.proxy),
                 "proxy_status": a.proxy_status,
                 "has_proxy": bool(a.proxy),
+                "write_paused_until": (a.write_paused_until.isoformat()
+                                        if a.write_paused_until else None),
+                "write_pause_reason": a.write_pause_reason,
                 "ua": a.ua,
                 "profile_dir": a.profile_dir,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
@@ -657,14 +660,21 @@ async def sync_account_works(account_id: int):
     """打开账号自己的主页,拦截抓取本账号已发布作品,落库(upsert)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    if engine is None:
+        raise HTTPException(503, "引擎未就绪")
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if not acc:
             raise HTTPException(404, "账号不存在")
+        if acc.status == "invalid":
+            raise HTTPException(400, "账号登录态已失效")
+        if engine._proxy_bad(acc):
+            raise HTTPException(400, "账号代理不可用")
         platform = acc.platform
         uid = acc.sec_uid or ""
         identity = browser.identity_for(acc)
-    items, err = await fetch_account_works(browser, identity, platform, uid)
+    async with engine._account_guard(account_id, fallback_key=f"account-works:{account_id}"):
+        items, err = await fetch_account_works(browser, identity, platform, uid)
     if not items:
         if err and err.startswith("missing_uid"):
             raise HTTPException(400, err.split(":", 1)[-1])
@@ -831,7 +841,14 @@ async def sync_follows(account_id: int, direction: str = "following"):
         if not users:
             print(f"[follow] douyin direct 空({derr}),回退浏览器拦截")
     if not users:
-        users, err = await fetch_follows(browser, identity, platform, uid, direction, known)
+        if engine is not None:
+            async with engine._account_guard(
+                    account_id, fallback_key=f"follows-browser:{account_id}:{direction}"):
+                users, err = await fetch_follows(
+                    browser, identity, platform, uid, direction, known)
+        else:
+            users, err = await fetch_follows(
+                browser, identity, platform, uid, direction, known)
     # 仅在登录态/缺 id 这类硬错误时报错;抓到 0 条不报错(可能确实没有,或接口待标定)
     if err and err.startswith("missing_uid"):
         raise HTTPException(400, err.split(":", 1)[-1])
@@ -901,7 +918,10 @@ async def sync_dm(account_id: int):
             raise HTTPException(404, "账号不存在")
         platform = acc.platform
         identity = browser.identity_for(acc)
-    convs, err = await fetch_dm_conversations(browser, identity, platform)
+    if engine is None:
+        raise HTTPException(503, "引擎未就绪")
+    async with engine._account_guard(account_id, fallback_key=f"dm:{account_id}"):
+        convs, err = await fetch_dm_conversations(browser, identity, platform)
     if err and err.startswith("logged_out"):
         raise HTTPException(400, "登录态已失效,请点「重新登录」")
     # 小红书网页端私信未开放(entry visible=false)等硬限制:直接把原因回给前端
@@ -1021,9 +1041,13 @@ async def fetch_dm_conversation_history(account_id: int, conv_id: str,
             pass
     if not short_id:
         raise HTTPException(400, "该会话缺 conversation_short_id,请重新同步会话列表")
-    parsed, err = await fetch_dm_history(browser, identity, platform, conv_id,
-                                         short_id, conv_type=1, cursor=cursor,
-                                         debug=debug)
+    if engine is None:
+        raise HTTPException(503, "引擎未就绪")
+    async with engine._account_guard(
+            account_id, fallback_key=f"dm-history:{account_id}:{conv_id}"):
+        parsed, err = await fetch_dm_history(
+            browser, identity, platform, conv_id, short_id,
+            conv_type=1, cursor=cursor, debug=debug)
     if err:
         raise HTTPException(400, err)
     msgs = parsed.get("messages", [])
@@ -1257,6 +1281,20 @@ async def set_account_proxy(account_id: int, body: ProxyIn):
     if browser:
         await browser.close_context(account_id)
     return {"ok": True, "proxy": _mask_proxy(p)}
+
+
+@app.post("/api/accounts/{account_id}/clear-write-pause")
+async def clear_account_write_pause(account_id: int):
+    """Clear the persisted write pause after the account has been checked manually."""
+    with get_session() as s:
+        acc = s.get(DouyinAccount, account_id)
+        if not acc:
+            raise HTTPException(404, "账号不存在")
+        acc.write_paused_until = None
+        acc.write_pause_reason = ""
+        s.add(acc)
+        s.commit()
+    return {"ok": True}
 
 
 @app.post("/api/accounts/{account_id}/assign-proxy")
@@ -2101,7 +2139,9 @@ async def _douyin_native_share(
         state = account.storage_state or account.creator_storage_state or ""
         raw_cookie = account.cookie or ""
     cookie = douyin_cookie_from_state(state) or raw_cookie
-    client = DouyinClient(cookie, user_agent, timeout=cfg.engine.request_timeout_seconds)
+    client = DouyinClient(cookie, user_agent,
+                          timeout=cfg.engine.request_timeout_seconds,
+                          proxy=proxy)
     raw = await client.fetch_video_detail(aweme_id)
     if not raw:
         raise ShareDownloadError(
@@ -4976,6 +5016,7 @@ def _task_dict(t: CommentTask) -> dict:
         "id": t.id, "platform": t.platform, "rule_id": t.rule_id,
         "account_id": t.account_id, "aweme_id": t.aweme_id,
         "target_comment_id": t.target_comment_id, "target_nick": t.target_nick,
+        "target_text": getattr(t, "target_text", ""),
         "content": t.content, "status": t.status, "result": t.result,
         "error": t.error, "method": t.method,
         "scheduled_at": t.scheduled_at.isoformat() if t.scheduled_at else None,

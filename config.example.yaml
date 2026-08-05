@@ -40,6 +40,9 @@ engine:
 
   # ── 写操作风控闸(取关/回关/私信 + 自动评论)──
   comment_hourly_cap_per_account: 10   # 每账号每小时自动评论上限(0=不限)
+  comment_risk_cooldown_seconds: 21600 # 平台拒绝/验证后暂停该账号写操作(默认6小时)
+  xhs_comment_write_mode: api          # api=审核后自动发布;manual=只保存草稿
+  xhs_comment_review_before_publish: true # true=人工审核后自动发布;false=生成后直接发布
   action_daily_cap_per_account: 20     # 每账号每日写操作(关注/取关/私信)总上限(0=不限)
   action_hourly_cap_per_account: 6     # 每账号每小时写操作上限(0=不限)
   action_min_gap_seconds: 90           # 同账号两次写操作全局最小间隔(与任务级 min_gap 取大)

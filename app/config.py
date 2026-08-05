@@ -50,6 +50,11 @@ class EngineConfig:
     comment_min_gap_seconds: int = 60        # 同账号两条评论的全局最小间隔(秒)
     comment_jitter: float = 0.4              # 评论发送时间额外抖动比例(±40%),更像真人
     comment_hourly_cap_per_account: int = 10  # 每账号每小时自动评论上限(比日上限更贴人类节律),0=不限
+    comment_risk_cooldown_seconds: int = 21600  # 平台拒绝/验证后暂停该账号写操作(默认6小时)
+    # 小红书评论发布通道: api=审核后自动发布, manual=只保留草稿不调用发布接口。
+    xhs_comment_write_mode: str = "api"  # api | manual
+    # true=先存草稿,人工点击“通过”后由队列自动发布; false=生成后直接排队发布。
+    xhs_comment_review_before_publish: bool = True
     # 抖音发评论用有头浏览器(弹真实窗口):抖音对无头写操作常降级/拦截,有头更稳,
     # 且能让你手动过验证码;量大嫌弹窗可设 false 试无头。
     comment_browser_headed: bool = True

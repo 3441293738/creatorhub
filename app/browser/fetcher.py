@@ -549,7 +549,8 @@ _DIAG_INPUTS = """
 
 async def post_comment_browser(mgr: BrowserManager, identity: Identity, aweme_id: str,
                                content: str, reply_to_text: str = "", headed: bool = True,
-                               settle_ms: int = 1800, timeout_ms: int = 12000
+                               settle_ms: int = 1800, timeout_ms: int = 12000,
+                               require_reply: bool = False
                                ) -> Tuple[bool, str]:
     """用账号持久 profile(已含登录态)打开作品页,在评论框输入并发送。
     headed=True:弹真实浏览器窗口(抖音对无头写操作常降级/拦截,有头更稳,且能手动过验证码)。
@@ -560,6 +561,8 @@ async def post_comment_browser(mgr: BrowserManager, identity: Identity, aweme_id
     content = (content or "").strip()
     if not content:
         return False, "空文案"
+    if require_reply and not (reply_to_text or "").strip():
+        return False, "缺少目标评论原文，已跳过回复"
     ctx = None
     if headed:
         ctx = await mgr.open_headed(identity)   # 同 profile 有头窗口(关闭即落盘 Cookie)
@@ -610,6 +613,8 @@ async def post_comment_browser(mgr: BrowserManager, identity: Identity, aweme_id
                     editor = page.locator('[contenteditable="true"]').last
             except Exception:
                 editor = None  # 回退到顶层评论框
+            if editor is None and require_reply:
+                return False, "未找到目标评论回复区，未发送成顶层评论"
 
         if editor is None:
             for sel in _COMMENT_INPUT:

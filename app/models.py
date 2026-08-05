@@ -35,6 +35,8 @@ class DouyinAccount(SQLModel, table=True):
     geo_lon: float = 0.0          # geolocation 伪造经度
     proxy_status: str = "unknown"  # unknown | ok | bad
     last_active_at: Optional[datetime] = None  # 上次活跃(用于错峰调度)
+    write_paused_until: Optional[datetime] = None  # 平台风控后暂停自动写操作
+    write_pause_reason: str = ""                    # 最近一次暂停原因
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -241,7 +243,7 @@ class DanmakuRecord(SQLModel, table=True):
 
 class CommentRule(SQLModel, table=True):
     """自动评论规则(循环配置)。引擎按 interval 生成一批 CommentTask。
-    auto_reply  = 回复「自己作品」收到的评论(低风险,正经创作者工具)。
+    auto_reply  = 回复「自己作品」收到的评论(内容目标较温和,但仍属于高敏感写操作)。
     auto_comment= 去「别人帖子」下评论(高风险,需节流+去重护着)。"""
     id: Optional[int] = Field(default=None, primary_key=True)
     platform: str = Field(default="douyin", index=True)   # douyin | xhs
@@ -282,6 +284,7 @@ class CommentTask(SQLModel, table=True):
     xsec_token: str = ""                                  # 小红书:发评论所需令牌
     target_comment_id: str = ""                           # 非空=回复该条评论;空=作品下顶层评论
     target_nick: str = ""                                 # 被回复者昵称(供 {nick} 用)
+    target_text: str = ""                                 # 目标评论原文(定位回复目标)
     content: str = ""                                     # 已渲染好的文案
     scheduled_at: Optional[datetime] = None               # 计划发送时间(错峰)
     # draft=草稿待审(人工通过后才转 pending);pending=待发;其余为执行态

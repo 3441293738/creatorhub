@@ -61,10 +61,12 @@ DEFAULT_PARAMS = {
 
 
 class DouyinClient:
-    def __init__(self, cookie: str, user_agent: str, timeout: float = 20.0):
+    def __init__(self, cookie: str, user_agent: str, timeout: float = 20.0,
+                 proxy: str = ""):
         self.cookie = cookie or ""
         self.ua = user_agent
         self.timeout = timeout
+        self.proxy = (proxy or "").strip()
         self.impersonate = impersonate_for_ua(user_agent)  # TLS 指纹复刻,绕 JA3 风控
 
     def _headers(self, referer: str = BASE + "/") -> Dict[str, str]:
@@ -96,7 +98,8 @@ class DouyinClient:
         url = self._build_url(path, params)
         async with AsyncSession() as cli:
             r = await cli.get(url, headers=self._headers(referer),
-                              impersonate=self.impersonate, timeout=self.timeout)
+                              impersonate=self.impersonate, timeout=self.timeout,
+                              proxy=self.proxy or None)
             if r.status_code != 200 or not r.content:
                 # HTTP 200 + 空 body = 被风控拒了(接口本身可能是活的:follower/list 直连
                 # 空 body,页面里发同一个请求却正常)。静默 return None 会让上层把「被拒」

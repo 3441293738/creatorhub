@@ -4793,7 +4793,7 @@ async function runRule(id) {
     try {
       const r = await api("/api/comment-rules/" + id + "/run-now", { method: "POST" });
       if (!r.ok) toast("未生成:" + (r.error || ""), "err", 7000);
-      else if (r.created > 0) toast(`生成 ${r.created} 条${r.review ? "草稿(待人工通过)" : "任务"}(发现 ${r.candidates} 个目标)`, "ok", 6000);
+      else if (r.created > 0) toast(`生成 ${r.created} 条${r.manual_only ? "人工发布草稿(未调用评论接口)" : r.review ? "草稿(待人工通过)" : "任务"}(发现 ${r.candidates} 个目标)`, "ok", 6000);
       else toast(`发现 ${r.candidates} 个目标,生成 0 条` + (r.note ? `:${r.note}` : "(可能都已生成过)"), "info", 9000);
     } catch (e) { toast("试跑失败:" + e.message, "err"); }
   });
@@ -4821,7 +4821,7 @@ async function refreshCommentTasks() {
     <td class="mut">${esc((t.aweme_id || "").slice(0, 16))}</td>
     <td>${t.target_comment_id ? "回复 " + esc(t.target_nick || "") : "顶层评论"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at + "Z").toLocaleString() : "尽快"}</td>
-    <td class="mut">${t.method === "browser" ? "浏览器" : t.method === "api" ? "API" : "—"}</td>
+    <td class="mut">${t.method === "browser" ? "浏览器" : t.method === "api" ? "API" : t.method === "manual" ? "人工发布" : "—"}</td>
     <td><span class="pill ${AC_TASK_PILL[t.status] || "pending"}">${AC_TASK_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}</td>
     <td class="acttd">
       ${isDraft ? `<button class="sm" onclick="approveTask(${t.id})">通过</button>` : ""}
