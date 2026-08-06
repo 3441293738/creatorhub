@@ -22,6 +22,17 @@ async def _focus(page):
         pass
 
 
+async def _reuse_or_create_login_page(ctx):
+    """复用持久化 Chromium 启动时自带的空白页，避免多出一个登录页签。"""
+    for candidate in ctx.pages:
+        try:
+            if candidate.url == "about:blank" and not candidate.is_closed():
+                return candidate
+        except Exception:
+            continue
+    return await ctx.new_page()
+
+
 async def interactive_login(mgr: BrowserManager, identity: Identity,
                             timeout_seconds: int = 180,
                             start_url: str = "https://www.douyin.com/"
@@ -115,7 +126,7 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
     仅凭 customerClientId / customer-sso-sid 之类的 Cookie 判断会误判(它们在登录弹窗
     一出现就被写入,根本没扫码)。用户中途关掉窗口则视为未登录。"""
     ctx = await mgr.open_headed(identity)
-    page = await ctx.new_page()
+    page = await _reuse_or_create_login_page(ctx)
     await _focus(page)
     logged = False
     nickname = ""
@@ -143,24 +154,8 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
                         nickname = await _read_xhs_nickname(page)
                     except Exception:
                         pass
-                    # 顺带授权创作平台(发布需要):跳过去后轮询等创作 cookie 出现,
-                    # 给用户时间在同一窗口里完成创作平台登录/同意;拿到或超时才收尾。
-                    try:
-                        await page.goto("https://creator.xiaohongshu.com",
-                                        wait_until="domcontentloaded", timeout=20000)
-                        cwaited = 0
-                        while cwaited < 90:
-                            if page.is_closed():
-                                break
-                            st = await ctx.storage_state()
-                            if any(c["name"] in _XHS_CREATOR_COOKIES
-                                   for c in st.get("cookies", [])):
-                                state_json = json.dumps(st)   # 含读取态+创作态
-                                break
-                            await asyncio.sleep(2)
-                            cwaited += 2
-                    except Exception:
-                        pass
+                    # 普通登录只保存主站读取态。创作平台是独立登录入口，避免在
+                    # 扫码完成后跨站跳转导致 Chromium 周期性拉起临时页签。
                     break
             if page.is_closed():                  # 没登录就关了窗口 -> 视为未登录
                 break
@@ -181,7 +176,7 @@ async def interactive_xhs_creator_login(mgr: BrowserManager, identity: Identity,
     扫码,落地含创作者会话的登录态。返回 (是否成功, storage_state_json, nickname)。
     与普通登录区分:这里登录的是创作平台,登录态里含 customerClientId / galaxy_creator_session_id 等。"""
     ctx = await mgr.open_headed(identity)
-    page = await ctx.new_page()
+    page = await _reuse_or_create_login_page(ctx)
     await _focus(page)
     logged = False
     nickname = ""
