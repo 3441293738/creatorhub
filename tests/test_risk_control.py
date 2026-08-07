@@ -348,6 +348,21 @@ risk_control:
         with db.get_session() as session:
             self.assertIsNone(session.get(CommentWatch, watch_id).last_scan_at)
 
+    def test_direct_read_pair_uses_same_budget(self):
+        account_id = self._account()
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        engine.risk.record_success(account_id, OperationKind.READ_HEAVY)
+
+        async def unexpected():
+            raise AssertionError("direct read should have been deferred")
+
+        rows, error = asyncio.run(engine.guarded_read_pair(
+            account_id, OperationKind.READ_HEAVY, "fixture-direct", unexpected,
+            empty_result=[]))
+
+        self.assertEqual(rows, [])
+        self.assertTrue(error.startswith("risk_deferred:"))
+
 
 if __name__ == "__main__":
     unittest.main()

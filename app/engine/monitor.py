@@ -277,6 +277,27 @@ class MonitorEngine:
                 self.risk.record_failure(account_id, kind, result.get("error"))
         return result
 
+    async def guarded_read_pair(self, account_id, kind: OperationKind,
+                                fallback_key: str, operation, *, empty_result):
+        """Budget a direct read returning ``(payload, error)``."""
+        decision = self.risk.preflight(account_id, kind)
+        if not decision.allowed:
+            return empty_result, f"risk_deferred:{decision.reason}"
+        try:
+            async with self._operation_guard(
+                    account_id, kind, fallback_key=fallback_key):
+                payload, error = await operation()
+        except Exception as exc:
+            if account_id:
+                self.risk.record_failure(account_id, kind, exc)
+            return empty_result, repr(exc)
+        if account_id:
+            if not error or error == "empty":
+                self.risk.record_success(account_id, kind)
+            else:
+                self.risk.record_failure(account_id, kind, error)
+        return payload, error
+
     def _identity_proxy(self, acc):
         """由账号行构建 (Identity, proxy)。acc 为空则匿名画像。"""
         if acc:
@@ -1433,20 +1454,12 @@ class MonitorEngine:
                 "added": added, "error": error}
 
     async def fetch_douyin_follows_direct(self, account_id: int, direction: str):
-        kind = OperationKind.READ_HEAVY
-        decision = self.risk.preflight(account_id, kind)
-        if not decision.allowed:
-            return [], decision.reason
-        async with self._operation_guard(
-                account_id, kind,
-                fallback_key=f"follows:{account_id}:{direction}"):
-            rows, error = await self._fetch_douyin_follows_direct_locked(
-                account_id, direction)
-        if not error or error == "empty":
-            self.risk.record_success(account_id, kind)
-        else:
-            self.risk.record_failure(account_id, kind, error)
-        return rows, error
+        return await self.guarded_read_pair(
+            account_id, OperationKind.READ_HEAVY,
+            f"follows:{account_id}:{direction}",
+            lambda: self._fetch_douyin_follows_direct_locked(
+                account_id, direction),
+            empty_result=[])
 
     async def _fetch_douyin_follows_direct_locked(self, account_id: int, direction: str):
         """抖音关注/粉丝直连(following/follower list 分页,比弹窗滚动抓得全)。

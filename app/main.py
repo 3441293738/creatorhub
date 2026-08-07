@@ -75,7 +75,7 @@ from .models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
 from .notifier import CHANNEL_TYPES, send_one
 from .profiles import (ensure_identity, migrate_identities, assign_proxy_from_pool,
                        seed_proxy_pool)
-from .risk import RiskController
+from .risk import OperationKind, RiskController
 from .settings import get_setting, set_setting
 from .windowing import (EXPLORER_WINDOW_CLASSES, bring_window_to_front,
                         capture_window_snapshot)
@@ -127,6 +127,9 @@ async def lifespan(app: FastAPI):
                              cfg.engine.max_live_contexts)
     await browser.start()
     engine = MonitorEngine(cfg, browser)
+    pruned_risk_events = engine.risk.prune_events()
+    if pruned_risk_events:
+        print(f"[startup] 已清理 {pruned_risk_events} 条过期风控事件")
     recovered = engine.recover_interrupted_tasks()
     if recovered:
         print(f"[startup] 已恢复 {recovered} 条中断的写任务")
@@ -686,8 +689,15 @@ async def sync_account_works(account_id: int):
         platform = acc.platform
         uid = acc.sec_uid or ""
         identity = browser.identity_for(acc)
-    async with engine._account_guard(account_id, fallback_key=f"account-works:{account_id}"):
-        items, err = await fetch_account_works(browser, identity, platform, uid)
+    async def _fetch():
+        return await fetch_account_works(browser, identity, platform, uid)
+
+    items, err = await engine.guarded_read_pair(
+        account_id, OperationKind.READ_LIGHT, f"account-works:{account_id}",
+        _fetch, empty_result=[])
+    if err.startswith("risk_deferred:"):
+        return {"ok": True, "fetched": 0, "added": 0, "skipped": True,
+                "reason": err.split(":", 1)[-1]}
     if not items:
         if err and err.startswith("missing_uid"):
             raise HTTPException(400, err.split(":", 1)[-1])
@@ -846,19 +856,31 @@ async def sync_follows(account_id: int, direction: str = "following"):
             FollowEdge.direction == direction)).all()}
     # 抖音优先直连(following/follower list 分页,比弹窗滚动抓得全);失败再回退浏览器拦截
     users, err = [], ""
-    if platform == "douyin" and engine is not None:
+    attempted_direct = platform == "douyin" and engine is not None
+    if attempted_direct:
         try:
             users, derr = await engine.fetch_douyin_follows_direct(account_id, direction)
         except Exception as e:
             users, derr = [], repr(e)
-        if not users:
+        if derr.startswith("risk_deferred:"):
+            return {"ok": True, "fetched": 0, "added": 0, "skipped": True,
+                    "reason": derr.split(":", 1)[-1]}
+        if not users and derr not in ("", "empty"):
             print(f"[follow] douyin direct 空({derr}),回退浏览器拦截")
-    if not users:
+    allow_browser_fallback = (not attempted_direct or derr == "no_cookie")
+    if not users and allow_browser_fallback:
         if engine is not None:
-            async with engine._account_guard(
-                    account_id, fallback_key=f"follows-browser:{account_id}:{direction}"):
-                users, err = await fetch_follows(
+            async def _fetch_browser_follows():
+                return await fetch_follows(
                     browser, identity, platform, uid, direction, known)
+
+            users, err = await engine.guarded_read_pair(
+                account_id, OperationKind.READ_HEAVY,
+                f"follows-browser:{account_id}:{direction}",
+                _fetch_browser_follows, empty_result=[])
+            if err.startswith("risk_deferred:"):
+                return {"ok": True, "fetched": 0, "added": 0,
+                        "skipped": True, "reason": err.split(":", 1)[-1]}
         else:
             users, err = await fetch_follows(
                 browser, identity, platform, uid, direction, known)
@@ -933,8 +955,15 @@ async def sync_dm(account_id: int):
         identity = browser.identity_for(acc)
     if engine is None:
         raise HTTPException(503, "引擎未就绪")
-    async with engine._account_guard(account_id, fallback_key=f"dm:{account_id}"):
-        convs, err = await fetch_dm_conversations(browser, identity, platform)
+    async def _fetch_conversations():
+        return await fetch_dm_conversations(browser, identity, platform)
+
+    convs, err = await engine.guarded_read_pair(
+        account_id, OperationKind.READ_HEAVY, f"dm:{account_id}",
+        _fetch_conversations, empty_result=[])
+    if err.startswith("risk_deferred:"):
+        return {"ok": True, "fetched": 0, "added": 0, "skipped": True,
+                "reason": err.split(":", 1)[-1]}
     if err and err.startswith("logged_out"):
         raise HTTPException(400, "登录态已失效,请点「重新登录」")
     # 小红书网页端私信未开放(entry visible=false)等硬限制:直接把原因回给前端
@@ -1056,11 +1085,17 @@ async def fetch_dm_conversation_history(account_id: int, conv_id: str,
         raise HTTPException(400, "该会话缺 conversation_short_id,请重新同步会话列表")
     if engine is None:
         raise HTTPException(503, "引擎未就绪")
-    async with engine._account_guard(
-            account_id, fallback_key=f"dm-history:{account_id}:{conv_id}"):
-        parsed, err = await fetch_dm_history(
+    async def _fetch_history():
+        return await fetch_dm_history(
             browser, identity, platform, conv_id, short_id,
             conv_type=1, cursor=cursor, debug=debug)
+    parsed, err = await engine.guarded_read_pair(
+        account_id, OperationKind.READ_HEAVY,
+        f"dm-history:{account_id}:{conv_id}", _fetch_history,
+        empty_result={})
+    if err.startswith("risk_deferred:"):
+        return {"ok": True, "messages": 0, "added": 0, "skipped": True,
+                "reason": err.split(":", 1)[-1]}
     if err:
         raise HTTPException(400, err)
     msgs = parsed.get("messages", [])
