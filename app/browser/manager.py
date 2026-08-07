@@ -219,28 +219,30 @@ class BrowserManager:
         ua = self._normalize_ua(identity.ua or self.default_ua)
         kwargs: Dict[str, Any] = dict(
             user_data_dir=str(pdir), headless=headless, args=_STEALTH,
-            user_agent=ua,
             viewport={"width": identity.viewport_w, "height": identity.viewport_h},
             locale=identity.locale or "zh-CN",
             timezone_id=identity.timezone_id or "Asia/Shanghai",
-            # geolocation 伪造:坐标与代理 IP 归属地/时区对齐,并预授权定位权限
-            # (模拟"用户已允许定位"的真实浏览器),避免 navigator.geolocation 暴露真实位置
-            # 或与代理 IP 地区冲突 —— 抖音/视频号 POI 等功能会读它。
-            geolocation=identity.geolocation,
-            permissions=["geolocation"],
         )
+        legacy = identity.identity_mode != "native"
+        if legacy:
+            kwargs.update(
+                user_agent=ua,
+                # 存量账号保持既有画像，避免已建立的 profile 突然漂移。
+                geolocation=identity.geolocation,
+                permissions=["geolocation"],
+            )
         proxy = _parse_proxy(identity.proxy)
         if proxy:
             kwargs["proxy"] = proxy
         ctx = await self._pw.chromium.launch_persistent_context(**kwargs)
         # Client Hints 与归一后的 UA 保持一致(否则内核按真实版本发 Sec-CH-UA,和 UA 打架)
-        sec = self._sec_ch_ua_headers(ua)
+        sec = self._sec_ch_ua_headers(ua) if legacy else None
         if sec:
             try:
                 await ctx.set_extra_http_headers(sec)
             except Exception:
                 pass
-        if identity.fp_seed:
+        if legacy and identity.fp_seed:
             try:
                 await ctx.add_init_script(fingerprint_script(identity.fp_seed, ua))
             except Exception:

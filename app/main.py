@@ -316,8 +316,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 from .browser.manager import normalize_proxy
                 proxy = normalize_proxy(choice)
             identity = Identity(
-                account_id=None, profile_dir=tmp_profile, proxy=proxy,
-                ua=new_fields["ua"], viewport_w=new_fields["viewport_w"],
+                account_id=None, profile_dir=tmp_profile, identity_mode="native",
+                proxy=proxy, ua="", viewport_w=new_fields["viewport_w"],
                 viewport_h=new_fields["viewport_h"], timezone_id=new_fields["timezone_id"],
                 locale=new_fields["locale"], fp_seed=new_fields["fp_seed"])
 
@@ -350,7 +350,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     acc = DouyinAccount(
                         platform=platform, nickname=nickname or nm, status="active",
                         profile_dir=tmp_profile, proxy=identity.proxy,
-                        ua=new_fields["ua"], viewport_w=new_fields["viewport_w"],
+                        identity_mode="native", ua="",
+                        viewport_w=new_fields["viewport_w"],
                         viewport_h=new_fields["viewport_h"],
                         timezone_id=new_fields["timezone_id"], locale=new_fields["locale"],
                         fp_seed=new_fields["fp_seed"])
@@ -511,8 +512,9 @@ async def login_cookie(body: CookieIn):
     platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou") else "douyin"
     state = cookie_string_to_state(body.cookie, platform)
     with get_session() as s:
-        acc = DouyinAccount(nickname=body.nickname or "Cookie账号", platform=platform,
-                            cookie=body.cookie.strip(), storage_state=state)
+        acc = DouyinAccount(
+            nickname=body.nickname or "Cookie账号", platform=platform,
+            identity_mode="native", cookie=body.cookie.strip(), storage_state=state)
         s.add(acc); s.commit(); s.refresh(acc)
         # 分配画像(profile/UA/指纹/代理):Cookie 会在首次开持久 profile 时桥接注入
         ensure_identity(acc, cfg, session=s, assign_proxy=True)
@@ -547,6 +549,7 @@ async def list_accounts(platform: str | None = None):
                 "write_paused_until": (a.write_paused_until.isoformat()
                                         if a.write_paused_until else None),
                 "write_pause_reason": a.write_pause_reason,
+                "identity_mode": a.identity_mode,
                 "ua": a.ua,
                 "profile_dir": a.profile_dir,
                 "created_at": a.created_at.isoformat() if a.created_at else None,

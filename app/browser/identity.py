@@ -61,6 +61,7 @@ class Identity:
     """一个账号的完整浏览器画像。account_id=None 表示匿名(未绑定账号的公开抓取)。"""
     account_id: Optional[int]
     profile_dir: str
+    identity_mode: str = "legacy"
     proxy: str = ""
     ua: str = ""
     viewport_w: int = 1280
@@ -92,7 +93,9 @@ class Identity:
         bridge = tuple(s for s in (getattr(acc, "storage_state", ""),
                                    getattr(acc, "creator_storage_state", "")) if s)
         return cls(
-            account_id=acc.id, profile_dir=pdir, proxy=acc.proxy or "",
+            account_id=acc.id, profile_dir=pdir,
+            identity_mode=getattr(acc, "identity_mode", "legacy") or "legacy",
+            proxy=acc.proxy or "",
             ua=acc.ua or default_ua,
             viewport_w=acc.viewport_w or 1280, viewport_h=acc.viewport_h or 800,
             timezone_id=acc.timezone_id or DEFAULT_TZ,

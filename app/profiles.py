@@ -76,7 +76,8 @@ def ensure_identity(acc: DouyinAccount, cfg, session=None, assign_proxy: bool = 
     changed = False
     if not acc.fp_seed:
         f = generate_identity_fields()
-        acc.ua = acc.ua or f["ua"]
+        if getattr(acc, "identity_mode", "legacy") != "native":
+            acc.ua = acc.ua or f["ua"]
         acc.viewport_w = acc.viewport_w or f["viewport_w"]
         acc.viewport_h = acc.viewport_h or f["viewport_h"]
         acc.timezone_id = acc.timezone_id or f["timezone_id"]
