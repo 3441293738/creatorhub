@@ -75,6 +75,7 @@ from .models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
 from .notifier import CHANNEL_TYPES, send_one
 from .profiles import (ensure_identity, migrate_identities, assign_proxy_from_pool,
                        seed_proxy_pool)
+from .risk import RiskController
 from .settings import get_setting, set_setting
 from .windowing import (EXPLORER_WINDOW_CLASSES, bring_window_to_front,
                         capture_window_snapshot)
@@ -1290,10 +1291,7 @@ async def clear_account_write_pause(account_id: int):
         acc = s.get(DouyinAccount, account_id)
         if not acc:
             raise HTTPException(404, "账号不存在")
-        acc.write_paused_until = None
-        acc.write_pause_reason = ""
-        s.add(acc)
-        s.commit()
+    (engine.risk if engine else RiskController(cfg)).clear_account(account_id)
     return {"ok": True}
 
 

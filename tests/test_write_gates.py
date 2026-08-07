@@ -1,26 +1,38 @@
 import asyncio
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import app.db as db
 from app.config import Config, EngineConfig
 from app.engine.monitor import MonitorEngine
-from app.models import AccountActionTask, CommentRule, CommentTask, DouyinAccount
+from app.models import (
+    AccountActionTask,
+    CommentRule,
+    CommentTask,
+    DouyinAccount,
+    PublishTask,
+)
 from sqlmodel import select
 
 
 class _BrowserStub:
     def __init__(self):
         self._locks = {}
+        self.identity_calls = 0
+        self.anon_calls = 0
 
     def lock_for(self, key):
         return self._locks.setdefault(key, asyncio.Lock())
 
     def identity_for(self, _account):
+        self.identity_calls += 1
         return None
 
     def anon_identity(self):
+        self.anon_calls += 1
         return None
 
 
@@ -96,6 +108,20 @@ class WriteGateTests(unittest.TestCase):
             session.refresh(task)
             return task.id
 
+    def _publish_task(self, account_id, *, platform="douyin"):
+        with db.get_session() as session:
+            task = PublishTask(
+                platform=platform,
+                account_id=account_id,
+                media_type="images",
+                media_json="[]",
+                status="pending",
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            return task.id
+
     def test_manual_comment_execution_keeps_task_queued_outside_active_window(self):
         account_id = self._account()
         task_id = self._comment_task(account_id)
@@ -132,11 +158,129 @@ class WriteGateTests(unittest.TestCase):
         with db.get_session() as session:
             account = session.get(DouyinAccount, account_id)
             self.assertIsNotNone(account.write_paused_until)
-            account.write_paused_until = None
-            account.write_pause_reason = ""
+        engine.risk.clear_account(account_id)
+        self.assertEqual(engine._comment_gate_error(account_id), "")
+
+    def test_publish_outside_active_window_stays_pending(self):
+        account_id = self._account()
+        task_id = self._publish_task(account_id)
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        engine._in_active_window = lambda: False
+
+        result = asyncio.run(engine.publish_task(task_id))
+
+        self.assertFalse(result["ok"])
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            self.assertEqual(task.status, "pending")
+
+    def test_publish_during_risk_pause_stays_pending(self):
+        account_id = self._account()
+        task_id = self._publish_task(account_id)
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        engine._pause_account_writes(account_id, "HTTP 429")
+
+        result = asyncio.run(engine.publish_task(task_id))
+
+        self.assertFalse(result["ok"])
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            self.assertEqual(task.status, "pending")
+            self.assertIsNotNone(task.scheduled_at)
+
+    def test_publish_with_missing_account_fails_before_browser_use(self):
+        browser = _BrowserStub()
+        task_id = self._publish_task(999999)
+        engine = MonitorEngine(self.cfg, browser)
+
+        result = asyncio.run(engine.publish_task(task_id))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(browser.identity_calls, 0)
+        self.assertEqual(browser.anon_calls, 0)
+        with db.get_session() as session:
+            self.assertEqual(session.get(PublishTask, task_id).status, "failed")
+
+    def test_publish_with_bad_proxy_is_deferred_for_recovery(self):
+        account_id = self._account()
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.proxy = "http://bad.example:8000"
+            account.proxy_status = "bad"
             session.add(account)
             session.commit()
-        self.assertEqual(engine._comment_gate_error(account_id), "")
+        task_id = self._publish_task(account_id)
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        result = asyncio.run(engine.publish_task(task_id))
+
+        self.assertFalse(result["ok"])
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            self.assertEqual(task.status, "pending")
+            self.assertGreater(task.scheduled_at, datetime.utcnow())
+
+    def test_successful_comment_blocks_immediate_cross_feature_write(self):
+        account_id = self._account()
+        comment_id = self._comment_task(account_id)
+        action_id = self._action_task(account_id)
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        async def sent(*_args, **_kwargs):
+            return True, ""
+
+        with patch("app.engine.monitor.post_comment_browser", sent):
+            first = asyncio.run(engine.execute_comment_task(comment_id))
+        second = asyncio.run(engine.execute_action_task(action_id))
+
+        self.assertTrue(first["ok"])
+        self.assertFalse(second["ok"])
+        with db.get_session() as session:
+            task = session.get(AccountActionTask, action_id)
+            self.assertEqual(task.status, "pending")
+            self.assertIsNotNone(task.scheduled_at)
+
+    def test_publish_risk_response_returns_task_to_pending(self):
+        account_id = self._account()
+        task_id = self._publish_task(account_id)
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        async def rejected(*_args, **_kwargs):
+            return False, "", "HTTP 429"
+
+        with patch("app.engine.monitor.publish_douyin", rejected):
+            result = asyncio.run(engine.publish_task(task_id))
+
+        self.assertFalse(result["ok"])
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            self.assertEqual(task.status, "pending")
+            self.assertIsNotNone(task.scheduled_at)
+            self.assertGreater(task.scheduled_at, datetime.utcnow())
+
+    def test_comment_at_daily_cap_remains_queued(self):
+        self.cfg.engine.comment_daily_cap_per_account = 1
+        account_id = self._account()
+        with db.get_session() as session:
+            session.add(CommentTask(
+                platform="douyin",
+                account_id=account_id,
+                aweme_id="already-sent",
+                content="done",
+                status="done",
+                done_at=datetime.utcnow(),
+            ))
+            session.commit()
+        task_id = self._comment_task(account_id)
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        result = asyncio.run(engine.execute_comment_task(task_id))
+
+        self.assertFalse(result["ok"])
+        with db.get_session() as session:
+            task = session.get(CommentTask, task_id)
+            self.assertEqual(task.status, "pending")
+            self.assertIsNotNone(task.scheduled_at)
 
     def test_self_comment_filter_prefers_account_ids(self):
         raw = {"user": {"uid": "self-uid", "nickname": "changed"}}

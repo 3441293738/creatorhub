@@ -54,6 +54,11 @@ from ..models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
                       FollowEdge, DmConversation, AccountWork, AccountStatSnapshot)
 from ..notifier import notify_all
 from ..netfp import probe_ip_region
+from ..risk import (
+    OperationKind,
+    RiskCategory,
+    RiskController,
+)
 from ..settings import get_setting
 from .downloader import Downloader
 
@@ -163,6 +168,7 @@ class MonitorEngine:
         self._actioning: set[int] = set()           # 正在执行的写操作任务 id
         self._last_acct_check = time.time()   # 上次账号体检时间
         self._geo_checked: dict = {}          # account_id -> 已校验过地区的代理(避免重复探测)
+        self.risk = RiskController(cfg)
         self._task: Optional[asyncio.Task] = None
         self._running = False
 
@@ -179,15 +185,31 @@ class MonitorEngine:
             self._task = None
 
     # ── 账号隔离调度 ──
+    @staticmethod
+    def _load_account(account_id):
+        if not account_id:
+            return None
+        with get_session() as s:
+            return s.get(DouyinAccount, account_id)
+
     @asynccontextmanager
-    async def _account_guard(self, account_id, fallback_key: str = ""):
-        """全局并发限 + 每账号串行锁:不同账号可并发(各自独立 profile/代理/指纹),
-        同一账号同一时刻只允许一个浏览器/网络动作。"""
+    async def _operation_guard(self, account_id, kind: OperationKind,
+                               fallback_key: str = ""):
+        """Serialize by global limit, network exit, then account profile."""
+        account = self._load_account(account_id)
         key = f"acc:{account_id}" if account_id else (fallback_key or "anon")
         lock = self.browser.lock_for(key)
         async with self._active_sem:
-            async with lock:
-                yield
+            async with self.risk.network_guard(account):
+                async with lock:
+                    yield account
+
+    @asynccontextmanager
+    async def _account_guard(self, account_id, fallback_key: str = ""):
+        """Compatibility wrapper for read call sites not converted yet."""
+        async with self._operation_guard(
+                account_id, OperationKind.READ_LIGHT, fallback_key) as account:
+            yield account
 
     def _identity_proxy(self, acc):
         """由账号行构建 (Identity, proxy)。acc 为空则匿名画像。"""
@@ -202,7 +224,20 @@ class MonitorEngine:
 
     @staticmethod
     def _proxy_bad(acc) -> bool:
-        return bool(acc and acc.proxy and acc.proxy_status == "bad")
+        return bool(
+            acc and acc.proxy
+            and acc.proxy_status in {"bad", "auth_error", "blocked"}
+        )
+
+    @staticmethod
+    def _defer_row(row, reason: str, next_at: datetime | None = None,
+                   fallback_seconds: int = 300) -> None:
+        now = datetime.utcnow()
+        proposed = next_at or (now + timedelta(seconds=max(1, fallback_seconds)))
+        if row.scheduled_at is None or row.scheduled_at < proposed:
+            row.scheduled_at = proposed
+        row.status = "pending"
+        row.error = str(reason or "平台操作已延后").strip()[:500]
 
     def _xhs_comment_write_mode(self) -> str:
         """Return the explicitly selected XHS comment write mode.
@@ -250,22 +285,12 @@ class MonitorEngine:
         """Pause all account write tasks after a platform risk-control response."""
         if not account_id:
             return
-        seconds = max(0, int(self.cfg.engine.comment_risk_cooldown_seconds or 0))
-        if seconds <= 0:
-            return
-        now = datetime.utcnow()
-        until = now + timedelta(seconds=seconds)
         reason = str(reason or "平台拒绝写操作").strip()[:240]
-        with get_session() as s:
-            acc = s.get(DouyinAccount, account_id)
-            if not acc:
-                return
-            if acc.write_paused_until and acc.write_paused_until > until:
-                until = acc.write_paused_until
-            acc.write_paused_until = until
-            acc.write_pause_reason = reason
-            s.add(acc)
-            s.commit()
+        failure = self.risk.record_failure(
+            account_id, OperationKind.COMMENT, reason)
+        until = failure.next_allowed_at
+        if not until:
+            return
         log.warning("账号 %s 检测到平台写操作风险，暂停至 %s: %s",
                     account_id, until.isoformat(timespec="seconds"), reason)
 
@@ -1732,7 +1757,9 @@ class MonitorEngine:
                 account_id = t.account_id if t else None
             # 发布串行 + 该账号串行(有头浏览器会接管该账号 profile,不能与抓取并发)
             async with self._publish_sem:
-                async with self._account_guard(account_id, fallback_key=f"pub:{task_id}"):
+                async with self._operation_guard(
+                        account_id, OperationKind.PUBLISH,
+                        fallback_key=f"pub:{task_id}"):
                     return await self._publish_task_locked(task_id)
         finally:
             self._publishing.discard(task_id)
@@ -1744,14 +1771,38 @@ class MonitorEngine:
                 return {"ok": False, "error": "任务不存在"}
             if t.status in ("done", "publishing"):
                 return {"ok": False, "error": f"任务状态为 {t.status}"}
-            state = ""
-            identity = self.browser.anon_identity()
-            if t.account_id:
-                acc = s.get(DouyinAccount, t.account_id)
-                if acc:
-                    # 发布用创作平台态;一次扫码已把创作 cookie 并入 storage_state,故回退它
-                    state = acc.creator_storage_state or acc.storage_state or ""
-                    identity = self.browser.identity_for(acc)
+            acc = s.get(DouyinAccount, t.account_id) if t.account_id else None
+            if not acc:
+                t.status = "failed"
+                t.error = "绑定账号不存在(可能已删除/重登成新号)"
+                s.add(t); s.commit()
+                return {"ok": False, "error": "account_missing"}
+            if acc.status == "invalid":
+                t.status = "failed"; t.error = "账号登录态已失效"
+                s.add(t); s.commit()
+                return {"ok": False, "error": "account_invalid"}
+            if self._proxy_bad(acc):
+                self._defer_row(t, "账号代理当前不可用", fallback_seconds=300)
+                s.add(t); s.commit()
+                return {"ok": False, "error": "proxy unavailable"}
+            pause_error = self._write_pause_error(t.account_id)
+            if pause_error:
+                decision = self.risk.preflight(t.account_id, OperationKind.PUBLISH)
+                self._defer_row(t, pause_error, decision.next_allowed_at)
+                s.add(t); s.commit()
+                return {"ok": False, "error": pause_error}
+            if not self._in_active_window():
+                self._defer_row(t, "当前处于非活跃时段，发布任务已保留在队列")
+                s.add(t); s.commit()
+                return {"ok": False, "error": t.error}
+            decision = self.risk.preflight(t.account_id, OperationKind.PUBLISH)
+            if not decision.allowed:
+                self._defer_row(t, decision.reason, decision.next_allowed_at)
+                s.add(t); s.commit()
+                return {"ok": False, "error": decision.reason}
+            # 发布用创作平台态;一次扫码已把创作 cookie 并入 storage_state,故回退它
+            state = acc.creator_storage_state or acc.storage_state or ""
+            identity = self.browser.identity_for(acc)
             media_type, title, desc, topics = t.media_type, t.title, t.desc, t.topics
             visibility, allow_save = t.visibility, t.allow_save
             location = getattr(t, "location", "") or ""
@@ -1814,13 +1865,32 @@ class MonitorEngine:
         return await self._finish_publish(task_id, ok, url, err)
 
     async def _finish_publish(self, task_id, ok, url, err, platform="xhs") -> dict:
+        account_id = None
+        failure = None
+        if not ok:
+            with get_session() as s:
+                task = s.get(PublishTask, task_id)
+                account_id = task.account_id if task else None
+            if account_id:
+                failure = self.risk.record_failure(
+                    account_id, OperationKind.PUBLISH, err)
         with get_session() as s:
             t = s.get(PublishTask, task_id)
             if t:
-                t.status = "done" if ok else "failed"
+                account_id = t.account_id
+                if ok:
+                    t.status = "done"
+                    t.done_at = datetime.utcnow()
+                elif failure and failure.category in {
+                        RiskCategory.RISK, RiskCategory.NETWORK}:
+                    self._defer_row(t, err, failure.next_allowed_at)
+                else:
+                    t.status = "failed"
                 t.result_url = url or t.result_url
                 t.error = "" if ok else err
                 s.add(t); s.commit()
+        if ok and account_id:
+            self.risk.record_success(account_id, OperationKind.PUBLISH)
         if ok:
             try:
                 with get_session() as s:
@@ -1916,6 +1986,9 @@ class MonitorEngine:
             return "已达到账号每小时评论上限"
         if not self._acct_gap_ok(account_id):
             return "尚未达到账号评论最小间隔"
+        decision = self.risk.preflight(account_id, OperationKind.COMMENT)
+        if not decision.allowed:
+            return decision.reason
         return ""
 
     async def _process_comment_rules(self):
@@ -2386,7 +2459,7 @@ class MonitorEngine:
             return False
         return True
 
-    def _action_gate_error(self, account_id, gap: int) -> str:
+    def _action_gate_error(self, account_id, gap: int, action: str = "follow") -> str:
         """Apply the same write gate to queued and API-triggered actions."""
         pause_error = self._write_pause_error(account_id)
         if pause_error:
@@ -2397,6 +2470,10 @@ class MonitorEngine:
             return "已达到账号写操作额度"
         if not self._action_gap_ok(account_id, gap):
             return "尚未达到账号写操作最小间隔"
+        kind = OperationKind.DM if action == "send_dm" else OperationKind.SOCIAL
+        decision = self.risk.preflight(account_id, kind)
+        if not decision.allowed:
+            return decision.reason
         return ""
 
     async def _process_action_tasks(self):
@@ -2431,7 +2508,10 @@ class MonitorEngine:
             with get_session() as s:
                 t = s.get(AccountActionTask, task_id)
                 account_id = t.account_id if t else None
-            async with self._account_guard(account_id, fallback_key=f"act:{task_id}"):
+                kind = (OperationKind.DM if t and t.action == "send_dm"
+                        else OperationKind.SOCIAL)
+            async with self._operation_guard(
+                    account_id, kind, fallback_key=f"act:{task_id}"):
                 return await self._execute_action_task_locked(task_id)
         finally:
             self._actioning.discard(task_id)
@@ -2441,21 +2521,28 @@ class MonitorEngine:
             t = s.get(AccountActionTask, task_id)
             if not t or t.status != "pending":
                 return {"ok": False, "error": "任务不可执行"}
+            account_id = t.account_id
             acc = s.get(DouyinAccount, t.account_id) if t.account_id else None
             if not acc:
                 t.status = "failed"; t.error = "绑定账号不存在(可能已删除/重登成新号)"
                 s.add(t); s.commit()
                 return {"ok": False, "error": "account_missing"}
             if self._proxy_bad(acc):
-                t.status = "failed"; t.error = "账号代理不可用(proxy bad)"
+                self._defer_row(t, "账号代理当前不可用", fallback_seconds=300)
                 s.add(t); s.commit()
-                return {"ok": False, "error": "proxy bad"}
+                return {"ok": False, "error": "proxy unavailable"}
             if acc.status == "invalid":
                 t.status = "failed"; t.error = "账号登录态已失效"
                 s.add(t); s.commit()
                 return {"ok": False, "error": "account_invalid"}
-            gate_error = self._action_gate_error(t.account_id, t.min_gap_seconds)
+            gate_error = self._action_gate_error(
+                t.account_id, t.min_gap_seconds, t.action)
             if gate_error:
+                kind = (OperationKind.DM if t.action == "send_dm"
+                        else OperationKind.SOCIAL)
+                decision = self.risk.preflight(t.account_id, kind)
+                self._defer_row(t, gate_error, decision.next_allowed_at)
+                s.add(t); s.commit()
                 return {"ok": False, "error": gate_error}
             action = t.action
             target_uid, target_sec_uid, content = t.target_uid, t.target_sec_uid, t.content
@@ -2496,14 +2583,23 @@ class MonitorEngine:
         except Exception as e:
             ok, err = False, f"{e!r}"
 
+        kind = OperationKind.DM if action == "send_dm" else OperationKind.SOCIAL
+        failure = None if ok else self.risk.record_failure(
+            account_id, kind, err)
         with get_session() as s:
             t = s.get(AccountActionTask, task_id)
             account_id = t.account_id if t else None
             if t:
-                t.status = "done" if ok else "failed"
+                if ok:
+                    t.status = "done"
+                elif failure and failure.category in {
+                        RiskCategory.RISK, RiskCategory.NETWORK}:
+                    self._defer_row(t, err, failure.next_allowed_at)
+                else:
+                    t.status = "failed"
                 t.error = "" if ok else err
                 t.result = "ok" if ok else ""
-                t.done_at = datetime.utcnow()
+                t.done_at = datetime.utcnow() if ok else t.done_at
                 s.add(t); s.commit()
                 if ok and action in ("follow", "unfollow"):
                     # 同一个人可能同时有两行:关注列表(following)+ 粉丝列表(fan)。
@@ -2544,8 +2640,8 @@ class MonitorEngine:
                             fan.is_mutual = True
                             s.add(fan)
                     s.commit()
-        if not ok and self._is_write_risk_error(err):
-            self._pause_account_writes(account_id, err)
+        if ok and account_id:
+            self.risk.record_success(account_id, kind)
         return {"ok": ok, "error": "" if ok else err}
 
     async def execute_comment_task(self, task_id: int) -> dict:
@@ -2556,7 +2652,9 @@ class MonitorEngine:
             with get_session() as s:
                 t = s.get(CommentTask, task_id)
                 account_id = t.account_id if t else None
-            async with self._account_guard(account_id, fallback_key=f"cmt:{task_id}"):
+            async with self._operation_guard(
+                    account_id, OperationKind.COMMENT,
+                    fallback_key=f"cmt:{task_id}"):
                 return await self._execute_comment_task_locked(task_id)
         finally:
             self._commenting.discard(task_id)
@@ -2568,10 +2666,13 @@ class MonitorEngine:
                 return {"ok": False, "error": "任务不存在"}
             if t.status not in ("pending",):
                 return {"ok": False, "error": f"任务状态为 {t.status}"}
+            account_id = t.account_id
             # 执行前再查一次每日上限(生成到执行之间可能已超额)
             cap = self.cfg.engine.comment_daily_cap_per_account
             if cap > 0 and self._acct_today_count(s, t.account_id) >= cap:
-                t.status = "canceled"; t.error = "已达账号每日评论上限"
+                self._defer_row(
+                    t, "已达账号每日评论上限",
+                    datetime.utcnow() + timedelta(days=1))
                 s.add(t); s.commit()
                 return {"ok": False, "error": "已达每日上限"}
             platform = t.platform
@@ -2588,15 +2689,18 @@ class MonitorEngine:
                 s.add(t); s.commit()
                 return {"ok": False, "error": "account_missing"}
             if self._proxy_bad(acc):
-                t.status = "failed"; t.error = "账号代理不可用(proxy bad)"
+                self._defer_row(t, "账号代理当前不可用", fallback_seconds=300)
                 s.add(t); s.commit()
-                return {"ok": False, "error": "proxy bad"}
+                return {"ok": False, "error": "proxy unavailable"}
             if acc.status == "invalid":
                 t.status = "failed"; t.error = "账号登录态已失效"
                 s.add(t); s.commit()
                 return {"ok": False, "error": "account_invalid"}
             gate_error = self._comment_gate_error(t.account_id)
             if gate_error:
+                decision = self.risk.preflight(t.account_id, OperationKind.COMMENT)
+                self._defer_row(t, gate_error, decision.next_allowed_at)
+                s.add(t); s.commit()
                 return {"ok": False, "error": gate_error}
             state = acc.storage_state or acc.creator_storage_state or ""
             proxy = acc.proxy or ""
@@ -2646,20 +2750,29 @@ class MonitorEngine:
         except Exception as e:
             ok, err = False, repr(e)
 
+        failure = None if ok or manual_only else self.risk.record_failure(
+            account_id, OperationKind.COMMENT, err)
         with get_session() as s:
             t = s.get(CommentTask, task_id)
             account_id = t.account_id if t else None
             if t:
                 # “立即发”在 manual 模式下也只能回到草稿,不能变成失败后重试循环。
-                t.status = "done" if ok else ("draft" if manual_only else "failed")
+                if ok:
+                    t.status = "done"
+                elif manual_only:
+                    t.status = "draft"
+                elif failure and failure.category in {
+                        RiskCategory.RISK, RiskCategory.NETWORK}:
+                    self._defer_row(t, err, failure.next_allowed_at)
+                else:
+                    t.status = "failed"
                 t.result = result
                 t.error = "" if ok else err
                 t.method = method
                 t.done_at = datetime.utcnow() if ok else t.done_at
                 s.add(t); s.commit()
-        if not ok and self._is_write_risk_error(err):
-            self._pause_account_writes(account_id, err)
         if ok:
+            self.risk.record_success(account_id, OperationKind.COMMENT)
             log.info("评论任务 %s 已发送(%s,作品 %s)", task_id, method, aweme_id)
         else:
             log.info("评论任务 %s 失败: %s", task_id, err)
