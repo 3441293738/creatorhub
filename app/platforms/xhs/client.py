@@ -55,7 +55,12 @@ def has_creator_cookies(storage_state_json: str) -> bool:
 
 
 class XhsApiError(Exception):
-    pass
+    def __init__(self, message: str, *, category: str = "business",
+                 status_code: int | None = None, signal: str = ""):
+        super().__init__(message)
+        self.category = category
+        self.status_code = status_code
+        self.signal = signal or category
 
 
 class XhsApiClient:
@@ -126,14 +131,48 @@ class XhsApiClient:
 
     @staticmethod
     def _unwrap(r) -> dict:
-        if r.status_code in (461, 471):
-            raise XhsApiError(f"触发验证码/风控(HTTP {r.status_code}),请稍后再试或更换账号")
+        if r.status_code in (403, 429, 461, 471):
+            raise XhsApiError(
+                f"触发验证码/风控(HTTP {r.status_code}),请稍后再试",
+                category="risk", status_code=r.status_code,
+                signal=f"http_{r.status_code}")
+        if r.status_code == 401:
+            raise XhsApiError(
+                "登录状态已失效", category="auth", status_code=401,
+                signal="http_401")
+        if r.status_code == 407:
+            raise XhsApiError(
+                "代理认证失败", category="network", status_code=407,
+                signal="proxy_auth")
+        if r.status_code >= 500:
+            raise XhsApiError(
+                f"平台服务异常(HTTP {r.status_code})", category="network",
+                status_code=r.status_code, signal=f"http_{r.status_code}")
         try:
             j = r.json()
         except Exception:
-            raise XhsApiError(f"非 JSON 响应(HTTP {r.status_code}): {r.text[:120]}")
+            category = "risk" if 200 <= r.status_code < 300 else "business"
+            raise XhsApiError(
+                f"非 JSON 响应(HTTP {r.status_code}): {r.text[:120]}",
+                category=category, status_code=r.status_code,
+                signal="ambiguous_response" if category == "risk" else "non_json")
         if not j.get("success", True) and "data" not in j:
-            raise XhsApiError(f"接口失败 code={j.get('code')} msg={j.get('msg') or j.get('message')}")
+            code = j.get("code")
+            message = str(j.get("msg") or j.get("message") or "")
+            text = message.lower()
+            if (code in {-100, -101, 401}
+                    or any(marker in text for marker in (
+                        "登录状态", "登录已失效", "未登录", "login expired"))):
+                category, signal = "auth", "auth_expired"
+            elif (code in {403, 429, 461, 471}
+                  or any(marker in text for marker in (
+                      "风控", "频繁", "验证码", "验证", "risk", "captcha"))):
+                category, signal = "risk", f"api_code_{code}"
+            else:
+                category, signal = "business", f"api_code_{code}"
+            raise XhsApiError(
+                f"接口失败 code={code} msg={message}", category=category,
+                status_code=r.status_code, signal=signal)
         return j.get("data") or {}
 
     # ── 业务接口 ──

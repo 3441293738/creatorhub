@@ -282,6 +282,37 @@ class WriteGateTests(unittest.TestCase):
             self.assertEqual(task.status, "pending")
             self.assertIsNotNone(task.scheduled_at)
 
+    def test_startup_recovers_interrupted_write_tasks(self):
+        account_id = self._account()
+        now = datetime(2026, 8, 7, 1, 0, 0)
+        with db.get_session() as session:
+            comment = CommentTask(
+                account_id=account_id, aweme_id="fixture", content="fixture",
+                status="doing")
+            action = AccountActionTask(
+                account_id=account_id, action="follow", status="doing")
+            publish = PublishTask(
+                account_id=account_id, media_json="[]", status="publishing")
+            session.add(comment)
+            session.add(action)
+            session.add(publish)
+            session.commit()
+            comment_id, action_id, publish_id = comment.id, action.id, publish.id
+
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        recovered = engine.recover_interrupted_tasks(now=now)
+
+        self.assertEqual(recovered, 3)
+        with db.get_session() as session:
+            rows = [
+                session.get(CommentTask, comment_id),
+                session.get(AccountActionTask, action_id),
+                session.get(PublishTask, publish_id),
+            ]
+            for row in rows:
+                self.assertEqual(row.status, "pending")
+                self.assertEqual(row.scheduled_at, now + timedelta(minutes=5))
+
     def test_self_comment_filter_prefers_account_ids(self):
         raw = {"user": {"uid": "self-uid", "nickname": "changed"}}
         self.assertTrue(MonitorEngine._is_self_comment(

@@ -194,6 +194,28 @@ class MonitorEngine:
             self._task = asyncio.create_task(self._loop())
             log.info("监控引擎已启动")
 
+    def recover_interrupted_tasks(self, *, now: datetime | None = None,
+                                  delay_seconds: int = 300) -> int:
+        """Return crash-left transient write states to their durable queues."""
+        scheduled_at = (now or datetime.utcnow()) + timedelta(
+            seconds=max(1, delay_seconds))
+        recovered = 0
+        with get_session() as s:
+            for model, transient in (
+                    (CommentTask, "doing"),
+                    (AccountActionTask, "doing"),
+                    (PublishTask, "publishing")):
+                rows = s.exec(select(model).where(model.status == transient)).all()
+                for row in rows:
+                    row.status = "pending"
+                    row.scheduled_at = scheduled_at
+                    row.error = "服务重启后已恢复到待执行队列"
+                    s.add(row)
+                    recovered += 1
+            if recovered:
+                s.commit()
+        return recovered
+
     async def stop(self):
         self._running = False
         if self._task:
@@ -451,8 +473,13 @@ class MonitorEngine:
                             try:
                                 d = await client.self_info()
                                 u, err = (d, "") if (d and not d.get("guest")) else ({}, "logged_out")
-                            except XhsApiError:
-                                u, err = {}, "logged_out"
+                            except XhsApiError as exc:
+                                if exc.category == "auth":
+                                    u, err = {}, "logged_out"
+                                else:
+                                    self.risk.record_failure(
+                                        aid, OperationKind.READ_LIGHT, exc)
+                                    continue
                     elif platform == "kuaishou":
                         u, err = await fetch_ks_self_profile(self.browser, identity)
                     elif platform == "shipinhao":

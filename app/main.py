@@ -127,6 +127,9 @@ async def lifespan(app: FastAPI):
                              cfg.engine.max_live_contexts)
     await browser.start()
     engine = MonitorEngine(cfg, browser)
+    recovered = engine.recover_interrupted_tasks()
+    if recovered:
+        print(f"[startup] 已恢复 {recovered} 条中断的写任务")
     engine.start()
     from .engine.im_receiver import ImReceiverManager
     im_receiver = ImReceiverManager(browser)
@@ -154,8 +157,8 @@ async def _xhs_profile(state: str, proxy: str = ""):
                           timeout=cfg.engine.request_timeout_seconds, proxy=proxy)
     try:
         me = await client.self_info()
-    except XhsApiError:
-        return {}, "logged_out"
+    except XhsApiError as exc:
+        return {}, "logged_out" if exc.category == "auth" else exc.category
     except Exception as e:
         print(f"[xhs_profile] self_info 失败: {e!r}")
         return {}, "error"
