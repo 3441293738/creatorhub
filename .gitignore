@@ -16,6 +16,7 @@ _site/
 # IDE
 .idea/
 .vscode/
+.worktrees/
 
 # Claude Code 本地技能/配置(不随仓库发布)
 .claude/
