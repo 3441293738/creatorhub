@@ -86,9 +86,40 @@ class ServerConfig:
 
 
 @dataclass
+class RiskControlConfig:
+    """Conservative cross-feature limits for platform-facing account activity."""
+    enabled: bool = True
+    mode: str = "conservative"
+    network_group_concurrency: int = 1
+    read_light_gap_seconds: int = 20
+    read_heavy_gap_seconds: int = 60
+    shared_write_gap_seconds: int = 300
+    comment_min_gap_seconds: int = 600
+    comment_hourly_cap: int = 3
+    comment_daily_cap: int = 10
+    social_min_gap_seconds: int = 900
+    social_hourly_cap: int = 2
+    social_daily_cap: int = 8
+    dm_min_gap_seconds: int = 900
+    dm_hourly_cap: int = 2
+    dm_daily_cap: int = 8
+    publish_min_gap_seconds: int = 7200
+    publish_hourly_cap: int = 1
+    publish_daily_cap: int = 3
+    combined_action_hourly_cap: int = 3
+    combined_action_daily_cap: int = 10
+    cooldown_steps_seconds: List[int] = field(
+        default_factory=lambda: [1800, 7200, 21600, 86400])
+    recovery_successes: int = 3
+    recovery_probe_gap_seconds: int = 600
+    event_retention_days: int = 30
+
+
+@dataclass
 class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     engine: EngineConfig = field(default_factory=EngineConfig)
+    risk_control: RiskControlConfig = field(default_factory=RiskControlConfig)
     db_path: str = "./data/creatorhub.db"
     proxies: List[str] = field(default_factory=list)  # 代理池;建号时一号一代理 sticky 分配
 
@@ -105,6 +136,11 @@ def load_config(path: str | None = None) -> Config:
         e = raw.get("engine", {})
         cfg.engine = EngineConfig(**{k: v for k, v in e.items()
                                      if k in EngineConfig.__dataclass_fields__})
+        risk = raw.get("risk_control", {}) or {}
+        cfg.risk_control = RiskControlConfig(**{
+            k: v for k, v in risk.items()
+            if k in RiskControlConfig.__dataclass_fields__
+        })
         cfg.db_path = (raw.get("storage", {}) or {}).get("db_path", cfg.db_path)
         px = raw.get("proxies") or []
         cfg.proxies = [str(p).strip() for p in px if str(p).strip()]

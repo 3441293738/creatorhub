@@ -37,6 +37,7 @@ class DouyinAccount(SQLModel, table=True):
     last_active_at: Optional[datetime] = None  # 上次活跃(用于错峰调度)
     write_paused_until: Optional[datetime] = None  # 平台风控后暂停自动写操作
     write_pause_reason: str = ""                    # 最近一次暂停原因
+    identity_mode: str = "legacy"                  # legacy=保留存量画像 | native=浏览器原生画像
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -88,6 +89,34 @@ class AppSetting(SQLModel, table=True):
     """全局键值设置(如默认下载目录)。"""
     key: str = Field(primary_key=True)
     value: str = ""
+
+
+class AccountRiskState(SQLModel, table=True):
+    """跨功能共享的账号平台风险状态，一账号一行。"""
+    account_id: int = Field(primary_key=True)
+    risk_level: int = 0
+    cooldown_until: Optional[datetime] = Field(default=None, index=True)
+    probe_only_until: Optional[datetime] = None
+    consecutive_risk: int = 0
+    recovery_successes: int = 0
+    last_risk_at: Optional[datetime] = None
+    last_risk_reason: str = ""
+    last_operation_at: Optional[datetime] = None
+    last_write_at: Optional[datetime] = None
+    last_heavy_read_at: Optional[datetime] = None
+    last_recovery_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class RiskEvent(SQLModel, table=True):
+    """统一平台操作计数事件；不保存 Cookie、代理凭据或响应正文。"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: int = Field(index=True)
+    network_key: str = Field(default="direct", index=True)
+    operation_kind: str = Field(default="read_light", index=True)
+    outcome: str = Field(default="success", index=True)
+    signal: str = ""
+    occurred_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
 
 class NotificationChannel(SQLModel, table=True):
@@ -169,6 +198,7 @@ class PublishTask(SQLModel, table=True):
     source_platform: str = ""      # 来源(如 douyin),跨平台转发时填
     source_content_id: Optional[int] = None            # 来源作品记录 id
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    done_at: Optional[datetime] = None
 
 
 class CommentRecord(SQLModel, table=True):

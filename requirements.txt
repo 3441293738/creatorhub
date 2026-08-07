@@ -2,6 +2,7 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 httpx[socks]==0.28.1     # [socks]=socksio,支持 SOCKS5 代理(多账号隔离用)
 pyyaml==6.0.3
+tzdata>=2025.2          # Windows 上为 zoneinfo 提供 IANA 时区数据库
 sqlmodel==0.0.22
 playwright==1.61.0
 xhshow>=0.2.0          # 小红书请求签名(X-S/X-T/x-S-Common)纯算法库
