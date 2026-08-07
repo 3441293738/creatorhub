@@ -148,6 +148,22 @@ def _douyin_scan_since(monitor_since: int, known_create_times: list[int]) -> int
     return min(monitor_since, latest_known) if latest_known else monitor_since
 
 
+def _round_robin_by_account(rows: list[tuple[int, int | None]]) \
+        -> list[tuple[int, int | None]]:
+    """Interleave due rows so one account cannot monopolize a scheduler burst."""
+    buckets: dict[object, list[tuple[int, int | None]]] = {}
+    for row_id, account_id in rows:
+        key: object = account_id if account_id is not None else f"anon:{row_id}"
+        buckets.setdefault(key, []).append((row_id, account_id))
+    ordered: list[tuple[int, int | None]] = []
+    while buckets:
+        for key in list(buckets):
+            ordered.append(buckets[key].pop(0))
+            if not buckets[key]:
+                del buckets[key]
+    return ordered
+
+
 class MonitorEngine:
     def __init__(self, cfg: Config, browser: BrowserManager):
         self.cfg = cfg
@@ -210,6 +226,34 @@ class MonitorEngine:
         async with self._operation_guard(
                 account_id, OperationKind.READ_LIGHT, fallback_key) as account:
             yield account
+
+    async def _guarded_read_dict(self, account_id, kind: OperationKind,
+                                 fallback_key: str, operation) -> dict:
+        """Run one read through its budget and persist the logical outcome."""
+        decision = self.risk.preflight(account_id, kind)
+        if not decision.allowed:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": decision.reason,
+                "next_allowed_at": (
+                    decision.next_allowed_at.isoformat()
+                    if decision.next_allowed_at else None),
+            }
+        try:
+            async with self._operation_guard(
+                    account_id, kind, fallback_key=fallback_key):
+                result = await operation()
+        except Exception as exc:
+            if account_id:
+                self.risk.record_failure(account_id, kind, exc)
+            raise
+        if account_id:
+            if result.get("ok") and not result.get("skipped"):
+                self.risk.record_success(account_id, kind)
+            elif result.get("error"):
+                self.risk.record_failure(account_id, kind, result.get("error"))
+        return result
 
     def _identity_proxy(self, acc):
         """由账号行构建 (Identity, proxy)。acc 为空则匿名画像。"""
@@ -387,9 +431,12 @@ class MonitorEngine:
                 accs.append((a.id, a.platform, a.storage_state, a.creator_storage_state,
                              a.proxy or "", self.browser.identity_for(a)))
         for aid, platform, state, creator_state, proxy, identity in accs:
+            decision = self.risk.preflight(aid, OperationKind.READ_LIGHT)
+            if not decision.allowed:
+                continue
             await self._verify_proxy_region(aid, proxy, identity.timezone_id)
             try:
-                async with self._account_guard(aid):
+                async with self._operation_guard(aid, OperationKind.READ_LIGHT):
                     if platform == "xhs" and creator_state:
                         # 创作者号:用创作平台接口校验(www 的 user/me 对创作态会误判)
                         chk = await creator_check(creator_state, proxy=proxy)
@@ -412,8 +459,13 @@ class MonitorEngine:
                         u, err = await fetch_channels_self_profile(self.browser, identity)
                     else:
                         u, err = await fetch_self_profile(self.browser, identity)
-            except Exception:
+            except Exception as exc:
+                self.risk.record_failure(aid, OperationKind.READ_LIGHT, exc)
                 continue
+            if u:
+                self.risk.record_success(aid, OperationKind.READ_LIGHT)
+            elif err:
+                self.risk.record_failure(aid, OperationKind.READ_LIGHT, err)
             with get_session() as s:
                 a = s.get(DouyinAccount, aid)
                 if not a:
@@ -467,13 +519,21 @@ class MonitorEngine:
                     for a in s.exec(select(DouyinAccount)).all()
                     if a.status != "invalid" and (a.storage_state or a.creator_storage_state)]
         for aid, platform, uid, identity in accs:
+            decision = self.risk.preflight(aid, OperationKind.READ_HEAVY)
+            if not decision.allowed:
+                continue
             try:
-                async with self._account_guard(aid):
+                async with self._operation_guard(aid, OperationKind.READ_HEAVY):
                     items, err = await fetch_account_works(self.browser, identity,
                                                            platform, uid)
             except Exception as e:
+                self.risk.record_failure(aid, OperationKind.READ_HEAVY, e)
                 log.warning("作品健康:账号 %s 抓取失败 %s", aid, e)
                 continue
+            if err:
+                self.risk.record_failure(aid, OperationKind.READ_HEAVY, err)
+            else:
+                self.risk.record_success(aid, OperationKind.READ_HEAVY)
             if not items:
                 continue
             self._stamp_active(aid)
@@ -571,14 +631,15 @@ class MonitorEngine:
         return (datetime.utcnow() - last_scan_at).total_seconds() >= interval_seconds * factor
 
     async def _scan_once(self):
-        due = []
+        due: list[tuple[int, int | None]] = []
         with get_session() as s:
             targets = s.exec(select(MonitorTarget).where(MonitorTarget.enabled == True)).all()  # noqa: E712
             for t in targets:
                 if self._due(t.last_scan_at, t.interval_seconds):
-                    due.append(t.id)
+                    due.append((t.id, t.account_id))
         if due:
-            await asyncio.gather(*(self.scan_target(tid) for tid in due))
+            ordered = _round_robin_by_account(due)
+            await asyncio.gather(*(self.scan_target(tid) for tid, _ in ordered))
 
     async def scan_target(self, target_id: int) -> dict:
         if target_id in self._inflight:
@@ -588,11 +649,28 @@ class MonitorEngine:
             with get_session() as s:
                 t = s.get(MonitorTarget, target_id)
                 account_id = t.account_id if t else None
-            async with self._account_guard(account_id, fallback_key=f"tgt:{target_id}"):
+            decision = self.risk.preflight(account_id, OperationKind.READ_LIGHT)
+            if not decision.allowed:
+                return {
+                    "ok": True,
+                    "new": 0,
+                    "skipped": True,
+                    "reason": decision.reason,
+                    "next_allowed_at": (
+                        decision.next_allowed_at.isoformat()
+                        if decision.next_allowed_at else None),
+                }
+            async with self._operation_guard(
+                    account_id, OperationKind.READ_LIGHT,
+                    fallback_key=f"tgt:{target_id}"):
                 res = await self._scan_target_locked(target_id)
             # 用该账号成功抓取过=登录态被有效使用,顺带续期,免得再被闲置保活重复摸
-            if account_id and res.get("ok"):
+            if account_id and res.get("ok") and not res.get("skipped"):
+                self.risk.record_success(account_id, OperationKind.READ_LIGHT)
                 self._stamp_active(account_id)
+            elif account_id and res.get("error"):
+                self.risk.record_failure(
+                    account_id, OperationKind.READ_LIGHT, res.get("error"))
             return res
         finally:
             self._inflight.discard(target_id)
@@ -942,7 +1020,14 @@ class MonitorEngine:
             return {"ok": True, "fetched": 0, "added": 0, "skipped": "正在抓取中"}
         self._inflight.add(key)
         try:
-            async with self._account_guard(account_id, fallback_key=key):
+            decision = self.risk.preflight(account_id, OperationKind.READ_HEAVY)
+            if not decision.allowed:
+                return {"ok": True, "fetched": 0, "added": 0,
+                        "skipped": True, "reason": decision.reason,
+                        "next_allowed_at": (decision.next_allowed_at.isoformat()
+                                            if decision.next_allowed_at else None)}
+            async with self._operation_guard(
+                    account_id, OperationKind.READ_HEAVY, fallback_key=key):
                 with get_session() as s:
                     acc = s.get(DouyinAccount, account_id)
                     if not acc:
@@ -981,10 +1066,17 @@ class MonitorEngine:
                                                if k != "aweme_id"}))
                         added += 1
                     s.commit()
-                return {"ok": bool(added or not err), "fetched": len(fresh),
-                        "added": added, "error": err}
+                result = {"ok": bool(added or not err), "fetched": len(fresh),
+                          "added": added, "error": err}
+                if result["ok"]:
+                    self.risk.record_success(account_id, OperationKind.READ_HEAVY)
+                elif err:
+                    self.risk.record_failure(
+                        account_id, OperationKind.READ_HEAVY, err)
+                return result
         except Exception as e:
             log.warning("本账号作品弹幕抓取失败 %s/%s: %s", platform, item_id, e)
+            self.risk.record_failure(account_id, OperationKind.READ_HEAVY, e)
             return {"ok": False, "fetched": 0, "added": 0, "error": repr(e)}
         finally:
             self._inflight.discard(key)
@@ -998,8 +1090,9 @@ class MonitorEngine:
             with get_session() as s:
                 watch = s.get(DanmakuWatch, watch_id)
                 account_id = watch.account_id if watch else None
-            async with self._account_guard(account_id, fallback_key=key):
-                return await self._scan_danmaku_watch_locked(watch_id)
+            return await self._guarded_read_dict(
+                account_id, OperationKind.READ_HEAVY, key,
+                lambda: self._scan_danmaku_watch_locked(watch_id))
         finally:
             self._inflight.discard(key)
 
@@ -1229,9 +1322,10 @@ class MonitorEngine:
             return {"ok": True, "fetched": 0, "added": 0, "skipped": "正在抓取中"}
         self._inflight.add(key)
         try:
-            async with self._account_guard(account_id, fallback_key=key):
-                return await self._sync_work_comments_locked(account_id, platform,
-                                                             item_id, xsec_token)
+            return await self._guarded_read_dict(
+                account_id, OperationKind.READ_HEAVY, key,
+                lambda: self._sync_work_comments_locked(
+                    account_id, platform, item_id, xsec_token))
         finally:
             self._inflight.discard(key)
 
@@ -1312,9 +1406,20 @@ class MonitorEngine:
                 "added": added, "error": error}
 
     async def fetch_douyin_follows_direct(self, account_id: int, direction: str):
-        async with self._account_guard(account_id,
-                                       fallback_key=f"follows:{account_id}:{direction}"):
-            return await self._fetch_douyin_follows_direct_locked(account_id, direction)
+        kind = OperationKind.READ_HEAVY
+        decision = self.risk.preflight(account_id, kind)
+        if not decision.allowed:
+            return [], decision.reason
+        async with self._operation_guard(
+                account_id, kind,
+                fallback_key=f"follows:{account_id}:{direction}"):
+            rows, error = await self._fetch_douyin_follows_direct_locked(
+                account_id, direction)
+        if not error or error == "empty":
+            self.risk.record_success(account_id, kind)
+        else:
+            self.risk.record_failure(account_id, kind, error)
+        return rows, error
 
     async def _fetch_douyin_follows_direct_locked(self, account_id: int, direction: str):
         """抖音关注/粉丝直连(following/follower list 分页,比弹窗滚动抓得全)。
@@ -1360,8 +1465,9 @@ class MonitorEngine:
             with get_session() as s:
                 w = s.get(CommentWatch, watch_id)
                 account_id = w.account_id if w else None
-            async with self._account_guard(account_id, fallback_key=f"cw:{watch_id}"):
-                return await self._scan_comment_watch_locked(watch_id)
+            return await self._guarded_read_dict(
+                account_id, OperationKind.READ_HEAVY, key,
+                lambda: self._scan_comment_watch_locked(watch_id))
         finally:
             self._inflight.discard(key)
 
@@ -2078,13 +2184,29 @@ class MonitorEngine:
         skip_words = [w.strip() for w in rf["skip_keywords"].split(",") if w.strip()]
         ai = self._ai_settings() if use_ai else None
 
-        async with self._account_guard(rf["account_id"], fallback_key=f"rule:{rule_id}"):
+        read_decision = self.risk.preflight(
+            rf["account_id"], OperationKind.READ_HEAVY)
+        if not read_decision.allowed:
+            return {"ok": False, "error": read_decision.reason,
+                    "skipped": True,
+                    "next_allowed_at": (read_decision.next_allowed_at.isoformat()
+                                        if read_decision.next_allowed_at else None)}
+        async with self._operation_guard(
+                rf["account_id"], OperationKind.READ_HEAVY,
+                fallback_key=f"rule:{rule_id}"):
             try:
                 cands, error = await self._discover_targets(
                     rf, acc_state, acc_proxy, acc_sec_uid, acc_nick, identity)
             except Exception as e:
+                self.risk.record_failure(
+                    rf["account_id"], OperationKind.READ_HEAVY, e)
                 self._mark_rule(rule_id, f"发现目标失败: {e!r}")
                 return {"ok": False, "error": repr(e)}
+        if error:
+            self.risk.record_failure(
+                rf["account_id"], OperationKind.READ_HEAVY, error)
+        else:
+            self.risk.record_success(rf["account_id"], OperationKind.READ_HEAVY)
 
         # 过滤 + 去重 + 生成
         created = 0

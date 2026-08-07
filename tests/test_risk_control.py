@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -7,7 +8,9 @@ import app.db as db
 from app.config import Config, RiskControlConfig
 from app.models import (
     AccountRiskState,
+    CommentWatch,
     DouyinAccount,
+    MonitorTarget,
     PublishTask,
     RiskEvent,
 )
@@ -18,6 +21,15 @@ from app.risk import (
     classify_platform_error,
     network_key,
 )
+from app.engine.monitor import MonitorEngine, _round_robin_by_account
+
+
+class _BrowserStub:
+    def __init__(self):
+        self._locks = {}
+
+    def lock_for(self, key):
+        return self._locks.setdefault(key, asyncio.Lock())
 
 
 class RiskControlTests(unittest.TestCase):
@@ -193,6 +205,126 @@ class RiskControlTests(unittest.TestCase):
             state = session.get(AccountRiskState, account_id)
             self.assertEqual(state.risk_level, 0)
             self.assertEqual(state.recovery_successes, 0)
+
+    def test_network_guard_serializes_accounts_on_same_exit(self):
+        first_id = self._account(proxy="")
+        second_id = self._account(proxy="")
+        controller = RiskController(self.cfg)
+
+        async def scenario():
+            active = 0
+            peak = 0
+
+            async def worker(account_id):
+                nonlocal active, peak
+                async with controller.network_guard(account_id):
+                    active += 1
+                    peak = max(peak, active)
+                    await asyncio.sleep(0.02)
+                    active -= 1
+
+            await asyncio.gather(worker(first_id), worker(second_id))
+            return peak
+
+        self.assertEqual(asyncio.run(scenario()), 1)
+
+    def test_network_guard_allows_distinct_proxy_exits_to_overlap(self):
+        first_id = self._account(proxy="http://proxy-a.example:8000")
+        second_id = self._account(proxy="http://proxy-b.example:8000")
+        controller = RiskController(self.cfg)
+
+        async def scenario():
+            active = 0
+            peak = 0
+
+            async def worker(account_id):
+                nonlocal active, peak
+                async with controller.network_guard(account_id):
+                    active += 1
+                    peak = max(peak, active)
+                    await asyncio.sleep(0.02)
+                    active -= 1
+
+            await asyncio.gather(worker(first_id), worker(second_id))
+            return peak
+
+        self.assertEqual(asyncio.run(scenario()), 2)
+
+    def test_heavy_read_budget_and_recovery_probe(self):
+        account_id = self._account()
+        controller = RiskController(self.cfg)
+        now = datetime(2026, 8, 7, 0, 0, 0)
+        controller.record_success(account_id, OperationKind.READ_HEAVY, now=now)
+
+        too_soon = controller.preflight(
+            account_id, OperationKind.READ_HEAVY, now=now + timedelta(seconds=30))
+        self.assertFalse(too_soon.allowed)
+        self.assertEqual(too_soon.signal, "kind_gap")
+
+        controller.record_failure(
+            account_id, OperationKind.READ_HEAVY, "HTTP 429",
+            status_code=429, now=now + timedelta(minutes=2))
+        after_cooldown = now + timedelta(minutes=33)
+        self.assertFalse(controller.preflight(
+            account_id, OperationKind.READ_HEAVY, now=after_cooldown).allowed)
+        self.assertTrue(controller.preflight(
+            account_id, OperationKind.READ_LIGHT, now=after_cooldown).allowed)
+
+    def test_due_targets_are_round_robin_by_account(self):
+        rows = [(1, 10), (2, 10), (3, 20), (4, 20), (5, None)]
+
+        ordered = _round_robin_by_account(rows)
+
+        self.assertEqual(ordered, [
+            (1, 10), (3, 20), (5, None), (2, 10), (4, 20)])
+
+    def test_scan_target_respects_light_read_budget_without_advancing_scan(self):
+        account_id = self._account()
+        with db.get_session() as session:
+            target = MonitorTarget(
+                platform="douyin", sec_uid="fixture", account_id=account_id,
+                interval_seconds=60, enabled=True)
+            session.add(target)
+            session.commit()
+            session.refresh(target)
+            target_id = target.id
+
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        engine.risk.record_success(account_id, OperationKind.READ_LIGHT)
+
+        async def unexpected(_target_id):
+            raise AssertionError("platform read should have been deferred")
+
+        engine._scan_target_locked = unexpected
+        result = asyncio.run(engine.scan_target(target_id))
+
+        self.assertTrue(result["skipped"])
+        with db.get_session() as session:
+            self.assertIsNone(session.get(MonitorTarget, target_id).last_scan_at)
+
+    def test_comment_watch_respects_heavy_read_budget(self):
+        account_id = self._account()
+        with db.get_session() as session:
+            watch = CommentWatch(
+                platform="douyin", kind="video", aweme_id="fixture",
+                account_id=account_id, enabled=True)
+            session.add(watch)
+            session.commit()
+            session.refresh(watch)
+            watch_id = watch.id
+
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        engine.risk.record_success(account_id, OperationKind.READ_HEAVY)
+
+        async def unexpected(_watch_id):
+            raise AssertionError("heavy platform read should have been deferred")
+
+        engine._scan_comment_watch_locked = unexpected
+        result = asyncio.run(engine.scan_comment_watch(watch_id))
+
+        self.assertTrue(result["skipped"])
+        with db.get_session() as session:
+            self.assertIsNone(session.get(CommentWatch, watch_id).last_scan_at)
 
 
 if __name__ == "__main__":
