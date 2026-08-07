@@ -61,6 +61,34 @@ engine:
   work_health_recent_days: 7            # 只体检最近 N 天内发布的作品
   work_health_stat_snapshots: true      # 记录账号粉丝/作品/互动每日快照(「本账号→数据」趋势;不占额外抓取)
 
+# 统一平台风控：所有读取、评论、关注/取关、私信和发布共用同一套账号预算。
+# conservative 模式下这些值是硬上限；engine 中更严格的旧限制仍然生效。
+risk_control:
+  enabled: true
+  mode: conservative
+  network_group_concurrency: 1   # 同一代理出口（含直连出口）同时只做一个平台操作
+  read_light_gap_seconds: 20
+  read_heavy_gap_seconds: 60
+  shared_write_gap_seconds: 300  # 评论/账号动作/私信/发布之间的跨功能共享间隔
+  comment_min_gap_seconds: 600
+  comment_hourly_cap: 3
+  comment_daily_cap: 10
+  social_min_gap_seconds: 900
+  social_hourly_cap: 2
+  social_daily_cap: 8
+  dm_min_gap_seconds: 900
+  dm_hourly_cap: 2
+  dm_daily_cap: 8
+  publish_min_gap_seconds: 7200
+  publish_hourly_cap: 1
+  publish_daily_cap: 3
+  combined_action_hourly_cap: 3
+  combined_action_daily_cap: 10
+  cooldown_steps_seconds: [1800, 7200, 21600, 86400] # 30 分钟、2 小时、6 小时、24 小时
+  recovery_successes: 3
+  recovery_probe_gap_seconds: 600
+  event_retention_days: 30
+
 storage:
   db_path: ./data/creatorhub.db
 

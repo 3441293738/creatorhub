@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import app.db as db
-from app.config import Config, RiskControlConfig
+from app.config import Config, RiskControlConfig, load_config
 from app.models import (
     AccountRiskState,
     CommentWatch,
@@ -66,6 +66,28 @@ class RiskControlTests(unittest.TestCase):
         self.assertEqual(cfg.network_group_concurrency, 1)
         self.assertEqual(cfg.publish_daily_cap, 3)
         self.assertEqual(cfg.cooldown_steps_seconds, [1800, 7200, 21600, 86400])
+
+    def test_risk_config_yaml_override_preserves_other_defaults(self):
+        config_path = Path(self.tmp.name) / "config.yaml"
+        config_path.write_text(
+            """
+engine:
+  media_dir: ./media
+  profiles_dir: ./profiles
+risk_control:
+  publish_daily_cap: 2
+  network_group_concurrency: 1
+  unknown_future_key: ignored
+""".strip(),
+            encoding="utf-8",
+        )
+
+        cfg = load_config(str(config_path))
+
+        self.assertEqual(cfg.risk_control.publish_daily_cap, 2)
+        self.assertEqual(cfg.risk_control.comment_daily_cap, 10)
+        self.assertEqual(cfg.risk_control.cooldown_steps_seconds,
+                         [1800, 7200, 21600, 86400])
 
     def test_new_risk_models_persist(self):
         account_id = self._account()

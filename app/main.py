@@ -71,7 +71,7 @@ from .models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
                      NotificationChannel, ProxyPool, PublishTask,
                      AccountWork, FollowEdge, DmConversation, DmMessage,
                      AccountActionTask, AccountStatSnapshot,
-                     ShareDownloadRecord)
+                     ShareDownloadRecord, AccountRiskState)
 from .notifier import CHANNEL_TYPES, send_one
 from .profiles import (ensure_identity, migrate_identities, assign_proxy_from_pool,
                        seed_proxy_pool)
@@ -534,6 +534,7 @@ async def list_accounts(platform: str | None = None):
         accs = s.exec(q).all()
         out = []
         for a in accs:
+            risk_state = s.get(AccountRiskState, a.id) if a.id else None
             used = len(s.exec(select(MonitorTarget.id)
                               .where(MonitorTarget.account_id == a.id)).all())
             out.append({
@@ -553,6 +554,11 @@ async def list_accounts(platform: str | None = None):
                                         if a.write_paused_until else None),
                 "write_pause_reason": a.write_pause_reason,
                 "identity_mode": a.identity_mode,
+                "risk_level": risk_state.risk_level if risk_state else 0,
+                "risk_cooldown_until": (
+                    risk_state.cooldown_until.isoformat()
+                    if risk_state and risk_state.cooldown_until else None),
+                "risk_signal": risk_state.last_risk_reason if risk_state else "",
                 "ua": a.ua,
                 "profile_dir": a.profile_dir,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
