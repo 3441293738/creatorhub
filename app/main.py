@@ -94,6 +94,35 @@ _file_manager_lock = threading.Lock()
 _share_download_sem = asyncio.Semaphore(2)
 
 
+class _OpenBrowserLease:
+    """Keep the unified account/network guard until a headed context closes."""
+
+    def __init__(self, context, guard):
+        self.context = context
+        self.guard = guard
+        self._released = False
+        self._release_lock = asyncio.Lock()
+
+    async def release(self) -> None:
+        async with self._release_lock:
+            if self._released:
+                return
+            self._released = True
+            await self.guard.__aexit__(None, None, None)
+
+    async def close(self) -> None:
+        try:
+            await self.context.close()
+        finally:
+            await self.release()
+
+
+async def _release_open_browser(account_id: int, lease: _OpenBrowserLease) -> None:
+    await lease.release()
+    if open_browsers.get(account_id) is lease:
+        open_browsers.pop(account_id, None)
+
+
 def _persist_native_ua(account_id: int, ua: str) -> None:
     """Persist the UA observed from an account's native Chromium context."""
     value = str(ua or "").strip()
@@ -1342,21 +1371,25 @@ async def open_account_browser(account_id: int, url: str = ""):
                 operation_target=identity) as guarded:
             yield guarded
 
+    guard = _open_guard()
+    await guard.__aenter__()
     try:
-        async with _open_guard():
-            ctx = await browser.open_headed(identity)
-            if cookies:
-                try:
-                    await ctx.add_cookies(_sanitize_cookies(cookies))
-                except Exception as e:
-                    print(f"[open-browser] 注入 Cookie 失败: {e!r}")
-            page = await ctx.new_page()
-            await page.goto(home, wait_until="domcontentloaded", timeout=30000)
+        ctx = await browser.open_headed(identity)
+        if cookies:
+            try:
+                await ctx.add_cookies(_sanitize_cookies(cookies))
+            except Exception as e:
+                print(f"[open-browser] 注入 Cookie 失败: {e!r}")
+        page = await ctx.new_page()
+        await page.goto(home, wait_until="domcontentloaded", timeout=30000)
     except Exception as e:
+        await guard.__aexit__(type(e), e, e.__traceback__)
         raise HTTPException(500, f"打开浏览器失败: {e!r}")
-    open_browsers[account_id] = ctx
+    lease = _OpenBrowserLease(ctx, guard)
+    open_browsers[account_id] = lease
     try:                       # 用户手动关窗后,从登记表移除
-        ctx.on("close", lambda *_: open_browsers.pop(account_id, None))
+        ctx.on("close", lambda *_: asyncio.create_task(
+            _release_open_browser(account_id, lease)))
     except Exception:
         pass
     return {"ok": True}

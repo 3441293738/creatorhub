@@ -198,10 +198,17 @@ class IdentityModeTests(unittest.TestCase):
                 return ContextStub()
 
         self_outer = self
+        async def scenario():
+            result = await main.open_account_browser(account_id)
+            self.assertTrue(engine.inside)
+            await main.open_browsers[account_id].close()
+            self.assertFalse(engine.inside)
+            return result
+
         main.browser = BrowserStub()
         main.engine = engine
         try:
-            result = asyncio.run(main.open_account_browser(account_id))
+            result = asyncio.run(scenario())
         finally:
             main.open_browsers.pop(account_id, None)
             main.browser, main.engine = previous_browser, previous_engine

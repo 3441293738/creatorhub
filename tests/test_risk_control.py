@@ -236,6 +236,26 @@ risk_control:
             self.assertNotEqual(account.proxy_status, "bad")
             self.assertEqual(state.consecutive_network_failures, 0)
 
+    def test_repeated_proxy_auth_failures_use_auth_error_status(self):
+        proxy = "http://proxy.example:8080"
+        account_id = self._account(proxy=proxy)
+        with db.get_session() as session:
+            session.add(ProxyPool(url=proxy, status="ok"))
+            session.commit()
+        controller = RiskController(self.cfg)
+
+        controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "proxy auth", status_code=407)
+        controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "proxy auth", status_code=407)
+
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            proxy_row = session.exec(
+                select(ProxyPool).where(ProxyPool.url == proxy)).one()
+            self.assertEqual(account.proxy_status, "auth_error")
+            self.assertEqual(proxy_row.status, "auth_error")
+
     def test_network_failure_counter_is_scoped_to_normalized_proxy(self):
         first = "http://proxy-a.example:8080"
         second = "http://proxy-b.example:8080"
@@ -619,6 +639,10 @@ risk_control:
         self.assertFalse(result["ok"])
         self.assertEqual(calls, 0)
         self.assertIn("risk_deferred:", result["error"])
+        with db.get_session() as session:
+            record = session.get(ContentRecord, record_id)
+            self.assertEqual(record.retry_count, 0)
+            self.assertEqual(record.download_status, "failed")
 
     def test_direct_read_pair_uses_same_budget(self):
         account_id = self._account()

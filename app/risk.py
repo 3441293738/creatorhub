@@ -583,11 +583,13 @@ class RiskController:
                     state.network_failure_key = current_key
                     state.consecutive_network_failures = 1
                 if proxy_failure and state.consecutive_network_failures >= 2:
-                    account.proxy_status = "bad"
+                    unavailable_status = (
+                        "auth_error" if signal == "proxy_auth" else "bad")
+                    account.proxy_status = unavailable_status
                     account_proxy = normalize_proxy(account.proxy)
                     for proxy_row in session.exec(select(ProxyPool)).all():
                         if normalize_proxy(proxy_row.url) == account_proxy:
-                            proxy_row.status = "bad"
+                            proxy_row.status = unavailable_status
                             proxy_row.last_checked_at = now
                             session.add(proxy_row)
             elif category == RiskCategory.AUTH:

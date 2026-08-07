@@ -3112,8 +3112,11 @@ class MonitorEngine:
                     acc_proxy = acc.proxy or ""
             media_json = rec.media_json
             aw = self._rebuild_aweme(rec, author_name)
+            needs_xhs_refetch = platform == "xhs" and (
+                not media_json or not aw.medias)
             rec.download_status = "downloading"
-            rec.retry_count = (rec.retry_count or 0) + 1
+            if not needs_xhs_refetch:
+                rec.retry_count = (rec.retry_count or 0) + 1
             s.add(rec); s.commit()
 
         # 小红书:无媒体快照时,重新拉详情补齐媒体直链
@@ -3136,6 +3139,13 @@ class MonitorEngine:
                     account_id, OperationKind.READ_HEAVY,
                     f"retry-download:{record_id}", _refetch_note_detail,
                     empty_result={})
+                if not str(derr or "").startswith("risk_deferred:"):
+                    with get_session() as s:
+                        rec = s.get(ContentRecord, record_id)
+                        if rec:
+                            rec.retry_count = (rec.retry_count or 0) + 1
+                            s.add(rec)
+                            s.commit()
             aw2 = parse_note_detail(card or {}, {"note_id": note_id}) if card else None
             if aw2 and aw2.medias:
                 aw = aw2
