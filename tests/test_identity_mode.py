@@ -216,6 +216,56 @@ class IdentityModeTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(engine.calls[0][1], OperationKind.LOGIN)
 
+    def test_open_account_browser_releases_guard_when_cancelled_before_lease(self):
+        with db.get_session() as session:
+            account = DouyinAccount(
+                nickname="fixture", platform="douyin", identity_mode="native",
+                profile_dir=str(Path(self.tmp.name) / "cancel-profile"),
+            )
+            session.add(account)
+            session.commit()
+            session.refresh(account)
+            account_id = account.id
+        previous_browser, previous_engine = main.browser, main.engine
+
+        class EngineStub:
+            def __init__(self):
+                self.inside = False
+
+            @asynccontextmanager
+            async def operation_guard(self, *_args, **_kwargs):
+                self.inside = True
+                try:
+                    yield None
+                finally:
+                    self.inside = False
+
+        engine = EngineStub()
+
+        class BrowserStub:
+            def identity_for(self, account):
+                return Identity.from_account(
+                    account, self_outer.cfg.engine.profiles_dir, "DEFAULT_UA")
+
+            async def open_headed(self, _identity):
+                self_outer.assertTrue(engine.inside)
+                raise asyncio.CancelledError()
+
+        self_outer = self
+
+        async def scenario():
+            with self.assertRaises(asyncio.CancelledError):
+                await main.open_account_browser(account_id)
+            self.assertFalse(engine.inside)
+
+        main.browser = BrowserStub()
+        main.engine = engine
+        try:
+            asyncio.run(scenario())
+        finally:
+            main.open_browsers.pop(account_id, None)
+            main.browser, main.engine = previous_browser, previous_engine
+
     def test_native_launch_omits_spoofing_options_and_hooks(self):
         manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
         manager._pw = _PlaywrightStub()

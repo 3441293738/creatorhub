@@ -1382,8 +1382,10 @@ async def open_account_browser(account_id: int, url: str = ""):
                 print(f"[open-browser] 注入 Cookie 失败: {e!r}")
         page = await ctx.new_page()
         await page.goto(home, wait_until="domcontentloaded", timeout=30000)
-    except Exception as e:
+    except BaseException as e:
         await guard.__aexit__(type(e), e, e.__traceback__)
+        if not isinstance(e, Exception):
+            raise
         raise HTTPException(500, f"打开浏览器失败: {e!r}")
     lease = _OpenBrowserLease(ctx, guard)
     open_browsers[account_id] = lease
