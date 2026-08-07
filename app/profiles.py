@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-from collections import Counter
 from pathlib import Path
 
 from sqlmodel import select
@@ -18,21 +17,37 @@ from .models import DouyinAccount, ProxyPool
 
 
 def _pool_urls(session, cfg) -> list:
-    """可用代理来源:优先数据库代理池(启用的),为空时回退 config.yaml 的 proxies。"""
-    urls = [p.url for p in session.exec(
-        select(ProxyPool).where(ProxyPool.enabled == True)).all() if p.url]  # noqa: E712
-    if not urls:
-        urls = [normalize_proxy(u) for u in (cfg.proxies or []) if u]
+    """Return normalized, unique proxies eligible for automatic assignment."""
+    rows = session.exec(select(ProxyPool)).all()
+    if rows:
+        sources = [
+            p.url for p in rows
+            if p.enabled and p.status not in {"bad", "auth_error", "blocked"}
+        ]
+    else:
+        sources = list(cfg.proxies or [])
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    for raw in sources:
+        url = normalize_proxy(raw)
+        if url and url not in seen:
+            urls.append(url)
+            seen.add(url)
     return urls
 
 
 def assign_proxy_from_pool(session, cfg) -> str:
-    """从代理池挑一条占用最少的代理(优先未占用)。池为空则返回空串。"""
+    """Return one unoccupied usable proxy, or an empty string."""
     pool = _pool_urls(session, cfg)
     if not pool:
         return ""
-    used = Counter(a.proxy for a in session.exec(select(DouyinAccount)).all() if a.proxy)
-    return min(pool, key=lambda p: used.get(p, 0))
+    occupied = {
+        normalize_proxy(a.proxy)
+        for a in session.exec(select(DouyinAccount)).all()
+        if a.proxy
+    }
+    return next((url for url in pool if url not in occupied), "")
 
 
 def seed_proxy_pool(cfg) -> int:

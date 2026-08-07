@@ -1315,6 +1315,31 @@ async def assign_account_proxy(account_id: int):
     return {"ok": True, "proxy": _mask_proxy(p)}
 
 
+def _proxy_probe_status(status_code: int) -> str:
+    """Map a proxy probe response to a persisted health state."""
+    if 200 <= status_code < 400:
+        return "ok"
+    if status_code == 407:
+        return "auth_error"
+    if status_code in {403, 429}:
+        return "blocked"
+    return "bad"
+
+
+def _proxy_status_ok(status_code: int) -> bool:
+    return _proxy_probe_status(status_code) == "ok"
+
+
+def _proxy_status_from_detail(ok: bool, detail: str) -> str:
+    if ok:
+        return "ok"
+    text = str(detail or "")
+    for code in (407, 403, 429):
+        if f"HTTP {code}" in text:
+            return _proxy_probe_status(code)
+    return "bad"
+
+
 async def _probe_proxy(url: str, platform: str = "douyin", timeout: float = 15):
     """经代理实连一次目标站,返回 (ok, detail)。"""
     import httpx
@@ -1327,7 +1352,7 @@ async def _probe_proxy(url: str, platform: str = "douyin", timeout: float = 15):
     try:
         async with httpx.AsyncClient(proxy=url, timeout=timeout, follow_redirects=True) as cli:
             r = await cli.get(test_url)
-        return r.status_code < 500, f"HTTP {r.status_code}"
+        return _proxy_status_ok(r.status_code), f"HTTP {r.status_code}"
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
@@ -1488,7 +1513,7 @@ async def test_account_proxy(account_id: int):
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if acc:
-            acc.proxy_status = "ok" if ok else "bad"
+            acc.proxy_status = _proxy_status_from_detail(ok, detail)
             s.add(acc); s.commit()
     return {"ok": ok, "detail": detail, "proxy": _mask_proxy(proxy)}
 
@@ -1655,7 +1680,7 @@ async def test_proxy_entry(pid: int):
     with get_session() as s:
         p = s.get(ProxyPool, pid)
         if p:
-            p.status = "ok" if ok else "bad"
+            p.status = _proxy_status_from_detail(ok, detail)
             p.last_checked_at = datetime.utcnow()
             if geo:                            # 归属地写入结构化字段(供「地区」列展示)
                 p.exit_ip = geo.get("ip", "") or p.exit_ip
