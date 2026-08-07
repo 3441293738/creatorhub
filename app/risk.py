@@ -265,6 +265,11 @@ class RiskController:
             min(hard_daily, daily) if daily > 0 else hard_daily,
         )
 
+    def _network_concurrency(self) -> int:
+        if self.policy.mode == "conservative":
+            return 1
+        return max(1, self.policy.network_group_concurrency)
+
     @staticmethod
     def _latest_success(session, account_id: int, kinds: list[str]) -> datetime | None:
         row = session.exec(
@@ -635,7 +640,7 @@ class RiskController:
         with self._network_lock_guard:
             sem = self._network_locks.get(key)
             if sem is None:
-                sem = asyncio.Semaphore(max(1, self.policy.network_group_concurrency))
+                sem = asyncio.Semaphore(self._network_concurrency())
                 self._network_locks[key] = sem
         async with sem:
             yield key

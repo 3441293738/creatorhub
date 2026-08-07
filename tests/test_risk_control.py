@@ -328,6 +328,7 @@ risk_control:
     def test_network_guard_serializes_accounts_on_same_exit(self):
         first_id = self._account(proxy="")
         second_id = self._account(proxy="")
+        self.cfg.risk_control.network_group_concurrency = 4
         controller = RiskController(self.cfg)
 
         async def scenario():

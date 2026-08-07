@@ -62,7 +62,8 @@ engine:
   work_health_stat_snapshots: true      # 记录账号粉丝/作品/互动每日快照(「本账号→数据」趋势;不占额外抓取)
 
 # 统一平台风控：所有读取、评论、关注/取关、私信和发布共用同一套账号预算。
-# conservative 模式下这些值是硬上限；engine 中更严格的旧限制仍然生效。
+# conservative 模式下这些值只能调得更严格，不能放宽保护线；0 表示沿用保护线而非不限。
+# 需要完全自定义时显式改为 mode: custom；engine 中更严格的旧限制仍然生效。
 risk_control:
   enabled: true
   mode: conservative
