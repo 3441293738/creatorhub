@@ -58,6 +58,7 @@ class FailureDecision:
     category: RiskCategory
     signal: str
     next_allowed_at: Optional[datetime] = None
+    controlled: bool = True
 
 
 def _utcnow() -> datetime:
@@ -371,6 +372,20 @@ class RiskController:
             account = self._load_account(session, account_or_id)
             if account is None:
                 return RiskDecision(False, "账号不存在", signal="account_missing")
+            if account.status == "invalid" and kind != OperationKind.LOGIN:
+                return RiskDecision(
+                    False,
+                    "账号登录态已失效，等待重新登录",
+                    signal="auth_required",
+                )
+            if account.proxy and account.proxy_status in {
+                    "bad", "auth_error", "blocked"} and kind != OperationKind.LOGIN:
+                return RiskDecision(
+                    False,
+                    "账号绑定代理当前不可用",
+                    now + timedelta(minutes=5),
+                    "proxy_unavailable",
+                )
             state = self._state(session, account_id)
             if state.cooldown_until and state.cooldown_until > now:
                 return RiskDecision(
@@ -467,6 +482,8 @@ class RiskController:
         *,
         now: datetime | None = None,
     ) -> None:
+        if not self.policy.enabled:
+            return
         account_id = self._account_id(account_or_id)
         if not account_id:
             return
@@ -479,6 +496,7 @@ class RiskController:
             state.last_operation_at = now
             state.updated_at = now
             state.consecutive_network_failures = 0
+            state.network_failure_key = ""
             if kind in self._WRITE_KINDS:
                 state.last_write_at = now
             if kind == OperationKind.READ_HEAVY:
@@ -521,6 +539,8 @@ class RiskController:
     ) -> FailureDecision:
         account_id = self._account_id(account_or_id)
         category, signal = classify_platform_error(error, status_code, payload)
+        if not self.policy.enabled:
+            return FailureDecision(category, signal, controlled=False)
         now = now or _utcnow()
         if not account_id:
             return FailureDecision(category, signal)
@@ -535,6 +555,7 @@ class RiskController:
             state.updated_at = now
             if category == RiskCategory.RISK:
                 state.consecutive_network_failures = 0
+                state.network_failure_key = ""
                 state.risk_level = min(4, max(1, state.risk_level + 1))
                 state.consecutive_risk += 1
                 state.recovery_successes = 0
@@ -549,9 +570,19 @@ class RiskController:
                 account.write_paused_until = next_at
                 account.write_pause_reason = state.last_risk_reason
             elif category == RiskCategory.NETWORK:
-                state.consecutive_network_failures += 1
                 next_at = now + timedelta(minutes=5)
-                if account.proxy and state.consecutive_network_failures >= 2:
+                proxy_failure = bool(account.proxy) and signal in {
+                    "network_failure", "proxy_auth"}
+                current_key = network_key(account.proxy) if proxy_failure else ""
+                if not proxy_failure:
+                    state.consecutive_network_failures = 0
+                    state.network_failure_key = ""
+                elif state.network_failure_key == current_key:
+                    state.consecutive_network_failures += 1
+                else:
+                    state.network_failure_key = current_key
+                    state.consecutive_network_failures = 1
+                if proxy_failure and state.consecutive_network_failures >= 2:
                     account.proxy_status = "bad"
                     account_proxy = normalize_proxy(account.proxy)
                     for proxy_row in session.exec(select(ProxyPool)).all():
@@ -561,10 +592,12 @@ class RiskController:
                             session.add(proxy_row)
             elif category == RiskCategory.AUTH:
                 state.consecutive_network_failures = 0
+                state.network_failure_key = ""
                 account.status = "invalid"
                 next_at = now + timedelta(minutes=15)
             else:
                 state.consecutive_network_failures = 0
+                state.network_failure_key = ""
             session.add(RiskEvent(
                 account_id=account_id,
                 network_key=network_key(account.proxy),
@@ -587,6 +620,7 @@ class RiskController:
                 state.probe_only_until = None
                 state.consecutive_risk = 0
                 state.consecutive_network_failures = 0
+                state.network_failure_key = ""
                 state.recovery_successes = 0
                 state.last_risk_reason = ""
                 state.last_recovery_at = None
@@ -627,9 +661,13 @@ class RiskController:
 
     @asynccontextmanager
     async def network_guard(self, account_or_id: DouyinAccount | int | None):
+        if not self.policy.enabled:
+            yield "disabled"
+            return
         proxy = ""
-        if isinstance(account_or_id, DouyinAccount):
-            proxy = account_or_id.proxy or ""
+        if not isinstance(account_or_id, (int, type(None))) \
+                and hasattr(account_or_id, "proxy"):
+            proxy = getattr(account_or_id, "proxy", "") or ""
         else:
             account_id = self._account_id(account_or_id)
             if account_id:

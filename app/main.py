@@ -94,6 +94,19 @@ _file_manager_lock = threading.Lock()
 _share_download_sem = asyncio.Semaphore(2)
 
 
+def _persist_native_ua(account_id: int, ua: str) -> None:
+    """Persist the UA observed from an account's native Chromium context."""
+    value = str(ua or "").strip()
+    if not account_id or not value:
+        return
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account and account.identity_mode == "native" and account.ua != value:
+            account.ua = value
+            session.add(account)
+            session.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global browser, engine, im_receiver
@@ -124,8 +137,9 @@ async def lifespan(app: FastAPI):
             print(f"[startup] 已为 {n} 个存量账号补齐画像(profile/UA/指纹/代理)")
     except Exception as e:
         print(f"[startup] 账号画像迁移失败(不影响启动): {e!r}")
-    browser = BrowserManager(cfg.engine.user_agent, cfg.engine.profiles_dir,
-                             cfg.engine.max_live_contexts)
+    browser = BrowserManager(
+        cfg.engine.user_agent, cfg.engine.profiles_dir,
+        cfg.engine.max_live_contexts, native_ua_callback=_persist_native_ua)
     await browser.start()
     engine = MonitorEngine(cfg, browser)
     pruned_risk_events = engine.risk.prune_events()
@@ -330,24 +344,41 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 viewport_h=new_fields["viewport_h"], timezone_id=new_fields["timezone_id"],
                 locale=new_fields["locale"], fp_seed=new_fields["fp_seed"])
 
-        # 2) 在 profile 里有头扫码
-        if platform == "xhs":
-            if creator:
-                ok, state_json, nickname = await interactive_xhs_creator_login(browser, identity)
+        # 2) 在统一账号/网络入口内扫码，避免与后台任务并行占用 profile。
+        @asynccontextmanager
+        async def _login_guard():
+            if engine is None:
+                yield None
+                return
+            async with engine.operation_guard(
+                    account_id, OperationKind.LOGIN,
+                    fallback_key=f"login:{task_id}",
+                    operation_target=identity) as guarded:
+                yield guarded
+
+        async with _login_guard():
+            if platform == "xhs":
+                if creator:
+                    ok, state_json, nickname = await interactive_xhs_creator_login(
+                        browser, identity)
+                else:
+                    ok, state_json, nickname = await interactive_xhs_login(
+                        browser, identity)
+            elif platform == "kuaishou":
+                if creator:
+                    ok, state_json, nickname = await interactive_ks_creator_login(
+                        browser, identity)
+                else:
+                    ok, state_json, nickname = await interactive_ks_login(
+                        browser, identity)
+            elif platform == "shipinhao":
+                ok, state_json, nickname = await interactive_channels_login(
+                    browser, identity)
+            elif creator:
+                ok, state_json, nickname = await interactive_creator_login(
+                    browser, identity)
             else:
-                ok, state_json, nickname = await interactive_xhs_login(browser, identity)
-        elif platform == "kuaishou":
-            if creator:
-                ok, state_json, nickname = await interactive_ks_creator_login(browser, identity)
-            else:
-                ok, state_json, nickname = await interactive_ks_login(browser, identity)
-        elif platform == "shipinhao":
-            # 视频号只有一套登录态(助手即创作平台),读取/发布共用
-            ok, state_json, nickname = await interactive_channels_login(browser, identity)
-        elif creator:
-            ok, state_json, nickname = await interactive_creator_login(browser, identity)
-        else:
-            ok, state_json, nickname = await interactive_login(browser, identity)
+                ok, state_json, nickname = await interactive_login(browser, identity)
 
         # 3) 仅在成功时落库
         if ok and state_json:
@@ -1299,15 +1330,28 @@ async def open_account_browser(account_id: int, url: str = ""):
                 cookies.extend(json.loads(st).get("cookies") or [])
             except Exception:
                 pass
+
+    @asynccontextmanager
+    async def _open_guard():
+        if engine is None:
+            yield None
+            return
+        async with engine.operation_guard(
+                account_id, OperationKind.LOGIN,
+                fallback_key=f"open-browser:{account_id}",
+                operation_target=identity) as guarded:
+            yield guarded
+
     try:
-        ctx = await browser.open_headed(identity)
-        if cookies:
-            try:
-                await ctx.add_cookies(_sanitize_cookies(cookies))
-            except Exception as e:
-                print(f"[open-browser] 注入 Cookie 失败: {e!r}")
-        page = await ctx.new_page()
-        await page.goto(home, wait_until="domcontentloaded", timeout=30000)
+        async with _open_guard():
+            ctx = await browser.open_headed(identity)
+            if cookies:
+                try:
+                    await ctx.add_cookies(_sanitize_cookies(cookies))
+                except Exception as e:
+                    print(f"[open-browser] 注入 Cookie 失败: {e!r}")
+            page = await ctx.new_page()
+            await page.goto(home, wait_until="domcontentloaded", timeout=30000)
     except Exception as e:
         raise HTTPException(500, f"打开浏览器失败: {e!r}")
     open_browsers[account_id] = ctx

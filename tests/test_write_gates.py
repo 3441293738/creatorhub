@@ -316,6 +316,39 @@ class WriteGateTests(unittest.TestCase):
             self.assertIsNotNone(task.scheduled_at)
             self.assertEqual(account.status, "invalid")
 
+    def test_disabled_risk_controller_does_not_defer_rejected_publish(self):
+        self.cfg.risk_control.enabled = False
+        account_id = self._account()
+        task_id = self._publish_task(account_id)
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        async def rejected(*_args, **_kwargs):
+            return False, "", "HTTP 429"
+
+        with patch("app.engine.monitor.publish_douyin", rejected):
+            result = asyncio.run(engine.publish_task(task_id))
+
+        self.assertFalse(result["ok"])
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            account = session.get(DouyinAccount, account_id)
+            self.assertEqual(task.status, "failed")
+            self.assertIsNone(task.scheduled_at)
+            self.assertIsNone(account.write_paused_until)
+
+    def test_disabled_risk_controller_ignores_existing_compatibility_pause(self):
+        account_id = self._account()
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.write_paused_until = datetime.utcnow() + timedelta(hours=1)
+            account.write_pause_reason = "legacy risk pause"
+            session.add(account)
+            session.commit()
+        self.cfg.risk_control.enabled = False
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        self.assertEqual(engine._write_pause_error(account_id), "")
+
     def test_comment_at_daily_cap_remains_queued(self):
         self.cfg.engine.comment_daily_cap_per_account = 1
         account_id = self._account()
@@ -438,6 +471,41 @@ class WriteGateTests(unittest.TestCase):
             task = session.exec(select(CommentTask).where(
                 CommentTask.rule_id == rule_id)).one()
             self.assertEqual(task.target_text, "hello from visitor")
+
+    def test_concurrent_comment_rule_discovery_rechecks_read_budget_in_lock(self):
+        account_id = self._account()
+        rule_ids = []
+        with db.get_session() as session:
+            for _ in range(2):
+                rule = CommentRule(
+                    platform="douyin", mode="auto_reply", target_kind="self",
+                    account_id=account_id, templates='["ok"]',
+                    max_per_run=1, daily_cap=10, min_gap_seconds=60,
+                )
+                session.add(rule)
+                session.commit()
+                session.refresh(rule)
+                rule_ids.append(rule.id)
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        calls = 0
+
+        async def discover(*_args):
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.02)
+            return [], ""
+
+        engine._discover_targets = discover
+
+        async def scenario():
+            return await asyncio.gather(*(
+                engine.run_comment_rule(rule_id) for rule_id in rule_ids))
+
+        results = asyncio.run(scenario())
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(sum(
+            1 for result in results if result.get("next_allowed_at")), 1)
 
     def test_xhs_manual_mode_keeps_draft_without_api_call(self):
         account_id = self._account(platform="xhs")

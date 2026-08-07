@@ -233,15 +233,23 @@ class MonitorEngine:
 
     @asynccontextmanager
     async def _operation_guard(self, account_id, kind: OperationKind,
-                               fallback_key: str = ""):
+                               fallback_key: str = "", operation_target=None):
         """Serialize by global limit, network exit, then account profile."""
-        account = self._load_account(account_id)
+        account = operation_target or self._load_account(account_id)
         key = f"acc:{account_id}" if account_id else (fallback_key or "anon")
         lock = self.browser.lock_for(key)
         async with self._active_sem:
             async with self.risk.network_guard(account):
                 async with lock:
                     yield account
+
+    @asynccontextmanager
+    async def operation_guard(self, account_id, kind: OperationKind,
+                              fallback_key: str = "", operation_target=None):
+        """Public unified gate for platform operations owned by API routes."""
+        async with self._operation_guard(
+                account_id, kind, fallback_key, operation_target) as account:
+            yield account
 
     @asynccontextmanager
     async def _account_guard(self, account_id, fallback_key: str = ""):
@@ -365,6 +373,8 @@ class MonitorEngine:
 
     def _write_pause_error(self, account_id) -> str:
         """Return a persisted account write pause, clearing an expired one."""
+        if not self.risk.policy.enabled:
+            return ""
         if not account_id:
             return ""
         now = datetime.utcnow()
@@ -2063,7 +2073,7 @@ class MonitorEngine:
                 if ok:
                     t.status = "done"
                     t.done_at = datetime.utcnow()
-                elif failure and failure.category in {
+                elif failure and failure.controlled and failure.category in {
                         RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH}:
                     self._defer_row(t, err, failure.next_allowed_at)
                 else:
@@ -2276,6 +2286,14 @@ class MonitorEngine:
         async with self._operation_guard(
                 rf["account_id"], OperationKind.READ_HEAVY,
                 fallback_key=f"rule:{rule_id}"):
+            read_decision = self.risk.preflight(
+                rf["account_id"], OperationKind.READ_HEAVY)
+            if not read_decision.allowed:
+                return {"ok": False, "error": read_decision.reason,
+                        "skipped": True,
+                        "next_allowed_at": (
+                            read_decision.next_allowed_at.isoformat()
+                            if read_decision.next_allowed_at else None)}
             try:
                 cands, error = await self._discover_targets(
                     rf, acc_state, acc_proxy, acc_sec_uid, acc_nick, identity)
@@ -2284,11 +2302,12 @@ class MonitorEngine:
                     rf["account_id"], OperationKind.READ_HEAVY, e)
                 self._mark_rule(rule_id, f"发现目标失败: {e!r}")
                 return {"ok": False, "error": repr(e)}
-        if error:
-            self.risk.record_failure(
-                rf["account_id"], OperationKind.READ_HEAVY, error)
-        else:
-            self.risk.record_success(rf["account_id"], OperationKind.READ_HEAVY)
+            if error:
+                self.risk.record_failure(
+                    rf["account_id"], OperationKind.READ_HEAVY, error)
+            else:
+                self.risk.record_success(
+                    rf["account_id"], OperationKind.READ_HEAVY)
 
         # 过滤 + 去重 + 生成
         created = 0
@@ -2794,7 +2813,7 @@ class MonitorEngine:
             if t:
                 if ok:
                     t.status = "done"
-                elif failure and failure.category in {
+                elif failure and failure.controlled and failure.category in {
                         RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH}:
                     self._defer_row(t, err, failure.next_allowed_at)
                 else:
@@ -2963,7 +2982,7 @@ class MonitorEngine:
                     t.status = "done"
                 elif manual_only:
                     t.status = "draft"
-                elif failure and failure.category in {
+                elif failure and failure.controlled and failure.category in {
                         RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH}:
                     self._defer_row(t, err, failure.next_allowed_at)
                 else:
@@ -3083,6 +3102,7 @@ class MonitorEngine:
             note_id = rec.aweme_id
             note_tok = rec.xsec_token or ""
             kind = (t.target_kind if t else "creator")
+            account_id = t.account_id if t else None
             acc_state = ""
             acc_proxy = ""
             if t and t.account_id:
@@ -3102,12 +3122,20 @@ class MonitorEngine:
             derr = "" if client else "账号登录态缺少 a1,请重新扫码登录"
             card = {}
             if client:
-                try:
-                    card = await client.note_detail(
-                        note_id, xsec_token=note_tok,
-                        xsec_source="pc_search" if kind == "keyword" else "pc_feed")
-                except Exception as e:
-                    derr = str(e)
+                async def _refetch_note_detail():
+                    try:
+                        detail = await client.note_detail(
+                            note_id, xsec_token=note_tok,
+                            xsec_source=("pc_search" if kind == "keyword"
+                                         else "pc_feed"))
+                        return detail, ""
+                    except Exception as exc:
+                        return {}, str(exc)
+
+                card, derr = await self.guarded_read_pair(
+                    account_id, OperationKind.READ_HEAVY,
+                    f"retry-download:{record_id}", _refetch_note_detail,
+                    empty_result={})
             aw2 = parse_note_detail(card or {}, {"note_id": note_id}) if card else None
             if aw2 and aw2.medias:
                 aw = aw2

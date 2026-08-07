@@ -129,10 +129,11 @@ def _bridge_cookies(states: tuple, existing: List[dict] | None = None) -> List[d
 
 class BrowserManager:
     def __init__(self, default_ua: str, profiles_root: str = "./data/profiles",
-                 max_live: int = 6):
+                 max_live: int = 6, native_ua_callback=None):
         self.default_ua = default_ua
         self.profiles_root = profiles_root
         self.max_live = max(1, max_live)
+        self._native_ua_callback = native_ua_callback
         self._pw = None
         self._contexts: Dict[Any, BrowserContext] = {}   # key -> 持久化 context
         self._last_used: Dict[Any, float] = {}
@@ -250,6 +251,8 @@ class BrowserManager:
                 actual_ua = await probe_page.evaluate("navigator.userAgent")
                 if actual_ua:
                     identity.ua = str(actual_ua)
+                    if identity.account_id is not None and self._native_ua_callback:
+                        self._native_ua_callback(identity.account_id, identity.ua)
             except Exception:
                 pass
             finally:

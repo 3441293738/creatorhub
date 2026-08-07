@@ -7,11 +7,13 @@ from pathlib import Path
 from sqlmodel import select
 
 import app.db as db
+from app.browser.identity import Identity
 from app.config import Config, RiskControlConfig, load_config
 from app.models import (
     AccountRiskState,
     CommentTask,
     CommentWatch,
+    ContentRecord,
     DouyinAccount,
     MonitorTarget,
     ProxyPool,
@@ -218,6 +220,45 @@ risk_control:
             proxy_row = session.exec(select(ProxyPool).where(ProxyPool.url == proxy)).one()
             self.assertEqual(proxy_row.status, "bad")
 
+    def test_platform_http_500_does_not_disable_proxy(self):
+        proxy = "http://proxy.example:8080"
+        account_id = self._account(proxy=proxy)
+        controller = RiskController(self.cfg)
+
+        controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "server error", status_code=500)
+        controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "server error", status_code=500)
+
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            state = session.get(AccountRiskState, account_id)
+            self.assertNotEqual(account.proxy_status, "bad")
+            self.assertEqual(state.consecutive_network_failures, 0)
+
+    def test_network_failure_counter_is_scoped_to_normalized_proxy(self):
+        first = "http://proxy-a.example:8080"
+        second = "http://proxy-b.example:8080"
+        account_id = self._account(proxy=first)
+        controller = RiskController(self.cfg)
+        controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "connection timeout")
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.proxy = second
+            session.add(account)
+            session.commit()
+
+        controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "connection timeout")
+
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            state = session.get(AccountRiskState, account_id)
+            self.assertNotEqual(account.proxy_status, "bad")
+            self.assertEqual(state.consecutive_network_failures, 1)
+            self.assertEqual(state.network_failure_key, network_key(second))
+
     def test_success_resets_consecutive_network_failures(self):
         account_id = self._account(proxy="http://proxy.example:8080")
         controller = RiskController(self.cfg)
@@ -242,6 +283,74 @@ risk_control:
             controller.next_write_at(account_id),
             now + timedelta(seconds=300),
         )
+
+    def test_invalid_account_blocks_platform_operations_until_relogin(self):
+        account_id = self._account()
+        controller = RiskController(self.cfg)
+        controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "logged_out")
+
+        decision = controller.preflight(account_id, OperationKind.READ_LIGHT)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.signal, "auth_required")
+
+    def test_bad_bound_proxy_blocks_future_platform_operations(self):
+        account_id = self._account(proxy="http://proxy.example:8080")
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.proxy_status = "bad"
+            session.add(account)
+            session.commit()
+
+        decision = RiskController(self.cfg).preflight(
+            account_id, OperationKind.READ_LIGHT)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.signal, "proxy_unavailable")
+
+    def test_disabled_controller_does_not_persist_failure_side_effects(self):
+        proxy = "http://proxy.example:8080"
+        account_id = self._account(proxy=proxy)
+        self.cfg.risk_control.enabled = False
+        controller = RiskController(self.cfg)
+
+        first = controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "connection timeout")
+        controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "logged_out")
+        controller.record_success(account_id, OperationKind.READ_LIGHT)
+
+        self.assertFalse(first.controlled)
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            self.assertEqual(account.status, "active")
+            self.assertNotEqual(account.proxy_status, "bad")
+            self.assertIsNone(session.get(AccountRiskState, account_id))
+            self.assertEqual(session.exec(select(RiskEvent)).all(), [])
+
+    def test_disabled_controller_does_not_serialize_network_exit(self):
+        first_id = self._account()
+        second_id = self._account()
+        self.cfg.risk_control.enabled = False
+        controller = RiskController(self.cfg)
+
+        async def scenario():
+            active = 0
+            peak = 0
+
+            async def worker(account_id):
+                nonlocal active, peak
+                async with controller.network_guard(account_id):
+                    active += 1
+                    peak = max(peak, active)
+                    await asyncio.sleep(0.02)
+                    active -= 1
+
+            await asyncio.gather(worker(first_id), worker(second_id))
+            return peak
+
+        self.assertEqual(asyncio.run(scenario()), 2)
 
     def test_write_is_denied_during_cooldown(self):
         account_id = self._account()
@@ -370,6 +479,37 @@ risk_control:
 
         self.assertEqual(asyncio.run(scenario()), 2)
 
+    def test_fresh_login_guard_uses_selected_proxy_exit(self):
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        identities = [
+            Identity(None, str(Path(self.tmp.name) / "login-a"),
+                     identity_mode="native", proxy="http://proxy-a.example:8080"),
+            Identity(None, str(Path(self.tmp.name) / "login-b"),
+                     identity_mode="native", proxy="http://proxy-b.example:8080"),
+        ]
+
+        async def scenario():
+            active = 0
+            peak = 0
+
+            async def worker(index, identity):
+                nonlocal active, peak
+                async with engine.operation_guard(
+                        None, OperationKind.LOGIN,
+                        fallback_key=f"login:{index}",
+                        operation_target=identity):
+                    active += 1
+                    peak = max(peak, active)
+                    await asyncio.sleep(0.02)
+                    active -= 1
+
+            await asyncio.gather(*(
+                worker(index, identity)
+                for index, identity in enumerate(identities)))
+            return peak
+
+        self.assertEqual(asyncio.run(scenario()), 2)
+
     def test_heavy_read_budget_and_recovery_probe(self):
         account_id = self._account()
         controller = RiskController(self.cfg)
@@ -445,6 +585,40 @@ risk_control:
         self.assertTrue(result["skipped"])
         with db.get_session() as session:
             self.assertIsNone(session.get(CommentWatch, watch_id).last_scan_at)
+
+    def test_xhs_download_retry_refetch_respects_heavy_read_budget(self):
+        account_id = self._account()
+        with db.get_session() as session:
+            target = MonitorTarget(
+                platform="xhs", sec_uid="fixture", account_id=account_id,
+                enabled=True)
+            session.add(target)
+            session.commit()
+            session.refresh(target)
+            record = ContentRecord(
+                platform="xhs", target_id=target.id, aweme_id="fixture-note",
+                media_json="", download_status="failed")
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            record_id = record.id
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        engine.risk.record_success(account_id, OperationKind.READ_HEAVY)
+        calls = 0
+
+        class ClientStub:
+            async def note_detail(self, *_args, **_kwargs):
+                nonlocal calls
+                calls += 1
+                return {}
+
+        engine._xhs_client = lambda *_args: ClientStub()
+
+        result = asyncio.run(engine.retry_download(record_id))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(calls, 0)
+        self.assertIn("risk_deferred:", result["error"])
 
     def test_direct_read_pair_uses_same_budget(self):
         account_id = self._account()
