@@ -55,6 +55,7 @@ from ..models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
 from ..notifier import notify_all
 from ..netfp import probe_ip_region
 from ..risk import (
+    classify_platform_error,
     OperationKind,
     RiskCategory,
     RiskController,
@@ -265,16 +266,27 @@ class MonitorEngine:
         try:
             async with self._operation_guard(
                     account_id, kind, fallback_key=fallback_key):
+                decision = self.risk.preflight(account_id, kind)
+                if not decision.allowed:
+                    return {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": decision.reason,
+                        "next_allowed_at": (
+                            decision.next_allowed_at.isoformat()
+                            if decision.next_allowed_at else None),
+                    }
                 result = await operation()
+                if account_id:
+                    if result.get("ok") and not result.get("skipped"):
+                        self.risk.record_success(account_id, kind)
+                    elif result.get("error"):
+                        self.risk.record_failure(
+                            account_id, kind, result.get("error"))
         except Exception as exc:
             if account_id:
                 self.risk.record_failure(account_id, kind, exc)
             raise
-        if account_id:
-            if result.get("ok") and not result.get("skipped"):
-                self.risk.record_success(account_id, kind)
-            elif result.get("error"):
-                self.risk.record_failure(account_id, kind, result.get("error"))
         return result
 
     async def guarded_read_pair(self, account_id, kind: OperationKind,
@@ -286,16 +298,19 @@ class MonitorEngine:
         try:
             async with self._operation_guard(
                     account_id, kind, fallback_key=fallback_key):
+                decision = self.risk.preflight(account_id, kind)
+                if not decision.allowed:
+                    return empty_result, f"risk_deferred:{decision.reason}"
                 payload, error = await operation()
+                if account_id:
+                    if not error or error == "empty":
+                        self.risk.record_success(account_id, kind)
+                    else:
+                        self.risk.record_failure(account_id, kind, error)
         except Exception as exc:
             if account_id:
                 self.risk.record_failure(account_id, kind, exc)
             return empty_result, repr(exc)
-        if account_id:
-            if not error or error == "empty":
-                self.risk.record_success(account_id, kind)
-            else:
-                self.risk.record_failure(account_id, kind, error)
         return payload, error
 
     def _identity_proxy(self, acc):
@@ -477,9 +492,12 @@ class MonitorEngine:
             decision = self.risk.preflight(aid, OperationKind.READ_LIGHT)
             if not decision.allowed:
                 continue
-            await self._verify_proxy_region(aid, proxy, identity.timezone_id)
             try:
                 async with self._operation_guard(aid, OperationKind.READ_LIGHT):
+                    if not self.risk.preflight(
+                            aid, OperationKind.READ_LIGHT).allowed:
+                        continue
+                    await self._verify_proxy_region(aid, proxy, identity.timezone_id)
                     if platform == "xhs" and creator_state:
                         # 创作者号:用创作平台接口校验(www 的 user/me 对创作态会误判)
                         chk = await creator_check(creator_state, proxy=proxy)
@@ -507,13 +525,13 @@ class MonitorEngine:
                         u, err = await fetch_channels_self_profile(self.browser, identity)
                     else:
                         u, err = await fetch_self_profile(self.browser, identity)
+                    if u:
+                        self.risk.record_success(aid, OperationKind.READ_LIGHT)
+                    elif err:
+                        self.risk.record_failure(aid, OperationKind.READ_LIGHT, err)
             except Exception as exc:
                 self.risk.record_failure(aid, OperationKind.READ_LIGHT, exc)
                 continue
-            if u:
-                self.risk.record_success(aid, OperationKind.READ_LIGHT)
-            elif err:
-                self.risk.record_failure(aid, OperationKind.READ_LIGHT, err)
             with get_session() as s:
                 a = s.get(DouyinAccount, aid)
                 if not a:
@@ -572,16 +590,19 @@ class MonitorEngine:
                 continue
             try:
                 async with self._operation_guard(aid, OperationKind.READ_HEAVY):
+                    if not self.risk.preflight(
+                            aid, OperationKind.READ_HEAVY).allowed:
+                        continue
                     items, err = await fetch_account_works(self.browser, identity,
                                                            platform, uid)
+                    if err:
+                        self.risk.record_failure(aid, OperationKind.READ_HEAVY, err)
+                    else:
+                        self.risk.record_success(aid, OperationKind.READ_HEAVY)
             except Exception as e:
                 self.risk.record_failure(aid, OperationKind.READ_HEAVY, e)
                 log.warning("作品健康:账号 %s 抓取失败 %s", aid, e)
                 continue
-            if err:
-                self.risk.record_failure(aid, OperationKind.READ_HEAVY, err)
-            else:
-                self.risk.record_success(aid, OperationKind.READ_HEAVY)
             if not items:
                 continue
             self._stamp_active(aid)
@@ -711,14 +732,23 @@ class MonitorEngine:
             async with self._operation_guard(
                     account_id, OperationKind.READ_LIGHT,
                     fallback_key=f"tgt:{target_id}"):
+                decision = self.risk.preflight(account_id, OperationKind.READ_LIGHT)
+                if not decision.allowed:
+                    return {
+                        "ok": True, "new": 0, "skipped": True,
+                        "reason": decision.reason,
+                        "next_allowed_at": (
+                            decision.next_allowed_at.isoformat()
+                            if decision.next_allowed_at else None),
+                    }
                 res = await self._scan_target_locked(target_id)
+                if account_id and res.get("ok") and not res.get("skipped"):
+                    self.risk.record_success(account_id, OperationKind.READ_LIGHT)
+                    self._stamp_active(account_id)
+                elif account_id and res.get("error"):
+                    self.risk.record_failure(
+                        account_id, OperationKind.READ_LIGHT, res.get("error"))
             # 用该账号成功抓取过=登录态被有效使用,顺带续期,免得再被闲置保活重复摸
-            if account_id and res.get("ok") and not res.get("skipped"):
-                self.risk.record_success(account_id, OperationKind.READ_LIGHT)
-                self._stamp_active(account_id)
-            elif account_id and res.get("error"):
-                self.risk.record_failure(
-                    account_id, OperationKind.READ_LIGHT, res.get("error"))
             return res
         finally:
             self._inflight.discard(target_id)
@@ -1076,6 +1106,12 @@ class MonitorEngine:
                                             if decision.next_allowed_at else None)}
             async with self._operation_guard(
                     account_id, OperationKind.READ_HEAVY, fallback_key=key):
+                decision = self.risk.preflight(account_id, OperationKind.READ_HEAVY)
+                if not decision.allowed:
+                    return {"ok": True, "fetched": 0, "added": 0,
+                            "skipped": True, "reason": decision.reason,
+                            "next_allowed_at": (decision.next_allowed_at.isoformat()
+                                                if decision.next_allowed_at else None)}
                 with get_session() as s:
                     acc = s.get(DouyinAccount, account_id)
                     if not acc:
@@ -1924,7 +1960,7 @@ class MonitorEngine:
                 s.add(t); s.commit()
                 return {"ok": False, "error": "account_missing"}
             if acc.status == "invalid":
-                t.status = "failed"; t.error = "账号登录态已失效"
+                self._defer_row(t, "账号登录态已失效，等待重新登录", fallback_seconds=900)
                 s.add(t); s.commit()
                 return {"ok": False, "error": "account_invalid"}
             if self._proxy_bad(acc):
@@ -1937,7 +1973,7 @@ class MonitorEngine:
                 self._defer_row(t, pause_error, decision.next_allowed_at)
                 s.add(t); s.commit()
                 return {"ok": False, "error": pause_error}
-            if not self._in_active_window():
+            if not self._in_active_window(t.account_id):
                 self._defer_row(t, "当前处于非活跃时段，发布任务已保留在队列")
                 s.add(t); s.commit()
                 return {"ok": False, "error": t.error}
@@ -2028,7 +2064,7 @@ class MonitorEngine:
                     t.status = "done"
                     t.done_at = datetime.utcnow()
                 elif failure and failure.category in {
-                        RiskCategory.RISK, RiskCategory.NETWORK}:
+                        RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH}:
                     self._defer_row(t, err, failure.next_allowed_at)
                 else:
                     t.status = "failed"
@@ -2052,11 +2088,13 @@ class MonitorEngine:
         return {"ok": ok, "url": url, "error": err}
 
     # ── 活跃时段(夜间静默)──
-    def _in_active_window(self) -> bool:
-        """当前是否处于允许写操作的活跃时段(按东八区小时)。夜间静默,降低深夜齐发特征。
-        end<=start 视为配置异常/全天放行;end>24 表示跨零点。"""
+    def _in_active_window(self, account_id=None) -> bool:
+        """Check active hours in the bound account's persisted timezone."""
         if not self.cfg.engine.quiet_hours_enabled:
             return True
+        account = self._load_account(account_id)
+        if account is not None:
+            return self.risk._in_active_window(account, datetime.utcnow())
         start = self.cfg.engine.active_hours_start
         end = self.cfg.engine.active_hours_end
         if end <= start:
@@ -2067,9 +2105,11 @@ class MonitorEngine:
         return h >= start or h < (end - 24)                 # 跨零点
 
     # ── 自动评论:规则生成任务 + 任务执行 ──
-    @staticmethod
-    def _today_start() -> datetime:
+    def _today_start(self, account_id=None) -> datetime:
         n = datetime.utcnow()
+        account = self._load_account(account_id)
+        if account is not None:
+            return self.risk._local_day_start_utc(account, n)
         return datetime(n.year, n.month, n.day)
 
     @staticmethod
@@ -2083,7 +2123,7 @@ class MonitorEngine:
         return len(s.exec(select(CommentTask.id)
                           .where(CommentTask.account_id == account_id)
                           .where(CommentTask.status == "done")
-                          .where(CommentTask.done_at >= self._today_start())).all())
+                          .where(CommentTask.done_at >= self._today_start(account_id))).all())
 
     def _acct_hour_comment_count(self, account_id) -> int:
         """该账号近一小时已成功发出的评论数(每小时配额,比日上限更贴人类节律)。"""
@@ -2096,10 +2136,12 @@ class MonitorEngine:
                               .where(CommentTask.done_at >= self._hour_ago())).all())
 
     def _rule_today_count(self, s, rule_id) -> int:
+        rule = s.get(CommentRule, rule_id)
+        account_id = rule.account_id if rule else None
         return len(s.exec(select(CommentTask.id)
                           .where(CommentTask.rule_id == rule_id)
                           .where(CommentTask.status == "done")
-                          .where(CommentTask.done_at >= self._today_start())).all())
+                          .where(CommentTask.done_at >= self._today_start(account_id))).all())
 
     def _acct_gap_ok(self, account_id) -> bool:
         """距该账号上一条成功评论是否已超过全局最小间隔(防同账号连发)。"""
@@ -2125,7 +2167,7 @@ class MonitorEngine:
         pause_error = self._write_pause_error(account_id)
         if pause_error:
             return pause_error
-        if not self._in_active_window():
+        if not self._in_active_window(account_id):
             return "当前处于非活跃时段，评论任务已保留在队列"
         hcap = self.cfg.engine.comment_hourly_cap_per_account
         if hcap > 0 and self._acct_hour_comment_count(account_id) >= hcap:
@@ -2565,8 +2607,6 @@ class MonitorEngine:
         return cands, ""
 
     async def _process_comment_tasks(self):
-        if not self._in_active_window():
-            return                                    # 夜间静默:写操作暂停,到点自然继续
         now = datetime.utcnow()
         due = []
         with get_session() as s:
@@ -2615,7 +2655,8 @@ class MonitorEngine:
         """写操作是否还在每日 / 每小时配额内(关注取关是封号重灾区,双重限流)。"""
         dcap = self.cfg.engine.action_daily_cap_per_account
         hcap = self.cfg.engine.action_hourly_cap_per_account
-        if dcap > 0 and self._action_count_since(account_id, self._today_start()) >= dcap:
+        if dcap > 0 and self._action_count_since(
+                account_id, self._today_start(account_id)) >= dcap:
             return False
         if hcap > 0 and self._action_count_since(account_id, self._hour_ago()) >= hcap:
             return False
@@ -2626,7 +2667,7 @@ class MonitorEngine:
         pause_error = self._write_pause_error(account_id)
         if pause_error:
             return pause_error
-        if not self._in_active_window():
+        if not self._in_active_window(account_id):
             return "当前处于非活跃时段，写操作已保留在队列"
         if not self._action_cap_ok(account_id):
             return "已达到账号写操作额度"
@@ -2639,8 +2680,6 @@ class MonitorEngine:
         return ""
 
     async def _process_action_tasks(self):
-        if not self._in_active_window():
-            return                                    # 夜间静默:写操作暂停,到点自然继续
         now = datetime.utcnow()
         due = []
         with get_session() as s:
@@ -2694,7 +2733,7 @@ class MonitorEngine:
                 s.add(t); s.commit()
                 return {"ok": False, "error": "proxy unavailable"}
             if acc.status == "invalid":
-                t.status = "failed"; t.error = "账号登录态已失效"
+                self._defer_row(t, "账号登录态已失效，等待重新登录", fallback_seconds=900)
                 s.add(t); s.commit()
                 return {"ok": False, "error": "account_invalid"}
             gate_error = self._action_gate_error(
@@ -2734,7 +2773,8 @@ class MonitorEngine:
                 if platform == "douyin" and dm_conv_id and dm_short_id and dm_ticket:
                     ok, err = await send_dm_api(self.browser, identity, dm_conv_id,
                                                 dm_short_id, dm_ticket, content)
-                    if not ok:
+                    category, _signal = classify_platform_error(err)
+                    if not ok and category == RiskCategory.BUSINESS:
                         ok, err = await send_dm(self.browser, identity, platform,
                                                 target_uid, target_sec_uid, content)
                 else:
@@ -2755,7 +2795,7 @@ class MonitorEngine:
                 if ok:
                     t.status = "done"
                 elif failure and failure.category in {
-                        RiskCategory.RISK, RiskCategory.NETWORK}:
+                        RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH}:
                     self._defer_row(t, err, failure.next_allowed_at)
                 else:
                     t.status = "failed"
@@ -2855,7 +2895,7 @@ class MonitorEngine:
                 s.add(t); s.commit()
                 return {"ok": False, "error": "proxy unavailable"}
             if acc.status == "invalid":
-                t.status = "failed"; t.error = "账号登录态已失效"
+                self._defer_row(t, "账号登录态已失效，等待重新登录", fallback_seconds=900)
                 s.add(t); s.commit()
                 return {"ok": False, "error": "account_invalid"}
             gate_error = self._comment_gate_error(t.account_id)
@@ -2924,7 +2964,7 @@ class MonitorEngine:
                 elif manual_only:
                     t.status = "draft"
                 elif failure and failure.category in {
-                        RiskCategory.RISK, RiskCategory.NETWORK}:
+                        RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH}:
                     self._defer_row(t, err, failure.next_allowed_at)
                 else:
                     t.status = "failed"

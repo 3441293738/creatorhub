@@ -98,6 +98,7 @@ class AccountRiskState(SQLModel, table=True):
     cooldown_until: Optional[datetime] = Field(default=None, index=True)
     probe_only_until: Optional[datetime] = None
     consecutive_risk: int = 0
+    consecutive_network_failures: int = 0
     recovery_successes: int = 0
     last_risk_at: Optional[datetime] = None
     last_risk_reason: str = ""

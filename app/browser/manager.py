@@ -235,6 +235,29 @@ class BrowserManager:
         if proxy:
             kwargs["proxy"] = proxy
         ctx = await self._pw.chromium.launch_persistent_context(**kwargs)
+        if not legacy:
+            # Persist the UA exposed by this exact native context. It is
+            # diagnostic state only; native launches still omit any override.
+            probe_page = None
+            created_probe = False
+            try:
+                pages = list(ctx.pages)
+                if pages:
+                    probe_page = pages[0]
+                else:
+                    probe_page = await ctx.new_page()
+                    created_probe = True
+                actual_ua = await probe_page.evaluate("navigator.userAgent")
+                if actual_ua:
+                    identity.ua = str(actual_ua)
+            except Exception:
+                pass
+            finally:
+                if created_probe and probe_page is not None:
+                    try:
+                        await probe_page.close()
+                    except Exception:
+                        pass
         # Client Hints 与归一后的 UA 保持一致(否则内核按真实版本发 Sec-CH-UA,和 UA 打架)
         sec = self._sec_ch_ua_headers(ua) if legacy else None
         if sec:

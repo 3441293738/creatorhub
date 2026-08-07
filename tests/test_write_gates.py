@@ -12,6 +12,7 @@ from app.models import (
     AccountActionTask,
     CommentRule,
     CommentTask,
+    DmConversation,
     DouyinAccount,
     PublishTask,
 )
@@ -126,7 +127,7 @@ class WriteGateTests(unittest.TestCase):
         account_id = self._account()
         task_id = self._comment_task(account_id)
         engine = MonitorEngine(self.cfg, _BrowserStub())
-        engine._in_active_window = lambda: False
+        engine._in_active_window = lambda *_args: False
 
         result = asyncio.run(engine.execute_comment_task(task_id))
 
@@ -139,7 +140,7 @@ class WriteGateTests(unittest.TestCase):
         account_id = self._account()
         task_id = self._action_task(account_id)
         engine = MonitorEngine(self.cfg, _BrowserStub())
-        engine._in_active_window = lambda: False
+        engine._in_active_window = lambda *_args: False
 
         result = asyncio.run(engine.execute_action_task(task_id))
 
@@ -165,7 +166,7 @@ class WriteGateTests(unittest.TestCase):
         account_id = self._account()
         task_id = self._publish_task(account_id)
         engine = MonitorEngine(self.cfg, _BrowserStub())
-        engine._in_active_window = lambda: False
+        engine._in_active_window = lambda *_args: False
 
         result = asyncio.run(engine.publish_task(task_id))
 
@@ -240,6 +241,44 @@ class WriteGateTests(unittest.TestCase):
             self.assertEqual(task.status, "pending")
             self.assertIsNotNone(task.scheduled_at)
 
+    def test_dm_risk_response_does_not_retry_through_browser(self):
+        account_id = self._account()
+        with db.get_session() as session:
+            session.add(DmConversation(
+                account_id=account_id,
+                conv_id="conv-fixture",
+                conv_short_id="short-fixture",
+                ticket="ticket-fixture",
+            ))
+            task = AccountActionTask(
+                platform="douyin", account_id=account_id, action="send_dm",
+                conv_id="conv-fixture", target_uid="target", content="hello",
+                status="pending",
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            task_id = task.id
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        browser_calls = 0
+
+        async def api_risk(*_args, **_kwargs):
+            return False, "HTTP 429"
+
+        async def browser_retry(*_args, **_kwargs):
+            nonlocal browser_calls
+            browser_calls += 1
+            return True, ""
+
+        with patch("app.engine.monitor.send_dm_api", api_risk), \
+                patch("app.engine.monitor.send_dm", browser_retry):
+            result = asyncio.run(engine.execute_action_task(task_id))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(browser_calls, 0)
+        with db.get_session() as session:
+            self.assertEqual(session.get(AccountActionTask, task_id).status, "pending")
+
     def test_publish_risk_response_returns_task_to_pending(self):
         account_id = self._account()
         task_id = self._publish_task(account_id)
@@ -257,6 +296,25 @@ class WriteGateTests(unittest.TestCase):
             self.assertEqual(task.status, "pending")
             self.assertIsNotNone(task.scheduled_at)
             self.assertGreater(task.scheduled_at, datetime.utcnow())
+
+    def test_publish_auth_expiry_keeps_task_pending_and_invalidates_account(self):
+        account_id = self._account()
+        task_id = self._publish_task(account_id)
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        async def logged_out(*_args, **_kwargs):
+            return False, "", "logged_out"
+
+        with patch("app.engine.monitor.publish_douyin", logged_out):
+            result = asyncio.run(engine.publish_task(task_id))
+
+        self.assertFalse(result["ok"])
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            account = session.get(DouyinAccount, account_id)
+            self.assertEqual(task.status, "pending")
+            self.assertIsNotNone(task.scheduled_at)
+            self.assertEqual(account.status, "invalid")
 
     def test_comment_at_daily_cap_remains_queued(self):
         self.cfg.engine.comment_daily_cap_per_account = 1
@@ -312,6 +370,33 @@ class WriteGateTests(unittest.TestCase):
             for row in rows:
                 self.assertEqual(row.status, "pending")
                 self.assertEqual(row.scheduled_at, now + timedelta(minutes=5))
+
+    def test_legacy_active_window_check_uses_account_timezone(self):
+        self.cfg.engine.quiet_hours_enabled = True
+        account_id = self._account()
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.timezone_id = "America/New_York"
+            session.add(account)
+            session.commit()
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        engine.risk._in_active_window = (
+            lambda account, _now: account.timezone_id == "America/New_York")
+
+        self.assertTrue(engine._in_active_window(account_id))
+
+    def test_legacy_daily_counter_uses_account_local_midnight(self):
+        account_id = self._account()
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.timezone_id = "America/New_York"
+            session.add(account)
+            session.commit()
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        expected = engine.risk._local_day_start_utc(
+            engine._load_account(account_id), datetime.utcnow())
+
+        self.assertEqual(engine._today_start(account_id), expected)
 
     def test_self_comment_filter_prefers_account_ids(self):
         raw = {"user": {"uid": "self-uid", "nickname": "changed"}}

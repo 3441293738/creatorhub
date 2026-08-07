@@ -13,8 +13,17 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlmodel import select
 
+from .browser.manager import normalize_proxy
 from .db import get_session
-from .models import AccountRiskState, DouyinAccount, RiskEvent
+from .models import (
+    AccountActionTask,
+    AccountRiskState,
+    CommentTask,
+    DouyinAccount,
+    ProxyPool,
+    PublishTask,
+    RiskEvent,
+)
 
 
 class OperationKind(str, Enum):
@@ -61,7 +70,7 @@ def _kind_value(kind: OperationKind | str) -> str:
 
 def network_key(proxy: str) -> str:
     """Return a non-secret stable key for a network exit."""
-    raw = str(proxy or "").strip()
+    raw = normalize_proxy(str(proxy or "").strip())
     if not raw:
         return "direct"
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -136,6 +145,14 @@ class RiskController:
         OperationKind.SOCIAL,
         OperationKind.DM,
     }
+    _CONSERVATIVE_LIMITS = {
+        OperationKind.COMMENT: (600, 3, 10),
+        OperationKind.SOCIAL: (900, 2, 8),
+        OperationKind.DM: (900, 2, 8),
+        OperationKind.PUBLISH: (7200, 1, 3),
+    }
+    _CONSERVATIVE_SHARED_WRITE_GAP = 300
+    _CONSERVATIVE_COMBINED_ACTION_CAPS = (3, 10)
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -198,18 +215,55 @@ class RiskController:
     def _limits(self, kind: OperationKind) -> tuple[int, int, int]:
         p = self.policy
         if kind == OperationKind.COMMENT:
-            return p.comment_min_gap_seconds, p.comment_hourly_cap, p.comment_daily_cap
+            configured = (p.comment_min_gap_seconds, p.comment_hourly_cap,
+                          p.comment_daily_cap)
+            return self._effective_limits(kind, configured)
         if kind == OperationKind.SOCIAL:
-            return p.social_min_gap_seconds, p.social_hourly_cap, p.social_daily_cap
+            configured = (p.social_min_gap_seconds, p.social_hourly_cap,
+                          p.social_daily_cap)
+            return self._effective_limits(kind, configured)
         if kind == OperationKind.DM:
-            return p.dm_min_gap_seconds, p.dm_hourly_cap, p.dm_daily_cap
+            configured = (p.dm_min_gap_seconds, p.dm_hourly_cap, p.dm_daily_cap)
+            return self._effective_limits(kind, configured)
         if kind == OperationKind.PUBLISH:
-            return p.publish_min_gap_seconds, p.publish_hourly_cap, p.publish_daily_cap
+            configured = (p.publish_min_gap_seconds, p.publish_hourly_cap,
+                          p.publish_daily_cap)
+            return self._effective_limits(kind, configured)
         if kind == OperationKind.READ_HEAVY:
             return p.read_heavy_gap_seconds, 0, 0
         if kind == OperationKind.READ_LIGHT:
             return p.read_light_gap_seconds, 0, 0
         return 0, 0, 0
+
+    def _effective_limits(
+        self, kind: OperationKind, configured: tuple[int, int, int],
+    ) -> tuple[int, int, int]:
+        if self.policy.mode != "conservative":
+            return configured
+        hard_gap, hard_hourly, hard_daily = self._CONSERVATIVE_LIMITS[kind]
+        gap, hourly, daily = configured
+        return (
+            max(hard_gap, max(0, gap)),
+            min(hard_hourly, hourly) if hourly > 0 else hard_hourly,
+            min(hard_daily, daily) if daily > 0 else hard_daily,
+        )
+
+    def _shared_write_gap(self) -> int:
+        configured = max(0, self.policy.shared_write_gap_seconds)
+        if self.policy.mode == "conservative":
+            return max(self._CONSERVATIVE_SHARED_WRITE_GAP, configured)
+        return configured
+
+    def _combined_action_caps(self) -> tuple[int, int]:
+        hourly = self.policy.combined_action_hourly_cap
+        daily = self.policy.combined_action_daily_cap
+        if self.policy.mode != "conservative":
+            return hourly, daily
+        hard_hourly, hard_daily = self._CONSERVATIVE_COMBINED_ACTION_CAPS
+        return (
+            min(hard_hourly, hourly) if hourly > 0 else hard_hourly,
+            min(hard_daily, daily) if daily > 0 else hard_daily,
+        )
 
     @staticmethod
     def _latest_success(session, account_id: int, kinds: list[str]) -> datetime | None:
@@ -220,17 +274,79 @@ class RiskController:
             .where(RiskEvent.operation_kind.in_(kinds))
             .order_by(RiskEvent.occurred_at.desc())
         ).first()
-        return row.occurred_at if row else None
+        latest = row.occurred_at if row else None
+        legacy: list[datetime] = []
+        if OperationKind.COMMENT.value in kinds:
+            value = session.exec(select(CommentTask.done_at)
+                                 .where(CommentTask.account_id == account_id)
+                                 .where(CommentTask.status == "done")
+                                 .order_by(CommentTask.done_at.desc())).first()
+            if value:
+                legacy.append(value)
+        if OperationKind.PUBLISH.value in kinds:
+            value = session.exec(select(PublishTask.done_at)
+                                 .where(PublishTask.account_id == account_id)
+                                 .where(PublishTask.status == "done")
+                                 .order_by(PublishTask.done_at.desc())).first()
+            if value:
+                legacy.append(value)
+        if OperationKind.DM.value in kinds:
+            value = session.exec(select(AccountActionTask.done_at)
+                                 .where(AccountActionTask.account_id == account_id)
+                                 .where(AccountActionTask.status == "done")
+                                 .where(AccountActionTask.action == "send_dm")
+                                 .order_by(AccountActionTask.done_at.desc())).first()
+            if value:
+                legacy.append(value)
+        if OperationKind.SOCIAL.value in kinds:
+            value = session.exec(select(AccountActionTask.done_at)
+                                 .where(AccountActionTask.account_id == account_id)
+                                 .where(AccountActionTask.status == "done")
+                                 .where(AccountActionTask.action != "send_dm")
+                                 .order_by(AccountActionTask.done_at.desc())).first()
+            if value:
+                legacy.append(value)
+        return max(([latest] if latest else []) + legacy, default=None)
 
     @staticmethod
     def _count_successes(session, account_id: int, kinds: list[str], since: datetime) -> int:
-        return len(session.exec(
+        event_count = len(session.exec(
             select(RiskEvent.id)
             .where(RiskEvent.account_id == account_id)
             .where(RiskEvent.outcome == RiskCategory.SUCCESS.value)
             .where(RiskEvent.operation_kind.in_(kinds))
             .where(RiskEvent.occurred_at >= since)
         ).all())
+        legacy_count = 0
+        if OperationKind.COMMENT.value in kinds:
+            legacy_count += len(session.exec(
+                select(CommentTask.id)
+                .where(CommentTask.account_id == account_id)
+                .where(CommentTask.status == "done")
+                .where(CommentTask.done_at >= since)).all())
+        if OperationKind.PUBLISH.value in kinds:
+            legacy_count += len(session.exec(
+                select(PublishTask.id)
+                .where(PublishTask.account_id == account_id)
+                .where(PublishTask.status == "done")
+                .where(PublishTask.done_at >= since)).all())
+        if OperationKind.DM.value in kinds:
+            legacy_count += len(session.exec(
+                select(AccountActionTask.id)
+                .where(AccountActionTask.account_id == account_id)
+                .where(AccountActionTask.status == "done")
+                .where(AccountActionTask.action == "send_dm")
+                .where(AccountActionTask.done_at >= since)).all())
+        if OperationKind.SOCIAL.value in kinds:
+            legacy_count += len(session.exec(
+                select(AccountActionTask.id)
+                .where(AccountActionTask.account_id == account_id)
+                .where(AccountActionTask.status == "done")
+                .where(AccountActionTask.action != "send_dm")
+                .where(AccountActionTask.done_at >= since)).all())
+        # New code writes both the legacy task row and a RiskEvent. ``max``
+        # reconstructs upgrade-day history without double-counting new writes.
+        return max(event_count, legacy_count)
 
     def preflight(
         self,
@@ -295,7 +411,7 @@ class RiskController:
 
             if kind in self._WRITE_KINDS and state.last_write_at:
                 next_at = state.last_write_at + timedelta(
-                    seconds=max(0, self.policy.shared_write_gap_seconds))
+                    seconds=self._shared_write_gap())
                 if next_at > now:
                     return RiskDecision(False, "尚未达到账号共享写操作间隔", next_at,
                                         "shared_write_gap")
@@ -319,19 +435,23 @@ class RiskController:
 
             if kind in (OperationKind.SOCIAL, OperationKind.DM):
                 action_kinds = [OperationKind.SOCIAL.value, OperationKind.DM.value]
+                combined_hourly_cap, combined_daily_cap = self._combined_action_caps()
                 hour_count = self._count_successes(
                     session, account_id, action_kinds, now - timedelta(hours=1))
-                if self.policy.combined_action_hourly_cap > 0 \
-                        and hour_count >= self.policy.combined_action_hourly_cap:
+                if combined_hourly_cap > 0 and hour_count >= combined_hourly_cap:
                     return RiskDecision(False, "已达到账号每小时账号动作总上限",
                                         now + timedelta(hours=1), "combined_hourly_cap")
                 day_count = self._count_successes(
                     session, account_id, action_kinds,
                     self._local_day_start_utc(account, now))
-                if self.policy.combined_action_daily_cap > 0 \
-                        and day_count >= self.policy.combined_action_daily_cap:
+                if combined_daily_cap > 0 and day_count >= combined_daily_cap:
+                    local = now.replace(tzinfo=timezone.utc).astimezone(
+                        self._timezone(account))
+                    next_local = (local + timedelta(days=1)).replace(
+                        hour=0, minute=0, second=0, microsecond=0)
+                    next_at = next_local.astimezone(timezone.utc).replace(tzinfo=None)
                     return RiskDecision(False, "已达到账号每日账号动作总上限",
-                                        now + timedelta(days=1), "combined_daily_cap")
+                                        next_at, "combined_daily_cap")
             session.commit()
         return RiskDecision(True)
 
@@ -353,6 +473,7 @@ class RiskController:
             state = self._state(session, account_id)
             state.last_operation_at = now
             state.updated_at = now
+            state.consecutive_network_failures = 0
             if kind in self._WRITE_KINDS:
                 state.last_write_at = now
             if kind == OperationKind.READ_HEAVY:
@@ -408,6 +529,7 @@ class RiskController:
             state.last_operation_at = now
             state.updated_at = now
             if category == RiskCategory.RISK:
+                state.consecutive_network_failures = 0
                 state.risk_level = min(4, max(1, state.risk_level + 1))
                 state.consecutive_risk += 1
                 state.recovery_successes = 0
@@ -422,9 +544,22 @@ class RiskController:
                 account.write_paused_until = next_at
                 account.write_pause_reason = state.last_risk_reason
             elif category == RiskCategory.NETWORK:
+                state.consecutive_network_failures += 1
                 next_at = now + timedelta(minutes=5)
+                if account.proxy and state.consecutive_network_failures >= 2:
+                    account.proxy_status = "bad"
+                    account_proxy = normalize_proxy(account.proxy)
+                    for proxy_row in session.exec(select(ProxyPool)).all():
+                        if normalize_proxy(proxy_row.url) == account_proxy:
+                            proxy_row.status = "bad"
+                            proxy_row.last_checked_at = now
+                            session.add(proxy_row)
             elif category == RiskCategory.AUTH:
-                next_at = None
+                state.consecutive_network_failures = 0
+                account.status = "invalid"
+                next_at = now + timedelta(minutes=15)
+            else:
+                state.consecutive_network_failures = 0
             session.add(RiskEvent(
                 account_id=account_id,
                 network_key=network_key(account.proxy),
@@ -446,6 +581,7 @@ class RiskController:
                 state.cooldown_until = None
                 state.probe_only_until = None
                 state.consecutive_risk = 0
+                state.consecutive_network_failures = 0
                 state.recovery_successes = 0
                 state.last_risk_reason = ""
                 state.last_recovery_at = None
@@ -457,6 +593,19 @@ class RiskController:
                 account.write_pause_reason = ""
                 session.add(account)
             session.commit()
+
+    def next_write_at(self, account_id: int) -> datetime | None:
+        """Return the earliest known time any write may pass shared gates."""
+        with self._decision_lock, get_session() as session:
+            state = session.get(AccountRiskState, account_id)
+            if state is None:
+                return None
+            candidates = [value for value in (state.cooldown_until,)
+                          if value is not None]
+            if state.last_write_at is not None:
+                candidates.append(
+                    state.last_write_at + timedelta(seconds=self._shared_write_gap()))
+            return max(candidates) if candidates else None
 
     def prune_events(self, *, now: datetime | None = None) -> int:
         cutoff = (now or _utcnow()) - timedelta(

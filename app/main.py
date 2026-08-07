@@ -74,6 +74,7 @@ from .models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
                      ShareDownloadRecord, AccountRiskState)
 from .notifier import CHANNEL_TYPES, send_one
 from .profiles import (ensure_identity, migrate_identities, assign_proxy_from_pool,
+                       release_proxy_reservation, reserve_proxy_from_pool,
                        seed_proxy_pool)
 from .risk import OperationKind, RiskController
 from .settings import get_setting, set_setting
@@ -290,6 +291,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
     login_tasks[task_id] = {"status": "waiting"}
     fresh_account = account_id is None
     tmp_profile = ""
+    proxy_reservation_key = ""
     new_fields = None
     nm = ("小红书账号" if platform == "xhs"
           else "快手账号" if platform == "kuaishou"
@@ -317,7 +319,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 proxy = ""
             elif choice.lower() == "auto":
                 with get_session() as s:
-                    proxy = assign_proxy_from_pool(s, cfg)
+                    proxy_reservation_key = task_id
+                    proxy = reserve_proxy_from_pool(s, cfg, proxy_reservation_key)
             else:
                 from .browser.manager import normalize_proxy
                 proxy = normalize_proxy(choice)
@@ -356,7 +359,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     acc = DouyinAccount(
                         platform=platform, nickname=nickname or nm, status="active",
                         profile_dir=tmp_profile, proxy=identity.proxy,
-                        identity_mode="native", ua="",
+                        identity_mode="native", ua=identity.ua or "",
                         viewport_w=new_fields["viewport_w"],
                         viewport_h=new_fields["viewport_h"],
                         timezone_id=new_fields["timezone_id"], locale=new_fields["locale"],
@@ -374,6 +377,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     acc.storage_state = state_json
                 if nickname:
                     acc.nickname = nickname
+                if acc.identity_mode == "native" and identity.ua:
+                    acc.ua = identity.ua
                 acc.status = "active"
                 s.add(acc); s.commit()
 
@@ -409,6 +414,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 pass
             shutil.rmtree(tmp_profile, ignore_errors=True)
         login_tasks[task_id] = {"status": "error", "error": f"{type(e).__name__}: {e}"}
+    finally:
+        if proxy_reservation_key:
+            release_proxy_reservation(proxy_reservation_key)
 
 
 @app.post("/api/login/browser/start")
@@ -530,6 +538,7 @@ async def login_cookie(body: CookieIn):
 
 @app.get("/api/accounts")
 async def list_accounts(platform: str | None = None):
+    risk_controller = engine.risk if engine else RiskController(cfg)
     with get_session() as s:
         q = select(DouyinAccount)
         if platform:
@@ -538,6 +547,7 @@ async def list_accounts(platform: str | None = None):
         out = []
         for a in accs:
             risk_state = s.get(AccountRiskState, a.id) if a.id else None
+            next_write_at = risk_controller.next_write_at(a.id) if a.id else None
             used = len(s.exec(select(MonitorTarget.id)
                               .where(MonitorTarget.account_id == a.id)).all())
             out.append({
@@ -562,6 +572,8 @@ async def list_accounts(platform: str | None = None):
                     risk_state.cooldown_until.isoformat()
                     if risk_state and risk_state.cooldown_until else None),
                 "risk_signal": risk_state.last_risk_reason if risk_state else "",
+                "next_write_at": (next_write_at.isoformat()
+                                  if next_write_at else None),
                 "ua": a.ua,
                 "profile_dir": a.profile_dir,
                 "created_at": a.created_at.isoformat() if a.created_at else None,

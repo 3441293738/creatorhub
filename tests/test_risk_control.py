@@ -4,13 +4,17 @@ import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from sqlmodel import select
+
 import app.db as db
 from app.config import Config, RiskControlConfig, load_config
 from app.models import (
     AccountRiskState,
+    CommentTask,
     CommentWatch,
     DouyinAccount,
     MonitorTarget,
+    ProxyPool,
     PublishTask,
     RiskEvent,
 )
@@ -89,6 +93,25 @@ risk_control:
         self.assertEqual(cfg.risk_control.cooldown_steps_seconds,
                          [1800, 7200, 21600, 86400])
 
+    def test_conservative_mode_enforces_hard_write_ceilings(self):
+        policy = self.cfg.risk_control
+        policy.comment_min_gap_seconds = 0
+        policy.comment_hourly_cap = 99
+        policy.comment_daily_cap = 0
+        policy.shared_write_gap_seconds = 1
+        policy.combined_action_hourly_cap = 99
+        policy.combined_action_daily_cap = 0
+        controller = RiskController(self.cfg)
+
+        self.assertEqual(controller._limits(OperationKind.COMMENT), (600, 3, 10))
+        self.assertEqual(controller._shared_write_gap(), 300)
+        self.assertEqual(controller._combined_action_caps(), (3, 10))
+
+        policy.mode = "custom"
+        self.assertEqual(controller._limits(OperationKind.COMMENT), (0, 99, 0))
+        self.assertEqual(controller._shared_write_gap(), 1)
+        self.assertEqual(controller._combined_action_caps(), (99, 0))
+
     def test_new_risk_models_persist(self):
         account_id = self._account()
 
@@ -125,6 +148,12 @@ risk_control:
         self.assertEqual(first, second)
         self.assertNotIn("secret", first)
         self.assertTrue(first.startswith("proxy:"))
+
+    def test_network_key_normalizes_equivalent_proxy_urls(self):
+        self.assertEqual(
+            network_key("proxy.example:8080"),
+            network_key("http://proxy.example:8080"),
+        )
 
     def test_platform_error_classifier_distinguishes_risk_auth_and_network(self):
         for status in (403, 429, 461, 471):
@@ -168,6 +197,52 @@ risk_control:
             self.assertEqual(failure.next_allowed_at, now + timedelta(seconds=seconds))
             now = failure.next_allowed_at
 
+    def test_two_consecutive_network_failures_disable_bound_proxy(self):
+        proxy = "http://proxy.example:8080"
+        account_id = self._account(proxy=proxy)
+        with db.get_session() as session:
+            session.add(ProxyPool(url=proxy, status="ok"))
+            session.commit()
+        controller = RiskController(self.cfg)
+
+        controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "connection timeout")
+        with db.get_session() as session:
+            self.assertNotEqual(session.get(DouyinAccount, account_id).proxy_status, "bad")
+
+        controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "connection timeout")
+
+        with db.get_session() as session:
+            self.assertEqual(session.get(DouyinAccount, account_id).proxy_status, "bad")
+            proxy_row = session.exec(select(ProxyPool).where(ProxyPool.url == proxy)).one()
+            self.assertEqual(proxy_row.status, "bad")
+
+    def test_success_resets_consecutive_network_failures(self):
+        account_id = self._account(proxy="http://proxy.example:8080")
+        controller = RiskController(self.cfg)
+        controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "connection timeout")
+        controller.record_success(account_id, OperationKind.READ_LIGHT)
+        controller.record_failure(
+            account_id, OperationKind.READ_LIGHT, "connection timeout")
+
+        with db.get_session() as session:
+            state = session.get(AccountRiskState, account_id)
+            self.assertEqual(state.consecutive_network_failures, 1)
+            self.assertNotEqual(session.get(DouyinAccount, account_id).proxy_status, "bad")
+
+    def test_next_write_at_combines_cooldown_and_shared_gap(self):
+        account_id = self._account()
+        controller = RiskController(self.cfg)
+        now = datetime(2026, 8, 7, 0, 0, 0)
+        controller.record_success(account_id, OperationKind.COMMENT, now=now)
+
+        self.assertEqual(
+            controller.next_write_at(account_id),
+            now + timedelta(seconds=300),
+        )
+
     def test_write_is_denied_during_cooldown(self):
         account_id = self._account()
         controller = RiskController(self.cfg)
@@ -184,6 +259,7 @@ risk_control:
 
     def test_daily_cap_uses_account_local_midnight(self):
         account_id = self._account(timezone_id="Asia/Shanghai")
+        self.cfg.risk_control.mode = "custom"
         self.cfg.risk_control.publish_min_gap_seconds = 0
         self.cfg.risk_control.publish_hourly_cap = 0
         self.cfg.risk_control.shared_write_gap_seconds = 0
@@ -203,6 +279,27 @@ risk_control:
             account_id, OperationKind.PUBLISH, now=after_midnight_utc)
 
         self.assertTrue(decision.allowed)
+
+    def test_upgrade_day_counts_legacy_completed_write_tasks(self):
+        account_id = self._account()
+        self.cfg.risk_control.mode = "custom"
+        self.cfg.risk_control.comment_min_gap_seconds = 0
+        self.cfg.risk_control.comment_hourly_cap = 0
+        self.cfg.risk_control.comment_daily_cap = 1
+        self.cfg.risk_control.shared_write_gap_seconds = 0
+        self.cfg.engine.quiet_hours_enabled = False
+        now = datetime(2026, 8, 7, 3, 0, 0)
+        with db.get_session() as session:
+            session.add(CommentTask(
+                account_id=account_id, status="done", content="legacy",
+                done_at=now - timedelta(hours=1)))
+            session.commit()
+
+        decision = RiskController(self.cfg).preflight(
+            account_id, OperationKind.COMMENT, now=now)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.signal, "daily_cap")
 
     def test_three_spaced_light_reads_reduce_one_risk_level(self):
         account_id = self._account()
@@ -362,6 +459,32 @@ risk_control:
 
         self.assertEqual(rows, [])
         self.assertTrue(error.startswith("risk_deferred:"))
+
+    def test_read_budget_is_rechecked_after_serialization_lock(self):
+        account_id = self._account()
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        calls = 0
+
+        async def operation():
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.02)
+            return ["ok"], ""
+
+        async def scenario():
+            return await asyncio.gather(*(
+                engine.guarded_read_pair(
+                    account_id, OperationKind.READ_HEAVY, "fixture", operation,
+                    empty_result=[])
+                for _ in range(2)
+            ))
+
+        results = asyncio.run(scenario())
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(sum(1 for payload, _error in results if payload == ["ok"]), 1)
+        self.assertEqual(sum(
+            1 for _payload, error in results if error.startswith("risk_deferred:")), 1)
 
 
 if __name__ == "__main__":

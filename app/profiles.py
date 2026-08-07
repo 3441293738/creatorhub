@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from sqlmodel import select
@@ -14,6 +15,10 @@ from .browser.identity import generate_identity_fields, seed_from_id
 from .browser.manager import normalize_proxy
 from .db import get_session
 from .models import DouyinAccount, ProxyPool
+
+
+_proxy_reservation_lock = threading.RLock()
+_proxy_reservations: dict[str, str] = {}
 
 
 def _pool_urls(session, cfg) -> list:
@@ -39,15 +44,37 @@ def _pool_urls(session, cfg) -> list:
 
 def assign_proxy_from_pool(session, cfg) -> str:
     """Return one unoccupied usable proxy, or an empty string."""
-    pool = _pool_urls(session, cfg)
-    if not pool:
-        return ""
-    occupied = {
-        normalize_proxy(a.proxy)
-        for a in session.exec(select(DouyinAccount)).all()
-        if a.proxy
-    }
-    return next((url for url in pool if url not in occupied), "")
+    with _proxy_reservation_lock:
+        pool = _pool_urls(session, cfg)
+        if not pool:
+            return ""
+        occupied = {
+            normalize_proxy(a.proxy)
+            for a in session.exec(select(DouyinAccount)).all()
+            if a.proxy
+        }
+        occupied.update(_proxy_reservations.values())
+        return next((url for url in pool if url not in occupied), "")
+
+
+def reserve_proxy_from_pool(session, cfg, reservation_key: str) -> str:
+    """Atomically reserve a free proxy while a new login is in progress."""
+    key = str(reservation_key or "").strip()
+    if not key:
+        return assign_proxy_from_pool(session, cfg)
+    with _proxy_reservation_lock:
+        if key in _proxy_reservations:
+            return _proxy_reservations[key]
+        proxy = assign_proxy_from_pool(session, cfg)
+        if proxy:
+            _proxy_reservations[key] = proxy
+        return proxy
+
+
+def release_proxy_reservation(reservation_key: str) -> None:
+    """Release a temporary login reservation after persistence or failure."""
+    with _proxy_reservation_lock:
+        _proxy_reservations.pop(str(reservation_key or "").strip(), None)
 
 
 def seed_proxy_pool(cfg) -> int:

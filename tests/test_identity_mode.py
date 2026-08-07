@@ -30,6 +30,13 @@ class _ContextStub:
         return None
 
 
+class _PageStub:
+    async def evaluate(self, expression):
+        if expression == "navigator.userAgent":
+            return "ACTUAL_NATIVE_UA"
+        return ""
+
+
 class _ChromiumStub:
     def __init__(self):
         self.kwargs = None
@@ -110,6 +117,21 @@ class IdentityModeTests(unittest.TestCase):
         self.assertNotIn("permissions", kwargs)
         self.assertEqual(context.header_calls, [])
         self.assertEqual(context.script_calls, [])
+
+    def test_native_launch_captures_actual_context_user_agent(self):
+        manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
+        manager._pw = _PlaywrightStub()
+        manager._pw.chromium.context.pages = [_PageStub()]
+        identity = Identity(
+            account_id=None,
+            profile_dir=str(Path(self.tmp.name) / "native-ua"),
+            identity_mode="native",
+            ua="",
+        )
+
+        asyncio.run(manager._launch_persistent(identity))
+
+        self.assertEqual(identity.ua, "ACTUAL_NATIVE_UA")
 
     def test_legacy_launch_keeps_existing_identity_behavior(self):
         manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)

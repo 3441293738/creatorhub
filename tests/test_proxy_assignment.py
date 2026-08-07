@@ -6,7 +6,11 @@ import app.db as db
 from app.config import Config
 from app.main import _proxy_probe_status, _proxy_status_ok
 from app.models import DouyinAccount, ProxyPool
-from app.profiles import assign_proxy_from_pool
+from app.profiles import (
+    assign_proxy_from_pool,
+    release_proxy_reservation,
+    reserve_proxy_from_pool,
+)
 
 
 class ProxyAssignmentTests(unittest.TestCase):
@@ -56,6 +60,26 @@ class ProxyAssignmentTests(unittest.TestCase):
                 assign_proxy_from_pool(session, self.cfg),
                 "http://proxy-a.example:8000",
             )
+
+    def test_concurrent_login_reservations_are_unique_until_released(self):
+        first = "http://proxy-a.example:8000"
+        second = "http://proxy-b.example:8000"
+        self.cfg.proxies = [first, second]
+        try:
+            with db.get_session() as session:
+                self.assertEqual(
+                    reserve_proxy_from_pool(session, self.cfg, "login-a"), first)
+                self.assertEqual(
+                    reserve_proxy_from_pool(session, self.cfg, "login-b"), second)
+                self.assertEqual(
+                    reserve_proxy_from_pool(session, self.cfg, "login-a"), first)
+            release_proxy_reservation("login-a")
+            with db.get_session() as session:
+                self.assertEqual(
+                    reserve_proxy_from_pool(session, self.cfg, "login-c"), first)
+        finally:
+            for key in ("login-a", "login-b", "login-c"):
+                release_proxy_reservation(key)
 
     def test_proxy_http_status_is_strictly_classified(self):
         for status in (200, 204, 301, 399):
