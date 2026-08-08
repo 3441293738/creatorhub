@@ -30,6 +30,7 @@ CreatorHub 使用 Python + FastAPI 提供统一 Web 界面，用于管理账号�
 
 - Python 3.10+
 - 桌面环境（扫码登录时需要弹出浏览器）
+- Google Chrome 稳定版（可选，但小红书扫码登录建议安装）
 - Node.js 18+（仅小红书发布需要）
 - 系统 ffmpeg（可选；未安装时自动使用 Python 依赖附带的 ffmpeg）
 
@@ -60,6 +61,8 @@ chmod +x start.sh
 ```text
 http://127.0.0.1:8000
 ```
+
+> **小红书登录建议：** 尽量使用本机系统中已安装的稳定版 Google Chrome。CreatorHub 会优先调用系统 Chrome，并为每个账号使用独立的持久化 Profile，不会复用个人 Chrome 的默认 Profile；未安装 Chrome 时会自动回退到 Playwright Chromium，功能仍可使用，但更容易遇到平台设备安全验证。
 
 常用命令：
 
@@ -232,6 +235,7 @@ python -m app.engine.share_downloader "完整分享文案或链接" -o ./data/me
 | macOS 安装依赖时报 `command /usr/bin/clang++ failed with code 1` | 更新代码后删除旧的 `.venv`，再运行 `./start.sh install`。旧版 `playwright==1.49.1` 固定依赖不支持 Python 3.14 wheel 的 `greenlet==3.1.1`，会错误地退回本地编译；当前依赖已更新，并会先升级 pip/setuptools/wheel。 |
 | Playwright 启动失败或找不到浏览器 | 运行 `python -m playwright install chromium` |
 | 扫码登录没有弹窗 | 确认当前机器有桌面环境；抖音也可使用 Cookie 登录 |
+| 小红书扫码登录出现设备安全验证 | 尽量安装或更新本机稳定版 Google Chrome，并保持同一账号的 Profile 和网络出口稳定；没有 Chrome 时项目会回退到 Playwright Chromium |
 | Windows 下出现 Playwright 子进程错误 | 使用单 worker 启动，不要添加 `--workers` |
 | 抓取不到作品或评论 | 检查登录态、目标链接和网络状态，必要时重新登录并降低频率 |
 | 小红书链接解析失败 | 重新复制包含有效 `xsec_token` 的完整链接 |
