@@ -8,6 +8,7 @@ from unittest.mock import patch
 import app.db as db
 from app.config import Config, EngineConfig
 from app.engine.monitor import MonitorEngine
+from app.risk import OperationKind
 from app.models import (
     AccountActionTask,
     CommentRule,
@@ -152,7 +153,8 @@ class WriteGateTests(unittest.TestCase):
     def test_risk_pause_blocks_and_persists_until_cleared(self):
         account_id = self._account()
         engine = MonitorEngine(self.cfg, _BrowserStub())
-        engine._pause_account_writes(account_id, "status_code=8 风控")
+        engine.risk.record_failure(
+            account_id, OperationKind.COMMENT, "HTTP 429")
 
         message = engine._comment_gate_error(account_id)
         self.assertIn("暂停至", message)
@@ -179,7 +181,8 @@ class WriteGateTests(unittest.TestCase):
         account_id = self._account()
         task_id = self._publish_task(account_id)
         engine = MonitorEngine(self.cfg, _BrowserStub())
-        engine._pause_account_writes(account_id, "HTTP 429")
+        engine.risk.record_failure(
+            account_id, OperationKind.COMMENT, "HTTP 429")
 
         result = asyncio.run(engine.publish_task(task_id))
 

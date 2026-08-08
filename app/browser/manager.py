@@ -23,15 +23,20 @@ from ..windowing import (CHROMIUM_WINDOW_CLASSES, bring_window_to_front,
                          capture_window_snapshot)
 from .identity import Identity, fingerprint_script
 
-_STEALTH = [
+_PROXY_WEBRTC_ARGS = [
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+    "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+]
+
+# 存量 legacy 账号必须保持原来的启动参数，避免已建立的浏览器画像突然漂移。
+_LEGACY_ARGS = [
     "--disable-blink-features=AutomationControlled",
     "--no-sandbox",
     "--disable-infobars",
     # 关键:禁止 WebRTC 走非代理 UDP。否则真实 Chromium 会通过 STUN 直接暴露宿主
     # 公网/内网 IP,绕过我们在 HTTP 层设的账号代理 —— 所有号在 WebRTC 上露同一真实
     # 出口 IP,一号一代理的防关联就白做了。这个 flag 让 WebRTC 只认代理路径。
-    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-    "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+    *_PROXY_WEBRTC_ARGS,
 ]
 
 # storage_state 里允许注入的 Cookie 字段(playwright add_cookies 接受的键)
@@ -140,27 +145,46 @@ class BrowserManager:
         self._locks: Dict[Any, asyncio.Lock] = {}
         self._cv_lock = asyncio.Lock()                   # 保护 context 字典的创建/驱逐
         self._chrome_major: Optional[int] = None         # 实际 Chromium 大版本(启动时探测)
+        # 优先使用机器上安装的稳定版 Chrome；没有时回退到 Playwright
+        # 附带的 Chrome for Testing。登录窗口因此更接近用户日常浏览器环境。
+        self._browser_channel: Optional[str] = None
 
     async def start(self):
         self._pw = await async_playwright().start()
         self._chrome_major = await self._detect_chrome_major()
 
     async def _detect_chrome_major(self) -> Optional[int]:
-        """探测 Playwright 实际内置的 Chromium 大版本。
+        """选择可用浏览器并探测其 Chromium 大版本。
+
+        优先系统稳定版 Chrome，缺失时使用 Playwright bundled Chromium。
         账号 UA 池写死了 Chrome 版本,但真实内核可能是另一版本 —— 二者不一致时,
         Sec-CH-UA 请求头 / navigator.userAgentData 由真实内核发出,会和 UA 字符串对不上,
         成为自动化特征。这里读一次真实 UA,后续把账号 UA 的版本号归一到它。"""
-        try:
-            b = await self._pw.chromium.launch(headless=True, args=_STEALTH)
+        for channel in ("chrome", None):
+            launch_kwargs: Dict[str, Any] = {
+                "headless": True,
+            }
+            if channel:
+                launch_kwargs["channel"] = channel
             try:
-                pg = await b.new_page()
+                browser = await self._pw.chromium.launch(**launch_kwargs)
+            except Exception:
+                continue
+            self._browser_channel = channel
+            try:
+                pg = await browser.new_page()
                 ua = await pg.evaluate("navigator.userAgent")
+                m = re.search(r"Chrome/(\d+)", ua or "")
+                return int(m.group(1)) if m else None
+            except Exception:
+                return None
             finally:
-                await b.close()
-            m = re.search(r"Chrome/(\d+)", ua or "")
-            return int(m.group(1)) if m else None
-        except Exception:
-            return None
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+        self._browser_channel = None
+        return None
 
     def _normalize_ua(self, ua: str) -> str:
         """把账号 UA 的 Chrome/Edg 大版本对齐到真实内核版本(未探测到则原样返回)。"""
@@ -170,6 +194,17 @@ class BrowserManager:
         ua = re.sub(r"Chrome/\d+", f"Chrome/{v}", ua)
         ua = re.sub(r"Edg/\d+", f"Edg/{v}", ua)
         return ua
+
+    def environment_snapshot(self, identity: Identity, *, headless: bool) -> Dict[str, Any]:
+        """返回不含代理凭据的浏览器环境诊断信息。"""
+        return {
+            "browser": self._browser_channel or "chromium",
+            "chrome_major": self._chrome_major,
+            "headless": bool(headless),
+            "identity_mode": identity.identity_mode,
+            "profile_dir": identity.profile_dir,
+            "has_proxy": bool(_parse_proxy(identity.proxy)),
+        }
 
     def _sec_ch_ua_headers(self, ua: str) -> Optional[Dict[str, str]]:
         """按归一后的 UA 生成一致的 Client Hints 头,覆盖真实内核默认发出的值。"""
@@ -219,20 +254,29 @@ class BrowserManager:
         was_empty = not any(pdir.iterdir())
         ua = self._normalize_ua(identity.ua or self.default_ua)
         kwargs: Dict[str, Any] = dict(
-            user_data_dir=str(pdir), headless=headless, args=_STEALTH,
-            viewport={"width": identity.viewport_w, "height": identity.viewport_h},
-            locale=identity.locale or "zh-CN",
-            timezone_id=identity.timezone_id or "Asia/Shanghai",
+            user_data_dir=str(pdir), headless=headless,
         )
+        if self._browser_channel:
+            kwargs["channel"] = self._browser_channel
         legacy = identity.identity_mode != "native"
         if legacy:
             kwargs.update(
+                args=list(_LEGACY_ARGS),
+                viewport={"width": identity.viewport_w, "height": identity.viewport_h},
+                locale=identity.locale or "zh-CN",
+                timezone_id=identity.timezone_id or "Asia/Shanghai",
                 user_agent=ua,
                 # 存量账号保持既有画像，避免已建立的 profile 突然漂移。
                 geolocation=identity.geolocation,
                 permissions=["geolocation"],
             )
         proxy = _parse_proxy(identity.proxy)
+        if not legacy:
+            # native 账号使用 Chrome/操作系统自己的视口、语言、时区与硬件画像。
+            # 仅在显式配置代理时约束 WebRTC，避免 UDP 绕过代理出口。
+            kwargs["no_viewport"] = True
+            if proxy:
+                kwargs["args"] = list(_PROXY_WEBRTC_ARGS)
         if proxy:
             kwargs["proxy"] = proxy
         ctx = await self._pw.chromium.launch_persistent_context(**kwargs)

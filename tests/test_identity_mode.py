@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from contextlib import asynccontextmanager
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import app.db as db
 import app.main as main
@@ -106,6 +107,16 @@ class IdentityModeTests(unittest.TestCase):
             main.cfg, main.browser, main.engine)
 
         class BrowserStub:
+            def environment_snapshot(self, identity, *, headless):
+                return {
+                    "browser": "chrome",
+                    "chrome_major": 150,
+                    "headless": headless,
+                    "identity_mode": identity.identity_mode,
+                    "profile_dir": identity.profile_dir,
+                    "has_proxy": bool(identity.proxy),
+                }
+
             async def close_context(self, _key):
                 return None
 
@@ -142,6 +153,50 @@ class IdentityModeTests(unittest.TestCase):
 
         self.assertEqual(len(engine.calls), 1)
         self.assertEqual(engine.calls[0][1], OperationKind.LOGIN)
+
+    def test_scan_login_task_reports_non_sensitive_browser_environment(self):
+        previous_cfg, previous_browser, previous_engine = (
+            main.cfg, main.browser, main.engine)
+
+        class BrowserStub:
+            def environment_snapshot(self, identity, *, headless):
+                return {
+                    "browser": "chrome",
+                    "chrome_major": 150,
+                    "headless": headless,
+                    "identity_mode": identity.identity_mode,
+                    "profile_dir": identity.profile_dir,
+                    "has_proxy": bool(identity.proxy),
+                }
+
+            async def close_context(self, _key):
+                return None
+
+        async def expired_login(_browser, _identity):
+            return False, "", ""
+
+        task_id = "environment-diagnostic"
+        main.cfg = self.cfg
+        main.browser = BrowserStub()
+        main.engine = None
+        try:
+            with patch("app.main.interactive_xhs_login", expired_login):
+                asyncio.run(main._run_login(
+                    task_id,
+                    platform="xhs",
+                    proxy_choice="http://user:secret@127.0.0.1:8080",
+                ))
+
+            result = main.login_tasks[task_id]
+        finally:
+            main.login_tasks.pop(task_id, None)
+            main.cfg, main.browser, main.engine = (
+                previous_cfg, previous_browser, previous_engine)
+
+        self.assertEqual(result["status"], "expired")
+        self.assertEqual(result["environment"]["browser"], "chrome")
+        self.assertTrue(result["environment"]["has_proxy"])
+        self.assertNotIn("secret", repr(result["environment"]))
 
     def test_open_account_browser_uses_unified_login_operation_guard(self):
         with db.get_session() as session:
@@ -283,8 +338,106 @@ class IdentityModeTests(unittest.TestCase):
         self.assertNotIn("user_agent", kwargs)
         self.assertNotIn("geolocation", kwargs)
         self.assertNotIn("permissions", kwargs)
+        self.assertNotIn("args", kwargs)
+        self.assertNotIn("viewport", kwargs)
+        self.assertNotIn("locale", kwargs)
+        self.assertNotIn("timezone_id", kwargs)
+        self.assertTrue(kwargs["no_viewport"])
         self.assertEqual(context.header_calls, [])
         self.assertEqual(context.script_calls, [])
+
+    def test_native_proxy_launch_only_adds_webrtc_proxy_routing_flags(self):
+        manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
+        manager._pw = _PlaywrightStub()
+        identity = Identity(
+            account_id=1,
+            profile_dir=str(Path(self.tmp.name) / "native-proxy"),
+            identity_mode="native",
+            proxy="http://127.0.0.1:8080",
+        )
+
+        asyncio.run(manager._launch_persistent(identity, headless=False))
+        kwargs = manager._pw.chromium.kwargs
+
+        self.assertEqual(kwargs["args"], [
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+        ])
+        self.assertEqual(kwargs["proxy"], {"server": "http://127.0.0.1:8080"})
+        self.assertTrue(kwargs["no_viewport"])
+
+    def test_browser_probe_prefers_installed_stable_chrome(self):
+        manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
+        page = AsyncMock()
+        page.evaluate.return_value = (
+            "Mozilla/5.0 Chrome/150.0.0.0 Safari/537.36")
+        browser = AsyncMock()
+        browser.new_page.return_value = page
+        chromium = AsyncMock()
+        chromium.launch.return_value = browser
+        manager._pw = SimpleNamespace(chromium=chromium)
+
+        major = asyncio.run(manager._detect_chrome_major())
+
+        self.assertEqual(major, 150)
+        self.assertEqual(manager._browser_channel, "chrome")
+        self.assertEqual(chromium.launch.await_args.kwargs["channel"], "chrome")
+        self.assertNotIn("args", chromium.launch.await_args.kwargs)
+
+    def test_browser_probe_falls_back_when_stable_chrome_is_unavailable(self):
+        manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
+        page = AsyncMock()
+        page.evaluate.return_value = (
+            "Mozilla/5.0 Chrome/149.0.0.0 Safari/537.36")
+        browser = AsyncMock()
+        browser.new_page.return_value = page
+        chromium = AsyncMock()
+        chromium.launch.side_effect = [RuntimeError("no stable chrome"), browser]
+        manager._pw = SimpleNamespace(chromium=chromium)
+
+        major = asyncio.run(manager._detect_chrome_major())
+
+        self.assertEqual(major, 149)
+        self.assertIsNone(manager._browser_channel)
+        self.assertEqual(chromium.launch.await_count, 2)
+        self.assertNotIn("channel", chromium.launch.await_args.kwargs)
+
+    def test_persistent_context_uses_selected_browser_channel(self):
+        manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
+        manager._pw = _PlaywrightStub()
+        manager._browser_channel = "chrome"
+        identity = Identity(
+            account_id=1,
+            profile_dir=str(Path(self.tmp.name) / "stable-channel"),
+            identity_mode="native",
+        )
+
+        asyncio.run(manager._launch_persistent(identity))
+
+        self.assertEqual(manager._pw.chromium.kwargs["channel"], "chrome")
+
+    def test_environment_snapshot_is_diagnostic_and_does_not_expose_proxy(self):
+        manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
+        manager._browser_channel = "chrome"
+        manager._chrome_major = 150
+        identity = Identity(
+            account_id=7,
+            profile_dir=str(Path(self.tmp.name) / "diagnostic"),
+            identity_mode="native",
+            proxy="http://user:secret@127.0.0.1:8080",
+        )
+
+        snapshot = manager.environment_snapshot(identity, headless=False)
+
+        self.assertEqual(snapshot, {
+            "browser": "chrome",
+            "chrome_major": 150,
+            "headless": False,
+            "identity_mode": "native",
+            "profile_dir": identity.profile_dir,
+            "has_proxy": True,
+        })
+        self.assertNotIn("secret", repr(snapshot))
 
     def test_native_launch_captures_actual_context_user_agent(self):
         manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)

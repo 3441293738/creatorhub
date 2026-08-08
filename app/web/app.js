@@ -1061,7 +1061,7 @@ async function startXhsLogin() {
   $("qrstatus").textContent = "正在打开小红书窗口…";
   try {
     const res = await api(loginStartUrl("/api/login/xhs/start", proxy), { method: "POST" });
-    $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书窗口已打开</b>，请使用小红书 App 扫码。<br>主站登录成功后会保存读取登录态并自动关闭窗口。<br>如需发布，请随后单独点击「创作者登录」。`;
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书官网首页已打开</b>，请在窗口中点击「登录」并使用小红书 App 扫码。<br>主站登录成功后会保存读取登录态并自动关闭窗口。<br>如需发布，请随后单独点击「创作者登录」。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("小红书登录启动失败:" + e.message, "err"); }
 }

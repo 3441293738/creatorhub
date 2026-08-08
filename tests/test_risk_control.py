@@ -3,10 +3,12 @@ import unittest
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from sqlmodel import select
 
 import app.db as db
+import app.main as main
 from app.browser.identity import Identity
 from app.config import Config, RiskControlConfig, load_config
 from app.models import (
@@ -95,6 +97,43 @@ risk_control:
         self.assertEqual(cfg.risk_control.cooldown_steps_seconds,
                          [1800, 7200, 21600, 86400])
 
+    def test_unknown_risk_mode_falls_back_to_conservative(self):
+        config_path = Path(self.tmp.name) / "config.yaml"
+        config_path.write_text(
+            "risk_control:\n  mode: Conservativ\n"
+            "  publish_min_gap_seconds: 0\n"
+            "  network_group_concurrency: 99\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(str(config_path))
+        controller = RiskController(cfg)
+
+        self.assertEqual(cfg.risk_control.mode, "conservative")
+        self.assertEqual(controller._limits(OperationKind.PUBLISH), (7200, 1, 3))
+        self.assertEqual(controller._network_concurrency(), 1)
+
+    def test_explicit_custom_risk_mode_is_normalized(self):
+        config_path = Path(self.tmp.name) / "config.yaml"
+        config_path.write_text(
+            "risk_control:\n  mode: ' CUSTOM '\n  publish_min_gap_seconds: 0\n",
+            encoding="utf-8",
+        )
+
+        cfg = load_config(str(config_path))
+
+        self.assertEqual(cfg.risk_control.mode, "custom")
+        self.assertEqual(RiskController(cfg)._limits(OperationKind.PUBLISH)[0], 0)
+
+    def test_invalid_timezone_falls_back_to_shanghai_day_boundary(self):
+        account_id = self._account(timezone_id="invalid/timezone")
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+
+        start = RiskController(self.cfg)._local_day_start_utc(
+            account, datetime(2026, 8, 7, 1, 0, 0))
+
+        self.assertEqual(start, datetime(2026, 8, 6, 16, 0, 0))
+
     def test_conservative_mode_enforces_hard_write_ceilings(self):
         policy = self.cfg.risk_control
         policy.comment_min_gap_seconds = 0
@@ -113,6 +152,29 @@ risk_control:
         self.assertEqual(controller._limits(OperationKind.COMMENT), (0, 99, 0))
         self.assertEqual(controller._shared_write_gap(), 1)
         self.assertEqual(controller._combined_action_caps(), (99, 0))
+
+    def test_programmatic_mode_uses_custom_as_the_only_floor_opt_out(self):
+        policy = self.cfg.risk_control
+        policy.mode = " Typo "
+        policy.publish_min_gap_seconds = 0
+        policy.publish_hourly_cap = 99
+        policy.publish_daily_cap = 0
+        policy.shared_write_gap_seconds = 1
+        policy.combined_action_hourly_cap = 99
+        policy.combined_action_daily_cap = 0
+        policy.network_group_concurrency = 8
+        controller = RiskController(self.cfg)
+
+        self.assertEqual(controller._limits(OperationKind.PUBLISH), (7200, 1, 3))
+        self.assertEqual(controller._shared_write_gap(), 300)
+        self.assertEqual(controller._combined_action_caps(), (3, 10))
+        self.assertEqual(controller._network_concurrency(), 1)
+
+        policy.mode = " CUSTOM "
+        self.assertEqual(controller._limits(OperationKind.PUBLISH), (0, 99, 0))
+        self.assertEqual(controller._shared_write_gap(), 1)
+        self.assertEqual(controller._combined_action_caps(), (99, 0))
+        self.assertEqual(controller._network_concurrency(), 8)
 
     def test_new_risk_models_persist(self):
         account_id = self._account()
@@ -170,6 +232,17 @@ risk_control:
         self.assertEqual(
             classify_platform_error("ProxyError: connection timeout")[0],
             RiskCategory.NETWORK,
+        )
+        for transport_error in (
+                TimeoutError("opaque timeout"),
+                ConnectionError("opaque connection failure")):
+            self.assertEqual(
+                classify_platform_error(transport_error)[0],
+                RiskCategory.NETWORK,
+            )
+        self.assertEqual(
+            classify_platform_error(RuntimeError("parser failed"))[0],
+            RiskCategory.BUSINESS,
         )
 
     def test_platform_error_classifier_accepts_structured_enum_category(self):
@@ -429,6 +502,142 @@ risk_control:
 
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.signal, "daily_cap")
+
+    def test_upgrade_day_counts_legacy_publish_created_at_when_done_at_missing(self):
+        account_id = self._account()
+        self.cfg.risk_control.mode = "custom"
+        self.cfg.risk_control.publish_min_gap_seconds = 0
+        self.cfg.risk_control.publish_hourly_cap = 0
+        self.cfg.risk_control.publish_daily_cap = 1
+        self.cfg.risk_control.shared_write_gap_seconds = 0
+        self.cfg.engine.quiet_hours_enabled = False
+        now = datetime(2026, 8, 7, 3, 0, 0)
+        with db.get_session() as session:
+            session.add(PublishTask(
+                account_id=account_id,
+                status="done",
+                created_at=now - timedelta(hours=1),
+                done_at=None,
+            ))
+            session.commit()
+
+        decision = RiskController(self.cfg).preflight(
+            account_id, OperationKind.PUBLISH, now=now)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.signal, "daily_cap")
+
+    def test_legacy_publish_without_done_at_enforces_min_gap(self):
+        account_id = self._account()
+        self.cfg.risk_control.mode = "custom"
+        self.cfg.risk_control.publish_min_gap_seconds = 3600
+        self.cfg.risk_control.publish_hourly_cap = 0
+        self.cfg.risk_control.publish_daily_cap = 0
+        self.cfg.risk_control.shared_write_gap_seconds = 0
+        self.cfg.engine.quiet_hours_enabled = False
+        now = datetime(2026, 8, 7, 3, 0, 0)
+        with db.get_session() as session:
+            session.add(PublishTask(
+                account_id=account_id,
+                status="done",
+                created_at=now - timedelta(hours=2),
+                done_at=None,
+            ))
+            session.flush()
+            session.add(PublishTask(
+                account_id=account_id,
+                status="done",
+                created_at=now - timedelta(minutes=30),
+                done_at=None,
+            ))
+            session.commit()
+
+        decision = RiskController(self.cfg).preflight(
+            account_id, OperationKind.PUBLISH, now=now)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.signal, "kind_gap")
+
+    def test_risk_event_pruning_uses_a_monotonic_day_watermark(self):
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        calls = []
+        engine.risk.prune_events = lambda **kwargs: calls.append(kwargs["now"]) or 2
+        day_one = datetime(2026, 8, 7, 1, 0, 0)
+        day_two = datetime(2026, 8, 8, 1, 0, 0)
+        engine._last_risk_prune_day = None
+
+        self.assertEqual(engine._prune_risk_events_if_due(day_one), 2)
+        self.assertEqual(engine._prune_risk_events_if_due(day_two), 2)
+        self.assertEqual(
+            engine._prune_risk_events_if_due(day_one + timedelta(hours=2)), 0)
+        self.assertEqual(calls, [day_one, day_two])
+
+    def test_risk_event_pruning_failure_does_not_escape_scheduler(self):
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        engine._last_risk_prune_day = None
+        calls = []
+
+        def fail(**kwargs):
+            calls.append(kwargs["now"])
+            raise RuntimeError("db")
+
+        engine.risk.prune_events = fail
+        day_one = datetime(2026, 8, 7, 1, 0, 0)
+        day_two = datetime(2026, 8, 8, 1, 0, 0)
+
+        self.assertEqual(engine._prune_risk_events_if_due(day_one), 0)
+        self.assertEqual(
+            engine._prune_risk_events_if_due(day_one + timedelta(hours=2)), 0)
+        self.assertEqual(engine._prune_risk_events_if_due(day_two), 0)
+        self.assertEqual(calls, [day_one, day_two])
+
+    def test_lifespan_prunes_once_and_updates_same_day_watermark(self):
+        previous_browser = main.browser
+        previous_engine = main.engine
+        previous_receiver = main.im_receiver
+
+        class BrowserStub:
+            def __init__(self):
+                self._locks = {}
+
+            async def start(self):
+                return None
+
+            async def stop(self):
+                return None
+
+            def lock_for(self, key):
+                return self._locks.setdefault(key, asyncio.Lock())
+
+        class ReceiverStub:
+            async def stop_all(self):
+                return None
+
+        try:
+            with patch("app.main.init_db"), \
+                    patch("app.main._backfill_danmaku_records", return_value=0), \
+                    patch("app.main._backfill_share_download_history", return_value=0), \
+                    patch("app.main.seed_proxy_pool", return_value=0), \
+                    patch("app.main.migrate_identities", return_value=0), \
+                    patch("app.main.BrowserManager", return_value=BrowserStub()), \
+                    patch.object(MonitorEngine, "start", autospec=True), \
+                    patch.object(RiskController, "prune_events", autospec=True,
+                                 return_value=0) as prune_events, \
+                    patch("app.engine.im_receiver.ImReceiverManager",
+                          return_value=ReceiverStub()):
+                async def scenario():
+                    async with main.lifespan(main.app):
+                        startup_now = prune_events.call_args.kwargs["now"]
+                        self.assertEqual(
+                            main.engine._prune_risk_events_if_due(
+                                startup_now), 0)
+
+                asyncio.run(scenario())
+            self.assertEqual(prune_events.call_count, 1)
+        finally:
+            main.browser = previous_browser
+            main.engine = previous_engine
+            main.im_receiver = previous_receiver
 
     def test_three_spaced_light_reads_reduce_one_risk_level(self):
         account_id = self._account()

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 from .identity import Identity
 from .manager import BrowserManager
@@ -104,6 +105,24 @@ _XHS_CREATOR_COOKIES = {"customerClientId", "galaxy_creator_session_id",
                         "access-token-creator.xiaohongshu.com", "customer-sso-sid"}
 
 
+class XhsSecurityVerificationRequired(RuntimeError):
+    """小红书将当前登录导航到了设备安全验证页。"""
+
+
+def _is_xhs_security_verification_url(url: str) -> bool:
+    """识别小红书设备验证页和已知的 IP 风险错误页。"""
+    try:
+        parsed = urlparse(str(url or ""))
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    if host != "xiaohongshu.com" and not host.endswith(".xiaohongshu.com"):
+        return False
+    if parsed.path.rstrip("/").lower() == "/website-login/captcha":
+        return True
+    return "300012" in parse_qs(parsed.query).get("error_code", [])
+
+
 async def _xhs_web_session(ctx) -> str:
     """取当前 web_session cookie 值(未登录时为空串/短值)。"""
     try:
@@ -131,13 +150,21 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
     logged = False
     nickname = ""
     state_json = ""
+    security_verification_seen = False
     try:
-        await page.goto("https://www.xiaohongshu.com/explore",
+        # 从官网首页进入登录流程。直接访问 /explore 会让全新隔离 profile
+        # 更容易被重定向到 website-login/captcha 的设备安全验证页。
+        await page.goto("https://www.xiaohongshu.com/",
                         wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(1200)
+        security_verification_seen = _is_xhs_security_verification_url(page.url)
         init_ws = await _xhs_web_session(ctx)     # 登录前的基准值(通常为空)
         waited = 0
         while waited < timeout_seconds:
+            security_verification_seen = (
+                security_verification_seen
+                or _is_xhs_security_verification_url(page.url)
+            )
             ws = await _xhs_web_session(ctx)
             # 真正登录后 web_session 才会变成有效长串,且不同于登录前。
             # 一旦判定登录,立刻抓 storage_state 落袋为安 —— 即使用户随后秒关窗口,
@@ -166,6 +193,11 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
             await ctx.close()
         except Exception:
             pass
+    if not logged and security_verification_seen:
+        raise XhsSecurityVerificationRequired(
+            "小红书要求完成设备安全验证；请保持当前网络和账号环境稳定，"
+            "重新打开登录窗口后按页面提示验证"
+        )
     return logged, state_json, nickname
 
 

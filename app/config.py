@@ -137,10 +137,14 @@ def load_config(path: str | None = None) -> Config:
         cfg.engine = EngineConfig(**{k: v for k, v in e.items()
                                      if k in EngineConfig.__dataclass_fields__})
         risk = raw.get("risk_control", {}) or {}
-        cfg.risk_control = RiskControlConfig(**{
+        risk_values = {
             k: v for k, v in risk.items()
             if k in RiskControlConfig.__dataclass_fields__
-        })
+        }
+        mode = str(risk_values.get("mode", "conservative") or "").strip().lower()
+        risk_values["mode"] = (
+            mode if mode in {"conservative", "custom"} else "conservative")
+        cfg.risk_control = RiskControlConfig(**risk_values)
         cfg.db_path = (raw.get("storage", {}) or {}).get("db_path", cfg.db_path)
         px = raw.get("proxies") or []
         cfg.proxies = [str(p).strip() for p in px if str(p).strip()]

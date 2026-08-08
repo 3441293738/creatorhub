@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from playwright.async_api import async_playwright
 
 from app.browser.login import (
+    XhsSecurityVerificationRequired,
+    _is_xhs_security_verification_url,
     _reuse_or_create_login_page,
     interactive_xhs_login,
 )
@@ -37,7 +39,45 @@ class XhsLoginPageTests(unittest.IsolatedAsyncioTestCase):
 
 
 class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_web_login_finishes_without_opening_creator_platform(self):
+    async def test_security_verification_url_is_recognized(self):
+        self.assertTrue(_is_xhs_security_verification_url(
+            "https://www.xiaohongshu.com/website-login/captcha?verifyType=124"
+        ))
+        self.assertTrue(_is_xhs_security_verification_url(
+            "https://www.xiaohongshu.com/explore?error_code=300012"
+        ))
+        self.assertFalse(_is_xhs_security_verification_url(
+            "https://www.xiaohongshu.com/explore"
+        ))
+
+    async def test_unfinished_security_verification_returns_clear_error(self):
+        manager = AsyncMock()
+        context = AsyncMock()
+        page = AsyncMock()
+        manager.open_headed.return_value = context
+        context.pages = [page]
+        context.cookies.side_effect = [[], []]
+        page.url = "about:blank"
+        page.is_closed = MagicMock(side_effect=[False, True])
+
+        async def goto(_url, **_kwargs):
+            page.url = (
+                "https://www.xiaohongshu.com/website-login/captcha"
+                "?verifyType=124&verifyBiz=461"
+            )
+
+        page.goto.side_effect = goto
+
+        with patch("app.browser.login.asyncio.sleep", new_callable=AsyncMock):
+            with self.assertRaisesRegex(
+                XhsSecurityVerificationRequired,
+                "小红书要求完成设备安全验证",
+            ):
+                await interactive_xhs_login(manager, object())
+
+        context.close.assert_awaited_once()
+
+    async def test_web_login_starts_from_homepage_and_skips_creator_platform(self):
         manager = AsyncMock()
         context = AsyncMock()
         page = AsyncMock()
@@ -73,7 +113,7 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(logged)
         self.assertEqual(nickname, "普通账号")
         self.assertIn("web_session", state)
-        self.assertEqual(visited, ["https://www.xiaohongshu.com/explore"])
+        self.assertEqual(visited, ["https://www.xiaohongshu.com/"])
 
 
 if __name__ == "__main__":

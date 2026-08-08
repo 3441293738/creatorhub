@@ -186,6 +186,7 @@ class MonitorEngine:
         self._last_acct_check = time.time()   # 上次账号体检时间
         self._geo_checked: dict = {}          # account_id -> 已校验过地区的代理(避免重复探测)
         self.risk = RiskController(cfg)
+        self._last_risk_prune_day = None
         self._task: Optional[asyncio.Task] = None
         self._running = False
 
@@ -285,12 +286,16 @@ class MonitorEngine:
                             if decision.next_allowed_at else None),
                     }
                 result = await operation()
+                error = result.get("error")
                 if account_id:
                     if result.get("ok") and not result.get("skipped"):
                         self.risk.record_success(account_id, kind)
-                    elif result.get("error"):
+                    elif error:
                         self.risk.record_failure(
-                            account_id, kind, result.get("error"))
+                            account_id, kind, error)
+                if isinstance(error, BaseException):
+                    result = dict(result)
+                    result["error"] = str(error)
         except Exception as exc:
             if account_id:
                 self.risk.record_failure(account_id, kind, exc)
@@ -315,6 +320,8 @@ class MonitorEngine:
                         self.risk.record_success(account_id, kind)
                     else:
                         self.risk.record_failure(account_id, kind, error)
+                if isinstance(error, BaseException):
+                    error = str(error)
         except Exception as exc:
             if account_id:
                 self.risk.record_failure(account_id, kind, exc)
@@ -360,17 +367,6 @@ class MonitorEngine:
                    or "manual").strip().lower()
         return mode if mode == "api" else "manual"
 
-    @staticmethod
-    def _is_write_risk_error(error: str) -> bool:
-        """识别平台拒绝/验证类错误，避免失败后继续连续重试。"""
-        text = str(error or "").lower()
-        markers = (
-            "风控", "频控", "访问频繁", "环境异常", "验证码", "验证", "限流",
-            "risk", "captcha", "rate limit", "too frequent",
-        )
-        return (any(marker.lower() in text for marker in markers)
-                or ("status_code=" in text and "status_code=0" not in text))
-
     def _write_pause_error(self, account_id) -> str:
         """Return a persisted account write pause, clearing an expired one."""
         if not self.risk.policy.enabled:
@@ -393,22 +389,24 @@ class MonitorEngine:
                 s.commit()
         return ""
 
-    def _pause_account_writes(self, account_id, reason: str) -> None:
-        """Pause all account write tasks after a platform risk-control response."""
-        if not account_id:
-            return
-        reason = str(reason or "平台拒绝写操作").strip()[:240]
-        failure = self.risk.record_failure(
-            account_id, OperationKind.COMMENT, reason)
-        until = failure.next_allowed_at
-        if not until:
-            return
-        log.warning("账号 %s 检测到平台写操作风险，暂停至 %s: %s",
-                    account_id, until.isoformat(timespec="seconds"), reason)
+    def _prune_risk_events_if_due(self, now: datetime | None = None) -> int:
+        """Prune retained risk events once for each attempted UTC day."""
+        now = now or datetime.utcnow()
+        prune_day = now.date()
+        if self._last_risk_prune_day is not None \
+                and prune_day <= self._last_risk_prune_day:
+            return 0
+        self._last_risk_prune_day = prune_day
+        try:
+            return self.risk.prune_events(now=now)
+        except Exception:
+            log.exception("risk event pruning failed for %s", prune_day.isoformat())
+            return 0
 
     async def _loop(self):
         while self._running:
             try:
+                self._prune_risk_events_if_due()
                 await self._scan_once()
                 await self._scan_comment_watches()
                 await self._scan_danmaku_watches()
@@ -752,12 +750,16 @@ class MonitorEngine:
                             if decision.next_allowed_at else None),
                     }
                 res = await self._scan_target_locked(target_id)
+                error = res.get("error")
                 if account_id and res.get("ok") and not res.get("skipped"):
                     self.risk.record_success(account_id, OperationKind.READ_LIGHT)
                     self._stamp_active(account_id)
-                elif account_id and res.get("error"):
+                elif account_id and error:
                     self.risk.record_failure(
-                        account_id, OperationKind.READ_LIGHT, res.get("error"))
+                        account_id, OperationKind.READ_LIGHT, error)
+                if isinstance(error, BaseException):
+                    res = dict(res)
+                    res["error"] = str(error)
             # 用该账号成功抓取过=登录态被有效使用,顺带续期,免得再被闲置保活重复摸
             return res
         finally:
@@ -1002,18 +1004,32 @@ class MonitorEngine:
                 briefs_raw = d.get("notes") or []
                 try:
                     author = await client.user_info(user_id)
-                except Exception:
+                except XhsApiError as e:
+                    error = e
+                    author = None
+                except Exception as exc:
+                    category, _signal = classify_platform_error(exc)
+                    if category in {
+                            RiskCategory.RISK, RiskCategory.AUTH,
+                            RiskCategory.NETWORK}:
+                        raise
                     author = None
         except XhsApiError as e:
-            error = str(e)
+            error = e
         except Exception as e:
-            error = f"小红书接口请求失败: {e!r}"
+            category, _signal = classify_platform_error(e)
+            error = (e if category in {
+                RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK
+            } else f"小红书接口请求失败: {e!r}")
 
         # 逐条新笔记调 feed 接口拿完整媒体直链(单轮限量,避免请求过多被风控)
         new_records = []
         seen = set()
         MAX_PER_SCAN = 12
         for raw in briefs_raw:
+            if error and classify_platform_error(error)[0] in {
+                    RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                break
             brief = parse_note_brief(raw)
             if not brief or brief["note_id"] in seen or brief["note_id"] in known:
                 continue
@@ -1029,7 +1045,16 @@ class MonitorEngine:
                 card = await client.note_detail(
                     brief["note_id"], xsec_token=note_tok,
                     xsec_source="pc_search" if kind == "keyword" else "pc_feed")
+            except XhsApiError as e:
+                error = e
+                break
             except Exception as e:
+                category, _signal = classify_platform_error(e)
+                if category in {
+                        RiskCategory.RISK, RiskCategory.AUTH,
+                        RiskCategory.NETWORK}:
+                    error = e
+                    break
                 derr = str(e)
             aw = parse_note_detail(card or {}, brief) if card else None
             if not aw:
@@ -1065,7 +1090,7 @@ class MonitorEngine:
             t = s.get(MonitorTarget, target_id)
             if t:
                 t.last_scan_at = datetime.utcnow()
-                t.last_error = error
+                t.last_error = str(error or "")
                 if author:  # 创作者资料(otherinfo)
                     p = parse_xhs_self_user(author)
                     if not t.nickname:
@@ -1477,9 +1502,15 @@ class MonitorEngine:
                          if c and c["comment_id"] not in known]
             else:
                 return {"ok": False, "error": f"不支持的平台:{platform}"}
+        except XhsApiError as e:
+            error = e
         except Exception as e:
             log.warning("本账号作品评论抓取失败 %s/%s: %s", platform, item_id, e)
-            return {"ok": False, "error": repr(e)}
+            category, _signal = classify_platform_error(e)
+            error = (e if category in {
+                RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK
+            } else repr(e))
+            return {"ok": False, "error": error}
         # 去重落库(watch_id=0 = 本账号作品来源)
         added = 0
         with get_session() as s:
@@ -1622,15 +1653,20 @@ class MonitorEngine:
             else:  # video
                 total_new, author = await self._cw_video(watch_id, identity, aweme_id,
                                                          name, first_scan)
+        except XhsApiError as e:
+            error = e
         except Exception as e:
-            error = repr(e)
+            category, _signal = classify_platform_error(e)
+            error = (e if category in {
+                RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK
+            } else repr(e))
             log.warning("评论监控 %s 失败: %s", watch_id, e)
 
         with get_session() as s:
             w = s.get(CommentWatch, watch_id)
             if w:
                 w.last_scan_at = datetime.utcnow()
-                w.last_error = error
+                w.last_error = str(error or "")
                 if author:
                     if not w.title:
                         w.title = author.get("nickname") or w.title
@@ -1812,7 +1848,14 @@ class MonitorEngine:
         try:
             d = await client.note_comments(note_id, xsec_token=xsec_token)
             raw = d.get("comments") or []
+        except XhsApiError:
+            raise
         except Exception as e:
+            category, _signal = classify_platform_error(e)
+            if category in {
+                    RiskCategory.RISK, RiskCategory.AUTH,
+                    RiskCategory.NETWORK}:
+                raise
             log.info("评论监控(小红书)%s: %s", note_id, e)
             return []
         fresh = [c for c in (parse_xhs_comment(rc) for rc in flatten_xhs_comments(raw)) if c]
@@ -1842,7 +1885,14 @@ class MonitorEngine:
             d = await client.notes_by_creator(user_id, xsec_token=xsec_token)
             briefs_raw = d.get("notes") or []
             author = await client.user_info(user_id)
+        except XhsApiError:
+            raise
         except Exception as e:
+            category, _signal = classify_platform_error(e)
+            if category in {
+                    RiskCategory.RISK, RiskCategory.AUTH,
+                    RiskCategory.NETWORK}:
+                raise
             log.info("评论监控(小红书创作者)%s: %s", user_id, e)
             briefs_raw, author = [], None
         briefs = [b for b in (parse_note_brief(r) for r in briefs_raw) if b]
@@ -2305,6 +2355,16 @@ class MonitorEngine:
             if error:
                 self.risk.record_failure(
                     rf["account_id"], OperationKind.READ_HEAVY, error)
+                category, _signal = classify_platform_error(error)
+                error = str(error)
+                if category in {
+                        RiskCategory.RISK, RiskCategory.AUTH,
+                        RiskCategory.NETWORK}:
+                    self._mark_rule(rule_id, f"发现目标失败: {error}")
+                    return {
+                        "ok": False, "created": 0, "candidates": 0,
+                        "error": error,
+                    }
             else:
                 self.risk.record_success(
                     rf["account_id"], OperationKind.READ_HEAVY)
@@ -2487,7 +2547,14 @@ class MonitorEngine:
                     try:
                         d = await client.note_comments(nt["note_id"], xsec_token=nt["xsec_token"])
                         rawc = d.get("comments") or []
-                    except Exception:
+                    except XhsApiError as e:
+                        return [], e
+                    except Exception as exc:
+                        category, _signal = classify_platform_error(exc)
+                        if category in {
+                                RiskCategory.RISK, RiskCategory.AUTH,
+                                RiskCategory.NETWORK}:
+                            return [], exc
                         continue
                     for rc in flatten_xhs_comments(rawc):
                         c = parse_xhs_comment(rc)
@@ -2525,16 +2592,22 @@ class MonitorEngine:
                 items, _a, err = await fetch_ks_videos(
                     self.browser, identity, acc_sec_uid, set(), max_scrolls=4,
                     block_media=self.cfg.engine.block_media_resources)
+                if err and classify_platform_error(err)[0] in {
+                        RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                    return [], err
                 cutoff = int(time.time()) - max(0, self.cfg.engine.comment_recent_days) * 86400
                 for feed in items[:self.cfg.engine.comment_recent_works]:
                     aw = parse_ks_feed(feed)
                     if aw and (not cutoff or not aw.create_time or aw.create_time >= cutoff):
                         works.append((aw.aweme_id, aw.desc))
             for pid, _desc in works:
-                raw, _e = await fetch_ks_comments(
+                raw, comment_error = await fetch_ks_comments(
                     self.browser, identity, pid, set(),
                     max_scrolls=self.cfg.engine.comment_max_scrolls,
                     block_media=self.cfg.engine.block_media_resources)
+                if comment_error and classify_platform_error(comment_error)[0] in {
+                        RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                    return [], comment_error
                 for rc in flatten_ks_comments(raw):
                     c = parse_ks_comment(rc)
                     if not c or not c.get("comment_id"):
@@ -2601,6 +2674,9 @@ class MonitorEngine:
             items, _a, err = await fetch_videos(
                 self.browser, identity, acc_sec_uid, set(), max_scrolls=4,
                 block_media=self.cfg.engine.block_media_resources)
+            if err and classify_platform_error(err)[0] in {
+                    RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                return [], err
             cutoff = int(time.time()) - max(0, self.cfg.engine.comment_recent_days) * 86400
             for it in items[:self.cfg.engine.comment_recent_works]:
                 aid = str(it.get("aweme_id") or "")
@@ -2608,9 +2684,13 @@ class MonitorEngine:
                 if aid and (not cutoff or not create_time or create_time >= cutoff):
                     works.append((aid, it.get("desc", "")))
         for aid, _desc in works:
-            raw, _e = await fetch_comments(self.browser, identity, aid, set(),
-                                           max_scrolls=self.cfg.engine.comment_max_scrolls,
-                                           block_media=self.cfg.engine.block_media_resources)
+            raw, comment_error = await fetch_comments(
+                self.browser, identity, aid, set(),
+                max_scrolls=self.cfg.engine.comment_max_scrolls,
+                block_media=self.cfg.engine.block_media_resources)
+            if comment_error and classify_platform_error(comment_error)[0] in {
+                    RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                return [], comment_error
             for rc in raw:
                 c = parse_comment(rc)
                 if not c or not c.get("comment_id"):

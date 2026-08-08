@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from enum import Enum
+from functools import lru_cache
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from sqlalchemy import func
 from sqlmodel import select
 
 from .browser.manager import normalize_proxy
@@ -24,6 +27,21 @@ from .models import (
     PublishTask,
     RiskEvent,
 )
+
+
+log = logging.getLogger("creatorhub.risk")
+
+
+@lru_cache(maxsize=128)
+def _resolve_timezone(timezone_id: str) -> tzinfo:
+    try:
+        return ZoneInfo(timezone_id)
+    except ZoneInfoNotFoundError:
+        log.warning("Invalid account timezone %s; falling back to Asia/Shanghai", timezone_id)
+        try:
+            return ZoneInfo("Asia/Shanghai")
+        except ZoneInfoNotFoundError:
+            return timezone(timedelta(hours=8), name="Asia/Shanghai")
 
 
 class OperationKind(str, Enum):
@@ -110,6 +128,8 @@ def classify_platform_error(
     if status_code is not None and 200 <= status_code < 300 \
             and payload in ("", b"", {}, []):
         return RiskCategory.RISK, "ambiguous_empty_response"
+    if isinstance(error, (TimeoutError, ConnectionError)):
+        return RiskCategory.NETWORK, "network_failure"
 
     text = str(error or "").strip().lower()
     auth_markers = (
@@ -186,15 +206,7 @@ class RiskController:
 
     @staticmethod
     def _timezone(account: DouyinAccount) -> tzinfo:
-        timezone_id = account.timezone_id or "Asia/Shanghai"
-        try:
-            return ZoneInfo(timezone_id)
-        except ZoneInfoNotFoundError:
-            # Minimal fallback for Windows/Python installs that do not bundle the
-            # IANA database. ``tzdata`` remains the preferred runtime source.
-            if timezone_id in {"Asia/Shanghai", "Asia/Chongqing", "Asia/Hong_Kong"}:
-                return timezone(timedelta(hours=8), name=timezone_id)
-            return timezone.utc
+        return _resolve_timezone(account.timezone_id or "Asia/Shanghai")
 
     def _local_day_start_utc(self, account: DouyinAccount, now: datetime) -> datetime:
         aware = now.replace(tzinfo=timezone.utc).astimezone(self._timezone(account))
@@ -239,7 +251,7 @@ class RiskController:
     def _effective_limits(
         self, kind: OperationKind, configured: tuple[int, int, int],
     ) -> tuple[int, int, int]:
-        if self.policy.mode != "conservative":
+        if self._is_custom_mode():
             return configured
         hard_gap, hard_hourly, hard_daily = self._CONSERVATIVE_LIMITS[kind]
         gap, hourly, daily = configured
@@ -251,14 +263,14 @@ class RiskController:
 
     def _shared_write_gap(self) -> int:
         configured = max(0, self.policy.shared_write_gap_seconds)
-        if self.policy.mode == "conservative":
-            return max(self._CONSERVATIVE_SHARED_WRITE_GAP, configured)
-        return configured
+        if self._is_custom_mode():
+            return configured
+        return max(self._CONSERVATIVE_SHARED_WRITE_GAP, configured)
 
     def _combined_action_caps(self) -> tuple[int, int]:
         hourly = self.policy.combined_action_hourly_cap
         daily = self.policy.combined_action_daily_cap
-        if self.policy.mode != "conservative":
+        if self._is_custom_mode():
             return hourly, daily
         hard_hourly, hard_daily = self._CONSERVATIVE_COMBINED_ACTION_CAPS
         return (
@@ -267,9 +279,12 @@ class RiskController:
         )
 
     def _network_concurrency(self) -> int:
-        if self.policy.mode == "conservative":
-            return 1
-        return max(1, self.policy.network_group_concurrency)
+        if self._is_custom_mode():
+            return max(1, self.policy.network_group_concurrency)
+        return 1
+
+    def _is_custom_mode(self) -> bool:
+        return str(self.policy.mode or "").strip().lower() == "custom"
 
     @staticmethod
     def _latest_success(session, account_id: int, kinds: list[str]) -> datetime | None:
@@ -290,10 +305,12 @@ class RiskController:
             if value:
                 legacy.append(value)
         if OperationKind.PUBLISH.value in kinds:
-            value = session.exec(select(PublishTask.done_at)
+            publish_completed_at = func.coalesce(
+                PublishTask.done_at, PublishTask.created_at)
+            value = session.exec(select(publish_completed_at)
                                  .where(PublishTask.account_id == account_id)
                                  .where(PublishTask.status == "done")
-                                 .order_by(PublishTask.done_at.desc())).first()
+                                 .order_by(publish_completed_at.desc())).first()
             if value:
                 legacy.append(value)
         if OperationKind.DM.value in kinds:
@@ -331,11 +348,13 @@ class RiskController:
                 .where(CommentTask.status == "done")
                 .where(CommentTask.done_at >= since)).all())
         if OperationKind.PUBLISH.value in kinds:
+            publish_completed_at = func.coalesce(
+                PublishTask.done_at, PublishTask.created_at)
             legacy_count += len(session.exec(
                 select(PublishTask.id)
                 .where(PublishTask.account_id == account_id)
                 .where(PublishTask.status == "done")
-                .where(PublishTask.done_at >= since)).all())
+                .where(publish_completed_at >= since)).all())
         if OperationKind.DM.value in kinds:
             legacy_count += len(session.exec(
                 select(AccountActionTask.id)

@@ -193,25 +193,27 @@ class XhsCreatorApi:
         j = r.json()
         return bool(j.get("success")), j.get("msg", ""), j
 
-    def my_info(self) -> Tuple[bool, dict]:
-        """创作平台「我的信息」(/api/galaxy/user/info)。返回 (ok, data)。"""
+    def my_info(self, *, detailed: bool = False):
+        """创作平台「我的信息」；详细模式额外返回未裁剪的响应。"""
         api = "/api/galaxy/user/info"
         h = _common_headers()
         h["sec-fetch-site"] = "same-origin"
         h.update(sign.generate_xsc(self.a1, api))
         r = self.cli.get(CREATOR_URL + api, headers=h, cookies=self.cookies)
         j = r.json()
-        return bool(j.get("success")), (j.get("data") or {})
+        result = bool(j.get("success")), (j.get("data") or {})
+        return (*result, j) if detailed else result
 
-    def ping(self) -> Tuple[bool, str]:
-        """轻量校验创作者登录态(单次请求)。返回 (是否有效, msg)。"""
+    def ping(self, *, detailed: bool = False):
+        """轻量校验创作者登录态；详细模式额外返回未裁剪的响应。"""
         api = "/api/galaxy/creator/note/user/posted"
         spliced = sign.splice_str(api, {"tab": "0"})
         h = _common_headers()
         h.update(sign.generate_xsc(self.a1, spliced))
         r = self.cli.get(CREATOR_URL + spliced, headers=h, cookies=self.cookies)
         j = r.json()
-        return bool(j.get("success")), (j.get("msg") or "")
+        result = bool(j.get("success")), (j.get("msg") or "")
+        return (*result, j) if detailed else result
 
     # ── 已发布列表 ──
     def published_notes(self) -> Tuple[bool, str, list]:

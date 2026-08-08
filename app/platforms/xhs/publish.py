@@ -11,13 +11,47 @@ from typing import List, Optional, Tuple
 
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
-from .client import cookie_str_from_state, has_a1
+from .client import XhsApiError, cookie_str_from_state, has_a1
 
 
 def _result_url(j: dict) -> str:
     d = j.get("data") or {}
     nid = d.get("id") or d.get("note_id") or ""
     return f"https://www.xiaohongshu.com/explore/{nid}" if nid else ""
+
+
+def _creator_response_error(response):
+    """Keep the creator response while making controlled failures classifiable."""
+    if not isinstance(response, dict):
+        return response or "creator_profile_failed"
+    message = str(response.get("msg") or response.get("message") or "")
+    code = response.get("code")
+    text = message.lower()
+    category = signal = ""
+    if code == 401:
+        category, signal = "auth", "http_401"
+    elif code == 407:
+        category, signal = "network", "proxy_auth"
+    elif code in (403, 429, 461, 471):
+        category, signal = "risk", f"http_{code}"
+    elif isinstance(code, int) and code >= 500:
+        category, signal = "network", f"http_{code}"
+    elif any(marker in text for marker in ("登录", "过期", "expired")):
+        category, signal = "auth", "auth_expired"
+    elif any(marker in text for marker in (
+            "risk", "captcha", "风控", "频控", "验证", "限流")):
+        category = "risk"
+        signal = "platform_risk"
+    elif any(marker in text for marker in (
+            "timeout", "network", "connection", "proxy", "dns", "tls")):
+        category, signal = "network", "network_failure"
+    if not category:
+        return response or "creator_profile_failed"
+    error = XhsApiError(
+        message or f"creator response code={code}", category=category,
+        status_code=code if isinstance(code, int) else None, signal=signal)
+    error.payload = response
+    return error
 
 
 def _publish_api_sync(cookie_str: str, media_type: str, title: str, desc: str,
@@ -82,60 +116,81 @@ async def publish_xhs(mgr: BrowserManager, identity: Identity, storage_state_jso
                                       title, desc, files, tags, headed, timeout_seconds)
 
 
-async def creator_check(storage_state_json: str, proxy: str = ""):
+async def creator_check(storage_state_json: str, proxy: str = "", *,
+                        preserve_error: bool = False):
     """校验创作者登录态。True=有效,False=确已失效,None=不确定(网络/环境,勿据此判失效)。"""
     cookie_str = cookie_str_from_state(storage_state_json)
     if not has_a1(cookie_str):
-        return False
+        error = XhsApiError(
+            "登录态缺少 a1", category="auth", signal="auth_expired")
+        return (False, error) if preserve_error else False
     try:
         from . import creator_sign
         if not creator_sign.available():
-            return None
-    except Exception:
-        return None
+            return (None, "creator_sign_unavailable") if preserve_error else None
+    except Exception as exc:
+        return (None, exc) if preserve_error else None
 
     def _run():
         from .creator_api import XhsCreatorApi
         api = XhsCreatorApi(cookie_str, proxy=proxy)
         try:
-            return api.ping()
+            result = api.ping(detailed=True)
+            if len(result) == 3:
+                return result
+            ok, msg = result
+            return ok, msg, {"success": ok, "msg": msg}
         finally:
             api.close()
     try:
-        ok, msg = await asyncio.to_thread(_run)
+        ok, msg, response = await asyncio.to_thread(_run)
         if ok:
-            return True
-        if any(k in (msg or "") for k in ("登录", "过期", "expired")):
-            return False
-        return None
-    except Exception:
-        return None
+            return (True, "") if preserve_error else True
+        login_expired = any(
+            marker in (msg or "") for marker in ("登录", "过期", "expired"))
+        if not preserve_error:
+            return False if login_expired else None
+        error = _creator_response_error(response)
+        if login_expired and not (
+                isinstance(error, XhsApiError) and error.category == "auth"):
+            error = XhsApiError(
+                msg or "logged_out", category="auth", signal="auth_expired")
+            error.payload = response
+        if isinstance(error, XhsApiError) and error.category == "auth":
+            return False, error
+        return None, error
+    except Exception as exc:
+        return (None, exc) if preserve_error else None
 
 
-async def creator_profile(storage_state_json: str, proxy: str = ""):
+async def creator_profile(storage_state_json: str, proxy: str = "", *,
+                          preserve_error: bool = False):
     """用创作平台接口拿账号资料(昵称/小红书号/头像/粉丝/笔记数)。返回 parsed dict 或 None。"""
     cookie_str = cookie_str_from_state(storage_state_json)
     if not has_a1(cookie_str):
-        return None
+        return (None, "logged_out") if preserve_error else None
     try:
         from . import creator_sign
         if not creator_sign.available():
-            return None
-    except Exception:
-        return None
+            return (None, "creator_sign_unavailable") if preserve_error else None
+    except Exception as exc:
+        return (None, exc) if preserve_error else None
 
     def _run():
         from .creator_api import XhsCreatorApi, parse_creator_user
         api = XhsCreatorApi(cookie_str, proxy=proxy)
         try:
-            ok, d = api.my_info()
-            return parse_creator_user(d) if (ok and d) else None
+            ok, d, response = api.my_info(detailed=True)
+            if ok and d:
+                return parse_creator_user(d), ""
+            return None, _creator_response_error(response)
         finally:
             api.close()
     try:
-        return await asyncio.to_thread(_run)
-    except Exception:
-        return None
+        profile, error = await asyncio.to_thread(_run)
+        return (profile, error) if preserve_error else profile
+    except Exception as exc:
+        return (None, exc) if preserve_error else None
 
 
 _LIST_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
