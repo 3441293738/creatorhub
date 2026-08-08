@@ -848,7 +848,7 @@ function applyPlatformUI() {
     ? "发布通过自动化快手创作平台完成。若遇验证码或需要补充封面，请在弹出窗口中手动处理；定时任务由后台引擎按计划执行。"
     : sph
     ? "发布通过自动化视频号助手完成。视频需等待转码，发布前可能要求补充封面、实名或人脸验证，请在弹出窗口中处理。注意：平台页面改版后可能需要重新适配。"
-    : "发布通过自动化小红书创作平台完成。若遇验证码或需要补充封面，请在弹出窗口中手动处理；定时任务由后台引擎按计划执行。";
+    : "发布通过账号独立的可见 Chrome 页面完成。提交只点击一次；若显示“结果待确认”，请先到小红书核对，系统不会自动重发。";
   const pubHint = $("pub-hint");
   if (pubHint) {
     const copy = pubHint.querySelector("span");
@@ -998,6 +998,13 @@ async function startLogin() {
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("登录启动失败:" + e.message, "err"); }
 }
+function loginEnvironmentText(env) {
+  if (!env || !env.backend_label) return "";
+  let text = env.backend_label;
+  if (env.has_proxy) text += " · 账号代理";
+  if (env.fallback_reason) text += "（" + env.fallback_reason + "）";
+  return text;
+}
 function pollLogin(tid) {
   clearInterval(qrTimer);
   clearTimeout(qrTimer);
@@ -1005,6 +1012,10 @@ function pollLogin(tid) {
   const tick = async () => {
     try {
       const res = await api("/api/login/browser/poll?task_id=" + tid);
+      const envText = loginEnvironmentText(res.environment);
+      if (["opening", "waiting"].includes(res.status) && envText) {
+        $("qrstatus").innerHTML = `${ic("i-eye")} 浏览器已打开 · <b>${esc(envText)}</b><br>请在可见窗口完成登录。`;
+      }
       if (res.status === "persisted") {
         $("qrstatus").textContent = "扫码已确认，正在校验登录态并同步账号资料…";
         if (!accountShown) {
@@ -1503,6 +1514,9 @@ async function refreshAccounts() {
     const proxyLine = a.has_proxy
       ? `<div class="mut" style="font-size:11px;margin-top:2px">代理 <code>${esc(a.proxy)}</code> <span class="pill ${pxCls}">${pxText[a.proxy_status] || a.proxy_status}</span></div>`
       : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--warn)">${ic("i-info")}未配置代理(走本机真实 IP,多账号有关联风险)</div>`;
+    const browserLine = isXhs && a.environment
+      ? `<div class="mut" style="font-size:11px;margin-top:2px">浏览器 ${esc(loginEnvironmentText(a.environment))}</div>`
+      : "";
     return `<tr>
       <td>
         <div class="user-cell">
@@ -1512,6 +1526,7 @@ async function refreshAccounts() {
             ${idline ? `<div class="mut" style="font-size:11px;margin-top:2px">${idline}</div>` : ""}
             <div class="mut" style="font-size:11px;margin-top:2px">${esc(detail)}</div>
             ${proxyLine}
+            ${browserLine}
           </div>
         </div>
       </td>
@@ -3276,7 +3291,7 @@ function noteCard(r) {
         <span class="like">${ic("i-heart")}${fmtNum(r.like_count)}</span>
       </div>
       <div class="ncard-actions">
-        <span class="pill ${r.download_status}" style="flex:1;justify-content:center" title="${esc(r.error || "")}">${r.download_status}${r.error ? " ⓘ" : ""}</span>
+        <span class="pill ${r.download_status}" style="flex:1;justify-content:center" title="${esc(r.error || "")}">${contentStatusLabel(r.download_status)}${r.error ? " ⓘ" : ""}</span>
         ${["failed", "skipped"].includes(r.download_status) ? `<button class="ghost sm" onclick="retryDl(${r.id})">${r.download_status === "skipped" ? "下载" : "重试"}</button>` : ""}
         ${(PLATFORM === "xhs" && r.download_status === "done") ? `<button class="ghost sm" onclick="repostDouyin(${r.id})">发抖音</button>` : ""}
         <button class="ghost sm danger" onclick="delContent(${r.id})">${ic("i-trash")}删除</button>
@@ -4279,8 +4294,8 @@ async function addPublish() {
   });
   refreshPublish();
 }
-const PUB_ST = { pending: "排队中", publishing: "发布中", done: "已发布", failed: "失败", canceled: "已取消" };
-const PUB_PILL = { pending: "pending", publishing: "downloading", done: "done", failed: "failed", canceled: "invalid" };
+const PUB_ST = { pending: "排队中", publishing: "发布中", uncertain: "结果待确认", done: "已发布", failed: "失败", canceled: "已取消" };
+const PUB_PILL = { pending: "pending", publishing: "downloading", uncertain: "downloading", done: "done", failed: "failed", canceled: "invalid" };
 async function editPublish(id) {
   const task = PUBLISH_TASKS.find(x => x.id === id); if (!task) return;
   const accounts = ACCOUNTS.filter(a => a.platform === task.platform);
@@ -4598,8 +4613,8 @@ async function submitRepost() {
 let AC_RULES = [];
 const AC_MODE_T = { auto_reply: "自动回复", auto_comment: "自动评论" };
 const AC_KIND_T = { self: "自己近期作品", work: "指定作品", creator: "指定博主", keyword: "关键词" };
-const AC_TASK_ST = { draft: "草稿待审", pending: "排队中", doing: "发送中", done: "已发送", failed: "失败", canceled: "已取消" };
-const AC_TASK_PILL = { draft: "downloading", pending: "pending", doing: "downloading", done: "done", failed: "failed", canceled: "invalid" };
+const AC_TASK_ST = { draft: "草稿待审", pending: "排队中", doing: "发送中", uncertain: "结果待确认", done: "已发送", failed: "失败", canceled: "已取消" };
+const AC_TASK_PILL = { draft: "downloading", pending: "pending", doing: "downloading", uncertain: "downloading", done: "done", failed: "failed", canceled: "invalid" };
 let AC_TASKS = [];
 
 function acKindOptions() {
@@ -4821,7 +4836,7 @@ async function refreshCommentTasks() {
     <td class="mut">${esc((t.aweme_id || "").slice(0, 16))}</td>
     <td>${t.target_comment_id ? "回复 " + esc(t.target_nick || "") : "顶层评论"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at + "Z").toLocaleString() : "尽快"}</td>
-    <td class="mut">${t.method === "browser" ? "浏览器" : t.method === "api" ? "API" : t.method === "manual" ? "人工发布" : "—"}</td>
+    <td class="mut">${t.method === "browser" ? "浏览器页面" : t.method === "api" ? "API 兼容模式" : t.method === "manual" ? "人工草稿" : "—"}</td>
     <td><span class="pill ${AC_TASK_PILL[t.status] || "pending"}">${AC_TASK_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}</td>
     <td class="acttd">
       ${isDraft ? `<button class="sm" onclick="approveTask(${t.id})">通过</button>` : ""}

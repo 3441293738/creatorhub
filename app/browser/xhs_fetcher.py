@@ -65,6 +65,38 @@ def _note_url(note_id: str, xsec_token: str = "", xsec_source: str = "pc_feed") 
     return f"{_BASE}/explore/{note_id}" + ("?" + urllib.parse.urlencode(qs) if qs else "")
 
 
+async def _wait_for_response(page, predicate, timeout: int, handler=None):
+    """Wait for a meaningful network condition; timeout is only an upper bound."""
+    try:
+        response = await page.wait_for_response(predicate, timeout=timeout)
+    except Exception:
+        return None
+    if handler is not None:
+        # Parse the exact response we waited for. An async ``response`` event
+        # callback may still be queued when a fast temporary page is released.
+        try:
+            await handler(response)
+        except Exception:
+            pass
+    return response
+
+
+async def _scroll_collection(mgr: BrowserManager, page, collection: dict,
+                             max_steps: int, stop_ids: Set[str] | None = None) -> None:
+    stagnant = 0
+    for _ in range(max(0, int(max_steps))):
+        if stop_ids and stop_ids & set(collection):
+            return
+        before = len(collection)
+        await mgr.xhs_interaction.scroll_step(page)
+        if len(collection) == before:
+            stagnant += 1
+            if stagnant >= 2:
+                return
+        else:
+            stagnant = 0
+
+
 async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
                           known_ids: Set[str], xsec_token: str = "", xsec_source: str = "",
                           max_scrolls: int = 8, settle_ms: int = 1800,
@@ -79,8 +111,6 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
     collected: Dict[str, dict] = {}
     author: Optional[dict] = None
     error = ""
-    page = await mgr.new_page(identity, block_media)
-
     api_seen = []
 
     async def on_response(resp):
@@ -102,46 +132,40 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
         except Exception:
             pass
 
-    page.on("response", on_response)
     final_url = ""
     try:
-        await page.goto(open_url or _profile_url(user_id, xsec_token, xsec_source),
-                        wait_until="domcontentloaded", timeout=30000)
-        try:
-            await page.wait_for_response(
-                lambda r: USER_POSTED_API in r.url and r.status == 200, timeout=12000)
-        except Exception:
-            pass
-        await page.wait_for_timeout(settle_ms)
-        stagnant = 0
-        for _ in range(max_scrolls):
-            if known_ids & set(collected.keys()):
-                break
-            before = len(collected)
-            await page.mouse.wheel(0, 4000)
-            await page.wait_for_timeout(settle_ms)
-            if len(collected) == before:
-                stagnant += 1
-                if stagnant >= 2:
-                    break
-            else:
-                stagnant = 0
-        # SSR 兜底/补全:首屏笔记直出在页面状态里,和拦截结果合并(不覆盖)
-        if ssr_fallback:
-            try:
-                ssr_items = json.loads(await page.evaluate(_SSR_NOTES_JS) or "[]")
-                added = 0
-                for it in ssr_items:
-                    it = _decamel(it)
-                    nid = str(it.get("note_id") or it.get("id")
-                              or (it.get("note_card") or {}).get("note_id") or "")
-                    if nid and nid not in collected:
-                        collected[nid] = it
-                        added += 1
-                print(f"[xhs_notes] ssr_notes={len(ssr_items)} merged={added}")
-            except Exception as e:
-                print(f"[xhs_notes] ssr_fallback failed: {e!r}")
-        final_url = page.url
+        async with mgr.visible_page(identity) as page:
+            page.on("response", on_response)
+            await page.goto(
+                open_url or _profile_url(user_id, xsec_token, xsec_source),
+                wait_until="domcontentloaded", timeout=30000)
+            await _wait_for_response(
+                page,
+                lambda r: USER_POSTED_API in r.url and r.status == 200,
+                12000,
+                on_response,
+            )
+            await _scroll_collection(
+                mgr, page, collected, max_scrolls, known_ids)
+            # SSR 兜底/补全:首屏笔记直出在页面状态里,和拦截结果合并(不覆盖)
+            if ssr_fallback:
+                try:
+                    ssr_items = json.loads(
+                        await page.evaluate(_SSR_NOTES_JS) or "[]")
+                    added = 0
+                    for it in ssr_items:
+                        it = _decamel(it)
+                        nid = str(
+                            it.get("note_id") or it.get("id")
+                            or (it.get("note_card") or {}).get("note_id") or "")
+                        if nid and nid not in collected:
+                            collected[nid] = it
+                            added += 1
+                    print(
+                        f"[xhs_notes] ssr_notes={len(ssr_items)} merged={added}")
+                except Exception as e:
+                    print(f"[xhs_notes] ssr_fallback failed: {e!r}")
+            final_url = page.url
         if not collected and not error:
             error = "未拦截到笔记(可能未登录/被风控/该创作者无公开笔记/链接缺 xsec_token)"
         if not collected:
@@ -150,11 +174,6 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
                   f"final_url={final_url}; api_seen({len(api_seen)})={api_seen[:30]}")
     except Exception as e:
         error = f"打开创作者主页失败: {e!r}"
-    finally:
-        try:
-            await page.close()
-        except Exception:
-            pass
 
     new_items = [it for nid, it in collected.items() if nid not in known_ids]
     return new_items, author, error
@@ -168,7 +187,6 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
     collected: Dict[str, dict] = {}
     api_seen = []
     error = ""
-    page = await mgr.new_page(identity, block_media)
 
     async def on_response(resp):
         url = resp.url
@@ -186,46 +204,45 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
                 if nid:
                     collected[nid] = it
 
-    page.on("response", on_response)
     final_url = ""
     typed = False
     try:
-        # 首选:像真人一样在搜索框输入关键词回车(最能触发 search/notes 请求)
-        await page.goto(f"{_BASE}/explore", wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(1500)
-        for sel in ('#search-input', 'input[placeholder*="搜索"]',
+        async with mgr.visible_page(identity) as page:
+            page.on("response", on_response)
+            # 首选正常搜索入口和逐字输入。
+            await page.goto(
+                f"{_BASE}/explore",
+                wait_until="domcontentloaded", timeout=30000)
+            for sel in (
+                    '#search-input', 'input[placeholder*="搜索"]',
                     '.search-input input', 'input.search-input'):
-            try:
-                box = page.locator(sel).first
-                await box.fill(keyword, timeout=3000)
-                await box.press("Enter")
-                typed = True
-                break
-            except Exception:
-                continue
-        if not typed:   # 兜底:直接打开搜索结果页
-            q = urllib.parse.urlencode({"keyword": keyword, "source": "web_explore_feed",
-                                        "type": "51"})
-            await page.goto(f"{_BASE}/search_result?{q}",
-                            wait_until="domcontentloaded", timeout=30000)
-        try:
-            await page.wait_for_response(lambda r: SEARCH_API in r.url and r.status == 200,
-                                         timeout=12000)
-        except Exception:
-            pass
-        await page.wait_for_timeout(settle_ms)
-        stagnant = 0
-        for _ in range(max_scrolls):
-            before = len(collected)
-            await page.mouse.wheel(0, 4000)
-            await page.wait_for_timeout(settle_ms)
-            if len(collected) == before:
-                stagnant += 1
-                if stagnant >= 2:
+                try:
+                    box = page.locator(sel).first
+                    await box.wait_for(state="visible", timeout=2500)
+                    await mgr.xhs_interaction.type_short(box, keyword)
+                    await box.press("Enter")
+                    typed = True
                     break
-            else:
-                stagnant = 0
-        final_url = page.url
+                except Exception:
+                    continue
+            if not typed:
+                q = urllib.parse.urlencode({
+                    "keyword": keyword,
+                    "source": "web_explore_feed",
+                    "type": "51",
+                })
+                await page.goto(
+                    f"{_BASE}/search_result?{q}",
+                    wait_until="domcontentloaded", timeout=30000)
+            await _wait_for_response(
+                page,
+                lambda r: SEARCH_API in r.url and r.status == 200,
+                12000,
+                on_response,
+            )
+            await _scroll_collection(
+                mgr, page, collected, max_scrolls)
+            final_url = page.url
         if not collected and not error:
             error = "未拦截到搜索结果(可能未登录/被风控/该关键词无结果)"
         if not collected:
@@ -234,11 +251,6 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
                   f"final_url={final_url}; api_seen({len(api_seen)})={api_seen[:30]}")
     except Exception as e:
         error = f"打开搜索页失败: {e!r}"
-    finally:
-        try:
-            await page.close()
-        except Exception:
-            pass
 
     new_items = [it for nid, it in collected.items() if nid not in known_ids]
     return new_items, error
@@ -252,7 +264,6 @@ async def fetch_xhs_note_detail(mgr: BrowserManager, identity: Identity, note_id
     返回 (note_card dict, error)。"""
     result: dict = {}
     error = ""
-    page = await mgr.new_page(identity, block_media)
 
     async def on_response(resp):
         if FEED_API in resp.url:
@@ -265,25 +276,22 @@ async def fetch_xhs_note_detail(mgr: BrowserManager, identity: Identity, note_id
                 if str(card.get("note_id") or it.get("id") or "") == note_id or not result:
                     result.update(card)
 
-    page.on("response", on_response)
     try:
-        await page.goto(_note_url(note_id, xsec_token, xsec_source),
-                        wait_until="domcontentloaded", timeout=30000)
-        try:
-            await page.wait_for_response(lambda r: FEED_API in r.url and r.status == 200,
-                                         timeout=8000)
-        except Exception:
-            pass
-        await page.wait_for_timeout(settle_ms)
+        async with mgr.visible_page(identity) as page:
+            page.on("response", on_response)
+            await page.goto(
+                _note_url(note_id, xsec_token, xsec_source),
+                wait_until="domcontentloaded", timeout=30000)
+            await _wait_for_response(
+                page,
+                lambda r: FEED_API in r.url and r.status == 200,
+                8000,
+                on_response,
+            )
         if not result:
             error = "未拦截到笔记详情(xsec_token 可能已过期或笔记不可见)"
     except Exception as e:
         error = f"打开笔记详情失败: {e!r}"
-    finally:
-        try:
-            await page.close()
-        except Exception:
-            pass
     return (result or None), error
 
 
@@ -295,7 +303,6 @@ async def fetch_xhs_comments(mgr: BrowserManager, identity: Identity, note_id: s
     """打开笔记页,下滑评论区,拦截 comment/page 收集评论。返回 (新评论原始列表, error)。"""
     collected: Dict[str, dict] = {}
     error = ""
-    page = await mgr.new_page(identity, block_media)
 
     async def on_response(resp):
         if COMMENT_API in resp.url:
@@ -308,36 +315,24 @@ async def fetch_xhs_comments(mgr: BrowserManager, identity: Identity, note_id: s
                 if cid:
                     collected[cid] = c
 
-    page.on("response", on_response)
     try:
-        await page.goto(_note_url(note_id, xsec_token, xsec_source),
-                        wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(settle_ms)
-        stagnant = 0
-        for _ in range(max_scrolls):
-            before = len(collected)
-            try:
-                await page.mouse.wheel(0, 3000)
-                await page.evaluate(
-                    "() => { const c=document.querySelector('.comments-el,.comments-container,.note-scroller'); if(c) c.scrollTop=c.scrollHeight; }")
-            except Exception:
-                pass
-            await page.wait_for_timeout(settle_ms)
-            if len(collected) == before:
-                stagnant += 1
-                if stagnant >= 2:
-                    break
-            else:
-                stagnant = 0
+        async with mgr.visible_page(identity) as page:
+            page.on("response", on_response)
+            await page.goto(
+                _note_url(note_id, xsec_token, xsec_source),
+                wait_until="domcontentloaded", timeout=30000)
+            await _wait_for_response(
+                page,
+                lambda r: COMMENT_API in r.url and r.status == 200,
+                8000,
+                on_response,
+            )
+            await _scroll_collection(
+                mgr, page, collected, max_scrolls, known_cids)
         if not collected and not error:
             error = "未拦截到评论(可能未登录/笔记无评论/xsec_token 过期)"
     except Exception as e:
         error = f"打开笔记页失败: {e!r}"
-    finally:
-        try:
-            await page.close()
-        except Exception:
-            pass
 
     new = [c for cid, c in collected.items() if cid not in known_cids]
     return new, error
@@ -363,7 +358,6 @@ async def fetch_creator_published(mgr: BrowserManager, identity: Identity,
     collected: Dict[str, dict] = {}
     api_seen: list = []
     error = ""
-    page = await mgr.new_page(identity, block_media)
 
     async def on_response(resp):
         url = resp.url
@@ -388,31 +382,37 @@ async def fetch_creator_published(mgr: BrowserManager, identity: Identity,
                     api_seen.append(f"{url.split('?')[0].split('xiaohongshu.com')[-1]} key={key} n={len(arr)}")
                     break
 
-    page.on("response", on_response)
     try:
-        for url in ("https://creator.xiaohongshu.com/new/note-manager",
+        async with mgr.visible_page(identity) as page:
+            page.on("response", on_response)
+            for url in (
+                    "https://creator.xiaohongshu.com/new/note-manager",
                     "https://creator.xiaohongshu.com/publish/publish?source=official"):
-            await page.goto(url, wait_until="domcontentloaded", timeout=40000)
-            await page.wait_for_timeout(settle_ms)
-            if "login" in page.url or "passport" in page.url:
-                error = "logged_out:创作平台未登录"
-                break
-            for _ in range(4):
+                await page.goto(
+                    url, wait_until="domcontentloaded", timeout=40000)
+                if "login" in page.url or "passport" in page.url:
+                    error = "logged_out:创作平台未登录"
+                    break
+                await _wait_for_response(
+                    page,
+                    lambda r: (
+                        "creator.xiaohongshu.com" in r.url
+                        and "/api/" in r.url and r.status == 200),
+                    10000,
+                    on_response,
+                )
                 if collected:
                     break
-                await page.mouse.wheel(0, 3000)
-                await page.wait_for_timeout(1500)
-            if collected:
-                break
+                await _scroll_collection(mgr, page, collected, 4)
+                if collected:
+                    break
+            final_url = page.url
         if not collected:
-            print(f"[xhs_creator_published] collected=0 final_url={page.url} api_seen={api_seen[:8]}")
+            print(
+                f"[xhs_creator_published] collected=0 "
+                f"final_url={final_url} api_seen={api_seen[:8]}")
     except Exception as e:
         error = f"打开创作平台失败: {e!r}"
-    finally:
-        try:
-            await page.close()
-        except Exception:
-            pass
     return list(collected.values()), error
 
 
@@ -425,7 +425,6 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
     other_data: dict = {}
     api_seen = []                 # 看到的小红书 API 请求(诊断用)
     error = ""
-    page = await mgr.new_page(identity, block_media)
 
     async def on_response(resp):
         url = resp.url
@@ -443,36 +442,34 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
         except Exception:
             pass
 
-    page.on("response", on_response)
     logged_out = False
     final_url = ""
     state_user = None
     try:
-        # 自己的主页会同时触发 user/me + otherinfo + user_posted
-        await page.goto(f"{_BASE}/user/profile/me", wait_until="domcontentloaded", timeout=30000)
-        try:
-            await page.wait_for_response(
-                lambda r: USER_ME_API in r.url and r.status == 200, timeout=timeout_ms)
-        except Exception:
-            pass
-        await page.wait_for_timeout(1800)
-        final_url = page.url
-        if "passport" in final_url or "/login" in final_url:
-            logged_out = True
-        if me_data.get("guest") is True:
-            logged_out = True
-        if not me_data and not other_data:    # 兜底:读 __INITIAL_STATE__
-            try:
-                state_user = await page.evaluate(_XHS_STATE_USER)
-            except Exception:
-                state_user = None
+        async with mgr.visible_page(identity) as page:
+            page.on("response", on_response)
+            # 自己的主页会同时触发 user/me + otherinfo + user_posted
+            await page.goto(
+                f"{_BASE}/user/profile/me",
+                wait_until="domcontentloaded", timeout=30000)
+            await _wait_for_response(
+                page,
+                lambda r: USER_ME_API in r.url and r.status == 200,
+                timeout_ms,
+                on_response,
+            )
+            final_url = page.url
+            if "passport" in final_url or "/login" in final_url:
+                logged_out = True
+            if me_data.get("guest") is True:
+                logged_out = True
+            if not me_data and not other_data:    # 兜底:读 __INITIAL_STATE__
+                try:
+                    state_user = await page.evaluate(_XHS_STATE_USER)
+                except Exception:
+                    state_user = None
     except Exception as e:
         error = f"{e!r}"
-    finally:
-        try:
-            await page.close()
-        except Exception:
-            pass
 
     # 合并:me 提供身份(user_id/red_id),otherinfo 提供昵称/头像/粉丝
     result: dict = {}

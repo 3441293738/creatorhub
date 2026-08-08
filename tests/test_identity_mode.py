@@ -79,6 +79,56 @@ class IdentityModeTests(unittest.TestCase):
 
             self.assertEqual(identity.identity_mode, mode)
 
+    def test_xhs_browser_defaults_are_page_native(self):
+        engine = Config().engine
+
+        self.assertEqual(engine.xhs_browser_mode, "auto")
+        self.assertEqual(engine.xhs_cdp_idle_seconds, 900)
+        self.assertEqual(engine.xhs_publish_mode, "browser")
+        self.assertEqual(engine.xhs_comment_write_mode, "browser")
+
+    def test_open_browser_url_requires_the_real_platform_host(self):
+        self.assertTrue(main._platform_url_allowed(
+            "xhs", "https://www.xiaohongshu.com/explore/fixture"))
+        self.assertTrue(main._platform_url_allowed(
+            "xhs", "https://creator.xiaohongshu.com/publish"))
+        self.assertFalse(main._platform_url_allowed(
+            "xhs", "https://evil.example/?next=xiaohongshu.com"))
+        self.assertFalse(main._platform_url_allowed(
+            "xhs", "https://xiaohongshu.com.evil.example/"))
+
+    def test_identity_from_account_remembers_platform(self):
+        account = DouyinAccount(
+            id=7,
+            platform="xhs",
+            nickname="fixture",
+            identity_mode="native",
+        )
+
+        identity = Identity.from_account(
+            account, self.cfg.engine.profiles_dir, "DEFAULT_UA")
+
+        self.assertEqual(identity.platform, "xhs")
+
+    def test_temporary_identities_use_profile_scoped_keys(self):
+        first = Identity(
+            account_id=None,
+            profile_dir=str(Path(self.tmp.name) / "login-a"),
+            platform="xhs",
+        )
+        second = Identity(
+            account_id=None,
+            profile_dir=str(Path(self.tmp.name) / "login-b"),
+            platform="xhs",
+        )
+
+        self.assertNotEqual(first.key, second.key)
+        self.assertEqual(first.key, Identity(
+            account_id=None,
+            profile_dir=first.profile_dir,
+            platform="xhs",
+        ).key)
+
     def test_native_identity_initialization_does_not_generate_spoofed_ua(self):
         account = DouyinAccount(id=1, nickname="fixture", identity_mode="native")
 
@@ -198,6 +248,50 @@ class IdentityModeTests(unittest.TestCase):
         self.assertTrue(result["environment"]["has_proxy"])
         self.assertNotIn("secret", repr(result["environment"]))
 
+    def test_successful_new_xhs_login_releases_temporary_session(self):
+        previous_cfg, previous_browser, previous_engine = (
+            main.cfg, main.browser, main.engine)
+
+        class BrowserStub:
+            def __init__(self):
+                self.closed_keys = []
+
+            def environment_snapshot(self, identity, *, headless):
+                return {
+                    "browser": "chrome", "headless": headless,
+                    "profile_dir": identity.profile_dir,
+                    "backend": "cdp", "backend_label": "系统 Chrome · CDP",
+                }
+
+            async def close_context(self, key):
+                self.closed_keys.append(key)
+
+        browser = BrowserStub()
+        captured = {}
+
+        async def logged_in(_browser, identity):
+            captured["key"] = identity.key
+            return True, '{"cookies":[{"name":"a1","value":"fixture"}]}', "fixture"
+
+        task_id = "successful-xhs-login"
+        main.cfg = self.cfg
+        main.browser = browser
+        main.engine = None
+        try:
+            with patch("app.main.interactive_xhs_login", logged_in), \
+                    patch("app.main._enrich_account_profile",
+                          AsyncMock(return_value="ok")):
+                asyncio.run(main._run_login(
+                    task_id, platform="xhs", proxy_choice="none"))
+            result = main.login_tasks[task_id]
+        finally:
+            main.login_tasks.pop(task_id, None)
+            main.cfg, main.browser, main.engine = (
+                previous_cfg, previous_browser, previous_engine)
+
+        self.assertEqual(result["status"], "confirmed")
+        self.assertEqual(browser.closed_keys, [captured["key"]])
+
     def test_open_account_browser_uses_unified_login_operation_guard(self):
         with db.get_session() as session:
             account = DouyinAccount(
@@ -270,6 +364,103 @@ class IdentityModeTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(engine.calls[0][1], OperationKind.LOGIN)
+
+    def test_xhs_open_browser_closes_through_manager_and_visible_gate(self):
+        with db.get_session() as session:
+            account = DouyinAccount(
+                nickname="xhs-fixture", platform="xhs", identity_mode="native",
+                profile_dir=str(Path(self.tmp.name) / "xhs-open-profile"),
+            )
+            session.add(account)
+            session.commit()
+            session.refresh(account)
+            account_id = account.id
+        previous_browser, previous_engine = main.browser, main.engine
+
+        state = {"engine": False, "visible": False}
+
+        class EngineStub:
+            @asynccontextmanager
+            async def operation_guard(self, *_args, **_kwargs):
+                state["engine"] = True
+                try:
+                    yield None
+                finally:
+                    state["engine"] = False
+
+        class PageStub:
+            async def goto(self, *_args, **_kwargs):
+                self_outer.assertTrue(state["engine"])
+                self_outer.assertTrue(state["visible"])
+
+            async def bring_to_front(self):
+                return None
+
+            def on(self, *_args):
+                return None
+
+        class ContextStub:
+            def __init__(self):
+                self.closed_directly = False
+
+            async def add_cookies(self, _cookies):
+                return None
+
+            async def close(self):
+                self.closed_directly = True
+
+            def on(self, *_args):
+                return None
+
+        context = ContextStub()
+
+        class BrowserStub:
+            def __init__(self):
+                self.closed_keys = []
+
+            def identity_for(self, account):
+                return Identity.from_account(
+                    account, self_outer.cfg.engine.profiles_dir, "DEFAULT_UA")
+
+            @asynccontextmanager
+            async def visible_action(self, _identity):
+                state["visible"] = True
+                try:
+                    yield
+                finally:
+                    state["visible"] = False
+
+            async def open_headed(self, _identity):
+                return context
+
+            async def new_page(self, _identity, **_kwargs):
+                return PageStub()
+
+            async def close_context(self, key):
+                self.closed_keys.append(key)
+
+        self_outer = self
+        browser = BrowserStub()
+
+        async def scenario():
+            result = await main.open_account_browser(account_id)
+            self.assertTrue(result["ok"])
+            self.assertTrue(state["engine"])
+            self.assertTrue(state["visible"])
+            await main.open_browsers[account_id].close()
+            self.assertFalse(state["engine"])
+            self.assertFalse(state["visible"])
+
+        main.browser = browser
+        main.engine = EngineStub()
+        try:
+            asyncio.run(scenario())
+        finally:
+            main.open_browsers.pop(account_id, None)
+            main.browser, main.engine = previous_browser, previous_engine
+
+        self.assertEqual(browser.closed_keys, [account_id])
+        self.assertFalse(context.closed_directly)
 
     def test_open_account_browser_releases_guard_when_cancelled_before_lease(self):
         with db.get_session() as session:
@@ -436,8 +627,46 @@ class IdentityModeTests(unittest.TestCase):
             "identity_mode": "native",
             "profile_dir": identity.profile_dir,
             "has_proxy": True,
+            "backend": "playwright",
+            "backend_label": "Playwright Chromium",
+            "fallback": False,
+            "fallback_reason": "",
         })
         self.assertNotIn("secret", repr(snapshot))
+
+    def test_account_environment_endpoint_is_redacted(self):
+        with db.get_session() as session:
+            account = DouyinAccount(
+                nickname="fixture", platform="xhs", identity_mode="native",
+                profile_dir=str(Path(self.tmp.name) / "env-profile"),
+                proxy="http://alice:secret@proxy.local:8080",
+            )
+            session.add(account)
+            session.commit()
+            session.refresh(account)
+            account_id = account.id
+
+        previous_browser = main.browser
+        manager = BrowserManager(
+            "UA", self.cfg.engine.profiles_dir, xhs_browser_mode="auto")
+        with db.get_session() as session:
+            identity = manager.identity_for(
+                session.get(DouyinAccount, account_id))
+        manager._backend_by_key[identity.key] = "playwright"
+        manager._fallback_reason_by_key[identity.key] = (
+            "connect ws://127.0.0.1:43111/devtools/browser/fixture "
+            "via http://alice:secret@proxy.local:8080")
+        main.browser = manager
+        try:
+            body = asyncio.run(main.account_browser_environment(account_id))
+        finally:
+            main.browser = previous_browser
+
+        dumped = repr(body)
+        self.assertEqual(body["backend_label"], "Playwright Chromium · 回退")
+        self.assertNotIn("secret", dumped)
+        self.assertNotIn("ws://", dumped)
+        self.assertNotIn("127.0.0.1:", dumped)
 
     def test_native_launch_captures_actual_context_user_agent(self):
         manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)

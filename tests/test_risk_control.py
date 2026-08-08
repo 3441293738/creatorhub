@@ -591,6 +591,24 @@ risk_control:
         self.assertEqual(engine._prune_risk_events_if_due(day_two), 0)
         self.assertEqual(calls, [day_one, day_two])
 
+    def test_monitor_idle_collection_uses_browser_manager_collector(self):
+        class Browser(_BrowserStub):
+            def __init__(self):
+                super().__init__()
+                self.samples = []
+
+            async def collect_idle_cdp(self, *, now=None):
+                self.samples.append(now)
+                return 2
+
+        browser = Browser()
+        engine = MonitorEngine(self.cfg, browser)
+
+        closed = asyncio.run(engine._collect_idle_browser_sessions(now=123.5))
+
+        self.assertEqual(closed, 2)
+        self.assertEqual(browser.samples, [123.5])
+
     def test_lifespan_prunes_once_and_updates_same_day_watermark(self):
         previous_browser = main.browser
         previous_engine = main.engine

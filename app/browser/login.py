@@ -24,7 +24,7 @@ async def _focus(page):
 
 
 async def _reuse_or_create_login_page(ctx):
-    """复用持久化 Chromium 启动时自带的空白页，避免多出一个登录页签。"""
+    """兼容旧调用：复用持久 Context 的空白页，否则创建一个新页。"""
     for candidate in ctx.pages:
         try:
             if candidate.url == "about:blank" and not candidate.is_closed():
@@ -124,7 +124,7 @@ def _is_xhs_security_verification_url(url: str) -> bool:
 
 
 async def _xhs_web_session(ctx) -> str:
-    """取当前 web_session cookie 值(未登录时为空串/短值)。"""
+    """取当前 web_session cookie 值；游客态也可能存在且发生轮换。"""
     try:
         for c in await ctx.cookies():
             if c["name"] == "web_session":
@@ -134,65 +134,88 @@ async def _xhs_web_session(ctx) -> str:
     return ""
 
 
+_XHS_USER_ME_API = "/api/sns/web/v2/user/me"
+
+
+def _xhs_login_response_handler(authenticated_user: dict):
+    async def on_response(response):
+        try:
+            parsed = urlparse(str(response.url or ""))
+            host = (parsed.hostname or "").lower()
+            if not (host == "xiaohongshu.com"
+                    or host.endswith(".xiaohongshu.com")):
+                return
+            if parsed.path.rstrip("/").lower() != _XHS_USER_ME_API:
+                return
+            if int(response.status) != 200:
+                return
+            payload = await response.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, dict) or data.get("guest") is True:
+                return
+            if not (data.get("user_id") or data.get("red_id")):
+                return
+            authenticated_user.update(data)
+        except Exception:
+            return
+    return on_response
+
+
 async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
                                 timeout_seconds: int = 180
                                 ) -> Tuple[bool, str, str]:
     """小红书扫码登录。打开真实窗口让用户扫码,落地登录态。
     返回 (是否成功, storage_state_json, nickname)。
 
-    判定登录:小红书游客态 web_session 为空/短值,登录成功后才会变成一长串 token。
-    所以必须等到 web_session「变成有效长串且不同于登录前的初始值」才算成功 ——
-    仅凭 customerClientId / customer-sso-sid 之类的 Cookie 判断会误判(它们在登录弹窗
-    一出现就被写入,根本没扫码)。用户中途关掉窗口则视为未登录。"""
-    ctx = await mgr.open_headed(identity)
-    page = await _reuse_or_create_login_page(ctx)
-    await _focus(page)
+    判定登录:必须同时观察到有效 web_session，以及主站 user/me 返回非游客用户身份。
+    游客态 web_session 和登录弹窗 Cookie 都可能在扫码前生成或轮换，不能单独作为
+    成功信号。用户中途关掉窗口则视为未登录。"""
+    ctx = await mgr.context_for(identity)
     logged = False
     nickname = ""
     state_json = ""
     security_verification_seen = False
-    try:
+    authenticated_user: dict = {}
+    on_response = _xhs_login_response_handler(authenticated_user)
+    async with mgr.visible_page(identity) as page:
+        await _focus(page)
+        page.on("response", on_response)
         # 从官网首页进入登录流程。直接访问 /explore 会让全新隔离 profile
         # 更容易被重定向到 website-login/captcha 的设备安全验证页。
-        await page.goto("https://www.xiaohongshu.com/",
-                        wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(1200)
+        await page.goto(
+            "https://www.xiaohongshu.com/",
+            wait_until="domcontentloaded", timeout=30000)
         security_verification_seen = _is_xhs_security_verification_url(page.url)
-        init_ws = await _xhs_web_session(ctx)     # 登录前的基准值(通常为空)
-        waited = 0
-        while waited < timeout_seconds:
+        deadline = asyncio.get_running_loop().time() + max(0, timeout_seconds)
+        while asyncio.get_running_loop().time() < deadline:
+            if page.is_closed():                  # 没登录就关了窗口 -> 视为未登录
+                break
             security_verification_seen = (
                 security_verification_seen
                 or _is_xhs_security_verification_url(page.url)
             )
             ws = await _xhs_web_session(ctx)
-            # 真正登录后 web_session 才会变成有效长串,且不同于登录前。
-            # 一旦判定登录,立刻抓 storage_state 落袋为安 —— 即使用户随后秒关窗口,
-            # 后续步骤报错也不会把已到手的登录态丢掉。
-            if ws and len(ws) >= 20 and ws != init_ws and "passport" not in page.url:
+            # Cookie 只作必要条件；user/me 的非游客身份才是授权完成证据。
+            if (ws and len(ws) >= 20 and authenticated_user
+                    and "passport" not in page.url
+                    and not _is_xhs_security_verification_url(page.url)):
                 try:
-                    state = await ctx.storage_state()
-                    state_json = json.dumps(state)
+                    state_json = json.dumps(await ctx.storage_state())
                     logged = True
                 except Exception:
                     pass
                 if logged:
-                    try:
-                        nickname = await _read_xhs_nickname(page)
-                    except Exception:
-                        pass
+                    nickname = str(
+                        authenticated_user.get("nickname") or "").strip()[:40]
+                    if not nickname:
+                        try:
+                            nickname = await _read_xhs_nickname(page)
+                        except Exception:
+                            pass
                     # 普通登录只保存主站读取态。创作平台是独立登录入口，避免在
                     # 扫码完成后跨站跳转导致 Chromium 周期性拉起临时页签。
                     break
-            if page.is_closed():                  # 没登录就关了窗口 -> 视为未登录
-                break
-            await asyncio.sleep(1)
-            waited += 1
-    finally:
-        try:
-            await ctx.close()
-        except Exception:
-            pass
+            await mgr.xhs_interaction.pause(0.70, 1.15)
     if not logged and security_verification_seen:
         raise XhsSecurityVerificationRequired(
             "小红书要求完成设备安全验证；请保持当前网络和账号环境稳定，"
@@ -207,19 +230,20 @@ async def interactive_xhs_creator_login(mgr: BrowserManager, identity: Identity,
     """小红书「创作服务平台」登录(发布/已发布列表用)。打开 creator.xiaohongshu.com/login
     扫码,落地含创作者会话的登录态。返回 (是否成功, storage_state_json, nickname)。
     与普通登录区分:这里登录的是创作平台,登录态里含 customerClientId / galaxy_creator_session_id 等。"""
-    ctx = await mgr.open_headed(identity)
-    page = await _reuse_or_create_login_page(ctx)
-    await _focus(page)
+    ctx = await mgr.context_for(identity)
     logged = False
     nickname = ""
     state_json = ""
-    try:
-        await page.goto("https://creator.xiaohongshu.com/login",
-                        wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(1200)
+    async with mgr.visible_page(identity) as page:
+        await _focus(page)
+        await page.goto(
+            "https://creator.xiaohongshu.com/login",
+            wait_until="domcontentloaded", timeout=30000)
         init_ws = await _xhs_web_session(ctx)
-        waited = 0
-        while waited < timeout_seconds:
+        deadline = asyncio.get_running_loop().time() + max(0, timeout_seconds)
+        while asyncio.get_running_loop().time() < deadline:
+            if page.is_closed():
+                break
             cookies = await ctx.cookies()
             names = {c["name"] for c in cookies}
             ws = next((c.get("value", "") for c in cookies if c["name"] == "web_session"), "")
@@ -228,7 +252,6 @@ async def interactive_xhs_creator_login(mgr: BrowserManager, identity: Identity,
             if (names & _XHS_CREATOR_COOKIES) or \
                     (on_creator and ws and len(ws) >= 20 and ws != init_ws):
                 try:
-                    await page.wait_for_timeout(1500)
                     state_json = json.dumps(await ctx.storage_state())
                     logged = True
                 except Exception:
@@ -239,15 +262,7 @@ async def interactive_xhs_creator_login(mgr: BrowserManager, identity: Identity,
                     except Exception:
                         pass
                     break
-            if page.is_closed():
-                break
-            await asyncio.sleep(1)
-            waited += 1
-    finally:
-        try:
-            await ctx.close()
-        except Exception:
-            pass
+            await mgr.xhs_interaction.pause(0.70, 1.15)
     return logged, state_json, nickname
 
 

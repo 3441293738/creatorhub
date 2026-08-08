@@ -1,7 +1,4 @@
-"""小红书发布入口。
-优先走「API 直发」(creator_api,参考 Spider_XHS:execjs 签名 + 直连接口,无需浏览器);
-若环境缺 Node/execjs/签名 JS,则回退到「浏览器自动化」(实验性)。
-"""
+"""小红书发布入口：默认可见页面操作，签名 API 仅作显式兼容模式。"""
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +8,7 @@ from typing import List, Optional, Tuple
 
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
+from .browser_writes import XhsWriteOutcome, publish_xhs_browser
 from .client import XhsApiError, cookie_str_from_state, has_a1
 
 
@@ -86,34 +84,41 @@ def _publish_api_sync(cookie_str: str, media_type: str, title: str, desc: str,
 async def publish_xhs(mgr: BrowserManager, identity: Identity, storage_state_json: str,
                       media_type: str, title: str, desc: str, media_paths: List[str],
                       topics: str = "", headed: bool = True,
-                      timeout_seconds: int = 180) -> Tuple[bool, str, str]:
+                      timeout_seconds: int = 180,
+                      mode: str = "browser",
+                      on_submit=None) -> Tuple[bool, str, str]:
     """发布一条小红书笔记。返回 (ok, result_url, error)。
-    API 直发与浏览器兜底都走该账号专属代理 / 持久 profile(防多账号关联)。"""
+    页面模式使用账号持久 Profile；API 仅为显式兼容模式。"""
     files = [str(Path(p)) for p in media_paths if p and Path(p).exists()]
     if not files:
         return False, "", "没有可用的本地媒体文件(路径不存在)"
     cookie_str = cookie_str_from_state(storage_state_json)
-    if not has_a1(cookie_str):
-        return False, "", "登录态缺少 a1,请重新扫码登录该小红书账号"
     proxy = identity.proxy if identity else ""
     title = (title or "").strip()[:20]
     desc = (desc or "")[:1000]
     tags = [t.strip().lstrip("#") for t in (topics or "").split(",") if t.strip()]
 
-    # 优先 API 直发
+    mode = str(mode or "browser").strip().lower()
+    if mode not in {"browser", "api"}:
+        mode = "browser"
+    if mode == "browser":
+        outcome = await publish_xhs_browser(
+            mgr, identity, media_type, title, desc, tags, files,
+            timeout_seconds=timeout_seconds, on_submit=on_submit)
+        return outcome.legacy()
+
+    # 显式 API 兼容模式；失败后不切换到浏览器，避免一次任务被重复提交。
+    if not has_a1(cookie_str):
+        return False, "", "登录态缺少 a1,请重新扫码登录该小红书账号"
     try:
         from . import creator_sign
         api_ok = creator_sign.available()
     except Exception:
         api_ok = False
-    if api_ok:
-        ok, url, err = await asyncio.to_thread(
-            _publish_api_sync, cookie_str, media_type, title, desc, files, tags, proxy)
-        if ok or err:
-            return ok, url, err
-    # 回退:浏览器自动化
-    return await _publish_xhs_browser(mgr, identity, media_type,
-                                      title, desc, files, tags, headed, timeout_seconds)
+    if not api_ok:
+        return False, "", "API 兼容模式所需签名环境不可用"
+    return await asyncio.to_thread(
+        _publish_api_sync, cookie_str, media_type, title, desc, files, tags, proxy)
 
 
 async def creator_check(storage_state_json: str, proxy: str = "", *,
@@ -228,89 +233,3 @@ async def list_published(storage_state_json: str, proxy: str = "") -> Tuple[bool
         return False, str(e), []
     except Exception as e:
         return False, f"{e!r}", []
-
-
-# ─────────── 回退:浏览器自动化(实验性)───────────
-PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official"
-_TAB_IMAGE = ["text=上传图文", 'div:has-text("上传图文")', "text=图文"]
-_TAB_VIDEO = ["text=上传视频", 'div:has-text("上传视频")', "text=视频"]
-_TITLE_SEL = ['input[placeholder*="标题"]', ".d-text input", 'input.c-input_inner']
-_DESC_SEL = ['[contenteditable="true"]', ".ql-editor", "#post-textarea", "textarea"]
-_PUBLISH_BTN = ['button:has-text("发布")', 'div.submit button', "text=发布笔记"]
-
-
-async def _click_first(page, selectors, timeout=2500) -> bool:
-    for sel in selectors:
-        try:
-            await page.click(sel, timeout=timeout)
-            return True
-        except Exception:
-            continue
-    return False
-
-
-async def _fill_first(page, selectors, text, timeout=2500) -> bool:
-    for sel in selectors:
-        try:
-            el = page.locator(sel).first
-            await el.click(timeout=timeout)
-            await el.fill(text, timeout=timeout)
-            return True
-        except Exception:
-            try:
-                await page.keyboard.type(text)
-                return True
-            except Exception:
-                continue
-    return False
-
-
-async def _publish_xhs_browser(mgr: BrowserManager, identity: Identity, media_type: str,
-                               title: str, desc: str, files: List[str], tags: List[str],
-                               headed: bool, timeout_seconds: int) -> Tuple[bool, str, str]:
-    body = (desc + ("\n" + " ".join(f"#{t}" for t in tags) if tags else "")).strip()[:1000]
-    # 用账号专属持久 profile(独立 UA/代理/指纹);登录态已在 profile 里
-    ctx = await mgr.open_headed(identity)
-    page = await ctx.new_page()
-    ok, result_url, error = False, "", ""
-    try:
-        await page.goto(PUBLISH_URL, wait_until="domcontentloaded", timeout=40000)
-        await page.wait_for_timeout(2500)
-        if "login" in page.url or "passport" in page.url:
-            return False, "", "logged_out:创作平台未登录"
-        await _click_first(page, _TAB_VIDEO if media_type == "video" else _TAB_IMAGE)
-        await page.wait_for_timeout(1500)
-        try:
-            await page.locator('input[type="file"]').first.set_input_files(
-                files if media_type == "images" else files[:1], timeout=15000)
-        except Exception as e:
-            return False, "", f"上传文件失败: {e!r}"
-        await page.wait_for_timeout(6000 if media_type == "video" else 3500)
-        if title:
-            await _fill_first(page, _TITLE_SEL, title)
-        await page.wait_for_timeout(500)
-        if body:
-            await _fill_first(page, _DESC_SEL, body)
-        await page.wait_for_timeout(800)
-        if not await _click_first(page, _PUBLISH_BTN, timeout=4000):
-            return False, "", "未找到发布按钮(发布页可能改版)"
-        try:
-            await page.wait_for_url("**/publish/success**", timeout=20000)
-            ok = True
-        except Exception:
-            try:
-                await page.get_by_text("发布成功", exact=False).first.wait_for(timeout=8000)
-                ok = True
-            except Exception:
-                ok = False
-        result_url = page.url if ok else ""
-        if not ok:
-            error = "已点发布但未确认成功(请到小红书确认)"
-    except Exception as e:
-        error = f"发布异常: {e!r}"
-    finally:
-        try:
-            await ctx.close()
-        except Exception:
-            pass
-    return ok, result_url, error

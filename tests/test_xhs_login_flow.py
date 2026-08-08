@@ -1,4 +1,5 @@
 import unittest
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from playwright.async_api import async_playwright
@@ -39,6 +40,16 @@ class XhsLoginPageTests(unittest.IsolatedAsyncioTestCase):
 
 
 class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _user_me_response(*, guest: bool, user_id: str = ""):
+        response = AsyncMock()
+        response.url = "https://www.xiaohongshu.com/api/sns/web/v2/user/me"
+        response.status = 200
+        response.json.return_value = {
+            "data": {"guest": guest, "user_id": user_id},
+        }
+        return response
+
     async def test_security_verification_url_is_recognized(self):
         self.assertTrue(_is_xhs_security_verification_url(
             "https://www.xiaohongshu.com/website-login/captcha?verifyType=124"
@@ -54,11 +65,11 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         manager = AsyncMock()
         context = AsyncMock()
         page = AsyncMock()
-        manager.open_headed.return_value = context
-        context.pages = [page]
+        manager.context_for.return_value = context
         context.cookies.side_effect = [[], []]
         page.url = "about:blank"
         page.is_closed = MagicMock(side_effect=[False, True])
+        page.on = MagicMock()
 
         async def goto(_url, **_kwargs):
             page.url = (
@@ -68,22 +79,30 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         page.goto.side_effect = goto
 
-        with patch("app.browser.login.asyncio.sleep", new_callable=AsyncMock):
-            with self.assertRaisesRegex(
-                XhsSecurityVerificationRequired,
-                "小红书要求完成设备安全验证",
-            ):
-                await interactive_xhs_login(manager, object())
+        @asynccontextmanager
+        async def visible_page(_identity):
+            try:
+                yield page
+            finally:
+                await page.close()
 
-        context.close.assert_awaited_once()
+        manager.visible_page = visible_page
+        manager.xhs_interaction.pause = AsyncMock()
+
+        with self.assertRaisesRegex(
+            XhsSecurityVerificationRequired,
+            "小红书要求完成设备安全验证",
+        ):
+            await interactive_xhs_login(manager, object())
+
+        context.close.assert_not_awaited()
+        page.close.assert_awaited_once()
 
     async def test_web_login_starts_from_homepage_and_skips_creator_platform(self):
         manager = AsyncMock()
         context = AsyncMock()
         page = AsyncMock()
-        manager.open_headed.return_value = context
-        context.new_page.return_value = page
-        context.pages = [page]
+        manager.context_for.return_value = context
         context.cookies.side_effect = [
             [],
             [{"name": "web_session", "value": "w" * 24}],
@@ -92,21 +111,42 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "cookies": [{"name": "web_session", "value": "w" * 24}]
         }
         page.url = "about:blank"
-        page.is_closed = MagicMock(return_value=False)
+        page.is_closed = MagicMock(side_effect=[False, False, True])
         visited = []
+        response_listener = {}
+
+        def on(event, listener):
+            if event == "response":
+                response_listener["handler"] = listener
+
+        page.on = MagicMock(side_effect=on)
+        page.remove_listener = MagicMock()
 
         async def goto(url, **_kwargs):
             visited.append(url)
             page.url = url
+            handler = response_listener.get("handler")
+            if handler is not None:
+                await handler(self._user_me_response(
+                    guest=False, user_id="fixture-user"))
 
         page.goto.side_effect = goto
+
+        @asynccontextmanager
+        async def visible_page(_identity):
+            try:
+                yield page
+            finally:
+                await page.close()
+
+        manager.visible_page = visible_page
+        manager.xhs_interaction.pause = AsyncMock()
         with (
             patch(
                 "app.browser.login._read_xhs_nickname",
                 new_callable=AsyncMock,
                 return_value="普通账号",
             ),
-            patch("app.browser.login.asyncio.sleep", new_callable=AsyncMock),
         ):
             logged, state, nickname = await interactive_xhs_login(manager, object())
 
@@ -114,6 +154,61 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(nickname, "普通账号")
         self.assertIn("web_session", state)
         self.assertEqual(visited, ["https://www.xiaohongshu.com/"])
+        context.close.assert_not_awaited()
+        page.close.assert_awaited_once()
+
+    async def test_rotated_guest_web_session_is_not_treated_as_logged_in(self):
+        manager = AsyncMock()
+        context = AsyncMock()
+        page = AsyncMock()
+        manager.context_for.return_value = context
+        context.cookies.side_effect = [
+            [{"name": "web_session", "value": "guest-session-before-0001"}],
+            [{"name": "web_session", "value": "guest-session-after-00002"}],
+        ]
+        context.storage_state.return_value = {
+            "cookies": [{
+                "name": "web_session",
+                "value": "guest-session-after-00002",
+            }],
+        }
+        page.url = "about:blank"
+        page.is_closed = MagicMock(side_effect=[False, False, True])
+        response_listener = {}
+
+        def on(event, listener):
+            if event == "response":
+                response_listener["handler"] = listener
+
+        page.on = MagicMock(side_effect=on)
+        page.remove_listener = MagicMock()
+
+        async def goto(url, **_kwargs):
+            page.url = url
+            handler = response_listener.get("handler")
+            if handler is not None:
+                await handler(self._user_me_response(guest=True))
+
+        page.goto.side_effect = goto
+
+        @asynccontextmanager
+        async def visible_page(_identity):
+            try:
+                yield page
+            finally:
+                await page.close()
+
+        manager.visible_page = visible_page
+        manager.xhs_interaction.pause = AsyncMock()
+
+        logged, state, nickname = await interactive_xhs_login(
+            manager, object(), timeout_seconds=10)
+
+        self.assertFalse(logged)
+        self.assertEqual(state, "")
+        self.assertEqual(nickname, "")
+        context.storage_state.assert_not_awaited()
+        page.close.assert_awaited_once()
 
 
 if __name__ == "__main__":

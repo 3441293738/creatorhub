@@ -15,12 +15,14 @@ import json
 import os
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urljoin
 
 from .douyin_im_pb import parse_conversations
 from .fetcher import fetch_videos
 from .ks_fetcher import fetch_ks_videos, fetch_ks_self_profile
 from .channels_fetcher import fetch_channels_works
 from .manager import BrowserManager
+from .xhs_dm import send_xhs_dm_page
 from .xhs_fetcher import fetch_xhs_notes
 from ..platforms.kuaishou import parse_self_user as parse_ks_self_user
 
@@ -58,13 +60,6 @@ _SELF_HOME = {
     "kuaishou": "https://www.kuaishou.com/",
 }
 _SELF_LINK_JS = {
-    # 侧栏「我」的链接(feed 卡片作者也是 /user/profile/,须按文本挑)
-    "xhs": """() => {
-        const as = [...document.querySelectorAll('a[href*="/user/profile/"]')];
-        const me = as.find(a => (a.textContent || '').trim() === '我');
-        const el = me || (as.length === 1 ? as[0] : null);
-        return el ? el.href : '';
-    }""",
     # 顶栏头像/用户区指向自己主页(正文卡片作者链接太多,只认头部区域)
     "kuaishou": """() => {
         for (const sel of ['header a[href*="/profile/"]',
@@ -84,9 +79,41 @@ async def _self_profile_link(mgr: BrowserManager, identity, platform: str
     返回 (绝对 URL, uid);拿不到返回 ("", "")。"""
     home = _SELF_HOME.get(platform)
     js = _SELF_LINK_JS.get(platform)
-    if not home or not js:
+    if not home or (platform != "xhs" and not js):
         return "", ""
     href = ""
+    if platform == "xhs":
+        try:
+            async with mgr.visible_page(identity) as page:
+                await page.goto(
+                    home, wait_until="domcontentloaded", timeout=30000)
+                for _ in range(6):
+                    anchors = page.locator('a[href*="/user/profile/"]')
+                    count = min(await anchors.count(), 24)
+                    sole = ""
+                    for index in range(count):
+                        anchor = anchors.nth(index)
+                        if not await anchor.is_visible():
+                            continue
+                        candidate = urljoin(
+                            home, await anchor.get_attribute("href") or "")
+                        if count == 1:
+                            sole = candidate
+                        text = (await anchor.inner_text()).strip()
+                        if text == "我":
+                            href = candidate
+                            break
+                    href = href or sole
+                    if href:
+                        break
+                    await mgr.xhs_interaction.pause(0.25, 0.55)
+        except Exception:
+            href = ""
+        m = re.search(r"/user/profile/([0-9a-zA-Z_-]+)", href)
+        uid = m.group(1) if m else ""
+        print(f"[hub-self] platform={platform} href={href!r} uid={uid}")
+        return href, uid
+
     page = await mgr.new_page(identity, block_media=True)
     try:
         await page.goto(home, wait_until="domcontentloaded", timeout=30000)
@@ -386,9 +413,9 @@ _FOLLOW_NAV = {
         },
     },
     "xhs": {
-        # ⚠️ xiaohongshu.com 顶栏有「关注」feed 标签,get_by_text 会点错;用 js: 精确点主页统计区
+        # 在 main/profile 统计区内按可见文案点击，避免顶栏「关注」feed 标签。
         "url": "https://www.xiaohongshu.com/user/profile/{uid}",
-        "open": {"following": ['js:关注'], "fan": ['js:粉丝']},
+        "open": {"following": ['xhs:关注'], "fan": ['xhs:粉丝']},
     },
     "kuaishou": {
         "url": "https://www.kuaishou.com/profile/{uid}",
@@ -423,26 +450,37 @@ _DOUYIN_OPEN_STAT_JS = """(label) => {
   return (el.tagName + ':' + (el.textContent || '').trim()).slice(0, 40);
 }"""
 
-# 小红书:主页统计里「关注/粉丝」文案会和顶栏导航「关注」撞,用 JS 只点「紧挨数字、且不在
-# 顶栏/侧栏」的那个统计项(点它才会弹出关注/粉丝列表抽屉,进而触发列表接口)。
-_XHS_OPEN_STAT_JS = """(label) => {
-  const bad = 'header,nav,[class*="nav"],[class*="header"],[class*="side"],[class*="channel"],[class*="tab"]';
-  const inChrome = (el) => !!el.closest(bad);
-  const cands = [...document.querySelectorAll('span,div,a')].filter(el => {
-    const t = (el.textContent || '').trim();
-    return (t === label || t === label + '数') && !inChrome(el) && el.children.length <= 1;
-  });
-  // 打分:父级文本里带数字(统计项形如「12 关注」)的优先
-  const scored = cands.map(el => {
-    const p = el.parentElement, pp = p && p.parentElement;
-    const near = ((p && p.textContent) || '') + ' ' + ((pp && pp.textContent) || '');
-    return { el, num: /\\d/.test(near) ? 1 : 0 };
-  }).sort((a, b) => b.num - a.num);
-  const pick = scored.length ? scored[0].el : null;
-  if (!pick) return false;
-  (pick.closest('[class*="interaction"],[class*="data-info"],[class*="count"],a,div') || pick).click();
-  return true;
-}"""
+async def _click_xhs_profile_stat(mgr: BrowserManager, page, label: str) -> bool:
+    """在主页内容区按语义定位统计项，通过 Playwright 可见点击打开列表。"""
+    scored = []
+    # 仅从正文/主页区域搜索，避免命中侧栏的「关注」信息流入口。
+    for selector in ("main", '[class*="profile"]'):
+        try:
+            root = page.locator(selector).first
+            if not await root.count() or not await root.is_visible():
+                continue
+            labels = root.get_by_text(label, exact=True)
+            for index in range(min(await labels.count(), 12)):
+                item = labels.nth(index)
+                if not await item.is_visible():
+                    continue
+                parent = item.locator("..")
+                nearby = (await parent.inner_text()).strip()
+                # 统计项通常是「12 关注」；纯「关注」更可能是导航或装饰文本。
+                score = 2 if re.search(r"\d", nearby) else 1
+                target = parent if score == 2 else item
+                scored.append((score, -index, target))
+        except Exception:
+            continue
+        if scored:
+            break
+    if not scored:
+        return False
+    target = max(scored, key=lambda row: (row[0], row[1]))[2]
+    await mgr.xhs_interaction.click_visible(target)
+    return True
+
+
 # 小红书关注/粉丝列表:数据渲染在弹层 DOM 里、不发独立 XHR(实测 api_seen 无列表接口),
 # 故点开后从弹层 DOM 抽用户。弹层里用户行可能是 /user/profile 锚点,也可能是 div(带 onclick)。
 # 返回 {modal, users, dbg}。dbg 在抽不到时打进日志,据真实结构写精确选择器。
@@ -526,10 +564,16 @@ _FOLLOW_PRECISE = {
 
 async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                         direction: str, known_uids: Set[str], settle_ms: int = 2000,
-                        max_scrolls: int = 40) -> Tuple[List[dict], str]:
+                        max_scrolls: int = 40, *, _xhs_visible: bool = False
+                        ) -> Tuple[List[dict], str]:
     """打开账号自己主页,切到「关注 / 粉丝」并滚动,拦截该页所有同域 XHR/GraphQL,
     启发式抽出用户对象。无公开接口,首版用于标定(日志打 api_seen)。
     返回 (归一后的用户 dict 列表, error)。"""
+    if platform == "xhs" and not _xhs_visible:
+        async with mgr.visible_action(identity):
+            return await fetch_follows(
+                mgr, identity, platform, uid, direction, known_uids,
+                settle_ms, max_scrolls, _xhs_visible=True)
     nav = _FOLLOW_NAV.get(platform, _FOLLOW_NAV["douyin"])
     uid = (uid or "").strip()
     self_url = ""
@@ -561,7 +605,12 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
     hit_urls: list = []                  # 真正吐出用户列表的接口(标定关键)
     api_seen: list = []
     error = ""
-    page = await mgr.new_page(identity, block_media=True)
+    page = await mgr.new_page(identity, block_media=platform != "xhs")
+    if platform == "xhs":
+        try:
+            await page.bring_to_front()
+        except Exception:
+            pass
 
     host = {"douyin": "douyin.com", "xhs": "xiaohongshu.com",
             "kuaishou": "kuaishou.com"}.get(platform, "douyin.com")
@@ -629,7 +678,10 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
             await page.wait_for_load_state("networkidle", timeout=15000)
         except Exception:
             pass
-        await page.wait_for_timeout(settle_ms)
+        if platform == "xhs":
+            await mgr.xhs_interaction.pause(0.25, 0.55)
+        else:
+            await page.wait_for_timeout(settle_ms)
         if platform == "douyin":
             # 标定:hydrate 后把关注/粉丝入口的真实标记打出来,别再盲猜选择器
             try:
@@ -648,9 +700,9 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                     print(f"[follow] douyin stat click {cand[5:]} → {clicked!r}")
                     if not clicked:
                         continue
-                elif cand.startswith("js:"):
-                    # 小红书:JS 精确点主页统计区的「关注/粉丝」(避开顶栏同名标签)
-                    clicked = await page.evaluate(_XHS_OPEN_STAT_JS, cand[3:])
+                elif cand.startswith("xhs:"):
+                    clicked = await _click_xhs_profile_stat(
+                        mgr, page, cand[4:])
                     if not clicked:
                         continue
                 elif cand.startswith("text="):
@@ -665,6 +717,10 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                     await el.click(timeout=4000)
             except Exception:
                 continue
+            if platform == "xhs":
+                await mgr.xhs_interaction.pause(0.25, 0.55)
+                opened = True
+                break
             if precise_hints:   # 等该方向接口(following/list 或 follower/list)回包来确认
                 try:
                     await page.wait_for_response(
@@ -678,7 +734,10 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                 await page.wait_for_timeout(settle_ms)
                 opened = True
                 break
-        await page.wait_for_timeout(settle_ms)
+        if platform == "xhs":
+            await mgr.xhs_interaction.pause(0.25, 0.55)
+        else:
+            await page.wait_for_timeout(settle_ms)
         # 小红书:边滚边从弹层 DOM 抽用户(数据不发独立 XHR);其余平台仍靠 XHR 拦截
         async def _xhs_scrape():
             nonlocal modal_seen, xhs_dbg
@@ -707,18 +766,27 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         for _ in range(max_scrolls):
             before = len(collected) + len(broad) + len(scraped)
             try:
-                # 找页面里「可滚动且内容最高」的容器(通常就是关注/粉丝弹窗列表)滚到底
-                await page.evaluate(
-                    "() => { let best=null,bh=0;"
-                    " document.querySelectorAll('div,ul,section,main').forEach(el=>{"
-                    "  const s=getComputedStyle(el);"
-                    "  if((s.overflowY==='auto'||s.overflowY==='scroll')"
-                    "     && el.scrollHeight>el.clientHeight+40 && el.scrollHeight>bh){best=el;bh=el.scrollHeight;}});"
-                    " if(best){best.scrollTop=best.scrollHeight;} window.scrollBy(0,3000); }")
-                await page.mouse.wheel(0, 3000)
+                if platform == "xhs":
+                    drawer = page.locator(
+                        '[role="dialog"],[class*="modal"],'
+                        '[class*="drawer"],[class*="user-list"]').first
+                    if await drawer.count() and await drawer.is_visible():
+                        await drawer.hover()
+                    await mgr.xhs_interaction.scroll_step(page)
+                else:
+                    # 其余平台保留原有列表容器滚动行为。
+                    await page.evaluate(
+                        "() => { let best=null,bh=0;"
+                        " document.querySelectorAll('div,ul,section,main').forEach(el=>{"
+                        "  const s=getComputedStyle(el);"
+                        "  if((s.overflowY==='auto'||s.overflowY==='scroll')"
+                        "     && el.scrollHeight>el.clientHeight+40 && el.scrollHeight>bh){best=el;bh=el.scrollHeight;}});"
+                        " if(best){best.scrollTop=best.scrollHeight;} window.scrollBy(0,3000); }")
+                    await page.mouse.wheel(0, 3000)
             except Exception:
                 pass
-            await page.wait_for_timeout(settle_ms)
+            if platform != "xhs":
+                await page.wait_for_timeout(settle_ms)
             await _xhs_scrape()
             if (len(collected) + len(broad) + len(scraped)) == before:
                 stagnant += 1
@@ -1027,9 +1095,15 @@ async def _fetch_im_user_info(page, sec_ids: list) -> Dict[str, dict]:
 
 
 async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
-                                 settle_ms: int = 2600, max_scrolls: int = 8
+                                 settle_ms: int = 2600, max_scrolls: int = 8,
+                                 *, _xhs_visible: bool = False
                                  ) -> Tuple[List[dict], str]:
     """打开私信页,拦截会话列表 XHR,启发式抽会话。无公开接口,首版用于标定。"""
+    if platform == "xhs" and not _xhs_visible:
+        async with mgr.visible_action(identity):
+            return await fetch_dm_conversations(
+                mgr, identity, platform, settle_ms, max_scrolls,
+                _xhs_visible=True)
     url = _DM_NAV.get(platform, _DM_NAV["douyin"])
     host = {"douyin": "douyin.com", "xhs": "xiaohongshu.com",
             "kuaishou": "kuaishou.com"}.get(platform, "douyin.com")
@@ -1045,7 +1119,12 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
     dm_init_raw = [b""]          # 抖音:get_message_by_init 的 protobuf 大包(会话全在这)
     im_profiles: Dict[str, dict] = {}  # uid -> {nickname, avatar, sec_uid},来自 im/user/info JSON
     error = ""
-    page = await mgr.new_page(identity, block_media=True)
+    page = await mgr.new_page(identity, block_media=platform != "xhs")
+    if platform == "xhs":
+        try:
+            await page.bring_to_front()
+        except Exception:
+            pass
 
     # ── WebSocket 探针(标定关键):若会话列表走 frontier-im WS,则 page.on("response")
     #    永远抓不到 —— 这一行日志能直接判定抖音私信的传输形态。
@@ -1182,7 +1261,10 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
         try:
             await page.wait_for_load_state("networkidle", timeout=15000)
         except Exception:
-            await page.wait_for_timeout(3000)
+            if platform == "xhs":
+                await mgr.xhs_interaction.pause(0.25, 0.55)
+            else:
+                await page.wait_for_timeout(3000)
         # 标定:枚举页面上所有像「私信/消息」的可点元素(真实 DOM),用来校准入口选择器,
         # 而不是继续盲猜。抖音私信入口是顶栏信封图标(多为 SVG + aria-label,无文字)。
         if platform == "douyin":
@@ -1284,7 +1366,7 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
         if platform in ("kuaishou", "xhs"):
             clicked_by = ""
             for cand in _DM_ENTRY:
-                if im_hit[0]:
+                if im_hit[0] or (platform == "xhs" and clicked_by):
                     break
                 try:
                     loc = (page.get_by_text(cand[5:], exact=False)
@@ -1299,31 +1381,28 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                         el = loc.nth(i)
                         if not await el.is_visible():
                             continue
-                        await el.click(timeout=3500)
+                        if platform == "xhs":
+                            await mgr.xhs_interaction.click_visible(el)
+                        else:
+                            await el.click(timeout=3500)
                         # 确认:等 IM 流量出现(最多 ~3.5s),没起来就试下一个候选
                         for _ in range(7):
-                            await page.wait_for_timeout(500)
+                            if platform == "xhs":
+                                await mgr.xhs_interaction.pause(0.2, 0.45)
+                            else:
+                                await page.wait_for_timeout(500)
                             if im_hit[0]:
                                 break
-                        if im_hit[0]:
+                        if im_hit[0] or platform == "xhs":
                             clicked_by = f"{cand}#{i}"
                             break
                     except Exception:
                         continue
             print(f"[dm] {platform} entry clicked_by="
                   f"{clicked_by or 'NONE(IM未起来)'} im_hit={im_hit[0]}")
-        # 小红书是 SPA:/im 直接 goto 会失败,但站内点「消息」链接是前端路由。
-        # 用 JS 点指向 /im 的锚点做 in-app 跳转(比 Playwright locator 更稳),再等会话接口。
+        # 小红书是 SPA:/im 直开不稳定；只用可见站内入口触发前端路由。
         if platform == "xhs":
-            try:
-                jumped = await page.evaluate(
-                    "() => { const a = document.querySelector('a[href*=\"/im\"]')"
-                    " || [...document.querySelectorAll('a,div,li')].find(e => /消息|私信/.test(e.textContent||'') && (e.textContent||'').trim().length<=4);"
-                    " if (a) { a.click(); return (a.getAttribute&&a.getAttribute('href'))||'clicked'; } return ''; }")
-                print(f"[dm] xhs im-entry jump={jumped!r}")
-                await page.wait_for_timeout(2500)
-            except Exception as e:
-                print(f"[dm] xhs im-entry jump failed: {e!r}")
+            await mgr.xhs_interaction.pause(0.25, 0.55)
         # IM SDK 异步初始化,显式等会话/消息接口回包(最多 ~22s),而不是死等固定时间
         try:
             await page.wait_for_response(
@@ -1336,19 +1415,26 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
             print(f"[dm] douyin im open im_hit={im_hit[0]} "
                   f"via={douyin_open_via or 'FAIL'} boxes={len(boxes or [])} "
                   f"url={page.url}")
-        await page.wait_for_timeout(settle_ms)
+        if platform == "xhs":
+            await mgr.xhs_interaction.pause(0.25, 0.55)
+        else:
+            await page.wait_for_timeout(settle_ms)
         for _ in range(max_scrolls):
             before = len(collected)
             try:
-                await page.mouse.wheel(0, 2500)
-                await page.evaluate(
-                    "() => { let b=null,h=0; document.querySelectorAll('div,ul,section').forEach(e=>{"
-                    " const s=getComputedStyle(e); if((s.overflowY==='auto'||s.overflowY==='scroll')"
-                    " && e.scrollHeight>e.clientHeight+40 && e.scrollHeight>h){b=e;h=e.scrollHeight;}});"
-                    " if(b)b.scrollTop=b.scrollHeight; }")
+                if platform == "xhs":
+                    await mgr.xhs_interaction.scroll_step(page)
+                else:
+                    await page.mouse.wheel(0, 2500)
+                    await page.evaluate(
+                        "() => { let b=null,h=0; document.querySelectorAll('div,ul,section').forEach(e=>{"
+                        " const s=getComputedStyle(e); if((s.overflowY==='auto'||s.overflowY==='scroll')"
+                        " && e.scrollHeight>e.clientHeight+40 && e.scrollHeight>h){b=e;h=e.scrollHeight;}});"
+                        " if(b)b.scrollTop=b.scrollHeight; }")
             except Exception:
                 pass
-            await page.wait_for_timeout(settle_ms)
+            if platform != "xhs":
+                await page.wait_for_timeout(settle_ms)
             if len(collected) == before:
                 break
         # wait_for_response 只等到响应头就返回,大包的 body 可能还在下载 —— 不等的话
@@ -1510,10 +1596,19 @@ async def _open_target_profile(mgr, identity, platform, target_uid, target_sec_u
     sec = target_sec_uid or target_uid
     url = _PROFILE_URL.get(platform, _PROFILE_URL["douyin"])
     url = url.format(sec=sec, uid=target_uid or sec)
-    ctx = await mgr.open_headed(identity)
-    page = await ctx.new_page()
+    ctx = (await mgr.context_for(identity) if platform == "xhs"
+           else await mgr.open_headed(identity))
+    page = (await mgr.new_page(identity, block_media=False)
+            if platform == "xhs" else await ctx.new_page())
     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    await page.wait_for_timeout(1800)
+    if platform == "xhs":
+        try:
+            await page.bring_to_front()
+        except Exception:
+            pass
+        await mgr.xhs_interaction.pause(0.25, 0.55)
+    else:
+        await page.wait_for_timeout(1800)
     return ctx, page
 
 
@@ -1554,7 +1649,8 @@ async def _follow_button(page) -> Tuple[Any, str]:
         return btn, ""
 
 
-async def _await_follow_button(page, timeout_ms: int = 12000) -> Tuple[Any, str]:
+async def _await_follow_button(page, timeout_ms: int = 12000,
+                               interaction=None) -> Tuple[Any, str]:
     """轮询等按钮出现:主页偶尔要好几秒才渲染出 user-info(空 title「的抖音」)。"""
     waited = 0
     while True:
@@ -1563,15 +1659,22 @@ async def _await_follow_button(page, timeout_ms: int = 12000) -> Tuple[Any, str]
             return btn, text
         if waited >= timeout_ms:
             return btn, text
-        await page.wait_for_timeout(500)
+        if interaction is None:
+            await page.wait_for_timeout(500)
+        else:
+            await interaction.pause(0.2, 0.45)
         waited += 500
 
 
-async def _wait_flip(page, want_following: bool, timeout_ms: int = 6000) -> str:
+async def _wait_flip(page, want_following: bool, timeout_ms: int = 6000,
+                     interaction=None) -> str:
     """等按钮文案翻到目标态,返回最后读到的文案(超时则返回未翻转的文案)。"""
     waited, text = 0, ""
     while waited < timeout_ms:
-        await page.wait_for_timeout(400)
+        if interaction is None:
+            await page.wait_for_timeout(400)
+        else:
+            await interaction.pause(0.18, 0.38)
         waited += 400
         _, text = await _follow_button(page)
         if text and _is_following(text) == want_following:
@@ -1579,14 +1682,17 @@ async def _wait_flip(page, want_following: bool, timeout_ms: int = 6000) -> str:
     return text
 
 
-async def _dismiss_confirm(page) -> bool:
+async def _dismiss_confirm(page, interaction=None) -> bool:
     """取关有时弹二次确认。只点按钮:'text=确定' 是子串匹配,会点中标题
     「确定要取消关注吗」这类纯文本节点,点了等于没点。"""
     for c in ("确定", "取消关注", "不再关注"):
         cc = await _first_visible(page, f'button:has-text("{c}")')
         if cc is not None:
             try:
-                await cc.click(timeout=2500)
+                if interaction is None:
+                    await cc.click(timeout=2500)
+                else:
+                    await interaction.click_visible(cc)
                 return True
             except Exception:
                 continue
@@ -1594,7 +1700,8 @@ async def _dismiss_confirm(page) -> bool:
 
 
 async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: str = "",
-                    target_sec_uid: str = "", unfollow: bool = False
+                    target_sec_uid: str = "", unfollow: bool = False, *,
+                    _xhs_visible: bool = False
                     ) -> Tuple[bool, str]:
     """打开目标主页,点「关注 / 已关注」按钮(UI 自动化,有头窗口更稳)。
 
@@ -1605,7 +1712,13 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
     首次点击常常打空:按钮已渲染但 React handler 还没绑上(和粉丝/作品/私信
     入口同一个 hydrate 病)。所以点不动就重点,而不是直接判失败。
     """
+    if platform == "xhs" and not _xhs_visible:
+        async with mgr.visible_action(identity):
+            return await do_follow(
+                mgr, identity, platform, target_uid, target_sec_uid, unfollow,
+                _xhs_visible=True)
     ctx = None
+    page = None
     want = "取关" if unfollow else "关注"
     want_following = not unfollow
     try:
@@ -1614,13 +1727,29 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
         if "passport" in page.url or "/login" in page.url:
             return False, "logged_out:账号未登录"
 
-        btn, text = await _await_follow_button(page)
+        interaction = mgr.xhs_interaction if platform == "xhs" else None
+        btn, text = await _await_follow_button(
+            page, interaction=interaction)
         if btn is None or not text:
             return False, f"未找到关注按钮(主页未渲染/改版?url={page.url})"
         if _is_following(text) == want_following:      # 已是目标状态
             return True, ""
 
         after = text
+        if platform == "xhs":
+            try:
+                await interaction.click_visible(btn)
+            except Exception as e:
+                return False, f"{want}点击失败: {e!r}"
+            if unfollow:
+                await interaction.pause(0.2, 0.45)
+                await _dismiss_confirm(page, interaction=interaction)
+            after = await _wait_flip(
+                page, want_following, interaction=interaction)
+            if after and _is_following(after) == want_following:
+                return True, ""
+            return False, (f"{want}结果未确认:按钮仍是「{after}」;"
+                           "为避免重复操作，本次不再点击")
         for attempt in range(3):
             try:
                 await btn.click(timeout=4000)
@@ -1645,7 +1774,9 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
         return False, f"{want}异常: {e!r}"
     finally:
         try:
-            if ctx is not None:
+            if page is not None:
+                await page.close()
+            if ctx is not None and platform != "xhs":
                 await ctx.close()
         except Exception:
             pass
@@ -1702,9 +1833,16 @@ async def send_dm_api(mgr: BrowserManager, identity, conv_id: str,
 
 
 async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str = "",
-                  target_sec_uid: str = "", text: str = "") -> Tuple[bool, str]:
+                   target_sec_uid: str = "", text: str = "", *,
+                   on_submit: Any = None,
+                   _xhs_visible: bool = False) -> Tuple[bool, str]:
     """给目标发私信(UI 自动化):打开对方主页 → 点「私信」→ 输入 → 发送。
     ⚠️ 各平台私信入口/选择器差异大,首版尽力而为,失败有诊断。"""
+    if platform == "xhs" and not _xhs_visible:
+        async with mgr.visible_action(identity):
+            return await send_dm(
+                mgr, identity, platform, target_uid, target_sec_uid, text,
+                on_submit=on_submit, _xhs_visible=True)
     text = (text or "").strip()
     if not text:
         return False, "空内容"
@@ -1712,22 +1850,41 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
     url = _DM_ENTRY_URL.get(platform, _DM_ENTRY_URL["douyin"]).format(
         sec=sec, uid=target_uid or sec)
     ctx = None
+    page = None
     try:
-        ctx = await mgr.open_headed(identity)
-        page = await ctx.new_page()
+        ctx = (await mgr.context_for(identity) if platform == "xhs"
+               else await mgr.open_headed(identity))
+        page = (await mgr.new_page(identity, block_media=False)
+                if platform == "xhs" else await ctx.new_page())
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(1800)
+        if platform == "xhs":
+            try:
+                await page.bring_to_front()
+            except Exception:
+                pass
+            await mgr.xhs_interaction.pause(0.25, 0.55)
+        else:
+            await page.wait_for_timeout(1800)
         if "passport" in page.url or "/login" in page.url:
             return False, "logged_out:账号未登录"
+        if platform == "xhs":
+            return await send_xhs_dm_page(
+                mgr, page, text, on_submit=on_submit)
         # 点开「私信」入口
         opened = False
         for label in ("私信", "发消息", "发私信"):
             try:
                 el = page.get_by_text(label, exact=False).first
                 if await el.count():
-                    await el.click(timeout=4000)
+                    if platform == "xhs":
+                        await mgr.xhs_interaction.click_visible(el)
+                    else:
+                        await el.click(timeout=4000)
                     opened = True
-                    await page.wait_for_timeout(1500)
+                    if platform == "xhs":
+                        await mgr.xhs_interaction.pause(0.25, 0.55)
+                    else:
+                        await page.wait_for_timeout(1500)
                     break
             except Exception:
                 continue
@@ -1743,15 +1900,25 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
         if editor is None:
             return False, ("未找到私信输入框(私信入口可能需手动打开/页面改版)。"
                            f"opened_entry={opened}")
-        await editor.click(timeout=8000)
-        await page.keyboard.type(text, delay=35)
-        await page.wait_for_timeout(500)
+        if platform == "xhs":
+            if len(text) <= 40:
+                await mgr.xhs_interaction.type_short(editor, text)
+            else:
+                await mgr.xhs_interaction.insert_long(
+                    editor, text, page=page)
+        else:
+            await editor.click(timeout=8000)
+            await page.keyboard.type(text, delay=35)
+            await page.wait_for_timeout(500)
         sent = False
         for sel in _DM_SEND:
             try:
                 btn = page.locator(sel).first
                 if await btn.count() and await btn.is_enabled():
-                    await btn.click(timeout=3000)
+                    if platform == "xhs":
+                        await mgr.xhs_interaction.click_visible(btn)
+                    else:
+                        await btn.click(timeout=3000)
                     sent = True
                     break
             except Exception:
@@ -1762,13 +1929,18 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
                 sent = True
             except Exception:
                 pass
-        await page.wait_for_timeout(1200)
+        if platform == "xhs":
+            await mgr.xhs_interaction.pause(0.25, 0.55)
+        else:
+            await page.wait_for_timeout(1200)
         return (sent, "" if sent else "未找到发送方式")
     except Exception as e:
         return False, f"发私信异常: {e!r}"
     finally:
         try:
-            if ctx is not None:
+            if page is not None:
+                await page.close()
+            if ctx is not None and platform != "xhs":
                 await ctx.close()
         except Exception:
             pass

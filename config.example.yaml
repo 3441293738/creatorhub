@@ -8,6 +8,9 @@ engine:
   worker_pool_size: 2             # 并发下载数(跨作品)
   scan_concurrency: 2             # 同时抓取的目标数(并发浏览器上下文)
   block_media_resources: false    # 屏蔽图片/视频/字体加载(省带宽但会打断抖音 SPA 致拿不到数据,建议保持 false)
+  xhs_browser_mode: auto          # auto=优先每账号系统 Chrome CDP;cdp=严格 CDP;playwright=兼容旧浏览器
+  xhs_cdp_idle_seconds: 900       # 小红书专用 Chrome 空闲回收秒数;0=仅按 LRU/退出回收
+  xhs_publish_mode: browser       # browser=页面发布;api=显式 API 兼容模式
   monitor_initial_backfill_count: 0  # 新增博主时回填最近 N 条;0=只下载订阅后的新作品,-1=尽可能全量
   comment_recent_works: 5         # 监控评论时,只看每个目标最近 N 条作品
   comment_recent_days: 7          # 且仅限最近多少天内发布的作品
@@ -41,7 +44,7 @@ engine:
   # ── 写操作风控闸(取关/回关/私信 + 自动评论)──
   comment_hourly_cap_per_account: 10   # 每账号每小时自动评论上限(0=不限)
   comment_risk_cooldown_seconds: 21600 # 平台拒绝/验证后暂停该账号写操作(默认6小时)
-  xhs_comment_write_mode: api          # api=审核后自动发布;manual=只保存草稿
+  xhs_comment_write_mode: browser      # browser=页面发布;api=显式兼容;manual=只保存草稿
   xhs_comment_review_before_publish: true # true=人工审核后自动发布;false=生成后直接发布
   action_daily_cap_per_account: 20     # 每账号每日写操作(关注/取关/私信)总上限(0=不限)
   action_hourly_cap_per_account: 6     # 每账号每小时写操作上限(0=不限)

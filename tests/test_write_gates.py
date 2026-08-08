@@ -16,6 +16,7 @@ from app.models import (
     DmConversation,
     DouyinAccount,
     PublishTask,
+    RiskEvent,
 )
 from sqlmodel import select
 
@@ -104,6 +105,18 @@ class WriteGateTests(unittest.TestCase):
             task = AccountActionTask(
                 platform="douyin", account_id=account_id, action="follow",
                 target_uid="fixture-user", status="pending",
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            return task.id
+
+    def _xhs_dm_task(self, account_id):
+        with db.get_session() as session:
+            task = AccountActionTask(
+                platform="xhs", account_id=account_id, action="send_dm",
+                target_uid="fixture-user", content="唯一消息",
+                status="pending",
             )
             session.add(task)
             session.commit()
@@ -282,6 +295,32 @@ class WriteGateTests(unittest.TestCase):
         with db.get_session() as session:
             self.assertEqual(session.get(AccountActionTask, task_id).status, "pending")
 
+    def test_xhs_dm_uncertain_is_not_retried_or_recorded_as_risk_failure(self):
+        account_id = self._account(platform="xhs")
+        task_id = self._xhs_dm_task(account_id)
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        async def ambiguous(*_args, **kwargs):
+            kwargs["on_submit"]()
+            with db.get_session() as session:
+                self.assertEqual(
+                    session.get(AccountActionTask, task_id).error,
+                    "write_submitted:browser",
+                )
+            return False, "write_uncertain:发送后连接中断"
+
+        with patch("app.engine.monitor.send_dm", ambiguous):
+            result = asyncio.run(engine.execute_action_task(task_id))
+
+        self.assertFalse(result["ok"])
+        with db.get_session() as session:
+            task = session.get(AccountActionTask, task_id)
+            self.assertEqual(task.status, "uncertain")
+            self.assertEqual(task.method, "browser")
+            self.assertIsNone(task.scheduled_at)
+            self.assertIsNone(task.done_at)
+            self.assertEqual(session.exec(select(RiskEvent)).all(), [])
+
     def test_publish_risk_response_returns_task_to_pending(self):
         account_id = self._account()
         task_id = self._publish_task(account_id)
@@ -318,6 +357,32 @@ class WriteGateTests(unittest.TestCase):
             self.assertEqual(task.status, "pending")
             self.assertIsNotNone(task.scheduled_at)
             self.assertEqual(account.status, "invalid")
+
+    def test_xhs_publish_uncertain_is_not_retried_or_recorded_as_done(self):
+        account_id = self._account(platform="xhs")
+        task_id = self._publish_task(account_id, platform="xhs")
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        calls = []
+
+        async def ambiguous(*_args, **kwargs):
+            calls.append(kwargs)
+            kwargs["on_submit"]()
+            with db.get_session() as session:
+                self.assertEqual(
+                    session.get(PublishTask, task_id).error,
+                    "write_submitted:browser")
+            return False, "", "write_uncertain:发布后连接中断"
+
+        with patch("app.engine.monitor.publish_xhs", ambiguous):
+            result = asyncio.run(engine.publish_task(task_id))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(calls[0]["mode"], "browser")
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            self.assertEqual(task.status, "uncertain")
+            self.assertIsNone(task.done_at)
+            self.assertIsNone(task.scheduled_at)
 
     def test_disabled_risk_controller_does_not_defer_rejected_publish(self):
         self.cfg.risk_control.enabled = False
@@ -387,16 +452,33 @@ class WriteGateTests(unittest.TestCase):
                 account_id=account_id, action="follow", status="doing")
             publish = PublishTask(
                 account_id=account_id, media_json="[]", status="publishing")
+            submitted_comment = CommentTask(
+                platform="xhs", account_id=account_id, aweme_id="submitted-note",
+                content="submitted", status="doing",
+                error="write_submitted:browser")
+            submitted_publish = PublishTask(
+                platform="xhs", account_id=account_id, media_json="[]",
+                status="publishing", error="write_submitted:browser")
+            submitted_action = AccountActionTask(
+                platform="xhs", account_id=account_id, action="send_dm",
+                target_uid="fixture-user", content="唯一消息", status="doing",
+                error="write_submitted:browser")
             session.add(comment)
             session.add(action)
             session.add(publish)
+            session.add(submitted_comment)
+            session.add(submitted_publish)
+            session.add(submitted_action)
             session.commit()
             comment_id, action_id, publish_id = comment.id, action.id, publish.id
+            submitted_comment_id = submitted_comment.id
+            submitted_publish_id = submitted_publish.id
+            submitted_action_id = submitted_action.id
 
         engine = MonitorEngine(self.cfg, _BrowserStub())
         recovered = engine.recover_interrupted_tasks(now=now)
 
-        self.assertEqual(recovered, 3)
+        self.assertEqual(recovered, 6)
         with db.get_session() as session:
             rows = [
                 session.get(CommentTask, comment_id),
@@ -406,6 +488,15 @@ class WriteGateTests(unittest.TestCase):
             for row in rows:
                 self.assertEqual(row.status, "pending")
                 self.assertEqual(row.scheduled_at, now + timedelta(minutes=5))
+            submitted_rows = [
+                session.get(CommentTask, submitted_comment_id),
+                session.get(PublishTask, submitted_publish_id),
+                session.get(AccountActionTask, submitted_action_id),
+            ]
+            for row in submitted_rows:
+                self.assertEqual(row.status, "uncertain")
+                self.assertIsNone(row.scheduled_at)
+                self.assertIn("重启", row.error)
 
     def test_legacy_active_window_check_uses_account_timezone(self):
         self.cfg.engine.quiet_hours_enabled = True
@@ -529,7 +620,59 @@ class WriteGateTests(unittest.TestCase):
             self.assertEqual(task.status, "draft")
             self.assertEqual(task.method, "manual")
 
+    def test_xhs_comment_defaults_to_browser_page_write(self):
+        from app.platforms.xhs.browser_writes import XhsWriteOutcome
+
+        account_id = self._account(platform="xhs")
+        task_id = self._xhs_comment_task(account_id)
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        def unexpected_api(*_args, **_kwargs):
+            raise AssertionError("default browser mode must not construct API client")
+
+        engine._xhs_client = unexpected_api
+
+        async def posted(*_args, **_kwargs):
+            return XhsWriteOutcome("success", result="comment-fixture")
+
+        with patch("app.engine.monitor.comment_xhs_browser", posted):
+            result = asyncio.run(engine.execute_comment_task(task_id))
+
+        self.assertTrue(result["ok"])
+        with db.get_session() as session:
+            task = session.get(CommentTask, task_id)
+            self.assertEqual(task.status, "done")
+            self.assertEqual(task.method, "browser")
+            self.assertEqual(task.result, "comment-fixture")
+
+    def test_xhs_comment_uncertain_stops_without_retry(self):
+        from app.platforms.xhs.browser_writes import XhsWriteOutcome
+
+        account_id = self._account(platform="xhs")
+        task_id = self._xhs_comment_task(account_id)
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        async def ambiguous(*_args, **kwargs):
+            kwargs["on_submit"]()
+            with db.get_session() as session:
+                self.assertEqual(
+                    session.get(CommentTask, task_id).error,
+                    "write_submitted:browser")
+            return XhsWriteOutcome("uncertain", error="发送后连接中断")
+
+        with patch("app.engine.monitor.comment_xhs_browser", ambiguous):
+            result = asyncio.run(engine.execute_comment_task(task_id))
+
+        self.assertFalse(result["ok"])
+        with db.get_session() as session:
+            task = session.get(CommentTask, task_id)
+            self.assertEqual(task.status, "uncertain")
+            self.assertEqual(task.method, "browser")
+            self.assertIsNone(task.done_at)
+            self.assertIsNone(task.scheduled_at)
+
     def test_xhs_rule_creates_review_draft_then_auto_publishes_after_approval(self):
+        self.cfg.engine.xhs_comment_write_mode = "api"
         account_id = self._account(platform="xhs")
         with db.get_session() as session:
             rule = CommentRule(

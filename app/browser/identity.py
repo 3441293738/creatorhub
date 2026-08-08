@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
 import uuid
@@ -74,10 +75,18 @@ class Identity:
     geo_lon: float = 0.0
     # 迁移桥:首次为存量账号创建持久 profile 时,把这些登录态 Cookie 注入进去。
     bridge_states: tuple = ()
+    # 仅用于选择浏览器后端；放在末尾保持现有位置参数构造兼容。
+    platform: str = ""
 
     @property
     def key(self):
-        return self.account_id if self.account_id is not None else "_anon"
+        if self.account_id is not None:
+            return self.account_id
+        # Concurrent fresh-login flows each own a different temporary profile.
+        # A single ``_anon`` key would reuse or close another login's Chrome.
+        profile = os.path.normcase(str(Path(self.profile_dir).resolve()))
+        digest = hashlib.sha256(profile.encode("utf-8")).hexdigest()[:16]
+        return f"_anon:{digest}"
 
     @property
     def geolocation(self) -> dict:
@@ -94,6 +103,7 @@ class Identity:
                                    getattr(acc, "creator_storage_state", "")) if s)
         return cls(
             account_id=acc.id, profile_dir=pdir,
+            platform=getattr(acc, "platform", "") or "",
             identity_mode=getattr(acc, "identity_mode", "legacy") or "legacy",
             proxy=acc.proxy or "",
             ua=acc.ua or default_ua,

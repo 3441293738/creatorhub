@@ -194,7 +194,7 @@ class PublishTask(SQLModel, table=True):
     visibility: str = "public"                         # 抖音:public 公开 | friends 好友可见 | private 仅自己可见
     allow_save: bool = True                            # 抖音:是否允许他人保存(下载)
     scheduled_at: Optional[datetime] = None            # 定时发布时间(空=尽快发)
-    status: str = "pending"        # pending | publishing | done | failed | canceled
+    status: str = "pending"        # pending | publishing | uncertain | done | failed | canceled
     result_url: str = ""           # 发布成功后的笔记链接(能取到则填)
     error: str = ""
     source_platform: str = ""      # 来源(如 douyin),跨平台转发时填
@@ -319,11 +319,11 @@ class CommentTask(SQLModel, table=True):
     target_text: str = ""                                 # 目标评论原文(定位回复目标)
     content: str = ""                                     # 已渲染好的文案
     scheduled_at: Optional[datetime] = None               # 计划发送时间(错峰)
-    # draft=草稿待审(人工通过后才转 pending);pending=待发;其余为执行态
-    status: str = "pending"        # draft | pending | doing | done | failed | canceled
+    # draft=草稿待审;uncertain=已提交但未取得明确结果,不可自动重试
+    status: str = "pending"        # draft | pending | doing | uncertain | done | failed | canceled
     result: str = ""               # 成功后的评论 id / 链接
     error: str = ""
-    method: str = ""               # 实际走的通道:api | browser
+    method: str = ""               # 实际走的通道:manual | api | browser
     created_at: datetime = Field(default_factory=datetime.utcnow)
     done_at: Optional[datetime] = None
 
@@ -433,7 +433,7 @@ class AccountActionTask(SQLModel, table=True):
     conv_id: str = ""                 # send_dm:会话 id(可空,用 target_uid 新开)
     content: str = ""                 # send_dm 的文案
     scheduled_at: Optional[datetime] = None
-    status: str = "pending"        # draft | pending | doing | done | failed | canceled
+    status: str = "pending"        # draft | pending | doing | done | failed | uncertain | canceled
     result: str = ""
     error: str = ""
     method: str = ""               # 实际走的通道:browser

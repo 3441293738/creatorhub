@@ -42,6 +42,10 @@ class EngineConfig:
     # ── 多账号风控隔离 ──
     profiles_dir: str = "./data/profiles"   # 每账号持久化浏览器 profile 根目录
     max_live_contexts: int = 6              # 同时常驻的浏览器 context 上限(LRU 驱逐,控内存)
+    # 小红书浏览器:默认优先连接 CreatorHub 管理的每账号系统 Chrome CDP。
+    xhs_browser_mode: str = "auto"          # auto | cdp | playwright
+    xhs_cdp_idle_seconds: int = 900          # 0=仅按 LRU、显式关闭或程序退出回收
+    xhs_publish_mode: str = "browser"       # browser | api(API 仅为显式兼容模式)
     active_accounts: int = 3                # 同一时刻最多并发活跃的账号数(错峰)
     scan_jitter: float = 0.15              # 扫描间隔随机抖动比例(±15%),消除整点齐发特征
     route_download_via_proxy: bool = True   # 媒体下载是否走账号代理(避免 CDN 拉流暴露真实 IP)
@@ -51,8 +55,8 @@ class EngineConfig:
     comment_jitter: float = 0.4              # 评论发送时间额外抖动比例(±40%),更像真人
     comment_hourly_cap_per_account: int = 10  # 每账号每小时自动评论上限(比日上限更贴人类节律),0=不限
     comment_risk_cooldown_seconds: int = 21600  # 平台拒绝/验证后暂停该账号写操作(默认6小时)
-    # 小红书评论发布通道: api=审核后自动发布, manual=只保留草稿不调用发布接口。
-    xhs_comment_write_mode: str = "api"  # api | manual
+    # 小红书评论发布通道:browser=页面操作;api=显式兼容;manual=只保留草稿。
+    xhs_comment_write_mode: str = "browser"  # browser | api | manual
     # true=先存草稿,人工点击“通过”后由队列自动发布; false=生成后直接排队发布。
     xhs_comment_review_before_publish: bool = True
     # 抖音发评论用有头浏览器(弹真实窗口):抖音对无头写操作常降级/拦截,有头更稳,

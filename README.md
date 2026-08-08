@@ -31,7 +31,7 @@ CreatorHub 使用 Python + FastAPI 提供统一 Web 界面，用于管理账号�
 - Python 3.10+
 - 桌面环境（扫码登录时需要弹出浏览器）
 - Google Chrome 稳定版（可选，但小红书扫码登录建议安装）
-- Node.js 18+（仅小红书发布需要）
+- Node.js 18+（仅启用小红书 `api` 发布兼容模式时需要）
 - 系统 ffmpeg（可选；未安装时自动使用 Python 依赖附带的 ffmpeg）
 
 ### 一键启动
@@ -62,7 +62,7 @@ chmod +x start.sh
 http://127.0.0.1:8000
 ```
 
-> **小红书登录建议：** 尽量使用本机系统中已安装的稳定版 Google Chrome。CreatorHub 会优先调用系统 Chrome，并为每个账号使用独立的持久化 Profile，不会复用个人 Chrome 的默认 Profile；未安装 Chrome 时会自动回退到 Playwright Chromium，功能仍可使用，但更容易遇到平台设备安全验证。
+> **小红书登录建议：** 尽量使用本机系统中已安装的稳定版 Google Chrome。CreatorHub 会优先通过 CDP 启动系统 Chrome，并为每个账号使用独立的持久化 Profile，不会读取或复用个人 Chrome 的日常 Profile；未安装 Chrome 时会自动回退到可见的 Playwright Chromium，功能仍可使用，但更容易遇到平台设备安全验证。
 
 常用命令：
 
@@ -96,7 +96,7 @@ python selftest.py
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-使用小红书发布功能时，还需安装 Node.js 依赖：
+仅当显式启用小红书 API 发布兼容模式时，才需安装 Node.js 依赖：
 
 ```bash
 npm install
@@ -159,6 +159,16 @@ npm install
 - 小红书支持图集、视频和定时发布。
 - 抖音、快手和视频号通过对应创作平台发布。
 - 已下载的抖音作品可转发到小红书或视频号，小红书作品可转发到抖音；发布前可修改标题、正文和话题。
+
+### 小红书独立 Chrome CDP 模式
+
+- 默认 `xhs_browser_mode: auto`：每个小红书账号启动一个独立、可见的系统 Chrome CDP 会话，并长期复用该账号自己的 Profile、Cookie、缓存和本地存储。
+- 项目专用 Profile 与用户平时打开 Chrome 使用的默认 Profile 完全分开；请勿同时用其他 Chrome 进程打开项目的账号 Profile。
+- 页面任务加载完整的图片、字体和媒体资源；搜索、滚动、输入、发布和评论统一走可见页面控件，且整台机器同一时刻只执行一个小红书可见操作。
+- 机器未安装稳定版 Chrome 时，`auto` 会回退到可见的 Playwright Chromium；账号列表会显示实际后端和回退原因。`cdp` 为严格模式，Chrome 缺失或 Profile 冲突时直接报错。
+- 账号代理支持 HTTP、HTTPS、SOCKS5 及账号密码认证。代理不可连接或认证失败时按失败关闭处理，不会静默改走本机直连；建议同一账号长期保持稳定出口。
+- 小红书发布和评论默认使用 `browser` 页面模式。提交按钮只点击一次；提交后若浏览器连接中断或缺少成功证据，任务会标记为“结果待确认”，不会自动重试，需先到平台核对。
+- 如需恢复旧兼容行为，可显式设置 `xhs_browser_mode: playwright`、`xhs_publish_mode: api`、`xhs_comment_write_mode: api`（或 `manual` 只保留草稿）。
 
 ### 4. 本账号与通知
 

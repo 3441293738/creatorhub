@@ -40,7 +40,7 @@ from ..platforms.xhs import (parse_note_brief, parse_note_detail,
                    flatten_comments as flatten_xhs_comments,
                    parse_self_user as parse_xhs_self_user,
                    XhsApiClient, XhsApiError, cookie_str_from_state, has_a1,
-                   publish_xhs, creator_check)
+                   publish_xhs, creator_check, comment_xhs_browser)
 from ..platforms.kuaishou import (parse_ks_feed, parse_ks_comment,
                    flatten_ks_comments, parse_self_user as parse_ks_self_user,
                    publish_kuaishou)
@@ -64,6 +64,7 @@ from ..settings import get_setting
 from .downloader import Downloader
 
 MAX_AUTO_RETRY = 3
+_BROWSER_SUBMIT_MARKER = "write_submitted:browser"
 
 log = logging.getLogger("creatorhub.engine")
 
@@ -209,14 +210,39 @@ class MonitorEngine:
                     (PublishTask, "publishing")):
                 rows = s.exec(select(model).where(model.status == transient)).all()
                 for row in rows:
-                    row.status = "pending"
-                    row.scheduled_at = scheduled_at
-                    row.error = "服务重启后已恢复到待执行队列"
+                    submitted = (
+                        getattr(row, "platform", "") == "xhs"
+                        and str(getattr(row, "error", "") or "")
+                        .startswith(_BROWSER_SUBMIT_MARKER)
+                    )
+                    if submitted:
+                        row.status = "uncertain"
+                        row.scheduled_at = None
+                        if hasattr(row, "done_at"):
+                            row.done_at = None
+                        row.error = (
+                            "服务重启前浏览器已进入提交边界，结果需到平台核对；"
+                            "任务不会自动重试")
+                    else:
+                        row.status = "pending"
+                        row.scheduled_at = scheduled_at
+                        row.error = "服务重启后已恢复到待执行队列"
                     s.add(row)
                     recovered += 1
             if recovered:
                 s.commit()
         return recovered
+
+    @staticmethod
+    def _mark_browser_submit(model, task_id: int) -> None:
+        """Durably mark the conservative no-retry boundary before one click."""
+        with get_session() as s:
+            row = s.get(model, task_id)
+            if row is None:
+                raise RuntimeError("待提交任务已不存在")
+            row.error = _BROWSER_SUBMIT_MARKER
+            s.add(row)
+            s.commit()
 
     async def stop(self):
         self._running = False
@@ -359,13 +385,18 @@ class MonitorEngine:
     def _xhs_comment_write_mode(self) -> str:
         """Return the explicitly selected XHS comment write mode.
 
-        Direct signed comment POSTs are opt-in.  An unknown or missing value
-        is deliberately treated as manual so an older config cannot silently
-        re-enable the risky path.
+        Browser page writes are the default. Direct signed comment POSTs stay
+        opt-in, while ``manual`` keeps the existing draft-only workflow.
         """
-        mode = str(getattr(self.cfg.engine, "xhs_comment_write_mode", "manual")
-                   or "manual").strip().lower()
-        return mode if mode == "api" else "manual"
+        mode = str(getattr(self.cfg.engine, "xhs_comment_write_mode", "browser")
+                   or "browser").strip().lower()
+        return mode if mode in {"browser", "api", "manual"} else "browser"
+
+    def _xhs_publish_mode(self) -> str:
+        """Use visible page publishing unless API compatibility is explicit."""
+        mode = str(getattr(self.cfg.engine, "xhs_publish_mode", "browser")
+                   or "browser").strip().lower()
+        return mode if mode in {"browser", "api"} else "browser"
 
     def _write_pause_error(self, account_id) -> str:
         """Return a persisted account write pause, clearing an expired one."""
@@ -403,10 +434,24 @@ class MonitorEngine:
             log.exception("risk event pruning failed for %s", prune_day.isoformat())
             return 0
 
+    async def _collect_idle_browser_sessions(self, now: float | None = None) -> int:
+        """Reuse the main scheduler to close idle owned XHS Chrome sessions."""
+        collector = getattr(self.browser, "collect_idle_cdp", None)
+        if not callable(collector):
+            return 0
+        try:
+            return int(await collector(now=now))
+        except Exception:
+            log.exception("idle XHS CDP collection failed")
+            return 0
+
     async def _loop(self):
         while self._running:
             try:
-                self._prune_risk_events_if_due()
+                sampled_at = datetime.utcnow()
+                sampled_epoch = time.time()
+                self._prune_risk_events_if_due(sampled_at)
+                await self._collect_idle_browser_sessions(sampled_epoch)
                 await self._scan_once()
                 await self._scan_comment_watches()
                 await self._scan_danmaku_watches()
@@ -2098,10 +2143,16 @@ class MonitorEngine:
             return await self._finish_publish(
                 task_id, False, "", "该账号未完成小红书「创作者登录」,请先在账号页点「创作者登录」")
 
+        xhs_mode = self._xhs_publish_mode()
         try:
             ok, url, err = await publish_xhs(self.browser, identity, state, media_type,
                                              title, desc, files, topics=topics,
-                                             headed=True)
+                                             headed=True,
+                                             mode=xhs_mode,
+                                             on_submit=(
+                                                 lambda: self._mark_browser_submit(
+                                                     PublishTask, task_id)
+                                                 if xhs_mode == "browser" else None))
         except Exception as e:
             ok, url, err = False, "", f"发布异常: {e!r}"
         return await self._finish_publish(task_id, ok, url, err)
@@ -2109,7 +2160,9 @@ class MonitorEngine:
     async def _finish_publish(self, task_id, ok, url, err, platform="xhs") -> dict:
         account_id = None
         failure = None
-        if not ok:
+        uncertain = (not ok and isinstance(err, str)
+                     and err.startswith("write_uncertain:"))
+        if not ok and not uncertain:
             with get_session() as s:
                 task = s.get(PublishTask, task_id)
                 account_id = task.account_id if task else None
@@ -2123,6 +2176,12 @@ class MonitorEngine:
                 if ok:
                     t.status = "done"
                     t.done_at = datetime.utcnow()
+                elif uncertain:
+                    # Submission crossed the click boundary but success evidence
+                    # was lost.  Never enqueue it again automatically.
+                    t.status = "uncertain"
+                    t.scheduled_at = None
+                    t.done_at = None
                 elif failure and failure.controlled and failure.category in {
                         RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH}:
                     self._defer_row(t, err, failure.next_allowed_at)
@@ -2315,7 +2374,7 @@ class MonitorEngine:
             return {"ok": False, "error": pause_error}
 
         xhs_manual_only = (rf["platform"] == "xhs"
-                           and self._xhs_comment_write_mode() != "api")
+                           and self._xhs_comment_write_mode() == "manual")
         xhs_review_required = (rf["platform"] == "xhs"
                                and bool(getattr(
                                    self.cfg.engine,
@@ -2877,15 +2936,30 @@ class MonitorEngine:
                         ok, err = await send_dm(self.browser, identity, platform,
                                                 target_uid, target_sec_uid, content)
                 else:
-                    ok, err = await send_dm(self.browser, identity, platform,
-                                            target_uid, target_sec_uid, content)
+                    if platform == "xhs":
+                        ok, err = await send_dm(
+                            self.browser, identity, platform,
+                            target_uid, target_sec_uid, content,
+                            on_submit=lambda: self._mark_browser_submit(
+                                AccountActionTask, task_id),
+                        )
+                    else:
+                        ok, err = await send_dm(
+                            self.browser, identity, platform,
+                            target_uid, target_sec_uid, content)
             else:
                 ok, err = False, f"未知动作 {action}"
         except Exception as e:
             ok, err = False, f"{e!r}"
 
         kind = OperationKind.DM if action == "send_dm" else OperationKind.SOCIAL
-        failure = None if ok else self.risk.record_failure(
+        uncertain = (
+            not ok
+            and platform == "xhs"
+            and action == "send_dm"
+            and str(err or "").startswith("write_uncertain:")
+        )
+        failure = None if ok or uncertain else self.risk.record_failure(
             account_id, kind, err)
         with get_session() as s:
             t = s.get(AccountActionTask, task_id)
@@ -2893,6 +2967,10 @@ class MonitorEngine:
             if t:
                 if ok:
                     t.status = "done"
+                elif uncertain:
+                    t.status = "uncertain"
+                    t.scheduled_at = None
+                    t.done_at = None
                 elif failure and failure.controlled and failure.category in {
                         RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH}:
                     self._defer_row(t, err, failure.next_allowed_at)
@@ -3010,13 +3088,15 @@ class MonitorEngine:
             s.add(t); s.commit()
 
         ok, result, err, method = False, "", "", ""
-        manual_only = platform == "xhs" and self._xhs_comment_write_mode() != "api"
+        uncertain = False
+        xhs_mode = self._xhs_comment_write_mode()
+        manual_only = platform == "xhs" and xhs_mode == "manual"
         try:
             if platform == "xhs":
-                method = "manual" if manual_only else "api"
+                method = xhs_mode
                 if manual_only:
                     err = "小红书评论默认转人工发布草稿;未调用评论发布接口"
-                else:
+                elif xhs_mode == "api":
                     client = self._xhs_client(state, proxy)
                     if client is None:
                         err = "账号登录态缺少 a1,请重新扫码登录"
@@ -3025,6 +3105,17 @@ class MonitorEngine:
                                                       target_comment_id=target_cid)
                         cid = (d.get("comment") or {}).get("id") if isinstance(d, dict) else ""
                         ok, result = True, (cid or "ok")
+                else:
+                    outcome = await comment_xhs_browser(
+                        self.browser, identity, aweme_id, xsec_token, content,
+                        target_comment_id=target_cid,
+                        target_text=target_text,
+                        on_submit=lambda: self._mark_browser_submit(
+                            CommentTask, task_id))
+                    ok = outcome.status == "success"
+                    uncertain = outcome.status == "uncertain"
+                    result, err, method = (
+                        outcome.result, outcome.error, outcome.method)
             elif platform == "kuaishou":
                 method = "browser"
                 ok, err = await post_ks_comment(
@@ -3051,7 +3142,7 @@ class MonitorEngine:
         except Exception as e:
             ok, err = False, repr(e)
 
-        failure = None if ok or manual_only else self.risk.record_failure(
+        failure = None if ok or manual_only or uncertain else self.risk.record_failure(
             account_id, OperationKind.COMMENT, err)
         with get_session() as s:
             t = s.get(CommentTask, task_id)
@@ -3062,6 +3153,10 @@ class MonitorEngine:
                     t.status = "done"
                 elif manual_only:
                     t.status = "draft"
+                elif uncertain:
+                    t.status = "uncertain"
+                    t.scheduled_at = None
+                    t.done_at = None
                 elif failure and failure.controlled and failure.category in {
                         RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH}:
                     self._defer_row(t, err, failure.next_allowed_at)

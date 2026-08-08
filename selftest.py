@@ -65,9 +65,9 @@ def check_playwright() -> bool:
 def check_node() -> bool:
     npm = shutil.which("npm.cmd") or shutil.which("npm")
     if npm:
-        print("[Node.js] OK: 小红书发布依赖可安装/更新")
+        print("[Node.js] OK: 小红书 API 发布兼容模式依赖可安装/更新")
         return True
-    print("[Node.js] INFO: 未检测到（仅影响小红书发布，其他功能可用）")
+    print("[Node.js] INFO: 未检测到（仅影响小红书 API 发布兼容模式）")
     return True
 
 

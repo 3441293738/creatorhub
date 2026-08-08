@@ -98,11 +98,14 @@ _share_download_sem = asyncio.Semaphore(2)
 class _OpenBrowserLease:
     """Keep the unified account/network guard until a headed context closes."""
 
-    def __init__(self, context, guard):
+    def __init__(self, context, guard, close_callback=None):
         self.context = context
         self.guard = guard
+        self.close_callback = close_callback
         self._released = False
+        self._closed = False
         self._release_lock = asyncio.Lock()
+        self._close_lock = asyncio.Lock()
 
     async def release(self) -> None:
         async with self._release_lock:
@@ -112,16 +115,25 @@ class _OpenBrowserLease:
             await self.guard.__aexit__(None, None, None)
 
     async def close(self) -> None:
-        try:
-            await self.context.close()
-        finally:
-            await self.release()
+        async with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                if self.close_callback is not None:
+                    await self.close_callback()
+                else:
+                    await self.context.close()
+            finally:
+                await self.release()
 
 
 async def _release_open_browser(account_id: int, lease: _OpenBrowserLease) -> None:
-    await lease.release()
-    if open_browsers.get(account_id) is lease:
-        open_browsers.pop(account_id, None)
+    try:
+        await lease.close()
+    finally:
+        if open_browsers.get(account_id) is lease:
+            open_browsers.pop(account_id, None)
 
 
 def _persist_native_ua(account_id: int, ua: str) -> None:
@@ -169,7 +181,9 @@ async def lifespan(app: FastAPI):
         print(f"[startup] 账号画像迁移失败(不影响启动): {e!r}")
     browser = BrowserManager(
         cfg.engine.user_agent, cfg.engine.profiles_dir,
-        cfg.engine.max_live_contexts, native_ua_callback=_persist_native_ua)
+        cfg.engine.max_live_contexts, native_ua_callback=_persist_native_ua,
+        xhs_browser_mode=cfg.engine.xhs_browser_mode,
+        xhs_cdp_idle_seconds=cfg.engine.xhs_cdp_idle_seconds)
     await browser.start()
     engine = MonitorEngine(cfg, browser)
     startup_now = datetime.utcnow()
@@ -439,6 +453,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 proxy = normalize_proxy(choice)
             identity = Identity(
                 account_id=None, profile_dir=tmp_profile, identity_mode="native",
+                platform=platform,
                 proxy=proxy, ua="", viewport_w=new_fields["viewport_w"],
                 viewport_h=new_fields["viewport_h"], timezone_id=new_fields["timezone_id"],
                 locale=new_fields["locale"], fp_seed=new_fields["fp_seed"])
@@ -486,6 +501,14 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     browser, identity)
             else:
                 ok, state_json, nickname = await interactive_login(browser, identity)
+
+        # 浏览器已经完成实际后端选择；此时快照能反映系统 Chrome 或真实回退。
+        login_environment = browser.environment_snapshot(identity, headless=False)
+        if fresh_account and platform == "xhs":
+            # The temporary identity has no durable account key. Close its CDP
+            # session before persisting the account so the same profile can be
+            # reopened under the newly assigned account id without conflict.
+            await browser.close_context(identity.key)
 
         # 3) 仅在成功时落库
         if ok and state_json:
@@ -697,6 +720,13 @@ async def list_accounts(platform: str | None = None):
             next_write_at = risk_controller.next_write_at(a.id) if a.id else None
             used = len(s.exec(select(MonitorTarget.id)
                               .where(MonitorTarget.account_id == a.id)).all())
+            environment = None
+            if a.platform == "xhs" and browser is not None:
+                try:
+                    environment = browser.environment_snapshot(
+                        browser.identity_for(a), headless=False)
+                except Exception:
+                    environment = None
             out.append({
                 "id": a.id, "platform": a.platform, "nickname": a.nickname, "status": a.status,
                 "sec_uid": a.sec_uid, "douyin_id": a.douyin_id, "avatar": a.avatar,
@@ -723,9 +753,23 @@ async def list_accounts(platform: str | None = None):
                                   if next_write_at else None),
                 "ua": a.ua,
                 "profile_dir": a.profile_dir,
+                "environment": environment,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
             })
         return out
+
+
+@app.get("/api/accounts/{account_id}/environment")
+async def account_browser_environment(account_id: int):
+    """Return redacted browser-backend diagnostics for one account."""
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "账号不存在")
+        identity = browser.identity_for(account)
+    return browser.environment_snapshot(identity, headless=False)
 
 
 def _mask_proxy(proxy: str) -> str:
@@ -1423,12 +1467,26 @@ _PLATFORM_HOST = {"douyin": "douyin.com", "xhs": "xiaohongshu.com",
                   "kuaishou": "kuaishou.com", "shipinhao": "weixin.qq.com"}
 
 
+def _platform_url_allowed(platform: str, value: str) -> bool:
+    expected = _PLATFORM_HOST.get(platform, "").casefold()
+    try:
+        parsed = urlsplit(str(value or "").strip())
+        host = (parsed.hostname or "").casefold()
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        expected and parsed.scheme in {"http", "https"}
+        and (host == expected or host.endswith("." + expected))
+    )
+
+
 @app.post("/api/accounts/{account_id}/open-browser")
 async def open_account_browser(account_id: int, url: str = ""):
     """用该账号登录态弹出一个真实浏览器窗口。默认停在平台首页;传 url 则停在该地址
     (仅允许本平台域名,用于「查看」视频号作品/管理页等需登录态才能打开的页面)。
     留给用户手动操作(查看/收发私信、F12 抓接口、手动维护等)。关闭窗口即落盘 Cookie。
-    注意:窗口开着期间该账号的后台抓取/写操作会因 profile 占用而暂时失败,用完关掉即可。"""
+    小红书复用账号专属 CDP Chrome，窗口开启期间占用全局可见操作队列；其他平台仍使用
+    临时有头 Context。用完关闭窗口后，后台任务会继续执行。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     with get_session() as s:
@@ -1451,7 +1509,7 @@ async def open_account_browser(account_id: int, url: str = ""):
                 platform, "https://www.douyin.com/")
     # 传了 url 且属于本平台域名 -> 停在该地址(否则回首页,防被当跳转开任意站)
     tgt = (url or "").strip()
-    if tgt.startswith("http") and _PLATFORM_HOST.get(platform, "") in tgt:
+    if _platform_url_allowed(platform, tgt):
         home = tgt
     # 持久 profile 只在"首次空目录"才注入登录态;为防 profile 里 Cookie 缺失/过期导致
     # 打开后未登录,这里用 DB 里已知的登录态 Cookie 再注入一次(覆盖刷新)。
@@ -1466,14 +1524,25 @@ async def open_account_browser(account_id: int, url: str = ""):
 
     @asynccontextmanager
     async def _open_guard():
-        if engine is None:
-            yield None
-            return
-        async with engine.operation_guard(
-                account_id, OperationKind.LOGIN,
-                fallback_key=f"open-browser:{account_id}",
-                operation_target=identity) as guarded:
-            yield guarded
+        @asynccontextmanager
+        async def _engine_guard():
+            if engine is None:
+                yield None
+                return
+            async with engine.operation_guard(
+                    account_id, OperationKind.LOGIN,
+                    fallback_key=f"open-browser:{account_id}",
+                    operation_target=identity) as guarded:
+                yield guarded
+
+        async with _engine_guard() as guarded:
+            if platform == "xhs":
+                # A user-held XHS window participates in the same machine-wide
+                # visible-action queue as scheduled reads and writes.
+                async with browser.visible_action(identity):
+                    yield guarded
+            else:
+                yield guarded
 
     guard = _open_guard()
     await guard.__aenter__()
@@ -1484,18 +1553,31 @@ async def open_account_browser(account_id: int, url: str = ""):
                 await ctx.add_cookies(_sanitize_cookies(cookies))
             except Exception as e:
                 print(f"[open-browser] 注入 Cookie 失败: {e!r}")
-        page = await ctx.new_page()
+        page = (await browser.new_page(identity, block_media=False)
+                if platform == "xhs" else await ctx.new_page())
         await page.goto(home, wait_until="domcontentloaded", timeout=30000)
+        if platform == "xhs":
+            try:
+                await page.bring_to_front()
+            except Exception:
+                pass
     except BaseException as e:
         await guard.__aexit__(type(e), e, e.__traceback__)
         if not isinstance(e, Exception):
             raise
         raise HTTPException(500, f"打开浏览器失败: {e!r}")
-    lease = _OpenBrowserLease(ctx, guard)
+    close_callback = (
+        (lambda: browser.close_context(identity.key))
+        if platform == "xhs" else None
+    )
+    lease = _OpenBrowserLease(ctx, guard, close_callback=close_callback)
     open_browsers[account_id] = lease
     try:                       # 用户手动关窗后,从登记表移除
         ctx.on("close", lambda *_: asyncio.create_task(
             _release_open_browser(account_id, lease)))
+        if platform == "xhs":
+            page.on("close", lambda *_: asyncio.create_task(
+                _release_open_browser(account_id, lease)))
     except Exception:
         pass
     return {"ok": True}
