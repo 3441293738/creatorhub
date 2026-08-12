@@ -395,6 +395,7 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
     error = ""
     page = await mgr.new_page(identity, block_media)
     logged_out = False
+    has_login_btn = None
     attempts: List[str] = []
 
     # 先取 cookie(在导航前就绪,这样响应监听里能用 uid 匹配)
@@ -449,6 +450,11 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
         await page.goto("https://www.kuaishou.com", wait_until="domcontentloaded",
                         timeout=30000)
         await page.wait_for_timeout(3000)     # 等头部自身信息接口回来
+        try:
+            has_login_btn = await page.get_by_text(
+                "登录", exact=True).first.is_visible(timeout=1200)
+        except Exception:
+            has_login_btn = None
 
         # ① 主路径:直接调本人资料 REST 接口 /rest/v/profile/get
         self3x = ""
@@ -489,6 +495,11 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
             if not result and (best["profile"].get("user_name")
                                or best["profile"].get("headurl")):
                 result = best
+        if has_login_btn is True:
+            # uid/passToken 可能仍保存在本地但已被服务端撤销；真实页面显示登录时
+            # 不接受 REST、GraphQL 或首页缓存中的旧资料。
+            result = {}
+            logged_out = True
     except Exception as e:
         error = f"{e!r}"
     finally:
@@ -502,7 +513,7 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
             error = "logged_out"
         elif not error:
             error = "no_profile_data"
-        print(f"[ks_self_profile] 未拿到资料; err={error}; uid_cookie={uid_cookie!r}; "
+        print(f"[ks_self_profile] 未拿到资料; err={error}; login_btn={has_login_btn}; uid_cookie={uid_cookie!r}; "
               f"hit_urls={hit_urls[:6]}; attempts={attempts}")
     return result, error
 

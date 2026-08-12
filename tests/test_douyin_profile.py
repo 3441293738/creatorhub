@@ -4,6 +4,7 @@ from app.browser.fetcher import (
     _extract_post_author,
     _extract_user,
     _fill_missing_user_fields,
+    _self_profile_session_is_invalid,
     _user_from_web_storage,
 )
 
@@ -63,6 +64,30 @@ class DouyinSelfProfileFallbackTests(unittest.TestCase):
         self.assertEqual(target["nickname"], "接口昵称")
         self.assertEqual(target["follower_count"], 12)
         self.assertIn("avatar_thumb", target)
+
+    def test_visible_login_button_rejects_stale_profile_and_cookies(self):
+        self.assertTrue(_self_profile_session_is_invalid(
+            has_login_btn=True,
+            has_login_cookie=True,
+            has_result=True,
+            profile_user_seen=True,
+        ))
+
+    def test_hidden_login_button_accepts_authoritative_profile(self):
+        self.assertFalse(_self_profile_session_is_invalid(
+            has_login_btn=False,
+            has_login_cookie=True,
+            has_result=True,
+            profile_user_seen=True,
+        ))
+
+    def test_storage_profile_requires_login_cookie(self):
+        self.assertTrue(_self_profile_session_is_invalid(
+            has_login_btn=False,
+            has_login_cookie=False,
+            has_result=True,
+            profile_user_seen=False,
+        ))
 
 
 if __name__ == "__main__":

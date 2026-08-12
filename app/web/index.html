@@ -1077,6 +1077,198 @@
   .quick-action .qa-copy b { color:inherit; font-size:12.5px; font-weight:650; }
   .quick-action .qa-copy span { overflow:hidden; color:var(--mut); font-size:11.5px; font-weight:400; line-height:1.3; text-overflow:ellipsis; white-space:nowrap; }
   .quick-action > svg { width:15px; height:15px; flex:0 0 auto; color:var(--mut-2); }
+  /* ── 关键词批量采集 ── */
+  .collection-kpis { display:grid; grid-template-columns:repeat(3,minmax(120px,1fr)); gap:8px; margin:12px 0; }
+  .collection-kpi { padding:10px 12px; border:1px solid var(--line-soft); border-radius:var(--r-sm); background:var(--bg); }
+  .collection-kpi b { display:block; color:var(--fg-strong); font:650 18px/1.25 var(--mono); }
+  .collection-kpi span { color:var(--mut); font-size:11px; }
+  .job-progress { min-width:150px; display:grid; gap:6px; }
+  .job-progress-head { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--mut); font-size:11px; }
+  .progress-track { height:6px; overflow:hidden; border-radius:999px; background:var(--surface-3); border:1px solid var(--line-soft); }
+  .progress-fill { height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--acc),var(--info)); transition:width .25s var(--ease); }
+  .keyword-stack { display:flex; flex-wrap:wrap; gap:4px; max-width:260px; }
+  .keyword-stack .meta-chip { max-width:120px; }
+  .collection-step { max-width:280px; margin-top:4px; color:var(--mut-2); font-size:10.5px; line-height:1.35; overflow-wrap:anywhere; }
+  .collection-task-list { display:grid; gap:10px; }
+  .collection-task {
+    display:grid; grid-template-columns:minmax(128px,.75fr) minmax(150px,1fr) minmax(180px,1.15fr) minmax(210px,1.35fr);
+    grid-template-areas:"meta keywords config progress" "error error error error" "actions actions actions actions";
+    gap:14px 18px; min-width:0; padding:14px 16px 12px;
+    background:var(--bg); border:1px solid var(--line-soft); border-radius:var(--r);
+    transition:border-color .18s var(--ease), box-shadow .18s var(--ease), background .18s var(--ease);
+  }
+  .collection-task:hover { border-color:color-mix(in srgb,var(--acc) 24%,var(--line)); box-shadow:var(--sh-sm); }
+  .collection-task:focus-within { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc-ring); }
+  .collection-task-meta { grid-area:meta; min-width:0; }
+  .collection-task-keywords { grid-area:keywords; min-width:0; }
+  .collection-task-config { grid-area:config; min-width:0; }
+  .collection-task-progress { grid-area:progress; min-width:0; }
+  .collection-task-label {
+    display:block; margin-bottom:6px; color:var(--mut-2); font-size:10px; font-weight:650;
+    letter-spacing:.06em;
+  }
+  .collection-task-created { display:block; margin-top:8px; color:var(--mut); font-size:10.5px; line-height:1.35; }
+  .collection-task-config-main { color:var(--fg); font-size:12px; font-weight:600; line-height:1.45; }
+  .collection-task-config-sub { margin-top:4px; color:var(--mut-2); font-size:10.5px; line-height:1.45; }
+  .collection-task .keyword-stack { max-width:none; }
+  .collection-task .job-progress { min-width:0; }
+  button.collection-task-error {
+    grid-area:error; width:100%; min-width:0; padding:8px 10px; justify-content:flex-start;
+    overflow:hidden; color:var(--danger); background:var(--danger-soft);
+    border-color:color-mix(in srgb,var(--danger) 28%,var(--line)); border-radius:var(--r-xs);
+    font-size:10.5px; font-weight:500; line-height:1.4; text-align:left;
+  }
+  button.collection-task-error:hover { background:color-mix(in srgb,var(--danger) 16%,var(--surface)); }
+  .collection-task-error svg { width:13px; height:13px; flex:0 0 auto; }
+  .collection-task-error-text { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .collection-task-error-link { flex:0 0 auto; margin-left:auto; font-weight:650; }
+  .collection-task-actions {
+    grid-area:actions; display:flex; align-items:center; flex-wrap:wrap; gap:7px;
+    margin:0 -2px; padding:11px 2px 0; border-top:1px solid var(--line-soft);
+  }
+  .collection-task-actions button { min-height:32px; margin:0; }
+  .collection-task-actions .collection-task-delete { margin-left:auto; }
+  .collection-task-empty { min-height:150px; border:1px dashed var(--line); border-radius:var(--r); }
+  .collection-task-skeleton {
+    display:grid; grid-template-columns:120px 1fr 1fr 1.2fr; gap:18px; align-items:center;
+    min-height:120px; padding:16px; border:1px solid var(--line-soft); border-radius:var(--r); background:var(--bg);
+  }
+  .collection-task-skeleton .sk { display:block; width:100%; }
+  @media(max-width:980px) {
+    .collection-task {
+      grid-template-columns:minmax(120px,.7fr) minmax(0,1.3fr);
+      grid-template-areas:"meta keywords" "config progress" "error error" "actions actions";
+    }
+  }
+  @media(max-width:600px) {
+    .collection-task {
+      grid-template-columns:1fr; grid-template-areas:"meta" "keywords" "config" "progress" "error" "actions";
+      gap:12px; padding:14px;
+    }
+    .collection-task-meta { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .collection-task-meta .collection-task-label { display:none; }
+    .collection-task-created { margin-top:0; text-align:right; }
+    .collection-task-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .collection-task-actions button { min-height:44px; }
+    .collection-task-actions .collection-task-delete { margin-left:0; }
+    .collection-task-skeleton { grid-template-columns:1fr; min-height:220px; }
+  }
+  .collection-comment { padding:10px 0; border-bottom:1px solid var(--line-soft); }
+  .collection-comment:last-child { border-bottom:0; }
+  .collection-comment-head { display:flex; justify-content:space-between; gap:12px; margin-bottom:4px; color:var(--mut); font-size:11px; }
+  .collection-comment p { margin:0; color:var(--fg); font-size:13px; line-height:1.55; overflow-wrap:anywhere; }
+  .collection-error { margin:0 0 12px; padding:10px 12px; color:var(--danger); background:color-mix(in srgb,var(--danger) 8%,var(--surface)); border:1px solid color-mix(in srgb,var(--danger) 30%,var(--line)); border-radius:var(--r-sm); font-size:12px; line-height:1.55; overflow-wrap:anywhere; }
+  .collection-result-headline {
+    display:flex; align-items:flex-end; justify-content:space-between; gap:16px;
+    margin:16px 0 10px;
+  }
+  .collection-result-headline b { display:block; color:var(--fg-strong); font-size:13px; }
+  .collection-result-headline span { display:block; margin-top:3px; color:var(--mut); font-size:11.5px; }
+  .collection-result-grid {
+    display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px;
+  }
+  .collection-result-item {
+    display:grid; grid-template-columns:132px minmax(0,1fr); min-width:0; overflow:hidden;
+    background:var(--bg); border:1px solid var(--line-soft); border-radius:var(--r);
+    transition:border-color .18s var(--ease), transform .18s var(--ease), box-shadow .18s var(--ease);
+  }
+  .collection-result-item:hover {
+    border-color:color-mix(in srgb,var(--acc) 32%,var(--line));
+    box-shadow:var(--sh-sm); transform:translateY(-1px);
+  }
+  .collection-result-item:focus-within { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc-ring); }
+  button.collection-result-cover {
+    position:relative; display:block; width:100%; height:100%; min-height:246px; padding:0;
+    overflow:hidden; border:0; border-radius:0; background:var(--surface-2); box-shadow:none;
+  }
+  button.collection-result-cover:hover { filter:none; }
+  button.collection-result-cover:active { transform:none; }
+  .collection-result-cover img { width:100%; height:100%; display:block; object-fit:cover; transition:transform .25s var(--ease); }
+  .collection-result-item:hover .collection-result-cover img { transform:scale(1.025); }
+  .collection-cover-empty { position:absolute; inset:0; display:grid; place-items:center; color:var(--mut-2); }
+  .collection-cover-empty svg { width:32px; height:32px; }
+  .collection-cover-type {
+    position:absolute; top:10px; left:10px; padding:4px 7px; border-radius:999px;
+    color:#fff; background:rgba(8,10,14,.72); font-size:10.5px; font-weight:650;
+    box-shadow:0 2px 8px rgba(0,0,0,.2);
+  }
+  .collection-cover-preview {
+    position:absolute; left:10px; right:10px; bottom:10px; display:flex; align-items:center;
+    justify-content:center; gap:5px; min-height:32px; border-radius:var(--r-xs);
+    color:#fff; background:rgba(8,10,14,.78); font-size:11.5px; font-weight:650;
+    backdrop-filter:blur(5px); transition:background .18s var(--ease);
+  }
+  .collection-result-cover:hover .collection-cover-preview,
+  .collection-result-cover:focus-visible .collection-cover-preview { background:color-mix(in srgb,var(--acc) 78%,rgba(8,10,14,.78)); }
+  .collection-cover-preview svg { width:14px; height:14px; }
+  .collection-result-body { display:flex; flex-direction:column; min-width:0; padding:13px 14px 12px; }
+  .collection-result-tags { display:flex; align-items:center; flex-wrap:wrap; gap:5px; min-height:22px; }
+  .collection-result-title {
+    display:-webkit-box; margin-top:7px; overflow:hidden; color:var(--fg-strong);
+    font-size:13.5px; font-weight:650; line-height:1.45; overflow-wrap:anywhere;
+    -webkit-box-orient:vertical; -webkit-line-clamp:2;
+  }
+  .collection-result-title:hover { color:var(--acc); }
+  .collection-result-byline {
+    display:flex; align-items:center; flex-wrap:wrap; gap:5px; margin-top:7px;
+    color:var(--mut); font-size:11px; line-height:1.35;
+  }
+  .collection-result-byline .collection-result-id {
+    min-width:0; max-width:128px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    color:var(--mut-2); font-family:var(--mono);
+  }
+  .collection-result-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin-top:11px; }
+  .collection-result-metric { padding:7px 8px; border-radius:var(--r-xs); background:var(--surface-2); }
+  .collection-result-metric b { display:flex; align-items:center; gap:4px; color:var(--fg); font:600 12px/1.2 var(--mono); }
+  .collection-result-metric b svg { width:12px; height:12px; color:var(--acc); }
+  .collection-result-metric span { display:block; margin-top:3px; color:var(--mut-2); font-size:9.5px; }
+  .collection-file-panel {
+    display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:8px;
+    margin-top:10px; padding:8px 9px; border:1px solid var(--line-soft); border-radius:var(--r-xs);
+    background:color-mix(in srgb,var(--surface-2) 75%,transparent);
+  }
+  .collection-file-main { display:flex; align-items:center; gap:8px; min-width:0; }
+  .collection-file-main > svg { width:17px; height:17px; flex:0 0 auto; color:var(--success); }
+  .collection-file-info { min-width:0; }
+  .collection-file-name { overflow:hidden; color:var(--fg); font-size:11px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
+  .collection-file-meta { margin-top:2px; overflow:hidden; color:var(--mut-2); font-size:9.5px; text-overflow:ellipsis; white-space:nowrap; }
+  .collection-file-actions { display:flex; align-items:center; gap:4px; }
+  button.collection-icon-action { width:28px; height:28px; padding:0; }
+  button.collection-icon-action svg { width:13px; height:13px; }
+  .collection-download-note { margin-top:10px; color:var(--mut-2); font-size:10.5px; line-height:1.4; }
+  .collection-download-note.failed { color:var(--danger); }
+  .collection-result-actions { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-top:auto; padding-top:11px; }
+  .collection-result-actions button { min-height:30px; margin:0; }
+  .collection-source-link {
+    display:inline-flex; align-items:center; justify-content:center; min-height:30px; padding:5px 10px;
+    border:1px solid var(--line); border-radius:var(--r-xs); color:var(--fg); background:var(--surface-2);
+    font-size:12px; font-weight:550; line-height:1; text-decoration:none;
+  }
+  .collection-source-link:hover { color:var(--fg-strong); background:var(--surface-3); border-color:color-mix(in srgb,var(--fg) 30%,var(--line)); }
+  .collection-source-link svg { width:13px; height:13px; }
+  .collection-result-empty { grid-column:1/-1; min-height:220px; border:1px dashed var(--line); border-radius:var(--r); }
+  .collection-result-skeleton { min-height:260px; padding:14px; border:1px solid var(--line-soft); border-radius:var(--r); background:var(--bg); }
+  .collection-result-skeleton .sk { display:block; width:100%; }
+  @media(max-width:980px) { .collection-result-grid { grid-template-columns:1fr; } }
+  @media(max-width:600px) {
+    .collection-result-headline { align-items:flex-start; flex-direction:column; gap:5px; }
+    .collection-result-item { grid-template-columns:104px minmax(0,1fr); }
+    button.collection-result-cover { min-height:278px; }
+    .collection-result-body { padding:12px; }
+    .collection-result-metrics { grid-template-columns:repeat(3,minmax(64px,1fr)); }
+    .collection-file-panel { grid-template-columns:1fr; }
+    .collection-file-actions { justify-content:flex-end; }
+    .collection-result-actions button, .collection-source-link { min-height:40px; }
+  }
+  @media(max-width:460px) {
+    .collection-result-item { grid-template-columns:1fr; }
+    button.collection-result-cover { height:210px; min-height:210px; }
+    .collection-result-cover img { object-position:center 24%; }
+  }
+  @media(pointer:coarse) {
+    button.collection-icon-action { width:44px; height:44px; }
+    .collection-task-actions button { min-height:44px; }
+  }
   .platform-callout {
     display:flex; align-items:flex-start; gap:11px; padding:13px 15px;
     color:var(--mut); background:color-mix(in srgb,var(--info) 6%,var(--surface));
@@ -1201,6 +1393,7 @@
     .row > * { min-width:0; }
     .quick-actions { grid-template-columns:1fr; }
     .form-grid, .form-grid.cols-4, .form-grid.download-grid, .option-grid { grid-template-columns:1fr; }
+    .collection-kpis { grid-template-columns:1fr; }
     .form-actions { justify-content:stretch; }
     .form-actions .status-text { flex-basis:100%; order:3; }
     .form-actions .actions-spacer { display:none; }
@@ -1293,6 +1486,8 @@
   <symbol id="i-card" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20M6 15h4"/></symbol>
   <symbol id="i-heart-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v11M2 13l2-3h11l-1.4 7a2 2 0 0 1-2 1.7H7"/><path d="M7 10 11 2a2 2 0 0 1 2.7 2.3L13 10"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 10v7M14 10v7"/></symbol>
   <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.97 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.52-1H3v-4h.08A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.97 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08A1.7 1.7 0 0 0 15.03 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.12.38.46.76 1.52 1H21v4h-.08c-1.06.24-1.4.62-1.52 1Z"/></symbol>
 </svg>
@@ -1323,6 +1518,7 @@
     <button class="navitem" data-tab="overview" onclick="switchTab('overview', true)"><svg><use href="#i-bolt"/></svg><span class="nav-label">总览</span></button>
     <button class="navitem" data-tab="accounts" onclick="switchTab('accounts', true)"><svg><use href="#i-card"/></svg><span class="nav-label">账号</span><span class="nav-badge" id="tb-acc">0</span></button>
     <button class="navitem notsh-only" data-tab="monitors" onclick="switchTab('monitors', true)"><svg><use href="#i-target"/></svg><span class="nav-label">作品监控</span><span class="nav-badge" id="tb-mon">0</span></button>
+    <button class="navitem collect-only" data-tab="collections" onclick="switchTab('collections', true)"><svg><use href="#i-hash"/></svg><span class="nav-label">关键词采集</span><span class="nav-badge" id="tb-col">0</span></button>
     <button class="navitem notsh-only" data-tab="comments" onclick="switchTab('comments', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">评论监控</span><span class="nav-badge" id="tb-watch">0</span></button>
     <button class="navitem dy-only" data-tab="danmaku" onclick="switchTab('danmaku', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">弹幕监控</span><span class="nav-badge" id="tb-danmaku">0</span></button>
     <div class="nav-sep">本账号</div>
@@ -1459,6 +1655,73 @@
         <button onclick="addProxy()"><svg><use href="#i-plus"/></svg>加入代理池</button>
       </div>
       <div class="table-wrap mini-table"><table id="proxy-table" aria-label="代理池列表"><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section data-panel="collections" class="collect-only">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-hash"/></svg></span>
+        <h2>新建抖音关键词采集 <span class="sub">批量搜索视频并抓取评论</span></h2>
+      </div>
+      <div class="stack">
+        <div class="form-field">
+          <label for="col-keywords">关键词 <span class="field-scope">必填 · 最多 20 个</span></label>
+          <textarea id="col-keywords" rows="5" placeholder="每行一个关键词，例如：&#10;露营装备&#10;城市骑行&#10;夏季穿搭" aria-describedby="col-keywords-help"></textarea>
+          <p class="hint" id="col-keywords-help">支持换行或逗号分隔；任务会按关键词逐个执行并自动去重。</p>
+        </div>
+        <div class="form-grid cols-4">
+          <div class="form-field"><label for="col-account">使用账号</label><select id="col-account" required></select></div>
+          <div class="form-field"><label for="col-content-limit">每词作品上限</label><input id="col-content-limit" type="number" min="1" max="100" value="20" inputmode="numeric"></div>
+          <div class="form-field"><label for="col-comment-limit">每作品评论上限</label><input id="col-comment-limit" type="number" min="0" max="200" value="20" inputmode="numeric"></div>
+          <div class="form-field dy-only"><label for="col-quality">视频画质</label><select id="col-quality"><option value="highest">原画 / 最高</option><option value="1080">1080P</option><option value="720">720P</option><option value="540">540P</option><option value="lowest">最低省流</option></select></div>
+        </div>
+        <div class="form-field" id="col-dir-wrap" style="display:none">
+          <label for="col-download-dir">下载目录（可选）</label>
+          <input id="col-download-dir" placeholder="留空保存到 data/media/keyword-collections">
+        </div>
+        <div class="option-grid" aria-label="采集选项">
+          <label class="switch-row"><input type="checkbox" id="col-download" onchange="applyCollectionForm()"><span class="switch-copy"><b>下载媒体</b><span>保存视频、图集和封面来源</span></span></label>
+          <label class="switch-row"><input type="checkbox" id="col-replies"><span class="switch-copy"><b>包含二级评论</b><span>采集抖音当前可返回的回复</span></span></label>
+        </div>
+        <div class="platform-callout" role="note">
+          <svg aria-hidden="true"><use href="#i-info"/></svg>
+          <div><b>按上限采集，不承诺搜索全量</b><p>抖音采集会临时打开可见浏览器窗口；搜索排序会受平台和账号状态影响；任务默认串行执行，可随时取消，已入库结果会保留。</p></div>
+        </div>
+        <div class="form-actions">
+          <span class="status-text" id="col-create-msg" role="status" aria-live="polite"></span>
+          <button type="button" onclick="createCollection()"><svg><use href="#i-play"/></svg>开始批量采集</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-list"/></svg></span>
+        <h2>采集任务 <span class="sub">进度、编辑、续跑与导出</span></h2>
+        <div class="right"><button class="ghost sm" type="button" onclick="refreshCollections()"><svg><use href="#i-bolt"/></svg>刷新</button></div>
+      </div>
+      <div class="collection-task-list" id="collection-job-table" role="list" aria-label="关键词采集任务列表" aria-live="polite"></div>
+    </div>
+
+    <div class="card" id="collection-results-card" style="display:none">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-film"/></svg></span>
+        <h2 id="collection-results-title">采集结果 <span class="sub" id="collection-results-sub"></span></h2>
+        <div class="right"><button class="ghost sm" type="button" onclick="closeCollectionResults()"><svg><use href="#i-x"/></svg>关闭</button></div>
+      </div>
+      <div class="collection-kpis" aria-label="当前任务统计">
+        <div class="collection-kpi"><b id="col-stat-content">0</b><span>已采作品</span></div>
+        <div class="collection-kpi"><b id="col-stat-comments">0</b><span>已采评论</span></div>
+        <div class="collection-kpi"><b id="col-stat-errors">0</b><span>异常记录</span></div>
+      </div>
+      <div class="collection-error" id="collection-results-error" role="alert" style="display:none"></div>
+      <div class="collection-result-headline">
+        <div><b>作品与本地文件</b><span>点击封面可站内预览；已下载文件可直接打开或在目录中定位</span></div>
+        <span id="collection-result-count" aria-live="polite"></span>
+      </div>
+      <div class="collection-result-grid" id="collection-content-list" aria-label="关键词采集作品结果" aria-live="polite"></div>
+      <div class="pager" id="collection-pager"></div>
     </div>
   </section>
 
@@ -2424,6 +2687,16 @@
 </div>
 
 <!-- 作品评论(弹窗) -->
+<div id="collection-comments-modal" class="pv-overlay" style="display:none" role="dialog" aria-modal="true"
+     aria-labelledby="collection-comments-title" onclick="if(event.target.id==='collection-comments-modal')hideCollectionComments()">
+  <div class="rp-box" style="width:min(94vw,620px);max-height:86vh;display:flex;flex-direction:column">
+    <button class="pv-close" onclick="hideCollectionComments()" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+    <h2 id="collection-comments-title">采集评论</h2>
+    <div class="mut" id="collection-comments-count" style="font-size:12px;margin:-6px 0 12px">—</div>
+    <div id="collection-comments-list" style="overflow:auto;flex:1;min-height:140px"></div>
+  </div>
+</div>
+
 <div id="wcmodal" class="pv-overlay" style="display:none" role="dialog" aria-modal="true"
      aria-labelledby="wc-title" onclick="if(event.target.id==='wcmodal')hideWorkComments()">
   <div class="rp-box" style="width:min(94vw,560px);max-height:86vh;display:flex;flex-direction:column">

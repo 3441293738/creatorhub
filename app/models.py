@@ -219,6 +219,71 @@ class CommentRecord(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class KeywordCollectionJob(SQLModel, table=True):
+    """一次性的关键词批量采集任务。与持续轮询的 MonitorTarget 分开建模。"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    platform: str = Field(default="douyin", index=True)  # douyin | xhs
+    account_id: int = Field(index=True)
+    keywords: str = "[]"                 # JSON 字符串数组
+    max_contents_per_keyword: int = 20
+    max_comments_per_content: int = 20
+    include_replies: bool = False
+    download_media: bool = False
+    video_quality: str = "highest"
+    download_dir: str = ""
+    status: str = Field(default="pending", index=True)  # pending | running | done | partial | failed | canceled
+    current_keyword: str = ""
+    current_step: str = "等待执行"
+    content_count: int = 0
+    comment_count: int = 0
+    error_count: int = 0
+    error: str = ""
+    cancel_requested: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
+class KeywordCollectionContent(SQLModel, table=True):
+    """关键词任务发现的一条作品/笔记。"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_id: int = Field(index=True)
+    platform: str = Field(default="douyin", index=True)
+    keyword: str = Field(default="", index=True)
+    aweme_id: str = Field(index=True)       # 抖音 aweme_id / 小红书 note_id
+    desc: str = ""
+    author_name: str = ""
+    author_id: str = ""
+    media_type: str = "video"
+    create_time: int = 0
+    cover_url: str = ""
+    like_count: int = 0
+    comment_count: int = 0                  # 平台显示的评论总数
+    collected_comment_count: int = 0        # 本任务实际入库数
+    media_json: str = "[]"
+    xsec_token: str = ""
+    download_status: str = "skipped"       # skipped | pending | downloading | done | failed
+    local_path: str = ""
+    error: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class KeywordCollectionComment(SQLModel, table=True):
+    """关键词任务抓到的评论；按任务与作品单独保存，便于删除和导出。"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_id: int = Field(index=True)
+    content_id: int = Field(index=True)
+    platform: str = Field(default="douyin", index=True)
+    aweme_id: str = Field(index=True)
+    comment_id: str = Field(index=True)
+    text: str = ""
+    user_nickname: str = ""
+    like_count: int = 0
+    create_time: int = 0
+    reply_to: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
 class DanmakuWatch(SQLModel, table=True):
     """短视频弹幕监控对象。弹幕与评论字段不同，单独建模。"""
     id: Optional[int] = Field(default=None, primary_key=True)

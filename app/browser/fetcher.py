@@ -6,8 +6,12 @@
 """
 from __future__ import annotations
 
+import json
+import random
+import re
+import string
 from typing import Dict, List, Optional, Set, Tuple
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 from .identity import Identity
 from .manager import BrowserManager
@@ -18,6 +22,11 @@ PROFILE_API = "aweme/v1/web/user/profile/other"
 SELF_PROFILE_API = "aweme/v1/web/user/profile/self"
 COMMENT_API = "aweme/v1/web/comment/list"
 DANMAKU_API = "aweme/v1/web/danmaku"
+SEARCH_API_MARKERS = (
+    "/aweme/v1/web/general/search/single/",
+    "/aweme/v1/web/search/item/",
+    "/aweme/v1/web/search/feed/",
+)
 # 与 login.py 的登录成功判据保持一致。资料接口改版时不能再只靠页面“登录”按钮
 # 判断登录态：按钮可能未渲染，或者被 AB 页面隐藏。
 _LOGIN_COOKIES = {"sessionid", "sessionid_ss", "sid_tt", "uid_tt", "sid_guard"}
@@ -41,6 +50,190 @@ _SCROLL_PROFILE_JS = """() => {
   return { range: bestRange, top: best ? best.scrollTop : window.scrollY };
 }"""
 
+# 搜索页的首屏请求现在并不总会由页面自动发出（登录弹窗、AB 页面和首屏
+# 服务端渲染都会造成这种情况）。在已经打开的同源页面里主动 fetch，浏览器会
+# 自动携带当前账号 Cookie、UA、代理和 Referer；这比另起 HTTP 客户端更不容易
+# 出现“账号资料能刷新、搜索接口却是未登录”的上下文分裂。
+_DOUYIN_SEARCH_FETCH_JS = """async (params) => {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params || {})) {
+    if (value !== undefined && value !== null && value !== '') {
+      query.set(key, String(value));
+    }
+  }
+  const nav = navigator || {};
+  const ua = String(nav.userAgent || '');
+  const chrome = ua.match(/(?:Chrome|Chromium)\/(\d+(?:\.\d+){0,3})/);
+  const windows = ua.match(/Windows NT ([\d.]+)/);
+  const mac = ua.match(/Mac OS X ([\d_]+)/);
+  const dynamic = {
+    browser_language: nav.language || 'zh-CN',
+    browser_platform: nav.platform || 'Win32',
+    browser_name: /Chrome|Chromium/.test(ua) ? 'Chrome' : 'Unknown',
+    browser_version: chrome ? chrome[1] : '',
+    browser_online: nav.onLine === false ? 'false' : 'true',
+    engine_name: /Chrome|Chromium/.test(ua) ? 'Blink' : '',
+    engine_version: chrome ? chrome[1].split('.')[0] + '.0' : '',
+    os_name: windows ? 'Windows' : (mac ? 'Mac OS' : ''),
+    os_version: windows ? windows[1] : (mac ? mac[1].replaceAll('_', '.') : ''),
+    cpu_core_num: nav.hardwareConcurrency || 8,
+    device_memory: nav.deviceMemory || 8,
+    screen_width: (window.screen && window.screen.width) || 1920,
+    screen_height: (window.screen && window.screen.height) || 1080,
+  };
+  for (const [key, value] of Object.entries(dynamic)) {
+    if (value !== '') query.set(key, String(value));
+  }
+  try {
+    const token = window.localStorage && window.localStorage.getItem('xmst');
+    if (token) query.set('msToken', token);
+  } catch (_) {}
+
+  const endpoint = '/aweme/v1/web/general/search/single/?' + query.toString();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      credentials: 'include',
+      headers: {Accept: 'application/json, text/plain, */*'},
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch (_) {}
+    return {
+      ok: response.ok,
+      status: response.status,
+      url: response.url,
+      data,
+      preview: text.slice(0, 500),
+    };
+  } catch (error) {
+    return {ok: false, status: 0, error: String(error), data: null};
+  } finally {
+    clearTimeout(timer);
+  }
+}"""
+
+
+def douyin_search_request_params(keyword: str, offset: int = 0,
+                                 count: int = 15,
+                                 search_id: str = "") -> Dict[str, str]:
+    """构造抖音网页搜索参数；通用浏览器参数在页面内按实际环境补齐。"""
+    webid = "".join(random.choice(string.digits) for _ in range(19))
+    return {
+        "search_channel": "aweme_video_web",
+        "enable_history": "1",
+        "keyword": keyword,
+        "search_source": "tab_search",
+        "query_correct_type": "1",
+        "is_filter_search": "0",
+        "from_group_id": "7378810571505847586",
+        "offset": str(max(0, offset)),
+        "count": str(max(1, min(count, 15))),
+        "need_filter_settings": "1",
+        "list_type": "multi",
+        "search_id": search_id,
+        "device_platform": "webapp",
+        "aid": "6383",
+        "channel": "channel_pc_web",
+        "version_code": "190600",
+        "version_name": "19.6.0",
+        "update_version_code": "170400",
+        "pc_client_type": "1",
+        "cookie_enabled": "true",
+        "platform": "PC",
+        "effective_type": "4g",
+        "round_trip_time": "50",
+        "webid": webid,
+    }
+
+
+def _douyin_search_browser_params(identity: Identity) -> Dict[str, str]:
+    """从账号固定画像补齐请求参数，避免 API 请求与浏览器 UA/视口不一致。"""
+    ua = identity.ua or ""
+    chrome = re.search(r"(?:Chrome|Chromium)/(\d+(?:\.\d+){0,3})", ua)
+    windows = re.search(r"Windows NT ([\d.]+)", ua)
+    mac = re.search(r"Mac OS X ([\d_]+)", ua)
+    version = chrome.group(1) if chrome else ""
+    is_mac = bool(mac)
+    return {
+        "browser_language": identity.locale or "zh-CN",
+        "browser_platform": "MacIntel" if is_mac else "Win32",
+        "browser_name": "Chrome",
+        "browser_version": version,
+        "browser_online": "true",
+        "engine_name": "Blink",
+        "engine_version": (version.split(".")[0] + ".0") if version else "",
+        "os_name": "Mac OS" if is_mac else "Windows",
+        "os_version": (mac.group(1).replace("_", ".") if mac
+                       else (windows.group(1) if windows else "10")),
+        "cpu_core_num": "8",
+        "device_memory": "8",
+        "screen_width": str(identity.viewport_w or 1440),
+        "screen_height": str(identity.viewport_h or 900),
+    }
+
+
+async def _request_douyin_search(page, identity: Identity,
+                                 params: Dict[str, str], referer: str) -> dict:
+    """通过 BrowserContext 的共享 Cookie 请求搜索接口，并设置硬超时。"""
+    request_params = dict(params)
+    request_params.update({
+        key: value for key, value in _douyin_search_browser_params(identity).items()
+        if value
+    })
+    try:
+        state = await page.context.storage_state()
+        for origin in state.get("origins") or []:
+            if "douyin.com" not in str(origin.get("origin") or ""):
+                continue
+            local = {
+                str(item.get("name") or ""): str(item.get("value") or "")
+                for item in origin.get("localStorage") or []
+            }
+            if local.get("xmst"):
+                request_params["msToken"] = local["xmst"]
+                break
+    except Exception:
+        pass
+
+    response = None
+    try:
+        response = await page.context.request.get(
+            "https://www.douyin.com/aweme/v1/web/general/search/single/",
+            params=request_params,
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "Referer": referer,
+                "User-Agent": identity.ua or "",
+            },
+            timeout=20000,
+            fail_on_status_code=False,
+        )
+        body = await response.text()
+        try:
+            payload = json.loads(body)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = None
+        return {
+            "ok": response.ok,
+            "status": response.status,
+            "url": response.url,
+            "data": payload,
+            "preview": body[:500],
+        }
+    except Exception as exc:
+        return {"ok": False, "status": 0, "error": repr(exc), "data": None}
+    finally:
+        if response is not None:
+            try:
+                await response.dispose()
+            except Exception:
+                pass
+
 
 def _page_reaches_boundary(items: List[dict], known_ids: Set[str],
                            stop_before: int = 0) -> bool:
@@ -57,6 +250,74 @@ def _page_reaches_boundary(items: List[dict], known_ids: Set[str],
         times = [int(it.get("create_time") or 0) for it in rows]
         return bool(times) and all(ts and ts < stop_before for ts in times)
     return False
+
+
+def extract_search_awemes(payload) -> List[dict]:
+    """从抖音不同版本的搜索响应中提取作品对象并保持首次出现顺序。
+
+    搜索接口先后出现过 ``data[].aweme_info``、``aweme_list`` 与混合卡片等
+    包装；这里只遍历已知容器键，避免把作者推荐卡误判成作品。
+    """
+    found: Dict[str, dict] = {}
+    container_keys = (
+        "data", "items", "list", "aweme_list", "aweme_info",
+        "aweme_mix_info", "mix_items", "search_result", "card",
+    )
+
+    def visit(value):
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        aid = str(value.get("aweme_id") or "")
+        if aid and (value.get("video") or value.get("images")):
+            found.setdefault(aid, value)
+            return
+        for key in container_keys:
+            child = value.get(key)
+            if child is not None and child is not value:
+                visit(child)
+
+    visit(payload)
+    return list(found.values())
+
+
+def douyin_search_empty_error(page_title: str, page_text: str,
+                              final_url: str, api_seen: List[str]) -> str:
+    """把空搜索结果区分为验证、掉登录、接口变化和真正的空响应。"""
+    diagnostic = f"{page_title}\n{page_text}\n{final_url}".casefold()
+    # 登录弹窗本身包含“验证码登录”字样，必须先识别“扫码登录”等登录墙信号，
+    # 否则会被下面的安全验证码分支误报成风控验证。
+    if any(token in diagnostic for token in (
+            "扫码登录", "登录后即可", "登录后查看", "立即登录", "/login")):
+        return "抖音登录态已失效；请重新扫码登录后再续跑"
+    if any(token in diagnostic for token in (
+            "验证码", "安全验证", "访问频繁", "环境异常",
+            "captcha", "verify")):
+        return ("抖音触发验证码/安全验证；请在账号页点击“打开浏览器”，"
+                "完成验证并关窗保存登录态后再续跑")
+    if api_seen:
+        return "抖音搜索接口有响应，但没有可解析的作品（关键词可能无结果或接口结构已变化）"
+    return "抖音搜索页没有发出作品搜索接口（页面可能未完整加载或平台页面已变化）"
+
+
+def douyin_search_exception_error(exc: Exception) -> str:
+    """把用户主动关窗与真正的页面异常分开，避免向界面泄漏超长堆栈文本。"""
+    detail = repr(exc)
+    if "TargetClosedError" in detail or "has been closed" in detail:
+        return "抖音采集窗口被关闭；请续跑任务，并在任务结束前保持窗口打开"
+    return f"打开抖音搜索页失败: {detail}"
+
+
+def _douyin_search_needs_verification(payload) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    nil_info = payload.get("search_nil_info") or {}
+    marker = " ".join(str(nil_info.get(key) or "") for key in (
+        "search_nil_type", "search_nil_item", "text_type"))
+    return "verify" in marker.casefold()
 
 
 # 作品页没拿到数据时,看页面究竟是什么状态:登录墙?空态?还是 tab 没激活?
@@ -194,6 +455,173 @@ async def fetch_videos(mgr: BrowserManager, identity: Identity, sec_uid: str,
     return new_items, author, error
 
 
+async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: str,
+                               max_results: int = 20, max_scrolls: int = 12,
+                               settle_ms: int = 1800,
+                               block_media: bool = False,
+                               context=None) -> Tuple[List[dict], str]:
+    """打开抖音视频搜索页，拦截站内搜索响应并返回作品原始对象。"""
+    collected: Dict[str, dict] = {}
+    api_seen: List[str] = []
+    error = ""
+    # 关键词搜索在抖音无头上下文中容易直接落到“验证码中间页”。批量任务可传入
+    # 同账号的临时有头 context；普通调用仍沿用后台常驻 context。
+    if context is not None:
+        page = next((candidate for candidate in context.pages
+                     if candidate.url == "about:blank"), None)
+        page = page or await context.new_page()
+    else:
+        page = await mgr.new_page(identity, block_media)
+
+    def collect_payload(payload) -> int:
+        before = len(collected)
+        for raw in extract_search_awemes(payload):
+            aid = str(raw.get("aweme_id") or "")
+            if aid:
+                collected.setdefault(aid, raw)
+        return len(collected) - before
+
+    async def on_response(resp):
+        url = resp.url
+        # 保留已知接口，同时接受路径中含 search 的新版本网页接口，避免平台只改
+        # 路径就被误报成“没有发出搜索接口”。
+        is_search_api = any(marker in url for marker in SEARCH_API_MARKERS)
+        is_search_api = is_search_api or (
+            "/aweme/v1/web/" in url and "search" in urlsplit(url).path.casefold())
+        if not is_search_api:
+            return
+        if len(api_seen) < 40:
+            api_seen.append(f"{resp.status} {url.split('?')[0]}")
+        try:
+            payload = await resp.json()
+        except Exception:
+            return
+        collect_payload(payload)
+
+    page.on("response", on_response)
+    final_url = ""
+    page_title = ""
+    page_text = ""
+    try:
+        # general 页可作为 general/search/single 的同源 Referer；具体只取视频由
+        # search_channel=aweme_video_web 控制。
+        target = f"https://www.douyin.com/search/{quote(keyword, safe='')}?type=general"
+        await page.goto(target, wait_until="domcontentloaded", timeout=30000)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=12000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(settle_ms)
+
+        # 页面不主动发首屏 XHR 时，直接在当前登录浏览器里请求同一个搜索接口。
+        # 每页最多 15 条，数量较大时沿用 extra.logid 继续分页。
+        direct_error = ""
+        search_id = ""
+        for offset in range(0, max(1, max_results), 15):
+            if len(collected) >= max_results:
+                break
+            params = douyin_search_request_params(
+                keyword, offset=offset,
+                # 网页端接口按固定 15 条返回；传 5 等较小值会被当成异常请求并
+                # 返回空 data，因此本地再按 max_results 截断。
+                count=15,
+                search_id=search_id)
+            try:
+                result = await _request_douyin_search(
+                    page, identity, params, target)
+            except Exception as exc:
+                direct_error = f"页面内搜索请求失败: {exc!r}"
+                break
+            result = result if isinstance(result, dict) else {}
+            status = int(result.get("status") or 0)
+            if len(api_seen) < 40:
+                api_seen.append(
+                    f"direct {status} /aweme/v1/web/general/search/single/")
+            payload = result.get("data")
+            if not isinstance(payload, dict):
+                preview = str(result.get("preview") or result.get("error") or "")
+                direct_error = (
+                    f"抖音搜索接口返回异常（HTTP {status or '未知'}）"
+                    + (f": {preview[:160]}" if preview else ""))
+                break
+
+            # 接口用 search_nil_info=verify_check 表示页面已弹出滑块。保持采集
+            # 窗口而不是立即判失败，让用户在同一窗口完成一次验证；验证完成后
+            # 复用相同账号上下文自动续跑。
+            if _douyin_search_needs_verification(payload):
+                try:
+                    await page.bring_to_front()
+                except Exception:
+                    pass
+                for _ in range(24):
+                    await page.wait_for_timeout(2500)
+                    if collected:
+                        break
+                    result = await _request_douyin_search(
+                        page, identity, params, target)
+                    payload = (result.get("data")
+                               if isinstance(result, dict) else None)
+                    if (isinstance(payload, dict)
+                            and not _douyin_search_needs_verification(payload)):
+                        break
+                if collected:
+                    break
+                if (not isinstance(payload, dict)
+                        or _douyin_search_needs_verification(payload)):
+                    direct_error = (
+                        "抖音要求完成滑块验证；请续跑任务后，在弹出的采集窗口中"
+                        "完成滑块，验证通过后任务会自动继续")
+                    break
+            added = collect_payload(payload)
+            search_id = str((payload.get("extra") or {}).get("logid") or "")
+            if added == 0 or not payload.get("has_more"):
+                break
+            await page.wait_for_timeout(600)
+
+        stagnant = 0
+        for _ in range(max(1, min(max_scrolls, 40))):
+            if len(collected) >= max_results:
+                break
+            before = len(collected)
+            try:
+                await page.evaluate(_SCROLL_PROFILE_JS)
+            except Exception:
+                pass
+            await page.mouse.wheel(0, 4200)
+            await page.wait_for_timeout(settle_ms)
+            if len(collected) == before:
+                stagnant += 1
+                if collected and stagnant >= 3:
+                    break
+            else:
+                stagnant = 0
+        final_url = page.url
+        if not collected:
+            try:
+                page_title = (await page.title()).strip()
+            except Exception:
+                pass
+            try:
+                page_text = (await page.locator("body").inner_text())[:1200]
+            except Exception:
+                pass
+            error = direct_error or douyin_search_empty_error(
+                page_title, page_text, final_url, api_seen)
+    except Exception as exc:
+        error = douyin_search_exception_error(exc)
+    finally:
+        try:
+            final_url = final_url or page.url
+            await page.close()
+        except Exception:
+            pass
+
+    if not collected:
+        print(f"[dy_search] keyword={keyword!r} final_url={final_url!r} "
+              f"title={page_title!r} api_seen({len(api_seen)})={api_seen[:10]}")
+    return list(collected.values())[:max_results], error
+
+
 # 滚动评论区的可滚动容器(而不是整页),驱动抖音自己的分页请求
 _SCROLL_COMMENTS = """
 () => {
@@ -217,7 +645,8 @@ _SCROLL_COMMENTS = """
 
 async def fetch_comments(mgr: BrowserManager, identity: Identity, aweme_id: str,
                          known_cids: Set[str], max_scrolls: int = 6,
-                         settle_ms: int = 1600, block_media: bool = True
+                         settle_ms: int = 1600, block_media: bool = True,
+                         context=None,
                          ) -> Tuple[List[dict], str]:
     """打开作品详情页,滚动评论容器翻页,拦截评论列表接口收集评论原始 JSON。
     返回 (新评论原始列表, error)。注意:抖音评论默认按热度排序,非严格时间序,
@@ -225,7 +654,8 @@ async def fetch_comments(mgr: BrowserManager, identity: Identity, aweme_id: str,
     """
     collected: Dict[str, dict] = {}
     error = ""
-    page = await mgr.new_page(identity, block_media)
+    page = (await context.new_page() if context is not None
+            else await mgr.new_page(identity, block_media))
 
     async def on_response(resp):
         if COMMENT_API in resp.url:
@@ -819,6 +1249,20 @@ async def _refetch_in_page(page, full_url: str) -> Optional[dict]:
         return None
 
 
+def _self_profile_session_is_invalid(has_login_btn, has_login_cookie,
+                                     has_result: bool,
+                                     profile_user_seen: bool) -> bool:
+    """根据页面和 Cookie 证据判断本人登录态是否已经失效。
+
+    登录 Cookie 即使仍在有效期内，也可能已被服务端撤销；页面明确显示可见的
+    “登录”入口时，应优先判定为退出状态，避免把 localStorage 或缓存接口中的
+    旧资料误当成一次成功的登录校验。
+    """
+    if has_login_btn is True:
+        return True
+    return bool(has_result and not profile_user_seen and has_login_cookie is False)
+
+
 async def fetch_self_profile(mgr: BrowserManager, identity: Identity,
                              timeout_ms: int = 15000, block_media: bool = False
                              ) -> Tuple[dict, str]:
@@ -950,8 +1394,10 @@ async def fetch_self_profile(mgr: BrowserManager, identity: Identity,
         except Exception:
             has_login_cookie = None
 
-        # localStorage 退出后可能残留。只有仍有登录 Cookie，弱来源资料才算有效。
-        if result and not profile_user_seen and has_login_cookie is False:
+        # 页面上的可见登录入口是最直接的退出证据。Cookie 可能尚未过期但已被
+        # 服务端撤销；localStorage/profile 缓存也可能继续返回旧账号资料。
+        if _self_profile_session_is_invalid(
+                has_login_btn, has_login_cookie, bool(result), profile_user_seen):
             result.clear()
             logged_out = True
     except Exception as e:

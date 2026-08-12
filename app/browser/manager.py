@@ -370,11 +370,14 @@ class BrowserManager:
     @staticmethod
     async def _bridge_identity_cookies(
             ctx: BrowserContext, identity: Identity,
-            *, assume_empty: bool = False) -> None:
+            *, assume_empty: bool = False, overwrite: bool = False) -> None:
         if not identity.bridge_states:
             return
         try:
-            existing = [] if assume_empty else await ctx.cookies()
+            # 常驻后台 context 默认保护 profile 中平台刚刷新的 Cookie。显式切到
+            # 临时有头采集窗口时则以数据库账号登录态为准，覆盖 profile 里可能残留的
+            # 访客/登出 Cookie，行为与“账号 → 打开浏览器”保持一致。
+            existing = [] if (assume_empty or overwrite) else await ctx.cookies()
             cookies = _bridge_cookies(identity.bridge_states, existing)
             if cookies:
                 await ctx.add_cookies(cookies)
@@ -574,6 +577,21 @@ class BrowserManager:
         await asyncio.to_thread(bring_window_to_front, snapshot,
                                 CHROMIUM_WINDOW_CLASSES, "", 1.5)
         return ctx
+
+    @asynccontextmanager
+    async def temporary_headed_context(self, identity: Identity):
+        """Lease a visible persistent context and always save/close it afterwards."""
+        ctx = await self.open_headed(identity)
+        try:
+            await self._bridge_identity_cookies(
+                ctx, identity, overwrite=True)
+            yield ctx
+        finally:
+            if identity.platform == "xhs":
+                await self.close_context(identity.key)
+            else:
+                with suppress(Exception):
+                    await ctx.close()
 
 
 # 各平台 Cookie 顶域(子域如 creator./edith. 都吃顶域 cookie,一个就够)

@@ -23,6 +23,7 @@ _site/
 
 # Runtime data (login states, downloaded media, sqlite db, uploads)
 data/
+logs/
 *.db
 config.yaml
 

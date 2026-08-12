@@ -51,7 +51,8 @@ from ..models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
                       CommentWatch, DanmakuWatch, DanmakuRecord,
                       DouyinAccount, MonitorTarget,
                       NotificationChannel, PublishTask, AccountActionTask,
-                      FollowEdge, DmConversation, AccountWork, AccountStatSnapshot)
+                       FollowEdge, DmConversation, AccountWork, AccountStatSnapshot,
+                       KeywordCollectionJob)
 from ..notifier import notify_all
 from ..netfp import probe_ip_region
 from ..risk import (
@@ -62,6 +63,7 @@ from ..risk import (
 )
 from ..settings import get_setting
 from .downloader import Downloader
+from .collection import KeywordCollector
 
 MAX_AUTO_RETRY = 3
 _BROWSER_SUBMIT_MARKER = "write_submitted:browser"
@@ -174,6 +176,7 @@ class MonitorEngine:
             cfg.engine.media_dir, cfg.engine.user_agent,
             cfg.engine.download_timeout_seconds,
         )
+        self.keyword_collector = KeywordCollector(cfg, browser, self.downloader)
         self._sem = asyncio.Semaphore(cfg.engine.worker_pool_size)
         # 限制并发抓取的目标数(多个浏览器上下文并行,但不无限开)
         self._scan_sem = asyncio.Semaphore(max(1, cfg.engine.scan_concurrency))
@@ -184,6 +187,7 @@ class MonitorEngine:
         self._publishing: set[int] = set()
         self._commenting: set[int] = set()         # 正在执行的评论任务 id
         self._actioning: set[int] = set()           # 正在执行的写操作任务 id
+        self._collection_tasks: dict[int, asyncio.Task] = {}  # 一次性关键词采集
         self._last_acct_check = time.time()   # 上次账号体检时间
         self._geo_checked: dict = {}          # account_id -> 已校验过地区的代理(避免重复探测)
         self.risk = RiskController(cfg)
@@ -229,6 +233,20 @@ class MonitorEngine:
                         row.error = "服务重启后已恢复到待执行队列"
                     s.add(row)
                     recovered += 1
+            for job in s.exec(
+                    select(KeywordCollectionJob)
+                    .where(KeywordCollectionJob.status == "running")).all():
+                if job.cancel_requested:
+                    job.status = "canceled"
+                    job.current_step = "已取消"
+                    job.finished_at = now or datetime.utcnow()
+                else:
+                    job.status = "pending"
+                    job.current_step = "服务重启后等待继续"
+                    job.started_at = None
+                    job.finished_at = None
+                s.add(job)
+                recovered += 1
             if recovered:
                 s.commit()
         return recovered
@@ -249,6 +267,12 @@ class MonitorEngine:
         if self._task:
             self._task.cancel()
             self._task = None
+        tasks = list(self._collection_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._collection_tasks.clear()
 
     # ── 账号隔离调度 ──
     @staticmethod
@@ -462,9 +486,144 @@ class MonitorEngine:
                 await self._process_comment_rules()
                 await self._process_comment_tasks()
                 await self._process_action_tasks()
+                await self._process_collection_jobs()
             except Exception as e:
                 log.exception("scan loop error: %s", e)
             await asyncio.sleep(15)
+
+    def enqueue_collection_job(self, job_id: int) -> bool:
+        """立即把关键词任务交给后台执行；同一时刻仅跑一个批量任务。"""
+        if job_id in self._collection_tasks:
+            return False
+        if len(self._collection_tasks) >= 1:
+            return False
+        task = asyncio.create_task(self.run_collection_job(job_id))
+        self._collection_tasks[job_id] = task
+
+        def done(completed: asyncio.Task, jid: int = job_id):
+            self._collection_tasks.pop(jid, None)
+            try:
+                completed.exception()
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        task.add_done_callback(done)
+        return True
+
+    async def _process_collection_jobs(self) -> None:
+        if self._collection_tasks:
+            return
+        with get_session() as s:
+            job = s.exec(
+                select(KeywordCollectionJob)
+                .where(KeywordCollectionJob.status == "pending")
+                .where(KeywordCollectionJob.cancel_requested == False)  # noqa:E712
+                .order_by(KeywordCollectionJob.created_at)
+            ).first()
+        if job:
+            self.enqueue_collection_job(job.id)
+
+    async def run_collection_job(self, job_id: int) -> dict:
+        """执行一个持久化关键词任务，并维护可恢复的状态机。"""
+        with get_session() as s:
+            job = s.get(KeywordCollectionJob, job_id)
+            if not job:
+                return {"ok": False, "error": "任务不存在"}
+            if job.cancel_requested or job.status == "canceled":
+                job.status = "canceled"
+                job.current_step = "已取消"
+                job.finished_at = datetime.utcnow()
+                s.add(job); s.commit()
+                return {"ok": True, "canceled": True}
+            account = s.get(DouyinAccount, job.account_id)
+            if (not account or account.platform != job.platform
+                    or account.status != "active" or not account.storage_state):
+                job.status = "failed"
+                job.current_step = "执行失败"
+                job.error = "所选账号不存在、登录态失效或平台不匹配"
+                job.error_count += 1
+                job.finished_at = datetime.utcnow()
+                s.add(job); s.commit()
+                return {"ok": False, "error": job.error}
+            account_id = account.id
+
+        decision = self.risk.preflight(account_id, OperationKind.READ_HEAVY)
+        if not decision.allowed:
+            with get_session() as s:
+                job = s.get(KeywordCollectionJob, job_id)
+                if job and job.status == "pending":
+                    job.current_step = "等待账号读取冷却"
+                    s.add(job); s.commit()
+            return {"ok": True, "deferred": True, "reason": decision.reason}
+
+        try:
+            async with self._operation_guard(account_id, OperationKind.READ_HEAVY):
+                decision = self.risk.preflight(account_id, OperationKind.READ_HEAVY)
+                if not decision.allowed:
+                    return {"ok": True, "deferred": True, "reason": decision.reason}
+                with get_session() as s:
+                    job = s.get(KeywordCollectionJob, job_id)
+                    if not job:
+                        return {"ok": False, "error": "任务不存在"}
+                    job.status = "running"
+                    job.current_step = "准备搜索"
+                    job.started_at = job.started_at or datetime.utcnow()
+                    job.finished_at = None
+                    s.add(job); s.commit()
+                    account = s.get(DouyinAccount, account_id)
+                result = await self.keyword_collector.run(job_id, account)
+
+            with get_session() as s:
+                job = s.get(KeywordCollectionJob, job_id)
+                if not job:
+                    return {"ok": False, "error": "任务不存在"}
+                if result.get("canceled") or job.cancel_requested:
+                    job.status = "canceled"
+                    job.current_step = "已取消"
+                elif job.error_count and job.content_count:
+                    job.status = "partial"
+                    job.current_step = "完成，部分内容有错误"
+                elif job.error_count and not job.content_count:
+                    job.status = "failed"
+                    job.current_step = "执行失败"
+                else:
+                    job.status = "done"
+                    job.current_step = "已完成"
+                job.finished_at = datetime.utcnow()
+                s.add(job); s.commit()
+                status = job.status
+            if status in {"done", "partial"}:
+                self.risk.record_success(account_id, OperationKind.READ_HEAVY)
+                self._stamp_active(account_id)
+            else:
+                self.risk.record_failure(account_id, OperationKind.READ_HEAVY,
+                                         "关键词采集未取得结果")
+            return {"ok": status in {"done", "partial"}, "status": status, **result}
+        except asyncio.CancelledError:
+            with get_session() as s:
+                job = s.get(KeywordCollectionJob, job_id)
+                if job and job.status == "running":
+                    if job.cancel_requested:
+                        job.status = "canceled"
+                        job.current_step = "已取消"
+                        job.finished_at = datetime.utcnow()
+                    else:
+                        job.status = "pending"
+                        job.current_step = "服务停止，等待恢复"
+                    s.add(job); s.commit()
+            raise
+        except Exception as exc:
+            self.risk.record_failure(account_id, OperationKind.READ_HEAVY, exc)
+            with get_session() as s:
+                job = s.get(KeywordCollectionJob, job_id)
+                if job:
+                    job.error_count += 1
+                    job.error = (job.error + "\n" if job.error else "") + str(exc)[:500]
+                    job.status = "partial" if job.content_count else "failed"
+                    job.current_step = "异常中止"
+                    job.finished_at = datetime.utcnow()
+                    s.add(job); s.commit()
+            return {"ok": False, "error": str(exc)}
 
     def _stamp_active(self, account_id) -> None:
         """记录账号「刚被成功摸活」的时刻。任何一次成功的网络/浏览器动作都算活跃,

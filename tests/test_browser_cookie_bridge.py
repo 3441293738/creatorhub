@@ -3,6 +3,8 @@ import time
 import unittest
 
 from app.browser.manager import _bridge_cookies
+from app.browser.identity import Identity
+from app.browser.manager import BrowserManager
 
 
 def _state(*cookies):
@@ -74,6 +76,41 @@ class BrowserCookieBridgeTests(unittest.TestCase):
         )
 
         self.assertEqual(_bridge_cookies((state,), existing=[]), [])
+
+
+class ForcedBrowserCookieBridgeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_visible_collection_overwrites_stale_profile_cookie(self):
+        state = _state({
+            "name": "sessionid",
+            "value": "fresh-db-value",
+            "domain": ".douyin.com",
+            "path": "/",
+        })
+
+        class FakeContext:
+            def __init__(self):
+                self.added = []
+
+            async def cookies(self):
+                return [{
+                    "name": "sessionid", "value": "stale-profile-value",
+                    "domain": ".douyin.com", "path": "/",
+                }]
+
+            async def add_cookies(self, cookies):
+                self.added.extend(cookies)
+
+        context = FakeContext()
+        identity = Identity(
+            account_id=1, profile_dir="fixture", platform="douyin",
+            bridge_states=(state,),
+        )
+
+        await BrowserManager._bridge_identity_cookies(
+            context, identity, overwrite=True)
+
+        self.assertEqual(len(context.added), 1)
+        self.assertEqual(context.added[0]["value"], "fresh-db-value")
 
 
 if __name__ == "__main__":

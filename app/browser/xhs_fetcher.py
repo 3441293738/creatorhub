@@ -445,6 +445,7 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
     logged_out = False
     final_url = ""
     state_user = None
+    has_login_btn = None
     try:
         async with mgr.visible_page(identity) as page:
             page.on("response", on_response)
@@ -462,6 +463,13 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
             if "passport" in final_url or "/login" in final_url:
                 logged_out = True
             if me_data.get("guest") is True:
+                logged_out = True
+            try:
+                has_login_btn = await page.get_by_text(
+                    "登录", exact=True).first.is_visible(timeout=1200)
+            except Exception:
+                has_login_btn = None
+            if has_login_btn is True:
                 logged_out = True
             if not me_data and not other_data:    # 兜底:读 __INITIAL_STATE__
                 try:
@@ -490,7 +498,7 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
             error = "logged_out"
         elif not error:
             error = "no_user_me_xhr" if not api_seen else "user/me 无 user 字段"
-        print(f"[xhs_self_profile] 未拿到资料; err={error}; final_url={final_url}; "
+        print(f"[xhs_self_profile] 未拿到资料; err={error}; final_url={final_url}; login_btn={has_login_btn}; "
               f"guest={me_data.get('guest')}; me={'有' if me_data else '无'}; "
               f"other={'有' if other_data else '无'}; state_user={'有' if state_user else '无'}; "
               f"api_seen({len(api_seen)})={api_seen[:25]}")

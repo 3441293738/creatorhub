@@ -860,6 +860,91 @@ def build_share_history_report(
     )
 
 
+def build_keyword_collection_report(job: Any, contents: Sequence[Any],
+                                    comments: Sequence[Any],
+                                    generated_at: datetime | None = None) -> bytes:
+    """Build one workbook containing the keyword job, content and comments."""
+    generated_at = generated_at or datetime.now()
+    workbook = Workbook()
+    _configure_workbook(workbook)
+    workbook.properties.creator = "CreatorHub"
+    workbook.properties.title = "CreatorHub 关键词采集报告"
+    keyword_value = _value(job, "keywords", "[]")
+    try:
+        keyword_text = ", ".join(json.loads(keyword_value or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        keyword_text = _text(keyword_value)
+    _write_module_summary(
+        workbook,
+        report_title="CreatorHub 关键词采集报告",
+        module_name="关键词采集",
+        detail_sheet="作品",
+        record_count=len(contents),
+        filters=(
+            ("任务 ID", _value(job, "id")),
+            ("平台", _value(job, "platform")),
+            ("关键词", keyword_text),
+            ("任务状态", _value(job, "status")),
+            ("作品数", len(contents)),
+            ("评论数", len(comments)),
+        ),
+        generated_at=generated_at,
+    )
+    content_by_id = {_value(row, "id"): row for row in contents}
+    content_rows = []
+    for row in contents:
+        platform = _text(_value(row, "platform"))
+        aweme_id = _text(_value(row, "aweme_id"))
+        url = (f"https://www.xiaohongshu.com/explore/{aweme_id}"
+               if platform == "xhs" else f"https://www.douyin.com/video/{aweme_id}")
+        content_rows.append((
+            _value(row, "id"), _text(_value(row, "keyword")), platform,
+            aweme_id, _text(_value(row, "desc")),
+            _text(_value(row, "author_name")), _text(_value(row, "media_type")),
+            _timestamp(_value(row, "create_time")), _value(row, "like_count", 0),
+            _value(row, "comment_count", 0),
+            _value(row, "collected_comment_count", 0),
+            _text(_value(row, "download_status")),
+            _local_path_text(_value(row, "local_path")), url,
+            _text(_value(row, "error")),
+        ))
+    _write_table(
+        workbook, "作品",
+        ("ID", "关键词", "平台", "作品ID", "描述", "作者", "媒体类型",
+         "发布时间", "点赞数", "平台评论数", "已采评论数", "下载状态",
+         "本地文件", "作品链接", "错误"),
+        content_rows,
+        widths=(10, 20, 12, 24, 54, 22, 12, 20, 12, 14, 14, 14, 42, 42, 38),
+        date_columns={8}, number_columns={1, 9, 10, 11},
+        link_columns={13, 14}, tab_color="E11D48", freeze_panes="E2",
+        row_height=36,
+    )
+    comment_rows = []
+    for row in comments:
+        content = content_by_id.get(_value(row, "content_id"))
+        comment_rows.append((
+            _value(row, "id"), _text(_value(content, "keyword")),
+            _text(_value(row, "platform")), _text(_value(row, "aweme_id")),
+            _text(_value(row, "comment_id")), _text(_value(row, "text")),
+            _text(_value(row, "user_nickname")), _value(row, "like_count", 0),
+            _timestamp(_value(row, "create_time")),
+            "回复" if _value(row, "reply_to") else "一级评论",
+            _text(_value(row, "reply_to")),
+        ))
+    _write_table(
+        workbook, "评论",
+        ("ID", "关键词", "平台", "作品ID", "评论ID", "评论内容", "用户昵称",
+         "点赞数", "评论时间", "类型", "上级评论ID"),
+        comment_rows,
+        widths=(10, 20, 12, 24, 24, 58, 22, 12, 20, 14, 24),
+        date_columns={9}, number_columns={1, 8}, tab_color="14B8A6",
+        freeze_panes="F2", row_height=36,
+    )
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
 def _write_summary(
     workbook: Workbook,
     *,

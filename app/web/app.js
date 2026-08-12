@@ -750,6 +750,9 @@ const PAGE_META = {
   monitors: {
     title: "作品监控", desc: "添加采集目标，管理下载策略并追踪作品状态。"
   },
+  collections: {
+    title: "关键词批量采集", desc: "批量搜索抖音视频，并按上限采集评论与媒体。"
+  },
   comments: {
     title: "评论监控", desc: "订阅作品或账号评论，按来源、分组和标签筛选。"
   },
@@ -806,7 +809,7 @@ function switchPlatform(pf) {
   try { localStorage.setItem("dym-pf", pf); } catch (e) {}
   applyPlatformUI();
   // 切换后立刻刷新该平台数据
-  refreshAccounts(); refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku();
+  refreshAccounts(); refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshCollections();
   populateAcAccount(); onAcMode(); refreshCommentRules(); refreshCommentTasks();
   if (pfHasPublish(PLATFORM)) refreshPublish();
 }
@@ -829,6 +832,7 @@ function applyPlatformUI() {
   document.querySelectorAll(".ks-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "kuaishou"));
   document.querySelectorAll(".sh-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "shipinhao"));
   document.querySelectorAll(".notsh-only").forEach(e => e.classList.toggle("hidden", pfIsChannels(PLATFORM)));
+  document.querySelectorAll(".collect-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "douyin"));
   document.querySelectorAll(".meta-scope").forEach(e => {
     e.textContent = (PF_NAME[PLATFORM] || "当前平台") + "内独立";
   });
@@ -882,6 +886,7 @@ function applyPlatformUI() {
     : PLATFORM === "kuaishou" ? "从 www.kuaishou.com 登录后复制完整 Cookie"
     : "从浏览器开发者工具复制完整 Cookie";
   applyMonitorForm();
+  applyCollectionForm();
   if (PLATFORM === "douyin") applyDanmakuForm();
   if ($("t-kind") && PLATFORM !== "xhs") $("t-kind").value = "creator";
   // 视频号只有本账号数据,不支持「监控他人」:若正停在这些面板,自动切到「账号管理」
@@ -891,6 +896,7 @@ function applyPlatformUI() {
     // 视频号本账号只有「我的作品 / 数据」;若停在关注/粉丝/私信子页,切回我的作品
     if (["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
   }
+  if (PLATFORM !== "douyin" && CURRENT_TAB === "collections") switchTab("overview");
   // 不支持发布的平台:若正停在该面板则回到总览(当前四平台均支持,兜底保留)
   if (!pfHasPublish(PLATFORM)) {
     const pub = document.querySelector('[data-panel="publish"]');
@@ -953,6 +959,7 @@ function switchTab(name, pushHistory = false) {
     loadShareAccounts();
     refreshShareHistory();
   }
+  if (name === "collections") { populateCollectionAccount(); refreshCollections(); }
 }
 
 // ─── 扫码登录(真实浏览器窗口) ───
@@ -1156,6 +1163,7 @@ async function saveCookie() {
 // ─── 账号 ───
 let ACCOUNTS = [];
 let MONITORS = [], WATCHES = [], CONTENTS = [];
+let COLLECTION_JOBS = [], COLLECTION_JOB_ID = 0, COLLECTION_PAGE = 1;
 let DANMAKU_WATCHES = [];
 let CHANNELS = [], PUBLISH_TASKS = [];
 let CONTENT_SRC = "", CONTENT_GROUP = "", CONTENT_TAG = "";
@@ -1547,6 +1555,7 @@ async function refreshAccounts() {
   if ($("tb-acc")) $("tb-acc").textContent = accs.length;
   populateAccountSelect();
   populateWatchAccount();
+  populateCollectionAccount();
   if (PLATFORM === "douyin") applyDanmakuForm();
   else populateDanmakuAccount();
   populatePubAcc();
@@ -1570,8 +1579,13 @@ function setHubAcc(id) { HUB_ACC = String(id || ""); try { localStorage.setItem(
 async function openAccountBrowser(id) {
   await withBusy(evtBtn(), "打开中", async () => {
     try {
-      await api("/api/accounts/" + id + "/open-browser", { method: "POST" });
-      toast("已弹出该账号浏览器窗口;用完请关窗(关窗即保存登录态)。窗口开着时该账号后台同步会暂停", "ok", 6000);
+      const result = await api("/api/accounts/" + id + "/open-browser", { method: "POST" });
+      if (result.logged_out) {
+        toast("该账号登录态已失效，请关闭当前窗口后点「重新登录」完成扫码", "err", 8000);
+        refreshAccounts();
+      } else {
+        toast("已弹出该账号浏览器窗口;用完请关窗(关窗即保存登录态)。窗口开着时该账号后台同步会暂停", "ok", 6000);
+      }
     } catch (e) { toast("打开失败:" + e.message, "err"); }
   });
 }
@@ -1995,6 +2009,15 @@ function populateAccountSelect() {
   sel.innerHTML = accOptions(ACCOUNTS, required ? `请选择${platformName}账号(必选)` : "不指定账号");
   // 抖音匿名主页可能返回风控后的旧快照；作品监控与小红书一样必须使用登录态。
   if (required && ACCOUNTS.length) sel.value = String(ACCOUNTS[0].id);
+}
+function populateCollectionAccount() {
+  const sel = $("col-account"); if (!sel) return;
+  const current = sel.value;
+  const list = ACCOUNTS.filter(a => a.platform === "douyin" && a.status !== "invalid" && a.has_storage);
+  sel.innerHTML = accOptions(list, list.length ? "请选择抖音账号" : "暂无可用抖音账号");
+  if (list.some(a => String(a.id) === current)) sel.value = current;
+  else if (list.length) sel.value = String(list[0].id);
+  if (sel._csSync) sel._csSync();
 }
 function populateWatchAccount() {
   const sel = $("w-acc"); if (!sel) return;
@@ -2971,6 +2994,390 @@ async function toggleChannel(id, enabled) { try { await api("/api/notifications/
 async function delChannel(id) { if (await uiConfirm({ title: "删除渠道", message: "删除该通知渠道?", okText: "删除", danger: true })) { try { await api("/api/notifications/" + id, { method: "DELETE" }); toast("渠道已删除", "ok"); refreshChannels(); } catch (e) { toast("删除失败:" + e.message, "err"); } } }
 
 // ─── 监控 ───
+// ═══════════ 关键词批量采集（当前版本：抖音）═══════════
+function parseCollectionKeywords(raw) {
+  const seen = new Set();
+  return String(raw || "")
+    .split(/[,，、;；\n]+/).map(x => x.trim()).filter(x => {
+      const key = x.toLocaleLowerCase();
+      if (!x || seen.has(key)) return false;
+      seen.add(key); return true;
+    }).slice(0, 21);
+}
+function collectionKeywords() {
+  return parseCollectionKeywords($("col-keywords") ? $("col-keywords").value : "");
+}
+function applyCollectionForm() {
+  const enabled = !!($("col-download") && $("col-download").checked);
+  if ($("col-dir-wrap")) $("col-dir-wrap").style.display = enabled ? "" : "none";
+}
+function collectionStatus(status) {
+  const labels = { pending: "等待中", running: "采集中", done: "已完成", partial: "部分完成", failed: "失败", canceled: "已取消" };
+  const classes = { pending: "pending", running: "downloading", done: "done", partial: "pending", failed: "failed", canceled: "skipped" };
+  return { label: labels[status] || status, cls: classes[status] || "skipped" };
+}
+function collectionLastError(job) {
+  const lines = String(job && job.error || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : "";
+}
+function collectionDate(value) {
+  if (!value) return "—";
+  const parsed = new Date(value.endsWith && value.endsWith("Z") ? value : value + "Z");
+  return Number.isNaN(parsed.getTime()) ? esc(value) : parsed.toLocaleString();
+}
+async function createCollection() {
+  const keywords = collectionKeywords();
+  const accountId = Number($("col-account").value || 0);
+  const contentLimit = Number($("col-content-limit").value || 0);
+  const commentLimit = Number($("col-comment-limit").value || 0);
+  let valid = true;
+  valid = setFieldError($("col-keywords"), !keywords.length ? "请至少填写一个关键词" : keywords.length > 20 ? "单个任务最多 20 个关键词" : "") && valid;
+  valid = setFieldError($("col-account"), !accountId ? "请选择一个已登录账号" : "") && valid;
+  valid = setFieldError($("col-content-limit"), contentLimit < 1 || contentLimit > 100 ? "请输入 1–100" : "") && valid;
+  valid = setFieldError($("col-comment-limit"), commentLimit < 0 || commentLimit > 200 ? "请输入 0–200" : "") && valid;
+  if (!valid) {
+    const first = document.querySelector('[data-panel="collections"] [aria-invalid="true"]');
+    if (first) first.focus();
+    return;
+  }
+  const btn = evtBtn();
+  await withBusy(btn, "创建中", async () => {
+    try {
+      const job = await api("/api/collections", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          platform: "douyin", account_id: accountId, keywords,
+          max_contents_per_keyword: contentLimit,
+          max_comments_per_content: commentLimit,
+          include_replies: $("col-replies").checked,
+          download_media: $("col-download").checked,
+          video_quality: $("col-quality").value || "highest",
+          download_dir: $("col-download-dir").value.trim(),
+        }),
+      });
+      $("col-create-msg").textContent = `任务 #${job.id} 已进入队列`;
+      $("col-keywords").value = "";
+      toast("关键词采集任务已创建", "ok");
+      await refreshCollections();
+    } catch (e) {
+      $("col-create-msg").textContent = "创建失败：" + e.message;
+      toast("创建失败：" + e.message, "err");
+    }
+  });
+}
+function collectionTaskSkeleton(count = 3) {
+  return Array.from({ length: count }, () => `<div class="collection-task-skeleton" aria-hidden="true">
+    <span class="sk" style="height:28px"></span><span class="sk" style="height:42px"></span>
+    <span class="sk" style="height:42px"></span><span class="sk" style="height:52px"></span>
+  </div>`).join("");
+}
+function collectionTaskEmpty() {
+  return `<div class="empty collection-task-empty"><div class="empty-ic">${ic("i-hash")}</div>
+    <div class="empty-t">还没有关键词采集任务</div><div class="empty-sub">在上方批量输入关键词并开始采集</div></div>`;
+}
+function renderCollectionJobs() {
+  const body = $("collection-job-table"); if (!body) return;
+  body.innerHTML = COLLECTION_JOBS.map(job => {
+    const status = collectionStatus(job.status);
+    const planned = Math.max(1, Number(job.planned_content_count || 0));
+    const percent = Math.min(100, Math.round(Number(job.content_count || 0) * 100 / planned));
+    const keywords = (job.keywords || []).slice(0, 5).map(k => `<span class="meta-chip">${esc(k)}</span>`).join("") +
+      ((job.keywords || []).length > 5 ? `<span class="meta-chip more">+${job.keywords.length - 5}</span>` : "");
+    const canCancel = ["pending", "running"].includes(job.status);
+    const canRetry = ["done", "partial", "failed", "canceled"].includes(job.status);
+    const canEdit = canRetry && job.platform === "douyin";
+    const errorText = collectionLastError(job);
+    return `<article class="collection-task" role="listitem" aria-label="任务 ${job.id}，${status.label}">
+      <div class="collection-task-meta"><div><span class="collection-task-label">任务状态</span><span class="pill ${status.cls}">${status.label}</span></div><time class="collection-task-created" datetime="${esc(job.created_at || "")}">${collectionDate(job.created_at)}</time></div>
+      <div class="collection-task-keywords"><span class="collection-task-label">关键词</span><div class="keyword-stack">${keywords}</div>${job.current_keyword ? `<div class="collection-step">当前：${esc(job.current_keyword)}</div>` : ""}</div>
+      <div class="collection-task-config"><span class="collection-task-label">采集配置</span><div class="collection-task-config-main">${job.max_contents_per_keyword} 作品/词 · ${job.max_comments_per_content} 评论/作品</div><div class="collection-task-config-sub">${job.include_replies ? "含二级评论 · " : ""}${job.download_media ? "下载媒体" : "仅采数据"}</div></div>
+      <div class="collection-task-progress"><span class="collection-task-label">执行进度</span><div class="job-progress"><div class="job-progress-head"><span>${esc(job.current_step || "等待执行")}</span><b>${job.content_count}/${job.planned_content_count}</b></div><div class="progress-track" role="progressbar" aria-label="任务 ${job.id} 进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="progress-fill" style="width:${percent}%"></div></div><div class="collection-step">已采评论 ${fmtNum(job.comment_count)}</div></div></div>
+      ${job.error_count ? `<button type="button" class="collection-task-error" onclick="openCollectionResults(${job.id})" title="${esc(errorText)}">${ic("i-info")}<span class="collection-task-error-text">${job.error_count} 条异常 · ${esc(errorText)}</span><span class="collection-task-error-link">查看详情</span></button>` : ""}
+      <div class="collection-task-actions" aria-label="任务 ${job.id} 操作">
+        <button type="button" class="sm collection-task-primary" onclick="openCollectionResults(${job.id})">${ic("i-eye")}查看结果</button>
+        ${canEdit ? `<button type="button" class="ghost sm" onclick="editCollection(${job.id})">${ic("i-settings")}编辑</button>` : ""}
+        <button type="button" class="ghost sm" onclick="exportCollection(${job.id})"${job.content_count ? "" : " disabled"}>${ic("i-download")}导出</button>
+        ${canCancel ? `<button type="button" class="ghost sm" onclick="cancelCollection(${job.id})">${ic("i-x")}取消任务</button>` : ""}
+        ${canRetry ? `<button type="button" class="ghost sm" onclick="retryCollection(${job.id})">${ic("i-play")}续跑</button>` : ""}
+        ${job.status !== "running" ? `<button type="button" class="ghost sm danger collection-task-delete" onclick="deleteCollection(${job.id})" aria-label="删除任务 ${job.id}">${ic("i-trash")}删除</button>` : ""}
+      </div>
+    </article>`;
+  }).join("") || collectionTaskEmpty();
+}
+async function refreshCollections() {
+  if (!$("collection-job-table") || PLATFORM !== "douyin") return;
+  try {
+    COLLECTION_JOBS = await api("/api/collections?platform=douyin");
+    const active = COLLECTION_JOBS.filter(j => ["pending", "running"].includes(j.status)).length;
+    if ($("tb-col")) $("tb-col").textContent = active || COLLECTION_JOBS.length;
+    renderCollectionJobs();
+    if (COLLECTION_JOB_ID) {
+      const job = COLLECTION_JOBS.find(j => j.id === COLLECTION_JOB_ID);
+      if (job) {
+        updateCollectionResultStats(job);
+        if (CURRENT_TAB === "collections") await loadCollectionContents(COLLECTION_PAGE, true);
+      }
+      else closeCollectionResults();
+    }
+  } catch (e) {
+    if (CURRENT_TAB === "collections") toast("采集任务刷新失败：" + e.message, "err");
+  }
+}
+async function editCollection(jobId, draft = null) {
+  const job = COLLECTION_JOBS.find(item => item.id === Number(jobId));
+  if (!job) return;
+  const accounts = ACCOUNTS.filter(a => a.platform === "douyin" && a.status !== "invalid" && a.has_storage);
+  const initial = draft || {
+    account_id: job.account_id,
+    keywords: (job.keywords || []).join("\n"),
+    max_contents_per_keyword: job.max_contents_per_keyword,
+    max_comments_per_content: job.max_comments_per_content,
+    include_replies: !!job.include_replies,
+    download_media: !!job.download_media,
+    video_quality: job.video_quality || "highest",
+    download_dir: job.download_dir || "",
+  };
+  const value = await new Promise(resolve => {
+    _uiResolve = resolve; _uiCancelVal = null;
+    $("ui-body").innerHTML = `
+      <div class="form-field"><label for="ecol-keywords">关键词 <span class="field-scope">最多 20 个</span></label>
+        <textarea id="ecol-keywords" rows="5" placeholder="每行一个关键词">${esc(initial.keywords)}</textarea></div>
+      <div class="form-grid">
+        <div class="form-field"><label for="ecol-account">使用账号</label><select id="ecol-account">${accOptions(accounts, accounts.length ? "请选择抖音账号" : "暂无可用抖音账号")}</select></div>
+        <div class="form-field"><label for="ecol-quality">视频画质</label><select id="ecol-quality"><option value="highest">原画 / 最高</option><option value="1080">1080P</option><option value="720">720P</option><option value="540">540P</option><option value="lowest">最低省流</option></select></div>
+        <div class="form-field"><label for="ecol-content-limit">每词作品上限</label><input id="ecol-content-limit" type="number" min="1" max="100" value="${Number(initial.max_contents_per_keyword) || 20}"></div>
+        <div class="form-field"><label for="ecol-comment-limit">每作品评论上限</label><input id="ecol-comment-limit" type="number" min="0" max="200" value="${Number(initial.max_comments_per_content) || 0}"></div>
+      </div>
+      <div class="option-grid" aria-label="采集选项">
+        <label class="switch-row"><input type="checkbox" id="ecol-download"${initial.download_media ? " checked" : ""} onchange="$('ecol-dir-wrap').style.display=this.checked?'':'none'"><span class="switch-copy"><b>下载媒体</b><span>保存视频和封面来源</span></span></label>
+        <label class="switch-row"><input type="checkbox" id="ecol-replies"${initial.include_replies ? " checked" : ""}><span class="switch-copy"><b>包含二级评论</b><span>采集抖音当前可返回的回复</span></span></label>
+      </div>
+      <div class="form-field" id="ecol-dir-wrap" style="display:${initial.download_media ? "" : "none"}"><label for="ecol-download-dir">下载目录（可选）</label><input id="ecol-download-dir" value="${esc(initial.download_dir)}" placeholder="留空使用默认目录"></div>`;
+    $("ecol-account").value = String(initial.account_id || "");
+    $("ecol-quality").value = initial.video_quality || "highest";
+    enhanceAllSelects($("ui-body")); csSyncAll();
+    _uiGetVal = () => ({
+      account_id: Number($("ecol-account").value || 0),
+      keywords: $("ecol-keywords").value,
+      max_contents_per_keyword: Number($("ecol-content-limit").value || 0),
+      max_comments_per_content: Number($("ecol-comment-limit").value || 0),
+      include_replies: $("ecol-replies").checked,
+      download_media: $("ecol-download").checked,
+      video_quality: $("ecol-quality").value || "highest",
+      download_dir: $("ecol-download-dir").value.trim(),
+    });
+    _uiOpen(`编辑采集任务 #${job.id}`, "保存配置不会删除已有作品和评论；修改后点击“续跑”应用新配置，系统会自动去重。", { okText: "保存配置", wide: true });
+  });
+  if (value === null) return;
+  const keywords = parseCollectionKeywords(value.keywords);
+  let error = "";
+  if (!keywords.length) error = "请至少填写一个关键词";
+  else if (keywords.length > 20) error = "单个任务最多 20 个关键词";
+  else if (!value.account_id) error = "请选择一个可用抖音账号";
+  else if (value.max_contents_per_keyword < 1 || value.max_contents_per_keyword > 100) error = "每词作品上限须为 1–100";
+  else if (value.max_comments_per_content < 0 || value.max_comments_per_content > 200) error = "每作品评论上限须为 0–200";
+  if (error) { toast(error, "err"); return editCollection(jobId, value); }
+  try {
+    await api(`/api/collections/${job.id}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...value, platform: "douyin", keywords }),
+    });
+    toast("任务配置已保存，点击“续跑”后生效", "ok");
+    await refreshCollections();
+  } catch (e) { toast("编辑失败：" + e.message, "err"); }
+}
+function updateCollectionResultStats(job) {
+  if (!job) return;
+  $("col-stat-content").textContent = fmtNum(job.content_count);
+  $("col-stat-comments").textContent = fmtNum(job.comment_count);
+  $("col-stat-errors").textContent = fmtNum(job.error_count);
+  const errorBox = $("collection-results-error");
+  const errorText = collectionLastError(job);
+  errorBox.style.display = errorText ? "" : "none";
+  errorBox.textContent = errorText ? `最近异常：${errorText}` : "";
+  $("collection-results-title").childNodes[0].nodeValue = `任务 #${job.id} 采集结果 `;
+  $("collection-results-sub").textContent = `${(job.keywords || []).join("、")} · ${collectionStatus(job.status).label}`;
+}
+async function openCollectionResults(jobId) {
+  const btn = evtBtn();
+  COLLECTION_JOB_ID = Number(jobId); COLLECTION_PAGE = 1;
+  const job = COLLECTION_JOBS.find(j => j.id === COLLECTION_JOB_ID);
+  if (job) updateCollectionResultStats(job);
+  $("collection-results-card").style.display = "";
+  await withBusy(btn, "加载中", async () => {
+    await loadCollectionContents(1);
+    const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    $("collection-results-card").scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
+  });
+}
+function closeCollectionResults() {
+  COLLECTION_JOB_ID = 0; COLLECTION_PAGE = 1;
+  if ($("collection-results-card")) $("collection-results-card").style.display = "none";
+}
+function collectionResultSkeleton(count = 4) {
+  return Array.from({ length: count }, () => `<div class="collection-result-skeleton" aria-hidden="true">
+    <span class="sk" style="height:120px"></span><span class="sk" style="width:72%;margin-top:14px"></span>
+    <span class="sk" style="width:92%;margin-top:10px"></span><span class="sk" style="height:42px;margin-top:18px"></span>
+  </div>`).join("");
+}
+function collectionEmpty(title, detail = "") {
+  return `<div class="empty collection-result-empty"><div class="empty-ic">${ic("i-film")}</div>
+    <div class="empty-t">${esc(title)}</div>${detail ? `<div class="empty-sub">${esc(detail)}</div>` : ""}</div>`;
+}
+function collectionFileDisplay(item) {
+  const path = String(item.local_path || "").trim();
+  const pathMeta = contentPathMeta(item);
+  const count = Number(item.media_count || 0);
+  const name = count > 1 ? `${count} 个媒体文件` : (pathMeta ? pathMeta.name + (pathMeta.ext ? `.${pathMeta.ext}` : "") : "本地媒体");
+  const bits = [item.file_size ? fmtShareSize(item.file_size) : "", pathMeta && pathMeta.dir ? pathMeta.dir : ""].filter(Boolean);
+  return { path, name, meta: bits.join(" · ") || "本地文件可用" };
+}
+function collectionResultCard(item) {
+  const title = item.desc || item.aweme_id || "未命名作品";
+  const isGallery = item.media_type === "images";
+  const typeLabel = isGallery ? `图集${item.media_count > 1 ? ` · ${item.media_count} 张` : ""}` : "视频";
+  const canPreview = Boolean(item.preview_available);
+  const file = collectionFileDisplay(item);
+  const fileExists = Boolean(item.local_exists);
+  const downloadClass = fileExists ? "done" : item.download_status === "failed" ? "failed" : "skipped";
+  const downloadLabel = fileExists ? "已下载" : item.download_status === "failed" ? "下载失败" : item.download_status === "done" ? "文件缺失" : "未下载";
+  const byline = [item.author_name || "未知作者", item.create_time ? fmtTime(item.create_time) : "", item.aweme_id || ""].filter(Boolean);
+  const cover = item.cover_url
+    ? `<img src="${esc(item.cover_url)}" alt="${esc(title.slice(0, 60))}封面" loading="lazy" referrerpolicy="no-referrer">`
+    : `<span class="collection-cover-empty">${ic(isGallery ? "i-image" : "i-film")}</span>`;
+  const filePanel = fileExists ? `<div class="collection-file-panel" title="${esc(file.path)}">
+    <div class="collection-file-main">${ic("i-folder")}<div class="collection-file-info">
+      <div class="collection-file-name">${esc(file.name)}</div><div class="collection-file-meta">${esc(file.meta)}</div>
+    </div></div>
+    <div class="collection-file-actions">
+      <button type="button" class="ghost collection-icon-action" onclick="openCollectionFile(${item.job_id},${item.id},this)" data-tip="用本机默认程序打开" aria-label="用本机默认程序打开">${ic("i-external")}</button>
+      <button type="button" class="ghost collection-icon-action" onclick="revealCollectionFile(${item.job_id},${item.id},this)" data-tip="在文件夹中显示" aria-label="在文件夹中显示">${ic("i-folder")}</button>
+      <button type="button" class="ghost collection-icon-action" data-path="${esc(file.path)}" onclick="copyCollectionPath(this)" data-tip="复制本地路径" aria-label="复制本地路径">${ic("i-copy")}</button>
+    </div>
+  </div>` : `<div class="collection-download-note${item.download_status === "failed" ? " failed" : ""}">${item.error ? esc(item.error) : "本地文件尚不可用，可先预览平台媒体或打开原作品"}</div>`;
+  return `<article class="collection-result-item">
+    <button type="button" class="collection-result-cover" onclick="openCollectionPreview(${item.job_id},${item.id})" aria-label="预览：${esc(title.slice(0, 80))}"${canPreview ? "" : " disabled"}>
+      ${cover}<span class="collection-cover-type">${esc(typeLabel)}</span>
+      <span class="collection-cover-preview">${ic("i-play")}${canPreview ? "站内预览" : "暂无预览"}</span>
+    </button>
+    <div class="collection-result-body">
+      <div class="collection-result-tags"><span class="meta-chip group">#${esc(item.keyword)}</span><span class="pill ${downloadClass}" title="${esc(item.error || "")}">${downloadLabel}</span></div>
+      <a class="collection-result-title" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" title="${esc(title)}">${esc(title)}</a>
+      <div class="collection-result-byline">${byline.map((part, index) => `<span${index === byline.length - 1 ? ' class="collection-result-id"' : ""}>${esc(part)}</span>`).join("<span>·</span>")}</div>
+      <div class="collection-result-metrics" aria-label="作品数据">
+        <div class="collection-result-metric"><b>${ic("i-heart")}${fmtNum(item.like_count)}</b><span>点赞</span></div>
+        <div class="collection-result-metric"><b>${ic("i-msg")}${fmtNum(item.comment_count)}</b><span>平台评论</span></div>
+        <div class="collection-result-metric"><b>${ic("i-inbox")}${fmtNum(item.collected_comment_count)}</b><span>已采评论</span></div>
+      </div>
+      ${filePanel}
+      <div class="collection-result-actions">
+        <button type="button" class="sm collection-preview-primary" onclick="openCollectionPreview(${item.job_id},${item.id})"${canPreview ? "" : " disabled"}>${ic("i-eye")}预览</button>
+        ${fileExists ? `<button type="button" class="ghost sm" onclick="openCollectionFile(${item.job_id},${item.id},this)">${ic("i-external")}打开文件</button>` : ""}
+        <button type="button" class="ghost sm" onclick="showCollectionComments(${item.id})"${item.collected_comment_count ? "" : " disabled"}>${ic("i-msg")}评论 ${item.collected_comment_count}</button>
+        <a class="collection-source-link" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">${ic("i-external")}原作品</a>
+      </div>
+    </div>
+  </article>`;
+}
+function openCollectionPreview(jobId, contentId, startIdx = 0) {
+  return _pvOpen(() => api(`/api/collections/${jobId}/contents/${contentId}/media`), startIdx);
+}
+async function collectionLocalAction(jobId, contentId, action, button) {
+  const old = button && button.innerHTML;
+  if (button) { button.disabled = true; button.innerHTML = `<span class="spin"></span>`; }
+  try {
+    await api(`/api/collections/${jobId}/contents/${contentId}/${action}`, {
+      method: "POST", headers: { "X-CreatorHub-Local-Action": action },
+    });
+    toast(action === "open" ? "已调用本机默认程序打开文件" : "已在文件夹中显示", "ok", 1800);
+  } catch (e) {
+    toast((action === "open" ? "打开文件失败：" : "打开文件夹失败：") + e.message, "err");
+  } finally {
+    if (button && button.isConnected) { button.disabled = false; button.innerHTML = old; }
+  }
+}
+function openCollectionFile(jobId, contentId, button) { return collectionLocalAction(jobId, contentId, "open", button); }
+function revealCollectionFile(jobId, contentId, button) { return collectionLocalAction(jobId, contentId, "reveal", button); }
+async function copyCollectionPath(button) {
+  const value = String(button && button.dataset.path || "");
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    toast("本地路径已复制", "ok", 1800);
+  } catch (e) {
+    const field = document.createElement("textarea");
+    field.value = value; field.style.position = "fixed"; field.style.opacity = "0";
+    document.body.appendChild(field); field.select();
+    const copied = document.execCommand("copy"); field.remove();
+    toast(copied ? "本地路径已复制" : "复制失败，请手动复制路径", copied ? "ok" : "err");
+  }
+}
+async function loadCollectionContents(page = COLLECTION_PAGE, quiet = false) {
+  if (!COLLECTION_JOB_ID) return;
+  COLLECTION_PAGE = Math.max(1, Number(page) || 1);
+  const body = $("collection-content-list");
+  if (!quiet) body.innerHTML = collectionResultSkeleton(4);
+  try {
+    const result = await api(`/api/collections/${COLLECTION_JOB_ID}/contents?page=${COLLECTION_PAGE}&page_size=20`);
+    COLLECTION_PAGE = result.page;
+    body.innerHTML = (result.items || []).map(collectionResultCard).join("") || collectionEmpty("任务暂时没有作品结果", "采集中可稍后刷新；失败任务可查看错误并续跑");
+    $("collection-result-count").textContent = `共 ${fmtNum(result.total)} 个作品`;
+    const pager = $("collection-pager");
+    pager.innerHTML = `<button class="ghost sm" onclick="loadCollectionContents(${result.page - 1})"${result.page <= 1 ? " disabled" : ""}>${ic("i-prev")}上一页</button><span class="mut">第 ${result.page} / ${result.pages} 页 · 共 ${fmtNum(result.total)} 条</span><button class="ghost sm" onclick="loadCollectionContents(${result.page + 1})"${result.page >= result.pages ? " disabled" : ""}>下一页${ic("i-next")}</button>`;
+    pager.hidden = result.pages <= 1;
+  } catch (e) {
+    body.innerHTML = collectionEmpty("结果加载失败", e.message);
+    $("collection-result-count").textContent = "";
+  }
+}
+async function showCollectionComments(contentId) {
+  const modal = $("collection-comments-modal");
+  const list = $("collection-comments-list");
+  list.innerHTML = `<div class="empty"><div class="empty-t">加载中…</div></div>`;
+  modal.style.display = "flex"; modalOpened(modal);
+  setTimeout(() => modal.querySelector(".pv-close").focus(), 0);
+  try {
+    const comments = await api(`/api/collections/${COLLECTION_JOB_ID}/comments?content_id=${contentId}&limit=500`);
+    $("collection-comments-count").textContent = `共 ${comments.length} 条本次采集评论`;
+    list.innerHTML = comments.map(comment => `<article class="collection-comment"><div class="collection-comment-head"><b>${esc(comment.user_nickname || "匿名用户")}</b><span>${fmtTime(comment.create_time)} · ${fmtNum(comment.like_count)} 赞${comment.reply_to ? " · 回复" : ""}</span></div><p>${esc(comment.text || "（空评论）")}</p></article>`).join("") || `<div class="empty"><div class="empty-t">没有已采评论</div></div>`;
+  } catch (e) {
+    list.innerHTML = `<div class="empty"><div class="empty-t">加载失败</div><div class="empty-sub">${esc(e.message)}</div></div>`;
+  }
+}
+function hideCollectionComments() {
+  const modal = $("collection-comments-modal");
+  modal.style.display = "none"; modalClosed(modal);
+}
+async function cancelCollection(jobId) {
+  const btn = evtBtn();
+  if (!await uiConfirm({ title: "取消采集任务", message: "任务会在当前请求完成后安全停止，已经保存的结果会保留。", okText: "取消任务", danger: true })) return;
+  await withBusy(btn, "取消中", async () => {
+    try { await api(`/api/collections/${jobId}/cancel`, { method: "POST" }); toast("已请求停止任务", "ok"); await refreshCollections(); }
+    catch (e) { toast("取消失败：" + e.message, "err"); }
+  });
+}
+async function retryCollection(jobId) {
+  const btn = evtBtn();
+  await withBusy(btn, "提交中", async () => {
+    try { await api(`/api/collections/${jobId}/retry`, { method: "POST" }); toast("任务已重新进入队列，已有结果会自动去重", "ok"); await refreshCollections(); }
+    catch (e) { toast("续跑失败：" + e.message, "err"); }
+  });
+}
+async function deleteCollection(jobId) {
+  const btn = evtBtn();
+  if (!await uiConfirm({ title: "删除采集任务", message: "将删除任务及其作品、评论记录；本地已下载文件不会被删除。", okText: "删除", danger: true })) return;
+  await withBusy(btn, "删除中", async () => {
+    try { await api(`/api/collections/${jobId}`, { method: "DELETE" }); if (COLLECTION_JOB_ID === jobId) closeCollectionResults(); toast("任务记录已删除，本地文件已保留", "ok"); await refreshCollections(); }
+    catch (e) { toast("删除失败：" + e.message, "err"); }
+  });
+}
+function exportCollection(jobId) {
+  const link = document.createElement("a");
+  link.href = `/api/collections/${jobId}/export.xlsx`;
+  link.download = `keyword-collection-${jobId}.xlsx`;
+  document.body.appendChild(link); link.click(); link.remove();
+}
+
 async function addMonitor() {
   const url_or_secuid = $("t-url").value.trim();
   const target_kind = (PLATFORM === "xhs" && $("t-kind")) ? $("t-kind").value : "creator";
@@ -4205,6 +4612,7 @@ document.addEventListener("keydown", e => {
     e.preventDefault();
     if (modal === $("repost")) hideRepost();
     else if (modal === $("wcmodal")) hideWorkComments();
+    else if (modal === $("collection-comments-modal")) hideCollectionComments();
     else if (modal === $("preview")) hidePreview();
     return;
   }
@@ -4890,6 +5298,7 @@ function esc(s) { return (s || "").toString().replace(/[&<>"]/g, c => ({ "&": "&
 function loop() {
   if (INFLIGHT > 0 || document.hidden) return;   // 慢操作/后台标签页不刷新,减少干扰与无效请求
   refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshOverviewChart(); refreshCommentRules(); refreshCommentTasks(); if (pfHasPublish(PLATFORM)) refreshPublish();
+  if (CURRENT_TAB === "collections") refreshCollections();
 }
 
 // initial skeletons while data loads
@@ -4900,9 +5309,11 @@ $("watch-table").innerHTML = skeleton(9);
 $("comment-table").innerHTML = skeleton(6);
 $("danmaku-watch-table").innerHTML = skeleton(8);
 $("danmaku-table").innerHTML = skeleton(6);
+$("collection-job-table").innerHTML = collectionTaskSkeleton(3);
+$("collection-content-list").innerHTML = collectionResultSkeleton(4);
 
 // restore last-selected section (default: 总览);旧版四个独立页已并入「账号管理」
-const VALID_TABS = ["overview", "accounts", "monitors", "comments", "danmaku", "hub", "publish", "autocomment", "share-download", "notifications", "settings"];
+const VALID_TABS = ["overview", "accounts", "collections", "monitors", "comments", "danmaku", "hub", "publish", "autocomment", "share-download", "notifications", "settings"];
 const LEGACY_HUB_TABS = ["myworks", "following", "fans", "dm"];
 switchTab((() => {
   try {

@@ -105,11 +105,20 @@ async def fetch_channels_self_profile(mgr: BrowserManager, identity: Identity,
 
     page.on("response", on_response)
     final_url = ""
+    has_login_btn = None
     try:
         await page.goto(PLATFORM_URL, wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(3500)
         final_url = page.url
         if "/login" in final_url or "login.html" in final_url:
+            error = "logged_out"
+        try:
+            has_login_btn = await page.get_by_text(
+                "登录", exact=True).first.is_visible(timeout=1200)
+        except Exception:
+            has_login_btn = None
+        if has_login_btn is True:
+            result = {}
             error = "logged_out"
     except Exception as e:
         error = f"{e!r}"
@@ -122,7 +131,7 @@ async def fetch_channels_self_profile(mgr: BrowserManager, identity: Identity,
     if not result and not error:
         error = "no_profile_data"
     if not result:
-        print(f"[channels_self_profile] err={error} final_url={final_url} "
+        print(f"[channels_self_profile] err={error} final_url={final_url} login_btn={has_login_btn} "
               f"api_seen({len(api_seen)})={api_seen[:40]}")
     return result, error
 
