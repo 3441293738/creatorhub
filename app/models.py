@@ -19,7 +19,7 @@ class DouyinAccount(SQLModel, table=True):
     follower_count: int = 0
     aweme_count: int = 0
     cookie: str = ""               # 原始 Cookie 串(粘贴登录时填,仅展示/兜底)
-    storage_state: str = ""        # Playwright storage_state JSON(浏览器登录态)
+    storage_state: str = ""        # Patchright storage_state JSON(浏览器登录态)
     creator_storage_state: str = ""  # 创作中心登录态(用于自有账号评论模式)
     status: str = "active"         # active | invalid
     # ── 设备/网络画像(防多账号关联风控:登录时生成一次,之后永久固定)──
@@ -34,6 +34,13 @@ class DouyinAccount(SQLModel, table=True):
     geo_lat: float = 0.0          # geolocation 伪造纬度(代理体检时按出口 IP 归属地写入;0=按种子派生兜底)
     geo_lon: float = 0.0          # geolocation 伪造经度
     proxy_status: str = "unknown"  # unknown | ok | bad
+    # 由账号的真实浏览器 context 探测并持久化；后续写操作用它识别出口漂移。
+    exit_ip: str = ""
+    exit_country: str = ""
+    exit_asn: str = ""
+    exit_timezone: str = ""
+    exit_proxy_signature: str = ""
+    exit_checked_at: Optional[datetime] = None
     last_active_at: Optional[datetime] = None  # 上次活跃(用于错峰调度)
     write_paused_until: Optional[datetime] = None  # 平台风控后暂停自动写操作
     write_pause_reason: str = ""                    # 最近一次暂停原因

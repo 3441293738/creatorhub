@@ -1,4 +1,4 @@
-"""Proxy planning shared by Playwright and the XHS Chrome CDP backend.
+"""Proxy planning shared by Patchright and the XHS Chrome CDP backend.
 
 The account proxy URL is parsed once into an immutable in-memory plan.  Any
 projection intended for a process command line is credential-free; secrets are

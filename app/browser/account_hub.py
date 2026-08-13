@@ -451,7 +451,7 @@ _DOUYIN_OPEN_STAT_JS = """(label) => {
 }"""
 
 async def _click_xhs_profile_stat(mgr: BrowserManager, page, label: str) -> bool:
-    """在主页内容区按语义定位统计项，通过 Playwright 可见点击打开列表。"""
+    """在主页内容区按语义定位统计项，通过 Patchright 可见点击打开列表。"""
     scored = []
     # 仅从正文/主页区域搜索，避免命中侧栏的「关注」信息流入口。
     for selector in ("main", '[class*="profile"]'):

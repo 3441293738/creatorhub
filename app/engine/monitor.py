@@ -393,8 +393,18 @@ class MonitorEngine:
     def _proxy_bad(acc) -> bool:
         return bool(
             acc and acc.proxy
-            and acc.proxy_status in {"bad", "auth_error", "blocked"}
+            and acc.proxy_status in {"bad", "auth_error", "blocked", "drifted"}
         )
+
+    def _native_write_environment_error(
+            self, acc, *, headed: bool = True,
+            browser_mode: bool = True) -> str:
+        """Run the BrowserManager's native-only hard gate when supported."""
+        checker = getattr(self.browser, "native_write_gate_error", None)
+        if not callable(checker) or acc is None:
+            return ""
+        return str(checker(
+            acc, headed=headed, browser_mode=browser_mode) or "")
 
     @staticmethod
     def _defer_row(row, reason: str, next_at: datetime | None = None,
@@ -592,7 +602,15 @@ class MonitorEngine:
                 job.finished_at = datetime.utcnow()
                 s.add(job); s.commit()
                 status = job.status
-            if status in {"done", "partial"}:
+                job_error = job.error or ""
+            category, _ = classify_platform_error(job_error)
+            if job_error and category in {
+                    RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                # 即使已经采到部分结果，验证码/登录态/网络异常也属于本次读取失败；
+                # 不能再记 success，否则会立即放行下一次重读并覆盖风险信号。
+                self.risk.record_failure(
+                    account_id, OperationKind.READ_HEAVY, job_error)
+            elif status in {"done", "partial"}:
                 self.risk.record_success(account_id, OperationKind.READ_HEAVY)
                 self._stamp_active(account_id)
             else:
@@ -2231,6 +2249,12 @@ class MonitorEngine:
                 self._defer_row(t, "账号代理当前不可用", fallback_seconds=300)
                 s.add(t); s.commit()
                 return {"ok": False, "error": "proxy unavailable"}
+            environment_error = self._native_write_environment_error(
+                acc, headed=True, browser_mode=True)
+            if environment_error:
+                self._defer_row(t, environment_error, fallback_seconds=300)
+                s.add(t); s.commit()
+                return {"ok": False, "error": environment_error}
             pause_error = self._write_pause_error(t.account_id)
             if pause_error:
                 decision = self.risk.preflight(t.account_id, OperationKind.PUBLISH)
@@ -2248,6 +2272,7 @@ class MonitorEngine:
                 return {"ok": False, "error": decision.reason}
             # 发布用创作平台态;一次扫码已把创作 cookie 并入 storage_state,故回退它
             state = acc.creator_storage_state or acc.storage_state or ""
+            native_mode = acc.identity_mode == "native"
             identity = self.browser.identity_for(acc)
             media_type, title, desc, topics = t.media_type, t.title, t.desc, t.topics
             visibility, allow_save = t.visibility, t.allow_save
@@ -2302,7 +2327,8 @@ class MonitorEngine:
             return await self._finish_publish(
                 task_id, False, "", "该账号未完成小红书「创作者登录」,请先在账号页点「创作者登录」")
 
-        xhs_mode = self._xhs_publish_mode()
+        xhs_mode = ("browser" if native_mode
+                    else self._xhs_publish_mode())
         try:
             ok, url, err = await publish_xhs(self.browser, identity, state, media_type,
                                              title, desc, files, topics=topics,
@@ -3049,6 +3075,12 @@ class MonitorEngine:
                 self._defer_row(t, "账号代理当前不可用", fallback_seconds=300)
                 s.add(t); s.commit()
                 return {"ok": False, "error": "proxy unavailable"}
+            environment_error = self._native_write_environment_error(
+                acc, headed=True, browser_mode=True)
+            if environment_error:
+                self._defer_row(t, environment_error, fallback_seconds=300)
+                s.add(t); s.commit()
+                return {"ok": False, "error": environment_error}
             if acc.status == "invalid":
                 self._defer_row(t, "账号登录态已失效，等待重新登录", fallback_seconds=900)
                 s.add(t); s.commit()
@@ -3074,6 +3106,7 @@ class MonitorEngine:
                 if _conv:
                     dm_short_id, dm_ticket = _conv.conv_short_id, _conv.ticket
             # commit 会 expire 本 session 内的实例,先把所需原语取出来再 commit
+            native_mode = acc.identity_mode == "native"
             identity = self.browser.identity_for(acc)
             t.status = "doing"; t.method = "browser"; t.error = ""
             s.add(t); s.commit()
@@ -3087,7 +3120,8 @@ class MonitorEngine:
                                           target_uid, target_sec_uid, unfollow=True)
             elif action == "send_dm":
                 # 抖音:有会话信息就走无头 API 发送;失败或缺信息再回退 UI 自动化
-                if platform == "douyin" and dm_conv_id and dm_short_id and dm_ticket:
+                if (platform == "douyin" and not native_mode
+                        and dm_conv_id and dm_short_id and dm_ticket):
                     ok, err = await send_dm_api(self.browser, identity, dm_conv_id,
                                                 dm_short_id, dm_ticket, content)
                     category, _signal = classify_platform_error(err)
@@ -3230,6 +3264,12 @@ class MonitorEngine:
                 self._defer_row(t, "账号代理当前不可用", fallback_seconds=300)
                 s.add(t); s.commit()
                 return {"ok": False, "error": "proxy unavailable"}
+            environment_error = self._native_write_environment_error(
+                acc, headed=True, browser_mode=True)
+            if environment_error:
+                self._defer_row(t, environment_error, fallback_seconds=300)
+                s.add(t); s.commit()
+                return {"ok": False, "error": environment_error}
             if acc.status == "invalid":
                 self._defer_row(t, "账号登录态已失效，等待重新登录", fallback_seconds=900)
                 s.add(t); s.commit()
@@ -3242,6 +3282,7 @@ class MonitorEngine:
                 return {"ok": False, "error": gate_error}
             state = acc.storage_state or acc.creator_storage_state or ""
             proxy = acc.proxy or ""
+            native_mode = acc.identity_mode == "native"
             identity = self.browser.identity_for(acc)
             t.status = "doing"; t.error = ""
             s.add(t); s.commit()
@@ -3249,6 +3290,8 @@ class MonitorEngine:
         ok, result, err, method = False, "", "", ""
         uncertain = False
         xhs_mode = self._xhs_comment_write_mode()
+        if native_mode and xhs_mode == "api":
+            xhs_mode = "browser"
         manual_only = platform == "xhs" and xhs_mode == "manual"
         try:
             if platform == "xhs":
@@ -3280,7 +3323,8 @@ class MonitorEngine:
                 ok, err = await post_ks_comment(
                     self.browser, identity, aweme_id, content,
                     reply_to_text=target_text if target_cid else "",
-                    headed=self.cfg.engine.comment_browser_headed)
+                    headed=(True if native_mode
+                            else self.cfg.engine.comment_browser_headed))
                 result = "ok" if ok else ""
             elif platform == "shipinhao":
                 # 视频号只能回复自己作品的评论(助手端无法主动去别人作品下评论)
@@ -3288,7 +3332,8 @@ class MonitorEngine:
                 ok, err = await post_channels_comment(
                     self.browser, identity, aweme_id, content,
                     reply_to_text=target_nick if target_cid else "",
-                    headed=self.cfg.engine.comment_browser_headed)
+                    headed=(True if native_mode
+                            else self.cfg.engine.comment_browser_headed))
                 result = "ok" if ok else ""
             else:
                 method = "browser"
@@ -3296,7 +3341,8 @@ class MonitorEngine:
                     self.browser, identity, aweme_id, content,
                     reply_to_text=target_text if target_cid else "",
                     require_reply=bool(target_cid),
-                    headed=self.cfg.engine.comment_browser_headed)
+                    headed=(True if native_mode
+                            else self.cfg.engine.comment_browser_headed))
                 result = "ok" if ok else ""
         except Exception as e:
             ok, err = False, repr(e)

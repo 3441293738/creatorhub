@@ -143,10 +143,10 @@ def install(*, skip_browser: bool = False, skip_node: bool = False) -> None:
 
     browser_installed = not skip_browser
     if skip_browser:
-        log("已跳过 Chromium 安装；扫码登录和采集前需执行 playwright install chromium")
+        log("已跳过 Chromium 安装；扫码登录和采集前需执行 patchright install chromium")
     else:
-        log("正在安装 Playwright Chromium（首次下载耗时取决于网络）")
-        run([python, "-m", "playwright", "install", "chromium"])
+        log("正在安装 Patchright Chromium（首次下载耗时取决于网络）")
+        run([python, "-m", "patchright", "install", "chromium"])
 
     node_installed = False
     npm = npm_executable()
@@ -294,7 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-browser",
         action="store_true",
-        help="安装时跳过 Playwright Chromium",
+        help="安装时跳过 Patchright Chromium",
     )
     parser.add_argument(
         "--skip-node",

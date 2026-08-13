@@ -33,6 +33,8 @@ class EngineConfig:
     # 自有账号弹幕模式:创作中心弹幕管理页(实验性,抖音改版时改这里)
     creator_danmaku_url: str = "https://creator.douyin.com/creator-micro/interaction/danmaku-management"
     request_timeout_seconds: int = 20
+    douyin_captcha_wait_seconds: int = 300  # 关键词采集遇验证时被动等待人工处理；期间不重试接口
+    douyin_keyword_gap_seconds: float = 8.0  # 同一任务内相邻抖音关键词的最小停顿
     download_timeout_seconds: int = 120
     media_dir: str = "./data/media"
     user_agent: str = (
@@ -43,7 +45,7 @@ class EngineConfig:
     profiles_dir: str = "./data/profiles"   # 每账号持久化浏览器 profile 根目录
     max_live_contexts: int = 6              # 同时常驻的浏览器 context 上限(LRU 驱逐,控内存)
     # 小红书浏览器:默认优先连接 CreatorHub 管理的每账号系统 Chrome CDP。
-    xhs_browser_mode: str = "auto"          # auto | cdp | playwright
+    xhs_browser_mode: str = "auto"          # auto | cdp | patchright
     xhs_cdp_idle_seconds: int = 900          # 0=仅按 LRU、显式关闭或程序退出回收
     xhs_publish_mode: str = "browser"       # browser | api(API 仅为显式兼容模式)
     active_accounts: int = 3                # 同一时刻最多并发活跃的账号数(错峰)
@@ -74,6 +76,12 @@ class EngineConfig:
     active_hours_start: int = 8              # 活跃起点小时(含),0-23
     active_hours_end: int = 24               # 活跃止点小时(不含);可 >24 表示跨零点(如 25=次日 1 点)
     verify_proxy_region: bool = True         # 体检时探测代理出口国家,与账号时区不一致则告警
+    # 新建 native 账号的写操作环境门禁。存量 legacy 账号不受这组开关影响。
+    native_write_gate_enabled: bool = True
+    native_write_require_system_chrome: bool = True
+    native_write_require_verified_proxy: bool = True
+    native_write_proxy_max_age_seconds: int = 86400
+    browser_exit_probe_url: str = "https://ipinfo.io/json"
     # ── 本账号作品健康监控(B5:盯自己作品的流量/0播/违规,发现异常推送通知)──
     #   借鉴竞品「流速监控 / 持续0播 / 作品违规监控」。默认关闭(需 periodic 同步本账号作品,较重)。
     work_health_enabled: bool = False         # 作品健康监控总开关
@@ -117,6 +125,11 @@ class RiskControlConfig:
     recovery_successes: int = 3
     recovery_probe_gap_seconds: int = 600
     event_retention_days: int = 30
+    # 同一网络出口下多个 native 账号在短时间内同时命中平台风险时，
+    # 暂停该出口下所有 native 账号的写操作。
+    network_group_risk_accounts: int = 2
+    network_group_risk_window_seconds: int = 900
+    network_group_cooldown_seconds: int = 7200
 
 
 @dataclass
@@ -140,6 +153,8 @@ def load_config(path: str | None = None) -> Config:
         e = raw.get("engine", {})
         cfg.engine = EngineConfig(**{k: v for k, v in e.items()
                                      if k in EngineConfig.__dataclass_fields__})
+        if cfg.engine.xhs_browser_mode == "playwright":
+            cfg.engine.xhs_browser_mode = "patchright"
         risk = raw.get("risk_control", {}) or {}
         risk_values = {
             k: v for k, v in risk.items()

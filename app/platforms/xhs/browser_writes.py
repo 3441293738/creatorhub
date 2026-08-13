@@ -81,7 +81,7 @@ async def _wait_upload_complete(page: Any, interaction: Any,
 
 
 class _SubmitLocator:
-    """Mark the exact boundary where Playwright dispatches the sole submit click."""
+    """Mark the exact boundary where Patchright dispatches the sole submit click."""
 
     def __init__(self, locator: Any, state: dict, on_submit: Any = None):
         self._locator = locator

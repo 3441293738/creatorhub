@@ -826,7 +826,7 @@ class BrowserManagerCdpTests(unittest.TestCase):
                              "http://alice:secret@proxy.local:8080")
             snapshot = manager.environment_snapshot(
                 self.identity, headless=False)
-            self.assertEqual(snapshot["backend"], "playwright")
+            self.assertEqual(snapshot["backend"], "patchright")
             self.assertTrue(snapshot["fallback"])
             self.assertNotIn("secret", repr(snapshot))
 
@@ -845,9 +845,9 @@ class BrowserManagerCdpTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_playwright_mode_bypasses_cdp(self):
+    def test_patchright_mode_bypasses_cdp(self):
         async def scenario():
-            manager = self._manager("playwright")
+            manager = self._manager("patchright")
             fallback = _ManagerContext()
             manager._launch_persistent = AsyncMock(return_value=fallback)
 
@@ -857,6 +857,12 @@ class BrowserManagerCdpTests(unittest.TestCase):
             self.assertEqual(manager._cdp_backend.open_calls, [])
 
         asyncio.run(scenario())
+
+    def test_legacy_playwright_mode_migrates_to_patchright(self):
+        manager = self._manager("playwright")
+
+        self.assertEqual(manager.xhs_browser_mode, "patchright")
+        self.assertFalse(manager._uses_xhs_cdp(self.identity))
 
     def test_xhs_cdp_never_blocks_full_page_resources(self):
         async def scenario():
@@ -900,9 +906,9 @@ class BrowserManagerCdpTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_xhs_playwright_fallback_is_headed_and_reused(self):
+    def test_xhs_patchright_fallback_is_headed_and_reused(self):
         async def scenario():
-            manager = self._manager("playwright")
+            manager = self._manager("patchright")
             fallback = _ManagerContext()
             manager._launch_persistent = AsyncMock(return_value=fallback)
 
@@ -915,9 +921,9 @@ class BrowserManagerCdpTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_proxy_change_also_rebuilds_playwright_fallback(self):
+    def test_proxy_change_also_rebuilds_patchright_fallback(self):
         async def scenario():
-            manager = self._manager("playwright")
+            manager = self._manager("patchright")
             contexts = [_ManagerContext(), _ManagerContext()]
             manager._launch_persistent = AsyncMock(side_effect=contexts)
             self.identity.proxy = "http://proxy-a.local:8080"
@@ -967,7 +973,7 @@ class BrowserManagerCdpTests(unittest.TestCase):
     def test_environment_snapshot_labels_backend_and_redacts_endpoints(self):
         manager = self._manager("auto")
         self.identity.proxy = "http://alice:secret@proxy.local:8080"
-        manager._backend_by_key[self.identity.key] = "playwright"
+        manager._backend_by_key[self.identity.key] = "patchright"
         manager._fallback_reason_by_key[self.identity.key] = (
             "connect ws://127.0.0.1:42137/devtools/browser/fixture "
             "via http://alice:secret@proxy.local:8080")
@@ -976,7 +982,7 @@ class BrowserManagerCdpTests(unittest.TestCase):
             self.identity, headless=False)
         dumped = json.dumps(snapshot, ensure_ascii=False)
 
-        self.assertEqual(snapshot["backend_label"], "Playwright Chromium · 回退")
+        self.assertEqual(snapshot["backend_label"], "Patchright Chromium · 回退")
         self.assertNotIn("secret", dumped)
         self.assertNotIn("ws://", dumped)
         self.assertNotIn("127.0.0.1:", dumped)

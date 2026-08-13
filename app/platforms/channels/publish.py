@@ -1,6 +1,6 @@
 """视频号发布入口(浏览器自动化视频号助手 channels.weixin.qq.com)。
 
-视频号发布页是 wujie 微前端(内容在 shadowRoot 里)。Playwright 的定位器默认会穿透
+视频号发布页是 wujie 微前端(内容在 shadowRoot 里)。Patchright 的定位器默认会穿透
 **开放的** shadow DOM,故下面用普通 CSS 选择器即可;若视频号把 shadow root 设成 closed
 则需改用 CDP pierce(参见 _CHANNELS_* 注释)。
 
@@ -155,7 +155,7 @@ async def _set_location(page, location: str):
 
 async def _find_in_frames(page, selectors):
     """在主页面 + 所有子 frame(wujie iframe)里找第一个命中的定位器。
-    Playwright 定位器默认穿透**开放** shadowRoot,但不穿 iframe,故需遍历 page.frames。
+    Patchright 定位器默认穿透**开放** shadowRoot,但不穿 iframe,故需遍历 page.frames。
     返回 (locator, frame) 或 (None, None)。"""
     for frame in page.frames:                # page.frames[0] 即主 frame
         for sel in selectors:
@@ -247,7 +247,7 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
             except Exception:
                 uploaded = False
         # 兜底:input 是点击时按需创建 —— 用 expect_file_chooser 拦截原生文件框(关键!
-        # 裸点上传区会弹 Windows「打开」对话框把 Playwright 卡死,必须这样接管)
+        # 裸点上传区会弹 Windows「打开」对话框把 Patchright 卡死,必须这样接管)
         if not uploaded:
             try:
                 async with page.expect_file_chooser(timeout=10000) as fc_info:

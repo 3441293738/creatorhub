@@ -149,7 +149,9 @@ def classify_platform_error(
 
     risk_markers = (
         "风控", "频控", "访问频繁", "操作频繁", "环境异常", "验证码", "验证",
-        "限流", "risk", "captcha", "rate limit", "too frequent", "http 429",
+        "限流", "安全验证", "设备异常", "账号异常", "滑块", "人机验证",
+        "risk", "captcha", "security verification", "verifycenter",
+        "website-login/captcha", "rate limit", "too frequent", "http 429",
         "http 403", "status_code=8",
     )
     if any(marker in text for marker in risk_markers):
@@ -203,6 +205,61 @@ class RiskController:
             session.add(state)
             session.flush()
         return state
+
+    def _apply_network_group_circuit_breaker(
+            self, session, account: DouyinAccount,
+            *, now: datetime) -> datetime | None:
+        """Pause native accounts sharing an exit after distinct accounts hit risk."""
+        if getattr(account, "identity_mode", "legacy") != "native":
+            return None
+        threshold = max(0, int(getattr(
+            self.policy, "network_group_risk_accounts", 0)))
+        if threshold < 2:
+            return None
+        window = max(1, int(getattr(
+            self.policy, "network_group_risk_window_seconds", 900)))
+        key = network_key(account.proxy)
+        recent_ids = set(session.exec(select(RiskEvent.account_id).where(
+            RiskEvent.network_key == key,
+            RiskEvent.outcome == RiskCategory.RISK.value,
+            RiskEvent.occurred_at >= now - timedelta(seconds=window),
+        )).all())
+        native_ids = {
+            account_id for account_id in recent_ids
+            if (lambda row: row is not None and row.identity_mode == "native")(
+                session.get(DouyinAccount, account_id))
+        }
+        if len(native_ids) < threshold:
+            return None
+
+        cooldown = max(1, int(getattr(
+            self.policy, "network_group_cooldown_seconds", 7200)))
+        until = now + timedelta(seconds=cooldown)
+        reason = (
+            f"共享网络出口在 {window} 秒内有 {len(native_ids)} 个账号"
+            "命中平台风险，已触发出口组熔断")
+        for target in session.exec(select(DouyinAccount)).all():
+            if target.identity_mode != "native" \
+                    or network_key(target.proxy) != key:
+                continue
+            target_state = self._state(session, target.id)
+            target_state.risk_level = max(1, target_state.risk_level)
+            if target_state.cooldown_until is None \
+                    or target_state.cooldown_until < until:
+                target_state.cooldown_until = until
+            if target_state.probe_only_until is None \
+                    or target_state.probe_only_until < until:
+                target_state.probe_only_until = until
+            target_state.last_risk_at = now
+            target_state.last_risk_reason = reason[:240]
+            target_state.recovery_successes = 0
+            target_state.last_recovery_at = None
+            target_state.updated_at = now
+            target.write_paused_until = until
+            target.write_pause_reason = reason[:240]
+            session.add(target_state)
+            session.add(target)
+        return until
 
     @staticmethod
     def _timezone(account: DouyinAccount) -> tzinfo:
@@ -398,7 +455,8 @@ class RiskController:
                     signal="auth_required",
                 )
             if account.proxy and account.proxy_status in {
-                    "bad", "auth_error", "blocked"} and kind != OperationKind.LOGIN:
+                    "bad", "auth_error", "blocked", "drifted"} \
+                    and kind != OperationKind.LOGIN:
                 return RiskDecision(
                     False,
                     "账号绑定代理当前不可用",
@@ -619,14 +677,22 @@ class RiskController:
             else:
                 state.consecutive_network_failures = 0
                 state.network_failure_key = ""
-            session.add(RiskEvent(
+            event = RiskEvent(
                 account_id=account_id,
                 network_key=network_key(account.proxy),
                 operation_kind=kind.value,
                 outcome=category.value,
                 signal=signal,
                 occurred_at=now,
-            ))
+            )
+            session.add(event)
+            session.flush()
+            if category == RiskCategory.RISK:
+                group_until = self._apply_network_group_circuit_breaker(
+                    session, account, now=now)
+                if group_until is not None \
+                        and (next_at is None or group_until > next_at):
+                    next_at = group_until
             session.add(state)
             session.add(account)
             session.commit()

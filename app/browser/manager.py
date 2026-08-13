@@ -1,4 +1,4 @@
-"""Playwright 浏览器管理器(多账号隔离版)。
+"""Patchright 浏览器管理器(多账号隔离版)。
 
 每个账号一套**独立持久化 context**(launch_persistent_context):
   - 独立 user-data-dir(cookie/localStorage 天然隔离)
@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from playwright.async_api import BrowserContext, async_playwright
+from patchright.async_api import BrowserContext, async_playwright
 
 from ..windowing import (CHROMIUM_WINDOW_CLASSES, bring_window_to_front,
                          capture_window_snapshot)
@@ -34,7 +35,6 @@ _PROXY_WEBRTC_ARGS = [
 # 存量 legacy 账号必须保持原来的启动参数，避免已建立的浏览器画像突然漂移。
 _LEGACY_ARGS = [
     "--disable-blink-features=AutomationControlled",
-    "--no-sandbox",
     "--disable-infobars",
     # 关键:禁止 WebRTC 走非代理 UDP。否则真实 Chromium 会通过 STUN 直接暴露宿主
     # 公网/内网 IP,绕过我们在 HTTP 层设的账号代理 —— 所有号在 WebRTC 上露同一真实
@@ -42,12 +42,70 @@ _LEGACY_ARGS = [
     *_PROXY_WEBRTC_ARGS,
 ]
 
-# storage_state 里允许注入的 Cookie 字段(playwright add_cookies 接受的键)
+# storage_state 里允许注入的 Cookie 字段(Patchright add_cookies 接受的键)
 _COOKIE_KEYS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
 
 
+class BrowserProfileConflictError(RuntimeError):
+    """账号 Profile 已被另一个 CreatorHub 进程占用。"""
+
+
+class _ProfileProcessLock:
+    """Small cross-platform advisory lock kept for a browser context's lifetime."""
+
+    def __init__(self, profile_dir: Path):
+        self.path = profile_dir / ".browser.lock"
+        self._fh = None
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.touch(exist_ok=True)
+        fh = self.path.open("r+b", buffering=0)
+        if self.path.stat().st_size == 0:
+            fh.write(b" ")
+            fh.flush()
+        fh.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, IOError):
+            fh.close()
+            raise BrowserProfileConflictError(
+                f"账号浏览器 Profile 已被其他进程占用: {self.path.parent}") from None
+        try:
+            payload = json.dumps({"pid": os.getpid(), "locked_at": time.time()}) \
+                .encode("utf-8")
+            fh.seek(0)
+            fh.write(payload)
+            fh.truncate()
+            fh.flush()
+        except Exception:
+            pass
+        self._fh = fh
+
+    def release(self) -> None:
+        fh, self._fh = self._fh, None
+        if fh is None:
+            return
+        try:
+            fh.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        fh.close()
+
+
 def _parse_proxy(s: str) -> Optional[Dict[str, str]]:
-    """把 http://user:pass@host:port / socks5://host:port 解析成 Playwright proxy 配置。"""
+    """把 http://user:pass@host:port / socks5://host:port 解析成 Patchright proxy 配置。"""
     plan = try_proxy_plan(s)
     return plan.playwright() if plan else None
 
@@ -120,22 +178,39 @@ class BrowserManager:
     def __init__(self, default_ua: str, profiles_root: str = "./data/profiles",
                  max_live: int = 6, native_ua_callback=None,
                  xhs_browser_mode: str = "auto",
-                 xhs_cdp_idle_seconds: int = 900):
+                 xhs_cdp_idle_seconds: int = 900,
+                 native_write_gate_enabled: bool = True,
+                 native_write_require_system_chrome: bool = True,
+                 native_write_require_verified_proxy: bool = True,
+                 native_write_proxy_max_age_seconds: int = 86400,
+                 browser_exit_probe_url: str = "https://ipinfo.io/json"):
         self.default_ua = default_ua
         self.profiles_root = profiles_root
         self.max_live = max(1, max_live)
         self._native_ua_callback = native_ua_callback
+        # ``playwright`` 是 1.61 以前配置文件使用的后端名；读取时平滑
+        # 迁移到 Patchright，避免升级后意外切回 auto/CDP。
+        requested_mode = "patchright" if xhs_browser_mode == "playwright" else xhs_browser_mode
         self.xhs_browser_mode = (
-            xhs_browser_mode if xhs_browser_mode in {"auto", "cdp", "playwright"}
+            requested_mode if requested_mode in {"auto", "cdp", "patchright"}
             else "auto"
         )
         self.xhs_cdp_idle_seconds = max(0, int(xhs_cdp_idle_seconds))
+        self.native_write_gate_enabled = bool(native_write_gate_enabled)
+        self.native_write_require_system_chrome = bool(
+            native_write_require_system_chrome)
+        self.native_write_require_verified_proxy = bool(
+            native_write_require_verified_proxy)
+        self.native_write_proxy_max_age_seconds = max(
+            0, int(native_write_proxy_max_age_seconds))
+        self.browser_exit_probe_url = str(browser_exit_probe_url or "").strip()
         self._pw = None
         self._contexts: Dict[Any, BrowserContext] = {}   # key -> 持久化 context
         self._cdp_sessions: Dict[Any, Any] = {}
         self._backend_by_key: Dict[Any, str] = {}
         self._fallback_reason_by_key: Dict[Any, str] = {}
         self._proxy_signature_by_key: Dict[Any, str] = {}
+        self._profile_process_locks: Dict[Any, _ProfileProcessLock] = {}
         self._cdp_backend = None
         self.xhs_interaction = XhsInteractionPolicy()
         self._xhs_visible_gate = XhsVisibleActionGate()
@@ -144,7 +219,7 @@ class BrowserManager:
         self._locks: Dict[Any, asyncio.Lock] = {}
         self._cv_lock = asyncio.Lock()                   # 保护 context 字典的创建/驱逐
         self._chrome_major: Optional[int] = None         # 实际 Chromium 大版本(启动时探测)
-        # 优先使用机器上安装的稳定版 Chrome；没有时回退到 Playwright
+        # 优先使用机器上安装的稳定版 Chrome；没有时回退到 Patchright
         # 附带的 Chrome for Testing。登录窗口因此更接近用户日常浏览器环境。
         self._browser_channel: Optional[str] = None
 
@@ -157,7 +232,7 @@ class BrowserManager:
     async def _detect_chrome_major(self) -> Optional[int]:
         """选择可用浏览器并探测其 Chromium 大版本。
 
-        优先系统稳定版 Chrome，缺失时使用 Playwright bundled Chromium。
+        优先系统稳定版 Chrome，缺失时使用 Patchright bundled Chromium。
         账号 UA 池写死了 Chrome 版本,但真实内核可能是另一版本 —— 二者不一致时,
         Sec-CH-UA 请求头 / navigator.userAgentData 由真实内核发出,会和 UA 字符串对不上,
         成为自动化特征。这里读一次真实 UA,后续把账号 UA 的版本号归一到它。"""
@@ -202,7 +277,7 @@ class BrowserManager:
         if backend is None:
             backend = (
                 "cdp" if self._uses_xhs_cdp(identity)
-                else "playwright"
+                else "patchright"
             )
         is_cdp = backend == "cdp"
         fallback_reason = self._fallback_reason_by_key.get(identity.key, "")
@@ -220,8 +295,8 @@ class BrowserManager:
         fallback = bool(fallback_reason)
         backend_label = (
             "系统 Chrome · CDP" if is_cdp
-            else "Playwright Chromium · 回退" if fallback
-            else "Playwright Chromium"
+            else "Patchright Chromium · 回退" if fallback
+            else "Patchright Chromium"
         )
         return {
             "browser": "chrome" if is_cdp else (self._browser_channel or "chromium"),
@@ -260,6 +335,8 @@ class BrowserManager:
         if self._pw:
             await self._pw.stop()
         self._pw = None
+        for key in list(self._profile_process_locks):
+            self._release_profile_lock(key)
 
     # ── 画像 ──
     def identity_for(self, acc) -> Identity:
@@ -287,16 +364,72 @@ class BrowserManager:
         """每账号串行锁:同一账号同一时刻只允许一个浏览器动作。"""
         return self._locks.setdefault(key, asyncio.Lock())
 
+    @staticmethod
+    def proxy_signature(proxy: str) -> str:
+        plan = try_proxy_plan(proxy)
+        return plan.signature if plan else "direct"
+
+    def _acquire_profile_lock(self, identity: Identity) -> None:
+        if identity.key in self._profile_process_locks:
+            return
+        lock = _ProfileProcessLock(Path(identity.profile_dir))
+        lock.acquire()
+        self._profile_process_locks[identity.key] = lock
+
+    def _release_profile_lock(self, key: Any) -> None:
+        lock = self._profile_process_locks.pop(key, None)
+        if lock is not None:
+            lock.release()
+
+    def native_write_gate_error(self, account, *, headed: bool = True,
+                                browser_mode: bool = True,
+                                now=None) -> str:
+        """仅对 native 账号执行写操作环境门禁；legacy 保持原行为。"""
+        if not self.native_write_gate_enabled \
+                or getattr(account, "identity_mode", "legacy") != "native":
+            return ""
+        if self._pw is None:
+            return "write_env_blocked:浏览器管理器未启动"
+        if browser_mode and not headed:
+            return "write_env_blocked:native 账号写操作必须使用有头浏览器"
+        if self.native_write_require_system_chrome \
+                and self._browser_channel != "chrome":
+            return "write_env_blocked:未检测到系统稳定版 Chrome"
+        proxy = str(getattr(account, "proxy", "") or "").strip()
+        if not proxy or not self.native_write_require_verified_proxy:
+            return ""
+        if getattr(account, "proxy_status", "unknown") != "ok":
+            return "write_env_blocked:账号代理尚未通过浏览器出口验证"
+        signature = self.proxy_signature(proxy)
+        if not getattr(account, "exit_ip", "") \
+                or getattr(account, "exit_proxy_signature", "") != signature:
+            return "write_env_blocked:账号代理缺少当前线路的浏览器出口基线"
+        checked = getattr(account, "exit_checked_at", None)
+        if not checked:
+            return "write_env_blocked:账号代理出口基线未记录检查时间"
+        if self.native_write_proxy_max_age_seconds > 0:
+            from datetime import datetime
+            sampled = now or datetime.utcnow()
+            if (sampled - checked).total_seconds() \
+                    > self.native_write_proxy_max_age_seconds:
+                return "write_env_blocked:账号代理的浏览器出口验证已过期"
+        return ""
+
     # ── 持久化 context ──
     async def _launch_persistent(self, identity: Identity, headless: bool = True
                                  ) -> BrowserContext:
         pdir = Path(identity.profile_dir)
         pdir.mkdir(parents=True, exist_ok=True)
-        was_empty = not any(pdir.iterdir())
+        was_empty = not any(p.name != ".browser.lock" for p in pdir.iterdir())
+        self._acquire_profile_lock(identity)
         ua = self._normalize_ua(identity.ua or self.default_ua)
         kwargs: Dict[str, Any] = dict(
             user_data_dir=str(pdir), headless=headless,
         )
+        # Patchright 默认会添加 --no-sandbox。Windows 的 Chrome 可以正常
+        # 使用沙箱，新旧账号都显式开启，避免安全警告和不必要的启动差异。
+        if os.name == "nt":
+            kwargs["chromium_sandbox"] = True
         if self._browser_channel:
             kwargs["channel"] = self._browser_channel
         legacy = identity.identity_mode != "native"
@@ -320,7 +453,13 @@ class BrowserManager:
                 kwargs["args"] = list(_PROXY_WEBRTC_ARGS)
         if proxy:
             kwargs["proxy"] = proxy
-        ctx = await self._pw.chromium.launch_persistent_context(**kwargs)
+        try:
+            ctx = await self._pw.chromium.launch_persistent_context(**kwargs)
+        except Exception:
+            self._release_profile_lock(identity.key)
+            raise
+        with suppress(Exception):
+            ctx.on("close", lambda *_: self._release_profile_lock(identity.key))
         if not legacy:
             # Persist the UA exposed by this exact native context. It is
             # diagnostic state only; native launches still omit any override.
@@ -422,22 +561,24 @@ class BrowserManager:
         self._backend_by_key.pop(key, None)
         self._fallback_reason_by_key.pop(key, None)
         self._proxy_signature_by_key.pop(key, None)
-        if session is not None and self._cdp_backend is not None:
-            with suppress(Exception):
-                await self._cdp_backend.close(session)
-            return
-        if ctx is not None:
-            with suppress(Exception):
-                await ctx.close()
+        try:
+            if session is not None and self._cdp_backend is not None:
+                with suppress(Exception):
+                    await self._cdp_backend.close(session)
+                return
+            if ctx is not None:
+                with suppress(Exception):
+                    await ctx.close()
+        finally:
+            self._release_profile_lock(key)
 
     async def context_for(self, identity: Identity) -> BrowserContext:
         """取(或惰性创建)账号专属常驻 context。"""
         key = identity.key
         async with self._cv_lock:
-            plan = (
-                self._xhs_proxy_plan(identity)
-                if identity.platform == "xhs" else None
-            )
+            plan = (self._xhs_proxy_plan(identity)
+                    if identity.platform == "xhs"
+                    else try_proxy_plan(identity.proxy))
             signature = plan.signature if plan else "direct"
             ctx = self._contexts.get(key)
             session = self._cdp_sessions.get(key)
@@ -468,7 +609,7 @@ class BrowserManager:
                         self._fallback_reason_by_key[key] = str(exc)[:200]
                         ctx = await self._launch_persistent(
                             identity, headless=False)
-                        self._backend_by_key[key] = "playwright"
+                        self._backend_by_key[key] = "patchright"
                     else:
                         ctx = session.context
                         if plan is not None and plan.scheme in {"http", "https"} \
@@ -481,13 +622,45 @@ class BrowserManager:
                 else:
                     ctx = await self._launch_persistent(
                         identity, headless=(identity.platform != "xhs"))
-                    self._backend_by_key[key] = "playwright"
+                    self._backend_by_key[key] = "patchright"
                 self._contexts[key] = ctx
                 self._proxy_signature_by_key[key] = signature
             self._last_used[key] = time.time()
             if key in self._cdp_sessions:
                 self._cdp_sessions[key].last_used = self._last_used[key]
             return ctx
+
+    async def probe_browser_exit(self, identity: Identity,
+                                 timeout_ms: int = 15000) -> Dict[str, str]:
+        """用账号真实 BrowserContext 探测出口，不经独立 HTTP 客户端。"""
+        if not self.browser_exit_probe_url:
+            raise RuntimeError("未配置 browser_exit_probe_url")
+        ctx = await self.context_for(identity)
+        page = await ctx.new_page()
+        try:
+            response = await page.goto(
+                self.browser_exit_probe_url, wait_until="domcontentloaded",
+                timeout=max(1000, int(timeout_ms)))
+            status = getattr(response, "status", 0) if response else 0
+            if status and not 200 <= int(status) < 300:
+                raise RuntimeError(f"出口探测返回 HTTP {status}")
+            raw = await page.locator("body").inner_text(timeout=3000)
+            data = json.loads(raw or "{}")
+            ip = str(data.get("ip") or "").strip()
+            if not ip:
+                raise RuntimeError("出口探测未返回 IP")
+            org = str(data.get("org") or "").strip()
+            asn = org.split(" ", 1)[0] if org.upper().startswith("AS") else org
+            return {
+                "ip": ip,
+                "country": str(data.get("country") or "").strip().upper(),
+                "asn": asn,
+                "timezone": str(data.get("timezone") or "").strip(),
+                "city": str(data.get("city") or "").strip(),
+            }
+        finally:
+            with suppress(Exception):
+                await page.close()
 
     async def new_page(self, identity: Identity, block_media: bool = False):
         """从账号常驻 context 开一个新 page(可屏蔽图片/视频/字体)。用完请 page.close()。"""
@@ -604,7 +777,7 @@ _COOKIE_DOMAIN = {
 
 
 def cookie_string_to_state(cookie_str: str, platform: str = "douyin") -> str:
-    """把粘贴的 Cookie 串转成 Playwright storage_state JSON(兜底登录用)。"""
+    """把粘贴的 Cookie 串转成 Patchright storage_state JSON(兜底登录用)。"""
     domain = _COOKIE_DOMAIN.get(platform, ".douyin.com")
     cookies: List[Dict[str, Any]] = []
     for part in cookie_str.strip().split(";"):

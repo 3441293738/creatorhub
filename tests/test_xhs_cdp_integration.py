@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 from app.browser.cdp import (
     CdpProxyAuthController,
@@ -313,7 +313,7 @@ class XhsCdpLocalIntegrationTests(unittest.TestCase):
                     (Path(tmp) / f"account-{account_id}" /
                      ".creatorhub-cdp-owner.json").exists())
 
-    def test_owned_chrome_recovers_after_playwright_driver_restart(self):
+    def test_owned_chrome_recovers_after_patchright_driver_restart(self):
         if ChromeLocator().find() is None:
             self.skipTest("stable Google Chrome is not installed")
 
@@ -330,7 +330,7 @@ class XhsCdpLocalIntegrationTests(unittest.TestCase):
             playwright2 = None
             session2 = None
             try:
-                # Stopping the Playwright driver simulates losing the app-side
+                # Stopping the Patchright driver simulates losing the app-side
                 # CDP connection while the externally owned Chrome stays alive.
                 await playwright1.stop()
                 playwright1 = None

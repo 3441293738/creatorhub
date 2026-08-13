@@ -2,7 +2,7 @@ import unittest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 from app.browser.login import (
     XhsSecurityVerificationRequired,

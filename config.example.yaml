@@ -8,7 +8,7 @@ engine:
   worker_pool_size: 2             # 并发下载数(跨作品)
   scan_concurrency: 2             # 同时抓取的目标数(并发浏览器上下文)
   block_media_resources: false    # 屏蔽图片/视频/字体加载(省带宽但会打断抖音 SPA 致拿不到数据,建议保持 false)
-  xhs_browser_mode: auto          # auto=优先每账号系统 Chrome CDP;cdp=严格 CDP;playwright=兼容旧浏览器
+  xhs_browser_mode: auto          # auto=优先每账号系统 Chrome CDP;cdp=严格 CDP;patchright=直接使用 Patchright
   xhs_cdp_idle_seconds: 900       # 小红书专用 Chrome 空闲回收秒数;0=仅按 LRU/退出回收
   xhs_publish_mode: browser       # browser=页面发布;api=显式 API 兼容模式
   monitor_initial_backfill_count: 0  # 新增博主时回填最近 N 条;0=只下载订阅后的新作品,-1=尽可能全量
@@ -27,6 +27,8 @@ engine:
   creator_comment_url: https://creator.douyin.com/creator-micro/interaction/comment-management
   creator_danmaku_url: https://creator.douyin.com/creator-micro/interaction/danmaku-management
   request_timeout_seconds: 20
+  douyin_captcha_wait_seconds: 300 # 关键词采集遇验证时等待人工处理；期间不产生搜索请求
+  douyin_keyword_gap_seconds: 8    # 同一任务内相邻抖音关键词的停顿秒数
   download_timeout_seconds: 120
   media_dir: ./data/media         # 下载文件落地目录
   user_agent: >-
@@ -40,6 +42,11 @@ engine:
   scan_jitter: 0.15              # 扫描间隔随机抖动比例(±15%),消除整点齐发特征
   route_download_via_proxy: true  # 媒体下载是否走账号代理(避免 CDN 拉流暴露真实 IP)
   verify_proxy_region: true       # 体检时探测代理出口国家,与账号时区(默认东八区)不一致则告警
+  native_write_gate_enabled: true # 仅新建 native 账号:写操作执行前检查浏览器/代理基线
+  native_write_require_system_chrome: true # 写操作必须使用系统稳定版 Chrome
+  native_write_require_verified_proxy: true # 已配代理的账号必须先通过“测试”建立出口基线
+  native_write_proxy_max_age_seconds: 86400 # 出口基线有效期;过期后需重新测试代理
+  browser_exit_probe_url: https://ipinfo.io/json
 
   # ── 写操作风控闸(取关/回关/私信 + 自动评论)──
   comment_hourly_cap_per_account: 10   # 每账号每小时自动评论上限(0=不限)
@@ -92,6 +99,9 @@ risk_control:
   recovery_successes: 3
   recovery_probe_gap_seconds: 600
   event_retention_days: 30
+  network_group_risk_accounts: 2 # 同出口多少个 native 账号同时命中风险后熔断
+  network_group_risk_window_seconds: 900
+  network_group_cooldown_seconds: 7200
 
 storage:
   db_path: ./data/creatorhub.db

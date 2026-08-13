@@ -10,7 +10,7 @@ import app.db as db
 import app.main as main
 from app.browser.identity import Identity
 from app.browser.manager import BrowserManager
-from app.config import Config
+from app.config import Config, load_config
 from app.models import DouyinAccount
 from app.profiles import ensure_identity
 from app.risk import OperationKind
@@ -51,7 +51,7 @@ class _ChromiumStub:
         return self.context
 
 
-class _PlaywrightStub:
+class _PatchrightStub:
     def __init__(self):
         self.chromium = _ChromiumStub()
 
@@ -86,6 +86,17 @@ class IdentityModeTests(unittest.TestCase):
         self.assertEqual(engine.xhs_cdp_idle_seconds, 900)
         self.assertEqual(engine.xhs_publish_mode, "browser")
         self.assertEqual(engine.xhs_comment_write_mode, "browser")
+
+    def test_legacy_playwright_config_value_migrates_to_patchright(self):
+        config_path = Path(self.tmp.name) / "legacy-browser-mode.yaml"
+        config_path.write_text(
+            "engine:\n  xhs_browser_mode: playwright\n",
+            encoding="utf-8",
+        )
+
+        cfg = load_config(str(config_path))
+
+        self.assertEqual(cfg.engine.xhs_browser_mode, "patchright")
 
     def test_open_browser_url_requires_the_real_platform_host(self):
         self.assertTrue(main._platform_url_allowed(
@@ -514,7 +525,7 @@ class IdentityModeTests(unittest.TestCase):
 
     def test_native_launch_omits_spoofing_options_and_hooks(self):
         manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
-        manager._pw = _PlaywrightStub()
+        manager._pw = _PatchrightStub()
         identity = Identity(
             account_id=1,
             profile_dir=str(Path(self.tmp.name) / "native"),
@@ -534,12 +545,14 @@ class IdentityModeTests(unittest.TestCase):
         self.assertNotIn("locale", kwargs)
         self.assertNotIn("timezone_id", kwargs)
         self.assertTrue(kwargs["no_viewport"])
+        if __import__("os").name == "nt":
+            self.assertTrue(kwargs["chromium_sandbox"])
         self.assertEqual(context.header_calls, [])
         self.assertEqual(context.script_calls, [])
 
     def test_native_proxy_launch_only_adds_webrtc_proxy_routing_flags(self):
         manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
-        manager._pw = _PlaywrightStub()
+        manager._pw = _PatchrightStub()
         identity = Identity(
             account_id=1,
             profile_dir=str(Path(self.tmp.name) / "native-proxy"),
@@ -556,6 +569,23 @@ class IdentityModeTests(unittest.TestCase):
         ])
         self.assertEqual(kwargs["proxy"], {"server": "http://127.0.0.1:8080"})
         self.assertTrue(kwargs["no_viewport"])
+
+    def test_windows_legacy_launch_keeps_chromium_sandbox_enabled(self):
+        manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
+        manager._pw = _PatchrightStub()
+        identity = Identity(
+            account_id=2,
+            profile_dir=str(Path(self.tmp.name) / "legacy-sandbox"),
+            identity_mode="legacy",
+            ua="LEGACY_UA",
+        )
+
+        asyncio.run(manager._launch_persistent(identity, headless=False))
+        kwargs = manager._pw.chromium.kwargs
+
+        self.assertNotIn("--no-sandbox", kwargs.get("args", []))
+        if __import__("os").name == "nt":
+            self.assertTrue(kwargs["chromium_sandbox"])
 
     def test_browser_probe_prefers_installed_stable_chrome(self):
         manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
@@ -595,7 +625,7 @@ class IdentityModeTests(unittest.TestCase):
 
     def test_persistent_context_uses_selected_browser_channel(self):
         manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
-        manager._pw = _PlaywrightStub()
+        manager._pw = _PatchrightStub()
         manager._browser_channel = "chrome"
         identity = Identity(
             account_id=1,
@@ -627,8 +657,8 @@ class IdentityModeTests(unittest.TestCase):
             "identity_mode": "native",
             "profile_dir": identity.profile_dir,
             "has_proxy": True,
-            "backend": "playwright",
-            "backend_label": "Playwright Chromium",
+            "backend": "patchright",
+            "backend_label": "Patchright Chromium",
             "fallback": False,
             "fallback_reason": "",
         })
@@ -652,7 +682,7 @@ class IdentityModeTests(unittest.TestCase):
         with db.get_session() as session:
             identity = manager.identity_for(
                 session.get(DouyinAccount, account_id))
-        manager._backend_by_key[identity.key] = "playwright"
+        manager._backend_by_key[identity.key] = "patchright"
         manager._fallback_reason_by_key[identity.key] = (
             "connect ws://127.0.0.1:43111/devtools/browser/fixture "
             "via http://alice:secret@proxy.local:8080")
@@ -663,14 +693,14 @@ class IdentityModeTests(unittest.TestCase):
             main.browser = previous_browser
 
         dumped = repr(body)
-        self.assertEqual(body["backend_label"], "Playwright Chromium · 回退")
+        self.assertEqual(body["backend_label"], "Patchright Chromium · 回退")
         self.assertNotIn("secret", dumped)
         self.assertNotIn("ws://", dumped)
         self.assertNotIn("127.0.0.1:", dumped)
 
     def test_native_launch_captures_actual_context_user_agent(self):
         manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
-        manager._pw = _PlaywrightStub()
+        manager._pw = _PatchrightStub()
         manager._pw.chromium.context.pages = [_PageStub()]
         identity = Identity(
             account_id=None,
@@ -699,7 +729,7 @@ class IdentityModeTests(unittest.TestCase):
             "DEFAULT_UA", self.cfg.engine.profiles_dir,
             native_ua_callback=main._persist_native_ua,
         )
-        manager._pw = _PlaywrightStub()
+        manager._pw = _PatchrightStub()
         manager._pw.chromium.context.pages = [_PageStub()]
 
         asyncio.run(manager._launch_persistent(identity))
@@ -712,7 +742,7 @@ class IdentityModeTests(unittest.TestCase):
 
     def test_legacy_launch_keeps_existing_identity_behavior(self):
         manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
-        manager._pw = _PlaywrightStub()
+        manager._pw = _PatchrightStub()
         manager._chrome_major = 131
         identity = Identity(
             account_id=1,

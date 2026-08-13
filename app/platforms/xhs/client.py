@@ -22,7 +22,7 @@ _DOMAIN = "https://www.xiaohongshu.com"
 
 
 def cookie_str_from_state(storage_state_json: str) -> str:
-    """从 Playwright storage_state JSON 提取小红书 Cookie 串(name=value; ...)。"""
+    """从 Patchright storage_state JSON 提取小红书 Cookie 串(name=value; ...)。"""
     try:
         state = json.loads(storage_state_json or "{}")
     except Exception:

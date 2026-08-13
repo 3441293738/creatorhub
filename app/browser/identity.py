@@ -90,7 +90,7 @@ class Identity:
 
     @property
     def geolocation(self) -> dict:
-        """返回 Playwright context 用的 geolocation 坐标(有实测坐标用实测,否则按 seed 派生)。"""
+        """返回 Patchright context 用的 geolocation 坐标(有实测坐标用实测,否则按 seed 派生)。"""
         lat, lon = self.geo_lat, self.geo_lon
         if not lat or not lon:
             lat, lon = derive_geo(self.fp_seed or "0")

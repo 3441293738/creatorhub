@@ -186,7 +186,12 @@ async def lifespan(app: FastAPI):
         cfg.engine.user_agent, cfg.engine.profiles_dir,
         cfg.engine.max_live_contexts, native_ua_callback=_persist_native_ua,
         xhs_browser_mode=cfg.engine.xhs_browser_mode,
-        xhs_cdp_idle_seconds=cfg.engine.xhs_cdp_idle_seconds)
+        xhs_cdp_idle_seconds=cfg.engine.xhs_cdp_idle_seconds,
+        native_write_gate_enabled=cfg.engine.native_write_gate_enabled,
+        native_write_require_system_chrome=cfg.engine.native_write_require_system_chrome,
+        native_write_require_verified_proxy=cfg.engine.native_write_require_verified_proxy,
+        native_write_proxy_max_age_seconds=cfg.engine.native_write_proxy_max_age_seconds,
+        browser_exit_probe_url=cfg.engine.browser_exit_probe_url)
     await browser.start()
     engine = MonitorEngine(cfg, browser)
     startup_now = datetime.utcnow()
@@ -749,6 +754,12 @@ async def list_accounts(platform: str | None = None):
                 "proxy": _mask_proxy(a.proxy),
                 "proxy_status": a.proxy_status,
                 "has_proxy": bool(a.proxy),
+                "exit_ip": a.exit_ip,
+                "exit_country": a.exit_country,
+                "exit_asn": a.exit_asn,
+                "exit_timezone": a.exit_timezone,
+                "exit_checked_at": (a.exit_checked_at.isoformat()
+                                    if a.exit_checked_at else None),
                 "write_paused_until": (a.write_paused_until.isoformat()
                                         if a.write_paused_until else None),
                 "write_pause_reason": a.write_pause_reason,
@@ -1624,6 +1635,16 @@ class ProxyIn(BaseModel):
     proxy: str = ""
 
 
+def _reset_account_exit_baseline(acc) -> None:
+    """A proxy assignment starts a new browser-egress baseline generation."""
+    acc.exit_ip = ""
+    acc.exit_country = ""
+    acc.exit_asn = ""
+    acc.exit_timezone = ""
+    acc.exit_proxy_signature = ""
+    acc.exit_checked_at = None
+
+
 @app.put("/api/accounts/{account_id}/proxy")
 async def set_account_proxy(account_id: int, body: ProxyIn):
     """手动设置/清空账号专属代理。改后会关掉该账号常驻 context,下次用新代理重开。"""
@@ -1638,6 +1659,7 @@ async def set_account_proxy(account_id: int, body: ProxyIn):
             raise HTTPException(404, "账号不存在")
         acc.proxy = p
         acc.proxy_status = "unknown"
+        _reset_account_exit_baseline(acc)
         s.add(acc); s.commit()
     if browser:
         await browser.close_context(account_id)
@@ -1667,6 +1689,7 @@ async def assign_account_proxy(account_id: int):
             raise HTTPException(400, "代理池为空(请在 config.yaml 的 proxies 里配置)")
         acc.proxy = p
         acc.proxy_status = "unknown"
+        _reset_account_exit_baseline(acc)
         s.add(acc); s.commit()
     if browser:
         await browser.close_context(account_id)
@@ -1806,7 +1829,7 @@ async def _detect_proxy(raw: str) -> dict:
 
     sch, auth_mode, url = found
     is_socks = sch.startswith("socks")
-    browser_ok = not (is_socks and auth_mode == "required")  # Playwright 不支持带密 SOCKS5
+    browser_ok = not (is_socks and auth_mode == "required")  # Patchright 不支持带密 SOCKS5
     geo = await _proxy_geo(url)              # 经该代理查出口 IP 归属地
     return {
         "ok": True, "scheme": sch, "auth": auth_mode,
@@ -1847,6 +1870,7 @@ async def assign_proxies_all():
                 continue
             acc.proxy = p
             acc.proxy_status = "unknown"
+            _reset_account_exit_baseline(acc)
             s.add(acc); s.commit()
             assigned += 1
         if browser:
@@ -1858,22 +1882,64 @@ async def assign_proxies_all():
 
 @app.post("/api/accounts/{account_id}/test-proxy")
 async def test_account_proxy(account_id: int):
-    """通过该账号代理实际连一次目标站,验证代理可用并更新 proxy_status。"""
+    """用 native 账号的真实 BrowserContext 验证代理出口并建立基线。"""
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if not acc:
             raise HTTPException(404, "账号不存在")
         proxy = acc.proxy or ""
         platform = acc.platform
+        identity_mode = acc.identity_mode
+        identity = browser.identity_for(acc) if browser else None
     if not proxy:
         return {"ok": False, "detail": "该账号未配置代理(将走宿主真实 IP)"}
-    ok, detail = await _probe_proxy(proxy, platform)
+    browser_exit = None
+    if identity_mode == "native" and browser is not None and identity is not None:
+        try:
+            # 强制下次 context 使用数据库中最新的代理配置。
+            await browser.close_context(account_id)
+            browser_exit = await browser.probe_browser_exit(identity)
+            ok = True
+            detail = f"Browser IP {browser_exit['ip']}"
+        except Exception as exc:
+            ok = False
+            detail = f"Browser probe failed: {exc}"
+    else:
+        ok, detail = await _probe_proxy(proxy, platform)
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if acc:
-            acc.proxy_status = _proxy_status_from_detail(ok, detail)
+            if ok and browser_exit:
+                signature = browser.proxy_signature(proxy)
+                same_generation = bool(acc.exit_proxy_signature) \
+                    and acc.exit_proxy_signature == signature
+                drift = same_generation and any((
+                    bool(acc.exit_ip and acc.exit_ip != browser_exit["ip"]),
+                    bool(acc.exit_country and browser_exit["country"]
+                         and acc.exit_country != browser_exit["country"]),
+                    bool(acc.exit_asn and browser_exit["asn"]
+                         and acc.exit_asn != browser_exit["asn"]),
+                ))
+                if drift:
+                    acc.proxy_status = "drifted"
+                    detail = (
+                        f"浏览器出口漂移: 基线 {acc.exit_ip or '-'} / "
+                        f"{acc.exit_asn or '-'}, 当前 {browser_exit['ip']} / "
+                        f"{browser_exit['asn'] or '-'}")
+                    ok = False
+                else:
+                    acc.proxy_status = "ok"
+                    acc.exit_ip = browser_exit["ip"]
+                    acc.exit_country = browser_exit["country"]
+                    acc.exit_asn = browser_exit["asn"]
+                    acc.exit_timezone = browser_exit["timezone"]
+                    acc.exit_proxy_signature = signature
+                    acc.exit_checked_at = datetime.utcnow()
+            else:
+                acc.proxy_status = _proxy_status_from_detail(ok, detail)
             s.add(acc); s.commit()
-    return {"ok": ok, "detail": detail, "proxy": _mask_proxy(proxy)}
+    return {"ok": ok, "detail": detail, "proxy": _mask_proxy(proxy),
+            "browser_exit": browser_exit}
 
 
 # ─────────── 代理池(提前配置,账号关联使用)───────────
@@ -2195,7 +2261,7 @@ def _share_input(value: str) -> str:
 
 
 def _write_account_cookie_file(account_id: int | None) -> tuple[str, str, str]:
-    """把 Playwright storage_state 临时转换为 yt-dlp 可读的 Netscape Cookie 文件。
+    """把 Patchright storage_state 临时转换为 yt-dlp 可读的 Netscape Cookie 文件。
 
     返回 (cookie_file, account_proxy, account_ua)。调用方必须在使用后删除 cookie_file。
     """

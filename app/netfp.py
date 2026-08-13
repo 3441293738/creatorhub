@@ -7,7 +7,7 @@ HTTP2 指纹复刻真实 Chrome —— 纯 httpx 的 TLS 指纹与浏览器不�
 
 impersonate 目标按调用方传入的 UA 里的 Chrome 大版本自动挑最接近的,UA 升级后无需改这里。
 
-注:浏览器拦截路径(Playwright 真实 Chrome)本身就是真指纹,不需要、也不应使用本模块。
+注:浏览器拦截路径(Patchright 真实 Chrome)本身就是真指纹,不需要、也不应使用本模块。
 """
 from __future__ import annotations
 

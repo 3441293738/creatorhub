@@ -18,7 +18,7 @@ BASE = "https://www.douyin.com"
 
 
 def cookie_from_state(storage_state_json: str) -> str:
-    """从 Playwright storage_state JSON 提取抖音 Cookie 串(name=value; ...)。
+    """从 Patchright storage_state JSON 提取抖音 Cookie 串(name=value; ...)。
     只取抖音相关域,直连接口(签名 + 该 Cookie)即可请求。"""
     try:
         state = json.loads(storage_state_json or "{}")

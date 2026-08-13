@@ -15,10 +15,10 @@ from sqlmodel import select
 from app import db
 from app.browser.fetcher import (
     _douyin_search_needs_verification,
-    douyin_search_request_params,
     douyin_search_empty_error,
     douyin_search_exception_error,
     extract_search_awemes,
+    fetch_douyin_search,
 )
 from app.config import Config
 from app.engine.collection import KeywordCollector
@@ -53,21 +53,6 @@ class SearchExtractionTests(unittest.TestCase):
         self.assertFalse(_douyin_search_needs_verification({
             "data": [{"aweme_info": {"aweme_id": "1"}}],
         }))
-
-    def test_direct_douyin_search_params_match_video_search_endpoint(self):
-        params = douyin_search_request_params(
-            "ai短剧", offset=15, count=7, search_id="log-id")
-
-        self.assertEqual(params["keyword"], "ai短剧")
-        self.assertEqual(params["search_channel"], "aweme_video_web")
-        self.assertEqual(params["offset"], "15")
-        self.assertEqual(params["count"], "7")
-        self.assertEqual(params["search_id"], "log-id")
-        self.assertEqual(params["device_platform"], "webapp")
-        self.assertEqual(params["aid"], "6383")
-        self.assertEqual(len(params["webid"]), 19)
-        self.assertTrue(params["webid"].isdigit())
-        self.assertNotIn("a_bogus", params)
 
     def test_collection_error_display_shortens_closed_browser_trace(self):
         message = _collection_error_for_display(
@@ -129,6 +114,77 @@ class SearchExtractionTests(unittest.TestCase):
 
         self.assertEqual([row["aweme_id"] for row in result], ["a-1", "a-2"])
         self.assertEqual(result[0]["desc"], "first")
+
+
+class DouyinPageSearchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_verification_wait_is_passive_and_page_response_resumes_collection(self):
+        verify_payload = {
+            "data": [],
+            "search_nil_info": {"search_nil_type": "verify_check"},
+        }
+        success_payload = {"data": [{"aweme_info": {
+            "aweme_id": "page-result-1",
+            "desc": "页面自然响应",
+            "video": {"play_addr": {"url_list": ["https://media.test/1.mp4"]}},
+        }}]}
+
+        class Response:
+            status = 200
+            url = "https://www.douyin.com/aweme/v1/web/general/search/single/"
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            async def json(self):
+                return self.payload
+
+        class Page:
+            def __init__(self):
+                self.url = "about:blank"
+                self.handler = None
+                self.wait_calls = 0
+                self.evaluate_calls = 0
+                self.mouse = SimpleNamespace(wheel=AsyncMock())
+
+            def on(self, event, handler):
+                if event == "response":
+                    self.handler = handler
+
+            async def goto(self, url, **_kwargs):
+                self.url = url
+                await self.handler(Response(verify_payload))
+
+            async def wait_for_load_state(self, *_args, **_kwargs):
+                return None
+
+            async def wait_for_timeout(self, _timeout):
+                self.wait_calls += 1
+                # 第一次是页面 settle；第二次是验证码被动等待。模拟用户完成验证后，
+                # 页面自己产生正常搜索响应。
+                if self.wait_calls == 2:
+                    await self.handler(Response(success_payload))
+
+            async def bring_to_front(self):
+                return None
+
+            async def evaluate(self, *_args, **_kwargs):
+                self.evaluate_calls += 1
+
+            async def close(self):
+                return None
+
+        page = Page()
+        context = SimpleNamespace(pages=[page])
+
+        rows, error = await fetch_douyin_search(
+            SimpleNamespace(), SimpleNamespace(), "露营",
+            max_results=1, captcha_wait_seconds=3, context=context,
+        )
+
+        self.assertEqual([row["aweme_id"] for row in rows], ["page-result-1"])
+        self.assertEqual(error, "")
+        self.assertEqual(page.evaluate_calls, 0)
+        self.assertEqual(page.mouse.wheel.await_count, 0)
 
 
 class KeywordCollectionPipelineTests(unittest.IsolatedAsyncioTestCase):
@@ -228,6 +284,36 @@ class KeywordCollectionPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.content_count, 1)
         self.assertEqual(job.comment_count, 2)
         self.assertEqual(len(headed_calls), 2)
+
+    async def test_captcha_stops_remaining_keywords_in_same_job(self):
+        with db.get_session() as session:
+            job = session.get(KeywordCollectionJob, self.job_id)
+            job.keywords = json.dumps(["露营", "穿搭"], ensure_ascii=False)
+            session.add(job)
+            session.commit()
+
+        @asynccontextmanager
+        async def temporary_headed_context(_identity):
+            yield SimpleNamespace()
+
+        browser = SimpleNamespace(
+            identity_for=lambda _account: SimpleNamespace(ua="fixture-agent"),
+            temporary_headed_context=temporary_headed_context,
+        )
+        cfg = Config()
+        cfg.engine.douyin_keyword_gap_seconds = 0
+        collector = KeywordCollector(cfg, browser, SimpleNamespace())
+        collector._discover_douyin = AsyncMock(return_value=(
+            [], "抖音要求完成滑块验证；本次任务已停止后续请求",
+        ))
+
+        result = await collector.run(self.job_id, self.account)
+
+        self.assertEqual(collector._discover_douyin.await_count, 1)
+        self.assertEqual(result["errors"], 1)
+        with db.get_session() as session:
+            job = session.get(KeywordCollectionJob, self.job_id)
+        self.assertIn("滑块验证", job.error)
 
 
 class KeywordCollectionEditTests(unittest.TestCase):

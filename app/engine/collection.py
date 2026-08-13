@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import random
 from pathlib import Path
 
 from sqlalchemy import func
@@ -33,6 +34,7 @@ from ..platforms.xhs import (
     parse_note_brief,
     parse_note_detail,
 )
+from ..risk import classify_platform_error, RiskCategory
 
 
 def _loads_keywords(raw: str) -> list[str]:
@@ -145,6 +147,7 @@ class KeywordCollector:
         return await fetch_douyin_search(
             self.browser, identity, keyword, max_results=limit,
             max_scrolls=scrolls,
+            captcha_wait_seconds=self.cfg.engine.douyin_captcha_wait_seconds,
             block_media=self.cfg.engine.block_media_resources,
             context=context,
         )
@@ -416,9 +419,13 @@ class KeywordCollector:
                             xhs_client: XhsApiClient | None = None,
                             context=None) -> dict:
 
-        for keyword in keywords:
+        for keyword_index, keyword in enumerate(keywords):
             if self._cancel_requested(job_id):
                 return {"canceled": True, "errors": self._job(job_id).error_count}
+            if job.platform == "douyin" and keyword_index:
+                gap = max(0.0, float(self.cfg.engine.douyin_keyword_gap_seconds))
+                if gap:
+                    await asyncio.sleep(gap * random.uniform(1.0, 1.35))
             self._progress(job_id, keyword=keyword, step="搜索作品")
             if job.platform == "douyin":
                 raw_items, search_error = await self._discover_douyin(
@@ -431,6 +438,11 @@ class KeywordCollector:
                 self._record_error(job_id, f"{keyword}: {search_error}")
                 if "登录态已失效" in search_error:
                     self._mark_account_invalid(account.id)
+                category, _ = classify_platform_error(search_error)
+                if category in {
+                        RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                    # 风险/登录态/网络异常后停止后续关键词，避免一次任务继续放大信号。
+                    break
             if not raw_items:
                 continue
 
