@@ -12,10 +12,11 @@
   :root {
     /* shell sizing */
     --header-h:68px; --sidebar-w:232px; --content-max:1260px;
+    --control-h:40px; --control-bg:#0b0f16; --control-bg-hover:#0f141d;
     /* surfaces */
     --bg:#090b10; --bg-grad:#0d1018;
     --surface:#12161e; --surface-2:#181d27; --surface-3:#202632;
-    --line:#29303c; --line-soft:#1d232d;
+    --line:#2a3341; --line-soft:#1d2530;
     /* text */
     --fg:#e7eaf0; --fg-strong:#f6f8fb; --mut:#8b94a3; --mut-2:#778094;
     /* brand + semantic */
@@ -26,11 +27,12 @@
     --warn:#fbbf24; --warn-soft:rgba(251,191,36,.14);
     --danger:#f87171; --danger-soft:rgba(248,113,113,.14);
     /* shape */
-    --r-xs:6px; --r-sm:8px; --r:12px; --r-lg:16px;
-    --sh-sm:0 1px 2px rgba(0,0,0,.4);
-    --sh:0 1px 2px rgba(0,0,0,.4), 0 12px 28px -16px rgba(0,0,0,.65);
-    --sh-lg:0 2px 4px rgba(0,0,0,.35), 0 24px 48px -20px rgba(0,0,0,.7);
-    --ease:cubic-bezier(.4,0,.2,1);
+    --r-xs:7px; --r-sm:10px; --r:14px; --r-lg:18px;
+    --sh-sm:0 1px 2px rgba(0,0,0,.32), inset 0 1px 0 rgba(255,255,255,.025);
+    --sh:0 1px 2px rgba(0,0,0,.35), 0 16px 36px -20px rgba(0,0,0,.78), inset 0 1px 0 rgba(255,255,255,.025);
+    --sh-lg:0 3px 8px rgba(0,0,0,.32), 0 28px 64px -24px rgba(0,0,0,.82);
+    --ease:cubic-bezier(.2,.75,.25,1);
+    --ease-out:cubic-bezier(.16,1,.3,1);
     --sans:"Fira Sans",system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
     --mono:"Fira Code",ui-monospace,"SFMono-Regular","JetBrains Mono",Consolas,monospace;
   }
@@ -45,6 +47,7 @@
       radial-gradient(900px 500px at 0% 0%, rgba(56,189,248,.05), transparent 55%),
       var(--bg);
     -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
   }
   ::selection { background:var(--acc-soft); }
 
@@ -54,8 +57,7 @@
   *::-webkit-scrollbar-thumb:hover { background:#2c3340; background-clip:padding-box; }
   html { scrollbar-color:var(--surface-3) transparent; scrollbar-width:thin; }
 
-  /* 原生 checkbox / 日期选择器统一用品牌色 */
-  input[type=checkbox], input[type=radio],
+  /* 原生日期选择器使用品牌色；复选框 / 单选框在表单区域统一重绘 */
   input[type=date], input[type=datetime-local], input[type=time] { accent-color:var(--acc); }
   input[type=date]::-webkit-calendar-picker-indicator,
   input[type=datetime-local]::-webkit-calendar-picker-indicator { filter:invert(.7); cursor:pointer; }
@@ -68,6 +70,7 @@
     padding:0 20px;
     background:rgba(9,11,16,.82); backdrop-filter:blur(18px) saturate(135%);
     border-bottom:1px solid var(--line-soft);
+    box-shadow:0 10px 32px -28px rgba(0,0,0,.85);
   }
   .header-inner {
     width:100%; max-width:1540px; min-height:var(--header-h); margin:0 auto;
@@ -108,6 +111,7 @@
     /* surfaces — 干净白卡 + 暖米底 */
     --bg:#fbf3f1; --bg-grad:#fff;
     --surface:#ffffff; --surface-2:#fdf4f2; --surface-3:#f8e7e2;
+    --control-bg:#fffaf9; --control-bg-hover:#fff6f4;
     --line:#f2ddd7; --line-soft:#f8e9e4;
     /* text — 暖近黑,保证对比度 */
     --fg:#2b2226; --fg-strong:#181113; --mut:#6e5e62; --mut-2:#806f73;
@@ -189,6 +193,7 @@
     transition:transform .18s var(--ease), box-shadow .18s var(--ease), border-color .18s var(--ease);
   }
   .ncard:hover { transform:translateY(-2px); box-shadow:var(--sh); border-color:var(--acc-ring); }
+  .ncard:has(.ncard-sel:checked) { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc-ring), var(--sh); }
   /* 统一封面比例:即便图裂/无封面也占位,避免绝对定位的类型角标压到标题首字 */
   .ncard-cover { display:block; width:100%; aspect-ratio:3/4; background:var(--surface-3); object-fit:cover; }
   .ncard-cover.ph { display:grid; place-items:center; color:var(--mut-2); }
@@ -398,7 +403,7 @@
   .stat {
     position:relative; overflow:hidden;
     display:flex; align-items:center; gap:12px;
-    min-height:92px; background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg); padding:16px 17px;
+    min-height:92px; background:linear-gradient(145deg,color-mix(in srgb,var(--surface) 96%,var(--surface-2)),var(--surface)); border:1px solid var(--line); border-radius:var(--r-lg); padding:16px 17px;
     box-shadow:var(--sh-sm), inset 0 1px 0 rgba(255,255,255,.025);
     transition:border-color .2s var(--ease), transform .2s var(--ease), box-shadow .2s var(--ease);
   }
@@ -423,7 +428,7 @@
   .num, td.num, .tab-badge, .nav-badge, .pv-counter, .stat-v { font-variant-numeric:tabular-nums; }
 
   /* ── layout ── */
-  main { max-width:var(--content-max); margin:0 auto; padding:28px 32px 48px; display:grid; gap:20px; }
+  main { max-width:var(--content-max); margin:0 auto; padding:30px 32px 52px; display:grid; gap:22px; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; align-items:start; }
 
   /* ── tabs ── */
@@ -457,13 +462,13 @@
     position:sticky; top:var(--header-h); flex:0 0 var(--sidebar-w); padding:22px 14px; align-self:flex-start;
     min-height:calc(100vh - var(--header-h)); max-height:calc(100vh - var(--header-h)); overflow-y:auto; scrollbar-width:none;
     border-right:1px solid var(--line-soft);
-    background:linear-gradient(180deg,color-mix(in srgb,var(--surface) 48%,transparent),transparent 76%);
+    background:linear-gradient(180deg,color-mix(in srgb,var(--surface) 58%,transparent),color-mix(in srgb,var(--bg) 78%,transparent) 76%);
   }
   .sidebar::-webkit-scrollbar { display:none; }
   .nav { display:flex; flex-direction:column; gap:5px; }
-  .navitem { position:relative; width:100%; min-height:42px; background:transparent; border:1px solid transparent; color:var(--mut); font-weight:550; font-size:13.5px; padding:10px 12px; border-radius:10px; }
-  .navitem:hover { background:var(--surface-2); color:var(--fg); }
-  .navitem.active { background:var(--acc-soft); color:var(--fg-strong); border-color:var(--acc-ring); }
+  .navitem { position:relative; width:100%; min-height:42px; background:transparent; border:1px solid transparent; color:var(--mut); font-weight:550; font-size:13.5px; padding:10px 12px; border-radius:11px; box-shadow:none; transition:color .18s var(--ease), background .18s var(--ease), border-color .18s var(--ease), transform .12s var(--ease-out); }
+  .navitem:hover { background:var(--surface-2); color:var(--fg); transform:translateX(2px); filter:none; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
+  .navitem.active { background:linear-gradient(90deg,var(--acc-soft),color-mix(in srgb,var(--acc-soft) 42%,transparent)); color:var(--fg-strong); border-color:var(--acc-ring); box-shadow:inset 0 1px 0 rgba(255,255,255,.035), 0 10px 24px -22px var(--acc); }
   .navitem.active::before { content:""; position:absolute; left:-1px; top:9px; bottom:9px; width:3px; border-radius:0 3px 3px 0; background:var(--acc); box-shadow:0 0 12px var(--acc-ring); }
   .navitem svg { width:17px; height:17px; }
   .nav-sep { font-size:10.5px; font-weight:600; letter-spacing:.6px; color:var(--mut-2); text-transform:uppercase; padding:14px 12px 5px; }
@@ -491,11 +496,12 @@
 
   /* ── cards ── */
   .card {
-    background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg);
+    background:linear-gradient(145deg,color-mix(in srgb,var(--surface) 98%,var(--surface-2)),var(--surface)); border:1px solid var(--line); border-radius:var(--r-lg);
     padding:20px; box-shadow:var(--sh-sm), inset 0 1px 0 rgba(255,255,255,.025);
-    transition:border-color .2s var(--ease), box-shadow .2s var(--ease);
+    transition:border-color .2s var(--ease), box-shadow .2s var(--ease), transform .2s var(--ease-out);
   }
-  .card:hover { border-color:color-mix(in srgb,var(--line) 55%,var(--acc)); box-shadow:var(--sh); }
+  .card:hover { border-color:color-mix(in srgb,var(--line) 58%,var(--acc)); box-shadow:var(--sh); }
+  .card:focus-within { border-color:color-mix(in srgb,var(--line) 58%,var(--acc)); }
   .card-head { display:flex; align-items:center; gap:11px; margin:0 0 16px; }
   .card-ic { display:grid; place-items:center; width:32px; height:32px; border-radius:9px; background:var(--acc-soft); color:var(--acc); border:1px solid color-mix(in srgb,var(--acc) 22%,transparent); flex:0 0 auto; }
   .card-ic svg { width:17px; height:17px; }
@@ -506,7 +512,7 @@
   /* ── page context / orientation ── */
   .page-context {
     display:flex; align-items:flex-end; gap:18px; min-width:0;
-    padding:2px 2px 18px; border-bottom:1px solid var(--line-soft);
+    padding:2px 2px 20px; border-bottom:1px solid var(--line-soft);
   }
   .page-context-main { min-width:0; flex:1; }
   .page-kicker {
@@ -527,29 +533,32 @@
   #page-title:focus { outline:none; box-shadow:none; }
   .page-desc { margin:5px 0 0; color:var(--mut); font-size:13px; line-height:1.5; }
   [data-panel] { scroll-margin-top:calc(var(--header-h) + 18px); }
+  [data-panel].panel-enter { animation:panelEnter .22s var(--ease-out) both; }
+  @keyframes panelEnter { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
 
   /* ── buttons ── */
   button {
     display:inline-flex; align-items:center; justify-content:center; gap:6px;
     background:linear-gradient(180deg,var(--acc-hover),var(--acc)); color:#fff; border:1px solid transparent; border-radius:var(--r-sm);
-    padding:8px 14px; cursor:pointer; font-size:13px; font-weight:550; line-height:1;
+    min-height:36px; padding:7px 14px; cursor:pointer; font-size:13px; font-weight:600; line-height:1;
     touch-action:manipulation;
-    transition:background .18s var(--ease), border-color .18s var(--ease), opacity .18s var(--ease), filter .18s var(--ease), box-shadow .18s var(--ease), transform .06s var(--ease);
+    box-shadow:0 7px 18px -13px var(--acc-ring), inset 0 1px 0 rgba(255,255,255,.18);
+    transition:background .18s var(--ease), border-color .18s var(--ease), opacity .18s var(--ease), filter .18s var(--ease), box-shadow .18s var(--ease), transform .12s var(--ease-out);
   }
   button svg { width:15px; height:15px; }
-  button:hover { filter:brightness(1.07); }
-  button:active { transform:translateY(1px); }
+  button:hover { filter:brightness(1.08); box-shadow:0 10px 24px -14px var(--acc-ring), inset 0 1px 0 rgba(255,255,255,.2); }
+  button:active { transform:scale(.985); }
   /* 仅主操作按钮(无任何变体 class)加柔光,避免泄漏到 ghost/tab/nav/平台切换 */
   button:not([class]):not([data-pf]):not([data-tab]) { box-shadow:0 6px 16px -11px var(--acc-ring), inset 0 1px 0 rgba(255,255,255,.13); }
-  button.ghost { background:var(--surface-2); border-color:var(--line); color:var(--fg); }
-  button.ghost:hover { background:var(--surface-3); border-color:#333a47; }
+  button.ghost { background:linear-gradient(180deg,var(--surface-2),color-mix(in srgb,var(--surface-2) 76%,var(--bg))); border-color:var(--line); color:var(--fg); box-shadow:inset 0 1px 0 rgba(255,255,255,.035); }
+  button.ghost:hover { background:var(--surface-3); border-color:color-mix(in srgb,var(--line) 62%,var(--fg)); }
   button.danger, button.ghost.danger {
     color:var(--danger); background:var(--danger-soft);
     border-color:color-mix(in srgb,var(--danger) 34%,var(--line)); box-shadow:none;
   }
   button.danger:hover, button.ghost.danger:hover { color:#fff; background:var(--danger); border-color:var(--danger); filter:none; }
-  button.sm { padding:5px 10px; font-size:12px; border-radius:var(--r-xs); }
-  button:disabled { opacity:.5; cursor:default; }
+  button.sm { min-height:30px; padding:5px 10px; font-size:12px; border-radius:var(--r-xs); }
+  button:disabled { opacity:.46; cursor:not-allowed; box-shadow:none; }
   button:disabled:hover { filter:none; }
   button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, [tabindex]:focus-visible {
     outline:none; box-shadow:0 0 0 3px var(--acc-ring); border-radius:var(--r-sm);
@@ -558,16 +567,50 @@
   /* ── inputs ── */
   label.field { display:block; font-size:12px; color:var(--mut); margin-bottom:6px; }
   input, textarea, select {
-    width:100%; background:var(--bg); border:1px solid var(--line); color:var(--fg);
-    border-radius:var(--r-sm); padding:10px 12px; font-size:13px; font-family:inherit;
-    transition:border-color .18s var(--ease), background .18s var(--ease);
+    width:100%; min-height:var(--control-h); background:var(--control-bg); border:1px solid var(--line); color:var(--fg);
+    border-radius:var(--r-sm); padding:9px 12px; font-size:13px; font-family:inherit;
+    box-shadow:inset 0 1px 1px rgba(0,0,0,.16), 0 1px 0 rgba(255,255,255,.018);
+    transition:border-color .18s var(--ease), background .18s var(--ease), box-shadow .18s var(--ease);
   }
   input::placeholder, textarea::placeholder { color:var(--mut-2); }
-  input:hover, textarea:hover, select:hover { border-color:#333a47; }
-  input:focus, textarea:focus, select:focus { outline:none; border-color:var(--acc); box-shadow:0 0 0 3px var(--acc-ring); }
+  input:hover, textarea:hover, select:hover { border-color:color-mix(in srgb,var(--line) 60%,var(--fg)); background-color:var(--control-bg-hover); }
+  input:focus, textarea:focus, select:focus { outline:none; border-color:var(--acc); background-color:var(--control-bg); box-shadow:0 0 0 3px var(--acc-ring), inset 0 1px 1px rgba(0,0,0,.12); }
   input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color:var(--danger); box-shadow:0 0 0 3px var(--danger-soft); }
-  textarea { resize:vertical; min-height:62px; line-height:1.5; }
+  textarea { resize:vertical; min-height:72px; line-height:1.55; }
   select { appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%238b94a3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 9px center; padding-right:30px; cursor:pointer; }
+
+  /* 统一重绘原生选择控件：保留语义、键盘操作与表单提交行为。 */
+  input[type="checkbox"], input[type="radio"] {
+    appearance:none; -webkit-appearance:none; position:relative; display:inline-grid; place-content:center;
+    width:18px!important; min-width:18px; height:18px; min-height:18px; padding:0!important; margin:0;
+    border:1px solid color-mix(in srgb,var(--line) 70%,var(--mut)); border-radius:5px;
+    background:var(--control-bg); box-shadow:inset 0 1px 2px rgba(0,0,0,.2); cursor:pointer;
+    vertical-align:-3px; transition:background .16s var(--ease), border-color .16s var(--ease), box-shadow .16s var(--ease), transform .12s var(--ease-out);
+  }
+  input[type="checkbox"]::before {
+    content:""; width:10px; height:8px; background:#fff;
+    clip-path:polygon(10% 42%,0 58%,40% 100%,100% 18%,84% 4%,38% 72%);
+    transform:scale(.35); opacity:0; transition:transform .16s var(--ease-out), opacity .12s var(--ease);
+  }
+  input[type="checkbox"]:checked, input[type="radio"]:checked {
+    border-color:var(--acc); background:linear-gradient(145deg,var(--acc-hover),var(--acc));
+    box-shadow:0 0 0 1px color-mix(in srgb,var(--acc) 24%,transparent), 0 5px 12px -8px var(--acc);
+  }
+  input[type="checkbox"]:checked::before { transform:scale(1); opacity:1; }
+  input[type="checkbox"]:indeterminate { border-color:var(--acc); background:var(--acc); }
+  input[type="checkbox"]:indeterminate::before { width:9px; height:2px; clip-path:none; border-radius:2px; transform:scale(1); opacity:1; }
+  input[type="radio"] { border-radius:50%; }
+  input[type="radio"]::before {
+    content:""; width:8px; height:8px; border-radius:50%; background:#fff;
+    transform:scale(.3); opacity:0; transition:transform .16s var(--ease-out), opacity .12s var(--ease);
+  }
+  input[type="radio"]:checked::before { transform:scale(1); opacity:1; }
+  input[type="checkbox"]:hover, input[type="radio"]:hover { border-color:var(--acc); transform:scale(1.04); }
+  input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { outline:none; box-shadow:0 0 0 3px var(--acc-ring); }
+  input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity:.42; cursor:not-allowed; transform:none; }
+  input[type="search"] { padding-left:36px; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238b94a3' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m20 20-3.6-3.6'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:12px center; }
+  input[type="number"] { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  input:disabled, textarea:disabled, select:disabled { opacity:.48; cursor:not-allowed; background-color:var(--surface-2); }
 
   .row { display:flex; gap:10px; align-items:center; }
   .danmaku-pager {
@@ -631,13 +674,36 @@
   button.input-action:hover { color:var(--fg); background:var(--surface-2); filter:none; }
   button.input-action:active { transform:translateY(-50%); }
   .switch-row {
-    display:flex; align-items:flex-start; gap:11px; padding:12px 13px;
-    color:var(--fg); background:var(--bg); border:1px solid var(--line-soft); border-radius:var(--r-sm); cursor:pointer;
+    display:flex; align-items:center; gap:11px; padding:11px 12px;
+    color:var(--fg); background:var(--control-bg); border:1px solid var(--line-soft); border-radius:var(--r-sm); cursor:pointer;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.018);
+    transition:border-color .18s var(--ease), background .18s var(--ease), box-shadow .18s var(--ease);
   }
-  .switch-row:hover { border-color:var(--line); background:var(--surface-2); }
-  .switch-row input { width:17px; height:17px; flex:0 0 auto; margin:2px 0 0; }
+  .switch-row:hover { border-color:color-mix(in srgb,var(--line) 60%,var(--fg)); background:var(--control-bg-hover); }
+  .switch-row:has(input:checked) { border-color:color-mix(in srgb,var(--acc) 24%,var(--line)); background:color-mix(in srgb,var(--acc) 4%,var(--control-bg)); box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
+  .switch-row:has(input:focus-visible) { border-color:var(--acc); box-shadow:0 0 0 3px var(--acc-ring); }
+  .switch-row input[type="checkbox"] {
+    appearance:none; -webkit-appearance:none; display:block; position:relative;
+    width:38px!important; min-width:38px; height:22px; min-height:22px; flex:0 0 38px; align-self:center;
+    margin:0; padding:0!important; overflow:hidden; line-height:0;
+    border:1px solid color-mix(in srgb,var(--line) 72%,var(--mut)); border-radius:999px;
+    background:var(--surface-3); box-shadow:inset 0 1px 2px rgba(0,0,0,.24);
+    transform:none; transition:background .18s var(--ease), border-color .18s var(--ease), box-shadow .18s var(--ease);
+  }
+  .switch-row input[type="checkbox"]::before {
+    content:""; position:absolute; top:50%; left:2px; width:16px; height:16px;
+    clip-path:none; border:0; border-radius:50%;
+    background:color-mix(in srgb,var(--fg) 78%,var(--surface)); box-shadow:0 1px 3px rgba(0,0,0,.32);
+    transform:translateY(-50%); transform-origin:center; opacity:1;
+    transition:transform .18s var(--ease-out), background .18s var(--ease);
+  }
+  .switch-row input[type="checkbox"]:hover { border-color:color-mix(in srgb,var(--acc) 50%,var(--line)); transform:none; }
+  .switch-row input[type="checkbox"]:checked { border-color:var(--acc); background:var(--acc); box-shadow:inset 0 1px 2px rgba(0,0,0,.12); }
+  .switch-row input[type="checkbox"]:checked::before { left:2px; background:#fff; transform:translate(16px,-50%); opacity:1; }
+  .switch-row input[type="checkbox"]:indeterminate::before { left:2px; width:16px; height:16px; border-radius:50%; transform:translate(8px,-50%); }
+  .switch-row input[type="checkbox"]:focus-visible { box-shadow:inset 0 1px 2px rgba(0,0,0,.12); }
   .switch-copy { display:grid; gap:2px; min-width:0; }
-  .switch-copy b { color:var(--fg); font-size:12.5px; font-weight:600; }
+  .switch-copy b { color:var(--fg); font-size:12.5px; font-weight:650; }
   .switch-copy span { color:var(--mut); font-size:11.5px; line-height:1.4; }
   .option-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
   .option-grid .switch-row { padding:10px 11px; }
@@ -688,27 +754,34 @@
   .cs-native { position:absolute !important; width:1px; height:1px; opacity:0; pointer-events:none; padding:0; margin:0; border:0; }
   .cs-trg {
     width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px;
-    background:var(--bg); border:1px solid var(--line); color:var(--fg);
-    border-radius:var(--r-sm); padding:9px 11px; font-size:13px; font-family:inherit; line-height:1.4;
-    cursor:pointer; text-align:left; transition:border-color .18s var(--ease), box-shadow .18s var(--ease); }
-  .cs-trg:hover { border-color:#333a47; background:var(--bg); }
+    min-height:var(--control-h); background:linear-gradient(180deg,var(--control-bg-hover),var(--control-bg)); border:1px solid var(--line); color:var(--fg);
+    border-radius:var(--r-sm); padding:8px 10px 8px 12px; font-size:13px; font-family:inherit; font-weight:500; line-height:1.4;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.025), 0 1px 1px rgba(0,0,0,.08);
+    cursor:pointer; text-align:left; transition:border-color .18s var(--ease), box-shadow .18s var(--ease), background .18s var(--ease), transform .12s var(--ease-out); }
+  .cs-trg:hover { border-color:color-mix(in srgb,var(--line) 60%,var(--fg)); background:var(--control-bg-hover); box-shadow:inset 0 1px 0 rgba(255,255,255,.035); filter:none; }
+  .cs-trg:active { transform:scale(.995); }
   .cs-native:disabled + .cs-trg { opacity:.48; cursor:not-allowed; }
-  .cs.open .cs-trg { border-color:var(--acc); box-shadow:0 0 0 3px var(--acc-ring); }
+  .cs.open .cs-trg { border-color:var(--acc); background:var(--control-bg); box-shadow:0 0 0 3px var(--acc-ring); }
   .cs-trg .cs-lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .cs-trg.ph .cs-lbl { color:var(--mut-2); }
-  .cs-arr { width:16px; height:16px; flex:0 0 auto; color:var(--mut); transition:transform .2s var(--ease); }
+  .cs-arr { width:16px; height:16px; flex:0 0 auto; padding:2px; color:var(--mut); border-radius:5px; background:var(--surface-2); transition:transform .2s var(--ease-out), color .18s var(--ease), background .18s var(--ease); }
+  .cs-trg:hover .cs-arr, .cs.open .cs-arr { color:var(--acc); background:var(--acc-soft); }
   .cs.open .cs-arr { transform:rotate(180deg); }
   .cs-panel {
-    position:fixed; z-index:300; background:var(--surface); border:1px solid var(--line);
-    border-radius:var(--r-sm); box-shadow:var(--sh); max-height:264px; overflow:auto; padding:5px;
-    transform-origin:top center; animation:csIn .15s var(--ease); }
-  @keyframes csIn { from { opacity:0; transform:translateY(-5px) scale(.985); } to { opacity:1; transform:none; } }
-  .cs-opt { padding:8px 10px; border-radius:8px; font-size:13px; cursor:pointer; white-space:nowrap;
-    color:var(--fg); transition:background .12s var(--ease); }
-  .cs-opt:hover { background:var(--bg); }
+    position:fixed; z-index:300; background:color-mix(in srgb,var(--surface) 96%,transparent); border:1px solid color-mix(in srgb,var(--line) 72%,var(--fg));
+    border-radius:12px; box-shadow:var(--sh-lg); max-height:280px; overflow:auto; padding:6px;
+    backdrop-filter:blur(18px) saturate(135%); transform-origin:top center; animation:csIn .16s var(--ease-out); }
+  @keyframes csIn { from { opacity:0; transform:translateY(-6px) scale(.982); } to { opacity:1; transform:none; } }
+  .cs-opt { position:relative; display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:36px; padding:8px 10px; border-radius:8px; font-size:13px; cursor:pointer; white-space:nowrap;
+    color:var(--fg); transition:background .12s var(--ease), color .12s var(--ease); }
+  .cs-opt-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .cs-opt::after { content:""; width:9px; height:5px; flex:0 0 auto; border-left:2px solid currentColor; border-bottom:2px solid currentColor; transform:rotate(-45deg) scale(.5); opacity:0; transition:opacity .12s var(--ease), transform .16s var(--ease-out); }
+  .cs-opt:hover { background:var(--surface-2); }
   .cs-opt:focus-visible { outline:none; background:var(--surface-2); box-shadow:inset 0 0 0 2px var(--acc-ring); }
-  .cs-opt.sel { background:var(--bg); color:var(--acc); font-weight:600; }
+  .cs-opt.sel { background:var(--acc-soft); color:var(--acc); font-weight:650; }
+  .cs-opt.sel::after { opacity:1; transform:rotate(-45deg) scale(1); }
   .cs-opt.dis { color:var(--mut-2); cursor:not-allowed; }
+  .cs-opt.dis::after { display:none; }
   .cs-opt.dis:hover { background:transparent; }
 
   /* 自定义 tooltip(替代原生 title) */
@@ -726,17 +799,18 @@
   .dt-native { position:absolute !important; width:1px; height:1px; opacity:0; pointer-events:none; padding:0; margin:0; border:0; }
   .dt-trg {
     width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px;
-    background:var(--bg); border:1px solid var(--line); color:var(--fg);
-    border-radius:var(--r-sm); padding:9px 11px; font-size:13px; font-family:inherit; line-height:1.4;
-    cursor:pointer; text-align:left; transition:border-color .18s var(--ease), box-shadow .18s var(--ease); }
-  .dt-trg:hover { border-color:#333a47; }
+    min-height:var(--control-h); background:linear-gradient(180deg,var(--control-bg-hover),var(--control-bg)); border:1px solid var(--line); color:var(--fg);
+    border-radius:var(--r-sm); padding:8px 10px 8px 12px; font-size:13px; font-family:inherit; font-weight:500; line-height:1.4;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.025); cursor:pointer; text-align:left; transition:border-color .18s var(--ease), box-shadow .18s var(--ease), background .18s var(--ease); }
+  .dt-trg:hover { border-color:color-mix(in srgb,var(--line) 60%,var(--fg)); background:var(--control-bg-hover); filter:none; }
   .dt.open .dt-trg { border-color:var(--acc); box-shadow:0 0 0 3px var(--acc-ring); }
   .dt-trg .dt-lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .dt-trg.ph .dt-lbl { color:var(--mut-2); }
-  .dt-ic { width:16px; height:16px; flex:0 0 auto; color:var(--mut); }
+  .dt-ic { width:16px; height:16px; flex:0 0 auto; color:var(--mut); transition:color .18s var(--ease); }
+  .dt-trg:hover .dt-ic, .dt.open .dt-ic { color:var(--acc); }
   .dt-panel {
-    position:fixed; z-index:300; width:268px; background:var(--surface); border:1px solid var(--line);
-    border-radius:var(--r-md, 12px); box-shadow:var(--sh); padding:12px; animation:csIn .15s var(--ease); }
+    position:fixed; z-index:300; width:280px; background:color-mix(in srgb,var(--surface) 96%,transparent); border:1px solid color-mix(in srgb,var(--line) 72%,var(--fg));
+    border-radius:14px; box-shadow:var(--sh-lg); padding:13px; backdrop-filter:blur(18px) saturate(135%); animation:csIn .16s var(--ease-out); }
   .dt-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
   .dt-title { font-size:13px; font-weight:600; }
   .dt-nav { width:28px; height:28px; padding:0; flex:0 0 auto; background:var(--bg); border:1px solid var(--line);
@@ -769,6 +843,8 @@
   th { color:var(--mut); font-weight:600; font-size:11.5px; text-transform:uppercase; letter-spacing:.35px; background:var(--surface-2); box-shadow:inset 0 -1px 0 var(--line-soft); }
   tbody tr { transition:background .15s var(--ease); }
   tbody tr:hover { background:var(--surface-2); }
+  tbody tr:has(input[type="checkbox"]:checked) { background:color-mix(in srgb,var(--acc) 7%,var(--surface)); }
+  tbody tr:has(input[type="checkbox"]:checked):hover { background:color-mix(in srgb,var(--acc) 11%,var(--surface)); }
   tbody tr:last-child td { border-bottom:0; }
   td.wrap { white-space:normal; }
   td.num { font-family:var(--mono); font-size:12.5px; }
@@ -882,33 +958,32 @@
     min-width:0; padding-top:10px; margin-top:2px; border-top:1px solid var(--line-soft);
   }
   .toolbar-actions-label { color:var(--mut-2); font-size:11px; font-weight:650; white-space:nowrap; }
-  .toolbar-actions .export-actions { margin-left:0; }
+  .toolbar-actions .export-actions { order:10; margin-left:auto; }
   .toolbar-actions > button { margin:0; }
   .toolbar-actions > span[id$="selbar"] {
     display:inline-flex; align-items:center; flex-wrap:wrap; gap:8px;
   }
   .export-actions {
-    display:inline-flex; align-items:center; gap:3px; min-height:34px; padding:3px;
-    border:1px solid var(--line); border-radius:10px; background:var(--surface-2);
-    box-shadow:var(--sh-sm); transition:border-color .18s var(--ease), opacity .18s var(--ease);
+    display:inline-flex; align-items:center; gap:7px; min-height:34px; padding:0;
+    border:0; border-radius:0; background:transparent;
+    box-shadow:none; transition:opacity .18s var(--ease);
   }
-  .export-actions:hover { border-color:var(--acc-ring); }
   .export-actions.is-busy { opacity:.78; pointer-events:none; }
   .export-caption {
-    display:inline-flex; align-items:center; gap:5px; padding:0 7px;
-    color:var(--mut); font-size:11px; font-weight:650; white-space:nowrap;
+    display:inline-flex; align-items:center; gap:5px; min-height:30px; padding:0 3px;
+    color:var(--mut-2); font-size:11px; font-weight:650; white-space:nowrap;
   }
-  .export-caption svg { width:14px; height:14px; color:var(--acc); }
+  .export-caption svg { width:14px; height:14px; color:var(--mut); }
   button.export-btn {
-    min-height:28px; padding:6px 9px; border-radius:7px; box-shadow:none;
-    font-size:11.5px; font-weight:650; white-space:nowrap;
+    min-height:32px; padding:6px 10px; border-radius:8px; box-shadow:none;
+    font-size:11.5px; font-weight:600; white-space:nowrap;
   }
   button.export-btn.filtered {
-    color:var(--acc); background:var(--acc-soft); border-color:var(--acc-ring);
+    color:var(--fg); background:var(--surface-2); border-color:var(--line);
   }
-  button.export-btn.filtered:hover { color:#fff; background:var(--acc); border-color:var(--acc); filter:none; }
-  button.export-btn.full { color:var(--fg); background:transparent; border-color:transparent; }
-  button.export-btn.full:hover { color:var(--fg-strong); background:var(--surface-3); border-color:var(--line); filter:none; }
+  button.export-btn.filtered:hover { color:var(--acc); background:var(--acc-soft); border-color:var(--acc-ring); filter:none; }
+  button.export-btn.full { color:var(--fg); background:var(--surface-2); border-color:var(--line); }
+  button.export-btn.full:hover { color:var(--acc); background:var(--acc-soft); border-color:var(--acc-ring); filter:none; }
   button.export-btn.busy { min-width:72px; }
   .export-btn .spin { width:12px; height:12px; border-width:2px; }
   .meta-stack { display:flex; flex-wrap:wrap; align-items:center; gap:5px; max-width:260px; }
@@ -1381,6 +1456,7 @@
     .page-context { align-items:center; }
     .page-context h2 { font-size:20px; }
     .navitem.active::before { left:10px; right:10px; top:auto; bottom:-9px; width:auto; height:2px; border-radius:2px 2px 0 0; }
+    .navitem:hover { transform:none; }
   }
   @media(max-width:700px) {
     :root { --header-h:104px; }
@@ -1401,7 +1477,7 @@
     .card-head .right { width:100%; margin-left:41px; }
     .card-head .right > .cs, .card-head .right > select { width:100%!important; max-width:none!important; }
     .manage-toolbar { grid-template-columns:repeat(2,minmax(0,1fr)); }
-    .manage-toolbar .export-actions { margin-left:0; }
+    .manage-toolbar .export-actions { margin-left:auto; }
     .row { flex-wrap:wrap; align-items:stretch; }
     .row > * { min-width:0; }
     .quick-actions { grid-template-columns:1fr; }
@@ -1459,6 +1535,7 @@
     button.sm { padding:8px 12px; }
     .navitem, .tab { padding-top:11px; padding-bottom:11px; }
     input, textarea, select { padding-top:11px; padding-bottom:11px; }
+    input[type="checkbox"], input[type="radio"] { padding:0; }
     .acttd button { margin-left:6px; }
   }
 
@@ -1797,10 +1874,10 @@
           <div class="table-wrap"><table class="risk-limit-table" aria-label="写操作风控额度">
             <thead><tr><th>操作</th><th>最小间隔（分钟）</th><th>每小时上限</th><th>每日上限</th></tr></thead>
             <tbody>
-              <tr><td>评论 / 回复</td><td><input id="risk-comment-gap" type="number" min="0"></td><td><input id="risk-comment-hourly" type="number" min="0"></td><td><input id="risk-comment-daily" type="number" min="0"></td></tr>
-              <tr><td>关注 / 取关</td><td><input id="risk-social-gap" type="number" min="0"></td><td><input id="risk-social-hourly" type="number" min="0"></td><td><input id="risk-social-daily" type="number" min="0"></td></tr>
-              <tr><td>私信</td><td><input id="risk-dm-gap" type="number" min="0"></td><td><input id="risk-dm-hourly" type="number" min="0"></td><td><input id="risk-dm-daily" type="number" min="0"></td></tr>
-              <tr><td>发布</td><td><input id="risk-publish-gap" type="number" min="0"></td><td><input id="risk-publish-hourly" type="number" min="0"></td><td><input id="risk-publish-daily" type="number" min="0"></td></tr>
+              <tr><td>评论 / 回复</td><td><input id="risk-comment-gap" type="number" min="0" aria-label="评论或回复最小间隔（分钟）"></td><td><input id="risk-comment-hourly" type="number" min="0" aria-label="评论或回复每小时上限"></td><td><input id="risk-comment-daily" type="number" min="0" aria-label="评论或回复每日上限"></td></tr>
+              <tr><td>关注 / 取关</td><td><input id="risk-social-gap" type="number" min="0" aria-label="关注或取关最小间隔（分钟）"></td><td><input id="risk-social-hourly" type="number" min="0" aria-label="关注或取关每小时上限"></td><td><input id="risk-social-daily" type="number" min="0" aria-label="关注或取关每日上限"></td></tr>
+              <tr><td>私信</td><td><input id="risk-dm-gap" type="number" min="0" aria-label="私信最小间隔（分钟）"></td><td><input id="risk-dm-hourly" type="number" min="0" aria-label="私信每小时上限"></td><td><input id="risk-dm-daily" type="number" min="0" aria-label="私信每日上限"></td></tr>
+              <tr><td>发布</td><td><input id="risk-publish-gap" type="number" min="0" aria-label="发布最小间隔（分钟）"></td><td><input id="risk-publish-hourly" type="number" min="0" aria-label="发布每小时上限"></td><td><input id="risk-publish-daily" type="number" min="0" aria-label="发布每日上限"></td></tr>
             </tbody>
           </table></div>
           <div class="form-grid" style="margin-top:10px">
@@ -2052,8 +2129,8 @@
           </span>
           <div class="export-actions" role="group" aria-label="链接下载历史 Excel 导出">
             <span class="export-caption" title="导出链接下载历史"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span>
-            <button type="button" class="export-btn filtered" onclick="exportShareHistoryReport(false, this)" title="按当前筛选条件导出链接下载历史" aria-label="导出链接下载历史筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button>
-            <button type="button" class="export-btn full" onclick="exportShareHistoryReport(true, this)" title="忽略筛选，导出当前平台全部链接下载历史" aria-label="导出链接下载历史全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button>
+          <button type="button" class="export-btn filtered" onclick="exportShareHistoryReport(false, this)" title="导出当前条件下的链接下载历史" aria-label="导出链接下载历史当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button>
+          <button type="button" class="export-btn full" onclick="exportShareHistoryReport(true, this)" title="导出当前平台全部链接下载历史" aria-label="导出链接下载历史全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button>
           </div>
         </div>
       </div>
@@ -2388,7 +2465,7 @@
       <select id="mon-group" aria-label="按分组筛选监控" onchange="onMonitorFilter()"><option value="">全部分组</option></select>
       <select id="mon-tag" aria-label="按标签筛选监控" onchange="onMonitorFilter()"><option value="">全部标签</option></select>
       <span class="filter-count" id="mon-filter-count" role="status" aria-live="polite"></span>
-      <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="监控列表 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('monitors', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出监控列表筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('monitors', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出监控列表全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div></div>
+      <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="监控列表 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('monitors', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出监控列表当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('monitors', true, this)" title="导出当前平台全部记录" aria-label="导出监控列表全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div></div>
     </div>
     <div class="table-wrap"><table aria-label="作品监控列表"><thead><tr>
       <th>用户</th><th>分组 / 标签</th><th>作品数</th><th>间隔</th><th>下载设置</th><th>上次扫描</th><th>状态</th><th></th>
@@ -2423,7 +2500,7 @@
       </select>
       <span class="filter-count" id="content-filter-count" role="status" aria-live="polite"></span>
       <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
-        <div class="export-actions" role="group" aria-label="作品数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('contents', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出作品数据筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('contents', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出作品数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div>
+        <div class="export-actions" role="group" aria-label="作品数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('contents', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出作品数据当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('contents', true, this)" title="导出当前平台全部记录" aria-label="导出作品数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div>
         <button class="ghost sm" id="content-selall-btn" onclick="contentSelAllToggle()">全选</button>
         <span id="content-selbar" style="display:none;align-items:center;gap:8px">
           <span class="mut" id="content-selcount">已选 0</span>
@@ -2535,7 +2612,7 @@
       <select id="watch-group" aria-label="按分组筛选评论监控" onchange="onWatchFilter()"><option value="">全部分组</option></select>
       <select id="watch-tag" aria-label="按标签筛选评论监控" onchange="onWatchFilter()"><option value="">全部标签</option></select>
       <span class="filter-count" id="watch-filter-count" role="status" aria-live="polite"></span>
-      <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="评论监控 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('comment-watches', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出评论监控筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('comment-watches', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出评论监控全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div></div>
+      <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="评论监控 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('comment-watches', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出评论监控当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('comment-watches', true, this)" title="导出当前平台全部记录" aria-label="导出评论监控全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div></div>
       </div>
       <div class="table-wrap"><table aria-label="评论监控列表"><thead><tr>
         <th>对象</th><th>分组 / 标签</th><th>类型</th><th>来源</th><th>评论数</th><th>间隔</th><th>上次扫描</th><th>状态</th><th>操作</th>
@@ -2564,7 +2641,7 @@
         </select>
         <span class="filter-count" id="comment-filter-count" role="status" aria-live="polite"></span>
         <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
-          <div class="export-actions" role="group" aria-label="评论数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('comments', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出评论数据筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('comments', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出评论数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div>
+          <div class="export-actions" role="group" aria-label="评论数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('comments', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出评论数据当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('comments', true, this)" title="导出当前平台全部记录" aria-label="导出评论数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div>
           <button class="ghost sm" id="comment-selall-btn" onclick="commentSelAllToggle()">全选</button>
           <span class="mut" id="comment-selcount" style="display:none">已选 0</span>
           <button class="sm danger" id="comment-batchbtn" style="display:none" onclick="commentBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
@@ -2670,10 +2747,10 @@
       </div>
       <div class="manage-toolbar">
         <input type="search" id="danmaku-watch-search" placeholder="搜索对象或别名" aria-label="搜索弹幕监控" oninput="renderDanmakuWatchRows()">
-        <select id="danmaku-watch-group" onchange="renderDanmakuWatchRows()"><option value="">全部分组</option></select>
-        <select id="danmaku-watch-tag" onchange="renderDanmakuWatchRows()"><option value="">全部标签</option></select>
+        <select id="danmaku-watch-group" aria-label="按分组筛选弹幕监控" onchange="renderDanmakuWatchRows()"><option value="">全部分组</option></select>
+        <select id="danmaku-watch-tag" aria-label="按标签筛选弹幕监控" onchange="renderDanmakuWatchRows()"><option value="">全部标签</option></select>
         <span class="filter-count" id="danmaku-watch-filter-count"></span>
-        <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="弹幕监控 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('danmaku-watches', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出弹幕监控筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('danmaku-watches', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出弹幕监控全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div></div>
+        <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="弹幕监控 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('danmaku-watches', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出弹幕监控当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('danmaku-watches', true, this)" title="导出当前平台全部记录" aria-label="导出弹幕监控全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div></div>
       </div>
       <div class="table-wrap"><table aria-label="弹幕监控列表"><thead><tr>
         <th>对象</th><th>类型</th><th>来源</th><th>弹幕数</th><th>间隔</th><th>上次扫描</th><th>状态</th><th>操作</th>
@@ -2686,7 +2763,7 @@
         <h2>抓到的弹幕</h2>
       </div>
       <div class="manage-toolbar">
-        <select id="danmaku-src" onchange="onDanmakuSrc()"><option value="">全部来源</option></select>
+        <select id="danmaku-src" aria-label="按来源筛选弹幕" onchange="onDanmakuSrc()"><option value="">全部来源</option></select>
         <input id="danmaku-query" type="search" placeholder="筛选文本 / 用户 ID" aria-label="筛选弹幕文本或用户" oninput="refreshDanmaku(true)">
         <input id="danmaku-time-start" type="number" min="0" step="0.1" placeholder="起点秒" aria-label="视频内起点秒" onchange="refreshDanmaku(true)">
         <input id="danmaku-time-end" type="number" min="0" step="0.1" placeholder="终点秒" aria-label="视频内终点秒" onchange="refreshDanmaku(true)">
@@ -2696,7 +2773,7 @@
         </select>
         <span class="filter-count" id="danmaku-filter-count" role="status" aria-live="polite"></span>
         <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
-          <div class="export-actions" role="group" aria-label="弹幕数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('danmaku', false, this)" title="按当前筛选条件导出全部匹配记录" aria-label="导出弹幕数据筛选结果"><svg aria-hidden="true"><use href="#i-filter"/></svg>导出筛选</button><button type="button" class="export-btn full" onclick="exportModuleReport('danmaku', true, this)" title="忽略本模块筛选，导出当前平台全部记录" aria-label="导出弹幕数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>导出全量</button></div>
+          <div class="export-actions" role="group" aria-label="弹幕数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('danmaku', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出弹幕数据当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('danmaku', true, this)" title="导出当前平台全部记录" aria-label="导出弹幕数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div>
           <button class="ghost sm danger" onclick="clearDanmaku()"><svg><use href="#i-trash"/></svg>清空弹幕</button>
         </div>
       </div>
