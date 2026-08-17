@@ -141,12 +141,19 @@ class KeywordCollector:
         return contents, comments
 
     async def _discover_douyin(self, account, keyword: str,
-                               limit: int, context=None) -> tuple[list[dict], str]:
+                               job: KeywordCollectionJob,
+                               context=None) -> tuple[list[dict], str]:
         identity = self.browser.identity_for(account)
-        scrolls = max(4, min(30, math.ceil(limit / 8) + 3))
         return await fetch_douyin_search(
-            self.browser, identity, keyword, max_results=limit,
-            max_scrolls=scrolls,
+            self.browser, identity, keyword,
+            max_results=job.max_contents_per_keyword,
+            max_scrolls=job.max_pages_per_keyword,
+            stagnant_limit=job.stagnant_pages,
+            search_sort=job.search_sort,
+            publish_time=job.publish_time,
+            content_type=job.content_type,
+            min_likes=job.min_likes,
+            min_comments=job.min_comments,
             captcha_wait_seconds=self.cfg.engine.douyin_captcha_wait_seconds,
             block_media=self.cfg.engine.block_media_resources,
             context=context,
@@ -429,7 +436,7 @@ class KeywordCollector:
             self._progress(job_id, keyword=keyword, step="搜索作品")
             if job.platform == "douyin":
                 raw_items, search_error = await self._discover_douyin(
-                    account, keyword, job.max_contents_per_keyword,
+                    account, keyword, job,
                     context=context)
             else:
                 raw_items, search_error = await self._discover_xhs(

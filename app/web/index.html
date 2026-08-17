@@ -1082,6 +1082,19 @@
   .collection-kpi { padding:10px 12px; border:1px solid var(--line-soft); border-radius:var(--r-sm); background:var(--bg); }
   .collection-kpi b { display:block; color:var(--fg-strong); font:650 18px/1.25 var(--mono); }
   .collection-kpi span { color:var(--mut); font-size:11px; }
+  .collection-filter-grid { padding-top:12px; border-top:1px solid var(--line-soft); }
+  .collection-advanced {
+    border:1px solid var(--line-soft); border-radius:var(--r-sm); background:var(--bg);
+  }
+  .collection-advanced > summary {
+    min-height:44px; display:flex; align-items:center; gap:8px; padding:9px 12px;
+    color:var(--fg); font-size:12px; font-weight:600; cursor:pointer; list-style:none;
+  }
+  .collection-advanced > summary::-webkit-details-marker { display:none; }
+  .collection-advanced > summary::before { content:"+"; color:var(--acc); font:600 16px/1 var(--mono); }
+  .collection-advanced[open] > summary::before { content:"−"; }
+  .collection-advanced > summary span { color:var(--mut); font-weight:400; }
+  .collection-advanced-body { padding:0 12px 12px; }
   .job-progress { min-width:150px; display:grid; gap:6px; }
   .job-progress-head { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--mut); font-size:11px; }
   .progress-track { height:6px; overflow:hidden; border-radius:999px; background:var(--surface-3); border:1px solid var(--line-soft); }
@@ -1676,6 +1689,22 @@
           <div class="form-field"><label for="col-comment-limit">每作品评论上限</label><input id="col-comment-limit" type="number" min="0" max="200" value="20" inputmode="numeric"></div>
           <div class="form-field dy-only"><label for="col-quality">视频画质</label><select id="col-quality"><option value="highest">原画 / 最高</option><option value="1080">1080P</option><option value="720">720P</option><option value="540">540P</option><option value="lowest">最低省流</option></select></div>
         </div>
+        <div class="form-grid cols-4 collection-filter-grid" aria-label="搜索深度与排序">
+          <div class="form-field"><label for="col-page-limit">每词采集深度 <span class="field-scope">1–40 页</span></label><input id="col-page-limit" type="number" min="1" max="40" value="12" inputmode="numeric"><p class="hint">一页对应一次搜索结果下滑。</p></div>
+          <div class="form-field"><label for="col-sort">搜索排序</label><select id="col-sort"><option value="general">综合排序</option><option value="latest">最新发布</option><option value="most_liked">最多点赞</option></select></div>
+          <div class="form-field"><label for="col-publish-time">发布时间</label><select id="col-publish-time"><option value="all">不限</option><option value="day">一天内</option><option value="week">一周内</option><option value="half_year">半年内</option></select></div>
+          <div class="form-field"><label for="col-content-type">内容类型</label><select id="col-content-type"><option value="all">全部作品</option><option value="video">视频</option><option value="images">图文 / 图集</option></select></div>
+        </div>
+        <details class="collection-advanced">
+          <summary>高级停止与数据门槛 <span>可选，减少无效结果</span></summary>
+          <div class="collection-advanced-body">
+            <div class="form-grid cols-4">
+              <div class="form-field"><label for="col-min-likes">最低点赞数</label><input id="col-min-likes" type="number" min="0" value="0" inputmode="numeric"></div>
+              <div class="form-field"><label for="col-min-comments">最低评论数</label><input id="col-min-comments" type="number" min="0" value="0" inputmode="numeric"></div>
+              <div class="form-field"><label for="col-stagnant-pages">连续无新增停止 <span class="field-scope">1–8 页</span></label><input id="col-stagnant-pages" type="number" min="1" max="8" value="3" inputmode="numeric"></div>
+            </div>
+          </div>
+        </details>
         <div class="form-field" id="col-dir-wrap" style="display:none">
           <label for="col-download-dir">下载目录（可选）</label>
           <input id="col-download-dir" placeholder="留空保存到 data/media/keyword-collections">
@@ -1686,7 +1715,7 @@
         </div>
         <div class="platform-callout" role="note">
           <svg aria-hidden="true"><use href="#i-info"/></svg>
-          <div><b>按上限采集，不承诺搜索全量</b><p>抖音采集会临时打开可见浏览器窗口；搜索排序会受平台和账号状态影响；任务默认串行执行，可随时取消，已入库结果会保留。</p></div>
+          <div><b>作品上限、深度页和停止条件任一满足即结束</b><p>抖音采集会临时打开可见浏览器窗口；平台筛选后还会在本地复核类型、时间和数据门槛；任务默认串行执行，可随时取消，已入库结果会保留。</p></div>
         </div>
         <div class="form-actions">
           <span class="status-text" id="col-create-msg" role="status" aria-live="polite"></span>

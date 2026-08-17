@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
@@ -156,6 +157,46 @@ def _douyin_search_needs_verification(payload) -> bool:
     return "verify" in marker.casefold()
 
 
+_SEARCH_SORT_CODES = {"general": "0", "most_liked": "1", "latest": "2"}
+_SEARCH_TIME_CODES = {"all": "0", "day": "1", "week": "7", "half_year": "180"}
+_SEARCH_TIME_SECONDS = {"day": 86400, "week": 7 * 86400, "half_year": 180 * 86400}
+
+
+def _douyin_search_item_matches(item: dict, *, content_type: str = "all",
+                                publish_time: str = "all", min_likes: int = 0,
+                                min_comments: int = 0, now: int | None = None) -> bool:
+    """对平台返回结果做确定性二次筛选，避免页面筛选未生效时混入错误数据。"""
+    if not isinstance(item, dict):
+        return False
+    if content_type == "video" and not item.get("video"):
+        return False
+    if content_type == "images" and not item.get("images"):
+        return False
+    statistics = item.get("statistics") or {}
+    if int(statistics.get("digg_count") or 0) < max(0, int(min_likes or 0)):
+        return False
+    if int(statistics.get("comment_count") or 0) < max(0, int(min_comments or 0)):
+        return False
+    window = _SEARCH_TIME_SECONDS.get(publish_time)
+    created = int(item.get("create_time") or 0)
+    # 少数搜索卡片不带 create_time；平台筛选仍可能已生效，未知值不在本地误删。
+    if window and created and created < int(now or time.time()) - window:
+        return False
+    return True
+
+
+def _sort_douyin_search_items(items: list[dict], search_sort: str) -> list[dict]:
+    if search_sort == "latest":
+        return sorted(items, key=lambda item: int(item.get("create_time") or 0), reverse=True)
+    if search_sort == "most_liked":
+        return sorted(
+            items,
+            key=lambda item: int((item.get("statistics") or {}).get("digg_count") or 0),
+            reverse=True,
+        )
+    return items
+
+
 # 作品页没拿到数据时,看页面究竟是什么状态:登录墙?空态?还是 tab 没激活?
 _WORKS_DOM_PROBE_JS = """() => {
   const txt = (document.body.innerText || '').replace(/\\s+/g, ' ');
@@ -293,6 +334,12 @@ async def fetch_videos(mgr: BrowserManager, identity: Identity, sec_uid: str,
 
 async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: str,
                                max_results: int = 20, max_scrolls: int = 12,
+                               stagnant_limit: int = 3,
+                               search_sort: str = "general",
+                               publish_time: str = "all",
+                               content_type: str = "all",
+                               min_likes: int = 0,
+                               min_comments: int = 0,
                                settle_ms: int = 1800,
                                captcha_wait_seconds: int = 300,
                                block_media: bool = False,
@@ -303,6 +350,11 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
     error = ""
     verification_active = False
     verification_seen = False
+    search_candidates_seen = 0
+    search_sort = search_sort if search_sort in _SEARCH_SORT_CODES else "general"
+    publish_time = publish_time if publish_time in _SEARCH_TIME_CODES else "all"
+    content_type = content_type if content_type in {"all", "video", "images"} else "all"
+    stagnant_limit = max(1, min(int(stagnant_limit or 3), 8))
     # 关键词搜索在抖音无头上下文中容易直接落到“验证码中间页”。批量任务可传入
     # 同账号的临时有头 context；普通调用仍沿用后台常驻 context。
     if context is not None:
@@ -313,10 +365,14 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
         page = await mgr.new_page(identity, block_media)
 
     def collect_payload(payload) -> int:
+        nonlocal search_candidates_seen
         before = len(collected)
         for raw in extract_search_awemes(payload):
+            search_candidates_seen += 1
             aid = str(raw.get("aweme_id") or "")
-            if aid:
+            if aid and _douyin_search_item_matches(
+                    raw, content_type=content_type, publish_time=publish_time,
+                    min_likes=min_likes, min_comments=min_comments):
                 collected.setdefault(aid, raw)
         return len(collected) - before
 
@@ -364,7 +420,12 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
     page_text = ""
     try:
         # 先像普通用户一样进入站内搜索结果页，只消费页面自己发出的响应。
-        target = f"https://www.douyin.com/search/{quote(keyword, safe='')}?type=general"
+        query = urlencode({
+            "type": "video" if content_type == "video" else "general",
+            "publish_time": _SEARCH_TIME_CODES[publish_time],
+            "sort_type": _SEARCH_SORT_CODES[search_sort],
+        })
+        target = f"https://www.douyin.com/search/{quote(keyword, safe='')}?{query}"
         await page.goto(target, wait_until="domcontentloaded", timeout=30000)
         try:
             await page.wait_for_load_state("networkidle", timeout=12000)
@@ -411,7 +472,7 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
                 break
             if len(collected) == before:
                 stagnant += 1
-                if collected and stagnant >= 3:
+                if collected and stagnant >= stagnant_limit:
                     break
             else:
                 stagnant = 0
@@ -425,7 +486,10 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
                 page_text = (await page.locator("body").inner_text())[:1200]
             except Exception:
                 pass
-            error = challenge_error or (
+            filter_error = (
+                "抖音搜索有结果，但当前内容类型、发布时间或数据门槛下没有符合条件的作品"
+                if search_candidates_seen else "")
+            error = challenge_error or filter_error or (
                 "抖音触发验证码/安全验证；本次任务已停止后续请求，"
                 "请完成验证并等待冷却后再续跑"
                 if verification_seen else "") or douyin_search_empty_error(
@@ -442,7 +506,7 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
     if not collected:
         print(f"[dy_search] keyword={keyword!r} final_url={final_url!r} "
               f"title={page_title!r} api_seen({len(api_seen)})={api_seen[:10]}")
-    return list(collected.values())[:max_results], error
+    return _sort_douyin_search_items(list(collected.values()), search_sort)[:max_results], error
 
 
 # 滚动评论区的可滚动容器(而不是整页),驱动抖音自己的分页请求

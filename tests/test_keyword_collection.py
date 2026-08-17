@@ -14,6 +14,8 @@ from sqlmodel import select
 
 from app import db
 from app.browser.fetcher import (
+    _douyin_search_item_matches,
+    _sort_douyin_search_items,
     _douyin_search_needs_verification,
     douyin_search_empty_error,
     douyin_search_exception_error,
@@ -114,6 +116,32 @@ class SearchExtractionTests(unittest.TestCase):
 
         self.assertEqual([row["aweme_id"] for row in result], ["a-1", "a-2"])
         self.assertEqual(result[0]["desc"], "first")
+
+    def test_search_filters_and_sorting_are_applied_deterministically(self):
+        rows = [
+            {"aweme_id": "old", "create_time": 100, "video": {"play_addr": {}},
+             "statistics": {"digg_count": 100, "comment_count": 8}},
+            {"aweme_id": "new", "create_time": 190, "images": [{}],
+             "statistics": {"digg_count": 20, "comment_count": 3}},
+            {"aweme_id": "hot", "create_time": 180, "video": {"play_addr": {}},
+             "statistics": {"digg_count": 500, "comment_count": 20}},
+        ]
+
+        self.assertFalse(_douyin_search_item_matches(
+            rows[0], content_type="video", publish_time="day",
+            min_likes=50, min_comments=5, now=100_000,
+        ))
+        self.assertTrue(_douyin_search_item_matches(
+            rows[2], content_type="video", min_likes=100, min_comments=10,
+        ))
+        self.assertEqual(
+            [row["aweme_id"] for row in _sort_douyin_search_items(rows, "latest")],
+            ["new", "hot", "old"],
+        )
+        self.assertEqual(
+            [row["aweme_id"] for row in _sort_douyin_search_items(rows, "most_liked")],
+            ["hot", "old", "new"],
+        )
 
 
 class DouyinPageSearchTests(unittest.IsolatedAsyncioTestCase):
@@ -350,6 +378,9 @@ class KeywordCollectionEditTests(unittest.TestCase):
             platform="douyin", account_id=self.account_id,
             keywords=["新关键词", "第二个词"],
             max_contents_per_keyword=12,
+            max_pages_per_keyword=24, stagnant_pages=4,
+            search_sort="latest", publish_time="week", content_type="video",
+            min_likes=100, min_comments=5,
             max_comments_per_content=30,
             include_replies=True, download_media=True,
             video_quality="1080", download_dir="",
@@ -362,6 +393,13 @@ class KeywordCollectionEditTests(unittest.TestCase):
 
         self.assertEqual(result["keywords"], ["新关键词", "第二个词"])
         self.assertEqual(result["max_contents_per_keyword"], 12)
+        self.assertEqual(result["max_pages_per_keyword"], 24)
+        self.assertEqual(result["stagnant_pages"], 4)
+        self.assertEqual(result["search_sort"], "latest")
+        self.assertEqual(result["publish_time"], "week")
+        self.assertEqual(result["content_type"], "video")
+        self.assertEqual(result["min_likes"], 100)
+        self.assertEqual(result["min_comments"], 5)
         self.assertEqual(result["max_comments_per_content"], 30)
         self.assertTrue(result["include_replies"])
         self.assertTrue(result["download_media"])
@@ -381,6 +419,20 @@ class KeywordCollectionEditTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as caught:
             asyncio.run(update_keyword_collection(self.job_id, self._body()))
         self.assertEqual(caught.exception.status_code, 409)
+
+    def test_collection_depth_and_filter_values_are_validated(self):
+        invalid_values = (
+            {"max_pages_per_keyword": 0},
+            {"stagnant_pages": 9},
+            {"search_sort": "unknown"},
+            {"publish_time": "month"},
+            {"content_type": "live"},
+            {"min_likes": -1},
+        )
+        for values in invalid_values:
+            with self.subTest(values=values), self.assertRaises(HTTPException) as caught:
+                asyncio.run(update_keyword_collection(self.job_id, self._body(**values)))
+            self.assertEqual(caught.exception.status_code, 400)
 
     def test_xhs_collection_creation_is_deferred(self):
         with self.assertRaises(HTTPException) as caught:

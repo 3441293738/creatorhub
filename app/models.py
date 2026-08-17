@@ -233,6 +233,13 @@ class KeywordCollectionJob(SQLModel, table=True):
     account_id: int = Field(index=True)
     keywords: str = "[]"                 # JSON 字符串数组
     max_contents_per_keyword: int = 20
+    max_pages_per_keyword: int = 12       # 抖音搜索为滚动加载；页面上以“深度页”表达
+    stagnant_pages: int = 3               # 连续多少次滚动无新结果后提前停止
+    search_sort: str = "general"          # general | latest | most_liked
+    publish_time: str = "all"             # all | day | week | half_year
+    content_type: str = "all"             # all | video | images
+    min_likes: int = 0
+    min_comments: int = 0
     max_comments_per_content: int = 20
     include_replies: bool = False
     download_media: bool = False

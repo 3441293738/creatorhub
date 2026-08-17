@@ -3049,6 +3049,13 @@ class KeywordCollectionIn(BaseModel):
     account_id: int
     keywords: list[str] = PydanticField(default_factory=list)
     max_contents_per_keyword: int = 20
+    max_pages_per_keyword: int = 12
+    stagnant_pages: int = 3
+    search_sort: str = "general"
+    publish_time: str = "all"
+    content_type: str = "all"
+    min_likes: int = 0
+    min_comments: int = 0
     max_comments_per_content: int = 20
     include_replies: bool = False
     download_media: bool = False
@@ -3057,7 +3064,7 @@ class KeywordCollectionIn(BaseModel):
 
 
 def _validated_collection_input(body: KeywordCollectionIn) \
-        -> tuple[str, list[str], str, str]:
+        -> tuple[str, list[str], str, str, dict]:
     """校验创建/编辑共用的任务配置并返回规范化值。"""
     platform = body.platform.strip().lower()
     if platform != "douyin":
@@ -3071,6 +3078,23 @@ def _validated_collection_input(body: KeywordCollectionIn) \
         raise HTTPException(400, "单个关键词不能超过 80 个字符")
     if not 1 <= body.max_contents_per_keyword <= 100:
         raise HTTPException(400, "每个关键词作品数须为 1~100")
+    if not 1 <= body.max_pages_per_keyword <= 40:
+        raise HTTPException(400, "每个关键词采集深度须为 1~40 页")
+    if not 1 <= body.stagnant_pages <= 8:
+        raise HTTPException(400, "连续无新结果停止阈值须为 1~8 页")
+    search_sort = body.search_sort.strip().lower()
+    if search_sort not in {"general", "latest", "most_liked"}:
+        raise HTTPException(400, "搜索排序须为综合、最新发布或最多点赞")
+    publish_time = body.publish_time.strip().lower()
+    if publish_time not in {"all", "day", "week", "half_year"}:
+        raise HTTPException(400, "发布时间筛选值无效")
+    content_type = body.content_type.strip().lower()
+    if content_type not in {"all", "video", "images"}:
+        raise HTTPException(400, "内容类型筛选值无效")
+    if not 0 <= body.min_likes <= 2_000_000_000:
+        raise HTTPException(400, "最低点赞数须为非负整数")
+    if not 0 <= body.min_comments <= 2_000_000_000:
+        raise HTTPException(400, "最低评论数须为非负整数")
     if not 0 <= body.max_comments_per_content <= 200:
         raise HTTPException(400, "每个作品评论数须为 0~200")
     quality = body.video_quality.strip() or "highest"
@@ -3082,7 +3106,16 @@ def _validated_collection_input(body: KeywordCollectionIn) \
             Path(download_dir).expanduser().mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             raise HTTPException(400, f"下载目录不可用: {exc}")
-    return platform, keywords, quality, download_dir
+    options = {
+        "max_pages_per_keyword": body.max_pages_per_keyword,
+        "stagnant_pages": body.stagnant_pages,
+        "search_sort": search_sort,
+        "publish_time": publish_time,
+        "content_type": content_type,
+        "min_likes": body.min_likes,
+        "min_comments": body.min_comments,
+    }
+    return platform, keywords, quality, download_dir, options
 
 
 def _collection_keywords(values: list[str]) -> list[str]:
@@ -3128,6 +3161,13 @@ def _collection_job_dict(job: KeywordCollectionJob) -> dict:
         "id": job.id, "platform": job.platform, "account_id": job.account_id,
         "keywords": keywords,
         "max_contents_per_keyword": job.max_contents_per_keyword,
+        "max_pages_per_keyword": job.max_pages_per_keyword,
+        "stagnant_pages": job.stagnant_pages,
+        "search_sort": job.search_sort,
+        "publish_time": job.publish_time,
+        "content_type": job.content_type,
+        "min_likes": job.min_likes,
+        "min_comments": job.min_comments,
         "max_comments_per_content": job.max_comments_per_content,
         "include_replies": job.include_replies,
         "download_media": job.download_media,
@@ -3252,7 +3292,7 @@ def _collection_comment_dict(row: KeywordCollectionComment) -> dict:
 
 @app.post("/api/collections")
 async def create_keyword_collection(body: KeywordCollectionIn):
-    platform, keywords, quality, download_dir = _validated_collection_input(body)
+    platform, keywords, quality, download_dir, options = _validated_collection_input(body)
     with get_session() as session:
         account = session.get(DouyinAccount, body.account_id)
         if (not account or account.platform != platform
@@ -3262,6 +3302,7 @@ async def create_keyword_collection(body: KeywordCollectionIn):
             platform=platform, account_id=body.account_id,
             keywords=json.dumps(keywords, ensure_ascii=False),
             max_contents_per_keyword=body.max_contents_per_keyword,
+            **options,
             max_comments_per_content=body.max_comments_per_content,
             include_replies=body.include_replies,
             download_media=body.download_media,
@@ -3277,7 +3318,7 @@ async def create_keyword_collection(body: KeywordCollectionIn):
 @app.put("/api/collections/{job_id}")
 async def update_keyword_collection(job_id: int, body: KeywordCollectionIn):
     """修改已结束任务的配置；历史作品/评论保留，续跑时按任务去重。"""
-    platform, keywords, quality, download_dir = _validated_collection_input(body)
+    platform, keywords, quality, download_dir, options = _validated_collection_input(body)
     with get_session() as session:
         job = session.get(KeywordCollectionJob, job_id)
         if not job:
@@ -3294,6 +3335,8 @@ async def update_keyword_collection(job_id: int, body: KeywordCollectionIn):
         job.account_id = body.account_id
         job.keywords = json.dumps(keywords, ensure_ascii=False)
         job.max_contents_per_keyword = body.max_contents_per_keyword
+        for field, value in options.items():
+            setattr(job, field, value)
         job.max_comments_per_content = body.max_comments_per_content
         job.include_replies = body.include_replies
         job.download_media = body.download_media

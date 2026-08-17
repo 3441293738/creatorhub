@@ -3030,11 +3030,19 @@ async function createCollection() {
   const accountId = Number($("col-account").value || 0);
   const contentLimit = Number($("col-content-limit").value || 0);
   const commentLimit = Number($("col-comment-limit").value || 0);
+  const pageLimit = Number($("col-page-limit").value || 0);
+  const stagnantPages = Number($("col-stagnant-pages").value || 0);
+  const minLikes = Number($("col-min-likes").value || 0);
+  const minComments = Number($("col-min-comments").value || 0);
   let valid = true;
   valid = setFieldError($("col-keywords"), !keywords.length ? "请至少填写一个关键词" : keywords.length > 20 ? "单个任务最多 20 个关键词" : "") && valid;
   valid = setFieldError($("col-account"), !accountId ? "请选择一个已登录账号" : "") && valid;
   valid = setFieldError($("col-content-limit"), contentLimit < 1 || contentLimit > 100 ? "请输入 1–100" : "") && valid;
   valid = setFieldError($("col-comment-limit"), commentLimit < 0 || commentLimit > 200 ? "请输入 0–200" : "") && valid;
+  valid = setFieldError($("col-page-limit"), pageLimit < 1 || pageLimit > 40 ? "请输入 1–40" : "") && valid;
+  valid = setFieldError($("col-stagnant-pages"), stagnantPages < 1 || stagnantPages > 8 ? "请输入 1–8" : "") && valid;
+  valid = setFieldError($("col-min-likes"), minLikes < 0 ? "请输入非负整数" : "") && valid;
+  valid = setFieldError($("col-min-comments"), minComments < 0 ? "请输入非负整数" : "") && valid;
   if (!valid) {
     const first = document.querySelector('[data-panel="collections"] [aria-invalid="true"]');
     if (first) first.focus();
@@ -3048,6 +3056,13 @@ async function createCollection() {
         body: JSON.stringify({
           platform: "douyin", account_id: accountId, keywords,
           max_contents_per_keyword: contentLimit,
+          max_pages_per_keyword: pageLimit,
+          stagnant_pages: stagnantPages,
+          search_sort: $("col-sort").value || "general",
+          publish_time: $("col-publish-time").value || "all",
+          content_type: $("col-content-type").value || "all",
+          min_likes: minLikes,
+          min_comments: minComments,
           max_comments_per_content: commentLimit,
           include_replies: $("col-replies").checked,
           download_media: $("col-download").checked,
@@ -3087,10 +3102,14 @@ function renderCollectionJobs() {
     const canRetry = ["done", "partial", "failed", "canceled"].includes(job.status);
     const canEdit = canRetry && job.platform === "douyin";
     const errorText = collectionLastError(job);
+    const sortLabel = { general: "综合", latest: "最新", most_liked: "最多点赞" }[job.search_sort] || "综合";
+    const timeLabel = { all: "不限时间", day: "一天内", week: "一周内", half_year: "半年内" }[job.publish_time] || "不限时间";
+    const typeLabel = { all: "全部类型", video: "视频", images: "图文" }[job.content_type] || "全部类型";
+    const threshold = [Number(job.min_likes) > 0 ? `≥${fmtNum(job.min_likes)} 赞` : "", Number(job.min_comments) > 0 ? `≥${fmtNum(job.min_comments)} 评` : ""].filter(Boolean).join(" · ");
     return `<article class="collection-task" role="listitem" aria-label="任务 ${job.id}，${status.label}">
       <div class="collection-task-meta"><div><span class="collection-task-label">任务状态</span><span class="pill ${status.cls}">${status.label}</span></div><time class="collection-task-created" datetime="${esc(job.created_at || "")}">${collectionDate(job.created_at)}</time></div>
       <div class="collection-task-keywords"><span class="collection-task-label">关键词</span><div class="keyword-stack">${keywords}</div>${job.current_keyword ? `<div class="collection-step">当前：${esc(job.current_keyword)}</div>` : ""}</div>
-      <div class="collection-task-config"><span class="collection-task-label">采集配置</span><div class="collection-task-config-main">${job.max_contents_per_keyword} 作品/词 · ${job.max_comments_per_content} 评论/作品</div><div class="collection-task-config-sub">${job.include_replies ? "含二级评论 · " : ""}${job.download_media ? "下载媒体" : "仅采数据"}</div></div>
+      <div class="collection-task-config"><span class="collection-task-label">采集配置</span><div class="collection-task-config-main">${job.max_contents_per_keyword} 作品/词 · ${job.max_pages_per_keyword || 12} 深度页 · ${sortLabel}</div><div class="collection-task-config-sub">${timeLabel} · ${typeLabel}${threshold ? ` · ${threshold}` : ""} · ${job.max_comments_per_content} 评论/作品<br>${job.include_replies ? "含二级评论 · " : ""}${job.download_media ? "下载媒体" : "仅采数据"} · 连续 ${job.stagnant_pages || 3} 页无新增停止</div></div>
       <div class="collection-task-progress"><span class="collection-task-label">执行进度</span><div class="job-progress"><div class="job-progress-head"><span>${esc(job.current_step || "等待执行")}</span><b>${job.content_count}/${job.planned_content_count}</b></div><div class="progress-track" role="progressbar" aria-label="任务 ${job.id} 进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="progress-fill" style="width:${percent}%"></div></div><div class="collection-step">已采评论 ${fmtNum(job.comment_count)}</div></div></div>
       ${job.error_count ? `<button type="button" class="collection-task-error" onclick="openCollectionResults(${job.id})" title="${esc(errorText)}">${ic("i-info")}<span class="collection-task-error-text">${job.error_count} 条异常 · ${esc(errorText)}</span><span class="collection-task-error-link">查看详情</span></button>` : ""}
       <div class="collection-task-actions" aria-label="任务 ${job.id} 操作">
@@ -3131,6 +3150,13 @@ async function editCollection(jobId, draft = null) {
     account_id: job.account_id,
     keywords: (job.keywords || []).join("\n"),
     max_contents_per_keyword: job.max_contents_per_keyword,
+    max_pages_per_keyword: job.max_pages_per_keyword || 12,
+    stagnant_pages: job.stagnant_pages || 3,
+    search_sort: job.search_sort || "general",
+    publish_time: job.publish_time || "all",
+    content_type: job.content_type || "all",
+    min_likes: Number(job.min_likes || 0),
+    min_comments: Number(job.min_comments || 0),
     max_comments_per_content: job.max_comments_per_content,
     include_replies: !!job.include_replies,
     download_media: !!job.download_media,
@@ -3148,6 +3174,15 @@ async function editCollection(jobId, draft = null) {
         <div class="form-field"><label for="ecol-content-limit">每词作品上限</label><input id="ecol-content-limit" type="number" min="1" max="100" value="${Number(initial.max_contents_per_keyword) || 20}"></div>
         <div class="form-field"><label for="ecol-comment-limit">每作品评论上限</label><input id="ecol-comment-limit" type="number" min="0" max="200" value="${Number(initial.max_comments_per_content) || 0}"></div>
       </div>
+      <div class="form-grid collection-filter-grid">
+        <div class="form-field"><label for="ecol-page-limit">每词采集深度</label><input id="ecol-page-limit" type="number" min="1" max="40" value="${Number(initial.max_pages_per_keyword) || 12}"></div>
+        <div class="form-field"><label for="ecol-sort">搜索排序</label><select id="ecol-sort"><option value="general">综合排序</option><option value="latest">最新发布</option><option value="most_liked">最多点赞</option></select></div>
+        <div class="form-field"><label for="ecol-publish-time">发布时间</label><select id="ecol-publish-time"><option value="all">不限</option><option value="day">一天内</option><option value="week">一周内</option><option value="half_year">半年内</option></select></div>
+        <div class="form-field"><label for="ecol-content-type">内容类型</label><select id="ecol-content-type"><option value="all">全部作品</option><option value="video">视频</option><option value="images">图文 / 图集</option></select></div>
+        <div class="form-field"><label for="ecol-min-likes">最低点赞数</label><input id="ecol-min-likes" type="number" min="0" value="${Number(initial.min_likes) || 0}"></div>
+        <div class="form-field"><label for="ecol-min-comments">最低评论数</label><input id="ecol-min-comments" type="number" min="0" value="${Number(initial.min_comments) || 0}"></div>
+        <div class="form-field"><label for="ecol-stagnant-pages">连续无新增停止</label><input id="ecol-stagnant-pages" type="number" min="1" max="8" value="${Number(initial.stagnant_pages) || 3}"></div>
+      </div>
       <div class="option-grid" aria-label="采集选项">
         <label class="switch-row"><input type="checkbox" id="ecol-download"${initial.download_media ? " checked" : ""} onchange="$('ecol-dir-wrap').style.display=this.checked?'':'none'"><span class="switch-copy"><b>下载媒体</b><span>保存视频和封面来源</span></span></label>
         <label class="switch-row"><input type="checkbox" id="ecol-replies"${initial.include_replies ? " checked" : ""}><span class="switch-copy"><b>包含二级评论</b><span>采集抖音当前可返回的回复</span></span></label>
@@ -3155,11 +3190,21 @@ async function editCollection(jobId, draft = null) {
       <div class="form-field" id="ecol-dir-wrap" style="display:${initial.download_media ? "" : "none"}"><label for="ecol-download-dir">下载目录（可选）</label><input id="ecol-download-dir" value="${esc(initial.download_dir)}" placeholder="留空使用默认目录"></div>`;
     $("ecol-account").value = String(initial.account_id || "");
     $("ecol-quality").value = initial.video_quality || "highest";
+    $("ecol-sort").value = initial.search_sort || "general";
+    $("ecol-publish-time").value = initial.publish_time || "all";
+    $("ecol-content-type").value = initial.content_type || "all";
     enhanceAllSelects($("ui-body")); csSyncAll();
     _uiGetVal = () => ({
       account_id: Number($("ecol-account").value || 0),
       keywords: $("ecol-keywords").value,
       max_contents_per_keyword: Number($("ecol-content-limit").value || 0),
+      max_pages_per_keyword: Number($("ecol-page-limit").value || 0),
+      stagnant_pages: Number($("ecol-stagnant-pages").value || 0),
+      search_sort: $("ecol-sort").value || "general",
+      publish_time: $("ecol-publish-time").value || "all",
+      content_type: $("ecol-content-type").value || "all",
+      min_likes: Number($("ecol-min-likes").value || 0),
+      min_comments: Number($("ecol-min-comments").value || 0),
       max_comments_per_content: Number($("ecol-comment-limit").value || 0),
       include_replies: $("ecol-replies").checked,
       download_media: $("ecol-download").checked,
@@ -3175,6 +3220,9 @@ async function editCollection(jobId, draft = null) {
   else if (keywords.length > 20) error = "单个任务最多 20 个关键词";
   else if (!value.account_id) error = "请选择一个可用抖音账号";
   else if (value.max_contents_per_keyword < 1 || value.max_contents_per_keyword > 100) error = "每词作品上限须为 1–100";
+  else if (value.max_pages_per_keyword < 1 || value.max_pages_per_keyword > 40) error = "每词采集深度须为 1–40 页";
+  else if (value.stagnant_pages < 1 || value.stagnant_pages > 8) error = "连续无新增停止阈值须为 1–8 页";
+  else if (value.min_likes < 0 || value.min_comments < 0) error = "点赞和评论门槛须为非负整数";
   else if (value.max_comments_per_content < 0 || value.max_comments_per_content > 200) error = "每作品评论上限须为 0–200";
   if (error) { toast(error, "err"); return editCollection(jobId, value); }
   try {
