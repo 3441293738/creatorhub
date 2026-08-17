@@ -115,24 +115,24 @@ npm install
 
 ### 更多界面
 
-> 点击缩略图可查看完整尺寸。
+> 截图统一为 1600 × 1000，点击可查看高清原图。
 
 <table>
   <tr>
-    <td width="50%"><strong>小红书浅色主题</strong><br><a href="assets/screenshots/overview-xiaohongshu.png"><img src="assets/screenshots/overview-xiaohongshu.png" alt="小红书总览面板"></a></td>
-    <td width="50%"><strong>账号与代理</strong><br><a href="assets/screenshots/accounts-proxy.png"><img src="assets/screenshots/accounts-proxy.png" alt="账号登录与代理池"></a></td>
+    <td width="50%" align="center" valign="top"><strong>小红书浅色主题</strong><br><a href="assets/screenshots/overview-xiaohongshu.png"><img src="assets/screenshots/overview-xiaohongshu.png" alt="小红书总览面板" width="100%"></a></td>
+    <td width="50%" align="center" valign="top"><strong>账号与代理</strong><br><a href="assets/screenshots/accounts-proxy.png"><img src="assets/screenshots/accounts-proxy.png" alt="账号登录与代理池" width="100%"></a></td>
   </tr>
   <tr>
-    <td width="50%"><strong>作品监控</strong><br><a href="assets/screenshots/monitor-posts.png"><img src="assets/screenshots/monitor-posts.png" alt="作品监控与下载"></a></td>
-    <td width="50%"><strong>评论监控</strong><br><a href="assets/screenshots/monitor-comments.png"><img src="assets/screenshots/monitor-comments.png" alt="评论监控"></a></td>
+    <td width="50%" align="center" valign="top"><strong>作品监控</strong><br><a href="assets/screenshots/monitor-posts.png"><img src="assets/screenshots/monitor-posts.png" alt="作品监控与下载" width="100%"></a></td>
+    <td width="50%" align="center" valign="top"><strong>评论监控</strong><br><a href="assets/screenshots/monitor-comments.png"><img src="assets/screenshots/monitor-comments.png" alt="评论监控" width="100%"></a></td>
   </tr>
   <tr>
-    <td width="50%"><strong>内容发布</strong><br><a href="assets/screenshots/publish-workflow.png"><img src="assets/screenshots/publish-workflow.png" alt="内容发布与任务队列"></a></td>
-    <td width="50%"><strong>链接下载</strong><br><a href="assets/screenshots/share-download.png"><img src="assets/screenshots/share-download.png" alt="分享链接解析与下载历史"></a></td>
+    <td width="50%" align="center" valign="top"><strong>内容发布</strong><br><a href="assets/screenshots/publish-workflow.png"><img src="assets/screenshots/publish-workflow.png" alt="内容发布与任务队列" width="100%"></a></td>
+    <td width="50%" align="center" valign="top"><strong>链接下载</strong><br><a href="assets/screenshots/share-download.png"><img src="assets/screenshots/share-download.png" alt="分享链接解析与下载历史" width="100%"></a></td>
   </tr>
   <tr>
-    <td width="50%"><strong>自动评论</strong><br><a href="assets/screenshots/autocomment-rules.png"><img src="assets/screenshots/autocomment-rules.png" alt="自动评论规则与任务记录"></a></td>
-    <td width="50%"><strong>本账号管理与私信</strong><br><a href="assets/screenshots/account-hub-dm.png"><img src="assets/screenshots/account-hub-dm.png" alt="本账号数据与私信管理"></a></td>
+    <td width="50%" align="center" valign="top"><strong>自动评论</strong><br><a href="assets/screenshots/autocomment-rules.png"><img src="assets/screenshots/autocomment-rules.png" alt="自动评论规则与任务记录" width="100%"></a></td>
+    <td width="50%" align="center" valign="top"><strong>本账号管理与私信</strong><br><a href="assets/screenshots/account-hub-dm.png"><img src="assets/screenshots/account-hub-dm.png" alt="本账号数据与私信管理" width="100%"></a></td>
   </tr>
 </table>
 
