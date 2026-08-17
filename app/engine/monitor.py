@@ -49,7 +49,7 @@ from ..platforms.channels import (parse_channels_feed, parse_channels_comment,
                    publish_channels)
 from ..models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
                       CommentWatch, DanmakuWatch, DanmakuRecord,
-                      DouyinAccount, MonitorTarget,
+                       DouyinAccount, MonitorTarget, AccountRiskState,
                       NotificationChannel, PublishTask, AccountActionTask,
                        FollowEdge, DmConversation, AccountWork, AccountStatSnapshot,
                        KeywordCollectionJob)
@@ -407,14 +407,62 @@ class MonitorEngine:
             acc, headed=headed, browser_mode=browser_mode) or "")
 
     @staticmethod
-    def _defer_row(row, reason: str, next_at: datetime | None = None,
-                   fallback_seconds: int = 300) -> None:
+    def _blocked_signal(reason: str) -> str:
+        text = str(reason or "")
+        if "登录态" in text or "重新登录" in text:
+            return "auth_required"
+        if "代理" in text or "出口" in text:
+            return "proxy_unavailable"
+        if "非活跃时段" in text:
+            return "quiet_hours"
+        if "额度" in text or "上限" in text:
+            return "quota"
+        if "最小间隔" in text or "尚未达到" in text:
+            return "operation_gap"
+        if "渐进恢复" in text or "轻量状态探测" in text:
+            return "probe_only"
+        if "冷却" in text or "风控" in text or "验证" in text:
+            return "cooldown"
+        return "deferred"
+
+    @staticmethod
+    def _blocked_operation(row) -> str:
+        if isinstance(row, PublishTask):
+            return OperationKind.PUBLISH.value
+        if isinstance(row, CommentTask):
+            return OperationKind.COMMENT.value
+        if isinstance(row, AccountActionTask):
+            return (OperationKind.DM.value if row.action == "send_dm"
+                    else OperationKind.SOCIAL.value)
+        if isinstance(row, KeywordCollectionJob):
+            return OperationKind.READ_HEAVY.value
+        return ""
+
+    @classmethod
+    def _defer_row(cls, row, reason: str, next_at: datetime | None = None,
+                   fallback_seconds: int = 300, signal: str = "") -> None:
         now = datetime.utcnow()
         proposed = next_at or (now + timedelta(seconds=max(1, fallback_seconds)))
-        if row.scheduled_at is None or row.scheduled_at < proposed:
+        if hasattr(row, "scheduled_at") \
+                and (row.scheduled_at is None or row.scheduled_at < proposed):
             row.scheduled_at = proposed
         row.status = "pending"
         row.error = str(reason or "平台操作已延后").strip()[:500]
+        if hasattr(row, "blocked_reason"):
+            row.blocked_reason = row.error
+            row.blocked_signal = signal or cls._blocked_signal(row.error)
+            row.blocked_operation = cls._blocked_operation(row)
+            row.blocked_at = now
+            row.next_allowed_at = proposed
+
+    @staticmethod
+    def _clear_row_block(row) -> None:
+        for name, value in (
+                ("blocked_reason", ""), ("blocked_signal", ""),
+                ("blocked_operation", ""), ("blocked_at", None),
+                ("next_allowed_at", None)):
+            if hasattr(row, name):
+                setattr(row, name, value)
 
     def _xhs_comment_write_mode(self) -> str:
         """Return the explicitly selected XHS comment write mode.
@@ -490,6 +538,7 @@ class MonitorEngine:
                 await self._scan_comment_watches()
                 await self._scan_danmaku_watches()
                 await self._retry_failed()
+                await self._process_risk_recovery()
                 await self._check_accounts()
                 await self._check_work_health()
                 await self._process_publish()
@@ -563,20 +612,44 @@ class MonitorEngine:
                 job = s.get(KeywordCollectionJob, job_id)
                 if job and job.status == "pending":
                     job.current_step = "等待账号读取冷却"
+                    job.blocked_reason = decision.reason
+                    job.blocked_signal = decision.signal or self._blocked_signal(
+                        decision.reason)
+                    job.blocked_operation = OperationKind.READ_HEAVY.value
+                    job.blocked_at = datetime.utcnow()
+                    job.next_allowed_at = decision.next_allowed_at
                     s.add(job); s.commit()
-            return {"ok": True, "deferred": True, "reason": decision.reason}
+            return {"ok": True, "deferred": True, "reason": decision.reason,
+                    "signal": decision.signal,
+                    "next_allowed_at": (decision.next_allowed_at.isoformat()
+                                        if decision.next_allowed_at else None)}
 
         try:
             async with self._operation_guard(account_id, OperationKind.READ_HEAVY):
                 decision = self.risk.preflight(account_id, OperationKind.READ_HEAVY)
                 if not decision.allowed:
-                    return {"ok": True, "deferred": True, "reason": decision.reason}
+                    with get_session() as s:
+                        job = s.get(KeywordCollectionJob, job_id)
+                        if job and job.status == "pending":
+                            job.current_step = "等待账号读取冷却"
+                            job.blocked_reason = decision.reason
+                            job.blocked_signal = decision.signal or self._blocked_signal(
+                                decision.reason)
+                            job.blocked_operation = OperationKind.READ_HEAVY.value
+                            job.blocked_at = datetime.utcnow()
+                            job.next_allowed_at = decision.next_allowed_at
+                            s.add(job); s.commit()
+                    return {"ok": True, "deferred": True,
+                            "reason": decision.reason, "signal": decision.signal,
+                            "next_allowed_at": (decision.next_allowed_at.isoformat()
+                                                if decision.next_allowed_at else None)}
                 with get_session() as s:
                     job = s.get(KeywordCollectionJob, job_id)
                     if not job:
                         return {"ok": False, "error": "任务不存在"}
                     job.status = "running"
                     job.current_step = "准备搜索"
+                    self._clear_row_block(job)
                     job.started_at = job.started_at or datetime.utcnow()
                     job.finished_at = None
                     s.add(job); s.commit()
@@ -699,105 +772,188 @@ class MonitorEngine:
                         " —— 关联/风控风险,建议换地区一致的长效代理或改账号时区",
                         account_id, geo["country"], timezone_id, expected, geo.get("ip"))
 
-    # ── 账号登录态体检 + 闲置保活 ──
+    # ── 账号登录态体检 + 风险恢复探测 ──
+    def _account_probe_tuple(self, account):
+        return (account.id, account.platform, account.storage_state,
+                account.creator_storage_state, account.proxy or "",
+                self.browser.identity_for(account))
+
+    def _wake_deferred_tasks(self, account_id: int) -> int:
+        """Wake rows that were explicitly deferred by a now-cleared risk gate."""
+        now = datetime.utcnow()
+        woken = 0
+        with get_session() as session:
+            for model in (PublishTask, CommentTask, AccountActionTask):
+                rows = session.exec(select(model).where(
+                    model.account_id == account_id,
+                    model.status == "pending",
+                    model.blocked_reason != "",
+                )).all()
+                for row in rows:
+                    row.scheduled_at = now
+                    row.error = ""
+                    self._clear_row_block(row)
+                    session.add(row)
+                    woken += 1
+            jobs = session.exec(select(KeywordCollectionJob).where(
+                KeywordCollectionJob.account_id == account_id,
+                KeywordCollectionJob.status == "pending",
+                KeywordCollectionJob.blocked_reason != "",
+            )).all()
+            for job in jobs:
+                job.current_step = "账号已恢复，等待继续"
+                job.error = ""
+                self._clear_row_block(job)
+                session.add(job)
+                woken += 1
+            if woken:
+                session.commit()
+        return woken
+
+    async def _probe_account_health(self, probe) -> dict:
+        aid, platform, state, creator_state, proxy, identity = probe
+        decision = self.risk.preflight(aid, OperationKind.READ_LIGHT)
+        if not decision.allowed:
+            return {"ok": False, "deferred": True, "reason": decision.reason,
+                    "next_allowed_at": decision.next_allowed_at}
+        with get_session() as session:
+            before = session.get(AccountRiskState, aid)
+            was_recovering = bool(before and before.risk_level > 0)
+            if was_recovering:
+                before.last_operation_at = datetime.utcnow()
+                before.updated_at = before.last_operation_at
+                session.add(before)
+                session.commit()
+        u, err = {}, ""
+        try:
+            async with self._operation_guard(aid, OperationKind.READ_LIGHT):
+                decision = self.risk.preflight(aid, OperationKind.READ_LIGHT)
+                if not decision.allowed:
+                    return {"ok": False, "deferred": True,
+                            "reason": decision.reason,
+                            "next_allowed_at": decision.next_allowed_at}
+                await self._verify_proxy_region(aid, proxy, identity.timezone_id)
+                if platform == "xhs" and creator_state:
+                    chk = await creator_check(creator_state, proxy=proxy)
+                    if chk is None:
+                        return {"ok": False, "indeterminate": True}
+                    u, err = ({"ok": 1}, "") if chk else ({}, "logged_out")
+                elif platform == "xhs":
+                    client = self._xhs_client(state, proxy)
+                    if client is None:
+                        u, err = {}, "logged_out"
+                    else:
+                        try:
+                            data = await client.self_info()
+                            u, err = ((data, "") if data and not data.get("guest")
+                                      else ({}, "logged_out"))
+                        except XhsApiError as exc:
+                            if exc.category == "auth":
+                                u, err = {}, "logged_out"
+                            else:
+                                self.risk.record_failure(
+                                    aid, OperationKind.READ_LIGHT, exc)
+                                return {"ok": False, "error": str(exc)}
+                elif platform == "kuaishou":
+                    u, err = await fetch_ks_self_profile(self.browser, identity)
+                elif platform == "shipinhao":
+                    u, err = await fetch_channels_self_profile(self.browser, identity)
+                else:
+                    u, err = await fetch_self_profile(self.browser, identity)
+                if u:
+                    self.risk.record_success(aid, OperationKind.READ_LIGHT)
+                elif err:
+                    self.risk.record_failure(aid, OperationKind.READ_LIGHT, err)
+        except Exception as exc:
+            self.risk.record_failure(aid, OperationKind.READ_LIGHT, exc)
+            return {"ok": False, "error": str(exc)}
+
+        got_profile = False
+        with get_session() as session:
+            account = session.get(DouyinAccount, aid)
+            if not account:
+                return {"ok": False, "error": "account_missing"}
+            if u:
+                if platform == "xhs":
+                    parsed = parse_xhs_self_user(u)
+                elif platform == "kuaishou":
+                    parsed = parse_ks_self_user(u)
+                elif platform == "shipinhao":
+                    parsed = parse_channels_self_user(u)
+                else:
+                    parsed = parse_self_user(u)
+                account.status = "active"
+                account.last_active_at = datetime.utcnow()
+                if parsed.get("nickname"):
+                    account.nickname = parsed["nickname"]
+                account.sec_uid = parsed.get("sec_uid") or account.sec_uid
+                account.douyin_id = parsed.get("douyin_id") or account.douyin_id
+                account.avatar = parsed.get("avatar") or account.avatar
+                account.follower_count = parsed.get("follower_count") or account.follower_count
+                account.aweme_count = parsed.get("aweme_count") or account.aweme_count
+                got_profile = True
+            elif err == "logged_out":
+                account.status = "invalid"
+                log.warning("账号 %s(%s)登录态失效", aid, account.nickname)
+            session.add(account)
+            session.commit()
+            risk_state = session.get(AccountRiskState, aid)
+            recovered = bool(was_recovering and risk_state
+                             and risk_state.risk_level == 0)
+
+        if got_profile and self.cfg.engine.work_health_stat_snapshots:
+            try:
+                self._write_stat_snapshot(aid, platform, [])
+            except Exception:
+                pass
+        woken = self._wake_deferred_tasks(aid) if recovered else 0
+        if recovered:
+            log.info("账号 %s 风险恢复完成，已唤醒 %s 条任务", aid, woken)
+        return {"ok": got_profile, "recovered": recovered, "woken": woken,
+                "error": err}
+
+    async def _process_risk_recovery(self) -> int:
+        """Probe recovering accounts independently of idle keepalive cadence."""
+        now = datetime.utcnow()
+        gap = max(1, self.cfg.risk_control.recovery_probe_gap_seconds)
+        with get_session() as session:
+            probes = []
+            states = session.exec(select(AccountRiskState).where(
+                AccountRiskState.risk_level > 0)).all()
+            for risk_state in states:
+                account = session.get(DouyinAccount, risk_state.account_id)
+                if not account or account.status == "invalid" \
+                        or not (account.storage_state or account.creator_storage_state):
+                    continue
+                if risk_state.cooldown_until and risk_state.cooldown_until > now:
+                    continue
+                last_attempt = max(
+                    [value for value in (risk_state.last_recovery_at,
+                                         risk_state.last_operation_at)
+                     if value is not None], default=None)
+                if last_attempt and (now - last_attempt).total_seconds() < gap:
+                    continue
+                probes.append(self._account_probe_tuple(account))
+        completed = 0
+        for probe in probes[:3]:
+            result = await self._probe_account_health(probe)
+            if result.get("ok"):
+                completed += 1
+        return completed
+
     async def _check_accounts(self):
         interval = self.cfg.engine.account_check_interval_seconds
-        if interval <= 0:
-            return
-        if time.time() - self._last_acct_check < interval:
+        if interval <= 0 or time.time() - self._last_acct_check < interval:
             return
         self._last_acct_check = time.time()
-        with get_session() as s:
-            accs = []
-            for a in s.exec(select(DouyinAccount)).all():
-                if not (a.storage_state or a.creator_storage_state):
-                    continue
-                if a.status == "invalid":
-                    continue                       # 已失效:摸也救不活,等用户重登,别白发请求
-                if not self._keepalive_due(a.last_active_at):
-                    continue                       # 近期已被监控/发布/上轮保活摸过,跳过
-                accs.append((a.id, a.platform, a.storage_state, a.creator_storage_state,
-                             a.proxy or "", self.browser.identity_for(a)))
-        for aid, platform, state, creator_state, proxy, identity in accs:
-            decision = self.risk.preflight(aid, OperationKind.READ_LIGHT)
-            if not decision.allowed:
-                continue
-            try:
-                async with self._operation_guard(aid, OperationKind.READ_LIGHT):
-                    if not self.risk.preflight(
-                            aid, OperationKind.READ_LIGHT).allowed:
-                        continue
-                    await self._verify_proxy_region(aid, proxy, identity.timezone_id)
-                    if platform == "xhs" and creator_state:
-                        # 创作者号:用创作平台接口校验(www 的 user/me 对创作态会误判)
-                        chk = await creator_check(creator_state, proxy=proxy)
-                        if chk is None:
-                            continue                 # 不确定,保持原状态
-                        u, err = ({"ok": 1}, "") if chk else ({}, "logged_out")
-                    elif platform == "xhs":
-                        client = self._xhs_client(state, proxy)
-                        if client is None:
-                            u, err = {}, "logged_out"
-                        else:
-                            try:
-                                d = await client.self_info()
-                                u, err = (d, "") if (d and not d.get("guest")) else ({}, "logged_out")
-                            except XhsApiError as exc:
-                                if exc.category == "auth":
-                                    u, err = {}, "logged_out"
-                                else:
-                                    self.risk.record_failure(
-                                        aid, OperationKind.READ_LIGHT, exc)
-                                    continue
-                    elif platform == "kuaishou":
-                        u, err = await fetch_ks_self_profile(self.browser, identity)
-                    elif platform == "shipinhao":
-                        u, err = await fetch_channels_self_profile(self.browser, identity)
-                    else:
-                        u, err = await fetch_self_profile(self.browser, identity)
-                    if u:
-                        self.risk.record_success(aid, OperationKind.READ_LIGHT)
-                    elif err:
-                        self.risk.record_failure(aid, OperationKind.READ_LIGHT, err)
-            except Exception as exc:
-                self.risk.record_failure(aid, OperationKind.READ_LIGHT, exc)
-                continue
-            with get_session() as s:
-                a = s.get(DouyinAccount, aid)
-                if not a:
-                    continue
-                if u:
-                    if platform == "xhs":
-                        p = parse_xhs_self_user(u)
-                    elif platform == "kuaishou":
-                        p = parse_ks_self_user(u)
-                    elif platform == "shipinhao":
-                        p = parse_channels_self_user(u)
-                    else:
-                        p = parse_self_user(u)
-                    a.status = "active"
-                    a.last_active_at = datetime.utcnow()   # 保活成功:重置闲置计时
-                    if p.get("nickname"):
-                        a.nickname = p["nickname"]
-                    a.sec_uid = p.get("sec_uid") or a.sec_uid
-                    a.douyin_id = p.get("douyin_id") or a.douyin_id
-                    a.avatar = p.get("avatar") or a.avatar
-                    a.follower_count = p.get("follower_count") or a.follower_count
-                    a.aweme_count = p.get("aweme_count") or a.aweme_count
-                    got_profile = True
-                elif err == "logged_out":
-                    a.status = "invalid"
-                    log.warning("账号 %s(%s)登录态失效", aid, a.nickname)
-                    got_profile = False
-                else:
-                    got_profile = False
-                s.add(a); s.commit()
-            # 体检成功即记一条粉丝/作品数快照(B4 趋势;不依赖作品健康开关也能出粉丝曲线)
-            if got_profile and self.cfg.engine.work_health_stat_snapshots:
-                try:
-                    self._write_stat_snapshot(aid, platform, [])
-                except Exception:
-                    pass
+        with get_session() as session:
+            probes = [self._account_probe_tuple(account)
+                      for account in session.exec(select(DouyinAccount)).all()
+                      if (account.storage_state or account.creator_storage_state)
+                      and account.status != "invalid"
+                      and self._keepalive_due(account.last_active_at)]
+        for probe in probes:
+            await self._probe_account_health(probe)
 
     # ── 本账号作品健康监控(B5)+ 数据快照(B4)──
     async def _check_work_health(self):
@@ -2258,7 +2414,8 @@ class MonitorEngine:
             pause_error = self._write_pause_error(t.account_id)
             if pause_error:
                 decision = self.risk.preflight(t.account_id, OperationKind.PUBLISH)
-                self._defer_row(t, pause_error, decision.next_allowed_at)
+                self._defer_row(t, pause_error, decision.next_allowed_at,
+                                signal=decision.signal)
                 s.add(t); s.commit()
                 return {"ok": False, "error": pause_error}
             if not self._in_active_window(t.account_id):
@@ -2267,7 +2424,8 @@ class MonitorEngine:
                 return {"ok": False, "error": t.error}
             decision = self.risk.preflight(t.account_id, OperationKind.PUBLISH)
             if not decision.allowed:
-                self._defer_row(t, decision.reason, decision.next_allowed_at)
+                self._defer_row(t, decision.reason, decision.next_allowed_at,
+                                signal=decision.signal)
                 s.add(t); s.commit()
                 return {"ok": False, "error": decision.reason}
             # 发布用创作平台态;一次扫码已把创作 cookie 并入 storage_state,故回退它
@@ -2280,6 +2438,7 @@ class MonitorEngine:
             platform = t.platform
             files = _loads_list(t.media_json)
             t.status = "publishing"; t.error = ""
+            self._clear_row_block(t)
             s.add(t); s.commit()
 
         if platform == "kuaishou":
@@ -2369,7 +2528,8 @@ class MonitorEngine:
                     t.done_at = None
                 elif failure and failure.controlled and failure.category in {
                         RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH}:
-                    self._defer_row(t, err, failure.next_allowed_at)
+                    self._defer_row(t, err, failure.next_allowed_at,
+                                    signal=failure.signal)
                 else:
                     t.status = "failed"
                 t.result_url = url or t.result_url
@@ -3091,7 +3251,8 @@ class MonitorEngine:
                 kind = (OperationKind.DM if t.action == "send_dm"
                         else OperationKind.SOCIAL)
                 decision = self.risk.preflight(t.account_id, kind)
-                self._defer_row(t, gate_error, decision.next_allowed_at)
+                self._defer_row(t, gate_error, decision.next_allowed_at,
+                                signal=decision.signal)
                 s.add(t); s.commit()
                 return {"ok": False, "error": gate_error}
             action = t.action
@@ -3109,6 +3270,7 @@ class MonitorEngine:
             native_mode = acc.identity_mode == "native"
             identity = self.browser.identity_for(acc)
             t.status = "doing"; t.method = "browser"; t.error = ""
+            self._clear_row_block(t)
             s.add(t); s.commit()
 
         try:
@@ -3166,7 +3328,8 @@ class MonitorEngine:
                     t.done_at = None
                 elif failure and failure.controlled and failure.category in {
                         RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH}:
-                    self._defer_row(t, err, failure.next_allowed_at)
+                    self._defer_row(t, err, failure.next_allowed_at,
+                                    signal=failure.signal)
                 else:
                     t.status = "failed"
                 t.error = "" if ok else err
@@ -3277,7 +3440,8 @@ class MonitorEngine:
             gate_error = self._comment_gate_error(t.account_id)
             if gate_error:
                 decision = self.risk.preflight(t.account_id, OperationKind.COMMENT)
-                self._defer_row(t, gate_error, decision.next_allowed_at)
+                self._defer_row(t, gate_error, decision.next_allowed_at,
+                                signal=decision.signal)
                 s.add(t); s.commit()
                 return {"ok": False, "error": gate_error}
             state = acc.storage_state or acc.creator_storage_state or ""
@@ -3285,6 +3449,7 @@ class MonitorEngine:
             native_mode = acc.identity_mode == "native"
             identity = self.browser.identity_for(acc)
             t.status = "doing"; t.error = ""
+            self._clear_row_block(t)
             s.add(t); s.commit()
 
         ok, result, err, method = False, "", "", ""
@@ -3364,7 +3529,8 @@ class MonitorEngine:
                     t.done_at = None
                 elif failure and failure.controlled and failure.category in {
                         RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH}:
-                    self._defer_row(t, err, failure.next_allowed_at)
+                    self._defer_row(t, err, failure.next_allowed_at,
+                                    signal=failure.signal)
                 else:
                     t.status = "failed"
                 t.result = result

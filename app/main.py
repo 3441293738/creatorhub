@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import urlsplit
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 import uuid as _uuid
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
@@ -72,7 +73,7 @@ from .models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
                      NotificationChannel, ProxyPool, PublishTask,
                      AccountWork, FollowEdge, DmConversation, DmMessage,
                       AccountActionTask, AccountStatSnapshot,
-                      ShareDownloadRecord, AccountRiskState, RiskEvent,
+                      ShareDownloadRecord, AccountRiskState, RiskEvent, RiskAdminAudit,
                       KeywordCollectionJob, KeywordCollectionContent,
                       KeywordCollectionComment)
 from .notifier import CHANNEL_TYPES, send_one
@@ -81,6 +82,9 @@ from .profiles import (ensure_identity, migrate_identities, assign_proxy_from_po
                        seed_proxy_pool)
 from .risk import (OperationKind, RiskCategory, RiskController,
                    classify_platform_error)
+from .risk_admin import (RiskSettingsError, apply_risk_settings,
+                         export_risk_settings, load_persisted_risk_settings,
+                         save_risk_settings)
 from .settings import get_setting, set_setting
 from .windowing import (EXPLORER_WINDOW_CLASSES, bring_window_to_front,
                         capture_window_snapshot)
@@ -156,6 +160,8 @@ def _persist_native_ua(account_id: int, ua: str) -> None:
 async def lifespan(app: FastAPI):
     global browser, engine, im_receiver
     init_db(cfg.db_path)
+    if load_persisted_risk_settings(cfg):
+        print("[startup] 已加载风控中心保存的运行时规则")
     try:
         repaired = _backfill_danmaku_records()
         if repaired:
@@ -777,6 +783,371 @@ async def list_accounts(platform: str | None = None):
                 "created_at": a.created_at.isoformat() if a.created_at else None,
             })
         return out
+
+
+# ─────────── 风控中心 ───────────
+def _risk_iso(value: datetime | None) -> str | None:
+    return value.isoformat(timespec="seconds") + "Z" if value else None
+
+
+def _risk_admin_required() -> bool:
+    return bool(os.environ.get("CREATORHUB_ADMIN_TOKEN", "").strip())
+
+
+def _require_risk_admin(request: Request) -> str:
+    expected = os.environ.get("CREATORHUB_ADMIN_TOKEN", "").strip()
+    supplied = request.headers.get("X-CreatorHub-Admin-Token", "").strip()
+    if expected and not secrets.compare_digest(expected, supplied):
+        raise HTTPException(403, "需要风控管理口令")
+    actor = request.headers.get("X-CreatorHub-Actor", "").strip()[:64]
+    if actor:
+        return actor
+    host = request.client.host if request.client else "local"
+    return f"local-ui@{host}"[:64]
+
+
+def _risk_config_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    changes = {}
+    for section in ("risk_control", "schedule"):
+        old, new = before.get(section, {}), after.get(section, {})
+        section_changes = {
+            key: {"before": old.get(key), "after": new.get(key)}
+            for key in sorted(set(old) | set(new)) if old.get(key) != new.get(key)
+        }
+        if section_changes:
+            changes[section] = section_changes
+    return changes
+
+
+def _record_risk_admin_audit(action: str, *, actor: str,
+                             account_id: int | None = None,
+                             detail: dict[str, Any] | None = None) -> None:
+    with get_session() as session:
+        session.add(RiskAdminAudit(
+            action=action, account_id=account_id, actor=actor,
+            detail=json.dumps(detail or {}, ensure_ascii=False)[:8000],
+        ))
+        session.commit()
+
+
+def _risk_task_rollups(session, account_ids: list[int]) -> dict[int, dict[str, Any]]:
+    result = {account_id: {
+        "collections": 0, "publishes": 0, "comments": 0, "actions": 0,
+        "total": 0, "blocked": 0, "blocked_signals": {},
+        "next_allowed_at": None, "latest_block_reason": "",
+        "latest_blocked_at": None,
+    } for account_id in account_ids}
+    if not account_ids:
+        return result
+    specs = (
+        (KeywordCollectionJob, "collections", ["pending", "running"]),
+        (PublishTask, "publishes", ["pending", "publishing"]),
+        (CommentTask, "comments", ["pending", "doing"]),
+        (AccountActionTask, "actions", ["pending", "doing"]),
+    )
+    for model, key, statuses in specs:
+        rows = session.exec(select(model).where(
+            model.account_id.in_(account_ids), model.status.in_(statuses))).all()
+        for row in rows:
+            item = result[row.account_id]
+            item[key] += 1
+            item["total"] += 1
+            reason = str(getattr(row, "blocked_reason", "") or "")
+            if not reason:
+                continue
+            item["blocked"] += 1
+            signal = str(getattr(row, "blocked_signal", "") or "deferred")
+            item["blocked_signals"][signal] = item["blocked_signals"].get(signal, 0) + 1
+            next_at = getattr(row, "next_allowed_at", None)
+            if next_at and (item["next_allowed_at"] is None
+                            or next_at < item["next_allowed_at"]):
+                item["next_allowed_at"] = next_at
+            blocked_at = getattr(row, "blocked_at", None)
+            if blocked_at and (item["latest_blocked_at"] is None
+                               or blocked_at > item["latest_blocked_at"]):
+                item["latest_blocked_at"] = blocked_at
+                item["latest_block_reason"] = reason
+    return result
+
+
+def _account_risk_view(account: DouyinAccount, now: datetime, *,
+                       state: AccountRiskState | None,
+                       latest_event: RiskEvent | None,
+                       queued: dict[str, Any]) -> dict[str, Any]:
+    risk_level = state.risk_level if state else 0
+    reason = state.last_risk_reason if state else ""
+    cooldown_until = state.cooldown_until if state else None
+    status_code, status_label, status_tone = "normal", "正常", "success"
+    if account.status == "invalid":
+        status_code, status_label, status_tone = "auth_invalid", "登录失效", "danger"
+        reason = "账号登录态已失效，需要重新登录"
+    elif account.proxy_status in {"bad", "auth_error", "blocked", "drifted"}:
+        status_code, status_label, status_tone = "proxy_error", "代理异常", "danger"
+        reason = account.write_pause_reason or "账号绑定代理不可用或出口发生漂移"
+    elif cooldown_until and cooldown_until > now:
+        if "出口组熔断" in reason:
+            status_code, status_label = "network_circuit", "网络熔断"
+        else:
+            status_code, status_label = "cooldown", "风险冷却"
+        status_tone = "danger"
+    elif risk_level > 0:
+        status_code, status_label, status_tone = "recovering", "渐进恢复", "warn"
+        reason = reason or "冷却已结束，等待轻量探测确认账号恢复"
+    elif account.write_paused_until and account.write_paused_until > now:
+        status_code, status_label, status_tone = "write_paused", "写入暂停", "warn"
+        reason = account.write_pause_reason or "账号写操作暂时停用"
+    elif status_code == "normal":
+        reason = "未检测到风险信号"
+
+    recovery_successes = state.recovery_successes if state else 0
+    recovery_target = max(1, cfg.risk_control.recovery_successes)
+    next_probe = None
+    if risk_level > 0:
+        if cooldown_until and cooldown_until > now:
+            next_probe = cooldown_until
+        elif state and (state.last_recovery_at or state.last_operation_at):
+            anchor = max(value for value in (
+                state.last_recovery_at, state.last_operation_at) if value is not None)
+            next_probe = anchor + timedelta(
+                seconds=cfg.risk_control.recovery_probe_gap_seconds)
+        else:
+            next_probe = now
+
+    if account.douyin_id:
+        platform_account_id = account.douyin_id
+        platform_account_id_label = {
+            "douyin": "抖音号", "xhs": "小红书号",
+            "kuaishou": "快手号", "shipinhao": "视频号",
+        }.get(account.platform, "账号 ID")
+    else:
+        platform_account_id = account.sec_uid
+        platform_account_id_label = {
+            "douyin": "sec_uid", "xhs": "user_id",
+            "kuaishou": "user_id", "shipinhao": "finder_id",
+        }.get(account.platform, "账号 ID")
+    return {
+        "account_id": account.id,
+        "platform_account_id": platform_account_id,
+        "platform_account_id_label": platform_account_id_label,
+        "nickname": account.nickname,
+        "platform": account.platform,
+        "account_status": account.status,
+        "status": status_code,
+        "status_label": status_label,
+        "status_tone": status_tone,
+        "risk_level": risk_level,
+        "reason": reason,
+        "cooldown_until": _risk_iso(cooldown_until),
+        "cooldown_remaining_seconds": max(
+            0, int((cooldown_until - now).total_seconds()))
+            if cooldown_until else 0,
+        "next_probe_at": _risk_iso(next_probe),
+        "recovery_successes": recovery_successes,
+        "recovery_target": recovery_target,
+        "last_risk_at": _risk_iso(state.last_risk_at if state else None),
+        "last_operation_at": _risk_iso(state.last_operation_at if state else None),
+        "last_operation_kind": latest_event.operation_kind if latest_event else "",
+        "proxy": _mask_proxy(account.proxy),
+        "proxy_status": account.proxy_status,
+        "network_key": latest_event.network_key if latest_event else "",
+        "queued_tasks": {
+            key: queued[key] for key in (
+                "collections", "publishes", "comments", "actions", "total")
+        },
+        "blocked_tasks": queued["blocked"],
+        "blocked_signals": queued["blocked_signals"],
+        "task_next_allowed_at": _risk_iso(queued["next_allowed_at"]),
+        "latest_block_reason": queued["latest_block_reason"],
+    }
+
+
+def _risk_account_views(session, accounts: list[DouyinAccount],
+                        now: datetime) -> list[dict[str, Any]]:
+    ids = [account.id for account in accounts]
+    states = {row.account_id: row for row in session.exec(
+        select(AccountRiskState).where(AccountRiskState.account_id.in_(ids))
+    ).all()} if ids else {}
+    latest_events: dict[int, RiskEvent] = {}
+    if ids:
+        for event in session.exec(select(RiskEvent).where(
+                RiskEvent.account_id.in_(ids)).order_by(
+                    RiskEvent.occurred_at.desc())).all():
+            latest_events.setdefault(event.account_id, event)
+    rollups = _risk_task_rollups(session, ids)
+    return [_account_risk_view(
+        account, now, state=states.get(account.id),
+        latest_event=latest_events.get(account.id), queued=rollups[account.id])
+        for account in accounts]
+
+
+@app.get("/api/risk-control/config")
+async def get_risk_control_config():
+    payload = export_risk_settings(cfg)
+    payload["admin_token_required"] = _risk_admin_required()
+    return payload
+
+
+class RiskSettingsIn(BaseModel):
+    risk_control: Dict[str, Any]
+    schedule: Dict[str, Any]
+
+
+@app.put("/api/risk-control/config")
+async def put_risk_control_config(body: RiskSettingsIn, request: Request):
+    actor = _require_risk_admin(request)
+    before = export_risk_settings(cfg)
+    try:
+        apply_risk_settings(cfg, body.model_dump())
+    except RiskSettingsError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    save_risk_settings(cfg)
+    if engine is not None:
+        engine.risk.update_policy(cfg.risk_control)
+    after = export_risk_settings(cfg)
+    _record_risk_admin_audit(
+        "policy_updated", actor=actor,
+        detail={"changes": _risk_config_diff(before, after)})
+    after["admin_token_required"] = _risk_admin_required()
+    return after
+
+
+@app.get("/api/risk-control/accounts")
+async def list_risk_control_accounts(platform: str | None = None):
+    now = datetime.utcnow()
+    with get_session() as session:
+        query = select(DouyinAccount)
+        if platform:
+            query = query.where(DouyinAccount.platform == platform)
+        accounts = session.exec(query.order_by(DouyinAccount.id)).all()
+        return _risk_account_views(session, accounts, now)
+
+
+@app.get("/api/risk-control/summary")
+async def get_risk_control_summary(platform: str | None = None):
+    now = datetime.utcnow()
+    local_now = datetime.now().astimezone()
+    today = local_now.replace(hour=0, minute=0, second=0, microsecond=0) \
+        .astimezone(timezone.utc).replace(tzinfo=None)
+    with get_session() as session:
+        query = select(DouyinAccount)
+        if platform:
+            query = query.where(DouyinAccount.platform == platform)
+        accounts = session.exec(query).all()
+        rows = _risk_account_views(session, accounts, now)
+        ids = [account.id for account in accounts]
+        risk_today = 0
+        if ids:
+            risk_today = len(session.exec(select(RiskEvent.id).where(
+                RiskEvent.account_id.in_(ids),
+                RiskEvent.outcome == RiskCategory.RISK.value,
+                RiskEvent.occurred_at >= today,
+            )).all())
+    counts = {
+        key: sum(1 for row in rows if row["status"] == key)
+        for key in ("normal", "cooldown", "recovering", "auth_invalid",
+                    "proxy_error", "network_circuit", "write_paused")
+    }
+    return {
+        "total": len(rows),
+        "counts": counts,
+        "abnormal": sum(1 for row in rows if row["status"] != "normal"),
+        "risk_events_today": risk_today,
+        "blocked_tasks": sum(row["blocked_tasks"] for row in rows),
+        "policy_enabled": cfg.risk_control.enabled,
+        "mode": cfg.risk_control.mode,
+        "sampled_at": _risk_iso(now),
+    }
+
+
+@app.get("/api/risk-control/accounts/{account_id}/events")
+async def list_account_risk_events(account_id: int, limit: int = 80):
+    limit = max(1, min(200, limit))
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if not account:
+            raise HTTPException(404, "账号不存在")
+        events = session.exec(select(RiskEvent).where(
+            RiskEvent.account_id == account_id).order_by(
+                RiskEvent.occurred_at.desc()).limit(limit)).all()
+        return {
+            "account": {"id": account.id, "nickname": account.nickname,
+                        "platform": account.platform},
+            "events": [{
+                "id": event.id,
+                "operation_kind": event.operation_kind,
+                "outcome": event.outcome,
+                "signal": event.signal,
+                "detail": event.detail,
+                "network_key": event.network_key,
+                "occurred_at": _risk_iso(event.occurred_at),
+            } for event in events],
+        }
+
+
+@app.post("/api/risk-control/accounts/{account_id}/probe")
+async def probe_account_risk(account_id: int, request: Request):
+    actor = _require_risk_admin(request)
+    result = await refresh_account_profile(account_id)
+    woken = 0
+    skipped = bool(isinstance(result, dict) and result.get("skipped"))
+    if engine is not None and not skipped:
+        with get_session() as session:
+            state = session.get(AccountRiskState, account_id)
+            account = session.get(DouyinAccount, account_id)
+            recovered = bool(state is not None and state.risk_level == 0
+                             and account and account.status == "active"
+                             and account.proxy_status not in {
+                                 "bad", "auth_error", "blocked", "drifted"})
+        if recovered:
+            woken = engine._wake_deferred_tasks(account_id)
+    _record_risk_admin_audit(
+        "manual_probe", actor=actor, account_id=account_id,
+        detail={"skipped": skipped,
+                "reason": result.get("reason", "") if isinstance(result, dict) else "",
+                "woken_tasks": woken})
+    return {"ok": True, "result": result, "woken_tasks": woken}
+
+
+class RiskClearIn(BaseModel):
+    confirmed: bool = False
+    reason: str = ""
+
+
+@app.post("/api/risk-control/accounts/{account_id}/clear")
+async def clear_account_risk(account_id: int, body: RiskClearIn, request: Request):
+    actor = _require_risk_admin(request)
+    reason = body.reason.strip()
+    if not body.confirmed or len(reason) < 3:
+        raise HTTPException(400, "解除前需要确认并填写至少 3 个字符的原因")
+    with get_session() as session:
+        if not session.get(DouyinAccount, account_id):
+            raise HTTPException(404, "账号不存在")
+        state = session.get(AccountRiskState, account_id)
+        before = {
+            "risk_level": state.risk_level if state else 0,
+            "cooldown_until": _risk_iso(state.cooldown_until if state else None),
+            "last_risk_reason": state.last_risk_reason if state else "",
+        }
+    controller = engine.risk if engine else RiskController(cfg)
+    controller.clear_account(account_id, reason=reason, actor=actor)
+    woken = engine._wake_deferred_tasks(account_id) if engine else 0
+    _record_risk_admin_audit(
+        "account_risk_cleared", actor=actor, account_id=account_id,
+        detail={"reason": reason, "before": before, "woken_tasks": woken})
+    return {"ok": True, "woken_tasks": woken}
+
+
+@app.get("/api/risk-control/audit")
+async def list_risk_admin_audit(limit: int = 100):
+    limit = max(1, min(300, limit))
+    with get_session() as session:
+        rows = session.exec(select(RiskAdminAudit).order_by(
+            RiskAdminAudit.created_at.desc()).limit(limit)).all()
+        return [{
+            "id": row.id, "action": row.action, "account_id": row.account_id,
+            "actor": row.actor, "detail": json.loads(row.detail or "{}"),
+            "created_at": _risk_iso(row.created_at),
+        } for row in rows]
 
 
 @app.get("/api/accounts/{account_id}/environment")
@@ -1667,14 +2038,10 @@ async def set_account_proxy(account_id: int, body: ProxyIn):
 
 
 @app.post("/api/accounts/{account_id}/clear-write-pause")
-async def clear_account_write_pause(account_id: int):
-    """Clear the persisted write pause after the account has been checked manually."""
-    with get_session() as s:
-        acc = s.get(DouyinAccount, account_id)
-        if not acc:
-            raise HTTPException(404, "账号不存在")
-    (engine.risk if engine else RiskController(cfg)).clear_account(account_id)
-    return {"ok": True}
+async def clear_account_write_pause(account_id: int, body: RiskClearIn,
+                                    request: Request):
+    """Compatibility alias for the audited risk-center clear action."""
+    return await clear_account_risk(account_id, body, request)
 
 
 @app.post("/api/accounts/{account_id}/assign-proxy")

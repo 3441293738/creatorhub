@@ -184,6 +184,15 @@ class RiskController:
         self._network_locks: dict[str, asyncio.Semaphore] = {}
         self._network_lock_guard = threading.Lock()
 
+    def update_policy(self, policy) -> None:
+        """Apply a saved policy to subsequent decisions without restarting."""
+        self.policy = policy
+        # Semaphores encode the configured capacity at construction time.
+        # Existing holders keep their own reference and release normally;
+        # newly scheduled work receives semaphores with the new capacity.
+        with self._network_lock_guard:
+            self._network_locks.clear()
+
     @staticmethod
     def _account_id(account_or_id: DouyinAccount | int | None) -> int | None:
         if isinstance(account_or_id, int):
@@ -683,6 +692,7 @@ class RiskController:
                 operation_kind=kind.value,
                 outcome=category.value,
                 signal=signal,
+                detail=str(error or signal).strip()[:240],
                 occurred_at=now,
             )
             session.add(event)
@@ -698,7 +708,8 @@ class RiskController:
             session.commit()
         return FailureDecision(category, signal, next_at)
 
-    def clear_account(self, account_id: int) -> None:
+    def clear_account(self, account_id: int, *, reason: str = "人工检查完成",
+                      actor: str = "local-ui") -> None:
         with self._decision_lock, get_session() as session:
             state = session.get(AccountRiskState, account_id)
             if state:
@@ -718,6 +729,15 @@ class RiskController:
                 account.write_paused_until = None
                 account.write_pause_reason = ""
                 session.add(account)
+            session.add(RiskEvent(
+                account_id=account_id,
+                network_key=network_key(account.proxy) if account else "direct",
+                operation_kind=OperationKind.READ_LIGHT.value,
+                outcome="manual",
+                signal="risk_cleared",
+                detail=(f"{actor} 解除账号风控状态：{reason}".strip())[:240],
+                occurred_at=_utcnow(),
+            ))
             session.commit()
 
     def next_write_at(self, account_id: int) -> datetime | None:

@@ -125,7 +125,18 @@ class RiskEvent(SQLModel, table=True):
     operation_kind: str = Field(default="read_light", index=True)
     outcome: str = Field(default="success", index=True)
     signal: str = ""
+    detail: str = ""              # 脱敏后的原因摘要；不保存响应正文或账号凭据
     occurred_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+class RiskAdminAudit(SQLModel, table=True):
+    """Local administrative changes to risk policy and account state."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    action: str = Field(index=True)
+    account_id: Optional[int] = Field(default=None, index=True)
+    actor: str = "local-ui"
+    detail: str = "{}"             # JSON diff/reason; never contains credentials
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
 
 class NotificationChannel(SQLModel, table=True):
@@ -204,6 +215,11 @@ class PublishTask(SQLModel, table=True):
     status: str = "pending"        # pending | publishing | uncertain | done | failed | canceled
     result_url: str = ""           # 发布成功后的笔记链接(能取到则填)
     error: str = ""
+    blocked_reason: str = ""
+    blocked_signal: str = ""
+    blocked_operation: str = ""
+    blocked_at: Optional[datetime] = None
+    next_allowed_at: Optional[datetime] = Field(default=None, index=True)
     source_platform: str = ""      # 来源(如 douyin),跨平台转发时填
     source_content_id: Optional[int] = None            # 来源作品记录 id
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -252,6 +268,11 @@ class KeywordCollectionJob(SQLModel, table=True):
     comment_count: int = 0
     error_count: int = 0
     error: str = ""
+    blocked_reason: str = ""
+    blocked_signal: str = ""
+    blocked_operation: str = ""
+    blocked_at: Optional[datetime] = None
+    next_allowed_at: Optional[datetime] = Field(default=None, index=True)
     cancel_requested: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
     started_at: Optional[datetime] = None
@@ -402,6 +423,11 @@ class CommentTask(SQLModel, table=True):
     status: str = "pending"        # draft | pending | doing | uncertain | done | failed | canceled
     result: str = ""               # 成功后的评论 id / 链接
     error: str = ""
+    blocked_reason: str = ""
+    blocked_signal: str = ""
+    blocked_operation: str = ""
+    blocked_at: Optional[datetime] = None
+    next_allowed_at: Optional[datetime] = Field(default=None, index=True)
     method: str = ""               # 实际走的通道:manual | api | browser
     created_at: datetime = Field(default_factory=datetime.utcnow)
     done_at: Optional[datetime] = None
@@ -515,6 +541,11 @@ class AccountActionTask(SQLModel, table=True):
     status: str = "pending"        # draft | pending | doing | done | failed | uncertain | canceled
     result: str = ""
     error: str = ""
+    blocked_reason: str = ""
+    blocked_signal: str = ""
+    blocked_operation: str = ""
+    blocked_at: Optional[datetime] = None
+    next_allowed_at: Optional[datetime] = Field(default=None, index=True)
     method: str = ""               # 实际走的通道:browser
     min_gap_seconds: int = 60      # 同账号两次写操作最小间隔
     created_at: datetime = Field(default_factory=datetime.utcnow)

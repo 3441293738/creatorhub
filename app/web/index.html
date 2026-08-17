@@ -1461,6 +1461,55 @@
     input, textarea, select { padding-top:11px; padding-bottom:11px; }
     .acttd button { margin-left:6px; }
   }
+
+  /* ── 风控中心：高密度运维看板 ── */
+  .risk-stats { display:grid; grid-template-columns:repeat(6,minmax(130px,1fr)); gap:10px; margin-bottom:14px; }
+  .risk-stat { min-height:88px; padding:14px; border:1px solid var(--line); border-radius:var(--r); background:var(--surface); display:grid; gap:4px; box-shadow:var(--sh-sm); }
+  .risk-stat b { font:600 23px/1 var(--mono); color:var(--fg-strong); }
+  .risk-stat span { color:var(--mut); font-size:12px; }
+  .risk-stat[data-tone="danger"] { border-color:rgba(248,113,113,.35); background:linear-gradient(135deg,var(--danger-soft),var(--surface) 68%); }
+  .risk-stat[data-tone="warn"] { border-color:rgba(251,191,36,.3); background:linear-gradient(135deg,var(--warn-soft),var(--surface) 68%); }
+  .risk-stat[data-tone="success"] { border-color:rgba(52,211,153,.28); }
+  .risk-toolbar { display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:12px; }
+  .risk-toolbar .spacer { flex:1; }
+  .risk-status { display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border:1px solid var(--line); border-radius:999px; font-size:11.5px; font-weight:650; white-space:nowrap; }
+  .risk-status::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--mut); }
+  .risk-status.success { color:var(--success); background:var(--success-soft); border-color:rgba(52,211,153,.28); }
+  .risk-status.success::before { background:var(--success); }
+  .risk-status.warn { color:var(--warn); background:var(--warn-soft); border-color:rgba(251,191,36,.3); }
+  .risk-status.warn::before { background:var(--warn); }
+  .risk-status.danger { color:var(--danger); background:var(--danger-soft); border-color:rgba(248,113,113,.34); }
+  .risk-status.danger::before { background:var(--danger); }
+  .risk-account { display:grid; gap:2px; min-width:150px; }
+  .risk-account small, .risk-reason small { color:var(--mut); font-size:11px; }
+  .risk-reason { min-width:240px; max-width:420px; white-space:normal; line-height:1.45; }
+  .risk-progress { display:grid; grid-template-columns:1fr auto; gap:5px 8px; align-items:center; min-width:120px; }
+  .risk-progress-track { height:5px; border-radius:999px; overflow:hidden; background:var(--surface-3); }
+  .risk-progress-track i { display:block; height:100%; background:var(--warn); border-radius:inherit; }
+  .risk-progress span { color:var(--mut); font:500 11px/1 var(--mono); }
+  .risk-config-shell { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+  .risk-config-group { margin:0; padding:14px; border:1px solid var(--line); border-radius:var(--r); background:var(--surface-2); min-width:0; }
+  .risk-config-group legend { padding:0 7px; color:var(--fg-strong); font-weight:650; }
+  .risk-config-group .form-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+  .risk-config-group.wide { grid-column:1/-1; }
+  .risk-limit-table input { min-width:76px; width:100%; }
+  .risk-limit-table th { font-size:11px; }
+  .risk-event-list { display:grid; gap:0; max-height:62vh; overflow:auto; }
+  .risk-event { display:grid; grid-template-columns:116px 90px 96px 1fr; gap:12px; padding:11px 4px; border-bottom:1px solid var(--line-soft); align-items:start; }
+  .risk-event time { font:500 11px/1.45 var(--mono); color:var(--mut); }
+  .risk-event-detail { min-width:0; overflow-wrap:anywhere; }
+  .risk-event-detail small { display:block; color:var(--mut); margin-top:2px; }
+  @media(max-width:1100px) {
+    .risk-stats { grid-template-columns:repeat(3,1fr); }
+    .risk-config-shell { grid-template-columns:1fr; }
+    .risk-config-group.wide { grid-column:auto; }
+  }
+  @media(max-width:640px) {
+    .risk-stats { grid-template-columns:repeat(2,1fr); }
+    .risk-config-group .form-grid { grid-template-columns:1fr; }
+    .risk-event { grid-template-columns:92px 74px 1fr; }
+    .risk-event-detail { grid-column:1/-1; }
+  }
 </style>
 </head>
 <body>
@@ -1542,6 +1591,8 @@
     <button class="navitem" data-tab="share-download" onclick="switchTab('share-download', true)"><svg><use href="#i-download"/></svg><span class="nav-label">链接下载</span></button>
     <button class="navitem" data-tab="notifications" onclick="switchTab('notifications', true)"><svg><use href="#i-bell"/></svg><span class="nav-label">通知</span></button>
     <button class="navitem" data-tab="settings" onclick="switchTab('settings', true)"><svg><use href="#i-settings"/></svg><span class="nav-label">设置</span></button>
+    <div class="nav-sep">安全</div>
+    <button class="navitem" data-tab="risk-control" onclick="switchTab('risk-control', true)"><svg><use href="#i-shield"/></svg><span class="nav-label">风控中心</span><span class="nav-badge" id="tb-risk">0</span></button>
   </nav>
 </aside>
 <main id="main-content" tabindex="-1">
@@ -1668,6 +1719,99 @@
         <button onclick="addProxy()"><svg><use href="#i-plus"/></svg>加入代理池</button>
       </div>
       <div class="table-wrap mini-table"><table id="proxy-table" aria-label="代理池列表"><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section data-panel="risk-control">
+    <div class="risk-stats" aria-label="风控状态统计">
+      <div class="risk-stat" data-tone="success"><b id="risk-stat-normal">—</b><span>正常账号</span></div>
+      <div class="risk-stat" data-tone="danger"><b id="risk-stat-cooldown">—</b><span>冷却 / 暂停 / 熔断</span></div>
+      <div class="risk-stat" data-tone="warn"><b id="risk-stat-recovering">—</b><span>渐进恢复</span></div>
+      <div class="risk-stat" data-tone="danger"><b id="risk-stat-invalid">—</b><span>登录 / 代理异常</span></div>
+      <div class="risk-stat" data-tone="warn"><b id="risk-stat-blocked">—</b><span>受阻任务</span></div>
+      <div class="risk-stat"><b id="risk-stat-today">—</b><span>今日风险事件</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-shield"/></svg></span>
+        <h2>账号风险态势 <span class="sub">状态、原因、恢复进度与待执行任务</span></h2>
+      </div>
+      <div class="risk-toolbar">
+        <input id="risk-account-search" type="search" placeholder="搜索账号或原因" aria-label="搜索风险账号" oninput="renderRiskAccounts()">
+        <select id="risk-status-filter" aria-label="筛选风险状态" onchange="renderRiskAccounts()">
+          <option value="">全部状态</option><option value="normal">正常</option><option value="cooldown">风险冷却</option>
+          <option value="recovering">渐进恢复</option><option value="auth_invalid">登录失效</option>
+          <option value="proxy_error">代理异常</option><option value="network_circuit">网络熔断</option>
+          <option value="write_paused">写入暂停</option>
+        </select>
+        <span class="filter-count" id="risk-filter-count" role="status" aria-live="polite"></span>
+        <span class="spacer"></span>
+        <button class="ghost sm" id="risk-admin-token-btn" type="button" onclick="setRiskAdminToken()" style="display:none"><svg><use href="#i-shield"/></svg>管理口令</button>
+        <button class="ghost sm" type="button" onclick="refreshRiskCenter(true)"><svg><use href="#i-play"/></svg>刷新状态</button>
+      </div>
+      <div class="table-wrap"><table aria-label="账号风险状态列表">
+        <thead><tr><th>账号</th><th>状态</th><th>等级</th><th>原因</th><th>冷却 / 探测</th><th>恢复</th><th>任务</th><th>网络</th><th>操作</th></tr></thead>
+        <tbody id="risk-account-table"></tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-settings"/></svg></span>
+        <h2>风控规则 <span class="sub">保存后立即作用于后台调度</span></h2>
+        <span class="right status-text" id="risk-config-msg" role="status" aria-live="polite"></span>
+      </div>
+      <div class="form-grid" style="margin-bottom:12px">
+        <label class="switch-row"><input type="checkbox" id="risk-enabled"><span class="switch-copy"><b>启用统一风控</b><span>关闭后平台操作不经过持久化风控闸门</span></span></label>
+        <div class="form-field"><label for="risk-mode">策略模式</label><select id="risk-mode"><option value="conservative">保守模式（保留安全下限）</option><option value="custom">自定义模式</option></select></div>
+        <div class="form-field"><label for="risk-retention">事件保留天数</label><input id="risk-retention" type="number" min="1" max="3650"></div>
+      </div>
+      <div class="risk-config-shell">
+        <fieldset class="risk-config-group">
+          <legend>读取与恢复</legend>
+          <div class="form-grid">
+            <div class="form-field"><label for="risk-read-light">轻量读取间隔（秒）</label><input id="risk-read-light" type="number" min="0"></div>
+            <div class="form-field"><label for="risk-read-heavy">重读取间隔（秒）</label><input id="risk-read-heavy" type="number" min="0"></div>
+            <div class="form-field"><label for="risk-recovery-count">恢复成功次数</label><input id="risk-recovery-count" type="number" min="1" max="20"></div>
+            <div class="form-field"><label for="risk-probe-gap">探测间隔（分钟）</label><input id="risk-probe-gap" type="number" min="1"></div>
+            <div class="form-field" style="grid-column:span 2"><label for="risk-cooldown-steps">冷却阶梯（分钟，逗号分隔）</label><input id="risk-cooldown-steps" placeholder="30, 120, 360, 1440"></div>
+          </div>
+        </fieldset>
+        <fieldset class="risk-config-group">
+          <legend>网络与时间策略</legend>
+          <div class="form-grid">
+            <div class="form-field"><label for="risk-network-concurrency">同出口并发</label><input id="risk-network-concurrency" type="number" min="1" max="32"></div>
+            <div class="form-field"><label for="risk-network-accounts">熔断账号阈值</label><input id="risk-network-accounts" type="number" min="0"></div>
+            <div class="form-field"><label for="risk-network-window">统计窗口（分钟）</label><input id="risk-network-window" type="number" min="1"></div>
+            <div class="form-field"><label for="risk-network-cooldown">出口冷却（分钟）</label><input id="risk-network-cooldown" type="number" min="1"></div>
+            <div class="form-field"><label for="risk-account-check">账号体检间隔（分钟）</label><input id="risk-account-check" type="number" min="0"></div>
+            <div class="form-field"><label for="risk-captcha-wait">验证码等待（分钟）</label><input id="risk-captcha-wait" type="number" min="0"></div>
+            <label class="switch-row" style="grid-column:1/-1"><input type="checkbox" id="risk-quiet-enabled"><span class="switch-copy"><b>启用写操作活跃时段</b><span>时段外的自动写操作保持等待</span></span></label>
+            <div class="form-field"><label for="risk-active-start">开始小时</label><input id="risk-active-start" type="number" min="0" max="23"></div>
+            <div class="form-field"><label for="risk-active-end">结束小时</label><input id="risk-active-end" type="number" min="1" max="47"></div>
+          </div>
+        </fieldset>
+        <fieldset class="risk-config-group wide">
+          <legend>写操作间隔与额度</legend>
+          <div class="table-wrap"><table class="risk-limit-table" aria-label="写操作风控额度">
+            <thead><tr><th>操作</th><th>最小间隔（分钟）</th><th>每小时上限</th><th>每日上限</th></tr></thead>
+            <tbody>
+              <tr><td>评论 / 回复</td><td><input id="risk-comment-gap" type="number" min="0"></td><td><input id="risk-comment-hourly" type="number" min="0"></td><td><input id="risk-comment-daily" type="number" min="0"></td></tr>
+              <tr><td>关注 / 取关</td><td><input id="risk-social-gap" type="number" min="0"></td><td><input id="risk-social-hourly" type="number" min="0"></td><td><input id="risk-social-daily" type="number" min="0"></td></tr>
+              <tr><td>私信</td><td><input id="risk-dm-gap" type="number" min="0"></td><td><input id="risk-dm-hourly" type="number" min="0"></td><td><input id="risk-dm-daily" type="number" min="0"></td></tr>
+              <tr><td>发布</td><td><input id="risk-publish-gap" type="number" min="0"></td><td><input id="risk-publish-hourly" type="number" min="0"></td><td><input id="risk-publish-daily" type="number" min="0"></td></tr>
+            </tbody>
+          </table></div>
+          <div class="form-grid" style="margin-top:10px">
+            <div class="form-field"><label for="risk-shared-write">共享写间隔（分钟）</label><input id="risk-shared-write" type="number" min="0"></div>
+            <div class="form-field"><label for="risk-combined-hourly">综合动作小时上限</label><input id="risk-combined-hourly" type="number" min="0"></div>
+            <div class="form-field"><label for="risk-combined-daily">综合动作每日上限</label><input id="risk-combined-daily" type="number" min="0"></div>
+          </div>
+        </fieldset>
+      </div>
+      <div class="form-note" style="margin-top:12px"><svg aria-hidden="true"><use href="#i-info"/></svg><span>保守模式会强制保留评论、社交、私信、发布和共享写入间隔的安全下限；需要完全按输入值运行时选择自定义模式。</span></div>
+      <div class="form-actions"><button class="ghost" type="button" onclick="showRiskAudit()"><svg><use href="#i-list"/></svg>查看变更记录</button><span class="actions-spacer"></span><button type="button" onclick="saveRiskConfig()"><svg><use href="#i-check"/></svg>保存并立即生效</button></div>
     </div>
   </section>
 
@@ -2751,6 +2895,16 @@
       <button class="ghost" onclick="uiModalCancel()" style="flex:0 0 auto">取消</button>
       <button id="ui-ok" onclick="uiModalOk()" style="flex:0 0 auto"><svg><use href="#i-check"/></svg>确定</button>
     </div>
+  </div>
+</div>
+
+<div id="risk-event-modal" class="pv-overlay" style="display:none" role="dialog" aria-modal="true"
+     aria-labelledby="risk-event-title" onclick="if(event.target.id==='risk-event-modal')hideRiskEvents()">
+  <div class="rp-box" style="width:min(94vw,840px);max-height:88vh;display:flex;flex-direction:column">
+    <button class="pv-close" onclick="hideRiskEvents()" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+    <h2 id="risk-event-title">风险事件</h2>
+    <div class="mut" id="risk-event-subtitle" style="font-size:12px;margin:-8px 0 12px">最近事件</div>
+    <div class="risk-event-list" id="risk-event-list"></div>
   </div>
 </div>
 
