@@ -2,6 +2,9 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from sqlmodel import select
 
 import app.db as db
 import app.main as main
@@ -13,7 +16,7 @@ from app.browser.backends import (
 from app.browser.identity import Identity
 from app.browser.manager import BrowserManager
 from app.config import Config, load_config
-from app.models import DouyinAccount
+from app.models import BrowserRuntime, DouyinAccount
 
 
 class FingerprintChromiumBackendTests(unittest.TestCase):
@@ -308,6 +311,38 @@ class AccountBrowserBackendApiTests(unittest.TestCase):
             self.assertEqual(saved.browser_runtime_id, "fp-148-fixture")
         self.assertEqual(stub.closed, [account_id])
         self.assertEqual(result["browser_backend"], "fingerprint_chromium")
+
+    def test_runtime_scan_accepts_machine_specific_directory(self):
+        install_root = Path(self.tmp.name) / "custom-browser-location"
+        executable = install_root / "Application" / "chrome.exe"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"portable-browser-fixture")
+        main.browser = BrowserManager(
+            "UA", str(Path(self.tmp.name) / "profiles"))
+
+        result = asyncio.run(main.scan_browser_runtimes(
+            main.BrowserRuntimeScanIn(root=str(install_root))))
+
+        self.assertEqual(result["found"], 1)
+        self.assertEqual(result["created"], 1)
+        with db.get_session() as session:
+            runtime = session.exec(select(BrowserRuntime)).first()
+            self.assertIsNotNone(runtime)
+            self.assertEqual(
+                Path(runtime.executable_path), executable.resolve())
+
+    def test_environment_can_supply_runtime_paths_without_config_drive(self):
+        first = Path(self.tmp.name) / "runtime-one"
+        second = Path(self.tmp.name) / "runtime-two"
+        first.mkdir(); second.mkdir()
+        main.cfg.engine.fingerprint_chromium_root = ""
+        with patch.dict("os.environ", {
+                "CREATORHUB_FINGERPRINT_CHROMIUM_ROOTS":
+                    str(first) + main.os.pathsep + str(second)}, clear=False):
+            roots = main._browser_runtime_scan_roots()
+
+        self.assertIn(str(first.resolve()), roots)
+        self.assertIn(str(second.resolve()), roots)
 
 
 if __name__ == "__main__":

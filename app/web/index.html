@@ -1777,8 +1777,9 @@
         <h2>浏览器内核 <span class="sub">多版本管理 · 账号固定绑定</span></h2>
       </div>
       <p class="mut" style="font-size:12px;margin:-4px 0 12px">
-        扫描 <code>D:\browsers\fingerprint-chromium</code> 下的 Chromium，或手动添加 <code>chrome.exe</code>。
-        每个账号可在上方「环境」中固定选择一个版本；不同版本使用独立 Profile，内核文件与测试目录都保留在 D 盘项目配置路径下。
+        扫描当前机器的 Chromium 安装目录，或手动添加 <code>chrome.exe</code> / <code>chrome</code>。
+        每台机器可以使用不同路径；每个账号可在上方「环境」中固定选择一个版本，不同版本使用独立 Profile。
+        <br>当前扫描目录：<code id="runtime-root">读取中…</code>
       </p>
       <div class="form-actions">
         <button class="ghost" onclick="scanBrowserRuntimes()"><svg><use href="#i-eye"/></svg>扫描内核目录</button>

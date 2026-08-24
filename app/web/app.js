@@ -1331,6 +1331,7 @@ async function saveCookie() {
 // ─── 账号 ───
 let ACCOUNTS = [];
 let BROWSER_RUNTIMES = [];
+let BROWSER_RUNTIME_ROOT = "";
 let MONITORS = [], WATCHES = [], CONTENTS = [];
 let COLLECTION_JOBS = [], COLLECTION_JOB_ID = 0, COLLECTION_PAGE = 1;
 let DANMAKU_WATCHES = [];
@@ -2612,6 +2613,11 @@ async function refreshBrowserRuntimes() {
   try {
     const result = await api("/api/browser-runtimes");
     BROWSER_RUNTIMES = result.runtimes || [];
+    let rememberedRoot = "";
+    try { rememberedRoot = localStorage.getItem("creatorhub-browser-runtime-root") || ""; } catch (e) {}
+    BROWSER_RUNTIME_ROOT = rememberedRoot || result.root || "";
+    const rootLabel = $("runtime-root");
+    if (rootLabel) rootLabel.textContent = BROWSER_RUNTIME_ROOT || "尚未设置，扫描时输入";
     table.querySelector("tbody").innerHTML = BROWSER_RUNTIMES.map(runtime => {
       const state = !runtime.enabled ? "已停用" : runtime.available
         ? (runtime.status === "ok" ? "测试通过" : "可用") : "文件缺失";
@@ -2642,12 +2648,22 @@ async function refreshBrowserRuntimes() {
 
 async function scanBrowserRuntimes() {
   const button = evtBtn();
+  const root = await uiPrompt({
+    title: "扫描 Chromium 内核目录",
+    hint: "输入当前机器上存放一个或多个 Chromium 版本的目录。路径按本机配置，不限定盘符或操作系统。",
+    value: BROWSER_RUNTIME_ROOT,
+    placeholder: "例如：浏览器安装目录或统一内核目录",
+  });
+  if (root === null) return;
+  if (!root.trim()) { toast("请输入要扫描的目录", "err"); return; }
   await withBusy(button, "扫描中", async () => {
     try {
       const result = await api("/api/browser-runtimes/scan", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ root: root.trim() }),
       });
+      BROWSER_RUNTIME_ROOT = result.root || root.trim();
+      try { localStorage.setItem("creatorhub-browser-runtime-root", BROWSER_RUNTIME_ROOT); } catch (e) {}
       toast(`扫描完成：发现 ${result.found} 个内核，新增 ${result.created} 个`, "ok");
       await refreshBrowserRuntimes();
     } catch (e) { toast("扫描失败：" + e.message, "err"); }
@@ -2657,9 +2673,9 @@ async function scanBrowserRuntimes() {
 async function addBrowserRuntime() {
   const path = await uiPrompt({
     title: "添加 Chromium 内核",
-    hint: "填写 chrome.exe 的完整路径。内核文件保留在原目录，不会复制到 C 盘。",
-    value: "D:\\browsers\\fingerprint-chromium\\Application\\chrome.exe",
-    placeholder: "D:\\browsers\\版本目录\\chrome.exe",
+    hint: "填写当前机器上 chrome/chromium 主程序的完整路径。程序只记录路径，不复制或移动浏览器文件。",
+    value: "",
+    placeholder: "chrome.exe、chrome 或 chromium 的完整路径",
   });
   if (path === null || !path.trim()) return;
   try {
@@ -2708,7 +2724,7 @@ async function toggleBrowserRuntime(runtimeId, enabled) {
 async function deleteBrowserRuntime(runtimeId) {
   if (!await uiConfirm({
     title: "移除内核记录",
-    message: "仅移除 CreatorHub 中的内核记录，不会删除 D 盘上的浏览器文件。",
+    message: "仅移除 CreatorHub 中的内核记录，不会删除原安装目录中的浏览器文件。",
     okText: "移除",
   })) return;
   try {

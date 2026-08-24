@@ -197,23 +197,80 @@ def _browser_runtime_dict(runtime: BrowserRuntime) -> dict:
     }
 
 
+def _browser_runtime_executable_candidates() -> list[str]:
+    """Return explicitly configured executable paths without assuming a drive."""
+    values = [
+        str(cfg.engine.fingerprint_chromium_path or "").strip(),
+        os.environ.get("CREATORHUB_FINGERPRINT_CHROMIUM_PATH", "").strip(),
+    ]
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        normalized = os.path.normcase(str(Path(value).expanduser().resolve()))
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(value)
+    return result
+
+
+def _browser_runtime_scan_roots() -> list[str]:
+    """Resolve configured, environment and portable project-local scan roots."""
+    values: list[str] = []
+    configured = str(cfg.engine.fingerprint_chromium_root or "").strip()
+    if configured:
+        values.append(configured)
+    env_roots = os.environ.get(
+        "CREATORHUB_FINGERPRINT_CHROMIUM_ROOTS", "").strip()
+    if env_roots:
+        values.extend(part.strip() for part in env_roots.split(os.pathsep))
+    # Portable deployments can put browser archives beside or inside the
+    # project. Only existing narrow directories are considered; no disk-wide
+    # scan is performed.
+    workspace = Path.cwd()
+    for candidate in (
+        workspace / "browsers",
+        workspace / "browser",
+        workspace / "data" / "browsers",
+        workspace.parent / "browsers",
+    ):
+        if candidate.is_dir():
+            values.append(str(candidate))
+    for executable in _browser_runtime_executable_candidates():
+        path = Path(executable).expanduser()
+        if path.parent.is_dir():
+            values.append(str(path.parent))
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        resolved = str(Path(value).expanduser().resolve())
+        normalized = os.path.normcase(resolved)
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(resolved)
+    return result
+
+
 def _seed_browser_runtimes() -> list[dict]:
     """Import configured/discovered runtimes and return manager specifications."""
     discovered: dict[str, dict] = {}
-    configured_path = str(cfg.engine.fingerprint_chromium_path or "").strip()
-    if configured_path:
+    configured_paths = _browser_runtime_executable_candidates()
+    for configured_path in configured_paths:
         try:
             item = runtime_metadata(configured_path)
             discovered[item["runtime_id"]] = item
         except (OSError, ValueError) as exc:
             print(f"[startup] 指纹内核路径不可用: {exc}")
-    root = str(cfg.engine.fingerprint_chromium_root or "").strip()
-    if root:
+    for root in _browser_runtime_scan_roots():
         try:
             for item in discover_chromium_runtimes(root):
                 discovered[item["runtime_id"]] = item
         except (OSError, ValueError) as exc:
-            print(f"[startup] 指纹内核扫描失败: {exc}")
+            print(f"[startup] 指纹内核扫描失败 ({root}): {exc}")
 
     with get_session() as session:
         existing = {
@@ -242,8 +299,9 @@ def _seed_browser_runtimes() -> list[dict]:
                 if not row.name:
                     row.name = item["name"]
                 session.add(row)
-            if configured_path and os.path.normcase(item["executable_path"]) \
-                    == os.path.normcase(str(Path(configured_path).resolve())):
+            if any(os.path.normcase(item["executable_path"])
+                   == os.path.normcase(str(Path(path).expanduser().resolve()))
+                   for path in configured_paths):
                 configured_runtime_id = runtime_id
         session.commit()
 
@@ -1495,11 +1553,13 @@ class BrowserRuntimeUpdateIn(BaseModel):
 
 @app.get("/api/browser-runtimes")
 async def list_browser_runtimes():
+    roots = _browser_runtime_scan_roots()
     with get_session() as session:
         rows = session.exec(select(BrowserRuntime).order_by(
             BrowserRuntime.is_default.desc(), BrowserRuntime.id)).all()
         return {
-            "root": str(cfg.engine.fingerprint_chromium_root or ""),
+            "root": roots[0] if roots else "",
+            "scan_roots": roots,
             "default_runtime_id": next(
                 (row.runtime_id for row in rows if row.is_default), ""),
             "runtimes": [_browser_runtime_dict(row) for row in rows],
@@ -1538,14 +1598,22 @@ async def add_browser_runtime(body: BrowserRuntimeAddIn):
 async def scan_browser_runtimes(body: BrowserRuntimeScanIn | None = None):
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
-    root = str((body.root if body else "")
-               or cfg.engine.fingerprint_chromium_root or "").strip()
-    if not root:
+    requested_root = str(body.root if body else "").strip()
+    roots = ([str(Path(requested_root).expanduser().resolve())]
+             if requested_root else _browser_runtime_scan_roots())
+    if not roots:
         raise HTTPException(400, "请先配置内核目录或输入扫描目录")
-    try:
-        discovered = discover_chromium_runtimes(root)
-    except (OSError, ValueError) as exc:
-        raise HTTPException(400, str(exc)) from exc
+    discovered_by_id: dict[str, dict] = {}
+    errors = []
+    for root in roots:
+        try:
+            for item in discover_chromium_runtimes(root):
+                discovered_by_id[item["runtime_id"]] = item
+        except (OSError, ValueError) as exc:
+            errors.append(f"{root}: {exc}")
+    if requested_root and errors:
+        raise HTTPException(400, errors[0])
+    discovered = list(discovered_by_id.values())
     payloads = []
     created_count = 0
     with get_session() as session:
@@ -1576,9 +1644,9 @@ async def scan_browser_runtimes(body: BrowserRuntimeScanIn | None = None):
     if default_id:
         browser.set_default_fingerprint_runtime(default_id)
     return {
-        "ok": True, "root": str(Path(root).expanduser().resolve()),
+        "ok": True, "root": roots[0], "roots": roots,
         "found": len(discovered), "created": created_count,
-        "runtimes": payloads,
+        "runtimes": payloads, "errors": errors,
     }
 
 
