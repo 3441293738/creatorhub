@@ -108,6 +108,49 @@ class IdentityModeTests(unittest.TestCase):
         self.assertFalse(main._platform_url_allowed(
             "xhs", "https://xiaohongshu.com.evil.example/"))
 
+    def test_xhs_open_page_ignores_transient_login_button_without_auth_evidence(self):
+        class Locator:
+            first = None
+
+            def __init__(self):
+                self.first = self
+
+            async def is_visible(self, **_kwargs):
+                return True
+
+        class Page:
+            url = "https://www.xiaohongshu.com/user/profile/me"
+
+            def get_by_text(self, *_args, **_kwargs):
+                return Locator()
+
+        async def scenario():
+            self.assertEqual(
+                await main._opened_page_login_state(Page(), "xhs", {}),
+                "unconfirmed",
+            )
+            self.assertEqual(
+                await main._opened_page_login_state(
+                    Page(), "xhs", {"authenticated": True}),
+                "authenticated",
+            )
+
+        asyncio.run(scenario())
+
+    def test_xhs_open_page_user_me_handler_records_strong_identity(self):
+        class Response:
+            url = "https://edith.xiaohongshu.com/api/sns/web/v2/user/me"
+            status = 200
+
+            async def json(self):
+                return {"data": {"guest": False, "user_id": "fixture-user"}}
+
+        evidence = {}
+        asyncio.run(main._xhs_open_auth_response_handler(evidence)(Response()))
+
+        self.assertTrue(evidence["seen"])
+        self.assertTrue(evidence["authenticated"])
+
     def test_identity_from_account_remembers_platform(self):
         account = DouyinAccount(
             id=7,
@@ -408,9 +451,25 @@ class IdentityModeTests(unittest.TestCase):
                     state["engine"] = False
 
         class PageStub:
+            url = "https://www.xiaohongshu.com/user/profile/me"
+
             async def goto(self, *_args, **_kwargs):
                 self_outer.assertTrue(state["engine"])
                 self_outer.assertTrue(state["visible"])
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            def get_by_text(self, *_args, **_kwargs):
+                class Locator:
+                    first = None
+
+                    def __init__(self):
+                        self.first = self
+
+                    async def is_visible(self, **_kwargs):
+                        return True
+                return Locator()
 
             async def bring_to_front(self):
                 return None
@@ -464,6 +523,8 @@ class IdentityModeTests(unittest.TestCase):
         async def scenario():
             result = await main.open_account_browser(account_id)
             self.assertTrue(result["ok"])
+            self.assertFalse(result["logged_out"])
+            self.assertEqual(result["login_state"], "unconfirmed")
             self.assertTrue(state["engine"])
             self.assertTrue(state["visible"])
             await main.open_browsers[account_id].close()
@@ -480,6 +541,9 @@ class IdentityModeTests(unittest.TestCase):
 
         self.assertEqual(browser.closed_keys, [account_id])
         self.assertFalse(context.closed_directly)
+        with db.get_session() as session:
+            self.assertEqual(
+                session.get(DouyinAccount, account_id).status, "active")
 
     def test_open_account_browser_releases_guard_when_cancelled_before_lease(self):
         with db.get_session() as session:

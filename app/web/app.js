@@ -2041,6 +2041,10 @@ async function openAccountBrowser(id) {
       if (result.logged_out) {
         toast("该账号登录态已失效，请关闭当前窗口后点「重新登录」完成扫码", "err", 8000);
         refreshAccounts();
+      } else if (result.login_state === "verification") {
+        toast("浏览器已打开；小红书要求安全验证，请在窗口中按提示完成", "info", 8000);
+      } else if (result.login_state === "unconfirmed") {
+        toast("浏览器已打开；页面尚未返回登录校验结果，不会因此把账号标记为登录失败", "info", 7000);
       } else {
         toast("已弹出该账号浏览器窗口;用完请关窗(关窗即保存登录态)。窗口开着时该账号后台同步会暂停", "ok", 6000);
       }

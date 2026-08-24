@@ -2869,6 +2869,7 @@ async def cancel_account_action(task_id: int):
 
 _PLATFORM_HOST = {"douyin": "douyin.com", "xhs": "xiaohongshu.com",
                   "kuaishou": "kuaishou.com", "shipinhao": "weixin.qq.com"}
+_XHS_USER_ME_API = "/api/sns/web/v2/user/me"
 
 
 def _platform_url_allowed(platform: str, value: str) -> bool:
@@ -2882,6 +2883,74 @@ def _platform_url_allowed(platform: str, value: str) -> bool:
         expected and parsed.scheme in {"http", "https"}
         and (host == expected or host.endswith("." + expected))
     )
+
+
+def _xhs_open_auth_response_handler(evidence: dict):
+    """Collect authoritative XHS login evidence while the headed page loads."""
+    async def on_response(response):
+        try:
+            parsed = urlsplit(str(response.url or ""))
+            host = (parsed.hostname or "").lower()
+            if not (host == "xiaohongshu.com"
+                    or host.endswith(".xiaohongshu.com")):
+                return
+            if parsed.path.rstrip("/").lower() != _XHS_USER_ME_API:
+                return
+            evidence["seen"] = True
+            if int(response.status) != 200:
+                return
+            payload = await response.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, dict):
+                return
+            if data.get("guest") is True:
+                evidence["guest"] = True
+                return
+            if data.get("user_id") or data.get("red_id"):
+                evidence["authenticated"] = True
+        except Exception:
+            return
+    return on_response
+
+
+async def _opened_page_login_state(page, platform: str,
+                                   xhs_evidence: dict | None = None) -> str:
+    """Classify the opened page without turning transient UI into auth loss."""
+    current_url = str(getattr(page, "url", "") or "").lower()
+    if platform == "xhs":
+        evidence = xhs_evidence or {}
+        if "/website-login/captcha" in current_url \
+                or "error_code=300012" in current_url:
+            return "verification"
+        if "passport" in current_url:
+            return "logged_out"
+        try:
+            path = urlsplit(current_url).path.rstrip("/")
+        except (TypeError, ValueError):
+            path = ""
+        if path == "/login" or path.startswith("/login/"):
+            return "logged_out"
+        if evidence.get("authenticated"):
+            return "authenticated"
+        if evidence.get("guest"):
+            return "logged_out"
+        # The XHS header can briefly render an exact "登录" button before
+        # user/me resolves.  A button alone is not proof that the session died;
+        # profile refresh remains the authoritative fallback.
+        return "unconfirmed"
+
+    logged_out = (
+        "passport" in current_url
+        or "/login" in current_url
+        or "login.html" in current_url
+    )
+    if not logged_out:
+        try:
+            logged_out = await page.get_by_text(
+                "登录", exact=True).first.is_visible(timeout=1500)
+        except Exception:
+            logged_out = False
+    return "logged_out" if logged_out else "authenticated"
 
 
 @app.post("/api/accounts/{account_id}/open-browser")
@@ -2907,7 +2976,7 @@ async def open_account_browser(account_id: int, url: str = ""):
             await old.close()
         except Exception:
             pass
-    home = {"xhs": "https://www.xiaohongshu.com/",
+    home = {"xhs": "https://www.xiaohongshu.com/user/profile/me",
             "kuaishou": "https://www.kuaishou.com/",
             "shipinhao": "https://channels.weixin.qq.com/platform"}.get(
                 platform, "https://www.douyin.com/")
@@ -2951,6 +3020,7 @@ async def open_account_browser(account_id: int, url: str = ""):
     guard = _open_guard()
     await guard.__aenter__()
     logged_out = False
+    login_state = "unconfirmed"
     try:
         ctx = await browser.open_headed(identity)
         if cookies:
@@ -2960,27 +3030,26 @@ async def open_account_browser(account_id: int, url: str = ""):
                 print(f"[open-browser] 注入 Cookie 失败: {e!r}")
         page = (await browser.new_page(identity, block_media=False)
                 if platform == "xhs" else await ctx.new_page())
+        xhs_evidence: dict = {}
+        if platform == "xhs":
+            page.on("response", _xhs_open_auth_response_handler(xhs_evidence))
         await page.goto(home, wait_until="domcontentloaded", timeout=30000)
-        # Cookie 存在/未过期不代表服务端仍接受这次会话。若真实页面已回到登录
-        # 地址或明确显示“登录”，立即同步账号状态，避免账号列表误报“正常”。
-        current_url = str(getattr(page, "url", "") or "").lower()
-        logged_out = (
-            "passport" in current_url
-            or "/login" in current_url
-            or "login.html" in current_url
-        )
-        if not logged_out:
-            try:
-                await page.wait_for_timeout(1000)
-                logged_out = await page.get_by_text(
-                    "登录", exact=True).first.is_visible(timeout=1500)
-            except Exception:
-                logged_out = False
-        if logged_out:
+        try:
+            # Give the async response callback a short opportunity to parse
+            # user/me.  This is stronger than inspecting the first rendered
+            # header frame, which is often still the anonymous skeleton.
+            await page.wait_for_timeout(2500 if platform == "xhs" else 1000)
+        except Exception:
+            pass
+        login_state = await _opened_page_login_state(
+            page, platform, xhs_evidence)
+        logged_out = login_state == "logged_out"
+        if logged_out or (platform == "xhs" and login_state == "authenticated"):
             with get_session() as s:
                 opened_account = s.get(DouyinAccount, account_id)
                 if opened_account:
-                    opened_account.status = "invalid"
+                    opened_account.status = (
+                        "invalid" if logged_out else "active")
                     s.add(opened_account)
                     s.commit()
         if platform == "xhs":
@@ -3007,7 +3076,8 @@ async def open_account_browser(account_id: int, url: str = ""):
                 _release_open_browser(account_id, lease)))
     except Exception:
         pass
-    return {"ok": True, "logged_out": logged_out}
+    return {"ok": True, "logged_out": logged_out,
+            "login_state": login_state}
 
 
 # ─────────── 账号代理(风控隔离)───────────
