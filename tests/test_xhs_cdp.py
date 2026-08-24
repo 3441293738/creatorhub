@@ -874,6 +874,28 @@ class BrowserManagerCdpTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_new_page_relaunches_once_after_user_closed_persistent_browser(self):
+        class ClosedContext(_ManagerContext):
+            async def new_page(self):
+                raise RuntimeError(
+                    "TargetClosedError: BrowserContext.new_page: "
+                    "Target page, context or browser has been closed")
+
+        async def scenario():
+            manager = self._manager("patchright")
+            stale = ClosedContext()
+            healthy = _ManagerContext()
+            manager._launch_persistent = AsyncMock(
+                side_effect=[stale, healthy])
+
+            page = await manager.new_page(self.identity)
+
+            self.assertIs(page, healthy.pages_created[0])
+            self.assertTrue(stale.closed)
+            self.assertEqual(manager._launch_persistent.await_count, 2)
+
+        asyncio.run(scenario())
+
     def test_proxy_signature_change_rebuilds_session(self):
         async def scenario():
             manager = self._manager("cdp")

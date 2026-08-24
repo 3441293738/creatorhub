@@ -1063,7 +1063,20 @@ class BrowserManager:
     async def new_page(self, identity: Identity, block_media: bool = False):
         """从账号常驻 context 开一个新 page(可屏蔽图片/视频/字体)。用完请 page.close()。"""
         ctx = await self.context_for(identity)
-        page = await ctx.new_page()
+        try:
+            page = await ctx.new_page()
+        except Exception as exc:
+            # A user can close the headed Chromium window directly. Patchright
+            # then leaves the now-closed BrowserContext object in our cache for
+            # a short time, so the next click would otherwise fail forever with
+            # TargetClosedError. Evict and relaunch the same account profile
+            # once; login cookies are bridged again by context_for().
+            detail = f"{type(exc).__name__}: {exc}".lower()
+            if "targetclosed" not in detail and "has been closed" not in detail:
+                raise
+            await self.close_context(identity.key)
+            ctx = await self.context_for(identity)
+            page = await ctx.new_page()
         session = self._cdp_sessions.get(identity.key)
         controller = getattr(session, "auth_controller", None)
         if controller is not None:
