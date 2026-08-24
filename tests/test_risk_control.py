@@ -388,6 +388,20 @@ risk_control:
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.signal, "auth_required")
 
+    def test_manual_probe_can_recheck_inconclusive_invalid_account(self):
+        account_id = self._account()
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.status = "invalid"
+            session.add(account)
+            session.commit()
+
+        decision = RiskController(self.cfg).preflight(
+            account_id, OperationKind.READ_LIGHT,
+            allow_invalid_probe=True)
+
+        self.assertTrue(decision.allowed)
+
     def test_bad_bound_proxy_blocks_future_platform_operations(self):
         account_id = self._account(proxy="http://proxy.example:8080")
         with db.get_session() as session:

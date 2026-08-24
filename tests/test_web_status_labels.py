@@ -54,3 +54,15 @@ def test_keyword_collection_tasks_use_responsive_cards_without_clipped_actions()
     assert "collection-job-list" not in html
     assert ".collection-task-actions .collection-task-delete { margin-left:auto; }" in html
     assert "grid-template-columns:repeat(2,minmax(0,1fr))" in html
+
+
+def test_profile_refresh_does_not_report_deferred_probe_as_success():
+    source = APP_JS.read_text(encoding="utf-8")
+    start = source.index("async function refreshProfile(id)")
+    end = source.index("async function setProxy(id)", start)
+    refresh = source[start:end]
+
+    assert "if (r.skipped)" in refresh
+    assert 'r.reason ||' in refresh
+    assert '"info"' in refresh
+    assert "await refreshAccounts()" in refresh

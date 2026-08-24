@@ -445,6 +445,7 @@ class RiskController:
         kind: OperationKind,
         *,
         now: datetime | None = None,
+        allow_invalid_probe: bool = False,
     ) -> RiskDecision:
         if not self.policy.enabled:
             return RiskDecision(True)
@@ -458,11 +459,31 @@ class RiskController:
             if account is None:
                 return RiskDecision(False, "账号不存在", signal="account_missing")
             if account.status == "invalid" and kind != OperationKind.LOGIN:
-                return RiskDecision(
-                    False,
-                    "账号登录态已失效，等待重新登录",
-                    signal="auth_required",
-                )
+                if not allow_invalid_probe:
+                    return RiskDecision(
+                        False,
+                        "账号登录态已失效，等待重新登录",
+                        signal="auth_required",
+                    )
+                # A manual profile refresh is the recovery probe for accounts
+                # that were marked invalid by an inconclusive login check.
+                # A real auth failure still gets a 15-minute retry gap.
+                latest_auth = session.exec(
+                    select(RiskEvent)
+                    .where(RiskEvent.account_id == account_id)
+                    .where(RiskEvent.outcome == RiskCategory.AUTH.value)
+                    .order_by(RiskEvent.occurred_at.desc())
+                    .limit(1)
+                ).first()
+                if latest_auth is not None:
+                    next_at = latest_auth.occurred_at + timedelta(minutes=15)
+                    if next_at > now:
+                        return RiskDecision(
+                            False,
+                            "登录态校验失败后需等待再探测",
+                            next_at,
+                            "auth_probe_gap",
+                        )
             if account.proxy and account.proxy_status in {
                     "bad", "auth_error", "blocked", "drifted"} \
                     and kind != OperationKind.LOGIN:

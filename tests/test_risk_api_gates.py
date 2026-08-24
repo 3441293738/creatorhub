@@ -331,7 +331,31 @@ class RiskApiGateTests(unittest.TestCase):
             "platform": "xhs",
             "douyin_id": "",
             "sec_uid": "",
+            "status": "active",
         })
+
+    def test_invalid_account_profile_refresh_can_recover_status(self):
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, self.account_id)
+            account.status = "invalid"
+            session.add(account)
+            session.commit()
+
+        async def enrich(account_id, _state, *, detailed=False):
+            with db.get_session() as session:
+                account = session.get(DouyinAccount, account_id)
+                account.status = "active"
+                session.add(account)
+                session.commit()
+            return ("ok", "") if detailed else "ok"
+
+        with patch("app.main._enrich_account_profile", enrich):
+            result = asyncio.run(main.refresh_account_profile(self.account_id))
+
+        self.assertEqual(result["status"], "active")
+        with db.get_session() as session:
+            self.assertEqual(
+                session.get(DouyinAccount, self.account_id).status, "active")
         self.assertEqual(self._operation_kinds(), [OperationKind.READ_LIGHT.value])
 
     def test_note_media_preserves_success_payload(self):

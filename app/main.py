@@ -478,7 +478,8 @@ async def _fetch_channels_profile_with_retry(identity, attempts: int = 3) -> tup
 
 async def _run_account_read(account_id: int, kind: OperationKind, key: str,
                             operation, *, empty_result,
-                            unexpected_detail: str = ""):
+                            unexpected_detail: str = "",
+                            allow_invalid_probe: bool = False):
     """Run one account-bound API read through the engine's unified gates."""
     if engine is None:
         raise HTTPException(503, "引擎未就绪")
@@ -487,7 +488,8 @@ async def _run_account_read(account_id: int, kind: OperationKind, key: str,
         guarded_empty = dict(empty_result)
         guarded_empty["_guard_error"] = True
     payload, error = await engine.guarded_read_pair(
-        account_id, kind, key, operation, empty_result=guarded_empty)
+        account_id, kind, key, operation, empty_result=guarded_empty,
+        allow_invalid_probe=allow_invalid_probe)
     guard_error = False
     if isinstance(payload, dict):
         payload = dict(payload)
@@ -2231,7 +2233,7 @@ async def refresh_account_profile(account_id: int):
     res, outcome = await _run_account_read(
         account_id, OperationKind.READ_LIGHT,
         f"refresh-profile:{account_id}", _refresh_profile,
-        empty_result={"ok": True})
+        empty_result={"ok": True}, allow_invalid_probe=True)
     if isinstance(outcome, dict):
         return outcome
     if res == "invalid":
@@ -2245,7 +2247,8 @@ async def refresh_account_profile(account_id: int):
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         return {"ok": True, "nickname": acc.nickname, "platform": acc.platform,
-                "douyin_id": acc.douyin_id, "sec_uid": acc.sec_uid}
+                "douyin_id": acc.douyin_id, "sec_uid": acc.sec_uid,
+                "status": acc.status}
 
 
 @app.post("/api/accounts/{account_id}/relogin/start")

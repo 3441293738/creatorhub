@@ -2525,11 +2525,20 @@ function applyDanmakuForm() {
 }
 async function refreshProfile(id) {
   const btn = evtBtn();
-  await withBusy(btn, "拉取中", async () => {
-    try { const r = await api("/api/accounts/" + id + "/refresh-profile", { method: "POST" }); const idLbl = (r.platform || PLATFORM) === "xhs" ? " · 小红书号 " : " · 抖音号 "; toast("资料已更新:" + (r.nickname || "") + (r.douyin_id ? idLbl + r.douyin_id : ""), "ok"); }
-    catch (e) { toast("刷新失败:" + e.message, "err"); }
+  await withBusy(btn, "\u83b7\u53d6\u4e2d", async () => {
+    try {
+      const r = await api("/api/accounts/" + id + "/refresh-profile", { method: "POST" });
+      if (r.skipped) {
+        toast("\u672c\u6b21\u672a\u6267\u884c\u8d44\u6599\u5237\u65b0:" + (r.reason || "\u8d26\u53f7\u5f53\u524d\u4e0d\u53ef\u63a2\u6d4b"), "info");
+        return;
+      }
+      const idLbl = (r.platform || PLATFORM) === "xhs" ? " \u00b7 \u5c0f\u7ea2\u4e66\u53f7 " : " \u00b7 \u6296\u97f3\u53f7 ";
+      toast("\u8d44\u6599\u5df2\u66f4\u65b0\uff0c\u767b\u5f55\u72b6\u6001\u5df2\u6062\u590d:" + (r.nickname || "") + (r.douyin_id ? idLbl + r.douyin_id : ""), "ok");
+    } catch (e) {
+      toast("\u5237\u65b0\u5931\u8d25:" + e.message, "err");
+    }
   });
-  refreshAccounts();
+  await refreshAccounts();
 }
 async function setProxy(id) {
   const a = ACCOUNTS.find(x => x.id === id);

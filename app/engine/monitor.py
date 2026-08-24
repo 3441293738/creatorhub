@@ -389,15 +389,20 @@ class MonitorEngine:
         return result
 
     async def guarded_read_pair(self, account_id, kind: OperationKind,
-                                fallback_key: str, operation, *, empty_result):
+                                fallback_key: str, operation, *, empty_result,
+                                allow_invalid_probe: bool = False):
         """Budget a direct read returning ``(payload, error)``."""
-        decision = self.risk.preflight(account_id, kind)
+        decision = self.risk.preflight(
+            account_id, kind,
+            allow_invalid_probe=allow_invalid_probe)
         if not decision.allowed:
             return empty_result, f"risk_deferred:{decision.reason}"
         try:
             async with self._operation_guard(
                     account_id, kind, fallback_key=fallback_key):
-                decision = self.risk.preflight(account_id, kind)
+                decision = self.risk.preflight(
+                    account_id, kind,
+                    allow_invalid_probe=allow_invalid_probe)
                 if not decision.allowed:
                     return empty_result, f"risk_deferred:{decision.reason}"
                 payload, error = await operation()
