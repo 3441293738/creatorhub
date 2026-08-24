@@ -981,7 +981,8 @@ class BrowserManagerCdpTests(unittest.TestCase):
             await manager.context_for(self.identity)
             manager._last_used[self.identity.key] = 100.0
 
-            async with manager.visible_action(self.identity):
+            async with manager.visible_action(
+                    self.identity, keep_context=True):
                 closed = await manager.collect_idle_cdp(now=111.0)
                 self.assertEqual(closed, 0)
                 self.assertIn(self.identity.key, manager._contexts)

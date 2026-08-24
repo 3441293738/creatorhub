@@ -3269,7 +3269,8 @@ async def open_account_browser(account_id: int, url: str = ""):
             if platform == "xhs":
                 # A user-held XHS window participates in the same machine-wide
                 # visible-action queue as scheduled reads and writes.
-                async with browser.visible_action(identity):
+                async with browser.visible_action(
+                        identity, keep_context=True):
                     yield guarded
             else:
                 yield guarded

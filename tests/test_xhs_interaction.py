@@ -242,6 +242,42 @@ class XhsInteractionTests(unittest.TestCase):
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=0.5))
 
+    def test_visible_action_closes_context_only_after_outermost_action(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                manager = BrowserManager("UA", tmp, xhs_browser_mode="cdp")
+                manager.close_context = AsyncMock()
+                identity = Identity(
+                    account_id=19,
+                    profile_dir=str(Path(tmp) / "acc_19"),
+                    identity_mode="native",
+                    platform="xhs",
+                )
+                async with manager.visible_action(identity):
+                    async with manager.visible_action(identity):
+                        manager.close_context.assert_not_awaited()
+                manager.close_context.assert_awaited_once_with(identity.key)
+
+        asyncio.run(scenario())
+
+    def test_manual_visible_action_can_keep_context_open(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                manager = BrowserManager("UA", tmp, xhs_browser_mode="cdp")
+                manager.close_context = AsyncMock()
+                identity = Identity(
+                    account_id=20,
+                    profile_dir=str(Path(tmp) / "acc_20"),
+                    identity_mode="native",
+                    platform="xhs",
+                )
+                async with manager.visible_action(
+                        identity, keep_context=True):
+                    pass
+                manager.close_context.assert_not_awaited()
+
+        asyncio.run(scenario())
+
     def test_scroll_steps_are_bounded_and_predicate_stops_early(self):
         async def scenario():
             page = _Page()
@@ -302,7 +338,7 @@ class XhsInteractionTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_visible_page_closes_only_temporary_page(self):
+    def test_visible_page_closes_temporary_page_and_one_shot_context(self):
         async def scenario():
             with tempfile.TemporaryDirectory() as tmp:
                 manager = BrowserManager("UA", tmp, xhs_browser_mode="cdp")
@@ -316,6 +352,7 @@ class XhsInteractionTests(unittest.TestCase):
 
                 context = Context()
                 manager.context_for = AsyncMock(return_value=context)
+                manager.close_context = AsyncMock()
                 identity = Identity(
                     account_id=9,
                     profile_dir=str(Path(tmp) / "acc_9"),
@@ -331,6 +368,7 @@ class XhsInteractionTests(unittest.TestCase):
 
                 self.assertTrue(page.closed)
                 context.close.assert_not_awaited()
+                manager.close_context.assert_awaited_once_with(identity.key)
                 self.assertEqual(page.front_calls, 1)
                 self.assertEqual(page.goto_calls[0][0],
                                  "https://www.xiaohongshu.com/")

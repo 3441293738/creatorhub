@@ -625,7 +625,7 @@ class IdentityModeTests(unittest.TestCase):
                     account, self_outer.cfg.engine.profiles_dir, "DEFAULT_UA")
 
             @asynccontextmanager
-            async def visible_action(self, _identity):
+            async def visible_action(self, _identity, **_kwargs):
                 state["visible"] = True
                 try:
                     yield

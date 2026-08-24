@@ -1091,21 +1091,33 @@ class BrowserManager:
         return page
 
     @asynccontextmanager
-    async def visible_action(self, identity: Identity):
-        """Serialize one account's page work and all visible XHS actions."""
-        if self._xhs_visible_gate.owned_by_current_task:
+    async def visible_action(self, identity: Identity, *, keep_context: bool = False):
+        """Serialize visible XHS work and close one-shot browser contexts.
+
+        A persistent Chromium context always owns a bootstrap about:blank page.
+        Closing only the task page therefore leaves a blank window behind. The
+        outermost one-shot action releases the whole context; the explicit
+        manual-account window opts out with ``keep_context=True``.
+        """
+        nested = self._xhs_visible_gate.owned_by_current_task
+        if nested:
             async with self._xhs_visible_gate.acquire(identity.key):
                 yield
             return
         page_lock = self._xhs_page_locks.setdefault(
             identity.key, asyncio.Lock())
         async with page_lock:
-            async with self._xhs_visible_gate.acquire(identity.key):
-                yield
+            try:
+                async with self._xhs_visible_gate.acquire(identity.key):
+                    yield
+            finally:
+                if not keep_context:
+                    with suppress(Exception):
+                        await self.close_context(identity.key)
 
     @asynccontextmanager
     async def visible_page(self, identity: Identity, *, url: str = ""):
-        """Lease one foreground XHS task page without closing shared Chrome."""
+        """Lease one foreground XHS task page and close its one-shot context."""
         async with self.visible_action(identity):
             snapshot = capture_window_snapshot(CHROMIUM_WINDOW_CLASSES)
             page = None
