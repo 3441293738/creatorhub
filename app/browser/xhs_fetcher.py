@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import urllib.parse
@@ -450,19 +451,26 @@ async def fetch_creator_published(mgr: BrowserManager, identity: Identity,
 async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
                                  timeout_ms: int = 15000, block_media: bool = False
                                  ) -> Tuple[dict, str]:
-    """打开自己的主页,拦截 v2/user/me(身份)+ otherinfo(昵称/头像/粉丝数)拿账号资料。
+    """打开主站首页,拦截 v2/user/me 拿当前登录账号资料。
+
+    ``/user/profile/me`` 已不再稳定触发当前用户接口：页面可能只请求配置和
+    未读数，随后一直等到超时。主站首页仍会在初始化导航时请求 ``user/me``，
+    因此必须在导航前预先挂好响应等待器，避免漏掉 DOMContentLoaded 之前的响应。
     返回 (user dict, error)。error == "logged_out" 表示登录态失效。"""
     me_data: dict = {}
     other_data: dict = {}
     api_seen = []                 # 看到的小红书 API 请求(诊断用)
+    user_me_seen = False
     error = ""
 
     async def on_response(resp):
+        nonlocal user_me_seen
         url = resp.url
         if "xiaohongshu.com" in url and "/api/sns/web/" in url and len(api_seen) < 40:
             api_seen.append(f"{resp.status} {url.split('?')[0].split('xiaohongshu.com')[-1]}")
         try:
             if USER_ME_API in url:
+                user_me_seen = True
                 d = (await resp.json()).get("data") or {}
                 if d:
                     me_data.update(d)
@@ -480,16 +488,25 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
     try:
         async with mgr.visible_page(identity) as page:
             page.on("response", on_response)
-            # 自己的主页会同时触发 user/me + otherinfo + user_posted
-            await page.goto(
-                f"{_BASE}/user/profile/me",
-                wait_until="domcontentloaded", timeout=30000)
-            await _wait_for_response(
+            # user/me 常在 DOMContentLoaded 前返回。先启动等待器再导航，既不会
+            # 漏响应，也不会在已经拿到身份后额外空等 timeout_ms。
+            response_waiter = asyncio.create_task(_wait_for_response(
                 page,
                 lambda r: USER_ME_API in r.url and r.status == 200,
                 timeout_ms,
                 on_response,
-            )
+            ))
+            await asyncio.sleep(0)
+            try:
+                await page.goto(
+                    f"{_BASE}/",
+                    wait_until="domcontentloaded", timeout=30000)
+                await response_waiter
+            except BaseException:
+                if not response_waiter.done():
+                    response_waiter.cancel()
+                await asyncio.gather(response_waiter, return_exceptions=True)
+                raise
             final_url = page.url
             if "passport" in final_url or "/login" in final_url:
                 logged_out = True
@@ -500,7 +517,12 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
                     "登录", exact=True).first.is_visible(timeout=1200)
             except Exception:
                 has_login_btn = None
-            if has_login_btn is True:
+            authenticated_me = bool(
+                me_data.get("guest") is not True
+                and (me_data.get("user_id") or me_data.get("red_id"))
+            )
+            # 首页首帧偶尔短暂显示“登录”；有效 user/me 比瞬态 UI 更权威。
+            if has_login_btn is True and not authenticated_me:
                 logged_out = True
             if not me_data and not other_data:    # 兜底:读 __INITIAL_STATE__
                 try:
@@ -528,7 +550,8 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
         if logged_out:
             error = "logged_out"
         elif not error:
-            error = "no_user_me_xhr" if not api_seen else "user/me 无 user 字段"
+            error = ("no_user_me_xhr" if not user_me_seen
+                     else "user/me 无有效用户字段")
         print(f"[xhs_self_profile] 未拿到资料; err={error}; final_url={final_url}; login_btn={has_login_btn}; "
               f"guest={me_data.get('guest')}; me={'有' if me_data else '无'}; "
               f"other={'有' if other_data else '无'}; state_user={'有' if state_user else '无'}; "

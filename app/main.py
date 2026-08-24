@@ -3226,7 +3226,9 @@ async def open_account_browser(account_id: int, url: str = ""):
             pass
     home = {"xhs": ("https://creator.xiaohongshu.com/"
                      if open_scope == "creator"
-                     else "https://www.xiaohongshu.com/user/profile/me"),
+                     # /user/profile/me 不再稳定触发 user/me，可能把有效登录态
+                     # 显示成“未确认”。首页会加载权威的当前用户接口。
+                     else "https://www.xiaohongshu.com/"),
             "kuaishou": "https://www.kuaishou.com/",
             "shipinhao": "https://channels.weixin.qq.com/platform"}.get(
                 platform, "https://www.douyin.com/")

@@ -5,8 +5,10 @@ from contextlib import asynccontextmanager
 from app.browser.identity import Identity
 from app.browser.xhs_fetcher import (
     FEED_API,
+    USER_ME_API,
     _xhs_page_failure,
     fetch_xhs_note_detail,
+    fetch_xhs_self_profile,
 )
 
 
@@ -63,6 +65,131 @@ class XhsFetcherResponseTests(unittest.TestCase):
                 _Manager(), identity, "note-1")
             self.assertEqual(error, "")
             self.assertEqual(detail["note_id"], "note-1")
+
+        asyncio.run(scenario())
+
+    def test_self_profile_arms_user_me_wait_before_opening_homepage(self):
+        class Response:
+            url = f"https://edith.xiaohongshu.com{USER_ME_API}"
+            status = 200
+
+            async def json(self):
+                return {"data": {
+                    "guest": False,
+                    "user_id": "fixture-user",
+                    "red_id": "fixture-red",
+                    "nickname": "fixture-name",
+                }}
+
+        class Locator:
+            first = None
+
+            def __init__(self):
+                self.first = self
+
+            async def is_visible(self, **_kwargs):
+                return False
+
+        class Page:
+            def __init__(self):
+                self.url = "about:blank"
+                self.response = Response()
+                self.waiting = False
+                self.navigation_started = asyncio.Event()
+                self.gotos = []
+
+            def on(self, *_args):
+                return None
+
+            async def wait_for_response(self, predicate, **_kwargs):
+                self.waiting = True
+                await self.navigation_started.wait()
+                assert predicate(self.response)
+                return self.response
+
+            async def goto(self, url, **_kwargs):
+                self.gotos.append(url)
+                self.assert_waiter_was_armed = self.waiting
+                self.url = "https://www.xiaohongshu.com/explore"
+                self.navigation_started.set()
+
+            def get_by_text(self, *_args, **_kwargs):
+                return Locator()
+
+        class Manager:
+            def __init__(self):
+                self.page = Page()
+
+            @asynccontextmanager
+            async def visible_page(self, _identity):
+                yield self.page
+
+        async def scenario():
+            manager = Manager()
+            identity = Identity(
+                account_id=1, profile_dir="fixture", platform="xhs",
+                identity_mode="native")
+            profile, error = await fetch_xhs_self_profile(
+                manager, identity, timeout_ms=100)
+
+            self.assertEqual(error, "")
+            self.assertEqual(profile["user_id"], "fixture-user")
+            self.assertTrue(manager.page.assert_waiter_was_armed)
+            self.assertEqual(
+                manager.page.gotos, ["https://www.xiaohongshu.com/"])
+
+        asyncio.run(scenario())
+
+    def test_unrelated_api_responses_do_not_masquerade_as_user_me(self):
+        class Response:
+            url = "https://edith.xiaohongshu.com/api/sns/web/v1/config"
+            status = 200
+
+            async def json(self):
+                return {"data": {}}
+
+        class Locator:
+            first = None
+
+            def __init__(self):
+                self.first = self
+
+            async def is_visible(self, **_kwargs):
+                return False
+
+        class Page:
+            url = "about:blank"
+
+            def on(self, event, listener):
+                if event == "response":
+                    self.listener = listener
+
+            async def wait_for_response(self, *_args, **_kwargs):
+                raise TimeoutError()
+
+            async def goto(self, *_args, **_kwargs):
+                self.url = "https://www.xiaohongshu.com/explore"
+                await self.listener(Response())
+
+            def get_by_text(self, *_args, **_kwargs):
+                return Locator()
+
+            async def evaluate(self, *_args, **_kwargs):
+                return None
+
+        class Manager:
+            @asynccontextmanager
+            async def visible_page(self, _identity):
+                yield Page()
+
+        async def scenario():
+            identity = Identity(
+                account_id=1, profile_dir="fixture", platform="xhs",
+                identity_mode="native")
+            profile, error = await fetch_xhs_self_profile(
+                Manager(), identity, timeout_ms=1)
+            self.assertEqual(profile, {})
+            self.assertEqual(error, "no_user_me_xhr")
 
         asyncio.run(scenario())
 
