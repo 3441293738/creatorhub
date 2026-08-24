@@ -53,6 +53,12 @@ class EngineConfig:
     # 小红书浏览器:默认优先连接 CreatorHub 管理的每账号系统 Chrome CDP。
     xhs_browser_mode: str = "auto"          # auto | cdp | patchright
     xhs_cdp_idle_seconds: int = 900          # 0=仅按 LRU、显式关闭或程序退出回收
+    # 小红书读取默认也走账号浏览器页面，避免扫码 Cookie 在浏览器与签名直连
+    # 客户端之间切换 UA/TLS/Client-Hints。api 只保留为显式兼容模式。
+    xhs_read_mode: str = "browser"           # browser | api
+    xhs_keyword_gap_seconds: float = 10.0    # 同一任务相邻关键词的最小停顿
+    xhs_item_gap_seconds: float = 2.5         # 相邻详情/评论读取的最小停顿
+    xhs_request_jitter: float = 0.35          # 上述停顿的正向随机抖动比例
     xhs_publish_mode: str = "browser"       # browser | api(API 仅为显式兼容模式)
     active_accounts: int = 3                # 同一时刻最多并发活跃的账号数(错峰)
     scan_jitter: float = 0.15              # 扫描间隔随机抖动比例(±15%),消除整点齐发特征
@@ -161,6 +167,17 @@ def load_config(path: str | None = None) -> Config:
                                      if k in EngineConfig.__dataclass_fields__})
         if cfg.engine.xhs_browser_mode == "playwright":
             cfg.engine.xhs_browser_mode = "patchright"
+        xhs_read_mode = str(
+            cfg.engine.xhs_read_mode or "browser").strip().lower()
+        cfg.engine.xhs_read_mode = (
+            xhs_read_mode if xhs_read_mode in {"browser", "api"}
+            else "browser")
+        cfg.engine.xhs_keyword_gap_seconds = max(
+            0.0, float(cfg.engine.xhs_keyword_gap_seconds))
+        cfg.engine.xhs_item_gap_seconds = max(
+            0.0, float(cfg.engine.xhs_item_gap_seconds))
+        cfg.engine.xhs_request_jitter = min(
+            1.0, max(0.0, float(cfg.engine.xhs_request_jitter)))
         backend = str(cfg.engine.browser_backend or "local").strip().lower()
         cfg.engine.browser_backend = (
             backend if backend in {"local", "fingerprint_chromium"}

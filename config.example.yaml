@@ -10,6 +10,10 @@ engine:
   block_media_resources: false    # 屏蔽图片/视频/字体加载(省带宽但会打断抖音 SPA 致拿不到数据,建议保持 false)
   xhs_browser_mode: auto          # auto=优先每账号系统 Chrome CDP;cdp=严格 CDP;patchright=直接使用 Patchright
   xhs_cdp_idle_seconds: 900       # 小红书专用 Chrome 空闲回收秒数;0=仅按 LRU/退出回收
+  xhs_read_mode: browser          # browser=读取也复用账号浏览器;api=显式签名 API 兼容模式
+  xhs_keyword_gap_seconds: 10     # 同一任务相邻关键词的最小停顿
+  xhs_item_gap_seconds: 2.5       # 相邻详情/评论读取的最小停顿
+  xhs_request_jitter: 0.35        # 小红书读取停顿的正向随机抖动比例
   xhs_publish_mode: browser       # browser=页面发布;api=显式 API 兼容模式
   monitor_initial_backfill_count: 0  # 新增博主时回填最近 N 条;0=只下载订阅后的新作品,-1=尽可能全量
   comment_recent_works: 5         # 监控评论时,只看每个目标最近 N 条作品

@@ -505,6 +505,61 @@ class BrowserManager:
     def identity_for(self, acc) -> Identity:
         return Identity.from_account(acc, self.profiles_root, self.default_ua)
 
+    def direct_request_user_agent(self, identity: Identity) -> str:
+        """Return a UA whose Chromium major matches the account runtime.
+
+        Browser-created cookies are also reused by a few explicit HTTP
+        compatibility paths.  Normalising their UA avoids presenting an old
+        configured Chrome version beside a newer account browser.
+        """
+        ua = str(identity.ua or self.default_ua or "").strip()
+        effective = self.effective_browser_backend(identity)
+        major = 0
+        if effective == FINGERPRINT_CHROMIUM_BACKEND:
+            try:
+                backend = self._fingerprint_backend_for(
+                    identity, require_available=False)
+                head = str(backend.version or "").split(".", 1)[0]
+                major = int(head) if head.isdigit() else 0
+            except (BrowserBackendUnavailableError, ValueError):
+                major = 0
+        else:
+            major = int(self._chrome_major or 0)
+        if major and ua:
+            ua = re.sub(
+                r"Chrome/\d+(?:\.\d+){0,3}",
+                f"Chrome/{major}.0.0.0", ua)
+            ua = re.sub(
+                r"Edg/\d+(?:\.\d+){0,3}",
+                f"Edg/{major}.0.0.0", ua)
+        return ua or self.default_ua
+
+    async def _capture_context_ua(
+            self, ctx: BrowserContext, identity: Identity) -> str:
+        """Persist the exact UA exposed by Patchright or an attached CDP tab."""
+        probe_page = None
+        created_probe = False
+        try:
+            pages = list(ctx.pages)
+            if pages:
+                probe_page = pages[0]
+            else:
+                probe_page = await ctx.new_page()
+                created_probe = True
+            actual_ua = str(
+                await probe_page.evaluate("navigator.userAgent") or "").strip()
+            if actual_ua:
+                identity.ua = actual_ua
+                if identity.account_id is not None and self._native_ua_callback:
+                    self._native_ua_callback(identity.account_id, actual_ua)
+            return actual_ua
+        except Exception:
+            return ""
+        finally:
+            if created_probe and probe_page is not None:
+                with suppress(Exception):
+                    await probe_page.close()
+
     def effective_browser_backend(self, identity: Identity) -> str:
         """Resolve an account override without silently accepting bad values."""
         requested = str(
@@ -767,28 +822,7 @@ class BrowserManager:
         if not legacy:
             # Persist the UA exposed by this exact native context. It is
             # diagnostic state only; native launches still omit any override.
-            probe_page = None
-            created_probe = False
-            try:
-                pages = list(ctx.pages)
-                if pages:
-                    probe_page = pages[0]
-                else:
-                    probe_page = await ctx.new_page()
-                    created_probe = True
-                actual_ua = await probe_page.evaluate("navigator.userAgent")
-                if actual_ua:
-                    identity.ua = str(actual_ua)
-                    if identity.account_id is not None and self._native_ua_callback:
-                        self._native_ua_callback(identity.account_id, identity.ua)
-            except Exception:
-                pass
-            finally:
-                if created_probe and probe_page is not None:
-                    try:
-                        await probe_page.close()
-                    except Exception:
-                        pass
+            await self._capture_context_ua(ctx, identity)
         # Client Hints 与归一后的 UA 保持一致(否则内核按真实版本发 Sec-CH-UA,和 UA 打架)
         sec = self._sec_ch_ua_headers(ua) if legacy else None
         if sec:
@@ -922,6 +956,7 @@ class BrowserManager:
                         self._backend_by_key[key] = "patchright"
                     else:
                         ctx = session.context
+                        await self._capture_context_ua(ctx, identity)
                         if plan is not None and plan.scheme in {"http", "https"} \
                                 and plan.authenticated:
                             session.auth_controller = CdpProxyAuthController(

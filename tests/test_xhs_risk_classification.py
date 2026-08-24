@@ -95,6 +95,25 @@ class XhsRiskClassificationTests(unittest.TestCase):
         self.assertEqual(caught.exception.category, "auth")
         self.assertEqual(caught.exception.signal, "auth_expired")
 
+    def test_direct_client_aligns_ua_client_hints_and_tls_target(self):
+        client = XhsApiClient(
+            "a1=fixture",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 Chrome/151.0.0.0 Safari/537.36",
+        )
+        target_major = client.impersonate.removeprefix("chrome")
+
+        self.assertIn(
+            f"Chrome/{target_major}.0.0.0",
+            client.base_headers["user-agent"],
+        )
+        self.assertIn(
+            f'"Chromium";v="{target_major}"',
+            client.base_headers["sec-ch-ua"],
+        )
+        self.assertEqual(
+            client.base_headers["sec-ch-ua-platform"], '"Windows"')
+
     def test_account_health_risk_does_not_mark_account_invalid(self):
         with db.get_session() as session:
             account = DouyinAccount(

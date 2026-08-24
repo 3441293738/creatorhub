@@ -158,6 +158,51 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
         self.assertTrue(cfg.engine.fingerprint_chromium_allow_headless)
         self.assertEqual(cfg.engine.fingerprint_chromium_platform, "windows")
 
+    def test_config_loads_xhs_browser_read_throttling(self):
+        config_path = Path(self.tmp.name) / "config.yaml"
+        config_path.write_text(
+            "engine:\n"
+            "  xhs_read_mode: browser\n"
+            "  xhs_keyword_gap_seconds: 12\n"
+            "  xhs_item_gap_seconds: 3.5\n"
+            "  xhs_request_jitter: 0.4\n",
+            encoding="utf-8",
+        )
+
+        cfg = load_config(str(config_path))
+
+        self.assertEqual(cfg.engine.xhs_read_mode, "browser")
+        self.assertEqual(cfg.engine.xhs_keyword_gap_seconds, 12)
+        self.assertEqual(cfg.engine.xhs_item_gap_seconds, 3.5)
+        self.assertEqual(cfg.engine.xhs_request_jitter, 0.4)
+
+    def test_direct_request_ua_matches_selected_fingerprint_runtime(self):
+        manager = BrowserManager(
+            "Mozilla/5.0 Chrome/130.0.0.0 Safari/537.36",
+            str(Path(self.tmp.name) / "profiles"),
+            fingerprint_chromium_runtimes=[{
+                "runtime_id": "fp-148",
+                "executable_path": str(self.executable),
+                "version": "148.0.1",
+                "name": "Chromium 148",
+                "enabled": True,
+                "is_default": True,
+            }],
+            fingerprint_default_runtime_id="fp-148",
+        )
+        identity = Identity(
+            account_id=9,
+            profile_dir=str(Path(self.tmp.name) / "profile-9"),
+            browser_backend="fingerprint_chromium",
+            browser_runtime_id="fp-148",
+            ua="Mozilla/5.0 Chrome/130.0.0.0 Safari/537.36",
+        )
+
+        ua = manager.direct_request_user_agent(identity)
+
+        self.assertIn("Chrome/148.0.0.0", ua)
+        self.assertNotIn("Chrome/130.", ua)
+
     def test_manager_launches_custom_runtime_without_legacy_js_injection(self):
         class ContextStub:
             def __init__(self):

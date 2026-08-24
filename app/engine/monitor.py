@@ -195,6 +195,42 @@ class MonitorEngine:
         self._task: Optional[asyncio.Task] = None
         self._running = False
 
+    async def _xhs_gap(self, seconds: float | None = None) -> None:
+        base = max(0.0, float(
+            self.cfg.engine.xhs_item_gap_seconds
+            if seconds is None else seconds))
+        if not base:
+            return
+        jitter = min(1.0, max(
+            0.0, float(self.cfg.engine.xhs_request_jitter or 0.0)))
+        await asyncio.sleep(base * random.uniform(1.0, 1.0 + jitter))
+
+    def _xhs_browser_reads_enabled(self) -> bool:
+        return bool(
+            self.cfg.engine.xhs_read_mode == "browser"
+            and callable(getattr(self.browser, "visible_page", None))
+        )
+
+    def _direct_request_ua(self, identity) -> str:
+        resolver = getattr(self.browser, "direct_request_user_agent", None)
+        if callable(resolver):
+            return resolver(identity)
+        return str(getattr(identity, "ua", "") or self.cfg.engine.user_agent)
+
+    @staticmethod
+    def _raise_severe_xhs_read_error(error) -> None:
+        if not error:
+            return
+        category, signal = classify_platform_error(error)
+        if category not in {
+                RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+            return
+        if isinstance(error, BaseException):
+            raise error
+        raise XhsApiError(
+            str(error), category=category.value,
+            signal=signal or "browser_read_error")
+
     def start(self):
         if self._task is None:
             self._running = True
@@ -1341,6 +1377,7 @@ class MonitorEngine:
             xsec_token = target.xsec_token or ""
             state = ""
             proxy = ""
+            identity = self.browser.anon_identity()
             if target.account_id:
                 acc = s.get(DouyinAccount, target.account_id)
                 if acc:
@@ -1349,6 +1386,7 @@ class MonitorEngine:
                             target_id, "账号代理标记为不可用(proxy bad),已跳过以免暴露真实 IP")
                     state = acc.storage_state or ""
                     proxy = acc.proxy or ""
+                    identity = self.browser.identity_for(acc)
             known = set(s.exec(
                 select(ContentRecord.aweme_id)
                 .where(ContentRecord.target_id == target_id)).all())
@@ -1369,13 +1407,34 @@ class MonitorEngine:
                     s.add(t); s.commit()
             return {"ok": False, "new": 0, "error": msg}
 
-        client = XhsApiClient(cookie_str, self.cfg.engine.user_agent,
-                              timeout=self.cfg.engine.request_timeout_seconds, proxy=proxy)
+        client = None
+        browser_reads = self._xhs_browser_reads_enabled()
+        if not browser_reads:
+            client = XhsApiClient(
+                cookie_str,
+                self._direct_request_ua(identity),
+                timeout=self.cfg.engine.request_timeout_seconds,
+                proxy=proxy)
         error = ""
         author = None
         briefs_raw: list = []
         try:
-            if kind == "keyword":
+            if browser_reads and kind == "keyword":
+                briefs_raw, browser_error = await fetch_xhs_search(
+                    self.browser, identity, keyword, known,
+                    max_scrolls=6,
+                    block_media=self.cfg.engine.block_media_resources)
+                if browser_error:
+                    error = browser_error
+            elif browser_reads:
+                briefs_raw, author, browser_error = await fetch_xhs_notes(
+                    self.browser, identity, user_id, known,
+                    xsec_token=xsec_token, xsec_source="pc_feed",
+                    max_scrolls=6,
+                    block_media=self.cfg.engine.block_media_resources)
+                if browser_error:
+                    error = browser_error
+            elif kind == "keyword":
                 briefs_raw = await client.search_notes(keyword)
             else:
                 d = await client.notes_by_creator(user_id, xsec_token=xsec_token)
@@ -1415,14 +1474,27 @@ class MonitorEngine:
             if len(new_records) >= MAX_PER_SCAN:
                 break
             if seen and len(seen) > 1:
-                await asyncio.sleep(0.6)   # 给 feed 接口留间隔,降低被风控/限流的概率
+                await self._xhs_gap()
             note_tok = brief.get("xsec_token", "")
             derr = ""
             card = {}
             try:
-                card = await client.note_detail(
-                    brief["note_id"], xsec_token=note_tok,
-                    xsec_source="pc_search" if kind == "keyword" else "pc_feed")
+                if browser_reads:
+                    card, derr = await fetch_xhs_note_detail(
+                        self.browser, identity, brief["note_id"],
+                        xsec_token=note_tok,
+                        xsec_source=("pc_search" if kind == "keyword" else "pc_feed"),
+                        block_media=self.cfg.engine.block_media_resources)
+                    card = card or {}
+                    if derr and classify_platform_error(derr)[0] in {
+                            RiskCategory.RISK, RiskCategory.AUTH,
+                            RiskCategory.NETWORK}:
+                        error = derr
+                        break
+                else:
+                    card = await client.note_detail(
+                        brief["note_id"], xsec_token=note_tok,
+                        xsec_source="pc_search" if kind == "keyword" else "pc_feed")
             except XhsApiError as e:
                 error = e
                 break
@@ -2011,11 +2083,13 @@ class MonitorEngine:
             return {"ok": False, "new_comments": 0, "error": msg}
         try:
             if platform == "xhs" and kind == "user":
-                total_new, author = await self._cw_xhs_creator(watch_id, state, sec_uid,
-                                                               xsec_token, name, first_scan, proxy)
+                total_new, author = await self._cw_xhs_creator(
+                    watch_id, identity, state, sec_uid,
+                    xsec_token, name, first_scan, proxy)
             elif platform == "xhs":   # 单条笔记
-                total_new, author = await self._cw_xhs_note(watch_id, state, aweme_id,
-                                                            xsec_token, name, first_scan, proxy)
+                total_new, author = await self._cw_xhs_note(
+                    watch_id, identity, state, aweme_id,
+                    xsec_token, name, first_scan, proxy)
             elif platform == "kuaishou" and kind == "user":
                 total_new, author = await self._cw_ks_user(watch_id, identity, sec_uid,
                                                            name, first_scan)
@@ -2214,12 +2288,13 @@ class MonitorEngine:
             await self._notify_comments(name, "(创作中心)", newer)
         return len(fresh), None
 
-    # ── 小红书评论监控(签名直连 API)──
-    def _xhs_client(self, state: str, proxy: str = ""):
+    # ── 小红书评论监控(浏览器优先，签名 API 仅显式兼容)──
+    def _xhs_client(self, identity, state: str, proxy: str = ""):
         cookie_str = cookie_str_from_state(state)
         if not has_a1(cookie_str):
             return None
-        return XhsApiClient(cookie_str, self.cfg.engine.user_agent,
+        return XhsApiClient(
+            cookie_str, self._direct_request_ua(identity),
                             timeout=self.cfg.engine.request_timeout_seconds, proxy=proxy)
 
     async def _xhs_fetch_comments(self, client, note_id, xsec_token, known) -> list:
@@ -2239,53 +2314,100 @@ class MonitorEngine:
         fresh = [c for c in (parse_xhs_comment(rc) for rc in flatten_xhs_comments(raw)) if c]
         return [c for c in fresh if c["comment_id"] not in known]
 
-    async def _cw_xhs_note(self, watch_id, state, note_id, xsec_token, name, first_scan,
-                           proxy=""):
-        client = self._xhs_client(state, proxy)
-        if client is None:
-            return 0, None
+    async def _cw_xhs_note(
+            self, watch_id, identity, state, note_id, xsec_token, name,
+            first_scan, proxy=""):
         with get_session() as s:
             known = set(s.exec(select(CommentRecord.comment_id)
                                .where(CommentRecord.watch_id == watch_id)
                                .where(CommentRecord.aweme_id == note_id)).all())
-        fresh = await self._xhs_fetch_comments(client, note_id, xsec_token, known)
+        if self._xhs_browser_reads_enabled():
+            raw, error = await fetch_xhs_comments(
+                self.browser, identity, note_id, known,
+                xsec_token=xsec_token, xsec_source="pc_feed",
+                max_scrolls=self._comment_watch_settings(watch_id)["max_scrolls"],
+                block_media=self.cfg.engine.block_media_resources)
+            if error:
+                log.info("评论监控(小红书)%s: %s", note_id, error)
+                self._raise_severe_xhs_read_error(error)
+            fresh = [c for c in
+                     (parse_xhs_comment(rc)
+                      for rc in flatten_xhs_comments(raw)) if c]
+            fresh = [c for c in fresh if c["comment_id"] not in known]
+        else:
+            client = self._xhs_client(identity, state, proxy)
+            if client is None:
+                return 0, None
+            fresh = await self._xhs_fetch_comments(
+                client, note_id, xsec_token, known)
         n = await self._ingest(watch_id, note_id, fresh, name, name, first_scan,
                                platform="xhs")
         return n, None
 
-    async def _cw_xhs_creator(self, watch_id, state, user_id, xsec_token, name, first_scan,
-                              proxy=""):
+    async def _cw_xhs_creator(
+            self, watch_id, identity, state, user_id, xsec_token, name,
+            first_scan, proxy=""):
         settings = self._comment_watch_settings(watch_id)
-        client = self._xhs_client(state, proxy)
-        if client is None:
-            return 0, None
-        try:
-            d = await client.notes_by_creator(user_id, xsec_token=xsec_token)
-            briefs_raw = d.get("notes") or []
-            author = await client.user_info(user_id)
-        except XhsApiError:
-            raise
-        except Exception as e:
-            category, _signal = classify_platform_error(e)
-            if category in {
-                    RiskCategory.RISK, RiskCategory.AUTH,
-                    RiskCategory.NETWORK}:
+        client = None
+        browser_reads = self._xhs_browser_reads_enabled()
+        if browser_reads:
+            briefs_raw, author, error = await fetch_xhs_notes(
+                self.browser, identity, user_id, set(),
+                xsec_token=xsec_token, xsec_source="pc_feed",
+                max_scrolls=4,
+                block_media=self.cfg.engine.block_media_resources)
+            if error:
+                log.info("评论监控(小红书创作者)%s: %s", user_id, error)
+                self._raise_severe_xhs_read_error(error)
+        else:
+            client = self._xhs_client(identity, state, proxy)
+            if client is None:
+                return 0, None
+            try:
+                d = await client.notes_by_creator(user_id, xsec_token=xsec_token)
+                briefs_raw = d.get("notes") or []
+                author = await client.user_info(user_id)
+            except XhsApiError:
                 raise
-            log.info("评论监控(小红书创作者)%s: %s", user_id, e)
-            briefs_raw, author = [], None
+            except Exception as e:
+                category, _signal = classify_platform_error(e)
+                if category in {
+                        RiskCategory.RISK, RiskCategory.AUTH,
+                        RiskCategory.NETWORK}:
+                    raise
+                log.info("评论监控(小红书创作者)%s: %s", user_id, e)
+                briefs_raw, author = [], None
         briefs = [b for b in (parse_note_brief(r) for r in briefs_raw) if b]
         cutoff = int(time.time()) - settings["recent_days"] * 86400
         briefs = [b for b in briefs
                   if not b.get("create_time") or b["create_time"] >= cutoff]
         briefs = briefs[:settings["recent_works"]]
         total = 0
-        for b in briefs:
+        for index, b in enumerate(briefs):
             nid = b["note_id"]
             with get_session() as s:
                 known = set(s.exec(select(CommentRecord.comment_id)
                                    .where(CommentRecord.watch_id == watch_id)
                                    .where(CommentRecord.aweme_id == nid)).all())
-            fresh = await self._xhs_fetch_comments(client, nid, b.get("xsec_token", ""), known)
+            if index:
+                await self._xhs_gap()
+            if browser_reads:
+                raw, read_error = await fetch_xhs_comments(
+                    self.browser, identity, nid, known,
+                    xsec_token=b.get("xsec_token", ""),
+                    xsec_source="pc_feed",
+                    max_scrolls=settings["max_scrolls"],
+                    block_media=self.cfg.engine.block_media_resources)
+                if read_error:
+                    log.info("评论监控(小红书)%s: %s", nid, read_error)
+                    self._raise_severe_xhs_read_error(read_error)
+                fresh = [c for c in
+                         (parse_xhs_comment(rc)
+                          for rc in flatten_xhs_comments(raw)) if c]
+                fresh = [c for c in fresh if c["comment_id"] not in known]
+            else:
+                fresh = await self._xhs_fetch_comments(
+                    client, nid, b.get("xsec_token", ""), known)
             total += await self._ingest(watch_id, nid, fresh, name, b.get("title", ""),
                                         first_scan, platform="xhs")
         author_dict = parse_xhs_self_user(author) if author else None

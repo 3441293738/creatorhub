@@ -367,6 +367,63 @@ class RiskApiGateTests(unittest.TestCase):
         })
         self.assertEqual(self._operation_kinds(), [OperationKind.READ_HEAVY.value])
 
+    def test_note_media_browser_mode_reuses_account_browser(self):
+        work = SimpleNamespace(
+            media_type="image", desc="Fixture", cover="",
+            medias=[SimpleNamespace(
+                url="https://fixture/image.jpg", kind="image",
+                ext="jpg", index=0)],
+        )
+        with patch.object(main.cfg.engine, "xhs_read_mode", "browser"), \
+                patch.object(
+                    self.browser, "visible_page", AsyncMock(), create=True), \
+                patch("app.main.fetch_xhs_note_detail", AsyncMock(
+                    return_value=({}, ""))) as browser_fetch, \
+                patch("app.platforms.xhs.XhsApiClient") as client_cls, \
+                patch("app.platforms.xhs.parse_note_detail", return_value=work):
+            result = asyncio.run(main.publish_note_media(
+                self.account_id, "note-1", "token", "pc_feed"))
+
+        self.assertEqual(result["media_type"], "image")
+        browser_fetch.assert_awaited_once()
+        client_cls.assert_not_called()
+
+    def test_xhs_share_inspection_uses_browser_note_reader(self):
+        identity = SimpleNamespace(proxy="", ua="", key="acc:1")
+        work = SimpleNamespace(
+            platform="xhs", aweme_id="0123456789abcdef01234567",
+            desc="Fixture note", author_name="Fixture author",
+            duration=0, create_time=0, like_count=0, comment_count=0,
+            cover="", media_type="images", quality_label="original",
+            medias=[SimpleNamespace(
+                url="https://fixture/image.jpg", kind="image",
+                ext="jpg", index=0)],
+        )
+        ref = SimpleNamespace(
+            note_id=work.aweme_id, xsec_token="token",
+            xsec_source="pc_feed")
+        with patch("app.main._xhs_browser_reads_enabled", return_value=True), \
+                patch.object(self.browser, "identity_for", return_value=identity), \
+                patch("app.main.xhs_resolve_note", AsyncMock(
+                    return_value=ref)), \
+                patch("app.main.fetch_xhs_note_detail", AsyncMock(
+                    return_value=({"note_id": work.aweme_id}, ""))) as fetcher, \
+                patch("app.platforms.xhs.parse_note_detail", return_value=work):
+            result = asyncio.run(main._xhs_native_share(
+                f"https://www.xiaohongshu.com/explore/{work.aweme_id}",
+                account_id=self.account_id,
+                output_root=Path(self.tmp.name),
+                quality="highest",
+                should_download=False,
+                save_metadata=True,
+                save_thumbnail=True,
+                proxy="",
+            ))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["metadata"]["platform"], "xhs")
+        fetcher.assert_awaited_once()
+
     def test_note_media_preserves_http_400_error_mapping(self):
         with patch("app.platforms.xhs.XhsApiClient") as client_cls:
             client_cls.return_value.note_detail = AsyncMock(side_effect=XhsApiError(

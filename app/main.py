@@ -33,7 +33,9 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       interactive_xhs_login, interactive_xhs_creator_login,
                       interactive_ks_login, interactive_ks_creator_login,
                       interactive_channels_login, interactive_channels_creator_login,
-                      fetch_self_profile, fetch_xhs_self_profile, fetch_ks_self_profile,
+                      fetch_self_profile, fetch_xhs_self_profile,
+                      fetch_xhs_note_detail, fetch_xhs_comments,
+                      fetch_ks_self_profile,
                       fetch_channels_self_profile,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
                       fetch_dm_history)
@@ -411,14 +413,31 @@ app = FastAPI(title="CreatorHub", lifespan=lifespan)
 WEB_DIR = Path(__file__).parent / "web"
 
 
+def _xhs_browser_reads_enabled() -> bool:
+    """Whether the configured browser implementation supports page reads."""
+    return bool(
+        cfg.engine.xhs_read_mode == "browser"
+        and browser is not None
+        and callable(getattr(browser, "visible_page", None))
+    )
+
+
+def _direct_request_ua(identity) -> str:
+    resolver = getattr(browser, "direct_request_user_agent", None)
+    if callable(resolver):
+        return resolver(identity)
+    return str(getattr(identity, "ua", "") or cfg.engine.user_agent)
+
+
 # ─────────── 扫码登录(真实浏览器) ───────────
-async def _xhs_profile(state: str, proxy: str = "", *, detailed: bool = False):
+async def _xhs_profile(state: str, proxy: str = "", *,
+                       detailed: bool = False, user_agent: str = ""):
     """用签名直连 API 拿小红书账号资料(me 身份 + otherinfo 昵称/头像/粉丝)。
     返回 (user dict, error)。error == "logged_out" 表示登录态失效。"""
     cookie_str = cookie_str_from_state(state)
     if not has_a1(cookie_str):
         return {}, "logged_out"
-    client = XhsApiClient(cookie_str, cfg.engine.user_agent,
+    client = XhsApiClient(cookie_str, user_agent or cfg.engine.user_agent,
                           timeout=cfg.engine.request_timeout_seconds, proxy=proxy)
     try:
         me = await client.self_info()
@@ -564,7 +583,14 @@ async def _enrich_account_profile(account_id: int, state: str, *,
 
     try:
         if platform == "xhs":
-            u, err = await _xhs_profile(state, proxy, detailed=detailed)
+            # Default to the account browser so profile checks keep the same
+            # UA/TLS/Client-Hints/profile that created the login cookies.
+            if _xhs_browser_reads_enabled():
+                u, err = await fetch_xhs_self_profile(browser, identity)
+            else:
+                u, err = await _xhs_profile(
+                    state, proxy, detailed=detailed,
+                    user_agent=_direct_request_ua(identity))
         elif platform == "kuaishou":
             u, err = await fetch_ks_self_profile(browser, identity)
         elif platform == "shipinhao":
@@ -3896,6 +3922,8 @@ def _share_history_dict(record: ShareDownloadRecord) -> dict:
 
 
 def _native_aweme_metadata(aweme, source_url: str) -> dict:
+    platform = str(getattr(aweme, "platform", "") or "douyin")
+    platform_name = "Xhs" if platform == "xhs" else platform.title()
     return {
         "id": aweme.aweme_id,
         "title": aweme.desc or aweme.aweme_id,
@@ -3908,11 +3936,11 @@ def _native_aweme_metadata(aweme, source_url: str) -> dict:
         "thumbnail": aweme.cover,
         "webpage_url": source_url,
         "original_url": source_url,
-        "extractor": "creatorhub:douyin",
-        "extractor_key": "CreatorHubDouyin",
+        "extractor": f"creatorhub:{platform}",
+        "extractor_key": f"CreatorHub{platform_name}",
         "ext": "jpg" if aweme.media_type == "images" else "mp4",
         "format": aweme.quality_label,
-        "platform": "douyin",
+        "platform": platform,
         "media_type": aweme.media_type,
         "media_count": len(aweme.medias),
     }
@@ -4045,6 +4073,166 @@ async def _douyin_native_share(
     }
 
 
+async def _xhs_native_share(
+    source_url: str,
+    *,
+    account_id: int | None,
+    output_root: Path,
+    quality: str,
+    should_download: bool,
+    save_metadata: bool,
+    save_thumbnail: bool,
+    proxy: str,
+) -> dict | None:
+    """Read XHS note metadata in the selected account browser, then fetch CDN media."""
+    if account_id is None or not _xhs_browser_reads_enabled():
+        return None
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if not account or account.platform != "xhs":
+            return None
+        identity = browser.identity_for(account)
+
+    from .browser.manager import normalize_proxy
+    if normalize_proxy(proxy) != normalize_proxy(identity.proxy):
+        raise ShareDownloadError(
+            "小红书链接下载必须复用账号已绑定代理；请先在账号环境中配置代理，"
+            "不要在下载页临时切换出口"
+        )
+
+    async def _read_note():
+        final_url = source_url
+        host = (urlsplit(source_url).hostname or "").lower()
+        if host == "xhslink.com" or host.endswith(".xhslink.com"):
+            try:
+                async with browser.visible_page(
+                        identity, url=source_url) as page:
+                    await page.wait_for_timeout(800)
+                    final_url = str(page.url or source_url)
+            except Exception as exc:
+                return None, f"小红书短链解析失败: {exc}"
+        ref = await xhs_resolve_note(final_url, _direct_request_ua(identity))
+        if ref is None:
+            return None, "没有从链接识别到小红书笔记 ID"
+        card, read_error = await fetch_xhs_note_detail(
+            browser,
+            identity,
+            ref.note_id,
+            xsec_token=ref.xsec_token,
+            xsec_source=ref.xsec_source or "pc_feed",
+            block_media=cfg.engine.block_media_resources,
+        )
+        return {
+            "card": card or {},
+            "note_id": ref.note_id,
+            "final_url": final_url,
+        }, read_error
+
+    payload, outcome = await _run_account_read(
+        account_id,
+        OperationKind.READ_HEAVY,
+        f"share-xhs:{account_id}",
+        _read_note,
+        empty_result={"card": {}, "note_id": "", "final_url": source_url},
+    )
+    if isinstance(outcome, dict):
+        raise ShareDownloadError(
+            f"小红书账号读取正在冷却: {outcome.get('reason') or '稍后重试'}")
+    if outcome:
+        raise ShareDownloadError(f"小红书笔记读取失败: {outcome}")
+
+    from .platforms.xhs import parse_note_detail as parse_xhs_note_detail
+    note_id = str(payload.get("note_id") or "")
+    card = payload.get("card") or {}
+    aweme = parse_xhs_note_detail(card, {"note_id": note_id})
+    if not aweme or not aweme.medias:
+        raise ShareDownloadError("小红书笔记已打开，但没有取得可下载的图片或视频")
+
+    # 不把账号 Cookie 回退给 yt-dlp 直连页面；这样才不会在同一登录态下
+    # 突然切换 TLS/HTTP2 指纹。
+    if quality == "audio" and aweme.media_type == "video":
+        raise ShareDownloadError(
+            "小红书账号浏览器模式暂不执行音频提取，请选择视频画质下载"
+        )
+
+    actual_ua = _direct_request_ua(identity)
+    metadata = _native_aweme_metadata(
+        aweme, str(payload.get("final_url") or source_url))
+    if not should_download:
+        return {
+            "ok": True,
+            "url": source_url,
+            "metadata": metadata,
+            "warnings": [],
+        }
+
+    downloader = Downloader(
+        str(output_root), actual_ua,
+        timeout=max(30.0, cfg.engine.download_timeout_seconds),
+    )
+    ok, _local_path, error = await downloader.download_aweme(
+        aweme, base_dir=str(output_root), proxy=identity.proxy or "")
+    if not ok:
+        raise ShareDownloadError(error or "小红书媒体下载失败")
+
+    target_dir = output_root / safe_title(aweme.author_name or "unknown")
+    title = safe_title(aweme.desc) or aweme.aweme_id
+    if save_metadata:
+        info_path = target_dir / f"{aweme.aweme_id}_{title}.info.json"
+        info_path.write_text(
+            json.dumps({
+                **metadata,
+                "media": [
+                    {"url": media.url, "kind": media.kind,
+                     "ext": media.ext, "index": media.index}
+                    for media in aweme.medias
+                ],
+                "raw": card,
+            }, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+
+    if save_thumbnail and aweme.media_type == "video" and aweme.cover:
+        import httpx
+        cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
+        try:
+            async with httpx.AsyncClient(
+                    timeout=max(30.0, cfg.engine.download_timeout_seconds),
+                    follow_redirects=True,
+                    headers={
+                        "User-Agent": actual_ua,
+                        "Referer": "https://www.xiaohongshu.com/",
+                    },
+                    proxy=normalize_proxy(identity.proxy) or None) as http:
+                await downloader._download_one(http, aweme.cover, cover_path)
+        except Exception:
+            pass
+
+    files = []
+    for path in sorted(target_dir.glob(f"{aweme.aweme_id}_*")):
+        if not path.is_file() or path.suffix.lower() in {".part", ".ytdl"}:
+            continue
+        files.append({
+            "name": path.name,
+            "path": str(path.resolve()),
+            "relative_path": path.relative_to(output_root).as_posix(),
+            "size": path.stat().st_size,
+            "role": _share_file_role(path),
+        })
+    if not any(item["role"] == "media" for item in files):
+        raise ShareDownloadError("小红书笔记解析成功，但本地没有生成媒体文件")
+    return {
+        "ok": True,
+        "job_id": f"xhs_{aweme.aweme_id}",
+        "url": source_url,
+        "output_dir": str(target_dir.resolve()),
+        "metadata": metadata,
+        "files": files,
+        "progress": {"status": "finished"},
+        "warnings": [],
+    }
+
+
 @app.post("/api/share-download/links")
 async def parse_share_links(body: ShareLinksIn):
     """只做本地文本清洗和链接提取，不访问分享站点。"""
@@ -4113,6 +4301,17 @@ async def share_download(body: ShareDownloadIn):
                             save_thumbnail=body.save_thumbnail,
                             proxy=proxy,
                             user_agent=user_agent,
+                        )
+                    elif link.platform == "xhs":
+                        item = await _xhs_native_share(
+                            link.url,
+                            account_id=body.account_id,
+                            output_root=output_root,
+                            quality=body.quality,
+                            should_download=body.download,
+                            save_metadata=body.save_metadata,
+                            save_thumbnail=body.save_thumbnail,
+                            proxy=proxy,
                         )
                     if item is not None:
                         pass
@@ -7025,13 +7224,13 @@ def _first_val(d: dict, *keys, default=""):
 
 
 async def _xhs_account_uid(state: str, proxy: str = "", *,
-                           detailed: bool = False):
+                           detailed: bool = False, user_agent: str = ""):
     """拿到该账号自己的 user_id(self_info → 创作平台资料兜底)。"""
     from .platforms.xhs import XhsApiClient, cookie_str_from_state, has_a1, creator_profile
     cookie = cookie_str_from_state(state)
     if has_a1(cookie):
         try:
-            client = XhsApiClient(cookie, cfg.engine.user_agent,
+            client = XhsApiClient(cookie, user_agent or cfg.engine.user_agent,
                                   timeout=cfg.engine.request_timeout_seconds, proxy=proxy)
             me = await client.self_info()
             uid = str((me or {}).get("user_id") or "")
@@ -7108,8 +7307,18 @@ async def list_published_notes(account_id: int):
             identity = browser.identity_for(current)
         out, good = [], False
         if read_state:
-            uid, uid_error = await _xhs_account_uid(
-                read_state, proxy, detailed=True)
+            uid = str(current.sec_uid or "") if current else ""
+            uid_error = ""
+            if not uid and _xhs_browser_reads_enabled():
+                profile, uid_error = await fetch_xhs_self_profile(
+                    browser, identity)
+                if profile:
+                    uid = str(
+                        (parse_xhs_self_user(profile) or {}).get("sec_uid")
+                        or "")
+            elif not uid:
+                uid, uid_error = await _xhs_account_uid(
+                    read_state, proxy, detailed=True)
             if uid_error:
                 category, _signal = classify_platform_error(uid_error)
                 if category in {
@@ -7212,6 +7421,7 @@ async def publish_note_media(account_id: int, note_id: str,
             raise HTTPException(400, "账号无效")
         state = acc.storage_state or acc.creator_storage_state or ""
         proxy = acc.proxy or ""
+        identity = browser.identity_for(acc) if browser is not None else None
     cookie = cookie_str_from_state(state)
     if not has_a1(cookie):
         raise HTTPException(400, "登录态缺少 a1")
@@ -7219,14 +7429,29 @@ async def publish_note_media(account_id: int, note_id: str,
     no_media = "拿不到该笔记的媒体(xsec_token 对 feed 接口无效)"
 
     async def _fetch_note_media():
-        client = XhsApiClient(
-            cookie, cfg.engine.user_agent,
-            timeout=cfg.engine.request_timeout_seconds, proxy=proxy)
-        try:
-            card = await client.note_detail(
-                note_id, xsec_token=xsec_token, xsec_source=xsec_source)
-        except XhsApiError as exc:
-            return None, exc
+        if _xhs_browser_reads_enabled() and identity is not None:
+            card, read_error = await fetch_xhs_note_detail(
+                browser, identity, note_id,
+                xsec_token=xsec_token, xsec_source=xsec_source,
+                block_media=cfg.engine.block_media_resources)
+            if read_error:
+                category, _signal = classify_platform_error(read_error)
+                if not card or category in {
+                        RiskCategory.RISK, RiskCategory.AUTH,
+                        RiskCategory.NETWORK}:
+                    return None, read_error
+        else:
+            client = XhsApiClient(
+                cookie,
+                (_direct_request_ua(identity)
+                 if browser is not None and identity is not None
+                 else cfg.engine.user_agent),
+                timeout=cfg.engine.request_timeout_seconds, proxy=proxy)
+            try:
+                card = await client.note_detail(
+                    note_id, xsec_token=xsec_token, xsec_source=xsec_source)
+            except XhsApiError as exc:
+                return None, exc
         aw = parse_note_detail(card or {}, {"note_id": note_id})
         if not aw or not aw.medias:
             return None, no_media
@@ -7269,13 +7494,40 @@ async def publish_note_comments(account_id: int, note_id: str,
             raise HTTPException(400, "账号无效")
         state = acc.storage_state or acc.creator_storage_state or ""
         proxy = acc.proxy or ""
+        identity = browser.identity_for(acc) if browser is not None else None
     cookie = cookie_str_from_state(state)
     if not has_a1(cookie):
         raise HTTPException(400, "登录态缺少 a1")
 
     async def _fetch_note_comments():
+        if _xhs_browser_reads_enabled() and identity is not None:
+            raw, read_error = await fetch_xhs_comments(
+                browser, identity, note_id, set(),
+                xsec_token=xsec_token, xsec_source=xsec_source,
+                max_scrolls=cfg.engine.comment_max_scrolls,
+                block_media=cfg.engine.block_media_resources)
+            if read_error:
+                category, _signal = classify_platform_error(read_error)
+                if not raw or category in {
+                        RiskCategory.RISK, RiskCategory.AUTH,
+                        RiskCategory.NETWORK}:
+                    return None, read_error
+            parsed = [item for item in
+                      (parse_xhs_comment(value)
+                       for value in flatten_comments(raw)) if item]
+            parsed.sort(
+                key=lambda comment: comment.get("create_time") or 0,
+                reverse=True)
+            return {
+                "comments": parsed,
+                "total": len(parsed),
+                "has_more": False,
+            }, ""
         client = XhsApiClient(
-            cookie, cfg.engine.user_agent,
+            cookie,
+            (_direct_request_ua(identity)
+             if browser is not None and identity is not None
+             else cfg.engine.user_agent),
             timeout=cfg.engine.request_timeout_seconds, proxy=proxy)
         # 评论接口要 pc_feed 令牌;先调 feed 拿一个新鲜令牌(feed 接受 pc_creatormng 令牌)
         tok, src = xsec_token, xsec_source
