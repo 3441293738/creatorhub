@@ -66,3 +66,18 @@ def test_profile_refresh_does_not_report_deferred_probe_as_success():
     assert 'r.reason ||' in refresh
     assert '"info"' in refresh
     assert "await refreshAccounts()" in refresh
+
+
+def test_monitor_advanced_filters_are_editable_and_retry_reports_real_result():
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    for control in (
+            "t-max-scrolls", "t-max-items", "t-record-media",
+            "t-recent-days", "t-min-likes", "t-min-comments",
+            "t-include-keywords", "t-exclude-keywords"):
+        assert f'id="{control}"' in html
+    assert "高级抓取与筛选" in html
+    assert 'if (!result.ok) throw new Error' in source
+    assert "已重新加入下载队列" not in source[source.index(
+        "async function retryDl"):source.index("async function delContent")]

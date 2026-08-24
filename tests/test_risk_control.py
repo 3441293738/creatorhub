@@ -892,6 +892,42 @@ risk_control:
             self.assertEqual(record.retry_count, 0)
             self.assertEqual(record.download_status, "failed")
 
+    def test_xhs_download_retry_passes_identity_state_and_proxy_in_order(self):
+        state = '{"cookies":[{"name":"a1","value":"fixture-a1"}]}'
+        with db.get_session() as session:
+            account = DouyinAccount(
+                platform="xhs", nickname="fixture-xhs", status="active",
+                storage_state=state, proxy="http://127.0.0.1:8080")
+            session.add(account)
+            session.commit()
+            session.refresh(account)
+            target = MonitorTarget(
+                platform="xhs", target_kind="keyword", keyword="fixture",
+                account_id=account.id, enabled=True)
+            session.add(target)
+            session.commit()
+            session.refresh(target)
+            record = ContentRecord(
+                platform="xhs", target_id=target.id, aweme_id="fixture-note",
+                media_json="", download_status="failed")
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            record_id = record.id
+
+        captured = []
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        def capture_client(identity, received_state, proxy):
+            captured.append((identity, received_state, proxy))
+            return None
+
+        engine._xhs_client = capture_client
+        result = asyncio.run(engine.retry_download(record_id))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(captured, [(None, state, "http://127.0.0.1:8080")])
+
     def test_direct_read_pair_uses_same_budget(self):
         account_id = self._account()
         engine = MonitorEngine(self.cfg, _BrowserStub())

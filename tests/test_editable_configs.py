@@ -141,11 +141,27 @@ class EditableConfigTests(unittest.TestCase):
             initial_backfill_count=20,
             download_enabled=False,
             media_filter="video",
+            max_scrolls=12,
+            max_items_per_scan=20,
+            record_media_filter="images",
+            min_like_count=100,
+            min_comment_count=10,
+            recent_days=30,
+            include_keywords=["防晒", "测评"],
+            exclude_keywords=["广告"],
         )))
         self.assertEqual(result["interval_seconds"], 1800)
         self.assertEqual(result["initial_backfill_count"], 20)
         self.assertFalse(result["download_enabled"])
         self.assertEqual(result["media_filter"], "video")
+        self.assertEqual(result["max_scrolls"], 12)
+        self.assertEqual(result["max_items_per_scan"], 20)
+        self.assertEqual(result["record_media_filter"], "images")
+        self.assertEqual(result["min_like_count"], 100)
+        self.assertEqual(result["min_comment_count"], 10)
+        self.assertEqual(result["recent_days"], 30)
+        self.assertEqual(result["include_keywords"], ["防晒", "测评"])
+        self.assertEqual(result["exclude_keywords"], ["广告"])
 
     def test_backfill_cannot_change_after_first_scan(self):
         with db.get_session() as session:

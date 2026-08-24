@@ -92,6 +92,65 @@ def _loads_list(s: str) -> list:
         return []
 
 
+def _monitor_terms(raw: str) -> list[str]:
+    """Load case-insensitive monitor terms while tolerating legacy CSV values."""
+    values = _loads_list(raw)
+    if not values and raw and not str(raw).lstrip().startswith("["):
+        values = str(raw).replace("，", ",").split(",")
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        term = " ".join(str(value or "").strip().split())
+        key = term.casefold()
+        if not term or key in seen:
+            continue
+        seen.add(key)
+        result.append(term)
+    return result
+
+
+def _monitor_strategy(target: MonitorTarget, *, default_scrolls: int,
+                      default_items: int = 0) -> dict:
+    """Return a clamped strategy so legacy rows keep platform defaults."""
+    configured_scrolls = int(getattr(target, "max_scrolls", 0) or 0)
+    configured_items = int(getattr(target, "max_items_per_scan", 0) or 0)
+    return {
+        "max_scrolls": max(1, min(30, configured_scrolls or default_scrolls)),
+        "max_items": max(0, min(100, configured_items or default_items)),
+        "media_type": str(getattr(target, "record_media_filter", "all") or "all"),
+        "min_likes": max(0, int(getattr(target, "min_like_count", 0) or 0)),
+        "min_comments": max(0, int(getattr(target, "min_comment_count", 0) or 0)),
+        "recent_days": max(0, int(getattr(target, "recent_days", 0) or 0)),
+        "includes": _monitor_terms(getattr(target, "include_keywords", "[]") or "[]"),
+        "excludes": _monitor_terms(getattr(target, "exclude_keywords", "[]") or "[]"),
+    }
+
+
+def _monitor_content_matches(aw: Aweme, strategy: dict,
+                             *, now_ts: int | None = None) -> bool:
+    """Apply target-level record filters after a platform item is normalized."""
+    media_type = strategy.get("media_type") or "all"
+    if media_type != "all" and aw.media_type != media_type:
+        return False
+    if int(aw.like_count or 0) < int(strategy.get("min_likes") or 0):
+        return False
+    if int(aw.comment_count or 0) < int(strategy.get("min_comments") or 0):
+        return False
+    recent_days = int(strategy.get("recent_days") or 0)
+    if recent_days and aw.create_time:
+        cutoff = (int(time.time()) if now_ts is None else int(now_ts)) - recent_days * 86400
+        if int(aw.create_time) < cutoff:
+            return False
+    folded = str(aw.desc or "").casefold()
+    includes = strategy.get("includes") or []
+    excludes = strategy.get("excludes") or []
+    if includes and not any(str(term).casefold() in folded for term in includes):
+        return False
+    if excludes and any(str(term).casefold() in folded for term in excludes):
+        return False
+    return True
+
+
 def _danmaku_matches(item: dict, settings: dict) -> bool:
     text = str(item.get("text") or "")
     folded = text.casefold()
@@ -880,7 +939,7 @@ class MonitorEngine:
                         return {"ok": False, "indeterminate": True}
                     u, err = ({"ok": 1}, "") if chk else ({}, "logged_out")
                 elif platform == "xhs":
-                    client = self._xhs_client(state, proxy)
+                    client = self._xhs_client(identity, state, proxy)
                     if client is None:
                         u, err = {}, "logged_out"
                     else:
@@ -1228,9 +1287,12 @@ class MonitorEngine:
             backfill_count = target.initial_backfill_count
             auto_download = target.download_enabled
             media_filter = target.media_filter or "all"
+            strategy = _monitor_strategy(
+                target, default_scrolls=12, default_items=0)
 
         items, author, error = await fetch_videos(
             self.browser, identity, sec_uid, known,
+            max_scrolls=strategy["max_scrolls"],
             block_media=self.cfg.engine.block_media_resources,
             # 默认只监控订阅后的作品；显式首次回填时允许继续向历史翻页。
             stop_before=(0 if first_scan and backfill_count != 0 else scan_since))
@@ -1238,7 +1300,13 @@ class MonitorEngine:
         new_records = []
         selected = _select_douyin_awemes(
             items, quality, first_scan, scan_since, backfill_count)
+        filtered_count = 0
         for aw in selected:
+            if not _monitor_content_matches(aw, strategy):
+                filtered_count += 1
+                continue
+            if strategy["max_items"] and len(new_records) >= strategy["max_items"]:
+                break
             should_download = auto_download and (
                 media_filter == "all" or aw.media_type == media_filter)
             media_json = json.dumps([{"url": m.url, "kind": m.kind, "ext": m.ext,
@@ -1279,7 +1347,8 @@ class MonitorEngine:
         await asyncio.gather(*(self._download(rec.id, aw, base_dir, proxy)
                                for rec, aw, should_download in new_records
                                if should_download))
-        return {"ok": not error, "new": len(new_records), "error": error}
+        return {"ok": not error, "new": len(new_records), "error": error,
+                "scanned": len(selected), "filtered": filtered_count}
 
     # ── 快手:创作者作品监控(浏览器拦截 GraphQL,与抖音同范式)──
     async def _scan_ks_target_locked(self, target_id: int) -> dict:
@@ -1306,18 +1375,27 @@ class MonitorEngine:
             quality = target.video_quality or get_setting("video_quality", "highest")
             auto_download = target.download_enabled
             media_filter = target.media_filter or "all"
+            strategy = _monitor_strategy(
+                target, default_scrolls=12, default_items=0)
 
         items, author, error = await fetch_ks_videos(
             self.browser, identity, user_id, known,
+            max_scrolls=strategy["max_scrolls"],
             block_media=self.cfg.engine.block_media_resources)
 
         new_records = []
         seen = set()
+        filtered_count = 0
         for item in items:
             aw = parse_ks_feed(item, quality)
             if not aw or aw.aweme_id in seen:
                 continue
             seen.add(aw.aweme_id)
+            if not _monitor_content_matches(aw, strategy):
+                filtered_count += 1
+                continue
+            if strategy["max_items"] and len(new_records) >= strategy["max_items"]:
+                break
             should_download = auto_download and (
                 media_filter == "all" or aw.media_type == media_filter)
             media_json = json.dumps([{"url": m.url, "kind": m.kind, "ext": m.ext,
@@ -1358,7 +1436,8 @@ class MonitorEngine:
         await asyncio.gather(*(self._download(rec.id, aw, base_dir, proxy)
                                for rec, aw, should_download in new_records
                                if should_download))
-        return {"ok": not error, "new": len(new_records), "error": error}
+        return {"ok": not error, "new": len(new_records), "error": error,
+                "scanned": len(seen), "filtered": filtered_count}
 
     def _mark_target_skip(self, target_id: int, msg: str) -> dict:
         """把跳过原因写到目标 last_error,并推进 last_scan_at(避免下轮立刻重试)。"""
@@ -1399,6 +1478,8 @@ class MonitorEngine:
                 "download_dir", self.cfg.engine.media_dir)
             auto_download = target.download_enabled
             media_filter = target.media_filter or "all"
+            strategy = _monitor_strategy(
+                target, default_scrolls=6, default_items=12)
 
         # 小红书签名直连需要登录态里的 a1 / web_session 等 Cookie
         cookie_str = cookie_str_from_state(state)
@@ -1427,7 +1508,7 @@ class MonitorEngine:
             if browser_reads and kind == "keyword":
                 briefs_raw, browser_error = await fetch_xhs_search(
                     self.browser, identity, keyword, known,
-                    max_scrolls=6,
+                    max_scrolls=strategy["max_scrolls"],
                     block_media=self.cfg.engine.block_media_resources)
                 if browser_error:
                     error = browser_error
@@ -1435,7 +1516,7 @@ class MonitorEngine:
                 briefs_raw, author, browser_error = await fetch_xhs_notes(
                     self.browser, identity, user_id, known,
                     xsec_token=xsec_token, xsec_source="pc_feed",
-                    max_scrolls=6,
+                    max_scrolls=strategy["max_scrolls"],
                     block_media=self.cfg.engine.block_media_resources)
                 if browser_error:
                     error = browser_error
@@ -1467,7 +1548,8 @@ class MonitorEngine:
         # 逐条新笔记调 feed 接口拿完整媒体直链(单轮限量,避免请求过多被风控)
         new_records = []
         seen = set()
-        MAX_PER_SCAN = 12
+        detail_attempts = 0
+        filtered_count = 0
         for raw in briefs_raw:
             if error and classify_platform_error(error)[0] in {
                     RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
@@ -1476,8 +1558,9 @@ class MonitorEngine:
             if not brief or brief["note_id"] in seen or brief["note_id"] in known:
                 continue
             seen.add(brief["note_id"])
-            if len(new_records) >= MAX_PER_SCAN:
+            if strategy["max_items"] and detail_attempts >= strategy["max_items"]:
                 break
+            detail_attempts += 1
             if seen and len(seen) > 1:
                 await self._xhs_gap()
             note_tok = brief.get("xsec_token", "")
@@ -1518,6 +1601,9 @@ class MonitorEngine:
                            create_time=0, author_name="", media_type="images")
                 aw.platform = "xhs"
                 aw.cover = brief.get("cover", "")
+            if not _monitor_content_matches(aw, strategy):
+                filtered_count += 1
+                continue
             should_download = bool(aw.medias) and auto_download and (
                 media_filter == "all" or aw.media_type == media_filter)
             media_json = json.dumps([{"url": m.url, "kind": m.kind, "ext": m.ext,
@@ -1536,6 +1622,7 @@ class MonitorEngine:
 
         print(f"[xhs_scan] kind={kind} key={keyword or user_id} briefs={len(briefs_raw)} "
               f"new_records={len(new_records)} "
+              f"details={detail_attempts} filtered={filtered_count} "
               f"with_media={sum(1 for _, a, _ in new_records if a.medias)} error={error!r}")
 
         target_name = ""
@@ -1565,7 +1652,8 @@ class MonitorEngine:
         await asyncio.gather(*(self._download(rec.id, aw, base_dir, proxy)
                                for rec, aw, should_download in new_records
                                if should_download))
-        return {"ok": not error, "new": len(new_records), "error": error}
+        return {"ok": not error, "new": len(new_records), "error": error,
+                "scanned": detail_attempts, "filtered": filtered_count}
 
     # ── 独立弹幕监控(DanmakuWatch)──
     async def _scan_danmaku_watches(self):
@@ -1934,7 +2022,7 @@ class MonitorEngine:
                 fresh = [c for c in (parse_comment(rc) for rc in raw)
                          if c and c["comment_id"] not in known]
             elif platform == "xhs":
-                client = self._xhs_client(state, proxy)
+                client = self._xhs_client(identity, state, proxy)
                 if client is None:
                     return {"ok": False, "error": "小红书账号缺 a1 Cookie,无法抓评论"}
                 fresh = await self._xhs_fetch_comments(client, item_id, xsec_token, known)
@@ -3045,7 +3133,7 @@ class MonitorEngine:
         cands: list = []
         # ── 小红书:签名直连 ──
         if platform == "xhs":
-            client = self._xhs_client(state, proxy)
+            client = self._xhs_client(identity, state, proxy)
             if client is None:
                 return [], "账号登录态缺少 a1,请重新扫码登录"
             if mode == "auto_comment":
@@ -3591,7 +3679,7 @@ class MonitorEngine:
                 if manual_only:
                     err = "小红书评论默认转人工发布草稿;未调用评论发布接口"
                 elif xhs_mode == "api":
-                    client = self._xhs_client(state, proxy)
+                    client = self._xhs_client(identity, state, proxy)
                     if client is None:
                         err = "账号登录态缺少 a1,请重新扫码登录"
                     else:
@@ -3778,11 +3866,15 @@ class MonitorEngine:
             account_id = t.account_id if t else None
             acc_state = ""
             acc_proxy = ""
+            identity = None
             if t and t.account_id:
                 acc = s.get(DouyinAccount, t.account_id)
                 if acc:
                     acc_state = acc.storage_state or ""
                     acc_proxy = acc.proxy or ""
+                    identity_for = getattr(self.browser, "identity_for", None)
+                    if callable(identity_for):
+                        identity = identity_for(acc)
             media_json = rec.media_json
             aw = self._rebuild_aweme(rec, author_name)
             needs_xhs_refetch = platform == "xhs" and (
@@ -3794,12 +3886,26 @@ class MonitorEngine:
 
         # 小红书:无媒体快照时,重新拉详情补齐媒体直链
         if platform == "xhs" and (not media_json or not aw.medias):
-            client = self._xhs_client(acc_state, acc_proxy)
-            derr = "" if client else "账号登录态缺少 a1,请重新扫码登录"
+            browser_reads = bool(identity is not None and self._xhs_browser_reads_enabled())
+            client = None if browser_reads else self._xhs_client(
+                identity, acc_state, acc_proxy)
+            if not account_id:
+                derr = "监控目标未绑定小红书账号,请先编辑监控并选择账号"
+            elif browser_reads or client:
+                derr = ""
+            else:
+                derr = "账号登录态缺少 a1,请重新扫码登录"
             card = {}
-            if client:
+            if browser_reads or client:
                 async def _refetch_note_detail():
                     try:
+                        if browser_reads:
+                            return await fetch_xhs_note_detail(
+                                self.browser, identity, note_id,
+                                xsec_token=note_tok,
+                                xsec_source=("pc_search" if kind == "keyword"
+                                             else "pc_feed"),
+                                block_media=self.cfg.engine.block_media_resources)
                         detail = await client.note_detail(
                             note_id, xsec_token=note_tok,
                             xsec_source=("pc_search" if kind == "keyword"
@@ -3828,6 +3934,7 @@ class MonitorEngine:
                         rec.media_type = aw.media_type
                         rec.create_time = aw.create_time or rec.create_time
                         rec.like_count = aw.like_count or rec.like_count
+                        rec.comment_count = aw.comment_count or rec.comment_count
                         rec.cover_url = aw.cover or rec.cover_url
                         rec.media_json = json.dumps([{"url": m.url, "kind": m.kind,
                                                       "ext": m.ext, "index": m.index}

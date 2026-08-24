@@ -5496,6 +5496,14 @@ class TargetIn(BaseModel):
     video_quality: str = ""
     download_enabled: bool = True
     media_filter: str = "all"
+    max_scrolls: int = 0
+    max_items_per_scan: int = 0
+    record_media_filter: str = "all"
+    min_like_count: int = 0
+    min_comment_count: int = 0
+    recent_days: int = 0
+    include_keywords: list[str] = PydanticField(default_factory=list)
+    exclude_keywords: list[str] = PydanticField(default_factory=list)
     alias: str = ""
     group_name: str = ""
     tags: list[str] = PydanticField(default_factory=list)
@@ -5508,10 +5516,39 @@ class TargetUpdate(BaseModel):
     video_quality: str | None = None
     download_enabled: bool | None = None
     media_filter: str | None = None
+    max_scrolls: int | None = None
+    max_items_per_scan: int | None = None
+    record_media_filter: str | None = None
+    min_like_count: int | None = None
+    min_comment_count: int | None = None
+    recent_days: int | None = None
+    include_keywords: list[str] | None = None
+    exclude_keywords: list[str] | None = None
     account_id: int | None = None
     alias: str | None = None
     group_name: str | None = None
     tags: list[str] | None = None
+
+
+def _validate_monitor_strategy(*, max_scrolls: int | None,
+                               max_items_per_scan: int | None,
+                               record_media_filter: str | None,
+                               min_like_count: int | None,
+                               min_comment_count: int | None,
+                               recent_days: int | None) -> None:
+    if max_scrolls is not None and not 0 <= max_scrolls <= 30:
+        raise HTTPException(400, "抓取深度须为 0~30；0 表示使用平台默认值")
+    if max_items_per_scan is not None and not 0 <= max_items_per_scan <= 100:
+        raise HTTPException(400, "每轮作品上限须为 0~100；0 表示使用平台默认值")
+    if record_media_filter is not None and record_media_filter not in (
+            "all", "video", "images"):
+        raise HTTPException(400, "作品类型筛选须为 all、video 或 images")
+    if min_like_count is not None and not 0 <= min_like_count <= 1_000_000_000:
+        raise HTTPException(400, "最低点赞数须为 0~1000000000")
+    if min_comment_count is not None and not 0 <= min_comment_count <= 1_000_000_000:
+        raise HTTPException(400, "最低评论数须为 0~1000000000")
+    if recent_days is not None and not 0 <= recent_days <= 3650:
+        raise HTTPException(400, "发布时间范围须为 0~3650 天；0 表示不限")
 
 @app.post("/api/monitors")
 async def add_monitor(body: TargetIn):
@@ -5543,6 +5580,13 @@ async def add_monitor(body: TargetIn):
         raise HTTPException(400, "监控间隔须为 60~86400 秒")
     if body.media_filter not in ("all", "video", "images"):
         raise HTTPException(400, "媒体筛选须为 all、video 或 images")
+    _validate_monitor_strategy(
+        max_scrolls=body.max_scrolls,
+        max_items_per_scan=body.max_items_per_scan,
+        record_media_filter=body.record_media_filter,
+        min_like_count=body.min_like_count,
+        min_comment_count=body.min_comment_count,
+        recent_days=body.recent_days)
     if dl:
         try:
             Path(dl).expanduser().mkdir(parents=True, exist_ok=True)
@@ -5587,7 +5631,17 @@ async def add_monitor(body: TargetIn):
                           interval_seconds=body.interval_seconds, download_dir=dl,
                           initial_backfill_count=backfill_count, video_quality=q,
                           download_enabled=body.download_enabled,
-                          media_filter=body.media_filter)
+                          media_filter=body.media_filter,
+                          max_scrolls=body.max_scrolls,
+                          max_items_per_scan=body.max_items_per_scan,
+                          record_media_filter=body.record_media_filter,
+                          min_like_count=body.min_like_count,
+                          min_comment_count=body.min_comment_count,
+                          recent_days=body.recent_days,
+                          include_keywords=_dump_meta_tags(
+                              _meta_tags(body.include_keywords)),
+                          exclude_keywords=_dump_meta_tags(
+                              _meta_tags(body.exclude_keywords)))
         s.add(t); s.commit(); s.refresh(t)
         return _target_dict(t)
 
@@ -5627,6 +5681,29 @@ async def update_monitor(tid: int, body: TargetUpdate):
             if body.media_filter not in ("all", "video", "images"):
                 raise HTTPException(400, "媒体筛选须为 all、video 或 images")
             t.media_filter = body.media_filter
+        _validate_monitor_strategy(
+            max_scrolls=body.max_scrolls,
+            max_items_per_scan=body.max_items_per_scan,
+            record_media_filter=body.record_media_filter,
+            min_like_count=body.min_like_count,
+            min_comment_count=body.min_comment_count,
+            recent_days=body.recent_days)
+        if body.max_scrolls is not None:
+            t.max_scrolls = body.max_scrolls
+        if body.max_items_per_scan is not None:
+            t.max_items_per_scan = body.max_items_per_scan
+        if body.record_media_filter is not None:
+            t.record_media_filter = body.record_media_filter
+        if body.min_like_count is not None:
+            t.min_like_count = body.min_like_count
+        if body.min_comment_count is not None:
+            t.min_comment_count = body.min_comment_count
+        if body.recent_days is not None:
+            t.recent_days = body.recent_days
+        if body.include_keywords is not None:
+            t.include_keywords = _dump_meta_tags(_meta_tags(body.include_keywords))
+        if body.exclude_keywords is not None:
+            t.exclude_keywords = _dump_meta_tags(_meta_tags(body.exclude_keywords))
         if body.account_id is not None:
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != t.platform or acc.status != "active":
@@ -6423,6 +6500,14 @@ def _target_dict(t: MonitorTarget) -> dict:
         "initial_backfill_count": t.initial_backfill_count,
         "download_dir": t.download_dir, "video_quality": t.video_quality,
         "download_enabled": t.download_enabled, "media_filter": t.media_filter,
+        "max_scrolls": t.max_scrolls,
+        "max_items_per_scan": t.max_items_per_scan,
+        "record_media_filter": t.record_media_filter,
+        "min_like_count": t.min_like_count,
+        "min_comment_count": t.min_comment_count,
+        "recent_days": t.recent_days,
+        "include_keywords": _load_meta_tags(t.include_keywords),
+        "exclude_keywords": _load_meta_tags(t.exclude_keywords),
         "account_id": t.account_id,
         "last_scan_at": t.last_scan_at.isoformat() if t.last_scan_at else None,
         "last_error": t.last_error,

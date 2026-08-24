@@ -94,6 +94,15 @@ class MonitorTarget(SQLModel, table=True):
     video_quality: str = ""                 # 画质偏好(空=用全局默认)
     download_enabled: bool = True           # 新作品是否自动下载；关闭时仍保留作品记录
     media_filter: str = "all"               # all | video | images
+    # 作品监控策略。0 表示使用平台默认值（小红书 6/12，其他平台 12/不限）。
+    max_scrolls: int = 0                    # 单轮页面下滑深度
+    max_items_per_scan: int = 0             # 单轮详情/入库上限
+    record_media_filter: str = "all"        # all | video | images，仅控制是否入库
+    min_like_count: int = 0
+    min_comment_count: int = 0
+    recent_days: int = 0                    # 0=不限发布时间
+    include_keywords: str = "[]"            # JSON 字符串数组，任一命中
+    exclude_keywords: str = "[]"            # JSON 字符串数组，任一命中即排除
     account_id: Optional[int] = None       # 用哪个登录账号的 Cookie 抓取
     last_scan_at: Optional[datetime] = None
     last_error: str = ""

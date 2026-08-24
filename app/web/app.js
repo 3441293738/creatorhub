@@ -4316,6 +4316,14 @@ async function addMonitor() {
           video_quality: PLATFORM === "xhs" ? "" : $("t-quality").value,
           download_enabled: downloadMode !== "none",
           media_filter: downloadMode === "none" ? "all" : downloadMode,
+          max_scrolls: +$("t-max-scrolls").value,
+          max_items_per_scan: +$("t-max-items").value,
+          record_media_filter: $("t-record-media").value,
+          recent_days: Math.max(0, +$("t-recent-days").value || 0),
+          min_like_count: Math.max(0, +$("t-min-likes").value || 0),
+          min_comment_count: Math.max(0, +$("t-min-comments").value || 0),
+          include_keywords: parseDanmakuKeywords($("t-include-keywords").value),
+          exclude_keywords: parseDanmakuKeywords($("t-exclude-keywords").value),
           alias: $("t-alias").value.trim(), group_name: getMetaValue("t-group").trim(),
           tags: parseTags(getMetaValue("t-tags")),
         }),
@@ -4349,6 +4357,14 @@ async function editMonitor(id) {
   const backfillOptions = numericSelectOptions(item.initial_backfill_count ?? 0, [
     [0, "不回填历史"], [5, "最近 5 条"], [20, "最近 20 条"], [-1, "尽可能全量"],
   ], " 条");
+  const depthOptions = numericSelectOptions(item.max_scrolls ?? 0, [
+    [0, "平台默认"], [3, "3 次下滑"], [6, "6 次下滑"],
+    [12, "12 次下滑"], [20, "20 次下滑"], [30, "30 次下滑"],
+  ]);
+  const itemLimitOptions = numericSelectOptions(item.max_items_per_scan ?? 0, [
+    [0, "平台默认"], [5, "5 条"], [12, "12 条"], [20, "20 条"],
+    [50, "50 条"], [100, "100 条"],
+  ]);
   const value = await new Promise(res => {
     _uiResolve = res; _uiCancelVal = null;
     _uiGetVal = () => {
@@ -4363,6 +4379,14 @@ async function editMonitor(id) {
         video_quality: $("em-quality") ? $("em-quality").value : "",
         download_enabled: downloadMode !== "none",
         media_filter: downloadMode === "none" ? "all" : downloadMode,
+        max_scrolls: +$("em-max-scrolls").value,
+        max_items_per_scan: +$("em-max-items").value,
+        record_media_filter: $("em-record-media").value,
+        recent_days: Math.max(0, +$("em-recent-days").value || 0),
+        min_like_count: Math.max(0, +$("em-min-likes").value || 0),
+        min_comment_count: Math.max(0, +$("em-min-comments").value || 0),
+        include_keywords: parseDanmakuKeywords($("em-include-keywords").value),
+        exclude_keywords: parseDanmakuKeywords($("em-exclude-keywords").value),
       };
       if ($("em-backfill")) result.initial_backfill_count = +$("em-backfill").value;
       return result;
@@ -4386,6 +4410,19 @@ async function editMonitor(id) {
         </div>
         ${item.last_scan_at ? "" : `<div><label class="field" for="em-backfill">首次历史回填</label>
           <select id="em-backfill">${backfillOptions}</select></div>`}
+        <div class="form-grid cols-4">
+          <div><label class="field" for="em-max-scrolls">抓取深度</label><select id="em-max-scrolls">${depthOptions}</select></div>
+          <div><label class="field" for="em-max-items">每轮作品上限</label><select id="em-max-items">${itemLimitOptions}</select></div>
+          <div><label class="field" for="em-record-media">作品类型</label><select id="em-record-media"><option value="all">全部入库</option><option value="video">仅视频</option><option value="images">仅图文/图集</option></select></div>
+          <div><label class="field" for="em-recent-days">发布时间范围</label><input id="em-recent-days" type="number" min="0" max="3650" inputmode="numeric"><div class="field-help">最近 N 天；0 表示不限</div></div>
+        </div>
+        <div class="form-grid cols-4">
+          <div><label class="field" for="em-min-likes">最低点赞数</label><input id="em-min-likes" type="number" min="0" max="1000000000" inputmode="numeric"></div>
+          <div><label class="field" for="em-min-comments">最低评论数</label><input id="em-min-comments" type="number" min="0" max="1000000000" inputmode="numeric"></div>
+          <div><label class="field" for="em-include-keywords">必须包含</label><input id="em-include-keywords" maxlength="320" placeholder="多个词用逗号分隔"></div>
+          <div><label class="field" for="em-exclude-keywords">排除关键词</label><input id="em-exclude-keywords" maxlength="320" placeholder="多个词用逗号分隔"></div>
+        </div>
+        <div class="field-help">筛选决定是否入库；抓取深度越高，单轮耗时和账号访问频率越高。</div>
       </fieldset>
       <fieldset class="monitor-config-group">
         <legend>记录与下载</legend>
@@ -4405,7 +4442,16 @@ async function editMonitor(id) {
     if ($("em-backfill")) $("em-backfill").value = String(item.initial_backfill_count ?? 0);
     if ($("em-quality")) $("em-quality").value = item.video_quality || "";
     $("em-download").value = item.download_enabled === false ? "none" : (item.media_filter || "all");
-    ["em-interval", "em-account", "em-backfill", "em-quality", "em-download"]
+    $("em-max-scrolls").value = String(item.max_scrolls ?? 0);
+    $("em-max-items").value = String(item.max_items_per_scan ?? 0);
+    $("em-record-media").value = item.record_media_filter || "all";
+    $("em-recent-days").value = String(item.recent_days || 0);
+    $("em-min-likes").value = String(item.min_like_count || 0);
+    $("em-min-comments").value = String(item.min_comment_count || 0);
+    $("em-include-keywords").value = (item.include_keywords || []).join(", ");
+    $("em-exclude-keywords").value = (item.exclude_keywords || []).join(", ");
+    ["em-interval", "em-account", "em-backfill", "em-quality", "em-download",
+      "em-max-scrolls", "em-max-items", "em-record-media"]
       .forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
     _uiOpen("编辑作品监控", "监控对象不可修改；需要更换主页、创作者或关键词时，请新建监控。", { okText: "保存修改", wide: true });
   });
@@ -4417,6 +4463,19 @@ async function editMonitor(id) {
     });
     toast("作品监控配置已更新", "ok"); refreshMonitors(); refreshContents();
   } catch (e) { toast("更新失败:" + e.message, "err"); }
+}
+function monitorStrategySummary(t) {
+  const depth = t.max_scrolls || (t.platform === "xhs" ? 6 : 12);
+  const limit = t.max_items_per_scan || (t.platform === "xhs" ? 12 : 0);
+  const filters = [];
+  if (t.record_media_filter && t.record_media_filter !== "all") filters.push(t.record_media_filter === "video" ? "视频" : "图文");
+  if (t.recent_days) filters.push(`${t.recent_days}天内`);
+  if (t.min_like_count) filters.push(`赞≥${fmtNum(t.min_like_count)}`);
+  if (t.min_comment_count) filters.push(`评≥${fmtNum(t.min_comment_count)}`);
+  if ((t.include_keywords || []).length) filters.push(`含 ${t.include_keywords.join("/")}`);
+  if ((t.exclude_keywords || []).length) filters.push(`排除 ${t.exclude_keywords.join("/")}`);
+  const filterLabel = filters.length ? filters.join(" · ") : "无入库筛选";
+  return `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px" title="${esc(filterLabel)}"><span class="pill q bare">深度 ${depth}</span><span class="pill q bare">上限 ${limit || "不限"}</span>${filters.length ? `<span class="pill q bare">${esc(filterLabel)}</span>` : ""}</div>`;
 }
 function monRow(t) {
   const label = t.target_kind === "keyword"
@@ -4435,6 +4494,7 @@ function monRow(t) {
     <td class="num">${Math.round(t.interval_seconds / 60)} 分</td>
     <td class="wrap" style="max-width:230px">
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px"><span class="pill q bare">${downloadLabel}</span></div>
+      ${monitorStrategySummary(t)}
       ${t.platform === "xhs" ? "" : `<span class="pill q bare">${QMAP[t.video_quality] || "默认画质"}</span> `}
       <span class="mut" title="${esc(t.download_dir || "默认目录")}" style="display:inline-block;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${esc(t.download_dir || "默认")}</span></td>
     <td class="mut">${t.last_scan_at ? new Date(t.last_scan_at + "Z").toLocaleString() : "—"}${t.last_error ? ` <span class="warn-ic" title="${esc(t.last_error)}">${ic("i-info")}</span>` : ""}</td>
@@ -4474,7 +4534,7 @@ async function runNow(id) {
     try {
       const r = await api("/api/monitors/" + id + "/run-now", { method: "POST" });
       if (r.error) toast("抓取未成功:" + r.error, "err", 6000);
-      else toast(`抓取完成,新增 ${r.new} 条`, "ok");
+      else toast(`抓取完成,检查 ${r.scanned ?? r.new} 条，筛除 ${r.filtered || 0} 条，新增 ${r.new} 条`, "ok");
     } catch (e) { toast("抓取失败:" + e.message, "err"); }
   });
   refreshMonitors(); refreshContents();
@@ -4743,10 +4803,15 @@ async function refreshContents(resetPage = false) {
   updateContentSelBar(); renderContentPager(meta);
 }
 async function retryDl(id) {
-  const btn = event.target.closest("button"); btn.disabled = true; btn.textContent = "重试中…";
-  try { await api("/api/contents/" + id + "/retry-download", { method: "POST" }); toast("已重新加入下载队列", "ok"); }
-  catch (e) { toast("重试失败:" + e.message, "err"); }
-  setTimeout(() => refreshContents(), 1200);
+  const btn = evtBtn();
+  await withBusy(btn, "重试中", async () => {
+    try {
+      const result = await api("/api/contents/" + id + "/retry-download", { method: "POST" });
+      if (!result.ok) throw new Error(result.error || "下载未完成");
+      toast("重试成功，作品已下载", "ok");
+    } catch (e) { toast("重试失败:" + e.message, "err", 7000); }
+  });
+  await refreshContents();
 }
 async function delContent(id) {
   if (!await uiConfirm({ title: "删除作品", message: "删除这条作品记录及其已下载的本地文件?", okText: "删除", danger: true })) return;

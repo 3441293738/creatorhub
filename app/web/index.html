@@ -2155,6 +2155,41 @@
               <option value="images">仅图集</option><option value="none">仅记录，不下载</option>
           </select></div>
         </div>
+        <details class="collection-advanced monitor-advanced">
+          <summary>高级抓取与筛选 <span>控制翻页深度、单轮上限和入库条件</span></summary>
+          <div class="collection-advanced-body">
+            <div class="form-grid cols-4">
+              <div class="form-field"><label for="t-max-scrolls">抓取深度</label><select id="t-max-scrolls">
+                <option value="0">平台默认</option><option value="3">3 次下滑</option>
+                <option value="6">6 次下滑</option><option value="12">12 次下滑</option>
+                <option value="20">20 次下滑</option><option value="30">30 次下滑</option>
+              </select></div>
+              <div class="form-field"><label for="t-max-items">每轮作品上限</label><select id="t-max-items">
+                <option value="0">平台默认</option><option value="5">5 条</option>
+                <option value="12">12 条</option><option value="20">20 条</option>
+                <option value="50">50 条</option><option value="100">100 条</option>
+              </select></div>
+              <div class="form-field"><label for="t-record-media">作品类型</label><select id="t-record-media">
+                <option value="all">全部入库</option><option value="video">仅视频</option>
+                <option value="images">仅图文/图集</option>
+              </select></div>
+              <div class="form-field"><label for="t-recent-days">发布时间范围</label>
+                <input id="t-recent-days" type="number" min="0" max="3650" value="0" inputmode="numeric">
+                <div class="field-help">最近 N 天；0 表示不限</div></div>
+            </div>
+            <div class="form-grid cols-4">
+              <div class="form-field"><label for="t-min-likes">最低点赞数</label>
+                <input id="t-min-likes" type="number" min="0" max="1000000000" value="0" inputmode="numeric"></div>
+              <div class="form-field"><label for="t-min-comments">最低评论数</label>
+                <input id="t-min-comments" type="number" min="0" max="1000000000" value="0" inputmode="numeric"></div>
+              <div class="form-field"><label for="t-include-keywords">必须包含</label>
+                <input id="t-include-keywords" maxlength="320" placeholder="多个词用逗号分隔"></div>
+              <div class="form-field"><label for="t-exclude-keywords">排除关键词</label>
+                <input id="t-exclude-keywords" maxlength="320" placeholder="多个词用逗号分隔"></div>
+            </div>
+            <div class="field-help">筛选只决定作品是否进入监控记录；“自动下载范围”仍单独控制下载行为。深度越高，请求耗时与账号访问频率越高。</div>
+          </div>
+        </details>
         <div class="form-actions">
           <span class="status-text" id="add-msg" role="status" aria-live="polite"></span>
           <button onclick="addMonitor()"><svg><use href="#i-target"/></svg>开始监控</button>

@@ -187,9 +187,14 @@ class MonitorMetadataMigrationTests(unittest.TestCase):
             engine.dispose()
             db._engine = previous_engine
 
-        expected = {"alias", "group_name", "tags"}
+        expected = {
+            "alias", "group_name", "tags", "max_scrolls",
+            "max_items_per_scan", "record_media_filter", "min_like_count",
+            "min_comment_count", "recent_days", "include_keywords",
+            "exclude_keywords",
+        }
         self.assertTrue(expected <= monitor_columns)
-        self.assertTrue(expected <= watch_columns)
+        self.assertTrue({"alias", "group_name", "tags"} <= watch_columns)
 
 
 if __name__ == "__main__":
