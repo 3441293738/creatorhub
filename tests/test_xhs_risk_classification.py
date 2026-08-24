@@ -114,6 +114,35 @@ class XhsRiskClassificationTests(unittest.TestCase):
         self.assertEqual(
             client.base_headers["sec-ch-ua-platform"], '"Windows"')
 
+    def test_direct_search_uses_current_v2_host_and_payload(self):
+        client = object.__new__(XhsApiClient)
+
+        class Signer:
+            @staticmethod
+            def get_search_id():
+                return "fixture-search-id"
+
+        captured = {}
+
+        async def post(uri, data, *, host):
+            captured.update(uri=uri, data=data, host=host)
+            return {"items": [{"id": "fixture-note"}]}
+
+        client._signer = Signer()
+        client._post = post
+        items = asyncio.run(client.search_notes(
+            "防晒霜", page=2, page_size=5))
+
+        self.assertEqual(items, [{"id": "fixture-note"}])
+        self.assertEqual(
+            captured["uri"], "/api/sns/web/v2/search/notes")
+        self.assertEqual(captured["host"], "https://so.xiaohongshu.com")
+        self.assertEqual(captured["data"]["keyword"], "防晒霜")
+        self.assertEqual(captured["data"]["page"], 2)
+        self.assertEqual(captured["data"]["page_size"], 10)
+        self.assertEqual(
+            captured["data"]["image_formats"], ["jpg", "webp", "avif"])
+
     def test_account_health_risk_does_not_mark_account_invalid(self):
         with db.get_session() as session:
             account = DouyinAccount(

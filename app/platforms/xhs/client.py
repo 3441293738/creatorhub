@@ -19,6 +19,7 @@ from urllib.parse import quote
 from ...netfp import impersonate_for_ua
 
 _HOST = "https://edith.xiaohongshu.com"
+_SEARCH_HOST = "https://so.xiaohongshu.com"
 _DOMAIN = "https://www.xiaohongshu.com"
 
 
@@ -148,12 +149,13 @@ class XhsApiClient:
                               proxy=self.proxy, timeout=self.timeout)
         return self._unwrap(r)
 
-    async def _post(self, uri: str, data: Dict[str, Any]) -> dict:
+    async def _post(self, uri: str, data: Dict[str, Any], *,
+                    host: str = _HOST) -> dict:
         sign = self._signer.sign_headers_post(uri, self.cookie_str, payload=data or {})
         headers = {**self.base_headers, **sign, "Cookie": self.cookie_str}
         body = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
         async with self._session_cls() as cli:
-            r = await cli.post(f"{_HOST}{uri}", data=body.encode("utf-8"),
+            r = await cli.post(f"{host}{uri}", data=body.encode("utf-8"),
                                headers=headers, impersonate=self.impersonate,
                                proxy=self.proxy, timeout=self.timeout)
         return self._unwrap(r)
@@ -207,12 +209,20 @@ class XhsApiClient:
     # ── 业务接口 ──
     async def search_notes(self, keyword: str, page: int = 1, page_size: int = 20,
                            sort: str = "general", note_type: int = 0) -> List[dict]:
+        # v2 对过小 page_size 会 success=true 但返回空 items；网页端的有效
+        # 区间从 10 开始，统一收敛避免再次出现“接口成功但无结果”。
+        page = max(1, int(page or 1))
+        page_size = max(10, min(40, int(page_size or 20)))
         data = {
             "keyword": keyword, "page": page, "page_size": page_size,
             "search_id": self._signer.get_search_id(),
             "sort": sort, "note_type": note_type,
+            "image_formats": ["jpg", "webp", "avif"],
         }
-        d = await self._post("/api/sns/web/v1/search/notes", data)
+        # 网页搜索已迁移到 so.xiaohongshu.com 的 v2。旧 edith/v1 仍返回
+        # success=true，但 items 恒为空，会把正常关键词误判为无结果。
+        d = await self._post(
+            "/api/sns/web/v2/search/notes", data, host=_SEARCH_HOST)
         return d.get("items") or []
 
     async def note_detail_raw(self, note_id: str, xsec_token: str = "",

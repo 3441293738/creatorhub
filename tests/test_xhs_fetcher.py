@@ -33,20 +33,20 @@ class _Response:
 class _Page:
     def __init__(self):
         self.response = _Response()
-        self.listener = None
+        self.listeners = []
 
     def on(self, event, listener):
         if event == "response":
-            self.listener = listener
+            self.listeners.append(listener)
 
     async def goto(self, *_args, **_kwargs):
-        return None
-
-    async def wait_for_response(self, predicate, **_kwargs):
-        assert predicate(self.response)
-        # The event listener is intentionally not run before this method
-        # returns, reproducing the scheduling race seen with async callbacks.
-        return self.response
+        # Queue async event handlers without awaiting them, reproducing the
+        # scheduling race seen when a temporary page closes quickly. The
+        # synchronous response inbox still captures the exact response.
+        for listener in self.listeners:
+            result = listener(self.response)
+            if asyncio.iscoroutine(result):
+                asyncio.create_task(result)
 
 
 class _Manager:
@@ -68,6 +68,39 @@ class XhsFetcherResponseTests(unittest.TestCase):
                 _Manager(), identity, "note-1")
             self.assertEqual(error, "")
             self.assertEqual(detail["note_id"], "note-1")
+
+        asyncio.run(scenario())
+
+    def test_detail_uses_ssr_card_when_page_does_not_emit_feed(self):
+        class Page:
+            url = "about:blank"
+
+            def on(self, *_args):
+                return None
+
+            async def goto(self, url, **_kwargs):
+                self.url = url
+
+            async def evaluate(self, _script, note_id):
+                return (
+                    '{"noteId":"' + note_id
+                    + '","title":"fixture","imageList":[{"url":"cover"}]}'
+                )
+
+        class Manager:
+            @asynccontextmanager
+            async def visible_page(self, _identity):
+                yield Page()
+
+        async def scenario():
+            identity = Identity(
+                account_id=1, profile_dir="fixture", platform="xhs",
+                identity_mode="native")
+            detail, error = await fetch_xhs_note_detail(
+                Manager(), identity, "note-ssr")
+            self.assertEqual(error, "")
+            self.assertEqual(detail["note_id"], "note-ssr")
+            self.assertEqual(detail["image_list"][0]["url"], "cover")
 
         asyncio.run(scenario())
 
@@ -97,24 +130,21 @@ class XhsFetcherResponseTests(unittest.TestCase):
             def __init__(self):
                 self.url = "about:blank"
                 self.response = Response()
-                self.waiting = False
-                self.navigation_started = asyncio.Event()
+                self.listeners = []
                 self.gotos = []
 
-            def on(self, *_args):
-                return None
-
-            async def wait_for_response(self, predicate, **_kwargs):
-                self.waiting = True
-                await self.navigation_started.wait()
-                assert predicate(self.response)
-                return self.response
+            def on(self, event, listener):
+                if event == "response":
+                    self.listeners.append(listener)
 
             async def goto(self, url, **_kwargs):
                 self.gotos.append(url)
-                self.assert_waiter_was_armed = self.waiting
+                self.assert_waiter_was_armed = len(self.listeners) >= 2
                 self.url = "https://www.xiaohongshu.com/explore"
-                self.navigation_started.set()
+                for listener in self.listeners:
+                    result = listener(self.response)
+                    if asyncio.iscoroutine(result):
+                        asyncio.create_task(result)
 
             def get_by_text(self, *_args, **_kwargs):
                 return Locator()
@@ -163,16 +193,19 @@ class XhsFetcherResponseTests(unittest.TestCase):
         class Page:
             url = "about:blank"
 
+            def __init__(self):
+                self.listeners = []
+
             def on(self, event, listener):
                 if event == "response":
-                    self.listener = listener
-
-            async def wait_for_response(self, *_args, **_kwargs):
-                raise TimeoutError()
+                    self.listeners.append(listener)
 
             async def goto(self, *_args, **_kwargs):
                 self.url = "https://www.xiaohongshu.com/explore"
-                await self.listener(Response())
+                for listener in self.listeners:
+                    result = listener(Response())
+                    if asyncio.iscoroutine(result):
+                        await result
 
             def get_by_text(self, *_args, **_kwargs):
                 return Locator()

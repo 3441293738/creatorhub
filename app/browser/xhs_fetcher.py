@@ -56,12 +56,93 @@ def _decamel(obj):
 # 笔记数不满一页时根本不会发 user_posted XHR —— 拦截会一无所获,须直读页面状态。
 # notes 结构:[发布列表, 收藏, 赞过](Vue ref 序列化时可能包一层 _rawValue),只取发布列表。
 _SSR_NOTES_JS = """() => {
-    const st = window.__INITIAL_STATE__;
+    const marker = 'window.__INITIAL_STATE__=';
+    let st = window.__INITIAL_STATE__;
+    if (!st || !Object.keys(st).length) {
+      for (const script of document.scripts) {
+        const text = script.textContent || '';
+        const at = text.indexOf(marker);
+        if (at < 0) continue;
+        try {
+          st = (new Function('return (' + text.slice(at + marker.length) + ')'))();
+        } catch (e) { st = null; }
+        break;
+      }
+    }
     let ns = st && st.user && st.user.notes;
     if (ns && ns._rawValue !== undefined) ns = ns._rawValue;
     if (!Array.isArray(ns)) return '[]';
     const posted = (ns.length && Array.isArray(ns[0])) ? ns[0] : ns;
     return JSON.stringify(posted.filter(x => x && typeof x === 'object'));
+}"""
+
+
+_SSR_NOTE_DETAIL_JS = """(noteId) => {
+    const marker = 'window.__INITIAL_STATE__=';
+    let st = window.__INITIAL_STATE__;
+    if (!st || !Object.keys(st).length) {
+      for (const script of document.scripts) {
+        const text = script.textContent || '';
+        const at = text.indexOf(marker);
+        if (at < 0) continue;
+        try {
+          st = (new Function('return (' + text.slice(at + marker.length) + ')'))();
+        } catch (e) { st = null; }
+        break;
+      }
+    }
+    let map = st && st.note && st.note.noteDetailMap;
+    if (map && map._rawValue !== undefined) map = map._rawValue;
+    let entry = map && map[noteId];
+    if (entry && entry._rawValue !== undefined) entry = entry._rawValue;
+    const note = entry && (entry.note || entry.noteCard || entry);
+    return JSON.stringify(note && typeof note === 'object' ? note : {});
+}"""
+
+
+_SSR_NOTE_COMMENTS_JS = """(noteId) => {
+    const marker = 'window.__INITIAL_STATE__=';
+    let st = window.__INITIAL_STATE__;
+    if (!st || !Object.keys(st).length) {
+      for (const script of document.scripts) {
+        const text = script.textContent || '';
+        const at = text.indexOf(marker);
+        if (at < 0) continue;
+        try {
+          st = (new Function('return (' + text.slice(at + marker.length) + ')'))();
+        } catch (e) { st = null; }
+        break;
+      }
+    }
+    let map = st && st.note && st.note.noteDetailMap;
+    if (map && map._rawValue !== undefined) map = map._rawValue;
+    let entry = map && map[noteId];
+    if (entry && entry._rawValue !== undefined) entry = entry._rawValue;
+    let comments = entry && entry.comments;
+    if (comments && comments._rawValue !== undefined) comments = comments._rawValue;
+    const list = comments && (comments.list || comments.comments || comments);
+    return JSON.stringify(Array.isArray(list) ? list : []);
+}"""
+
+
+_SSR_PROFILE_AUTHOR_JS = """() => {
+    const marker = 'window.__INITIAL_STATE__=';
+    let st = window.__INITIAL_STATE__;
+    if (!st || !Object.keys(st).length) {
+      for (const script of document.scripts) {
+        const text = script.textContent || '';
+        const at = text.indexOf(marker);
+        if (at < 0) continue;
+        try {
+          st = (new Function('return (' + text.slice(at + marker.length) + ')'))();
+        } catch (e) { st = null; }
+        break;
+      }
+    }
+    const user = st && st.user;
+    let profile = user && user.userPageData;
+    if (profile && profile._rawValue !== undefined) profile = profile._rawValue;
+    return JSON.stringify(profile && typeof profile === 'object' ? profile : {});
 }"""
 
 
@@ -73,20 +154,50 @@ def _note_url(note_id: str, xsec_token: str = "", xsec_source: str = "pc_feed") 
     return f"{_BASE}/explore/{note_id}" + ("?" + urllib.parse.urlencode(qs) if qs else "")
 
 
-async def _wait_for_response(page, predicate, timeout: int, handler=None):
-    """Wait for a meaningful network condition; timeout is only an upper bound."""
-    try:
-        response = await page.wait_for_response(predicate, timeout=timeout)
-    except Exception:
-        return None
-    if handler is not None:
-        # Parse the exact response we waited for. An async ``response`` event
-        # callback may still be queued when a fast temporary page is released.
-        try:
-            await handler(response)
-        except Exception:
-            pass
-    return response
+class _ResponseInbox:
+    """Capture matching responses before navigation/click actions begin.
+
+    Patchright's Python ``Page`` exposes ``expect_response`` but not
+    ``wait_for_response``.  The previous calls to the latter therefore returned
+    immediately through broad exception handling and could close the temporary
+    page before an async response callback parsed its body.  A synchronous event
+    listener feeding a queue works for navigation, clicks and scrolling alike.
+    """
+
+    def __init__(self, page, predicate):
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._predicate = predicate
+
+        def capture(response):
+            try:
+                matched = self._predicate(response)
+            except Exception:
+                matched = False
+            if matched:
+                self._queue.put_nowait(response)
+
+        self._capture = capture
+        page.on("response", capture)
+
+    async def wait(self, timeout_ms: int, handler=None, ready=None):
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0, timeout_ms) / 1000
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
+            try:
+                response = await asyncio.wait_for(
+                    self._queue.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return None
+            if handler is not None:
+                try:
+                    await handler(response)
+                except Exception:
+                    pass
+            if ready is None or ready():
+                return response
 
 
 async def _scroll_collection(mgr: BrowserManager, page, collection: dict,
@@ -167,15 +278,14 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
     try:
         async with mgr.visible_page(identity) as page:
             page.on("response", on_response)
+            responses = _ResponseInbox(
+                page,
+                lambda r: USER_POSTED_API in r.url and r.status == 200)
             await page.goto(
                 open_url or _profile_url(user_id, xsec_token, xsec_source),
                 wait_until="domcontentloaded", timeout=30000)
-            await _wait_for_response(
-                page,
-                lambda r: USER_POSTED_API in r.url and r.status == 200,
-                12000,
-                on_response,
-            )
+            await responses.wait(
+                max(1500, min(5000, settle_ms)), on_response)
             await _scroll_collection(
                 mgr, page, collected, max_scrolls, known_ids)
             # SSR 兜底/补全:首屏笔记直出在页面状态里,和拦截结果合并(不覆盖)
@@ -196,6 +306,16 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
                         f"[xhs_notes] ssr_notes={len(ssr_items)} merged={added}")
                 except Exception as e:
                     print(f"[xhs_notes] ssr_fallback failed: {e!r}")
+            # otherinfo 也可能不再发 XHR，作者资料和首屏笔记一样从 SSR 读取。
+            if author is None:
+                try:
+                    ssr_author = _decamel(json.loads(
+                        await page.evaluate(_SSR_PROFILE_AUTHOR_JS) or "{}"))
+                    if ssr_author:
+                        ssr_author.setdefault("user_id", user_id)
+                        author = ssr_author
+                except Exception:
+                    pass
             final_url = page.url
             if not collected:
                 page_failure = await _xhs_page_failure(page)
@@ -244,23 +364,10 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
     try:
         async with mgr.visible_page(identity) as page:
             page.on("response", on_response)
-            search_responses: asyncio.Queue = asyncio.Queue()
-
-            def capture_search_response(resp):
-                if _is_search_notes_response(resp.url) and resp.status == 200:
-                    search_responses.put_nowait(resp)
-
-            page.on("response", capture_search_response)
-
-            async def wait_search_response(timeout_ms: int):
-                try:
-                    response = await asyncio.wait_for(
-                        search_responses.get(), timeout=max(0, timeout_ms) / 1000)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    return None
-                # 精确解析队列里命中的响应；异步 response 回调可能仍在排队。
-                await on_response(response)
-                return response
+            responses = _ResponseInbox(
+                page,
+                lambda r: (_is_search_notes_response(r.url)
+                           and r.status == 200))
 
             # 首选正常搜索入口和逐字输入。
             await page.goto(
@@ -283,7 +390,7 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
             response = None
             if typed:
                 await box.press("Enter")
-                response = await wait_search_response(4000)
+                response = await responses.wait(4000, on_response)
             if response is None:
                 # 页面尚未完成 hydration 时 Enter 偶尔不生效；直接打开正常搜索
                 # 结果 URL。该页面仍由真实浏览器加载并自行发出带签名的 v2 请求。
@@ -296,7 +403,7 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
                 await page.goto(
                     f"{_BASE}/search_result?{q}",
                     wait_until="domcontentloaded", timeout=30000)
-                await wait_search_response(12000)
+                await responses.wait(12000, on_response)
             await _scroll_collection(
                 mgr, page, collected, max_scrolls)
             final_url = page.url
@@ -339,15 +446,22 @@ async def fetch_xhs_note_detail(mgr: BrowserManager, identity: Identity, note_id
     try:
         async with mgr.visible_page(identity) as page:
             page.on("response", on_response)
+            responses = _ResponseInbox(
+                page, lambda r: FEED_API in r.url and r.status == 200)
             await page.goto(
                 _note_url(note_id, xsec_token, xsec_source),
                 wait_until="domcontentloaded", timeout=30000)
-            await _wait_for_response(
-                page,
-                lambda r: FEED_API in r.url and r.status == 200,
-                8000,
-                on_response,
-            )
+            # 详情首屏目前由 SSR 直出，常常不会再请求 v1/feed。优先读取页面
+            # 内联状态；老页面没有 SSR 时再等待 feed 响应。
+            try:
+                ssr_card = _decamel(json.loads(
+                    await page.evaluate(_SSR_NOTE_DETAIL_JS, note_id) or "{}"))
+                if ssr_card:
+                    result.update(ssr_card)
+            except Exception:
+                pass
+            if not result:
+                await responses.wait(8000, on_response)
         if not result:
             error = "未拦截到笔记详情(xsec_token 可能已过期或笔记不可见)"
     except Exception as e:
@@ -379,15 +493,25 @@ async def fetch_xhs_comments(mgr: BrowserManager, identity: Identity, note_id: s
     try:
         async with mgr.visible_page(identity) as page:
             page.on("response", on_response)
+            responses = _ResponseInbox(
+                page, lambda r: COMMENT_API in r.url and r.status == 200)
             await page.goto(
                 _note_url(note_id, xsec_token, xsec_source),
                 wait_until="domcontentloaded", timeout=30000)
-            await _wait_for_response(
-                page,
-                lambda r: COMMENT_API in r.url and r.status == 200,
-                8000,
-                on_response,
-            )
+            # 首屏评论也可能只存在 SSR 状态中，不再单独发 comment/page。
+            try:
+                ssr_comments = _decamel(json.loads(
+                    await page.evaluate(
+                        _SSR_NOTE_COMMENTS_JS, note_id) or "[]"))
+                for comment in ssr_comments:
+                    cid = str(comment.get("id") or comment.get("comment_id") or "")
+                    if cid:
+                        collected[cid] = comment
+            except Exception:
+                pass
+            if not collected:
+                await responses.wait(
+                    max(1500, min(4000, settle_ms)), on_response)
             await _scroll_collection(
                 mgr, page, collected, max_scrolls, known_cids)
             if not collected:
@@ -404,7 +528,20 @@ async def fetch_xhs_comments(mgr: BrowserManager, identity: Identity, note_id: s
 _XHS_STATE_USER = """
 () => {
   try {
-    const s = window.__INITIAL_STATE__ || {};
+    const marker = 'window.__INITIAL_STATE__=';
+    let s = window.__INITIAL_STATE__;
+    if (!s || !Object.keys(s).length) {
+      for (const script of document.scripts) {
+        const text = script.textContent || '';
+        const at = text.indexOf(marker);
+        if (at < 0) continue;
+        try {
+          s = (new Function('return (' + text.slice(at + marker.length) + ')'))();
+        } catch (e) { s = null; }
+        break;
+      }
+    }
+    s = s || {};
     const u = s.user || {};
     // 不同页面结构兜底:登录用户资料可能在 userInfo / loginUser / userPageData
     return u.userInfo || u.loginUser || u.userPageData || u.info || null;
@@ -448,6 +585,11 @@ async def fetch_creator_published(mgr: BrowserManager, identity: Identity,
     try:
         async with mgr.visible_page(identity) as page:
             page.on("response", on_response)
+            responses = _ResponseInbox(
+                page,
+                lambda r: (
+                    "creator.xiaohongshu.com" in r.url
+                    and "/api/" in r.url and r.status == 200))
             for url in (
                     "https://creator.xiaohongshu.com/new/note-manager",
                     "https://creator.xiaohongshu.com/publish/publish?source=official"):
@@ -456,14 +598,8 @@ async def fetch_creator_published(mgr: BrowserManager, identity: Identity,
                 if "login" in page.url or "passport" in page.url:
                     error = "logged_out:创作平台未登录"
                     break
-                await _wait_for_response(
-                    page,
-                    lambda r: (
-                        "creator.xiaohongshu.com" in r.url
-                        and "/api/" in r.url and r.status == 200),
-                    10000,
-                    on_response,
-                )
+                await responses.wait(
+                    10000, on_response, ready=lambda: bool(collected))
                 if collected:
                     break
                 await _scroll_collection(mgr, page, collected, 4)
@@ -519,25 +655,13 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
     try:
         async with mgr.visible_page(identity) as page:
             page.on("response", on_response)
-            # user/me 常在 DOMContentLoaded 前返回。先启动等待器再导航，既不会
-            # 漏响应，也不会在已经拿到身份后额外空等 timeout_ms。
-            response_waiter = asyncio.create_task(_wait_for_response(
-                page,
-                lambda r: USER_ME_API in r.url and r.status == 200,
-                timeout_ms,
-                on_response,
-            ))
-            await asyncio.sleep(0)
-            try:
-                await page.goto(
-                    f"{_BASE}/",
-                    wait_until="domcontentloaded", timeout=30000)
-                await response_waiter
-            except BaseException:
-                if not response_waiter.done():
-                    response_waiter.cancel()
-                await asyncio.gather(response_waiter, return_exceptions=True)
-                raise
+            # user/me 常在 DOMContentLoaded 前返回，导航前先挂同步事件队列。
+            responses = _ResponseInbox(
+                page, lambda r: USER_ME_API in r.url and r.status == 200)
+            await page.goto(
+                f"{_BASE}/",
+                wait_until="domcontentloaded", timeout=30000)
+            await responses.wait(timeout_ms, on_response)
             final_url = page.url
             if "passport" in final_url or "/login" in final_url:
                 logged_out = True
