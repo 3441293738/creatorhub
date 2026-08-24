@@ -1530,6 +1530,63 @@
   /* 行/卡片刷新时的轻微"陈旧"提示:配合 INFLIGHT 暂停轮询,这里给手动刷新一个柔和过渡 */
   .table-wrap.stale { opacity:.55; transition:opacity .2s var(--ease); }
 
+  /* ── 统一任务队列 ── */
+  .queue-stats { display:grid; grid-template-columns:repeat(5,minmax(120px,1fr)); gap:10px; }
+  button.queue-stat {
+    min-height:82px; padding:13px 15px; text-align:left; display:grid; gap:5px;
+    background:var(--surface); color:var(--fg); border:1px solid var(--line);
+    border-radius:var(--r); box-shadow:var(--sh-sm); filter:none;
+  }
+  button.queue-stat:hover { background:var(--surface-2); border-color:var(--acc-ring); filter:none; }
+  button.queue-stat.active { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc-soft); }
+  .queue-stat b { font:650 22px/1 var(--mono); color:var(--fg-strong); }
+  .queue-stat span { color:var(--mut); font-size:12px; }
+  .queue-stat[data-tone="info"] b { color:var(--info); }
+  .queue-stat[data-tone="warn"] b { color:var(--warn); }
+  .queue-stat[data-tone="danger"] b { color:var(--danger); }
+  .queue-toolbar {
+    display:grid; grid-template-columns:minmax(130px,.8fr) minmax(150px,1fr) minmax(130px,.8fr) minmax(220px,1.6fr) auto;
+    gap:10px; align-items:end; margin-bottom:14px;
+  }
+  .queue-toolbar .form-field { min-width:0; }
+  .queue-toolbar button { min-height:40px; }
+  .queue-table { min-width:1040px; table-layout:fixed; }
+  .queue-table .queue-col-type { width:122px; }
+  .queue-table .queue-col-content { width:310px; }
+  .queue-table .queue-col-account { width:150px; }
+  .queue-table .queue-col-time { width:160px; }
+  .queue-table .queue-col-status { width:118px; }
+  .queue-table .queue-col-reason { width:230px; }
+  .queue-table .queue-col-action { width:92px; }
+  .queue-copy, .queue-reason { white-space:normal; min-width:0; line-height:1.45; overflow-wrap:anywhere; }
+  .queue-copy b { display:block; color:var(--fg-strong); font-weight:620; }
+  .queue-copy small, .queue-reason small, .queue-account small, .queue-time small {
+    display:block; margin-top:3px; color:var(--mut); font-size:11px; line-height:1.4;
+  }
+  .queue-account { white-space:normal; }
+  .queue-time { font:500 11px/1.45 var(--mono); white-space:normal; color:var(--mut); }
+  .queue-reason { color:var(--mut); font-size:12px; }
+  .queue-reason.has-error { color:var(--danger); }
+  .queue-blocked { background:var(--warn-soft); color:var(--warn); border-color:rgba(251,191,36,.3); }
+  .queue-running { background:var(--info-soft); color:var(--info); border-color:rgba(56,189,248,.25); }
+  .queue-completed { background:var(--success-soft); color:var(--success); border-color:rgba(52,211,153,.25); }
+  .queue-pager { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-top:12px; }
+  .queue-pager-actions { display:flex; align-items:center; gap:7px; }
+  .queue-pager button { min-width:40px; min-height:38px; padding:8px 11px; }
+  .queue-pager .form-field { grid-template-columns:auto auto; align-items:center; gap:7px; }
+  .queue-pager select { min-width:82px; }
+  @media(max-width:1050px) {
+    .queue-stats { grid-template-columns:repeat(3,1fr); }
+    .queue-toolbar { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .queue-toolbar > button { grid-column:1/-1; }
+  }
+  @media(max-width:640px) {
+    .queue-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .queue-toolbar { grid-template-columns:1fr; }
+    .queue-toolbar > button { grid-column:auto; }
+    .queue-pager, .queue-pager-actions { justify-content:center; }
+  }
+
   /* ── navigation helpers ── */
   .skip-link {
     position:fixed; left:16px; top:10px; z-index:500; padding:9px 13px;
@@ -1768,6 +1825,7 @@
     <div class="nav-sep">本账号</div>
     <button class="navitem" data-tab="hub" onclick="switchTab('hub', true)"><svg><use href="#i-user"/></svg><span class="nav-label">账号管理</span></button>
     <div class="nav-sep">工具</div>
+    <button class="navitem" data-tab="queue" onclick="switchTab('queue', true)"><svg><use href="#i-list"/></svg><span class="nav-label">任务队列</span><span class="nav-badge" id="tb-queue">0</span></button>
     <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish', true)"><svg><use href="#i-send"/></svg><span class="nav-label">发布</span><span class="nav-badge" id="tb-pub">0</span></button>
     <button class="navitem notsh-only" data-tab="autocomment" onclick="switchTab('autocomment', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
     <button class="navitem" data-tab="share-download" onclick="switchTab('share-download', true)"><svg><use href="#i-download"/></svg><span class="nav-label">链接下载</span></button>
@@ -2012,6 +2070,45 @@
       </div>
       <div class="form-note" style="margin-top:12px"><svg aria-hidden="true"><use href="#i-info"/></svg><span>保守模式会强制保留评论、社交、私信、发布和共享写入间隔的安全下限；需要完全按输入值运行时选择自定义模式。</span></div>
       <div class="form-actions"><button class="ghost" type="button" onclick="showRiskAudit()"><svg><use href="#i-list"/></svg>查看变更记录</button><span class="actions-spacer"></span><button type="button" onclick="saveRiskConfig()"><svg><use href="#i-check"/></svg>保存并立即生效</button></div>
+    </div>
+  </section>
+
+  <section data-panel="queue">
+    <div class="queue-stats" aria-label="任务队列统计">
+      <button type="button" class="queue-stat active" data-queue-state="active" onclick="setTaskQueueState('active')"><b id="queue-stat-active">—</b><span>处理中 / 等待中</span></button>
+      <button type="button" class="queue-stat" data-queue-state="pending" onclick="setTaskQueueState('pending')"><b id="queue-stat-pending">—</b><span>等待执行</span></button>
+      <button type="button" class="queue-stat" data-queue-state="running" data-tone="info" onclick="setTaskQueueState('running')"><b id="queue-stat-running">—</b><span>正在执行</span></button>
+      <button type="button" class="queue-stat" data-queue-state="blocked" data-tone="warn" onclick="setTaskQueueState('blocked')"><b id="queue-stat-blocked">—</b><span>风控延后</span></button>
+      <button type="button" class="queue-stat" data-queue-state="failed" data-tone="danger" onclick="setTaskQueueState('failed')"><b id="queue-stat-failed">—</b><span>失败 / 待处理</span></button>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-list"/></svg></span>
+        <h2>任务明细 <span class="sub">统一查看采集、发布、评论、账号动作和下载任务</span></h2>
+      </div>
+      <div class="queue-toolbar" aria-label="任务队列筛选">
+        <div class="form-field"><label for="queue-platform">平台范围</label><select id="queue-platform" onchange="refreshTaskQueue(true)"><option value="current" id="queue-platform-current">当前平台</option><option value="all">全部平台</option></select></div>
+        <div class="form-field"><label for="queue-type">队列类型</label><select id="queue-type" onchange="refreshTaskQueue(true)"><option value="">全部队列</option><option value="collections">关键词采集</option><option value="publishes">内容发布</option><option value="comments">自动评论</option><option value="actions">账号动作</option><option value="monitor_downloads">监控下载</option><option value="collection_downloads">采集下载</option></select></div>
+        <div class="form-field"><label for="queue-state">任务状态</label><select id="queue-state" onchange="refreshTaskQueue(true)"><option value="active">活动任务</option><option value="pending">等待执行</option><option value="running">正在执行</option><option value="blocked">风控延后</option><option value="failed">失败任务</option><option value="completed">已完成</option><option value="all">全部状态</option></select></div>
+        <div class="form-field"><label for="queue-query">搜索</label><input id="queue-query" type="search" placeholder="任务内容、账号、错误或风控原因" onkeydown="if(event.key==='Enter'){event.preventDefault();refreshTaskQueue(true)}"></div>
+        <button type="button" class="ghost" onclick="refreshTaskQueue(true)"><svg><use href="#i-bolt"/></svg>刷新</button>
+      </div>
+      <div class="table-wrap" id="queue-table-wrap">
+        <table class="queue-table" aria-label="任务队列明细">
+          <thead><tr><th class="queue-col-type">队列</th><th class="queue-col-content">任务内容</th><th class="queue-col-account">账号</th><th class="queue-col-time">时间</th><th class="queue-col-status">状态</th><th class="queue-col-reason">阻塞 / 错误</th><th class="queue-col-action">操作</th></tr></thead>
+          <tbody id="queue-table"></tbody>
+        </table>
+      </div>
+      <div class="queue-pager" id="queue-pager" hidden>
+        <span class="mut" id="queue-page-info">第 1 / 1 页</span>
+        <div class="queue-pager-actions">
+          <button type="button" class="ghost" id="queue-first" onclick="goTaskQueuePage(1)" aria-label="任务队列第一页">«</button>
+          <button type="button" class="ghost" id="queue-prev" onclick="goTaskQueuePage(TASK_QUEUE_PAGE-1)" aria-label="任务队列上一页">‹</button>
+          <button type="button" class="ghost" id="queue-next" onclick="goTaskQueuePage(TASK_QUEUE_PAGE+1)" aria-label="任务队列下一页">›</button>
+          <button type="button" class="ghost" id="queue-last" onclick="goTaskQueuePage(TASK_QUEUE_PAGES)" aria-label="任务队列最后一页">»</button>
+        </div>
+        <div class="form-field"><label for="queue-page-size">每页</label><select id="queue-page-size" onchange="setTaskQueuePageSize(this.value)"><option value="10">10 条</option><option value="20" selected>20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></div>
+      </div>
     </div>
   </section>
 

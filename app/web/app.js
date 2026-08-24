@@ -851,6 +851,9 @@ const PAGE_META = {
   publish: {
     title: "内容发布", desc: "准备素材与文案，创建立即或定时发布任务。"
   },
+  queue: {
+    title: "任务队列", desc: "统一查看采集、发布、评论、账号动作与下载任务的排队、执行和阻塞状态。"
+  },
   autocomment: {
     title: "自动评论", desc: "配置评论与回复规则，并审核待发布文案。"
   },
@@ -896,6 +899,8 @@ function switchPlatform(pf) {
   applyPlatformUI();
   // 切换后立刻刷新该平台数据
   refreshAccounts(); refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshCollections();
+  updateTaskQueuePlatformLabel();
+  if (CURRENT_TAB === "queue") refreshTaskQueue(true); else refreshTaskQueueBadge();
   if (CURRENT_TAB === "risk-control") refreshRiskCenter(true);
   populateAcAccount(); onAcMode(); refreshCommentRules(); refreshCommentTasks();
   if (pfHasPublish(PLATFORM)) refreshPublish();
@@ -1060,6 +1065,7 @@ function switchTab(name, pushHistory = false) {
     refreshShareHistory();
   }
   if (name === "collections") { populateCollectionAccount(); refreshCollections(); }
+  if (name === "queue") refreshTaskQueue();
   if (name === "risk-control") refreshRiskCenter();
 }
 
@@ -6273,6 +6279,175 @@ async function delTask(id) {
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 
+// ─── 统一任务队列 ───
+let TASK_QUEUE_PAGE = 1;
+let TASK_QUEUE_PAGE_SIZE = 20;
+let TASK_QUEUE_PAGES = 1;
+let TASK_QUEUE_LOADING = false;
+let TASK_QUEUE_REFRESH_PENDING = false;
+let TASK_QUEUE_BADGE_LOADING = false;
+
+const TASK_QUEUE_RAW_STATUS = {
+  draft: "草稿待审", pending: "等待执行", running: "采集中", publishing: "发布中",
+  doing: "执行中", downloading: "下载中", done: "已完成", failed: "失败",
+  partial: "部分完成", uncertain: "结果待确认", canceled: "已取消", skipped: "已跳过",
+};
+const TASK_QUEUE_STATE_META = {
+  pending: ["等待执行", "pending"], running: ["正在执行", "queue-running"],
+  blocked: ["风控延后", "queue-blocked"], failed: ["执行失败", "failed"],
+  completed: ["已完成", "queue-completed"],
+};
+
+function updateTaskQueuePlatformLabel() {
+  const option = $("queue-platform-current");
+  if (option) option.textContent = `当前平台（${PF_NAME[PLATFORM] || PLATFORM}）`;
+  const select = $("queue-platform");
+  if (select && select._csSync) select._csSync();
+}
+
+function taskQueuePlatform() {
+  const value = $("queue-platform")?.value || "current";
+  return value === "current" ? PLATFORM : value;
+}
+
+function taskQueueDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function taskQueueSourceLabel(tab) {
+  return ({
+    collections: "采集任务", publish: "发布任务", autocomment: "评论任务",
+    hub: "账号管理", monitors: "作品监控",
+  })[tab] || "查看";
+}
+
+function taskQueueRow(item) {
+  const stateMeta = TASK_QUEUE_STATE_META[item.state] || [item.state || "未知", "skipped"];
+  const rawStatus = TASK_QUEUE_RAW_STATUS[item.status] || item.status || "未知";
+  const account = item.account_name || (item.account_id ? `账号 #${item.account_id}` : "未绑定账号");
+  const scheduled = item.scheduled_at ? `<b>计划 ${taskQueueDate(item.scheduled_at)}</b>` : "";
+  const created = item.created_at ? `<small>创建 ${taskQueueDate(item.created_at)}</small>` : "";
+  const nextAllowed = item.next_allowed_at ? `<small>最早继续：${taskQueueDate(item.next_allowed_at)}</small>` : "";
+  const reason = item.blocked_reason || item.error || "—";
+  const reasonClass = item.error && !item.blocked_reason ? " has-error" : "";
+  const signal = item.blocked_signal ? `<small>信号：${esc(item.blocked_signal)}</small>` : "";
+  return `<tr>
+    <td><span class="pill q bare">${esc(item.queue_label)}</span><small class="mut" style="display:block;margin-top:5px">${esc(PF_NAME[item.platform] || item.platform || "—")}</small></td>
+    <td><div class="queue-copy"><b title="${esc(item.title)}">${esc(item.title)}</b>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}</div></td>
+    <td><div class="queue-account"><b>${esc(account)}</b>${item.account_id ? `<small>ID ${Number(item.account_id)}</small>` : ""}</div></td>
+    <td><div class="queue-time">${scheduled || "尽快执行"}${created}</div></td>
+    <td><span class="pill ${stateMeta[1]}">${esc(stateMeta[0])}</span><small class="mut" style="display:block;margin-top:5px">${esc(rawStatus)}</small></td>
+    <td><div class="queue-reason${reasonClass}">${esc(reason)}${signal}${nextAllowed}</div></td>
+    <td class="acttd"><button type="button" class="ghost sm" onclick="openTaskQueueSource('${esc(item.source_tab)}')">${esc(taskQueueSourceLabel(item.source_tab))}</button></td>
+  </tr>`;
+}
+
+function renderTaskQueuePager(data) {
+  const pager = $("queue-pager");
+  if (!pager) return;
+  TASK_QUEUE_PAGE = Math.max(1, Number(data.page || 1));
+  TASK_QUEUE_PAGE_SIZE = Math.max(1, Number(data.page_size || TASK_QUEUE_PAGE_SIZE));
+  TASK_QUEUE_PAGES = Math.max(1, Number(data.pages || 1));
+  $("queue-page-info").textContent = `第 ${TASK_QUEUE_PAGE} / ${TASK_QUEUE_PAGES} 页 · 共 ${fmtNum(data.total || 0)} 条`;
+  $("queue-first").disabled = TASK_QUEUE_PAGE <= 1;
+  $("queue-prev").disabled = TASK_QUEUE_PAGE <= 1;
+  $("queue-next").disabled = TASK_QUEUE_PAGE >= TASK_QUEUE_PAGES;
+  $("queue-last").disabled = TASK_QUEUE_PAGE >= TASK_QUEUE_PAGES;
+  if ($("queue-page-size")) $("queue-page-size").value = String(TASK_QUEUE_PAGE_SIZE);
+  pager.hidden = false;
+}
+
+function renderTaskQueueSummary(summary = {}) {
+  ["active", "pending", "running", "blocked", "failed"].forEach(name => {
+    const el = $(`queue-stat-${name}`);
+    if (el) el.textContent = fmtNum(Number(summary[name] || 0));
+  });
+  const badge = $("tb-queue");
+  if (badge) badge.textContent = fmtNum(Number(summary.active || 0));
+  const selected = $("queue-state")?.value || "active";
+  document.querySelectorAll("[data-queue-state]").forEach(button =>
+    button.classList.toggle("active", button.dataset.queueState === selected));
+}
+
+async function refreshTaskQueue(resetPage = false) {
+  const body = $("queue-table");
+  if (resetPage) TASK_QUEUE_PAGE = 1;
+  if (!body) return;
+  if (TASK_QUEUE_LOADING) { TASK_QUEUE_REFRESH_PENDING = true; return; }
+  TASK_QUEUE_LOADING = true;
+  $("queue-table-wrap")?.classList.add("stale");
+  const params = new URLSearchParams({
+    platform: taskQueuePlatform(),
+    queue_type: $("queue-type")?.value || "",
+    state: $("queue-state")?.value || "active",
+    q: $("queue-query")?.value.trim() || "",
+    page: String(TASK_QUEUE_PAGE),
+    page_size: String(TASK_QUEUE_PAGE_SIZE),
+  });
+  try {
+    const data = await api("/api/task-queue?" + params.toString());
+    body.innerHTML = data.items?.length
+      ? data.items.map(taskQueueRow).join("")
+      : empty(7, "当前筛选范围内没有任务", "i-inbox", "切换状态或平台范围后再查看");
+    renderTaskQueueSummary(data.summary || {});
+    renderTaskQueuePager(data);
+  } catch (e) {
+    body.innerHTML = empty(7, "任务队列加载失败", "i-info", e.message || "请稍后重试");
+    if (CURRENT_TAB === "queue") toast("任务队列加载失败：" + e.message, "err");
+  } finally {
+    TASK_QUEUE_LOADING = false;
+    $("queue-table-wrap")?.classList.remove("stale");
+    if (TASK_QUEUE_REFRESH_PENDING) {
+      TASK_QUEUE_REFRESH_PENDING = false;
+      setTimeout(() => refreshTaskQueue(), 0);
+    }
+  }
+}
+
+async function refreshTaskQueueBadge() {
+  if (TASK_QUEUE_BADGE_LOADING || CURRENT_TAB === "queue") return;
+  TASK_QUEUE_BADGE_LOADING = true;
+  try {
+    const params = new URLSearchParams({ platform: PLATFORM, state: "active", page_size: "1" });
+    const data = await api("/api/task-queue?" + params.toString());
+    const badge = $("tb-queue");
+    if (badge) badge.textContent = fmtNum(Number(data.summary?.active || 0));
+  } catch (e) {
+    // 导航徽章是辅助信息，失败时保留上次值，不打断当前页面操作。
+  } finally { TASK_QUEUE_BADGE_LOADING = false; }
+}
+
+function setTaskQueueState(state) {
+  const select = $("queue-state");
+  if (!select) return;
+  select.value = state;
+  if (select._csSync) select._csSync();
+  refreshTaskQueue(true);
+}
+
+function goTaskQueuePage(page) {
+  const target = Math.max(1, Math.min(TASK_QUEUE_PAGES, Number(page) || 1));
+  if (target === TASK_QUEUE_PAGE) return;
+  TASK_QUEUE_PAGE = target;
+  refreshTaskQueue();
+}
+
+function setTaskQueuePageSize(value) {
+  TASK_QUEUE_PAGE_SIZE = Math.max(10, Math.min(100, Number(value) || 20));
+  refreshTaskQueue(true);
+}
+
+function openTaskQueueSource(tab) {
+  if (!PAGE_META[tab]) return;
+  switchTab(tab, true);
+}
+
 function esc(s) { return (s || "").toString().replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 function loop() {
@@ -6280,6 +6455,7 @@ function loop() {
   refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshOverviewChart(); refreshCommentRules(); refreshCommentTasks(); if (pfHasPublish(PLATFORM)) refreshPublish();
   if (CURRENT_TAB === "collections") refreshCollections();
   if (CURRENT_TAB === "risk-control") refreshRiskCenter();
+  if (CURRENT_TAB === "queue") refreshTaskQueue(); else refreshTaskQueueBadge();
 }
 
 // initial skeletons while data loads
@@ -6292,9 +6468,10 @@ $("danmaku-watch-table").innerHTML = skeleton(8);
 $("danmaku-table").innerHTML = skeleton(6);
 $("collection-job-table").innerHTML = collectionTaskSkeleton(3);
 $("collection-content-list").innerHTML = collectionResultSkeleton(4);
+$("queue-table").innerHTML = skeleton(7);
 
 // restore last-selected section (default: 总览);旧版四个独立页已并入「账号管理」
-const VALID_TABS = ["overview", "accounts", "risk-control", "collections", "monitors", "comments", "danmaku", "hub", "publish", "autocomment", "share-download", "notifications", "settings"];
+const VALID_TABS = ["overview", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "publish", "autocomment", "share-download", "notifications", "settings"];
 const LEGACY_HUB_TABS = ["myworks", "following", "fans", "dm"];
 switchTab((() => {
   try {
@@ -6310,6 +6487,7 @@ switchHubTab(HUB_TAB);   // 恢复上次停留的子标签(我的作品/关注/�
 // restore last-selected platform (default: 抖音)
 PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "douyin", "kuaishou", "shipinhao"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
 applyPlatformUI();
+updateTaskQueuePlatformLabel();
 
 onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshBrowserRuntimes(); refreshProxies(); refreshChannels(); loop();
 enhanceAllSelects();   // 把所有原生 <select> 升级为美化下拉

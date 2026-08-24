@@ -81,3 +81,21 @@ def test_monitor_advanced_filters_are_editable_and_retry_reports_real_result():
     assert 'if (!result.ok) throw new Error' in source
     assert "已重新加入下载队列" not in source[source.index(
         "async function retryDl"):source.index("async function delContent")]
+
+
+def test_unified_task_queue_page_has_filters_badge_and_source_navigation():
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'data-tab="queue"' in html
+    assert 'data-panel="queue"' in html
+    assert 'id="tb-queue"' in html
+    for control in ("queue-platform", "queue-type", "queue-state", "queue-query"):
+        assert f'id="{control}"' in html
+    assert 'id="queue-table"' in html
+    assert 'id="queue-pager"' in html
+    assert 'queue: {' in source[source.index("const PAGE_META"):source.index("function updatePageContext")]
+    assert 'async function refreshTaskQueue(' in source
+    assert 'async function refreshTaskQueueBadge(' in source
+    assert 'openTaskQueueSource' in source
+    assert '"queue"' in source[source.index("const VALID_TABS"):source.index("const LEGACY_HUB_TABS")]
