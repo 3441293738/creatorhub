@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8fafc">
+  <meta name="description" content="CreatorHub 交流群固定入口，获取最新微信群二维码。">
+  <title>CreatorHub 交流群</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --background: #f8fafc;
+      --surface: #ffffff;
+      --foreground: #0f172a;
+      --muted-foreground: #475569;
+      --primary: #1e3a5f;
+      --primary-soft: #e9eef5;
+      --success: #166534;
+      --success-soft: #dcfce7;
+      --warning: #92400e;
+      --warning-soft: #fef3c7;
+      --danger: #b91c1c;
+      --danger-soft: #fee2e2;
+      --border: #cbd5e1;
+      --ring: #2563eb;
+      --shadow: 0 24px 70px rgb(15 23 42 / 10%);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      min-height: 100%;
+      background: var(--background);
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--foreground);
+      background:
+        radial-gradient(circle at 50% 0%, rgb(37 99 235 / 8%), transparent 34rem),
+        var(--background);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      line-height: 1.6;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    .page {
+      width: min(100% - 32px, 620px);
+      margin: 0 auto;
+      padding: 44px 0 36px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      min-height: 44px;
+      gap: 10px;
+      margin-bottom: 22px;
+      color: var(--primary);
+      font-size: 15px;
+      font-weight: 750;
+      text-decoration: none;
+    }
+
+    .brand svg {
+      width: 28px;
+      height: 28px;
+    }
+
+    .card {
+      overflow: hidden;
+      border: 1px solid rgb(203 213 225 / 85%);
+      border-radius: 28px;
+      background: rgb(255 255 255 / 94%);
+      box-shadow: var(--shadow);
+    }
+
+    .header {
+      padding: 34px 34px 26px;
+      text-align: center;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      margin: 0 0 14px;
+      padding: 3px 12px;
+      border-radius: 999px;
+      color: var(--primary);
+      background: var(--primary-soft);
+      font-size: 13px;
+      font-weight: 750;
+      letter-spacing: .04em;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(28px, 7vw, 40px);
+      line-height: 1.2;
+      letter-spacing: -.035em;
+    }
+
+    .intro {
+      max-width: 450px;
+      margin: 14px auto 0;
+      color: var(--muted-foreground);
+      font-size: 16px;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      margin-top: 18px;
+      padding: 5px 13px;
+      border-radius: 999px;
+      color: var(--success);
+      background: var(--success-soft);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .status::before {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      content: "";
+    }
+
+    .status.warning {
+      color: var(--warning);
+      background: var(--warning-soft);
+    }
+
+    .status.error {
+      color: var(--danger);
+      background: var(--danger-soft);
+    }
+
+    .qr-section {
+      padding: 0 34px 34px;
+    }
+
+    .qr-frame {
+      position: relative;
+      display: grid;
+      min-height: 420px;
+      place-items: center;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      background:
+        linear-gradient(90deg, transparent 49.5%, rgb(203 213 225 / 30%) 50%, transparent 50.5%),
+        linear-gradient(transparent 49.5%, rgb(203 213 225 / 30%) 50%, transparent 50.5%),
+        #f1f5f9;
+    }
+
+    .qr-image {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: #ffffff;
+      opacity: 0;
+      transition: opacity 180ms ease;
+    }
+
+    .qr-image.ready {
+      opacity: 1;
+    }
+
+    .loading {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      color: var(--muted-foreground);
+      text-align: center;
+    }
+
+    .loading[hidden] {
+      display: none;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .button {
+      display: inline-flex;
+      min-height: 48px;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      color: var(--foreground);
+      background: var(--surface);
+      font-size: 15px;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+      transition: border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
+    }
+
+    .button.primary {
+      border-color: var(--primary);
+      color: #ffffff;
+      background: var(--primary);
+    }
+
+    .button:hover {
+      border-color: var(--primary);
+      background: var(--primary-soft);
+    }
+
+    .button.primary:hover {
+      color: #ffffff;
+      background: #172f4f;
+    }
+
+    .button:active {
+      transform: translateY(1px);
+    }
+
+    .button:focus-visible,
+    .brand:focus-visible {
+      outline: 3px solid rgb(37 99 235 / 35%);
+      outline-offset: 3px;
+    }
+
+    .button svg {
+      width: 18px;
+      height: 18px;
+      flex: 0 0 auto;
+    }
+
+    .hint {
+      margin: 16px 2px 0;
+      color: var(--muted-foreground);
+      font-size: 14px;
+      text-align: center;
+    }
+
+    .meta {
+      margin: 8px 2px 0;
+      color: #64748b;
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .footer {
+      margin: 22px 0 0;
+      color: #64748b;
+      font-size: 13px;
+      text-align: center;
+    }
+
+    @media (max-width: 560px) {
+      .page {
+        width: min(100% - 20px, 620px);
+        padding-top: 20px;
+      }
+
+      .brand {
+        margin-left: 4px;
+        margin-bottom: 14px;
+      }
+
+      .card {
+        border-radius: 22px;
+      }
+
+      .header {
+        padding: 28px 20px 22px;
+      }
+
+      .qr-section {
+        padding: 0 14px 22px;
+      }
+
+      .qr-frame {
+        min-height: 340px;
+        border-radius: 18px;
+      }
+
+      .actions {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        transition-duration: .01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <a class="brand" href="../" aria-label="返回 CreatorHub 在线预览">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <rect x="3" y="3" width="26" height="26" rx="8" fill="currentColor" opacity=".12"/>
+        <path d="M10 11.5h12M10 16h8M10 20.5h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+      </svg>
+      <span>CreatorHub</span>
+    </a>
+
+    <article class="card">
+      <header class="header">
+        <p class="eyebrow">社区固定入口</p>
+        <h1 id="group-name">CreatorHub 交流群</h1>
+        <p class="intro">长按下方图片，在微信中选择“识别图中二维码”加入群聊。</p>
+        <div id="status" class="status" role="status" aria-live="polite">正在获取最新二维码</div>
+      </header>
+
+      <section class="qr-section" aria-label="当前微信群二维码">
+        <div class="qr-frame">
+          <div id="loading" class="loading">正在加载最新群二维码…</div>
+          <img
+            id="qr-image"
+            class="qr-image"
+            width="1050"
+            height="1566"
+            alt="CreatorHub 交流群最新二维码"
+          >
+        </div>
+
+        <div class="actions">
+          <a id="open-image" class="button primary" href="#" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 3v12m0 0 4-4m-4 4-4-4M5 15v4h14v-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            查看二维码原图
+          </a>
+          <button id="refresh" class="button" type="button">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M20 11a8 8 0 1 0-2.34 5.66M20 5v6h-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            刷新二维码
+          </button>
+        </div>
+
+        <p class="hint">二维码会定期更新。以后仍访问本页面，即可获取最新版本。</p>
+        <p id="meta" class="meta"></p>
+      </section>
+    </article>
+
+    <p class="footer">CreatorHub · 多平台内容管理面板</p>
+  </main>
+
+  <script>
+    (() => {
+      const elements = {
+        groupName: document.querySelector("#group-name"),
+        image: document.querySelector("#qr-image"),
+        loading: document.querySelector("#loading"),
+        meta: document.querySelector("#meta"),
+        openImage: document.querySelector("#open-image"),
+        refresh: document.querySelector("#refresh"),
+        status: document.querySelector("#status"),
+      };
+
+      const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+      function setStatus(text, tone = "success") {
+        elements.status.textContent = text;
+        elements.status.className = `status${tone === "success" ? "" : ` ${tone}`}`;
+      }
+
+      function validConfig(config) {
+        return config && typeof config.image === "string" && config.image.trim() !== "";
+      }
+
+      async function loadCommunity() {
+        elements.refresh.disabled = true;
+        elements.image.classList.remove("ready");
+        elements.loading.hidden = false;
+        elements.loading.textContent = "正在加载最新群二维码…";
+        setStatus("正在获取最新二维码", "warning");
+
+        try {
+          const response = await fetch(`./config.json?t=${Date.now()}`, { cache: "no-store" });
+          if (!response.ok) throw new Error(`config request failed: ${response.status}`);
+          const config = await response.json();
+          if (!validConfig(config)) throw new Error("invalid community config");
+
+          const imageUrl = new URL(config.image, window.location.href);
+          imageUrl.searchParams.set("v", config.version || config.updatedAt || Date.now().toString());
+
+          if (config.groupName) {
+            elements.groupName.textContent = config.groupName;
+            elements.image.alt = `${config.groupName}最新二维码`;
+          }
+
+          await new Promise((resolve, reject) => {
+            elements.image.onload = resolve;
+            elements.image.onerror = reject;
+            elements.image.src = imageUrl.href;
+          });
+
+          elements.openImage.href = imageUrl.href;
+          elements.image.classList.add("ready");
+          elements.loading.hidden = true;
+
+          const expiresAt = config.expiresAt ? new Date(config.expiresAt) : null;
+          const updatedAt = config.updatedAt ? new Date(config.updatedAt) : null;
+          const expired = expiresAt && !Number.isNaN(expiresAt.valueOf()) && expiresAt <= new Date();
+
+          if (expired) {
+            setStatus("本期二维码可能已过期，正在等待更新", "warning");
+          } else {
+            setStatus("当前二维码可用");
+          }
+
+          const details = [];
+          if (updatedAt && !Number.isNaN(updatedAt.valueOf())) {
+            details.push(`更新于 ${dateFormatter.format(updatedAt)}`);
+          }
+          if (expiresAt && !Number.isNaN(expiresAt.valueOf())) {
+            details.push(`有效期至 ${dateFormatter.format(expiresAt)}`);
+          }
+          elements.meta.textContent = details.join(" · ");
+        } catch (error) {
+          console.error(error);
+          elements.loading.hidden = false;
+          elements.loading.textContent = "二维码加载失败，请稍后刷新重试。";
+          elements.meta.textContent = "";
+          setStatus("二维码暂时未加载", "error");
+        } finally {
+          elements.refresh.disabled = false;
+        }
+      }
+
+      elements.refresh.addEventListener("click", loadCommunity);
+      loadCommunity();
+    })();
+  </script>
+</body>
+</html>

@@ -8,6 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "app" / "web"
 PREVIEW = ROOT / "preview"
+COMMUNITY = PREVIEW / "community"
+COMMUNITY_QR = ROOT / "assets" / "community" / "wechat-group.jpg"
 
 
 def build(destination: Path) -> None:
@@ -26,6 +28,8 @@ def build(destination: Path) -> None:
     (destination / "index.html").write_text(html.replace(marker, replacement), encoding="utf-8")
     shutil.copy2(SOURCE / "app.js", destination / "app.js")
     shutil.copy2(PREVIEW / "demo-api.js", destination / "demo-api.js")
+    shutil.copytree(COMMUNITY, destination / "community")
+    shutil.copy2(COMMUNITY_QR, destination / "community" / COMMUNITY_QR.name)
     (destination / ".nojekyll").write_text("", encoding="utf-8")
 
 

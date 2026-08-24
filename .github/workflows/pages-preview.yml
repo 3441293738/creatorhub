@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "app/web/**"
+      - "assets/community/**"
       - "preview/**"
       - ".github/workflows/pages-preview.yml"
   workflow_dispatch:

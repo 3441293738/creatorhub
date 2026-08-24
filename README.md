@@ -2,7 +2,7 @@
 
 > 本地运行的多平台内容管理面板，支持 **抖音 / 小红书 / 快手 / 视频号**。
 
-[在线预览](https://3441293738.github.io/creatorhub/) · [快速开始](#快速开始) · [平台能力](#平台能力)
+[在线预览](https://3441293738.github.io/creatorhub/) · [快速开始](#快速开始) · [平台能力](#平台能力) · [交流群](#交流群)
 
 > 在线预览由 GitHub Pages 提供，使用脱敏示例数据，仅展示界面与交互；登录、抓取、下载和发布仍需在本地运行。
 
@@ -276,6 +276,20 @@ data/
 ```
 
 备份项目前，建议一并备份 `config.yaml` 和 `data/`。
+
+## 交流群
+
+欢迎加入 **CreatorHub 交流群**，交流使用经验、问题反馈和功能建议。
+
+<p align="center">
+  <a href="https://3441293738.github.io/creatorhub/community/">
+    <img src="assets/community/live-entry.png" alt="CreatorHub 交流群固定入口二维码" width="280">
+  </a>
+</p>
+
+<p align="center">
+  扫码或点击二维码打开<a href="https://3441293738.github.io/creatorhub/community/">交流群固定入口</a>；微信群二维码到期后会在入口页更新。
+</p>
 
 ## 赞助商
 
