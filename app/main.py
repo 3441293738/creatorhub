@@ -2404,8 +2404,20 @@ async def refresh_account_profile(account_id: int):
         raise HTTPException(400, "该账号无浏览器登录态(Cookie 粘贴账号可能不含完整态),无法拉取资料")
 
     async def _refresh_profile():
-        return await _enrich_account_profile(
-            account_id, state, detailed=True)
+        try:
+            return await _enrich_account_profile(
+                account_id, state, detailed=True)
+        finally:
+            if platform == "xhs" and browser is not None:
+                # XHS browser reads use a persistent headed context. The task
+                # page is closed by visible_page(), but Chromium keeps its
+                # bootstrap about:blank tab alive until the context is closed.
+                # A user-triggered refresh is one-shot, so release it while the
+                # account operation guard is still held.
+                try:
+                    await browser.close_context(account_id)
+                except Exception:
+                    pass
 
     res, outcome = await _run_account_read(
         account_id, OperationKind.READ_LIGHT,

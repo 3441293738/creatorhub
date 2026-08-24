@@ -28,6 +28,7 @@ class _Identity:
 class _BrowserStub:
     def __init__(self):
         self._locks = {}
+        self.closed_keys = []
 
     def lock_for(self, key):
         return self._locks.setdefault(key, asyncio.Lock())
@@ -37,6 +38,9 @@ class _BrowserStub:
 
     def anon_identity(self):
         return _Identity()
+
+    async def close_context(self, key):
+        self.closed_keys.append(key)
 
 
 class _CreatorResponse:
@@ -336,6 +340,7 @@ class RiskApiGateTests(unittest.TestCase):
             "has_read_login": False,
             "has_creator": False,
         })
+        self.assertEqual(self.browser.closed_keys, [self.account_id])
 
     def test_profile_refresh_returns_immediately_while_manual_browser_is_open(self):
         class Lease:
@@ -350,6 +355,7 @@ class RiskApiGateTests(unittest.TestCase):
         self.assertTrue(result["skipped"])
         self.assertEqual(result["blocked_by"], "open_browser")
         self.assertIn("关闭窗口", result["reason"])
+        self.assertEqual(self.browser.closed_keys, [])
 
     def test_invalid_account_profile_refresh_can_recover_status(self):
         with db.get_session() as session:
