@@ -211,6 +211,53 @@ class IdentityModeTests(unittest.TestCase):
             platform="xhs",
         ).key)
 
+    def test_duplicate_xhs_login_reuses_and_refocuses_active_task(self):
+        task_id = "active-xhs-login"
+        main.login_tasks[task_id] = main._login_task_state(
+            status="waiting", platform="xhs", creator=False,
+            account_id=None)
+        try:
+            with patch("app.main.bring_window_to_front",
+                       return_value=True) as focus:
+                result = asyncio.run(main._reuse_or_reject_interactive_login(
+                    "xhs", False))
+        finally:
+            main.login_tasks.pop(task_id, None)
+
+        self.assertEqual(result["task_id"], task_id)
+        self.assertTrue(result["reused"])
+        focus.assert_called_once()
+
+    def test_different_login_scope_is_rejected_instead_of_queued(self):
+        task_id = "active-xhs-creator-login"
+        main.login_tasks[task_id] = main._login_task_state(
+            status="waiting", platform="xhs", creator=True,
+            account_id=None)
+        try:
+            with self.assertRaises(main.HTTPException) as caught:
+                asyncio.run(main._reuse_or_reject_interactive_login(
+                    "xhs", False))
+        finally:
+            main.login_tasks.pop(task_id, None)
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("已有小红书创作者扫码登录窗口", caught.exception.detail)
+
+    def test_open_account_browser_rejects_new_scan_login_immediately(self):
+        class Lease:
+            active = True
+
+        main.open_browsers[73] = Lease()
+        try:
+            with self.assertRaises(main.HTTPException) as caught:
+                asyncio.run(main._reuse_or_reject_interactive_login(
+                    "xhs", False))
+        finally:
+            main.open_browsers.pop(73, None)
+
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertIn("先关闭已打开的指纹浏览器窗口", caught.exception.detail)
+
     def test_native_identity_initialization_does_not_generate_spoofed_ua(self):
         account = DouyinAccount(id=1, nickname="fixture", identity_mode="native")
 

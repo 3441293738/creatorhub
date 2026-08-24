@@ -97,7 +97,8 @@ from .risk_admin import (RiskSettingsError, apply_risk_settings,
                          export_risk_settings, load_persisted_risk_settings,
                          save_risk_settings)
 from .settings import get_setting, set_setting
-from .windowing import (EXPLORER_WINDOW_CLASSES, bring_window_to_front,
+from .windowing import (CHROMIUM_WINDOW_CLASSES, EXPLORER_WINDOW_CLASSES,
+                        bring_window_to_front,
                         capture_window_snapshot)
 
 import json
@@ -111,6 +112,95 @@ login_tasks: Dict[str, dict] = {}
 open_browsers: Dict[int, Any] = {}
 _file_manager_lock = threading.Lock()
 _share_download_sem = asyncio.Semaphore(2)
+
+
+_ACTIVE_LOGIN_STATUSES = {"opening", "waiting", "persisted"}
+
+
+def _login_task_state(*, status: str, platform: str,
+                      creator: bool, account_id: int | None,
+                      **details) -> dict:
+    """Build a login task update without dropping its conflict metadata."""
+    return {
+        "status": status,
+        "platform": platform,
+        "creator": bool(creator),
+        "account_id": account_id,
+        **details,
+    }
+
+
+def _active_login_task() -> tuple[str, dict] | None:
+    """Return the most recently started interactive login that still owns a window."""
+    for task_id, state in reversed(list(login_tasks.items())):
+        if str(state.get("status") or "") in _ACTIVE_LOGIN_STATUSES:
+            return task_id, state
+    return None
+
+
+def _active_open_browser_account_ids() -> list[int]:
+    return [
+        account_id for account_id, lease in open_browsers.items()
+        if bool(getattr(lease, "active", True))
+    ]
+
+
+def _login_scope_label(platform: str, creator: bool) -> str:
+    label = {
+        "xhs": "小红书",
+        "kuaishou": "快手",
+        "shipinhao": "视频号",
+        "douyin": "抖音",
+    }.get(platform, platform or "平台")
+    return f"{label}创作者" if creator else label
+
+
+async def _reuse_or_reject_interactive_login(
+        platform: str, creator: bool, account_id: int | None = None,
+) -> dict | None:
+    """Refocus duplicate login clicks; reject a different login instead of queueing forever."""
+    open_account_ids = _active_open_browser_account_ids()
+    if open_account_ids:
+        account_text = "、".join(str(value) for value in open_account_ids[:4])
+        raise HTTPException(
+            409,
+            "已有账号浏览器窗口打开"
+            f"（账号 {account_text}），扫码登录会被可见窗口队列阻塞。"
+            "请先关闭已打开的指纹浏览器窗口，再点击添加账号。",
+        )
+
+    active = _active_login_task()
+    if active is None:
+        return None
+    task_id, state = active
+    same_login = (
+        str(state.get("platform") or "") == platform
+        and bool(state.get("creator")) == bool(creator)
+        and state.get("account_id") == account_id
+    )
+    if not same_login:
+        active_label = _login_scope_label(
+            str(state.get("platform") or ""), bool(state.get("creator")))
+        raise HTTPException(
+            409,
+            f"已有{active_label}扫码登录窗口正在等待操作。"
+            "请先在该窗口完成登录或将其关闭，再启动新的登录。",
+        )
+
+    # A repeated click usually means the existing Chromium window is behind the
+    # dashboard. Raise it instead of creating a second task that waits forever.
+    snapshot = capture_window_snapshot(CHROMIUM_WINDOW_CLASSES)
+    title_hint = _login_scope_label(platform, creator).replace("创作者", "")
+    await asyncio.to_thread(
+        bring_window_to_front, snapshot, CHROMIUM_WINDOW_CLASSES,
+        title_hint, 1.0,
+    )
+    return {
+        "task_id": task_id,
+        "status": state.get("status", "waiting"),
+        "reused": True,
+        "hint": "已有扫码登录窗口，已尝试将它切换到前台",
+    }
 
 
 class _OpenBrowserLease:
@@ -667,7 +757,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
     import os
     import shutil
     from .browser import Identity, generate_identity_fields
-    login_tasks[task_id] = {"status": "waiting"}
+    login_tasks[task_id] = _login_task_state(
+        status="waiting", platform=platform, creator=creator,
+        account_id=account_id)
     fresh_account = account_id is None
     tmp_profile = ""
     proxy_reservation_key = ""
@@ -684,7 +776,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             with get_session() as s:
                 acc = s.get(DouyinAccount, account_id)
                 if not acc:
-                    login_tasks[task_id] = {"status": "error", "error": "账号不存在"}
+                    login_tasks[task_id] = _login_task_state(
+                        status="error", platform=platform, creator=creator,
+                        account_id=account_id, error="账号不存在")
                     return
                 ensure_identity(acc, cfg, session=s, assign_proxy=False)
                 s.add(acc); s.commit(); s.refresh(acc)
@@ -741,10 +835,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
         # 登录轮询返回可诊断但不含代理凭据的实际运行环境。浏览器或版本回退
         # 一眼可见，避免把平台验证误判成单纯的 Cookie/二维码问题。
         login_environment = browser.environment_snapshot(identity, headless=False)
-        login_tasks[task_id] = {
-            "status": "waiting",
-            "environment": login_environment,
-        }
+        login_tasks[task_id] = _login_task_state(
+            status="waiting", platform=platform, creator=creator,
+            account_id=account_id, environment=login_environment)
 
         # 2) 在统一账号/网络入口内扫码，避免与后台任务并行占用 profile。
         @asynccontextmanager
@@ -841,21 +934,23 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
 
             # 登录态已经持久化且账号已经落库：立即通知前端把账号显示出来。
             # 完整资料抓取可能还需数秒，不能让它阻塞“扫码成功”的交互反馈。
-            login_tasks[task_id] = {
-                "status": "persisted",
-                "account_id": acc_id,
-                "nickname": nickname or nm,
-                "hint": "扫码已确认，正在校验登录态并同步账号资料",
-                "environment": login_environment,
-            }
+            login_tasks[task_id] = _login_task_state(
+                status="persisted", platform=platform, creator=creator,
+                account_id=acc_id,
+                nickname=nickname or nm,
+                hint="扫码已确认，正在校验登录态并同步账号资料",
+                environment=login_environment,
+            )
 
             profile_status = await _enrich_account_profile(acc_id, state_json)   # best-effort
             with get_session() as s:
                 acc = s.get(DouyinAccount, acc_id)
-                login_tasks[task_id] = {"status": "confirmed", "account_id": acc_id,
-                                        "nickname": acc.nickname if acc else (nickname or nm),
-                                        "profile_status": profile_status,
-                                        "environment": login_environment}
+                login_tasks[task_id] = _login_task_state(
+                    status="confirmed", platform=platform, creator=creator,
+                    account_id=acc_id,
+                    nickname=acc.nickname if acc else (nickname or nm),
+                    profile_status=profile_status,
+                    environment=login_environment)
         else:
             if fresh_account and tmp_profile:   # 没建账号,清理临时 profile
                 try:
@@ -863,10 +958,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 except Exception:
                     pass
                 shutil.rmtree(tmp_profile, ignore_errors=True)
-            login_tasks[task_id] = {
-                "status": "expired",
-                "environment": login_environment,
-            }
+            login_tasks[task_id] = _login_task_state(
+                status="expired", platform=platform, creator=creator,
+                account_id=account_id, environment=login_environment)
     except Exception as e:
         traceback.print_exc()
         if fresh_account and tmp_profile:
@@ -875,11 +969,10 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             except Exception:
                 pass
             shutil.rmtree(tmp_profile, ignore_errors=True)
-        login_tasks[task_id] = {
-            "status": "error",
-            "error": f"{type(e).__name__}: {e}",
-            "environment": login_environment,
-        }
+        login_tasks[task_id] = _login_task_state(
+            status="error", platform=platform, creator=creator,
+            account_id=account_id, error=f"{type(e).__name__}: {e}",
+            environment=login_environment)
     finally:
         if proxy_reservation_key:
             release_proxy_reservation(proxy_reservation_key)
@@ -904,8 +997,12 @@ async def login_browser_start(proxy: str = "auto", browser_backend: str = "defau
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("douyin", False)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="douyin", creator=False, account_id=None)
     asyncio.create_task(_run_login(
         task_id, proxy_choice=proxy, browser_backend=browser_backend,
         browser_runtime_id=browser_runtime_id))
@@ -921,8 +1018,12 @@ async def login_creator_start(proxy: str = "auto", browser_backend: str = "defau
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("douyin", True)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="douyin", creator=True, account_id=None)
     asyncio.create_task(_run_login(
         task_id, creator=True, proxy_choice=proxy,
         browser_backend=browser_backend,
@@ -939,8 +1040,12 @@ async def login_xhs_start(proxy: str = "auto", browser_backend: str = "default",
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("xhs", False)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="xhs", creator=False, account_id=None)
     asyncio.create_task(_run_login(
         task_id, platform="xhs", proxy_choice=proxy,
         browser_backend=browser_backend,
@@ -957,8 +1062,12 @@ async def login_xhs_creator_start(proxy: str = "auto", browser_backend: str = "d
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("xhs", True)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="xhs", creator=True, account_id=None)
     asyncio.create_task(_run_login(
         task_id, creator=True, platform="xhs", proxy_choice=proxy,
         browser_backend=browser_backend,
@@ -975,8 +1084,13 @@ async def login_ks_start(proxy: str = "auto", browser_backend: str = "default",
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("kuaishou", False)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="kuaishou", creator=False,
+        account_id=None)
     asyncio.create_task(_run_login(
         task_id, platform="kuaishou", proxy_choice=proxy,
         browser_backend=browser_backend,
@@ -993,8 +1107,13 @@ async def login_ks_creator_start(proxy: str = "auto", browser_backend: str = "de
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("kuaishou", True)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="kuaishou", creator=True,
+        account_id=None)
     asyncio.create_task(_run_login(
         task_id, creator=True, platform="kuaishou", proxy_choice=proxy,
         browser_backend=browser_backend,
@@ -1011,8 +1130,13 @@ async def login_channels_start(proxy: str = "auto", browser_backend: str = "defa
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("shipinhao", False)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="shipinhao", creator=False,
+        account_id=None)
     asyncio.create_task(_run_login(
         task_id, platform="shipinhao", proxy_choice=proxy,
         browser_backend=browser_backend,
@@ -2317,6 +2441,17 @@ async def relogin_start(account_id: int, scope: str = "auto"):
             is_creator = requested_scope == "creator"
         else:
             is_creator = bool(acc.creator_storage_state)
+
+    reused = await _reuse_or_reject_interactive_login(
+        platform, is_creator, account_id)
+    if reused is not None:
+        reused["login_scope"] = "creator" if is_creator else "read"
+        return reused
+
+    with get_session() as s:
+        acc = s.get(DouyinAccount, account_id)
+        if not acc:
+            raise HTTPException(404, "账号不存在")
         # 重登会清空旧认证 Cookie；完成扫码校验前账号不应继续显示“正常”。
         other_scope_available = (
             platform == "xhs" and (
@@ -2329,7 +2464,9 @@ async def relogin_start(account_id: int, scope: str = "auto"):
         s.add(acc)
         s.commit()
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform=platform, creator=is_creator,
+        account_id=account_id)
     asyncio.create_task(_run_login(task_id, creator=is_creator, account_id=account_id,
                                    platform=platform))
     return {"task_id": task_id, "status": "opening",
