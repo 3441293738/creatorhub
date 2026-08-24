@@ -5,8 +5,11 @@ from contextlib import asynccontextmanager
 from app.browser.identity import Identity
 from app.browser.xhs_fetcher import (
     FEED_API,
+    SEARCH_API,
+    SEARCH_API_LEGACY,
     USER_ME_API,
     _xhs_page_failure,
+    fetch_xhs_search,
     fetch_xhs_note_detail,
     fetch_xhs_self_profile,
 )
@@ -192,6 +195,108 @@ class XhsFetcherResponseTests(unittest.TestCase):
             self.assertEqual(error, "no_user_me_xhr")
 
         asyncio.run(scenario())
+
+    def test_search_accepts_v2_and_legacy_v1_responses(self):
+        class Locator:
+            first = None
+
+            def __init__(self, page):
+                self.first = self
+                self.page = page
+
+            async def wait_for(self, **_kwargs):
+                return None
+
+            async def press(self, key):
+                if key == "Enter":
+                    self.page.enter_pressed = True
+                    self.page.search_listener_armed = (
+                        len(self.page.listeners) >= 2)
+                    await self.page.emit_response()
+
+        class LoginLocator:
+            first = None
+
+            def __init__(self):
+                self.first = self
+
+            async def is_visible(self, **_kwargs):
+                return False
+
+        class Interaction:
+            async def type_short(self, locator, text):
+                locator.page.typed_text = text
+
+            async def scroll_step(self, *_args, **_kwargs):
+                return None
+
+        class Response:
+            status = 200
+
+            def __init__(self, path):
+                self.url = f"https://edith.xiaohongshu.com{path}"
+
+            async def json(self):
+                return {"data": {"items": [{
+                    "id": "note-v2",
+                    "model_type": "note",
+                    "note_card": {"display_title": "fixture"},
+                    "xsec_token": "fixture-token",
+                }]}}
+
+        class Page:
+            def __init__(self, path):
+                self.url = "about:blank"
+                self.response = Response(path)
+                self.listeners = []
+                self.enter_pressed = False
+                self.search_listener_armed = False
+                self.typed_text = ""
+
+            def on(self, event, listener):
+                if event == "response":
+                    self.listeners.append(listener)
+
+            async def emit_response(self):
+                for listener in list(self.listeners):
+                    result = listener(self.response)
+                    if asyncio.iscoroutine(result):
+                        await result
+
+            async def goto(self, url, **_kwargs):
+                self.url = url
+
+            def locator(self, _selector):
+                return Locator(self)
+
+            def get_by_text(self, *_args, **_kwargs):
+                return LoginLocator()
+
+        class Manager:
+            def __init__(self, path):
+                self.page = Page(path)
+                self.xhs_interaction = Interaction()
+
+            @asynccontextmanager
+            async def visible_page(self, _identity):
+                yield self.page
+
+        async def scenario(path):
+            manager = Manager(path)
+            identity = Identity(
+                account_id=1, profile_dir="fixture", platform="xhs",
+                identity_mode="native")
+            items, error = await fetch_xhs_search(
+                manager, identity, "防晒霜", set(), max_scrolls=0)
+            self.assertEqual(error, "")
+            self.assertEqual([item["id"] for item in items], ["note-v2"])
+            self.assertEqual(manager.page.typed_text, "防晒霜")
+            self.assertTrue(manager.page.search_listener_armed)
+            self.assertTrue(manager.page.enter_pressed)
+
+        for path in (SEARCH_API, SEARCH_API_LEGACY):
+            with self.subTest(path=path):
+                asyncio.run(scenario(path))
 
     def test_page_failure_requires_an_explicit_login_or_verification_signal(self):
         class Locator:

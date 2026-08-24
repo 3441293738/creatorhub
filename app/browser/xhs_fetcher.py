@@ -15,13 +15,20 @@ from .manager import BrowserManager
 
 USER_POSTED_API = "/api/sns/web/v1/user_posted"
 OTHERINFO_API = "/api/sns/web/v1/user/otherinfo"
-SEARCH_API = "/api/sns/web/v1/search/notes"
+# 网页端 2026 版已切到 v2；保留 v1 匹配以兼容旧内核/灰度页面。
+SEARCH_API = "/api/sns/web/v2/search/notes"
+SEARCH_API_LEGACY = "/api/sns/web/v1/search/notes"
 FEED_API = "/api/sns/web/v1/feed"
 COMMENT_API = "/api/sns/web/v2/comment/page"
 # 小红书网页端「当前登录用户」接口(旧的 v1/user/selfinfo 已不再用)
 USER_ME_API = "/api/sns/web/v2/user/me"
 
 _BASE = "https://www.xiaohongshu.com"
+
+
+def _is_search_notes_response(url: str) -> bool:
+    return any(path in str(url or "") for path in (
+        SEARCH_API, SEARCH_API_LEGACY))
 
 
 def _profile_url(user_id: str, xsec_token: str = "", xsec_source: str = "") -> str:
@@ -218,7 +225,7 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
         url = resp.url
         if "xiaohongshu.com" in url and "/api/sns/web/" in url and len(api_seen) < 40:
             api_seen.append(f"{resp.status} {url.split('?')[0].split('xiaohongshu.com')[-1]}")
-        if SEARCH_API in url:
+        if _is_search_notes_response(url):
             try:
                 data = (await resp.json()).get("data") or {}
             except Exception:
@@ -232,10 +239,29 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
 
     final_url = ""
     typed = False
+    direct_fallback = False
     page_failure = ""
     try:
         async with mgr.visible_page(identity) as page:
             page.on("response", on_response)
+            search_responses: asyncio.Queue = asyncio.Queue()
+
+            def capture_search_response(resp):
+                if _is_search_notes_response(resp.url) and resp.status == 200:
+                    search_responses.put_nowait(resp)
+
+            page.on("response", capture_search_response)
+
+            async def wait_search_response(timeout_ms: int):
+                try:
+                    response = await asyncio.wait_for(
+                        search_responses.get(), timeout=max(0, timeout_ms) / 1000)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    return None
+                # 精确解析队列里命中的响应；异步 response 回调可能仍在排队。
+                await on_response(response)
+                return response
+
             # 首选正常搜索入口和逐字输入。
             await page.goto(
                 f"{_BASE}/explore",
@@ -247,12 +273,21 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
                     box = page.locator(sel).first
                     await box.wait_for(state="visible", timeout=2500)
                     await mgr.xhs_interaction.type_short(box, keyword)
-                    await box.press("Enter")
                     typed = True
                     break
                 except Exception:
                     continue
-            if not typed:
+            # 搜索响应可能在 Enter/导航完成前就返回，因此用同步事件回调先放入
+            # 队列，再精确解析命中的响应。Python Patchright 没有
+            # page.wait_for_response，不能依赖该方法等待。
+            response = None
+            if typed:
+                await box.press("Enter")
+                response = await wait_search_response(4000)
+            if response is None:
+                # 页面尚未完成 hydration 时 Enter 偶尔不生效；直接打开正常搜索
+                # 结果 URL。该页面仍由真实浏览器加载并自行发出带签名的 v2 请求。
+                direct_fallback = typed
                 q = urllib.parse.urlencode({
                     "keyword": keyword,
                     "source": "web_explore_feed",
@@ -261,12 +296,7 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
                 await page.goto(
                     f"{_BASE}/search_result?{q}",
                     wait_until="domcontentloaded", timeout=30000)
-            await _wait_for_response(
-                page,
-                lambda r: SEARCH_API in r.url and r.status == 200,
-                12000,
-                on_response,
-            )
+                await wait_search_response(12000)
             await _scroll_collection(
                 mgr, page, collected, max_scrolls)
             final_url = page.url
@@ -276,7 +306,8 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
             error = page_failure or "未拦截到搜索结果（关键词可能无结果，或页面接口已调整）"
         if not collected:
             saw = any("search/notes" in a for a in api_seen)
-            print(f"[xhs_search] kw={keyword!r}; typed={typed}; saw_search_api={saw}; "
+            print(f"[xhs_search] kw={keyword!r}; typed={typed}; direct_fallback={direct_fallback}; "
+                  f"saw_search_api={saw}; "
                   f"final_url={final_url}; api_seen({len(api_seen)})={api_seen[:30]}")
     except Exception as e:
         error = f"打开搜索页失败: {e!r}"
