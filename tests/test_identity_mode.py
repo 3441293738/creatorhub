@@ -282,6 +282,7 @@ class IdentityModeTests(unittest.TestCase):
 
         async def logged_in(_browser, identity):
             captured["key"] = identity.key
+            captured["browser_backend"] = identity.browser_backend
             return True, '{"cookies":[{"name":"a1","value":"fixture"}]}', "fixture"
 
         task_id = "successful-xhs-login"
@@ -293,14 +294,21 @@ class IdentityModeTests(unittest.TestCase):
                     patch("app.main._enrich_account_profile",
                           AsyncMock(return_value="ok")):
                 asyncio.run(main._run_login(
-                    task_id, platform="xhs", proxy_choice="none"))
+                    task_id, platform="xhs", proxy_choice="none",
+                    browser_backend="fingerprint_chromium"))
             result = main.login_tasks[task_id]
+            with db.get_session() as session:
+                saved = session.get(DouyinAccount, result["account_id"])
+                saved_browser_backend = saved.browser_backend
         finally:
             main.login_tasks.pop(task_id, None)
             main.cfg, main.browser, main.engine = (
                 previous_cfg, previous_browser, previous_engine)
 
         self.assertEqual(result["status"], "confirmed")
+        self.assertEqual(saved_browser_backend, "fingerprint_chromium")
+        self.assertEqual(captured.get("browser_backend"),
+                         "fingerprint_chromium")
         self.assertEqual(browser.closed_keys, [captured["key"]])
 
     def test_open_account_browser_uses_unified_login_operation_guard(self):

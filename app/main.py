@@ -428,7 +428,8 @@ async def _enrich_account_profile(account_id: int, state: str, *,
 
 
 async def _run_login(task_id: str, creator: bool = False, account_id: int | None = None,
-                     platform: str = "douyin", proxy_choice: str = "auto"):
+                     platform: str = "douyin", proxy_choice: str = "auto",
+                     browser_backend: str = "default"):
     """扫码登录。多账号隔离模型:一账号=一持久 profile。
     - 传 account_id:登录进该账号自己的 profile(重新登录/补创作者登录)。
     - 不传:用「临时 profile」登录,**只有登录成功才建账号**;关窗/超时/取消都不留残号。"""
@@ -472,8 +473,12 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             else:
                 from .browser.manager import normalize_proxy
                 proxy = normalize_proxy(choice)
+            requested_backend = str(browser_backend or "default").strip().lower()
+            if requested_backend not in ACCOUNT_BROWSER_BACKENDS:
+                requested_backend = "default"
             identity = Identity(
                 account_id=None, profile_dir=tmp_profile, identity_mode="native",
+                browser_backend=requested_backend,
                 platform=platform,
                 proxy=proxy, ua="", viewport_w=new_fields["viewport_w"],
                 viewport_h=new_fields["viewport_h"], timezone_id=new_fields["timezone_id"],
@@ -547,6 +552,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     acc = DouyinAccount(
                         platform=platform, nickname=nickname or nm, status="active",
                         profile_dir=tmp_profile, proxy=identity.proxy,
+                        browser_backend=identity.browser_backend,
                         identity_mode="native", ua=identity.ua or "",
                         viewport_w=new_fields["viewport_w"],
                         viewport_h=new_fields["viewport_h"],
@@ -616,86 +622,115 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             release_proxy_reservation(proxy_reservation_key)
 
 
+def _validate_login_browser_backend(value: str) -> str:
+    requested = str(value or "default").strip().lower()
+    if requested not in ACCOUNT_BROWSER_BACKENDS:
+        raise HTTPException(400, "浏览器环境取值无效")
+    status = browser.backend_status(requested)
+    if not status["available"]:
+        raise HTTPException(400, f"浏览器环境不可用：{status['detail']}")
+    return requested
+
+
 @app.post("/api/login/browser/start")
-async def login_browser_start(proxy: str = "auto"):
+async def login_browser_start(proxy: str = "auto", browser_backend: str = "default"):
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend = _validate_login_browser_backend(browser_backend)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, proxy_choice=proxy))
+    asyncio.create_task(_run_login(
+        task_id, proxy_choice=proxy, browser_backend=browser_backend))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开浏览器窗口,请在其中点击“登录”并用抖音 App 扫码"}
 
 
 @app.post("/api/login/creator/start")
-async def login_creator_start(proxy: str = "auto"):
+async def login_creator_start(proxy: str = "auto", browser_backend: str = "default"):
     """创作中心登录(用于自有账号评论模式;其登录态同样可用于公开抓取)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend = _validate_login_browser_backend(browser_backend)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, creator=True, proxy_choice=proxy))
+    asyncio.create_task(_run_login(
+        task_id, creator=True, proxy_choice=proxy,
+        browser_backend=browser_backend))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开创作中心窗口,请在其中扫码登录你的抖音号"}
 
 
 @app.post("/api/login/xhs/start")
-async def login_xhs_start(proxy: str = "auto"):
+async def login_xhs_start(proxy: str = "auto", browser_backend: str = "default"):
     """小红书扫码登录(用于监控/读取)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend = _validate_login_browser_backend(browser_backend)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, platform="xhs", proxy_choice=proxy))
+    asyncio.create_task(_run_login(
+        task_id, platform="xhs", proxy_choice=proxy,
+        browser_backend=browser_backend))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开小红书官网首页,请在窗口中点击登录并用小红书 App 扫码"}
 
 
 @app.post("/api/login/xhs-creator/start")
-async def login_xhs_creator_start(proxy: str = "auto"):
+async def login_xhs_creator_start(proxy: str = "auto", browser_backend: str = "default"):
     """小红书「创作服务平台」登录(用于发布/已发布列表)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend = _validate_login_browser_backend(browser_backend)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, creator=True, platform="xhs", proxy_choice=proxy))
+    asyncio.create_task(_run_login(
+        task_id, creator=True, platform="xhs", proxy_choice=proxy,
+        browser_backend=browser_backend))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开小红书创作平台窗口,请扫码登录(发布用)"}
 
 
 @app.post("/api/login/kuaishou/start")
-async def login_ks_start(proxy: str = "auto"):
+async def login_ks_start(proxy: str = "auto", browser_backend: str = "default"):
     """快手扫码登录(用于监控/读取)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend = _validate_login_browser_backend(browser_backend)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, platform="kuaishou", proxy_choice=proxy))
+    asyncio.create_task(_run_login(
+        task_id, platform="kuaishou", proxy_choice=proxy,
+        browser_backend=browser_backend))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开快手窗口,请在其中用快手 App 扫码登录"}
 
 
 @app.post("/api/login/kuaishou-creator/start")
-async def login_ks_creator_start(proxy: str = "auto"):
+async def login_ks_creator_start(proxy: str = "auto", browser_backend: str = "default"):
     """快手「创作者服务平台」登录(用于发布)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend = _validate_login_browser_backend(browser_backend)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, creator=True, platform="kuaishou",
-                                   proxy_choice=proxy))
+    asyncio.create_task(_run_login(
+        task_id, creator=True, platform="kuaishou", proxy_choice=proxy,
+        browser_backend=browser_backend))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开快手创作平台窗口,请扫码登录(发布用)"}
 
 
 @app.post("/api/login/shipinhao/start")
-async def login_channels_start(proxy: str = "auto"):
+async def login_channels_start(proxy: str = "auto", browser_backend: str = "default"):
     """视频号扫码登录(读取/发布共用,微信扫码)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend = _validate_login_browser_backend(browser_backend)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, platform="shipinhao", proxy_choice=proxy))
+    asyncio.create_task(_run_login(
+        task_id, platform="shipinhao", proxy_choice=proxy,
+        browser_backend=browser_backend))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开视频号助手窗口,请用微信扫码登录"}
 

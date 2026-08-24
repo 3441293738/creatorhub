@@ -1062,6 +1062,39 @@ function switchTab(name, pushHistory = false) {
 
 // ─── 扫码登录(真实浏览器窗口) ───
 let qrTimer = null;
+let preLoginBrowserBackend = "default";
+// 新账号尚未落库，扫码前先确定浏览器内核；成功后该选择随账号持久化。
+async function choosePreLoginBrowserBackend() {
+  let catalog;
+  try {
+    catalog = await api("/api/browser-backends");
+  } catch (e) {
+    toast("读取登录环境失败：" + e.message, "err");
+    return null;
+  }
+  const backends = catalog.backends || [];
+  const defaultBackend = backends.find(item => item.name === catalog.default);
+  const options = [
+    {
+      value: "default",
+      label: `跟随全局（${defaultBackend ? defaultBackend.label : catalog.default}）`,
+      disabled: !!defaultBackend && !defaultBackend.available,
+    },
+    ...backends.map(item => ({
+      value: item.name,
+      label: item.label + (item.available ? "" : ` · 不可用：${item.detail || "未配置"}`),
+      disabled: !item.available,
+    })),
+  ];
+  const selected = await uiSelect({
+    title: "选择扫码登录环境",
+    hint: "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。",
+    options,
+    value: preLoginBrowserBackend,
+  });
+  if (selected !== null) preLoginBrowserBackend = selected;
+  return selected;
+}
 // 登录前选代理:返回 "" (不用) | "auto" | 具体url | null(取消)
 async function choosePreLoginProxy() {
   let opts = [];
@@ -1088,17 +1121,20 @@ async function choosePreLoginProxy() {
   }
   return v;
 }
-function loginStartUrl(path, proxy) {
-  return path + "?proxy=" + encodeURIComponent(proxy);
+function loginStartUrl(path, proxy, browserBackend) {
+  return path + "?proxy=" + encodeURIComponent(proxy)
+    + "&browser_backend=" + encodeURIComponent(browserBackend || "default");
 }
 async function startLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开浏览器窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/browser/start", proxy), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/browser/start", proxy, browserBackend), { method: "POST" });
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>浏览器窗口已打开</b>，请在该窗口点击「登录」并使用抖音 App 扫码。<br>完成后这里会自动刷新。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("登录启动失败:" + e.message, "err"); }
@@ -1156,13 +1192,15 @@ function pollLogin(tid) {
 
 // ─── 创作者登录(自有账号评论模式用) ───
 async function startCreatorLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开创作中心窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/creator/start", proxy), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/creator/start", proxy, browserBackend), { method: "POST" });
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>创作中心窗口已打开</b>，请在该窗口扫码登录抖音账号。<br>此登录态也可用于公开抓取。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
@@ -1170,13 +1208,15 @@ async function startCreatorLogin() {
 
 // ─── 小红书扫码登录 ───
 async function startXhsLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开小红书窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/xhs/start", proxy), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/xhs/start", proxy, browserBackend), { method: "POST" });
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书官网首页已打开</b>，请在窗口中点击「登录」并使用小红书 App 扫码。<br>主站登录成功后会保存读取登录态并自动关闭窗口。<br>如需发布，请随后单独点击「创作者登录」。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("小红书登录启动失败:" + e.message, "err"); }
@@ -1184,13 +1224,15 @@ async function startXhsLogin() {
 
 // ─── 小红书创作者登录(发布用) ───
 async function startXhsCreatorLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开小红书创作平台窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/xhs-creator/start", proxy), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/xhs-creator/start", proxy, browserBackend), { method: "POST" });
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书创作平台窗口已打开</b>，请扫码登录，此登录态用于发布。<br>登录成功后请稍等片刻再关闭窗口。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
@@ -1198,13 +1240,15 @@ async function startXhsCreatorLogin() {
 
 // ─── 快手扫码登录 ───
 async function startKsLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开快手窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/kuaishou/start", proxy), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/kuaishou/start", proxy, browserBackend), { method: "POST" });
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>快手窗口已打开</b>，请在该窗口点击「登录」并使用快手 App 扫码。<br>完成后这里会自动刷新。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("快手登录启动失败:" + e.message, "err"); }
@@ -1212,13 +1256,15 @@ async function startKsLogin() {
 
 // ─── 快手创作者登录(发布用) ───
 async function startKsCreatorLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开快手创作平台窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/kuaishou-creator/start", proxy), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/kuaishou-creator/start", proxy, browserBackend), { method: "POST" });
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>快手创作平台窗口已打开</b>，请扫码登录，此登录态用于发布。<br>登录成功后请稍等片刻再关闭窗口。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
@@ -1226,13 +1272,15 @@ async function startKsCreatorLogin() {
 
 // ─── 视频号扫码登录(读取/发布共用,微信扫码) ───
 async function startChannelsLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开视频号助手窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/shipinhao/start", proxy), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/shipinhao/start", proxy, browserBackend), { method: "POST" });
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>视频号助手窗口已打开</b>，请使用微信扫码登录，读取和发布共用此登录态。<br>登录成功后请稍等片刻再关闭窗口。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("视频号登录启动失败:" + e.message, "err"); }
