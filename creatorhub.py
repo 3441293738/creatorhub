@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -202,17 +203,35 @@ def browser_url(host: str, port: int) -> str:
     return f"http://{browser_host}:{port}"
 
 
+def service_is_ready(url: str) -> bool:
+    """Return True only when the configured address serves CreatorHub health."""
+    try:
+        with urllib.request.urlopen(f"{url}/health", timeout=0.8) as response:
+            if response.status != 200:
+                return False
+            payload = json.loads(response.read().decode("utf-8"))
+            return isinstance(payload, dict) and payload.get("status") == "ok"
+    except Exception:
+        return False
+
+
+def port_is_open(host: str, port: int) -> bool:
+    target = "127.0.0.1" if host in {"0.0.0.0", "::", "[::]"} else host
+    target = target.strip("[]")
+    try:
+        with socket.create_connection((target, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
 def open_browser_when_ready(url: str) -> None:
-    health_url = f"{url}/health"
     for _ in range(120):
-        try:
-            with urllib.request.urlopen(health_url, timeout=1) as response:
-                if response.status == 200:
-                    log(f"服务已就绪：{url}")
-                    webbrowser.open(url)
-                    return
-        except Exception:
-            time.sleep(0.5)
+        if service_is_ready(url):
+            log(f"服务已就绪：{url}")
+            webbrowser.open(url)
+            return
+        time.sleep(0.5)
 
 
 def start(
@@ -237,6 +256,21 @@ def start(
     selected_host = host or config_host
     selected_port = port or config_port
     url = browser_url(selected_host, selected_port)
+
+    # 双击启动器时很容易重复开两个控制台。旧逻辑中的浏览器等待线程会先
+    # 命中已有服务并打印“已就绪”，随后新 uvicorn 才报 10048，造成服务
+    # 已坏的错觉。已运行的是 CreatorHub 时直接复用；其他进程占用则给出
+    # 明确错误，不再启动第二个 uvicorn。
+    if service_is_ready(url):
+        log(f"CreatorHub 已在运行：{url}")
+        if not no_open:
+            webbrowser.open(url)
+        return
+    if port_is_open(selected_host, selected_port):
+        raise RuntimeError(
+            f"端口 {selected_port} 已被其他程序占用；"
+            "请关闭占用程序或使用 --port 指定其他端口"
+        )
 
     if not no_open:
         threading.Thread(
