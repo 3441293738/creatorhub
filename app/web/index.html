@@ -1079,6 +1079,72 @@
   #uimodal .fp-edit-panel { display:none; }
   #uimodal .fp-edit-panel.active { display:grid; }
   #uimodal div.fp-edit-panel.active:not(.form-grid) { display:block; }
+  #uimodal .fp-runtime-summary {
+    display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px;
+    margin:0 0 12px; padding:10px; border:1px solid var(--line-soft);
+    border-radius:var(--r-sm); background:var(--bg);
+  }
+  #uimodal .fp-runtime-summary > div { min-width:0; }
+  #uimodal .fp-runtime-summary span {
+    display:block; margin-bottom:3px; color:var(--mut-2); font-size:10px;
+  }
+  #uimodal .fp-runtime-summary b {
+    display:block; overflow:hidden; color:var(--fg); font-size:11.5px;
+    font-weight:600; text-overflow:ellipsis; white-space:nowrap;
+  }
+  #uimodal .fp-settings {
+    overflow:hidden; border:1px solid var(--line-soft); border-radius:var(--r);
+    background:color-mix(in srgb,var(--surface) 86%,var(--bg));
+  }
+  #uimodal .fp-settings > * { margin:0; }
+  #uimodal .fp-settings > .fp-config-row,
+  #uimodal .fp-settings > .form-field,
+  #uimodal .fp-settings > .fp-mode-fields {
+    padding:13px 14px; border-bottom:1px solid var(--line-soft);
+  }
+  #uimodal .fp-settings > :last-child { border-bottom:0; }
+  #uimodal .fp-config-row {
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+  }
+  #uimodal .fp-config-row > div:first-child { min-width:0; }
+  #uimodal .fp-config-row b { display:block; color:var(--fg-strong); font-size:12.5px; }
+  #uimodal .fp-config-row span {
+    display:block; margin-top:3px; color:var(--mut-2); font-size:10.5px; line-height:1.45;
+  }
+  #uimodal .fp-segment {
+    display:inline-flex; flex:0 0 auto; align-items:center; padding:2px;
+    border:1px solid var(--line); border-radius:9px; background:var(--bg);
+  }
+  #uimodal .fp-segment button {
+    min-height:27px; padding:4px 10px; border:0; border-radius:7px;
+    background:transparent; box-shadow:none; color:var(--mut); font-size:11px;
+  }
+  #uimodal .fp-segment button:hover:not(:disabled) { color:var(--fg); background:var(--surface-2); filter:none; }
+  #uimodal .fp-segment button.active {
+    color:#fff; background:var(--acc); box-shadow:0 2px 8px color-mix(in srgb,var(--acc) 25%,transparent);
+  }
+  #uimodal .fp-segment button:disabled { opacity:.35; cursor:not-allowed; }
+  #uimodal .fp-mode-fields {
+    opacity:.48; background:color-mix(in srgb,var(--bg) 48%,transparent);
+    transition:opacity .16s var(--ease),background .16s var(--ease);
+  }
+  #uimodal .fp-mode-fields.enabled { opacity:1; background:transparent; }
+  #uimodal .fp-mode-fields.form-grid { gap:10px; }
+  #uimodal .fp-mode-fields > .form-field { margin:0; }
+  #uimodal .fp-settings .form-field label { margin-bottom:6px; color:var(--mut); font-size:10.5px; }
+  #uimodal .fp-readonly {
+    display:grid; grid-template-columns:112px minmax(0,1fr); gap:12px; align-items:start;
+    padding:12px 14px; border-bottom:1px solid var(--line-soft); background:var(--bg);
+  }
+  #uimodal .fp-readonly span { color:var(--mut); font-size:11px; }
+  #uimodal .fp-readonly code {
+    overflow-wrap:anywhere; color:var(--fg); font-family:var(--mono); font-size:10.5px; line-height:1.5;
+  }
+  #uimodal .fp-seed-badge {
+    flex:0 0 auto; padding:5px 8px; border:1px solid var(--line); border-radius:7px;
+    background:var(--bg); color:var(--mut); font-family:var(--mono); font-size:10.5px;
+  }
+  #uimodal #ui-extra-action { margin-right:auto; }
   @media(max-width:600px) {
     .manage-toolbar input, .manage-toolbar select, .manage-toolbar .cs { flex:1 1 calc(50% - 8px); max-width:none; }
     .manage-toolbar input[type="search"] { min-width:0; }
@@ -1089,6 +1155,13 @@
       padding:18px 16px 14px;
     }
     #uimodal #ui-actions > button { flex:1 1 0!important; min-height:42px; }
+    #uimodal .fp-runtime-summary { grid-template-columns:1fr; }
+    #uimodal .fp-config-row { align-items:flex-start; flex-direction:column; gap:8px; }
+    #uimodal .fp-segment { align-self:stretch; display:grid; grid-auto-flow:column; grid-auto-columns:1fr; }
+    #uimodal .fp-segment button { padding-inline:5px; }
+    #uimodal .fp-readonly { grid-template-columns:1fr; gap:5px; }
+    #uimodal #ui-actions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }
+    #uimodal #ui-extra-action { margin-right:0; }
   }
 
   /* table inside a card without extra border for the small acc/notif tables */

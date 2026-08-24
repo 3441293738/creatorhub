@@ -95,6 +95,13 @@ class IpFingerprintApiTests(unittest.TestCase):
                 fp_brand="Edge",
                 fp_hardware_concurrency=16,
                 fp_disable_spoofing="canvas",
+                fp_language_mode="custom",
+                fp_timezone_mode="custom",
+                fp_viewport_mode="custom",
+                fp_location_mode="custom",
+                fp_geolocation_permission="deny",
+                fp_webrtc_mode="allow",
+                fp_extra_args="--mute-audio",
             )
             session.add(account)
             session.commit()
@@ -131,6 +138,13 @@ class IpFingerprintApiTests(unittest.TestCase):
             self.assertEqual(saved.fp_brand, "")
             self.assertEqual(saved.fp_hardware_concurrency, 0)
             self.assertEqual(saved.fp_disable_spoofing, "")
+            self.assertEqual(saved.fp_language_mode, "auto")
+            self.assertEqual(saved.fp_timezone_mode, "auto")
+            self.assertEqual(saved.fp_viewport_mode, "auto")
+            self.assertEqual(saved.fp_location_mode, "auto")
+            self.assertEqual(saved.fp_geolocation_permission, "allow")
+            self.assertEqual(saved.fp_webrtc_mode, "conceal")
+            self.assertEqual(saved.fp_extra_args, "")
         self.assertTrue(result["ok"])
         self.assertEqual(result["fingerprint"]["source_ip"], "203.0.113.20")
         self.assertEqual(browser.closed, [account_id])
@@ -174,6 +188,10 @@ class IpFingerprintApiTests(unittest.TestCase):
             hardware_concurrency=12,
             gpu_vendor="Apple Inc.", gpu_renderer="Apple M3",
             disable_spoofing=["canvas", "audio"],
+            language_mode="custom", timezone_mode="custom",
+            viewport_mode="custom", location_mode="custom",
+            geolocation_permission="ask", webrtc_mode="allow",
+            extra_args="--mute-audio\n--disable-notifications",
         )
 
         result = asyncio.run(
@@ -188,6 +206,15 @@ class IpFingerprintApiTests(unittest.TestCase):
             self.assertEqual(saved.fp_hardware_concurrency, 12)
             self.assertEqual(saved.fp_gpu_renderer, "Apple M3")
             self.assertEqual(saved.fp_disable_spoofing, "canvas,audio")
+            self.assertEqual(saved.fp_language_mode, "custom")
+            self.assertEqual(saved.fp_timezone_mode, "custom")
+            self.assertEqual(saved.fp_viewport_mode, "custom")
+            self.assertEqual(saved.fp_location_mode, "custom")
+            self.assertEqual(saved.fp_geolocation_permission, "ask")
+            self.assertEqual(saved.fp_webrtc_mode, "allow")
+            self.assertEqual(
+                saved.fp_extra_args,
+                "--mute-audio\n--disable-notifications")
             self.assertEqual(saved.viewport_w, 1536)
             self.assertEqual(saved.timezone_id, "America/Los_Angeles")
         self.assertTrue(result["ok"])
@@ -198,6 +225,14 @@ class IpFingerprintApiTests(unittest.TestCase):
         with self.assertRaisesRegex(main.HTTPException, "IANA 时区"):
             main._validate_fingerprint_update(main.AccountFingerprintUpdateIn(
                 seed="fixture", timezone="not/a-zone"))
+
+        with self.assertRaisesRegex(main.HTTPException, "账号环境冲突"):
+            main._validate_fingerprint_update(main.AccountFingerprintUpdateIn(
+                seed="fixture", extra_args="--user-data-dir=D:/fixture"))
+
+        with self.assertRaisesRegex(main.HTTPException, "WebRTC 模式"):
+            main._validate_fingerprint_update(main.AccountFingerprintUpdateIn(
+                seed="fixture", webrtc_mode="invalid"))
 
 
 if __name__ == "__main__":

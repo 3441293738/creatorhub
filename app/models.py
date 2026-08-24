@@ -46,6 +46,13 @@ class DouyinAccount(SQLModel, table=True):
     fp_gpu_renderer: str = ""
     fp_accept_languages: str = ""
     fp_disable_spoofing: str = ""  # comma list: font,audio,canvas,clientrects,gpu
+    fp_language_mode: str = "auto"       # auto | custom
+    fp_timezone_mode: str = "auto"       # auto | custom
+    fp_viewport_mode: str = "auto"       # auto | custom
+    fp_location_mode: str = "auto"       # auto | custom
+    fp_geolocation_permission: str = "allow"  # ask | allow | deny
+    fp_webrtc_mode: str = "conceal"      # conceal | allow
+    fp_extra_args: str = ""               # validated additional Chromium args
     geo_lat: float = 0.0          # geolocation 伪造纬度(代理体检时按出口 IP 归属地写入;0=按种子派生兜底)
     geo_lon: float = 0.0          # geolocation 伪造经度
     proxy_status: str = "unknown"  # unknown | ok | bad

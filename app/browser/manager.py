@@ -735,14 +735,20 @@ class BrowserManager:
             args = list(fingerprint_plan.args)
             args.append(
                 f"--window-size={int(identity.viewport_w)},{int(identity.viewport_h)}")
-            if proxy:
+            if proxy and str(identity.fp_webrtc_mode or "conceal") != "allow":
                 for item in _PROXY_WEBRTC_ARGS:
                     if item not in args:
                         args.append(item)
+            geo_permission = str(
+                identity.fp_geolocation_permission or "allow").lower()
+            if geo_permission == "deny":
+                args.append("--deny-permission-prompts")
             kwargs["args"] = args
             kwargs["no_viewport"] = True
-            kwargs["geolocation"] = identity.geolocation
-            kwargs["permissions"] = ["geolocation"]
+            if geo_permission != "deny":
+                kwargs["geolocation"] = identity.geolocation
+            if geo_permission == "allow":
+                kwargs["permissions"] = ["geolocation"]
         elif not legacy:
             # native 账号使用 Chrome/操作系统自己的视口、语言、时区与硬件画像。
             # 仅在显式配置代理时约束 WebRTC，避免 UDP 绕过代理出口。

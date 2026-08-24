@@ -12,6 +12,7 @@ from app.browser.backends import (
     BrowserBackendUnavailableError,
     FingerprintChromiumBackend,
     fingerprint_seed_u32,
+    parse_extra_launch_args,
 )
 from app.browser.identity import Identity
 from app.browser.manager import BrowserManager
@@ -108,6 +109,33 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
         self.assertIn("--accept-lang=en-US,en", args)
         self.assertIn("--disable-spoofing=canvas,gpu", args)
 
+    def test_privacy_mode_and_safe_additional_launch_args_are_applied(self):
+        backend = FingerprintChromiumBackend(
+            str(self.executable), platform="windows")
+        identity = Identity(
+            account_id=11,
+            profile_dir=str(Path(self.tmp.name) / "profile-11"),
+            browser_backend="fingerprint_chromium",
+            fp_webrtc_mode="allow",
+            fp_extra_args="--mute-audio\n--disable-notifications",
+        )
+
+        args = backend.launch_plan(identity, requested_headless=False).args
+
+        self.assertNotIn("--disable-non-proxied-udp", args)
+        self.assertIn("--mute-audio", args)
+        self.assertIn("--disable-notifications", args)
+
+    def test_additional_launch_args_reject_owned_runtime_settings(self):
+        self.assertEqual(
+            parse_extra_launch_args("--mute-audio, --disable-notifications"),
+            ("--mute-audio", "--disable-notifications"),
+        )
+        with self.assertRaisesRegex(ValueError, "账号环境冲突"):
+            parse_extra_launch_args("--proxy-server=http://fixture:8080")
+        with self.assertRaisesRegex(ValueError, "必须使用"):
+            parse_extra_launch_args("mute-audio")
+
     def test_config_loads_fingerprint_runtime_options(self):
         config_path = Path(self.tmp.name) / "config.yaml"
         config_path.write_text(
@@ -190,6 +218,50 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
         self.assertEqual(kwargs["permissions"], ["geolocation"])
         self.assertIn("latitude", kwargs["geolocation"])
         self.assertEqual(context.script_calls, [])
+
+    def test_manager_honors_denied_geolocation_permission(self):
+        class ContextStub:
+            pages = []
+
+            async def new_page(self):
+                class Page:
+                    async def evaluate(self, _expression):
+                        return "Mozilla/5.0 Chrome/148.0.0.0 Safari/537.36"
+
+                    async def close(self):
+                        return None
+                return Page()
+
+            async def cookies(self):
+                return []
+
+        class ChromiumStub:
+            def __init__(self):
+                self.kwargs = None
+
+            async def launch_persistent_context(self, **kwargs):
+                self.kwargs = kwargs
+                return ContextStub()
+
+        manager = BrowserManager(
+            "UA", str(Path(self.tmp.name) / "profiles-denied"),
+            fingerprint_chromium_path=str(self.executable),
+            fingerprint_chromium_platform="windows",
+        )
+        manager._pw = type("PW", (), {"chromium": ChromiumStub()})()
+        identity = Identity(
+            account_id=12,
+            profile_dir=str(Path(self.tmp.name) / "profile-12"),
+            browser_backend="fingerprint_chromium",
+            fp_geolocation_permission="deny",
+        )
+
+        asyncio.run(manager._launch_persistent(identity))
+        kwargs = manager._pw.chromium.kwargs
+
+        self.assertIn("--deny-permission-prompts", kwargs["args"])
+        self.assertNotIn("geolocation", kwargs)
+        self.assertNotIn("permissions", kwargs)
 
     def test_xhs_fingerprint_account_bypasses_system_chrome_cdp_backend(self):
         manager = BrowserManager(

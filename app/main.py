@@ -37,7 +37,9 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       fetch_channels_self_profile,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
                       fetch_dm_history)
-from .browser.backends import ACCOUNT_BROWSER_BACKENDS, fingerprint_seed_u32
+from .browser.backends import (
+    ACCOUNT_BROWSER_BACKENDS, fingerprint_seed_u32, parse_extra_launch_args,
+)
 from .browser.ip_fingerprint import derive_ip_fingerprint
 from .browser.runtime_catalog import (
     discover_chromium_runtimes,
@@ -1809,6 +1811,13 @@ def _account_fingerprint_payload(account: DouyinAccount) -> dict:
         "gpu_renderer": account.fp_gpu_renderer,
         "disable_spoofing": [
             value for value in account.fp_disable_spoofing.split(",") if value],
+        "language_mode": account.fp_language_mode,
+        "timezone_mode": account.fp_timezone_mode,
+        "viewport_mode": account.fp_viewport_mode,
+        "location_mode": account.fp_location_mode,
+        "geolocation_permission": account.fp_geolocation_permission,
+        "webrtc_mode": account.fp_webrtc_mode,
+        "extra_args": account.fp_extra_args,
         "actual_ua": account.ua,
         "generated_at": (account.fp_generated_at.isoformat()
                          if account.fp_generated_at else None),
@@ -1851,6 +1860,13 @@ class AccountFingerprintUpdateIn(BaseModel):
     gpu_vendor: str = ""
     gpu_renderer: str = ""
     disable_spoofing: list[str] = PydanticField(default_factory=list)
+    language_mode: str = "auto"
+    timezone_mode: str = "auto"
+    viewport_mode: str = "auto"
+    location_mode: str = "auto"
+    geolocation_permission: str = "allow"
+    webrtc_mode: str = "conceal"
+    extra_args: str = ""
 
 
 def _validate_fingerprint_update(body: AccountFingerprintUpdateIn) -> dict:
@@ -1907,12 +1923,32 @@ def _validate_fingerprint_update(body: AccountFingerprintUpdateIn) -> dict:
             raise HTTPException(400, f"未知指纹模块: {name}")
         if name not in disabled:
             disabled.append(name)
+    modes = {
+        "fp_language_mode": (body.language_mode, {"auto", "custom"}, "语言模式"),
+        "fp_timezone_mode": (body.timezone_mode, {"auto", "custom"}, "时区模式"),
+        "fp_viewport_mode": (body.viewport_mode, {"auto", "custom"}, "窗口模式"),
+        "fp_location_mode": (body.location_mode, {"auto", "custom"}, "位置模式"),
+        "fp_geolocation_permission": (
+            body.geolocation_permission, {"ask", "allow", "deny"}, "地理位置权限"),
+        "fp_webrtc_mode": (body.webrtc_mode, {"conceal", "allow"}, "WebRTC 模式"),
+    }
+    normalized_modes = {}
+    for field_name, (raw_value, allowed, label) in modes.items():
+        selected = str(raw_value or "").strip().lower()
+        if selected not in allowed:
+            raise HTTPException(400, f"{label}取值无效")
+        normalized_modes[field_name] = selected
+    extra_args = str(body.extra_args or "").strip()
+    try:
+        parse_extra_launch_args(extra_args)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     def _short(value: str, field: str) -> str:
         result = str(value or "").strip()
         if len(result) > 100:
             raise HTTPException(400, f"{field}长度超过限制")
         return result
-    return {
+    result = {
         "fp_seed": seed,
         "fp_source_ip": source_ip,
         "fp_country": _short(body.country, "国家/地区"),
@@ -1933,7 +1969,10 @@ def _validate_fingerprint_update(body: AccountFingerprintUpdateIn) -> dict:
         "fp_gpu_vendor": gpu_vendor,
         "fp_gpu_renderer": gpu_renderer,
         "fp_disable_spoofing": ",".join(disabled),
+        "fp_extra_args": extra_args,
     }
+    result.update(normalized_modes)
+    return result
 
 
 @app.put("/api/accounts/{account_id}/fingerprint")
@@ -2027,6 +2066,13 @@ async def generate_account_fingerprint_from_ip(account_id: int):
         account.fp_gpu_renderer = ""
         account.fp_accept_languages = ""
         account.fp_disable_spoofing = ""
+        account.fp_language_mode = "auto"
+        account.fp_timezone_mode = "auto"
+        account.fp_viewport_mode = "auto"
+        account.fp_location_mode = "auto"
+        account.fp_geolocation_permission = "allow"
+        account.fp_webrtc_mode = "conceal"
+        account.fp_extra_args = ""
         session.add(account)
         session.commit()
         session.refresh(account)

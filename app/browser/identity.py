@@ -80,6 +80,13 @@ class Identity:
     fp_gpu_renderer: str = ""
     fp_accept_languages: str = ""
     fp_disable_spoofing: str = ""
+    fp_language_mode: str = "auto"
+    fp_timezone_mode: str = "auto"
+    fp_viewport_mode: str = "auto"
+    fp_location_mode: str = "auto"
+    fp_geolocation_permission: str = "allow"
+    fp_webrtc_mode: str = "conceal"
+    fp_extra_args: str = ""
     # geolocation 伪造坐标(与代理 IP 归属地/时区对齐)。0 表示未设定,由 seed 派生兜底。
     geo_lat: float = 0.0
     geo_lon: float = 0.0
@@ -140,6 +147,19 @@ class Identity:
                 getattr(acc, "fp_accept_languages", "") or ""),
             fp_disable_spoofing=(
                 getattr(acc, "fp_disable_spoofing", "") or ""),
+            fp_language_mode=(
+                getattr(acc, "fp_language_mode", "auto") or "auto"),
+            fp_timezone_mode=(
+                getattr(acc, "fp_timezone_mode", "auto") or "auto"),
+            fp_viewport_mode=(
+                getattr(acc, "fp_viewport_mode", "auto") or "auto"),
+            fp_location_mode=(
+                getattr(acc, "fp_location_mode", "auto") or "auto"),
+            fp_geolocation_permission=(
+                getattr(acc, "fp_geolocation_permission", "allow") or "allow"),
+            fp_webrtc_mode=(
+                getattr(acc, "fp_webrtc_mode", "conceal") or "conceal"),
+            fp_extra_args=getattr(acc, "fp_extra_args", "") or "",
             geo_lat=getattr(acc, "geo_lat", 0.0) or 0.0,
             geo_lon=getattr(acc, "geo_lon", 0.0) or 0.0,
             bridge_states=bridge,

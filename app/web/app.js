@@ -213,6 +213,8 @@ function _uiKey(e) {
 function uiModalCancel() { _uiClose(_uiCancelVal); }
 function uiModalOk() { _uiClose(_uiGetVal ? _uiGetVal() : ""); }
 function _uiOpen(title, hint, { okText = "确定", danger = false, wide = false } = {}) {
+  const previousExtraAction = $("ui-extra-action");
+  if (previousExtraAction) previousExtraAction.remove();
   $("ui-title").textContent = title || "";
   $("ui-hint").textContent = hint || "";
   const ok = $("ui-ok");
@@ -2736,89 +2738,170 @@ async function deleteBrowserRuntime(runtimeId) {
 }
 
 function uiFingerprintEditor(account, fp) {
-  const checked = name => (fp.disable_spoofing || []).includes(name) ? " checked" : "";
+  const disabled = new Set(fp.disable_spoofing || []);
+  const runtimeVersion = String((account.environment || {}).runtime_version || "");
+  const runtimeMajor = Number(runtimeVersion.split(".")[0]) || 0;
+  const gpuCustomSupported = runtimeMajor >= 139 && runtimeMajor < 144;
+  const modeButtons = (name, options, current) => `<div class="fp-segment" data-fp-mode="${esc(name)}" role="group">` +
+    options.map(option => `<button type="button" class="${option.value === current ? "active" : ""}" data-value="${esc(option.value)}" aria-pressed="${option.value === current ? "true" : "false"}"${option.disabled ? " disabled" : ""}>${esc(option.label)}</button>`).join("") + `</div>`;
+  const surfaceMode = (name, label, custom = false) => {
+    let current = disabled.has(name) ? "off" : "random";
+    if (custom && gpuCustomSupported && (fp.gpu_vendor || fp.gpu_renderer)) current = "custom";
+    const options = [{ value: "random", label: "随机" }];
+    if (custom) options.push({ value: "custom", label: "自定义", disabled: !gpuCustomSupported });
+    options.push({ value: "off", label: "关闭" });
+    return `<div class="fp-config-row"><div><b>${esc(label)}</b><span>每个账号使用稳定且不同的取值</span></div>${modeButtons(name, options, current)}</div>`;
+  };
+  const platformMode = fp.platform ? "custom" : "auto";
+  const brandMode = fp.brand ? "custom" : "auto";
+  const cpuMode = Number(fp.hardware_concurrency) > 0 ? "custom" : "auto";
   return new Promise(resolve => {
     _uiResolve = resolve; _uiCancelVal = null;
     $("ui-body").innerHTML = `
-      <div class="hint" style="margin:0 0 14px">自动值可以逐项覆盖。保存后会关闭该账号当前浏览器，下次启动应用新指纹。</div>
-      <div class="fp-edit-tabs" role="tablist" aria-label="指纹设置分组">
-        <button type="button" class="ghost sm active" role="tab" aria-selected="true" data-fp-tab="basic">基础环境</button>
-        <button type="button" class="ghost sm" role="tab" aria-selected="false" data-fp-tab="advanced">高级指纹</button>
+      <div class="hint" style="margin:0 0 14px">自动项会跟随来源 IP 生成；切换为自定义后可逐项编辑。保存后关闭该账号当前浏览器，下次启动应用新配置。</div>
+      <div class="fp-edit-tabs" role="tablist" aria-label="浏览器指纹设置">
+        <button type="button" class="ghost sm active" role="tab" aria-selected="true" data-fp-tab="basic">基础设置</button>
+        <button type="button" class="ghost sm" role="tab" aria-selected="false" data-fp-tab="advanced">高级设置</button>
       </div>
-      <div class="form-grid fp-edit-panel active" data-fp-panel="basic">
-        <div class="form-field"><label for="fp-edit-seed">指纹种子</label><input id="fp-edit-seed" value="${esc(fp.seed || "")}" maxlength="128"><div class="mut" style="font-size:11px">当前内核 uint32：${esc(String(fp.engine_seed ?? ""))}</div></div>
-        <div class="form-field"><label for="fp-edit-ip">来源 IP</label><input id="fp-edit-ip" value="${esc(fp.source_ip || "")}" placeholder="可留空"></div>
-        <div class="form-field"><label for="fp-edit-timezone">IANA 时区</label><input id="fp-edit-timezone" value="${esc(fp.timezone || "Asia/Shanghai")}" placeholder="Asia/Shanghai"></div>
-        <div class="form-field"><label for="fp-edit-locale">浏览器语言</label><input id="fp-edit-locale" value="${esc(fp.locale || "zh-CN")}" placeholder="zh-CN"></div>
-        <div class="form-field"><label for="fp-edit-accept">Accept-Language</label><input id="fp-edit-accept" value="${esc(fp.accept_languages || "")}" placeholder="自动，例如 zh-CN,zh"></div>
-        <div class="form-field"><label for="fp-edit-vw">窗口宽度</label><input id="fp-edit-vw" type="number" min="320" max="7680" value="${Number(fp.viewport_w) || 1280}"></div>
-        <div class="form-field"><label for="fp-edit-vh">窗口高度</label><input id="fp-edit-vh" type="number" min="240" max="4320" value="${Number(fp.viewport_h) || 800}"></div>
-        <div class="form-field"><label for="fp-edit-lat">纬度</label><input id="fp-edit-lat" type="number" min="-90" max="90" step="0.000001" value="${Number(fp.geo_lat) || 0}"></div>
-        <div class="form-field"><label for="fp-edit-lon">经度</label><input id="fp-edit-lon" type="number" min="-180" max="180" step="0.000001" value="${Number(fp.geo_lon) || 0}"></div>
-        <div class="form-field"><label for="fp-edit-country">国家/地区</label><input id="fp-edit-country" value="${esc(fp.country || "")}"></div>
-        <div class="form-field"><label for="fp-edit-region">区域</label><input id="fp-edit-region" value="${esc(fp.region || "")}"></div>
-        <div class="form-field"><label for="fp-edit-city">城市</label><input id="fp-edit-city" value="${esc(fp.city || "")}"></div>
-      </div>
-      <div class="form-grid fp-edit-panel" data-fp-panel="advanced">
-        <div class="form-field"><label for="fp-edit-platform">操作系统</label><select id="fp-edit-platform">
-          <option value=""${!fp.platform ? " selected" : ""}>按内核自动</option>
-          <option value="windows"${fp.platform === "windows" ? " selected" : ""}>Windows</option>
-          <option value="macos"${fp.platform === "macos" ? " selected" : ""}>macOS</option>
-          <option value="linux"${fp.platform === "linux" ? " selected" : ""}>Linux</option>
-        </select></div>
-        <div class="form-field"><label for="fp-edit-platform-version">系统版本</label><input id="fp-edit-platform-version" value="${esc(fp.platform_version || "")}" placeholder="自动，例如 10.0.19045"></div>
-        <div class="form-field"><label for="fp-edit-brand">浏览器品牌</label><input id="fp-edit-brand" value="${esc(fp.brand || "")}" placeholder="自动，例如 Chrome / Edge"></div>
-        <div class="form-field"><label for="fp-edit-brand-version">浏览器品牌版本</label><input id="fp-edit-brand-version" value="${esc(fp.brand_version || "")}" placeholder="自动，例如 148.0.0.0"></div>
-        <div class="form-field"><label for="fp-edit-cpu">CPU 逻辑核心</label><input id="fp-edit-cpu" type="number" min="0" max="256" value="${Number(fp.hardware_concurrency) || 0}"><div class="mut" style="font-size:11px">0 表示按种子生成</div></div>
-        <div class="form-field"><label for="fp-edit-gpu-vendor">GPU Vendor</label><input id="fp-edit-gpu-vendor" value="${esc(fp.gpu_vendor || "")}" placeholder="自动"><div class="mut" style="font-size:11px">仅 Chromium 139–143 支持显式值</div></div>
-        <div class="form-field"><label for="fp-edit-gpu-renderer">GPU Renderer</label><input id="fp-edit-gpu-renderer" value="${esc(fp.gpu_renderer || "")}" placeholder="自动"><div class="mut" style="font-size:11px">144+ 由种子生成</div></div>
-      </div>
-      <div class="fp-edit-panel" data-fp-panel="advanced" style="margin-top:14px"><label class="field">选择停止伪装的模块（默认全部开启伪装）</label>
-        <div class="row" style="flex-wrap:wrap;gap:12px">
-          <label class="check"><input class="fp-spoof" type="checkbox" value="font"${checked("font")}>字体</label>
-          <label class="check"><input class="fp-spoof" type="checkbox" value="audio"${checked("audio")}>音频</label>
-          <label class="check"><input class="fp-spoof" type="checkbox" value="canvas"${checked("canvas")}>Canvas</label>
-          <label class="check"><input class="fp-spoof" type="checkbox" value="clientrects"${checked("clientrects")}>ClientRects</label>
-          <label class="check"><input class="fp-spoof" type="checkbox" value="gpu"${checked("gpu")}>GPU</label>
+      <div class="fp-edit-panel active" data-fp-panel="basic">
+        <div class="fp-runtime-summary">
+          <div><span>浏览器内核</span><b>${esc(runtimeVersion || "跟随所选运行时")}</b></div>
+          <div><span>设备类型</span><b>桌面设备</b></div>
+          <div><span>指纹编号</span><b>${esc(fp.fingerprint_id || "-")}</b></div>
+        </div>
+        <div class="fp-settings">
+          <div class="fp-config-row"><div><b>操作系统</b><span>影响 navigator.platform 与 Client Hints</span></div>${modeButtons("platform", [{value:"auto",label:"自动"},{value:"custom",label:"自定义"}], platformMode)}</div>
+          <div class="form-grid fp-mode-fields" data-fp-custom="platform">
+            <div class="form-field"><label for="fp-edit-platform">系统类型</label><select id="fp-edit-platform"><option value="windows"${fp.platform === "windows" ? " selected" : ""}>Windows</option><option value="macos"${fp.platform === "macos" ? " selected" : ""}>macOS</option><option value="linux"${fp.platform === "linux" ? " selected" : ""}>Linux</option></select></div>
+            <div class="form-field"><label for="fp-edit-platform-version">系统版本</label><input id="fp-edit-platform-version" value="${esc(fp.platform_version || "")}" placeholder="例如 10.0.19045"></div>
+          </div>
+          <div class="fp-config-row"><div><b>浏览器品牌与版本</b><span>影响 User-Agent 与 UA Data</span></div>${modeButtons("brand", [{value:"auto",label:"自动"},{value:"custom",label:"自定义"}], brandMode)}</div>
+          <div class="form-grid fp-mode-fields" data-fp-custom="brand">
+            <div class="form-field"><label for="fp-edit-brand">浏览器品牌</label><input id="fp-edit-brand" value="${esc(fp.brand || "")}" placeholder="Chrome / Edge"></div>
+            <div class="form-field"><label for="fp-edit-brand-version">浏览器版本</label><input id="fp-edit-brand-version" value="${esc(fp.brand_version || "")}" placeholder="例如 148.0.0.0"></div>
+          </div>
+          ${fp.actual_ua ? `<div class="fp-readonly"><span>User Agent</span><code>${esc(fp.actual_ua)}</code></div>` : ""}
+          <div class="fp-config-row"><div><b>语言</b><span>可跟随来源 IP 自动匹配</span></div>${modeButtons("language", [{value:"auto",label:"跟随 IP"},{value:"custom",label:"自定义"}], fp.language_mode || "auto")}</div>
+          <div class="form-grid fp-mode-fields" data-fp-custom="language">
+            <div class="form-field"><label for="fp-edit-locale">浏览器语言</label><input id="fp-edit-locale" value="${esc(fp.locale || "zh-CN")}"></div>
+            <div class="form-field"><label for="fp-edit-accept">Accept-Language</label><input id="fp-edit-accept" value="${esc(fp.accept_languages || "")}" placeholder="例如 zh-CN,zh"></div>
+          </div>
+          <div class="fp-config-row"><div><b>时区</b><span>可跟随来源 IP 匹配 IANA 时区</span></div>${modeButtons("timezone", [{value:"auto",label:"跟随 IP"},{value:"custom",label:"自定义"}], fp.timezone_mode || "auto")}</div>
+          <div class="fp-mode-fields" data-fp-custom="timezone"><div class="form-field"><label for="fp-edit-timezone">IANA 时区</label><input id="fp-edit-timezone" value="${esc(fp.timezone || "Asia/Shanghai")}"></div></div>
+          <div class="fp-config-row"><div><b>WebRTC</b><span>隐藏模式阻止非代理 UDP 暴露本机 IP</span></div>${modeButtons("webrtc", [{value:"conceal",label:"隐藏"},{value:"allow",label:"允许"}], fp.webrtc_mode || "conceal")}</div>
+          <div class="fp-config-row"><div><b>地理位置权限</b><span>控制网站读取浏览器定位的权限</span></div>${modeButtons("geo-permission", [{value:"ask",label:"询问"},{value:"allow",label:"允许"},{value:"deny",label:"禁止"}], fp.geolocation_permission || "allow")}</div>
+          <div class="fp-config-row"><div><b>地理位置数据</b><span>可跟随来源 IP 自动生成坐标</span></div>${modeButtons("location", [{value:"auto",label:"跟随 IP"},{value:"custom",label:"自定义"}], fp.location_mode || "auto")}</div>
+          <div class="form-grid fp-mode-fields" data-fp-custom="location">
+            <div class="form-field"><label for="fp-edit-ip">来源 IP</label><input id="fp-edit-ip" value="${esc(fp.source_ip || "")}"></div>
+            <div class="form-field"><label for="fp-edit-country">国家/地区</label><input id="fp-edit-country" value="${esc(fp.country || "")}"></div>
+            <div class="form-field"><label for="fp-edit-region">区域</label><input id="fp-edit-region" value="${esc(fp.region || "")}"></div>
+            <div class="form-field"><label for="fp-edit-city">城市</label><input id="fp-edit-city" value="${esc(fp.city || "")}"></div>
+            <div class="form-field"><label for="fp-edit-lat">纬度</label><input id="fp-edit-lat" type="number" min="-90" max="90" step="0.000001" value="${Number(fp.geo_lat) || 0}"></div>
+            <div class="form-field"><label for="fp-edit-lon">经度</label><input id="fp-edit-lon" type="number" min="-180" max="180" step="0.000001" value="${Number(fp.geo_lon) || 0}"></div>
+          </div>
+          <div class="fp-config-row"><div><b>窗口尺寸</b><span>设置浏览器窗口打开时的大小</span></div>${modeButtons("viewport", [{value:"auto",label:"自动"},{value:"custom",label:"自定义"}], fp.viewport_mode || "auto")}</div>
+          <div class="form-grid fp-mode-fields" data-fp-custom="viewport">
+            <div class="form-field"><label for="fp-edit-vw">宽度</label><input id="fp-edit-vw" type="number" min="320" max="7680" value="${Number(fp.viewport_w) || 1280}"></div>
+            <div class="form-field"><label for="fp-edit-vh">高度</label><input id="fp-edit-vh" type="number" min="240" max="4320" value="${Number(fp.viewport_h) || 800}"></div>
+          </div>
         </div>
       </div>
-      ${fp.actual_ua ? `<div class="mut fp-edit-panel" data-fp-panel="advanced" style="font-size:11px;margin-top:14px;word-break:break-all">上次实际 UA：<code>${esc(fp.actual_ua)}</code></div>` : ""}
-      <div class="form-actions" style="margin-top:16px">
-        <button id="fp-auto-generate" type="button" class="ghost">根据当前 IP 恢复自动值</button>
-      </div>`;
+      <div class="fp-edit-panel" data-fp-panel="advanced">
+        <div class="fp-settings">
+          <div class="fp-config-row"><div><b>指纹种子</b><span>Canvas、Audio 等随机值由种子稳定派生</span></div><div class="fp-seed-badge">uint32 ${esc(String(fp.engine_seed ?? ""))}</div></div>
+          <div class="form-field"><label for="fp-edit-seed">种子值</label><input id="fp-edit-seed" value="${esc(fp.seed || "")}" maxlength="128"></div>
+          ${surfaceMode("font", "字体")}
+          ${surfaceMode("canvas", "Canvas")}
+          ${surfaceMode("gpu", "WebGL / GPU", true)}
+          <div class="form-grid fp-mode-fields" data-fp-custom="gpu">
+            <div class="form-field"><label for="fp-edit-gpu-vendor">WebGL Vendor</label><input id="fp-edit-gpu-vendor" value="${esc(fp.gpu_vendor || "")}" placeholder="例如 Google Inc. (Intel)"></div>
+            <div class="form-field"><label for="fp-edit-gpu-renderer">WebGL Renderer</label><input id="fp-edit-gpu-renderer" value="${esc(fp.gpu_renderer || "")}" placeholder="仅 139–143 内核支持"></div>
+          </div>
+          ${surfaceMode("audio", "AudioContext")}
+          ${surfaceMode("clientrects", "ClientRects")}
+          <div class="fp-config-row"><div><b>硬件并发数</b><span>navigator.hardwareConcurrency</span></div>${modeButtons("cpu", [{value:"auto",label:"自动"},{value:"custom",label:"自定义"}], cpuMode)}</div>
+          <div class="fp-mode-fields" data-fp-custom="cpu"><div class="form-field"><label for="fp-edit-cpu">CPU 逻辑核心</label><input id="fp-edit-cpu" type="number" min="1" max="256" value="${Number(fp.hardware_concurrency) || 8}"></div></div>
+          <div class="form-field"><label for="fp-edit-extra">附加启动参数</label><textarea id="fp-edit-extra" rows="3" placeholder="每行一个安全参数，例如 --mute-audio">${esc(fp.extra_args || "")}</textarea><div class="mut" style="font-size:11px">仅接受安全的 Chromium 参数；代理、调试端口、用户目录和指纹核心参数由系统统一管理。</div></div>
+        </div>
+      </div>
+      `;
     enhanceAllSelects($("ui-body"));
-    $("ui-body").querySelectorAll("[data-fp-tab]").forEach(tab => {
+    const body = $("ui-body");
+    const selectedMode = name => {
+      const active = body.querySelector(`[data-fp-mode="${name}"] button.active`);
+      return active ? active.dataset.value : "";
+    };
+    const syncCustomFields = name => {
+      const enabled = selectedMode(name) === "custom";
+      body.querySelectorAll(`[data-fp-custom="${name}"] input,[data-fp-custom="${name}"] select,[data-fp-custom="${name}"] textarea`).forEach(control => {
+        control.disabled = !enabled;
+        if (control._csSync) control._csSync();
+      });
+      body.querySelectorAll(`[data-fp-custom="${name}"]`).forEach(group => group.classList.toggle("enabled", enabled));
+    };
+    body.querySelectorAll("[data-fp-mode] button").forEach(button => {
+      button.addEventListener("click", () => {
+        if (button.disabled) return;
+        const segment = button.closest("[data-fp-mode]");
+        segment.querySelectorAll("button").forEach(item => {
+          const active = item === button;
+          item.classList.toggle("active", active);
+          item.setAttribute("aria-pressed", active ? "true" : "false");
+        });
+        syncCustomFields(segment.dataset.fpMode);
+      });
+    });
+    ["platform", "brand", "language", "timezone", "location", "viewport", "gpu", "cpu"].forEach(syncCustomFields);
+    body.querySelectorAll("[data-fp-tab]").forEach(tab => {
       tab.addEventListener("click", () => {
         const selected = tab.dataset.fpTab;
-        $("ui-body").querySelectorAll("[data-fp-tab]").forEach(item => {
+        body.querySelectorAll("[data-fp-tab]").forEach(item => {
           const active = item.dataset.fpTab === selected;
           item.classList.toggle("active", active);
           item.setAttribute("aria-selected", active ? "true" : "false");
         });
-        $("ui-body").querySelectorAll("[data-fp-panel]").forEach(panel =>
-          panel.classList.toggle("active", panel.dataset.fpPanel === selected));
-        $("ui-body").scrollTo({ top: 0, behavior: "smooth" });
+        body.querySelectorAll("[data-fp-panel]").forEach(panel => panel.classList.toggle("active", panel.dataset.fpPanel === selected));
+        body.scrollTo({ top: 0, behavior: "smooth" });
       });
     });
     const value = id => ($(id) || {}).value || "";
-    const number = (id, fallback = 0) => {
-      const parsed = Number(value(id)); return Number.isFinite(parsed) ? parsed : fallback;
+    const number = (id, fallback = 0) => { const parsed = Number(value(id)); return Number.isFinite(parsed) ? parsed : fallback; };
+    _uiGetVal = () => {
+      const platformCustom = selectedMode("platform") === "custom";
+      const brandCustom = selectedMode("brand") === "custom";
+      const gpuCustom = selectedMode("gpu") === "custom";
+      const surfaces = ["font", "audio", "canvas", "clientrects", "gpu"];
+      return { action: "save", data: {
+        seed: value("fp-edit-seed"), source_ip: value("fp-edit-ip"),
+        country: value("fp-edit-country"), region: value("fp-edit-region"), city: value("fp-edit-city"),
+        timezone: value("fp-edit-timezone"), locale: value("fp-edit-locale"), accept_languages: value("fp-edit-accept"),
+        viewport_w: number("fp-edit-vw", 1280), viewport_h: number("fp-edit-vh", 800),
+        geo_lat: number("fp-edit-lat"), geo_lon: number("fp-edit-lon"),
+        platform: platformCustom ? value("fp-edit-platform") : "",
+        platform_version: platformCustom ? value("fp-edit-platform-version") : "",
+        brand: brandCustom ? value("fp-edit-brand") : "",
+        brand_version: brandCustom ? value("fp-edit-brand-version") : "",
+        hardware_concurrency: selectedMode("cpu") === "custom" ? number("fp-edit-cpu", 8) : 0,
+        gpu_vendor: gpuCustom ? value("fp-edit-gpu-vendor") : "",
+        gpu_renderer: gpuCustom ? value("fp-edit-gpu-renderer") : "",
+        disable_spoofing: surfaces.filter(name => selectedMode(name) === "off"),
+        language_mode: selectedMode("language") || "auto",
+        timezone_mode: selectedMode("timezone") || "auto",
+        viewport_mode: selectedMode("viewport") || "auto",
+        location_mode: selectedMode("location") || "auto",
+        geolocation_permission: selectedMode("geo-permission") || "allow",
+        webrtc_mode: selectedMode("webrtc") || "conceal",
+        extra_args: value("fp-edit-extra"),
+      }};
     };
-    _uiGetVal = () => ({ action: "save", data: {
-      seed: value("fp-edit-seed"), source_ip: value("fp-edit-ip"),
-      country: value("fp-edit-country"), region: value("fp-edit-region"), city: value("fp-edit-city"),
-      timezone: value("fp-edit-timezone"), locale: value("fp-edit-locale"),
-      accept_languages: value("fp-edit-accept"),
-      viewport_w: number("fp-edit-vw", 1280), viewport_h: number("fp-edit-vh", 800),
-      geo_lat: number("fp-edit-lat"), geo_lon: number("fp-edit-lon"),
-      platform: value("fp-edit-platform"), platform_version: value("fp-edit-platform-version"),
-      brand: value("fp-edit-brand"), brand_version: value("fp-edit-brand-version"),
-      hardware_concurrency: number("fp-edit-cpu"),
-      gpu_vendor: value("fp-edit-gpu-vendor"), gpu_renderer: value("fp-edit-gpu-renderer"),
-      disable_spoofing: [...document.querySelectorAll("#ui-body .fp-spoof:checked")].map(el => el.value),
-    }});
-    $("fp-auto-generate").addEventListener("click", () => _uiClose({ action: "auto" }));
-    _uiOpen(`${account.nickname} · 编辑浏览器指纹`, `指纹 ${fp.fingerprint_id || "-"}`, { okText: "保存指纹", wide: true });
+    _uiOpen(`${account.nickname} · 浏览器指纹`, `指纹 ${fp.fingerprint_id || "-"}`, { okText: "保存配置", wide: true });
+    const autoButton = document.createElement("button");
+    autoButton.id = "ui-extra-action";
+    autoButton.type = "button";
+    autoButton.className = "ghost";
+    autoButton.textContent = "按 IP 自动生成";
+    autoButton.addEventListener("click", () => _uiClose({ action: "auto" }));
+    $("ui-actions").insertBefore(autoButton, $("ui-actions").firstElementChild);
   });
 }
 

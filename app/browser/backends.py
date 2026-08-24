@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,20 @@ ACCOUNT_BROWSER_BACKENDS = {
     DEFAULT_BACKEND,
     LOCAL_BACKEND,
     FINGERPRINT_CHROMIUM_BACKEND,
+}
+
+_BLOCKED_EXTRA_ARG_PREFIXES = {
+    "--user-data-dir", "--remote-debugging-address",
+    "--remote-debugging-port", "--remote-debugging-pipe",
+    "--proxy-server", "--proxy-pac-url", "--no-proxy-server",
+    "--fingerprint", "--fingerprint-platform",
+    "--fingerprint-platform-version", "--fingerprint-brand",
+    "--fingerprint-brand-version", "--fingerprint-hardware-concurrency",
+    "--fingerprint-gpu-vendor", "--fingerprint-gpu-renderer",
+    "--disable-spoofing", "--timezone", "--lang", "--accept-lang",
+    "--window-size", "--no-sandbox", "--disable-web-security",
+    "--ignore-certificate-errors", "--load-extension",
+    "--disable-extensions-except",
 }
 
 
@@ -85,6 +100,32 @@ def _accept_language(locale: str) -> str:
     value = str(locale or "zh-CN").strip() or "zh-CN"
     base = value.split("-", 1)[0]
     return value if base == value else f"{value},{base}"
+
+
+def parse_extra_launch_args(value: str) -> tuple[str, ...]:
+    """Parse user-supplied Chromium switches while protecting owned settings."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ()
+    if len(raw) > 1200 or any(
+            ord(char) < 32 and char not in "\t\r\n" for char in raw):
+        raise ValueError("浏览器启动参数格式无效")
+    # The UI documents newline/comma separation while shlex keeps quoted
+    # values containing spaces together on every host platform.
+    normalized = raw.replace("\r", " ").replace("\n", " ").replace(",", " ")
+    try:
+        tokens = shlex.split(normalized, posix=True)
+    except ValueError as exc:
+        raise ValueError("浏览器启动参数引号不完整") from exc
+    result = []
+    for token in tokens:
+        if not token.startswith("--") or len(token) > 240:
+            raise ValueError("启动参数必须使用 --参数 或 --参数=值 格式")
+        name = token.split("=", 1)[0].lower()
+        if name in _BLOCKED_EXTRA_ARG_PREFIXES:
+            raise ValueError(f"启动参数与账号环境冲突: {name}")
+        result.append(token)
+    return tuple(dict.fromkeys(result))
 
 
 class FingerprintChromiumBackend:
@@ -165,8 +206,9 @@ class FingerprintChromiumBackend:
             f"--timezone={timezone}",
             f"--lang={locale}",
             f"--accept-lang={accepted}",
-            "--disable-non-proxied-udp",
         ]
+        if str(identity.fp_webrtc_mode or "conceal") != "allow":
+            args.append("--disable-non-proxied-udp")
         if identity.fp_platform_version:
             args.append(
                 f"--fingerprint-platform-version={identity.fp_platform_version}")
@@ -198,6 +240,7 @@ class FingerprintChromiumBackend:
         ]
         if disabled:
             args.append("--disable-spoofing=" + ",".join(dict.fromkeys(disabled)))
+        args.extend(parse_extra_launch_args(identity.fp_extra_args))
         return BrowserLaunchPlan(
             name=self.name,
             label=self.label,
