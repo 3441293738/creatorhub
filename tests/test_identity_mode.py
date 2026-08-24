@@ -427,7 +427,10 @@ class IdentityModeTests(unittest.TestCase):
         self.assertEqual(saved_browser_backend, "fingerprint_chromium")
         self.assertEqual(captured.get("browser_backend"),
                          "fingerprint_chromium")
-        self.assertEqual(browser.closed_keys, [captured["key"]])
+        self.assertEqual(
+            browser.closed_keys,
+            [captured["key"], result["account_id"]],
+        )
 
     def test_fresh_xhs_creator_login_does_not_claim_main_read_session(self):
         previous_cfg, previous_browser, previous_engine = (

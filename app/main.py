@@ -942,7 +942,20 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 environment=login_environment,
             )
 
-            profile_status = await _enrich_account_profile(acc_id, state_json)   # best-effort
+            try:
+                profile_status = await _enrich_account_profile(
+                    acc_id, state_json)   # best-effort
+            finally:
+                if platform == "xhs":
+                    # XHS profile enrichment uses a persistent headed context.
+                    # Once its temporary task page closes, Chromium otherwise
+                    # leaves the bootstrap about:blank tab visible for the idle
+                    # cache lifetime. Login has already been persisted, so shut
+                    # down that context before reporting completion.
+                    try:
+                        await browser.close_context(acc_id)
+                    except Exception:
+                        pass
             with get_session() as s:
                 acc = s.get(DouyinAccount, acc_id)
                 login_tasks[task_id] = _login_task_state(
