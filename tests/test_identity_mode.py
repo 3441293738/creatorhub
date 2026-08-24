@@ -151,6 +151,34 @@ class IdentityModeTests(unittest.TestCase):
         self.assertTrue(evidence["seen"])
         self.assertTrue(evidence["authenticated"])
 
+    def test_xhs_read_login_requires_main_site_web_session(self):
+        creator_only = (
+            '{"cookies":[{"name":"customer-sso-sid","value":"creator"}]}'
+        )
+        read_login = (
+            '{"cookies":[{"name":"web_session","value":"main-session"}]}'
+        )
+
+        self.assertFalse(main._xhs_has_read_login_state(creator_only))
+        self.assertTrue(main._xhs_has_read_login_state(read_login))
+
+    def test_xhs_creator_page_has_its_own_login_classification(self):
+        async def scenario():
+            active = SimpleNamespace(
+                url="https://creator.xiaohongshu.com/home")
+            logged_out = SimpleNamespace(
+                url="https://creator.xiaohongshu.com/login")
+            self.assertEqual(
+                await main._opened_page_login_state(active, "xhs_creator"),
+                "authenticated",
+            )
+            self.assertEqual(
+                await main._opened_page_login_state(logged_out, "xhs_creator"),
+                "logged_out",
+            )
+
+        asyncio.run(scenario())
+
     def test_identity_from_account_remembers_platform(self):
         account = DouyinAccount(
             id=7,
@@ -354,6 +382,49 @@ class IdentityModeTests(unittest.TestCase):
                          "fingerprint_chromium")
         self.assertEqual(browser.closed_keys, [captured["key"]])
 
+    def test_fresh_xhs_creator_login_does_not_claim_main_read_session(self):
+        previous_cfg, previous_browser, previous_engine = (
+            main.cfg, main.browser, main.engine)
+
+        class BrowserStub:
+            def environment_snapshot(self, identity, *, headless):
+                return {"browser": "chrome", "headless": headless,
+                        "profile_dir": identity.profile_dir}
+
+            async def close_context(self, _key):
+                return None
+
+        state = (
+            '{"cookies":[{"name":"customer-sso-sid",'
+            '"value":"creator"}]}'
+        )
+
+        async def logged_in(_browser, _identity):
+            return True, state, "creator-fixture"
+
+        task_id = "successful-xhs-creator-login"
+        main.cfg = self.cfg
+        main.browser = BrowserStub()
+        main.engine = None
+        try:
+            with patch("app.main.interactive_xhs_creator_login", logged_in), \
+                    patch("app.main._enrich_account_profile",
+                          AsyncMock(return_value="ok")):
+                asyncio.run(main._run_login(
+                    task_id, creator=True, platform="xhs",
+                    proxy_choice="none"))
+            result = main.login_tasks[task_id]
+            with db.get_session() as session:
+                saved = session.get(DouyinAccount, result["account_id"])
+                self.assertEqual(saved.creator_storage_state, state)
+                self.assertEqual(saved.storage_state, "")
+        finally:
+            main.login_tasks.pop(task_id, None)
+            main.cfg, main.browser, main.engine = (
+                previous_cfg, previous_browser, previous_engine)
+
+        self.assertEqual(result["status"], "confirmed")
+
     def test_open_account_browser_uses_unified_login_operation_guard(self):
         with db.get_session() as session:
             account = DouyinAccount(
@@ -432,6 +503,9 @@ class IdentityModeTests(unittest.TestCase):
             account = DouyinAccount(
                 nickname="xhs-fixture", platform="xhs", identity_mode="native",
                 profile_dir=str(Path(self.tmp.name) / "xhs-open-profile"),
+                creator_storage_state=(
+                    '{"cookies":[{"name":"customer-sso-sid",'
+                    '"value":"creator"}]}'),
             )
             session.add(account)
             session.commit()
@@ -451,7 +525,7 @@ class IdentityModeTests(unittest.TestCase):
                     state["engine"] = False
 
         class PageStub:
-            url = "https://www.xiaohongshu.com/user/profile/me"
+            url = "https://creator.xiaohongshu.com/"
 
             async def goto(self, *_args, **_kwargs):
                 self_outer.assertTrue(state["engine"])
@@ -524,7 +598,8 @@ class IdentityModeTests(unittest.TestCase):
             result = await main.open_account_browser(account_id)
             self.assertTrue(result["ok"])
             self.assertFalse(result["logged_out"])
-            self.assertEqual(result["login_state"], "unconfirmed")
+            self.assertEqual(result["login_state"], "authenticated")
+            self.assertEqual(result["login_scope"], "creator")
             self.assertTrue(state["engine"])
             self.assertTrue(state["visible"])
             await main.open_browsers[account_id].close()

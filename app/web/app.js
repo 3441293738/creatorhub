@@ -1674,13 +1674,17 @@ async function refreshAccounts() {
       a.douyin_id ? idName + esc(a.douyin_id) : null,
       a.sec_uid ? secName + esc(a.sec_uid).slice(0, 16) + "…" : null,
     ].filter(Boolean).join(" · ");
+    const loginDetails = isXhs
+      ? [a.has_read_login ? "读取登录已保存" : "读取登录未配置",
+         a.has_creator ? "创作登录已保存" : "创作登录未配置"]
+      : [a.has_storage
+          ? (a.status === "invalid" ? "登录态已保存但校验失效" : "登录态有效")
+          : "无登录态"];
     const detail = [
       a.aweme_count ? a.aweme_count + (isXhs ? " 笔记" : " 作品") : null,
       a.follower_count ? fmtNum(a.follower_count) + " 粉丝" : null,
       isXhs ? "扫码登录" : (a.login_type === "cookie" ? "Cookie 登录" : "扫码登录"),
-      a.has_storage
-        ? (a.status === "invalid" ? "登录态已保存但校验失效" : "登录态有效")
-        : "无登录态",
+      ...loginDetails,
       `被 ${a.monitor_count} 个监控使用`,
       a.created_at ? "登录于 " + new Date(a.created_at + "Z").toLocaleString() : null,
     ].filter(Boolean).join(" · ");
@@ -1703,6 +1707,15 @@ async function refreshAccounts() {
     const fingerprintLine = a.fingerprint_ip
       ? `<div class="mut" style="font-size:11px;margin-top:2px">指纹 ${esc(a.fingerprint_id || "-")} · IP ${esc(a.fingerprint_ip)} · ${esc(fingerprintPlace || a.fingerprint_timezone || "未知地区")}${a.exit_ip && !a.fingerprint_ip_matches_exit ? ' <span class="pill invalid">与当前出口不一致</span>' : ""}</div>`
       : `<div class="mut" style="font-size:11px;margin-top:2px">指纹尚未按出口 IP 生成</div>`;
+    const reloginButton = isXhs && !a.has_read_login
+      ? `<button class="sm" style="background:var(--warn);border-color:transparent;color:#1a1a1a" onclick="relogin(${a.id},'read')">补读取登录</button>`
+      : (a.status === "invalid"
+          ? `<button class="sm" style="background:var(--warn);border-color:transparent;color:#1a1a1a" onclick="relogin(${a.id})">重新登录</button>`
+          : `<button class="ghost sm" onclick="relogin(${a.id})" title="${isXhs ? "重新扫码登录当前授权" : "重新扫码登录"}">重新登录</button>`);
+    const creatorLoginButton = isXhs && !a.has_creator
+      ? `<button class="ghost sm" onclick="relogin(${a.id},'creator')">补创作登录</button>` : "";
+    const accountStatusLabel = a.status === "invalid"
+      ? "登录失效" : (isXhs && !a.has_read_login && a.has_creator ? "创作登录正常" : "正常");
     return `<tr>
       <td>
         <div class="user-cell">
@@ -1717,11 +1730,10 @@ async function refreshAccounts() {
           </div>
         </div>
       </td>
-      <td><span class="pill ${a.status}">${a.status === "invalid" ? "登录失效" : "正常"}</span></td>
+      <td><span class="pill ${a.status}">${accountStatusLabel}</span></td>
       <td class="acttd">
-        ${a.status === "invalid"
-          ? `<button class="sm" style="background:var(--warn);border-color:transparent;color:#1a1a1a" onclick="relogin(${a.id})">重新登录</button>`
-          : `<button class="ghost sm" onclick="relogin(${a.id})" title="${isXhs ? "重登可升级创作平台授权(发布需要)" : "重新扫码登录"}">重新登录</button>`}
+        ${reloginButton}
+        ${creatorLoginButton}
         <button class="ghost sm" onclick="refreshProfile(${a.id})">刷新资料</button>
         <button class="ghost sm" onclick="openAccountHub(${a.id})" title="查看该账号的作品 / 关注 / 粉丝 / 私信">数据</button>
         <button class="ghost sm" onclick="openAccountBrowser(${a.id})" title="用该账号登录态弹出真实浏览器窗口,手动收发私信 / 维护 / 抓接口(关窗即保存)">打开浏览器</button>
@@ -2046,7 +2058,8 @@ async function openAccountBrowser(id) {
       } else if (result.login_state === "unconfirmed") {
         toast("浏览器已打开；页面尚未返回登录校验结果，不会因此把账号标记为登录失败", "info", 7000);
       } else {
-        toast("已弹出该账号浏览器窗口;用完请关窗(关窗即保存登录态)。窗口开着时该账号后台同步会暂停", "ok", 6000);
+        const scope = result.login_scope === "creator" ? "创作平台" : "主站读取";
+        toast("已弹出该账号" + scope + "浏览器窗口;用完请关窗(关窗即保存登录态)。窗口开着时该账号后台同步会暂停", "ok", 7000);
       }
     } catch (e) { toast("打开失败:" + e.message, "err"); }
   });
@@ -2534,6 +2547,10 @@ async function refreshProfile(id) {
       const r = await api("/api/accounts/" + id + "/refresh-profile", { method: "POST" });
       if (r.skipped) {
         toast("\u672c\u6b21\u672a\u6267\u884c\u8d44\u6599\u5237\u65b0:" + (r.reason || "\u8d26\u53f7\u5f53\u524d\u4e0d\u53ef\u63a2\u6d4b"), "info");
+        return;
+      }
+      if ((r.platform || PLATFORM) === "xhs" && r.login_scope === "creator" && !r.has_read_login) {
+        toast("创作平台登录有效，资料已更新；主站读取登录尚未配置", "info", 8000);
         return;
       }
       const idLbl = (r.platform || PLATFORM) === "xhs" ? " \u00b7 \u5c0f\u7ea2\u4e66\u53f7 " : " \u00b7 \u6296\u97f3\u53f7 ";
@@ -3104,12 +3121,13 @@ async function testProxy(id) {
   } catch (e) { toast("测试失败:" + e.message, "err"); }
   finally { btn.disabled = false; btn.textContent = old; refreshAccounts(); }
 }
-async function relogin(id) {
+async function relogin(id, scope = "auto") {
   const btn = evtBtn();
   await withBusy(btn, "启动中", async () => {
     try {
-      const res = await api("/api/accounts/" + id + "/relogin/start", { method: "POST" });
-      toast("已打开浏览器窗口,请扫码重新登录该账号", "info");
+      const res = await api("/api/accounts/" + id + "/relogin/start?scope=" + encodeURIComponent(scope), { method: "POST" });
+      const label = res.login_scope === "creator" ? "创作平台" : "主站读取";
+      toast("已打开" + label + "浏览器窗口,请扫码登录该账号", "info");
       pollReloginTask(res.task_id);
     } catch (e) { toast("启动失败:" + e.message, "err"); }
   });

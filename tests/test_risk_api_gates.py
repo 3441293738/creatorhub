@@ -332,6 +332,9 @@ class RiskApiGateTests(unittest.TestCase):
             "douyin_id": "",
             "sec_uid": "",
             "status": "active",
+            "login_scope": "read",
+            "has_read_login": False,
+            "has_creator": False,
         })
 
     def test_invalid_account_profile_refresh_can_recover_status(self):

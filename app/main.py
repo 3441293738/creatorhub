@@ -430,6 +430,23 @@ def _direct_request_ua(identity) -> str:
 
 
 # ─────────── 扫码登录(真实浏览器) ───────────
+def _storage_has_cookie(state: str, name: str) -> bool:
+    try:
+        cookies = json.loads(state or "{}").get("cookies") or []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return any(
+        str(item.get("name") or "") == name
+        and bool(str(item.get("value") or ""))
+        for item in cookies if isinstance(item, dict)
+    )
+
+
+def _xhs_has_read_login_state(state: str) -> bool:
+    """Main-site XHS reads require web_session; creator cookies are separate."""
+    return _storage_has_cookie(state, "web_session")
+
+
 async def _xhs_profile(state: str, proxy: str = "", *,
                        detailed: bool = False, user_agent: str = ""):
     """用签名直连 API 拿小红书账号资料(me 身份 + otherinfo 昵称/头像/粉丝)。
@@ -803,7 +820,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     s.add(acc); s.commit(); s.refresh(acc); acc_id = acc.id
                 if creator:
                     acc.creator_storage_state = state_json
-                    if not is_xhs or not acc.storage_state:   # xhs 创作登录不覆盖读取态
+                    if not is_xhs and not acc.storage_state:
                         acc.storage_state = state_json
                 elif platform == "shipinhao":
                     # 视频号一套登录态即读取又发布,两处都写
@@ -1054,13 +1071,22 @@ async def list_accounts(platform: str | None = None):
                         browser.identity_for(a), headless=False)
                 except Exception:
                     environment = None
+            has_creator = (
+                bool(a.creator_storage_state)
+                or has_creator_cookies(a.storage_state)
+            )
+            has_read_login = (
+                _xhs_has_read_login_state(a.storage_state)
+                if a.platform == "xhs" else bool(a.storage_state)
+            )
             out.append({
                 "id": a.id, "platform": a.platform, "nickname": a.nickname, "status": a.status,
                 "sec_uid": a.sec_uid, "douyin_id": a.douyin_id, "avatar": a.avatar,
                 "follower_count": a.follower_count, "aweme_count": a.aweme_count,
-                "has_creator": bool(a.creator_storage_state) or has_creator_cookies(a.storage_state),
-                "kind": "creator" if (a.creator_storage_state or has_creator_cookies(a.storage_state)) else "fetch",
-                "has_storage": bool(a.storage_state),
+                "has_creator": has_creator,
+                "has_read_login": has_read_login,
+                "kind": "creator" if has_creator else "fetch",
+                "has_storage": has_read_login,
                 "login_type": "cookie" if a.cookie else "scan",
                 "monitor_count": used,
                 # 风控隔离画像
@@ -2223,6 +2249,7 @@ async def refresh_account_profile(account_id: int):
             raise HTTPException(404, "账号不存在")
         state = acc.storage_state or acc.creator_storage_state
         platform = acc.platform
+        creator_state = acc.creator_storage_state or ""
     if not state:
         raise HTTPException(400, "该账号无浏览器登录态(Cookie 粘贴账号可能不含完整态),无法拉取资料")
 
@@ -2246,13 +2273,22 @@ async def refresh_account_profile(account_id: int):
                                  "(含它实际看到的请求),把它发我即可定位")
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
+        has_read_login = (
+            _xhs_has_read_login_state(acc.storage_state)
+            if acc and acc.platform == "xhs"
+            else bool(acc and acc.storage_state)
+        )
         return {"ok": True, "nickname": acc.nickname, "platform": acc.platform,
                 "douyin_id": acc.douyin_id, "sec_uid": acc.sec_uid,
-                "status": acc.status}
+                "status": acc.status,
+                "login_scope": ("creator" if platform == "xhs" and creator_state
+                                  else "read"),
+                "has_read_login": has_read_login,
+                "has_creator": bool(acc.creator_storage_state)}
 
 
 @app.post("/api/accounts/{account_id}/relogin/start")
-async def relogin_start(account_id: int):
+async def relogin_start(account_id: int, scope: str = "auto"):
     """重新登录:更新原账号的登录态(账号是创作者号则走创作中心)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
@@ -2260,10 +2296,23 @@ async def relogin_start(account_id: int):
         acc = s.get(DouyinAccount, account_id)
         if not acc:
             raise HTTPException(404, "账号不存在")
-        is_creator = bool(acc.creator_storage_state)
         platform = acc.platform
+        requested_scope = str(scope or "auto").strip().lower()
+        if requested_scope not in {"auto", "read", "creator"}:
+            raise HTTPException(400, "登录范围取值无效")
+        if platform == "xhs" and requested_scope != "auto":
+            is_creator = requested_scope == "creator"
+        else:
+            is_creator = bool(acc.creator_storage_state)
         # 重登会清空旧认证 Cookie；完成扫码校验前账号不应继续显示“正常”。
-        acc.status = "invalid"
+        other_scope_available = (
+            platform == "xhs" and (
+                (not is_creator and bool(acc.creator_storage_state))
+                or (is_creator and _xhs_has_read_login_state(acc.storage_state))
+            )
+        )
+        if not other_scope_available:
+            acc.status = "invalid"
         s.add(acc)
         s.commit()
     task_id = uuid.uuid4().hex
@@ -2271,6 +2320,7 @@ async def relogin_start(account_id: int):
     asyncio.create_task(_run_login(task_id, creator=is_creator, account_id=account_id,
                                    platform=platform))
     return {"task_id": task_id, "status": "opening",
+            "login_scope": "creator" if is_creator else "read",
             "hint": "已打开浏览器窗口,请扫码重新登录该账号"}
 
 
@@ -2917,6 +2967,20 @@ async def _opened_page_login_state(page, platform: str,
                                    xhs_evidence: dict | None = None) -> str:
     """Classify the opened page without turning transient UI into auth loss."""
     current_url = str(getattr(page, "url", "") or "").lower()
+    if platform == "xhs_creator":
+        if "passport" in current_url:
+            return "logged_out"
+        try:
+            parsed = urlsplit(current_url)
+            path = parsed.path.rstrip("/").lower()
+            host = (parsed.hostname or "").lower()
+        except (TypeError, ValueError):
+            path, host = "", ""
+        if path == "/login" or path.startswith("/login/"):
+            return "logged_out"
+        if host == "creator.xiaohongshu.com" and current_url:
+            return "authenticated"
+        return "unconfirmed"
     if platform == "xhs":
         evidence = xhs_evidence or {}
         if "/website-login/captcha" in current_url \
@@ -2968,6 +3032,15 @@ async def open_account_browser(account_id: int, url: str = ""):
             raise HTTPException(404, "账号不存在")
         platform = acc.platform
         identity = browser.identity_for(acc)
+        has_read_login = (
+            _xhs_has_read_login_state(acc.storage_state)
+            if platform == "xhs" else bool(acc.storage_state)
+        )
+        has_creator_login = bool(acc.creator_storage_state)
+        open_scope = (
+            "creator" if platform == "xhs" and not has_read_login
+            and has_creator_login else "read"
+        )
         states = [acc.storage_state or "", acc.creator_storage_state or ""]
     # 该账号已开着窗口就先关旧的(同一 profile 不能并存)
     old = open_browsers.pop(account_id, None)
@@ -2976,7 +3049,9 @@ async def open_account_browser(account_id: int, url: str = ""):
             await old.close()
         except Exception:
             pass
-    home = {"xhs": "https://www.xiaohongshu.com/user/profile/me",
+    home = {"xhs": ("https://creator.xiaohongshu.com/"
+                     if open_scope == "creator"
+                     else "https://www.xiaohongshu.com/user/profile/me"),
             "kuaishou": "https://www.kuaishou.com/",
             "shipinhao": "https://channels.weixin.qq.com/platform"}.get(
                 platform, "https://www.douyin.com/")
@@ -2984,6 +3059,13 @@ async def open_account_browser(account_id: int, url: str = ""):
     tgt = (url or "").strip()
     if _platform_url_allowed(platform, tgt):
         home = tgt
+        if platform == "xhs":
+            try:
+                open_scope = (
+                    "creator" if (urlsplit(home).hostname or "").lower()
+                    == "creator.xiaohongshu.com" else "read")
+            except (TypeError, ValueError):
+                open_scope = "read"
     # 持久 profile 只在"首次空目录"才注入登录态;为防 profile 里 Cookie 缺失/过期导致
     # 打开后未登录,这里用 DB 里已知的登录态 Cookie 再注入一次(覆盖刷新)。
     from .browser.manager import _sanitize_cookies
@@ -3031,7 +3113,7 @@ async def open_account_browser(account_id: int, url: str = ""):
         page = (await browser.new_page(identity, block_media=False)
                 if platform == "xhs" else await ctx.new_page())
         xhs_evidence: dict = {}
-        if platform == "xhs":
+        if platform == "xhs" and open_scope == "read":
             page.on("response", _xhs_open_auth_response_handler(xhs_evidence))
         await page.goto(home, wait_until="domcontentloaded", timeout=30000)
         try:
@@ -3042,14 +3124,22 @@ async def open_account_browser(account_id: int, url: str = ""):
         except Exception:
             pass
         login_state = await _opened_page_login_state(
-            page, platform, xhs_evidence)
+            page, ("xhs_creator" if platform == "xhs"
+                   and open_scope == "creator" else platform), xhs_evidence)
         logged_out = login_state == "logged_out"
         if logged_out or (platform == "xhs" and login_state == "authenticated"):
             with get_session() as s:
                 opened_account = s.get(DouyinAccount, account_id)
                 if opened_account:
-                    opened_account.status = (
-                        "invalid" if logged_out else "active")
+                    other_scope_available = (
+                        platform == "xhs" and logged_out and (
+                            (open_scope == "read" and has_creator_login)
+                            or (open_scope == "creator" and has_read_login)
+                        )
+                    )
+                    if not other_scope_available:
+                        opened_account.status = (
+                            "invalid" if logged_out else "active")
                     s.add(opened_account)
                     s.commit()
         if platform == "xhs":
@@ -3077,7 +3167,7 @@ async def open_account_browser(account_id: int, url: str = ""):
     except Exception:
         pass
     return {"ok": True, "logged_out": logged_out,
-            "login_state": login_state}
+            "login_state": login_state, "login_scope": open_scope}
 
 
 # ─────────── 账号代理(风控隔离)───────────
