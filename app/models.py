@@ -31,6 +31,11 @@ class DouyinAccount(SQLModel, table=True):
     timezone_id: str = "Asia/Shanghai"
     locale: str = "zh-CN"
     fp_seed: str = ""             # 指纹种子(canvas/webgl/navigator 据此确定性生成,保证每次一致)
+    fp_source_ip: str = ""        # 最近一次生成指纹时使用的真实出口 IP
+    fp_country: str = ""          # IP 对应的 ISO2 国家/地区
+    fp_region: str = ""
+    fp_city: str = ""
+    fp_generated_at: Optional[datetime] = None
     geo_lat: float = 0.0          # geolocation 伪造纬度(代理体检时按出口 IP 归属地写入;0=按种子派生兜底)
     geo_lon: float = 0.0          # geolocation 伪造经度
     proxy_status: str = "unknown"  # unknown | ok | bad

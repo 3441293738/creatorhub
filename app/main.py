@@ -37,6 +37,7 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
                       fetch_dm_history)
 from .browser.backends import ACCOUNT_BROWSER_BACKENDS
+from .browser.ip_fingerprint import derive_ip_fingerprint
 from .platforms.douyin import (
     DouyinClient,
     cookie_from_state as douyin_cookie_from_state,
@@ -441,6 +442,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
     tmp_profile = ""
     proxy_reservation_key = ""
     new_fields = None
+    fingerprint_fields = None
     login_environment = {}
     nm = ("小红书账号" if platform == "xhs"
           else "快手账号" if platform == "kuaishou"
@@ -476,13 +478,33 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             requested_backend = str(browser_backend or "default").strip().lower()
             if requested_backend not in ACCOUNT_BROWSER_BACKENDS:
                 requested_backend = "default"
+            backend_status = getattr(browser, "backend_status", None)
+            effective_backend = ""
+            if callable(backend_status):
+                effective_backend = backend_status(requested_backend).get("name", "")
+            if effective_backend == "fingerprint_chromium":
+                geo = await _proxy_geo(proxy, timeout=6)
+                if geo and geo.get("ip"):
+                    fingerprint_fields = derive_ip_fingerprint(
+                        task_id,
+                        geo.get("ip", ""),
+                        country=geo.get("country", ""),
+                        region=geo.get("region", ""),
+                        city=geo.get("city", ""),
+                        timezone_id=geo.get("timezone", ""),
+                        latitude=geo.get("lat") or 0.0,
+                        longitude=geo.get("lon") or 0.0,
+                    )
+                    new_fields.update(fingerprint_fields)
             identity = Identity(
                 account_id=None, profile_dir=tmp_profile, identity_mode="native",
                 browser_backend=requested_backend,
                 platform=platform,
                 proxy=proxy, ua="", viewport_w=new_fields["viewport_w"],
                 viewport_h=new_fields["viewport_h"], timezone_id=new_fields["timezone_id"],
-                locale=new_fields["locale"], fp_seed=new_fields["fp_seed"])
+                locale=new_fields["locale"], fp_seed=new_fields["fp_seed"],
+                geo_lat=new_fields.get("geo_lat", 0.0),
+                geo_lon=new_fields.get("geo_lon", 0.0))
 
         # 登录轮询返回可诊断但不含代理凭据的实际运行环境。浏览器或版本回退
         # 一眼可见，避免把平台验证误判成单纯的 Cookie/二维码问题。
@@ -557,7 +579,15 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                         viewport_w=new_fields["viewport_w"],
                         viewport_h=new_fields["viewport_h"],
                         timezone_id=new_fields["timezone_id"], locale=new_fields["locale"],
-                        fp_seed=new_fields["fp_seed"])
+                        fp_seed=new_fields["fp_seed"],
+                        fp_source_ip=(fingerprint_fields or {}).get("source_ip", ""),
+                        fp_country=(fingerprint_fields or {}).get("country", ""),
+                        fp_region=(fingerprint_fields or {}).get("region", ""),
+                        fp_city=(fingerprint_fields or {}).get("city", ""),
+                        fp_generated_at=(datetime.utcnow()
+                                         if fingerprint_fields else None),
+                        geo_lat=new_fields.get("geo_lat", 0.0),
+                        geo_lon=new_fields.get("geo_lon", 0.0))
                     s.add(acc); s.commit(); s.refresh(acc); acc_id = acc.id
                 if creator:
                     acc.creator_storage_state = state_json
@@ -813,6 +843,17 @@ async def list_accounts(platform: str | None = None):
                 "write_pause_reason": a.write_pause_reason,
                 "identity_mode": a.identity_mode,
                 "browser_backend": a.browser_backend,
+                "fingerprint_id": (a.fp_seed or "")[:12],
+                "fingerprint_ip": a.fp_source_ip,
+                "fingerprint_country": a.fp_country,
+                "fingerprint_region": a.fp_region,
+                "fingerprint_city": a.fp_city,
+                "fingerprint_timezone": a.timezone_id,
+                "fingerprint_locale": a.locale,
+                "fingerprint_generated_at": (
+                    a.fp_generated_at.isoformat() if a.fp_generated_at else None),
+                "fingerprint_ip_matches_exit": bool(
+                    a.fp_source_ip and a.exit_ip and a.fp_source_ip == a.exit_ip),
                 "risk_level": risk_state.risk_level if risk_state else 0,
                 "risk_cooldown_until": (
                     risk_state.cooldown_until.isoformat()
@@ -1211,6 +1252,118 @@ async def list_browser_backends():
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     return browser.backend_catalog()
+
+
+def _account_fingerprint_payload(account: DouyinAccount) -> dict:
+    return {
+        "account_id": account.id,
+        "fingerprint_id": (account.fp_seed or "")[:12],
+        "source_ip": account.fp_source_ip,
+        "country": account.fp_country,
+        "region": account.fp_region,
+        "city": account.fp_city,
+        "timezone": account.timezone_id,
+        "locale": account.locale,
+        "viewport": f"{account.viewport_w}x{account.viewport_h}",
+        "geo": ({"latitude": account.geo_lat, "longitude": account.geo_lon}
+                if account.geo_lat or account.geo_lon else None),
+        "generated_at": (account.fp_generated_at.isoformat()
+                         if account.fp_generated_at else None),
+        "browser_backend": account.browser_backend,
+        "exit_ip": account.exit_ip,
+        "ip_matches_exit": bool(
+            account.fp_source_ip and account.exit_ip
+            and account.fp_source_ip == account.exit_ip),
+    }
+
+
+@app.get("/api/accounts/{account_id}/fingerprint")
+async def account_fingerprint(account_id: int):
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "账号不存在")
+        return _account_fingerprint_payload(account)
+
+
+@app.post("/api/accounts/{account_id}/fingerprint/from-ip")
+async def generate_account_fingerprint_from_ip(account_id: int):
+    """Probe the current egress and persist a stable, locality-aligned device."""
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "账号不存在")
+        proxy = account.proxy or ""
+        fallback = {
+            "ip": account.exit_ip,
+            "country": account.exit_country or account.fp_country,
+            "region": account.fp_region,
+            "city": account.fp_city,
+            "timezone": account.exit_timezone or account.timezone_id,
+            "lat": account.geo_lat,
+            "lon": account.geo_lon,
+        }
+
+    geo = await _proxy_geo(proxy)
+    if not geo or not geo.get("ip"):
+        geo = fallback if fallback.get("ip") else None
+    if not geo:
+        raise HTTPException(400, "未取得当前出口 IP，请先确认代理可用后重试")
+
+    try:
+        fields = derive_ip_fingerprint(
+            account_id,
+            geo.get("ip", ""),
+            country=geo.get("country", ""),
+            region=geo.get("region", ""),
+            city=geo.get("city", ""),
+            timezone_id=geo.get("timezone", ""),
+            latitude=geo.get("lat") or 0.0,
+            longitude=geo.get("lon") or 0.0,
+            fallback_timezone=fallback.get("timezone") or "Asia/Shanghai",
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "账号不存在")
+        if account.fp_source_ip == fields["source_ip"] and account.fp_seed:
+            # Regenerating against an unchanged sticky exit is idempotent: the
+            # device must not drift merely because the user opened this dialog.
+            fields["fp_seed"] = account.fp_seed
+            fields["fingerprint_id"] = account.fp_seed[:12]
+            fields["viewport_w"] = account.viewport_w
+            fields["viewport_h"] = account.viewport_h
+        account.fp_seed = fields["fp_seed"]
+        account.fp_source_ip = fields["source_ip"]
+        account.fp_country = fields["country"]
+        account.fp_region = fields["region"]
+        account.fp_city = fields["city"]
+        account.fp_generated_at = datetime.utcnow()
+        account.timezone_id = fields["timezone_id"]
+        account.locale = fields["locale"]
+        account.viewport_w = fields["viewport_w"]
+        account.viewport_h = fields["viewport_h"]
+        account.geo_lat = fields["geo_lat"]
+        account.geo_lon = fields["geo_lon"]
+        session.add(account)
+        session.commit()
+        session.refresh(account)
+        payload = _account_fingerprint_payload(account)
+
+    # A running context was created with the old engine seed/timezone.  Release
+    # both user-opened and background contexts before returning the new device.
+    lease = open_browsers.pop(account_id, None)
+    if lease is not None:
+        try:
+            await lease.close()
+        except Exception:
+            pass
+    if browser is not None:
+        await browser.close_context(account_id)
+    return {"ok": True, "fingerprint": payload}
 
 
 class AccountBrowserBackendIn(BaseModel):
@@ -2203,30 +2356,42 @@ async def _probe_proxy(url: str, platform: str = "douyin", timeout: float = 15):
 
 
 def _parse_ipinfo(j: dict) -> dict:
+    lat = lon = 0.0
+    loc = str(j.get("loc") or "")
+    if "," in loc:
+        try:
+            lat, lon = (float(value) for value in loc.split(",", 1))
+        except (TypeError, ValueError):
+            lat = lon = 0.0
     return {"ip": j.get("ip", ""), "country": j.get("country", ""),
             "region": j.get("region", ""), "city": j.get("city", ""),
-            "isp": j.get("org", "")}
+            "isp": j.get("org", ""), "timezone": j.get("timezone", ""),
+            "lat": lat, "lon": lon}
 
 
 def _parse_ipapi(j: dict) -> dict:
     if j.get("status") != "success":
         return {}
-    return {"ip": j.get("query", ""), "country": j.get("country", ""),
+    return {"ip": j.get("query", ""),
+            "country": j.get("countryCode") or j.get("country", ""),
             "region": j.get("regionName", ""), "city": j.get("city", ""),
-            "isp": j.get("isp", "")}
+            "isp": j.get("isp", ""), "timezone": j.get("timezone", ""),
+            "lat": j.get("lat") or 0.0, "lon": j.get("lon") or 0.0}
 
 
 async def _proxy_geo(proxy_url: str, timeout: float = 8) -> dict | None:
-    """经代理查出口 IP 及归属地(多源兜底)。返回 {ip,country,region,city,isp} 或 None。"""
+    """经代理查出口 IP/归属地/时区/坐标；空代理表示宿主直连。"""
     import httpx
     sources = [
-        ("http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,isp,query",
-         _parse_ipapi),
         ("https://ipinfo.io/json", _parse_ipinfo),
+        ("http://ip-api.com/json/?lang=zh-CN&fields=status,country,countryCode,regionName,city,lat,lon,timezone,isp,query",
+         _parse_ipapi),
     ]
     try:
-        async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout,
-                                     follow_redirects=True) as cli:
+        client_options = {"timeout": timeout, "follow_redirects": True}
+        if proxy_url:
+            client_options["proxy"] = proxy_url
+        async with httpx.AsyncClient(**client_options) as cli:
             for url, parser in sources:
                 try:
                     g = parser((await cli.get(url)).json())

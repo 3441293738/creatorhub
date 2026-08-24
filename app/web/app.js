@@ -1671,6 +1671,11 @@ async function refreshAccounts() {
     const browserLine = a.environment
       ? `<div class="mut" style="font-size:11px;margin-top:2px">浏览器 ${esc(loginEnvironmentText(a.environment))}</div>`
       : "";
+    const fingerprintPlace = [a.fingerprint_country, a.fingerprint_region, a.fingerprint_city]
+      .filter(Boolean).join(" · ");
+    const fingerprintLine = a.fingerprint_ip
+      ? `<div class="mut" style="font-size:11px;margin-top:2px">指纹 ${esc(a.fingerprint_id || "-")} · IP ${esc(a.fingerprint_ip)} · ${esc(fingerprintPlace || a.fingerprint_timezone || "未知地区")}${a.exit_ip && !a.fingerprint_ip_matches_exit ? ' <span class="pill invalid">与当前出口不一致</span>' : ""}</div>`
+      : `<div class="mut" style="font-size:11px;margin-top:2px">指纹尚未按出口 IP 生成</div>`;
     return `<tr>
       <td>
         <div class="user-cell">
@@ -1681,6 +1686,7 @@ async function refreshAccounts() {
             <div class="mut" style="font-size:11px;margin-top:2px">${esc(detail)}</div>
             ${proxyLine}
             ${browserLine}
+            ${fingerprintLine}
           </div>
         </div>
       </td>
@@ -1693,6 +1699,7 @@ async function refreshAccounts() {
         <button class="ghost sm" onclick="openAccountHub(${a.id})" title="查看该账号的作品 / 关注 / 粉丝 / 私信">数据</button>
         <button class="ghost sm" onclick="openAccountBrowser(${a.id})" title="用该账号登录态弹出真实浏览器窗口,手动收发私信 / 维护 / 抓接口(关窗即保存)">打开浏览器</button>
         <button class="ghost sm" onclick="setBrowserBackend(${a.id})" title="选择本地 Chrome/Patchright 或开源 Fingerprint Chromium 内核">环境</button>
+        <button class="ghost sm" onclick="manageFingerprint(${a.id})" title="根据账号当前出口 IP 生成稳定指纹、时区、语言和地理位置">指纹</button>
         <button class="ghost sm" onclick="setProxy(${a.id})" title="设置/分配该账号专属代理(防多账号关联)">代理</button>
         ${a.has_proxy ? `<button class="ghost sm" onclick="testProxy(${a.id})" title="经该代理实连一次,验证可用">测代理</button>` : ""}
         <button class="ghost sm danger" onclick="delAccount(${a.id})" aria-label="删除账号">${ic("i-trash")}删除</button>
@@ -2580,6 +2587,40 @@ async function setBrowserBackend(id) {
   } catch (e) {
     toast("切换失败:" + e.message, "err");
   }
+}
+
+async function manageFingerprint(id) {
+  const account = ACCOUNTS.find(item => item.id === id);
+  if (!account) return;
+  let current;
+  try {
+    current = await api(`/api/accounts/${id}/fingerprint`);
+  } catch (e) {
+    toast("读取指纹失败:" + e.message, "err");
+    return;
+  }
+  const place = [current.country, current.region, current.city].filter(Boolean).join(" · ");
+  const summary = current.source_ip
+    ? `当前指纹 ${current.fingerprint_id} · IP ${current.source_ip} · ${place || "未知地区"} · ${current.timezone} · ${current.locale}`
+    : "当前账号尚未根据出口 IP 生成指纹。";
+  const confirmed = await uiConfirm({
+    title: `${account.nickname} · IP 指纹`,
+    message: `${summary} 根据当前代理（未配置代理时使用本机出口）重新探测并生成；相同 IP 保持原指纹，IP 变化才更新。生成后会关闭该账号当前浏览器。`,
+    okText: "根据当前 IP 生成",
+  });
+  if (!confirmed) return;
+  const button = evtBtn();
+  await withBusy(button, "生成中", async () => {
+    try {
+      const result = await api(`/api/accounts/${id}/fingerprint/from-ip`, { method: "POST" });
+      const fp = result.fingerprint || {};
+      const location = [fp.country, fp.region, fp.city].filter(Boolean).join(" · ");
+      toast(`指纹已生成：${fp.fingerprint_id || "-"} · ${fp.source_ip || "-"} · ${location || fp.timezone || ""}`, "ok", 7000);
+      await refreshAccounts();
+    } catch (e) {
+      toast("生成失败:" + e.message, "err", 8000);
+    }
+  });
 }
 
 // ─── 代理池 ───
