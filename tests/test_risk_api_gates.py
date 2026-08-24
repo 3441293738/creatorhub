@@ -337,6 +337,20 @@ class RiskApiGateTests(unittest.TestCase):
             "has_creator": False,
         })
 
+    def test_profile_refresh_returns_immediately_while_manual_browser_is_open(self):
+        class Lease:
+            active = True
+
+        main.open_browsers[self.account_id] = Lease()
+        try:
+            result = asyncio.run(main.refresh_account_profile(self.account_id))
+        finally:
+            main.open_browsers.pop(self.account_id, None)
+
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["blocked_by"], "open_browser")
+        self.assertIn("关闭窗口", result["reason"])
+
     def test_invalid_account_profile_refresh_can_recover_status(self):
         with db.get_session() as session:
             account = session.get(DouyinAccount, self.account_id)

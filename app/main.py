@@ -125,6 +125,10 @@ class _OpenBrowserLease:
         self._release_lock = asyncio.Lock()
         self._close_lock = asyncio.Lock()
 
+    @property
+    def active(self) -> bool:
+        return not self._released and not self._closed
+
     async def release(self) -> None:
         async with self._release_lock:
             if self._released:
@@ -2243,6 +2247,15 @@ async def del_account(account_id: int):
 
 @app.post("/api/accounts/{account_id}/refresh-profile")
 async def refresh_account_profile(account_id: int):
+    manual_browser = open_browsers.get(account_id)
+    if manual_browser is not None and bool(
+            getattr(manual_browser, "active", True)):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "该账号浏览器窗口仍开着，请先关闭窗口再刷新资料",
+            "blocked_by": "open_browser",
+        }
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if not acc:
