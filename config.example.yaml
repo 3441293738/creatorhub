@@ -40,6 +40,7 @@ engine:
   max_live_contexts: 6            # 同时常驻的浏览器 context 上限(LRU 驱逐,控内存;20+账号无需全开)
   browser_backend: local          # local=现有 Patchright/CDP;fingerprint_chromium=全局使用开源指纹内核
   fingerprint_chromium_path: ""   # fingerprint-chromium 的 chrome/chrome.exe 绝对路径
+  fingerprint_chromium_root: ""   # 多内核扫描根目录,例如 D:/browsers/fingerprint-chromium
   fingerprint_chromium_allow_headless: false # 上游无头画像不完整,默认所有指纹环境使用可见窗口
   fingerprint_chromium_platform: auto # auto=跟随宿主系统;也可指定 windows/linux/macos
   active_accounts: 3              # 同一时刻最多并发活跃的账号数(错峰,降低"多号同时活跃"特征)

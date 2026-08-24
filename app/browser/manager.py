@@ -195,7 +195,9 @@ class BrowserManager:
                  browser_backend: str = LOCAL_BACKEND,
                  fingerprint_chromium_path: str = "",
                  fingerprint_chromium_allow_headless: bool = False,
-                 fingerprint_chromium_platform: str = "auto"):
+                 fingerprint_chromium_platform: str = "auto",
+                 fingerprint_chromium_runtimes: list[dict] | None = None,
+                 fingerprint_default_runtime_id: str = ""):
         self.default_ua = default_ua
         self.profiles_root = profiles_root
         self.max_live = max(1, max_live)
@@ -222,15 +224,45 @@ class BrowserManager:
             if requested_backend in {LOCAL_BACKEND, FINGERPRINT_CHROMIUM_BACKEND}
             else LOCAL_BACKEND
         )
-        self._fingerprint_backend = FingerprintChromiumBackend(
-            fingerprint_chromium_path,
-            allow_headless=fingerprint_chromium_allow_headless,
-            platform=fingerprint_chromium_platform,
-        )
+        self._fingerprint_backends: Dict[str, FingerprintChromiumBackend] = {}
+        self._fingerprint_runtime_enabled: Dict[str, bool] = {}
+        self.default_fingerprint_runtime_id = str(
+            fingerprint_default_runtime_id or "").strip()
+        if fingerprint_chromium_path:
+            configured_id = self.default_fingerprint_runtime_id or "configured"
+            self.register_fingerprint_runtime(
+                configured_id, fingerprint_chromium_path,
+                allow_headless=fingerprint_chromium_allow_headless,
+                platform=fingerprint_chromium_platform,
+                label="Fingerprint Chromium · 开源内核",
+                enabled=True,
+            )
+            if not self.default_fingerprint_runtime_id:
+                self.default_fingerprint_runtime_id = configured_id
+        for runtime in fingerprint_chromium_runtimes or []:
+            runtime_id = str(runtime.get("runtime_id") or "").strip()
+            if not runtime_id:
+                continue
+            self.register_fingerprint_runtime(
+                runtime_id,
+                str(runtime.get("executable_path") or ""),
+                allow_headless=bool(runtime.get("allow_headless", False)),
+                platform=str(runtime.get("platform") or "auto"),
+                version=str(runtime.get("version") or ""),
+                label=str(runtime.get("name") or ""),
+                enabled=bool(runtime.get("enabled", True)),
+            )
+            if runtime.get("is_default"):
+                self.default_fingerprint_runtime_id = runtime_id
+        if not self.default_fingerprint_runtime_id and self._fingerprint_backends:
+            self.default_fingerprint_runtime_id = next(iter(self._fingerprint_backends))
+        # Compatibility alias retained for callers/tests written for one runtime.
+        self._fingerprint_backend = self._default_fingerprint_backend()
         self._pw = None
         self._contexts: Dict[Any, BrowserContext] = {}   # key -> 持久化 context
         self._cdp_sessions: Dict[Any, Any] = {}
         self._backend_by_key: Dict[Any, str] = {}
+        self._runtime_by_key: Dict[Any, str] = {}
         self._fallback_reason_by_key: Dict[Any, str] = {}
         self._proxy_signature_by_key: Dict[Any, str] = {}
         self._profile_process_locks: Dict[Any, _ProfileProcessLock] = {}
@@ -245,6 +277,84 @@ class BrowserManager:
         # 优先使用机器上安装的稳定版 Chrome；没有时回退到 Patchright
         # 附带的 Chrome for Testing。登录窗口因此更接近用户日常浏览器环境。
         self._browser_channel: Optional[str] = None
+
+    def register_fingerprint_runtime(
+            self, runtime_id: str, executable_path: str, *,
+            allow_headless: bool = False, platform: str = "auto",
+            version: str = "", label: str = "", enabled: bool = True) -> None:
+        runtime_id = str(runtime_id or "").strip()
+        if not runtime_id:
+            raise ValueError("runtime_id 不能为空")
+        self._fingerprint_backends[runtime_id] = FingerprintChromiumBackend(
+            executable_path,
+            allow_headless=allow_headless,
+            platform=platform,
+            runtime_id=runtime_id,
+            version=version,
+            label=(label or f"Fingerprint Chromium {version or runtime_id}"),
+        )
+        self._fingerprint_runtime_enabled[runtime_id] = bool(enabled)
+        if enabled and not self.default_fingerprint_runtime_id:
+            self.default_fingerprint_runtime_id = runtime_id
+        self._fingerprint_backend = self._default_fingerprint_backend()
+
+    def unregister_fingerprint_runtime(self, runtime_id: str) -> None:
+        runtime_id = str(runtime_id or "").strip()
+        self._fingerprint_backends.pop(runtime_id, None)
+        self._fingerprint_runtime_enabled.pop(runtime_id, None)
+        if self.default_fingerprint_runtime_id == runtime_id:
+            self.default_fingerprint_runtime_id = next(
+                (key for key in self._fingerprint_backends
+                 if self._fingerprint_runtime_enabled.get(key, False)), "")
+        self._fingerprint_backend = self._default_fingerprint_backend()
+
+    def set_default_fingerprint_runtime(self, runtime_id: str) -> None:
+        runtime_id = str(runtime_id or "").strip()
+        if runtime_id not in self._fingerprint_backends:
+            raise ValueError("内核运行时不存在")
+        if not self._fingerprint_runtime_enabled.get(runtime_id, False):
+            raise ValueError("内核运行时已停用")
+        self.default_fingerprint_runtime_id = runtime_id
+        self._fingerprint_backend = self._default_fingerprint_backend()
+
+    def clear_default_fingerprint_runtime(self) -> None:
+        self.default_fingerprint_runtime_id = ""
+        self._fingerprint_backend = self._default_fingerprint_backend()
+
+    def _default_fingerprint_backend(self) -> FingerprintChromiumBackend:
+        backend = self._fingerprint_backends.get(
+            self.default_fingerprint_runtime_id)
+        if backend is not None:
+            return backend
+        for runtime_id, candidate in self._fingerprint_backends.items():
+            if self._fingerprint_runtime_enabled.get(runtime_id, False):
+                return candidate
+        return FingerprintChromiumBackend("")
+
+    def effective_fingerprint_runtime_id(self, identity: Identity) -> str:
+        requested = str(
+            getattr(identity, "browser_runtime_id", "") or "").strip()
+        return requested or self.default_fingerprint_runtime_id
+
+    def _fingerprint_backend_for(
+            self, identity: Identity, *, require_available: bool = True,
+            ) -> FingerprintChromiumBackend:
+        runtime_id = self.effective_fingerprint_runtime_id(identity)
+        backend = self._fingerprint_backends.get(runtime_id)
+        if backend is None:
+            raise BrowserBackendUnavailableError(
+                f"账号选择的内核运行时不存在: {runtime_id or '未配置'}")
+        if not self._fingerprint_runtime_enabled.get(runtime_id, False):
+            raise BrowserBackendUnavailableError(
+                f"账号选择的内核运行时已停用: {runtime_id}")
+        if require_available and not backend.available:
+            raise BrowserBackendUnavailableError(backend.unavailable_reason)
+        return backend
+
+    @staticmethod
+    def _runtime_profile_dir(identity: Identity, runtime_id: str) -> Path:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", runtime_id or "default")
+        return Path(identity.profile_dir) / "runtimes" / safe
 
     async def start(self):
         self._pw = await async_playwright().start()
@@ -305,6 +415,17 @@ class BrowserManager:
                 backend = "cdp" if self._uses_xhs_cdp(identity) else "patchright"
         is_cdp = backend == "cdp"
         is_fingerprint = backend == FINGERPRINT_CHROMIUM_BACKEND
+        runtime_id = ""
+        runtime_version = ""
+        runtime_label = ""
+        fingerprint_backend = self._fingerprint_backend
+        if is_fingerprint:
+            runtime_id = self._runtime_by_key.get(
+                identity.key, self.effective_fingerprint_runtime_id(identity))
+            fingerprint_backend = self._fingerprint_backends.get(
+                runtime_id, self._fingerprint_backend)
+            runtime_version = fingerprint_backend.version
+            runtime_label = fingerprint_backend.label
         fallback_reason = self._fallback_reason_by_key.get(identity.key, "")
         # Diagnostics are user-facing, never a transport for debugger URLs or
         # proxy credentials.
@@ -320,30 +441,38 @@ class BrowserManager:
         fallback = bool(fallback_reason)
         backend_label = (
             "系统 Chrome · CDP" if is_cdp
-            else self._fingerprint_backend.label if is_fingerprint
+            else runtime_label if is_fingerprint
             else "Patchright Chromium · 回退" if fallback
             else "Patchright Chromium"
         )
-        return {
+        snapshot = {
             "browser": (
                 "chrome" if is_cdp
                 else "fingerprint-chromium" if is_fingerprint
                 else (self._browser_channel or "chromium")
             ),
-            "chrome_major": None if is_fingerprint else self._chrome_major,
+            "chrome_major": (
+                int(runtime_version.split(".", 1)[0])
+                if is_fingerprint and runtime_version.split(".", 1)[0].isdigit()
+                else None if is_fingerprint else self._chrome_major),
             "headless": (
                 False if is_cdp
-                else bool(headless and self._fingerprint_backend.allow_headless)
+                else bool(headless and fingerprint_backend.allow_headless)
                 if is_fingerprint else bool(headless)
             ),
             "identity_mode": identity.identity_mode,
-            "profile_dir": identity.profile_dir,
+            "profile_dir": (str(self._runtime_profile_dir(identity, runtime_id))
+                            if is_fingerprint else identity.profile_dir),
             "has_proxy": bool(str(identity.proxy or "").strip()),
             "backend": backend,
             "backend_label": backend_label,
             "fallback": fallback,
             "fallback_reason": fallback_reason,
         }
+        if is_fingerprint:
+            snapshot["runtime_id"] = runtime_id
+            snapshot["runtime_version"] = runtime_version
+        return snapshot
 
     def _sec_ch_ua_headers(self, ua: str) -> Optional[Dict[str, str]]:
         """按归一后的 UA 生成一致的 Client Hints 头,覆盖真实内核默认发出的值。"""
@@ -389,7 +518,9 @@ class BrowserManager:
             if requested == DEFAULT_BACKEND else requested
         )
 
-    def backend_status(self, requested: str = DEFAULT_BACKEND) -> Dict[str, Any]:
+    def backend_status(
+            self, requested: str = DEFAULT_BACKEND,
+            runtime_id: str = "") -> Dict[str, Any]:
         value = str(requested or DEFAULT_BACKEND).strip().lower()
         if value not in ACCOUNT_BROWSER_BACKENDS:
             return {
@@ -399,12 +530,41 @@ class BrowserManager:
             }
         name = self.default_browser_backend if value == DEFAULT_BACKEND else value
         if name == FINGERPRINT_CHROMIUM_BACKEND:
+            selected_id = str(runtime_id or self.default_fingerprint_runtime_id).strip()
+            backend = self._fingerprint_backends.get(selected_id)
+            if backend is None:
+                return {
+                    "name": name, "runtime_id": selected_id,
+                    "available": False,
+                    "detail": "未注册可用的 Fingerprint Chromium 内核",
+                }
+            enabled = self._fingerprint_runtime_enabled.get(selected_id, False)
             return {
                 "name": name,
-                "available": self._fingerprint_backend.available,
-                "detail": self._fingerprint_backend.unavailable_reason,
+                "runtime_id": selected_id,
+                "available": bool(enabled and backend.available),
+                "detail": ("内核运行时已停用" if not enabled
+                           else backend.unavailable_reason),
             }
         return {"name": LOCAL_BACKEND, "available": True, "detail": ""}
+
+    def fingerprint_runtime_catalog(self) -> List[Dict[str, Any]]:
+        rows = []
+        for runtime_id, backend in self._fingerprint_backends.items():
+            enabled = self._fingerprint_runtime_enabled.get(runtime_id, False)
+            rows.append({
+                "runtime_id": runtime_id,
+                "name": backend.label,
+                "version": backend.version,
+                "platform": backend.platform,
+                "allow_headless": backend.allow_headless,
+                "enabled": enabled,
+                "is_default": runtime_id == self.default_fingerprint_runtime_id,
+                "available": bool(enabled and backend.available),
+                "detail": ("内核运行时已停用" if not enabled
+                           else backend.unavailable_reason),
+            })
+        return rows
 
     def backend_catalog(self) -> Dict[str, Any]:
         return {
@@ -419,10 +579,14 @@ class BrowserManager:
                 {
                     "name": FINGERPRINT_CHROMIUM_BACKEND,
                     "label": self._fingerprint_backend.label,
-                    "available": self._fingerprint_backend.available,
-                    "detail": self._fingerprint_backend.unavailable_reason,
+                    "available": self.backend_status(
+                        FINGERPRINT_CHROMIUM_BACKEND)["available"],
+                    "detail": self.backend_status(
+                        FINGERPRINT_CHROMIUM_BACKEND)["detail"],
                 },
             ],
+            "default_runtime_id": self.default_fingerprint_runtime_id,
+            "runtimes": self.fingerprint_runtime_catalog(),
         }
 
     def anon_identity(self) -> Identity:
@@ -453,10 +617,11 @@ class BrowserManager:
         plan = try_proxy_plan(proxy)
         return plan.signature if plan else "direct"
 
-    def _acquire_profile_lock(self, identity: Identity) -> None:
+    def _acquire_profile_lock(
+            self, identity: Identity, profile_dir: Path | None = None) -> None:
         if identity.key in self._profile_process_locks:
             return
-        lock = _ProfileProcessLock(Path(identity.profile_dir))
+        lock = _ProfileProcessLock(profile_dir or Path(identity.profile_dir))
         lock.acquire()
         self._profile_process_locks[identity.key] = lock
 
@@ -479,7 +644,9 @@ class BrowserManager:
         # Gate tests and queued task projections may pass a lightweight account
         # view, so resolving the backend must not require full profile fields.
         effective_backend = self.effective_browser_backend(account)
-        fingerprint_status = self.backend_status(effective_backend)
+        fingerprint_status = self.backend_status(
+            effective_backend,
+            str(getattr(account, "browser_runtime_id", "") or ""))
         if effective_backend == FINGERPRINT_CHROMIUM_BACKEND \
                 and not fingerprint_status["available"]:
             return (
@@ -513,16 +680,23 @@ class BrowserManager:
     # ── 持久化 context ──
     async def _launch_persistent(self, identity: Identity, headless: bool = True
                                  ) -> BrowserContext:
-        pdir = Path(identity.profile_dir)
+        effective_backend = self.effective_browser_backend(identity)
+        fingerprint_backend = None
+        runtime_id = ""
+        if effective_backend == FINGERPRINT_CHROMIUM_BACKEND:
+            fingerprint_backend = self._fingerprint_backend_for(identity)
+            runtime_id = fingerprint_backend.runtime_id
+            pdir = self._runtime_profile_dir(identity, runtime_id)
+        else:
+            pdir = Path(identity.profile_dir)
         pdir.mkdir(parents=True, exist_ok=True)
         was_empty = not any(p.name != ".browser.lock" for p in pdir.iterdir())
-        self._acquire_profile_lock(identity)
+        self._acquire_profile_lock(identity, pdir)
         ua = self._normalize_ua(identity.ua or self.default_ua)
-        effective_backend = self.effective_browser_backend(identity)
         fingerprint_plan = None
         if effective_backend == FINGERPRINT_CHROMIUM_BACKEND:
             try:
-                fingerprint_plan = self._fingerprint_backend.launch_plan(
+                fingerprint_plan = fingerprint_backend.launch_plan(
                     identity, requested_headless=headless)
             except BrowserBackendUnavailableError:
                 self._release_profile_lock(identity.key)
@@ -679,6 +853,7 @@ class BrowserManager:
         session = self._cdp_sessions.pop(key, None)
         self._last_used.pop(key, None)
         self._backend_by_key.pop(key, None)
+        self._runtime_by_key.pop(key, None)
         self._fallback_reason_by_key.pop(key, None)
         self._proxy_signature_by_key.pop(key, None)
         try:
@@ -697,11 +872,14 @@ class BrowserManager:
         key = identity.key
         async with self._cv_lock:
             effective_backend = self.effective_browser_backend(identity)
+            runtime_id = (
+                self.effective_fingerprint_runtime_id(identity)
+                if effective_backend == FINGERPRINT_CHROMIUM_BACKEND else "")
             plan = (self._xhs_proxy_plan(identity)
                     if identity.platform == "xhs"
                     else try_proxy_plan(identity.proxy))
             proxy_signature = plan.signature if plan else "direct"
-            signature = f"{effective_backend}:{proxy_signature}"
+            signature = f"{effective_backend}:{runtime_id}:{proxy_signature}"
             ctx = self._contexts.get(key)
             session = self._cdp_sessions.get(key)
             if ctx is not None and (
@@ -749,6 +927,8 @@ class BrowserManager:
                         if effective_backend == FINGERPRINT_CHROMIUM_BACKEND
                         else "patchright"
                     )
+                    if effective_backend == FINGERPRINT_CHROMIUM_BACKEND:
+                        self._runtime_by_key[key] = runtime_id
                 self._contexts[key] = ctx
                 self._proxy_signature_by_key[key] = signature
             self._last_used[key] = time.time()
@@ -787,6 +967,53 @@ class BrowserManager:
         finally:
             with suppress(Exception):
                 await page.close()
+
+    async def probe_fingerprint_runtime(
+            self, runtime_id: str, profile_root: str | Path) -> Dict[str, Any]:
+        """Launch one registered runtime with an isolated disposable profile."""
+        if self._pw is None:
+            raise RuntimeError("浏览器管理器尚未启动")
+        runtime_id = str(runtime_id or "").strip()
+        status = self.backend_status(FINGERPRINT_CHROMIUM_BACKEND, runtime_id)
+        if not status["available"]:
+            raise BrowserBackendUnavailableError(str(status["detail"]))
+        profile = Path(profile_root) / f"probe_{runtime_id}_{time.time_ns()}"
+        identity = Identity(
+            account_id=None,
+            profile_dir=str(profile),
+            identity_mode="native",
+            browser_backend=FINGERPRINT_CHROMIUM_BACKEND,
+            browser_runtime_id=runtime_id,
+            fp_seed=f"runtime-probe-{runtime_id}",
+        )
+        context = None
+        page = None
+        try:
+            context = await self._launch_persistent(identity, headless=False)
+            pages = list(context.pages)
+            page = pages[0] if pages else await context.new_page()
+            details = await page.evaluate("""() => ({
+                userAgent: navigator.userAgent,
+                platform: navigator.platform,
+                language: navigator.language,
+                webdriver: navigator.webdriver
+            })""")
+            return {
+                "ok": True,
+                "runtime_id": runtime_id,
+                "user_agent": str((details or {}).get("userAgent") or ""),
+                "platform": str((details or {}).get("platform") or ""),
+                "language": str((details or {}).get("language") or ""),
+                "webdriver": (details or {}).get("webdriver"),
+            }
+        finally:
+            if context is not None:
+                with suppress(Exception):
+                    await context.close()
+            self._release_profile_lock(identity.key)
+            import shutil
+            with suppress(Exception):
+                shutil.rmtree(profile)
 
     async def new_page(self, identity: Identity, block_media: bool = False):
         """从账号常驻 context 开一个新 page(可屏蔽图片/视频/字体)。用完请 page.close()。"""

@@ -52,6 +52,8 @@ class DouyinAccount(SQLModel, table=True):
     identity_mode: str = "legacy"                  # legacy=保留存量画像 | native=浏览器原生画像
     # default=跟随全局；local=现有 Patchright/CDP；fingerprint_chromium=开源内核。
     browser_backend: str = "default"
+    # fingerprint_chromium 下绑定的具体内核运行时；空=跟随默认内核。
+    browser_runtime_id: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -95,6 +97,25 @@ class ProxyPool(SQLModel, table=True):
     region: str = ""
     city: str = ""
     isp: str = ""
+    last_checked_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class BrowserRuntime(SQLModel, table=True):
+    """可由账号固定选择的本地 Chromium 内核运行时。"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    runtime_id: str = Field(default="", index=True, unique=True)
+    name: str = ""
+    backend: str = "fingerprint_chromium"
+    version: str = ""
+    executable_path: str = ""
+    platform: str = "auto"
+    allow_headless: bool = False
+    enabled: bool = True
+    is_default: bool = False
+    status: str = "unknown"       # unknown | ok | bad
+    last_error: str = ""
+    file_sha256: str = ""
     last_checked_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 

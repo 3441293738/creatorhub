@@ -38,6 +38,10 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       fetch_dm_history)
 from .browser.backends import ACCOUNT_BROWSER_BACKENDS
 from .browser.ip_fingerprint import derive_ip_fingerprint
+from .browser.runtime_catalog import (
+    discover_chromium_runtimes,
+    runtime_metadata,
+)
 from .platforms.douyin import (
     DouyinClient,
     cookie_from_state as douyin_cookie_from_state,
@@ -72,7 +76,7 @@ from .engine.share_downloader import (
 from .models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
                      CommentWatch, DanmakuWatch, DanmakuRecord,
                      DouyinAccount, MonitorTarget,
-                     NotificationChannel, ProxyPool, PublishTask,
+                     NotificationChannel, ProxyPool, BrowserRuntime, PublishTask,
                      AccountWork, FollowEdge, DmConversation, DmMessage,
                       AccountActionTask, AccountStatSnapshot,
                       ShareDownloadRecord, AccountRiskState, RiskEvent, RiskAdminAudit,
@@ -158,6 +162,110 @@ def _persist_native_ua(account_id: int, ua: str) -> None:
             session.commit()
 
 
+def _browser_backend_status(requested: str, runtime_id: str = "") -> dict:
+    """Call the runtime-aware manager while keeping lightweight test adapters."""
+    checker = browser.backend_status
+    try:
+        return checker(requested, runtime_id)
+    except TypeError:
+        return checker(requested)
+
+
+def _browser_runtime_dict(runtime: BrowserRuntime) -> dict:
+    path = Path(runtime.executable_path)
+    return {
+        "id": runtime.id,
+        "runtime_id": runtime.runtime_id,
+        "name": runtime.name,
+        "backend": runtime.backend,
+        "version": runtime.version,
+        "major": (runtime.version.split(".", 1)[0]
+                  if runtime.version else ""),
+        "executable_path": runtime.executable_path,
+        "platform": runtime.platform,
+        "allow_headless": runtime.allow_headless,
+        "enabled": runtime.enabled,
+        "is_default": runtime.is_default,
+        "status": runtime.status,
+        "last_error": runtime.last_error,
+        "available": path.is_file(),
+        "file_sha256": runtime.file_sha256,
+        "last_checked_at": (runtime.last_checked_at.isoformat()
+                            if runtime.last_checked_at else None),
+        "created_at": (runtime.created_at.isoformat()
+                       if runtime.created_at else None),
+    }
+
+
+def _seed_browser_runtimes() -> list[dict]:
+    """Import configured/discovered runtimes and return manager specifications."""
+    discovered: dict[str, dict] = {}
+    configured_path = str(cfg.engine.fingerprint_chromium_path or "").strip()
+    if configured_path:
+        try:
+            item = runtime_metadata(configured_path)
+            discovered[item["runtime_id"]] = item
+        except (OSError, ValueError) as exc:
+            print(f"[startup] 指纹内核路径不可用: {exc}")
+    root = str(cfg.engine.fingerprint_chromium_root or "").strip()
+    if root:
+        try:
+            for item in discover_chromium_runtimes(root):
+                discovered[item["runtime_id"]] = item
+        except (OSError, ValueError) as exc:
+            print(f"[startup] 指纹内核扫描失败: {exc}")
+
+    with get_session() as session:
+        existing = {
+            row.runtime_id: row
+            for row in session.exec(select(BrowserRuntime)).all()
+        }
+        configured_runtime_id = ""
+        for runtime_id, item in discovered.items():
+            row = existing.get(runtime_id)
+            if row is None:
+                row = BrowserRuntime(
+                    runtime_id=runtime_id,
+                    name=item["name"],
+                    version=item["version"],
+                    executable_path=item["executable_path"],
+                    platform=cfg.engine.fingerprint_chromium_platform,
+                    allow_headless=cfg.engine.fingerprint_chromium_allow_headless,
+                    file_sha256=item["file_sha256"],
+                )
+                session.add(row)
+                existing[runtime_id] = row
+            else:
+                row.version = item["version"]
+                row.executable_path = item["executable_path"]
+                row.file_sha256 = item["file_sha256"]
+                if not row.name:
+                    row.name = item["name"]
+                session.add(row)
+            if configured_path and os.path.normcase(item["executable_path"]) \
+                    == os.path.normcase(str(Path(configured_path).resolve())):
+                configured_runtime_id = runtime_id
+        session.commit()
+
+        rows = session.exec(select(BrowserRuntime).order_by(BrowserRuntime.id)).all()
+        default = next(
+            (row for row in rows if row.is_default and row.enabled), None)
+        if default is None:
+            default = next(
+                (row for row in rows
+                 if row.runtime_id == configured_runtime_id and row.enabled), None)
+        if default is None:
+            default = next((row for row in rows if row.enabled), None)
+        if default is not None:
+            for row in rows:
+                wanted = row.id == default.id
+                if row.is_default != wanted:
+                    row.is_default = wanted
+                    session.add(row)
+            session.commit()
+        return [_browser_runtime_dict(row) for row in rows]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global browser, engine, im_receiver
@@ -190,6 +298,14 @@ async def lifespan(app: FastAPI):
             print(f"[startup] 已为 {n} 个存量账号补齐画像(profile/UA/指纹/代理)")
     except Exception as e:
         print(f"[startup] 账号画像迁移失败(不影响启动): {e!r}")
+    try:
+        runtime_specs = _seed_browser_runtimes()
+    except Exception as e:
+        print(f"[startup] 浏览器内核目录导入失败(不影响启动): {e!r}")
+        runtime_specs = []
+    default_runtime_id = next(
+        (item["runtime_id"] for item in runtime_specs
+         if item.get("is_default") and item.get("enabled")), "")
     browser = BrowserManager(
         cfg.engine.user_agent, cfg.engine.profiles_dir,
         cfg.engine.max_live_contexts, native_ua_callback=_persist_native_ua,
@@ -201,11 +317,14 @@ async def lifespan(app: FastAPI):
         native_write_proxy_max_age_seconds=cfg.engine.native_write_proxy_max_age_seconds,
         browser_exit_probe_url=cfg.engine.browser_exit_probe_url,
         browser_backend=cfg.engine.browser_backend,
-        fingerprint_chromium_path=cfg.engine.fingerprint_chromium_path,
+        fingerprint_chromium_path=(
+            "" if runtime_specs else cfg.engine.fingerprint_chromium_path),
         fingerprint_chromium_allow_headless=(
             cfg.engine.fingerprint_chromium_allow_headless),
         fingerprint_chromium_platform=(
-            cfg.engine.fingerprint_chromium_platform))
+            cfg.engine.fingerprint_chromium_platform),
+        fingerprint_chromium_runtimes=runtime_specs,
+        fingerprint_default_runtime_id=default_runtime_id)
     await browser.start()
     engine = MonitorEngine(cfg, browser)
     startup_now = datetime.utcnow()
@@ -430,7 +549,8 @@ async def _enrich_account_profile(account_id: int, state: str, *,
 
 async def _run_login(task_id: str, creator: bool = False, account_id: int | None = None,
                      platform: str = "douyin", proxy_choice: str = "auto",
-                     browser_backend: str = "default"):
+                     browser_backend: str = "default",
+                     browser_runtime_id: str = ""):
     """扫码登录。多账号隔离模型:一账号=一持久 profile。
     - 传 account_id:登录进该账号自己的 profile(重新登录/补创作者登录)。
     - 不传:用「临时 profile」登录,**只有登录成功才建账号**;关窗/超时/取消都不留残号。"""
@@ -481,7 +601,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             backend_status = getattr(browser, "backend_status", None)
             effective_backend = ""
             if callable(backend_status):
-                effective_backend = backend_status(requested_backend).get("name", "")
+                effective_backend = _browser_backend_status(
+                    requested_backend, browser_runtime_id).get("name", "")
             if effective_backend == "fingerprint_chromium":
                 geo = await _proxy_geo(proxy, timeout=6)
                 if geo and geo.get("ip"):
@@ -499,6 +620,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             identity = Identity(
                 account_id=None, profile_dir=tmp_profile, identity_mode="native",
                 browser_backend=requested_backend,
+                browser_runtime_id=str(browser_runtime_id or "").strip(),
                 platform=platform,
                 proxy=proxy, ua="", viewport_w=new_fields["viewport_w"],
                 viewport_h=new_fields["viewport_h"], timezone_id=new_fields["timezone_id"],
@@ -575,6 +697,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                         platform=platform, nickname=nickname or nm, status="active",
                         profile_dir=tmp_profile, proxy=identity.proxy,
                         browser_backend=identity.browser_backend,
+                        browser_runtime_id=identity.browser_runtime_id,
                         identity_mode="native", ua=identity.ua or "",
                         viewport_w=new_fields["viewport_w"],
                         viewport_h=new_fields["viewport_h"],
@@ -652,115 +775,138 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             release_proxy_reservation(proxy_reservation_key)
 
 
-def _validate_login_browser_backend(value: str) -> str:
+def _validate_login_browser_backend(
+        value: str, runtime_id: str = "") -> tuple[str, str]:
     requested = str(value or "default").strip().lower()
+    runtime_id = str(runtime_id or "").strip()
     if requested not in ACCOUNT_BROWSER_BACKENDS:
         raise HTTPException(400, "浏览器环境取值无效")
-    status = browser.backend_status(requested)
+    status = _browser_backend_status(requested, runtime_id)
     if not status["available"]:
         raise HTTPException(400, f"浏览器环境不可用：{status['detail']}")
-    return requested
+    return requested, runtime_id
 
 
 @app.post("/api/login/browser/start")
-async def login_browser_start(proxy: str = "auto", browser_backend: str = "default"):
+async def login_browser_start(proxy: str = "auto", browser_backend: str = "default",
+                              browser_runtime_id: str = ""):
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
-    browser_backend = _validate_login_browser_backend(browser_backend)
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
     asyncio.create_task(_run_login(
-        task_id, proxy_choice=proxy, browser_backend=browser_backend))
+        task_id, proxy_choice=proxy, browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开浏览器窗口,请在其中点击“登录”并用抖音 App 扫码"}
 
 
 @app.post("/api/login/creator/start")
-async def login_creator_start(proxy: str = "auto", browser_backend: str = "default"):
+async def login_creator_start(proxy: str = "auto", browser_backend: str = "default",
+                              browser_runtime_id: str = ""):
     """创作中心登录(用于自有账号评论模式;其登录态同样可用于公开抓取)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
-    browser_backend = _validate_login_browser_backend(browser_backend)
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
     asyncio.create_task(_run_login(
         task_id, creator=True, proxy_choice=proxy,
-        browser_backend=browser_backend))
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开创作中心窗口,请在其中扫码登录你的抖音号"}
 
 
 @app.post("/api/login/xhs/start")
-async def login_xhs_start(proxy: str = "auto", browser_backend: str = "default"):
+async def login_xhs_start(proxy: str = "auto", browser_backend: str = "default",
+                          browser_runtime_id: str = ""):
     """小红书扫码登录(用于监控/读取)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
-    browser_backend = _validate_login_browser_backend(browser_backend)
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
     asyncio.create_task(_run_login(
         task_id, platform="xhs", proxy_choice=proxy,
-        browser_backend=browser_backend))
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开小红书官网首页,请在窗口中点击登录并用小红书 App 扫码"}
 
 
 @app.post("/api/login/xhs-creator/start")
-async def login_xhs_creator_start(proxy: str = "auto", browser_backend: str = "default"):
+async def login_xhs_creator_start(proxy: str = "auto", browser_backend: str = "default",
+                                  browser_runtime_id: str = ""):
     """小红书「创作服务平台」登录(用于发布/已发布列表)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
-    browser_backend = _validate_login_browser_backend(browser_backend)
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
     asyncio.create_task(_run_login(
         task_id, creator=True, platform="xhs", proxy_choice=proxy,
-        browser_backend=browser_backend))
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开小红书创作平台窗口,请扫码登录(发布用)"}
 
 
 @app.post("/api/login/kuaishou/start")
-async def login_ks_start(proxy: str = "auto", browser_backend: str = "default"):
+async def login_ks_start(proxy: str = "auto", browser_backend: str = "default",
+                         browser_runtime_id: str = ""):
     """快手扫码登录(用于监控/读取)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
-    browser_backend = _validate_login_browser_backend(browser_backend)
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
     asyncio.create_task(_run_login(
         task_id, platform="kuaishou", proxy_choice=proxy,
-        browser_backend=browser_backend))
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开快手窗口,请在其中用快手 App 扫码登录"}
 
 
 @app.post("/api/login/kuaishou-creator/start")
-async def login_ks_creator_start(proxy: str = "auto", browser_backend: str = "default"):
+async def login_ks_creator_start(proxy: str = "auto", browser_backend: str = "default",
+                                 browser_runtime_id: str = ""):
     """快手「创作者服务平台」登录(用于发布)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
-    browser_backend = _validate_login_browser_backend(browser_backend)
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
     asyncio.create_task(_run_login(
         task_id, creator=True, platform="kuaishou", proxy_choice=proxy,
-        browser_backend=browser_backend))
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开快手创作平台窗口,请扫码登录(发布用)"}
 
 
 @app.post("/api/login/shipinhao/start")
-async def login_channels_start(proxy: str = "auto", browser_backend: str = "default"):
+async def login_channels_start(proxy: str = "auto", browser_backend: str = "default",
+                               browser_runtime_id: str = ""):
     """视频号扫码登录(读取/发布共用,微信扫码)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
-    browser_backend = _validate_login_browser_backend(browser_backend)
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
     task_id = uuid.uuid4().hex
     login_tasks[task_id] = {"status": "opening"}
     asyncio.create_task(_run_login(
         task_id, platform="shipinhao", proxy_choice=proxy,
-        browser_backend=browser_backend))
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开视频号助手窗口,请用微信扫码登录"}
 
@@ -843,6 +989,7 @@ async def list_accounts(platform: str | None = None):
                 "write_pause_reason": a.write_pause_reason,
                 "identity_mode": a.identity_mode,
                 "browser_backend": a.browser_backend,
+                "browser_runtime_id": a.browser_runtime_id,
                 "fingerprint_id": (a.fp_seed or "")[:12],
                 "fingerprint_ip": a.fp_source_ip,
                 "fingerprint_country": a.fp_country,
@@ -1254,6 +1401,316 @@ async def list_browser_backends():
     return browser.backend_catalog()
 
 
+def _register_runtime_with_manager(runtime: BrowserRuntime | dict) -> None:
+    if browser is None:
+        return
+    item = (_browser_runtime_dict(runtime)
+            if isinstance(runtime, BrowserRuntime) else runtime)
+    browser.register_fingerprint_runtime(
+        item["runtime_id"], item["executable_path"],
+        allow_headless=bool(item.get("allow_headless", False)),
+        platform=str(item.get("platform") or "auto"),
+        version=str(item.get("version") or ""),
+        label=str(item.get("name") or ""),
+        enabled=bool(item.get("enabled", True)),
+    )
+
+
+def _upsert_browser_runtime(
+        session, item: dict, *, name: str = "",
+        platform: str = "auto", allow_headless: bool = False,
+        enable_new: bool = True) -> tuple[BrowserRuntime, bool]:
+    row = session.exec(select(BrowserRuntime).where(
+        BrowserRuntime.runtime_id == item["runtime_id"])).first()
+    created = row is None
+    if row is None:
+        row = BrowserRuntime(
+            runtime_id=item["runtime_id"],
+            enabled=enable_new,
+            platform=platform,
+            allow_headless=allow_headless,
+        )
+    row.name = str(name or row.name or item["name"]).strip()[:120]
+    row.version = item["version"]
+    row.executable_path = item["executable_path"]
+    row.file_sha256 = item["file_sha256"]
+    row.platform = str(row.platform or platform or "auto")
+    row.last_error = ""
+    if not row.status:
+        row.status = "unknown"
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row, created
+
+
+def _runtime_account_ids(session, runtime_id: str, *, followers: bool = False) -> list[int]:
+    rows = session.exec(select(DouyinAccount)).all()
+    ids = []
+    for account in rows:
+        if account.id is None:
+            continue
+        selected = str(account.browser_runtime_id or "").strip()
+        if selected == runtime_id or (followers and not selected):
+            effective = (browser.effective_browser_backend(account)
+                         if browser is not None else account.browser_backend)
+            if effective == "fingerprint_chromium":
+                ids.append(account.id)
+    return ids
+
+
+async def _close_runtime_accounts(account_ids: list[int]) -> None:
+    if browser is None:
+        return
+    for account_id in set(account_ids):
+        lease = open_browsers.pop(account_id, None)
+        if lease is not None:
+            try:
+                await lease.close()
+            except Exception:
+                pass
+        try:
+            await browser.close_context(account_id)
+        except Exception:
+            pass
+
+
+class BrowserRuntimeAddIn(BaseModel):
+    executable_path: str
+    name: str = ""
+    platform: str = "auto"
+    allow_headless: bool = False
+
+
+class BrowserRuntimeScanIn(BaseModel):
+    root: str = ""
+
+
+class BrowserRuntimeUpdateIn(BaseModel):
+    name: str | None = None
+    enabled: bool | None = None
+    is_default: bool | None = None
+    allow_headless: bool | None = None
+
+
+@app.get("/api/browser-runtimes")
+async def list_browser_runtimes():
+    with get_session() as session:
+        rows = session.exec(select(BrowserRuntime).order_by(
+            BrowserRuntime.is_default.desc(), BrowserRuntime.id)).all()
+        return {
+            "root": str(cfg.engine.fingerprint_chromium_root or ""),
+            "default_runtime_id": next(
+                (row.runtime_id for row in rows if row.is_default), ""),
+            "runtimes": [_browser_runtime_dict(row) for row in rows],
+        }
+
+
+@app.post("/api/browser-runtimes")
+async def add_browser_runtime(body: BrowserRuntimeAddIn):
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    platform = str(body.platform or "auto").strip().lower()
+    if platform not in {"auto", "windows", "linux", "macos"}:
+        raise HTTPException(400, "内核平台取值无效")
+    try:
+        item = runtime_metadata(body.executable_path)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    with get_session() as session:
+        row, created = _upsert_browser_runtime(
+            session, item, name=body.name, platform=platform,
+            allow_headless=body.allow_headless)
+        rows = session.exec(select(BrowserRuntime)).all()
+        if not any(candidate.is_default for candidate in rows):
+            row.is_default = True
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+        payload = _browser_runtime_dict(row)
+    _register_runtime_with_manager(payload)
+    if payload["is_default"]:
+        browser.set_default_fingerprint_runtime(payload["runtime_id"])
+    return {"ok": True, "created": created, "runtime": payload}
+
+
+@app.post("/api/browser-runtimes/scan")
+async def scan_browser_runtimes(body: BrowserRuntimeScanIn | None = None):
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    root = str((body.root if body else "")
+               or cfg.engine.fingerprint_chromium_root or "").strip()
+    if not root:
+        raise HTTPException(400, "请先配置内核目录或输入扫描目录")
+    try:
+        discovered = discover_chromium_runtimes(root)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    payloads = []
+    created_count = 0
+    with get_session() as session:
+        for item in discovered:
+            row, created = _upsert_browser_runtime(
+                session, item,
+                platform=cfg.engine.fingerprint_chromium_platform,
+                allow_headless=cfg.engine.fingerprint_chromium_allow_headless)
+            payloads.append(_browser_runtime_dict(row))
+            created_count += int(created)
+        rows = session.exec(select(BrowserRuntime).order_by(BrowserRuntime.id)).all()
+        if rows and not any(row.is_default and row.enabled for row in rows):
+            default = next((row for row in rows if row.enabled), None)
+            if default is not None:
+                for row in rows:
+                    row.is_default = row.id == default.id
+                    session.add(row)
+                session.commit()
+                payloads = [_browser_runtime_dict(row) for row in session.exec(
+                    select(BrowserRuntime).where(
+                        BrowserRuntime.runtime_id.in_(
+                            [item["runtime_id"] for item in discovered]))).all()]
+        default_id = next(
+            (row.runtime_id for row in session.exec(select(BrowserRuntime)).all()
+             if row.is_default and row.enabled), "")
+    for payload in payloads:
+        _register_runtime_with_manager(payload)
+    if default_id:
+        browser.set_default_fingerprint_runtime(default_id)
+    return {
+        "ok": True, "root": str(Path(root).expanduser().resolve()),
+        "found": len(discovered), "created": created_count,
+        "runtimes": payloads,
+    }
+
+
+@app.put("/api/browser-runtimes/{runtime_id}")
+async def update_browser_runtime(runtime_id: str, body: BrowserRuntimeUpdateIn):
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    old_default = ""
+    close_ids: list[int] = []
+    with get_session() as session:
+        row = session.exec(select(BrowserRuntime).where(
+            BrowserRuntime.runtime_id == runtime_id)).first()
+        if row is None:
+            raise HTTPException(404, "内核运行时不存在")
+        old_default = next((candidate.runtime_id for candidate in session.exec(
+            select(BrowserRuntime)).all() if candidate.is_default), "")
+        if body.name is not None:
+            row.name = str(body.name or "").strip()[:120] or row.name
+        if body.allow_headless is not None:
+            row.allow_headless = bool(body.allow_headless)
+        if body.enabled is not None:
+            row.enabled = bool(body.enabled)
+        if body.is_default:
+            row.enabled = True
+            for candidate in session.exec(select(BrowserRuntime)).all():
+                candidate.is_default = candidate.runtime_id == runtime_id
+                session.add(candidate)
+        elif not row.enabled and row.is_default:
+            replacement = session.exec(select(BrowserRuntime).where(
+                BrowserRuntime.runtime_id != runtime_id,
+                BrowserRuntime.enabled == True).order_by(  # noqa: E712
+                    BrowserRuntime.id)).first()
+            row.is_default = False
+            if replacement is not None:
+                replacement.is_default = True
+                session.add(replacement)
+        session.add(row)
+        session.commit()
+        rows = session.exec(select(BrowserRuntime)).all()
+        payload = _browser_runtime_dict(session.exec(select(BrowserRuntime).where(
+            BrowserRuntime.runtime_id == runtime_id)).first())
+        default_id = next(
+            (candidate.runtime_id for candidate in rows
+             if candidate.is_default and candidate.enabled), "")
+        close_ids = _runtime_account_ids(
+            session, runtime_id,
+            followers=(old_default == runtime_id or default_id == runtime_id))
+    _register_runtime_with_manager(payload)
+    if default_id:
+        browser.set_default_fingerprint_runtime(default_id)
+    elif browser.default_fingerprint_runtime_id == runtime_id:
+        browser.clear_default_fingerprint_runtime()
+    await _close_runtime_accounts(close_ids)
+    return {"ok": True, "runtime": payload,
+            "default_runtime_id": default_id}
+
+
+@app.post("/api/browser-runtimes/{runtime_id}/test")
+async def test_browser_runtime(runtime_id: str):
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    with get_session() as session:
+        row = session.exec(select(BrowserRuntime).where(
+            BrowserRuntime.runtime_id == runtime_id)).first()
+        if row is None:
+            raise HTTPException(404, "内核运行时不存在")
+        payload = _browser_runtime_dict(row)
+    _register_runtime_with_manager(payload)
+    checked_at = datetime.utcnow()
+    try:
+        result = await browser.probe_fingerprint_runtime(
+            runtime_id, Path(cfg.engine.profiles_dir) / "_runtime_probes")
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"[:500]
+        with get_session() as session:
+            row = session.exec(select(BrowserRuntime).where(
+                BrowserRuntime.runtime_id == runtime_id)).first()
+            if row is not None:
+                row.status = "bad"
+                row.last_error = detail
+                row.last_checked_at = checked_at
+                session.add(row)
+                session.commit()
+        raise HTTPException(400, detail) from exc
+    with get_session() as session:
+        row = session.exec(select(BrowserRuntime).where(
+            BrowserRuntime.runtime_id == runtime_id)).first()
+        if row is not None:
+            row.status = "ok"
+            row.last_error = ""
+            row.last_checked_at = checked_at
+            session.add(row)
+            session.commit()
+    return result
+
+
+@app.delete("/api/browser-runtimes/{runtime_id}")
+async def delete_browser_runtime(runtime_id: str):
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    with get_session() as session:
+        row = session.exec(select(BrowserRuntime).where(
+            BrowserRuntime.runtime_id == runtime_id)).first()
+        if row is None:
+            raise HTTPException(404, "内核运行时不存在")
+        bound = session.exec(select(DouyinAccount).where(
+            DouyinAccount.browser_runtime_id == runtime_id)).all()
+        if bound:
+            raise HTTPException(
+                409, f"仍有 {len(bound)} 个账号绑定此内核，请先切换账号环境")
+        was_default = row.is_default
+        session.delete(row)
+        session.commit()
+        replacement = session.exec(select(BrowserRuntime).where(
+            BrowserRuntime.enabled == True).order_by(  # noqa: E712
+                BrowserRuntime.id)).first()
+        if was_default and replacement is not None:
+            replacement.is_default = True
+            session.add(replacement)
+            session.commit()
+        default_id = replacement.runtime_id if was_default and replacement else next(
+            (candidate.runtime_id for candidate in session.exec(
+                select(BrowserRuntime)).all() if candidate.is_default), "")
+        follower_ids = _runtime_account_ids(
+            session, runtime_id, followers=was_default)
+    browser.unregister_fingerprint_runtime(runtime_id)
+    if default_id:
+        browser.set_default_fingerprint_runtime(default_id)
+    await _close_runtime_accounts(follower_ids)
+    return {"ok": True, "default_runtime_id": default_id}
+
+
 def _account_fingerprint_payload(account: DouyinAccount) -> dict:
     return {
         "account_id": account.id,
@@ -1270,6 +1727,7 @@ def _account_fingerprint_payload(account: DouyinAccount) -> dict:
         "generated_at": (account.fp_generated_at.isoformat()
                          if account.fp_generated_at else None),
         "browser_backend": account.browser_backend,
+        "browser_runtime_id": account.browser_runtime_id,
         "exit_ip": account.exit_ip,
         "ip_matches_exit": bool(
             account.fp_source_ip and account.exit_ip
@@ -1368,6 +1826,7 @@ async def generate_account_fingerprint_from_ip(account_id: int):
 
 class AccountBrowserBackendIn(BaseModel):
     browser_backend: str
+    browser_runtime_id: str = ""
 
 
 @app.put("/api/accounts/{account_id}/browser-backend")
@@ -1377,9 +1836,10 @@ async def set_account_browser_backend(
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     requested = str(body.browser_backend or "").strip().lower()
+    runtime_id = str(body.browser_runtime_id or "").strip()
     if requested not in ACCOUNT_BROWSER_BACKENDS:
         raise HTTPException(400, "浏览器后端取值无效")
-    status = browser.backend_status(requested)
+    status = _browser_backend_status(requested, runtime_id)
     if not status["available"]:
         raise HTTPException(
             400, f"浏览器后端不可用:{status['detail']}")
@@ -1398,6 +1858,8 @@ async def set_account_browser_backend(
         if account is None:
             raise HTTPException(404, "账号不存在")
         account.browser_backend = requested
+        account.browser_runtime_id = (
+            runtime_id if requested == "fingerprint_chromium" else "")
         session.add(account)
         session.commit()
         session.refresh(account)
@@ -1408,6 +1870,7 @@ async def set_account_browser_backend(
     return {
         "ok": True,
         "browser_backend": requested,
+        "browser_runtime_id": identity.browser_runtime_id,
         "effective_backend": status["name"],
         "environment": environment,
     }

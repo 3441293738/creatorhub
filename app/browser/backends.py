@@ -43,6 +43,8 @@ class BrowserLaunchPlan:
     args: tuple[str, ...]
     headless: bool
     engine_controlled_identity: bool = False
+    runtime_id: str = ""
+    version: str = ""
 
 
 class BrowserRuntimeBackend(Protocol):
@@ -96,9 +98,15 @@ class FingerprintChromiumBackend:
         *,
         allow_headless: bool = False,
         platform: str = "auto",
+        runtime_id: str = "",
+        version: str = "",
+        label: str = "",
     ):
         self._raw_path = str(executable_path or "").strip()
         self.allow_headless = bool(allow_headless)
+        self.runtime_id = str(runtime_id or "").strip()
+        self.version = str(version or "").strip()
+        self.label = str(label or "").strip() or self.__class__.label
         requested_platform = str(platform or "auto").strip().lower()
         self.platform = (
             _host_fingerprint_platform()
@@ -157,4 +165,6 @@ class FingerprintChromiumBackend:
             # UA and still leaks other headless traits.  Keep it opt-in.
             headless=bool(requested_headless and self.allow_headless),
             engine_controlled_identity=True,
+            runtime_id=self.runtime_id,
+            version=self.version,
         )

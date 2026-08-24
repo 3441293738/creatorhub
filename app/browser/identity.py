@@ -78,6 +78,8 @@ class Identity:
     bridge_states: tuple = ()
     # 仅用于选择浏览器后端；放在末尾保持现有位置参数构造兼容。
     platform: str = ""
+    # fingerprint_chromium 下选择的具体本地内核；空表示跟随默认内核。
+    browser_runtime_id: str = ""
 
     @property
     def key(self):
@@ -108,6 +110,8 @@ class Identity:
             identity_mode=getattr(acc, "identity_mode", "legacy") or "legacy",
             browser_backend=(
                 getattr(acc, "browser_backend", "default") or "default"),
+            browser_runtime_id=(
+                getattr(acc, "browser_runtime_id", "") or ""),
             proxy=acc.proxy or "",
             ua=acc.ua or default_ua,
             viewport_w=acc.viewport_w or 1280, viewport_h=acc.viewport_h or 800,

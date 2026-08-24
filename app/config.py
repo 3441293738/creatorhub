@@ -47,6 +47,7 @@ class EngineConfig:
     # 全局浏览器运行时；账号可用 browser_backend 单独覆盖。
     browser_backend: str = "local"          # local | fingerprint_chromium
     fingerprint_chromium_path: str = ""     # 开源 fingerprint-chromium 的 chrome/chrome.exe
+    fingerprint_chromium_root: str = ""     # 多内核扫描根目录；递归发现 chrome/chrome.exe
     fingerprint_chromium_allow_headless: bool = False  # 上游无头画像不完整，默认强制有头
     fingerprint_chromium_platform: str = "auto"       # auto | windows | linux | macos
     # 小红书浏览器:默认优先连接 CreatorHub 管理的每账号系统 Chrome CDP。

@@ -1770,6 +1770,23 @@
       <div class="table-wrap mini-table"><table id="acc-table" aria-label="平台账号列表"><tbody></tbody></table></div>
     </div>
 
+    <!-- 指纹 Chromium 多版本内核 -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-film"/></svg></span>
+        <h2>浏览器内核 <span class="sub">多版本管理 · 账号固定绑定</span></h2>
+      </div>
+      <p class="mut" style="font-size:12px;margin:-4px 0 12px">
+        扫描 <code>D:\browsers\fingerprint-chromium</code> 下的 Chromium，或手动添加 <code>chrome.exe</code>。
+        每个账号可在上方「环境」中固定选择一个版本；不同版本使用独立 Profile，内核文件与测试目录都保留在 D 盘项目配置路径下。
+      </p>
+      <div class="form-actions">
+        <button class="ghost" onclick="scanBrowserRuntimes()"><svg><use href="#i-eye"/></svg>扫描内核目录</button>
+        <button class="ghost" onclick="addBrowserRuntime()"><svg><use href="#i-plus"/></svg>手动添加 chrome.exe</button>
+      </div>
+      <div class="table-wrap mini-table"><table id="runtime-table" aria-label="浏览器内核列表"><tbody></tbody></table></div>
+    </div>
+
     <!-- 代理池(提前配置好,账号从池里关联) -->
     <div class="card">
       <div class="card-head">

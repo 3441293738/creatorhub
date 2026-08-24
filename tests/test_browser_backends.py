@@ -75,6 +75,7 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
             "engine:\n"
             "  browser_backend: fingerprint_chromium\n"
             f"  fingerprint_chromium_path: '{self.executable.as_posix()}'\n"
+            f"  fingerprint_chromium_root: '{Path(self.tmp.name).as_posix()}'\n"
             "  fingerprint_chromium_allow_headless: true\n"
             "  fingerprint_chromium_platform: windows\n",
             encoding="utf-8",
@@ -85,6 +86,8 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
         self.assertEqual(cfg.engine.browser_backend, "fingerprint_chromium")
         self.assertEqual(cfg.engine.fingerprint_chromium_path,
                          self.executable.as_posix())
+        self.assertEqual(cfg.engine.fingerprint_chromium_root,
+                         Path(self.tmp.name).as_posix())
         self.assertTrue(cfg.engine.fingerprint_chromium_allow_headless)
         self.assertEqual(cfg.engine.fingerprint_chromium_platform, "windows")
 
@@ -168,6 +171,71 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
                          "Fingerprint Chromium · 开源内核")
         self.assertFalse(snapshot["headless"])
 
+    def test_account_runtime_selects_executable_and_isolated_profile(self):
+        runtime_a = Path(self.tmp.name) / "chrome-a.exe"
+        runtime_b = Path(self.tmp.name) / "chrome-b.exe"
+        runtime_a.write_bytes(b"a")
+        runtime_b.write_bytes(b"b")
+
+        class PageStub:
+            async def evaluate(self, _expression):
+                return "Mozilla/5.0 Chrome/149.0.0.0 Safari/537.36"
+
+            async def close(self):
+                return None
+
+        class ContextStub:
+            pages = []
+
+            async def new_page(self):
+                return PageStub()
+
+            async def cookies(self):
+                return []
+
+            def on(self, *_args):
+                return None
+
+        class ChromiumStub:
+            def __init__(self):
+                self.kwargs = None
+
+            async def launch_persistent_context(self, **kwargs):
+                self.kwargs = kwargs
+                return ContextStub()
+
+        manager = BrowserManager(
+            "UA", str(Path(self.tmp.name) / "profiles"),
+            fingerprint_chromium_runtimes=[
+                {"runtime_id": "fp-148-a", "executable_path": str(runtime_a),
+                 "version": "148.0.1", "name": "内核 148", "enabled": True,
+                 "is_default": True},
+                {"runtime_id": "fp-149-b", "executable_path": str(runtime_b),
+                 "version": "149.0.1", "name": "内核 149", "enabled": True},
+            ],
+            fingerprint_default_runtime_id="fp-148-a",
+        )
+        manager._pw = type("PW", (), {"chromium": ChromiumStub()})()
+        identity = Identity(
+            account_id=19,
+            profile_dir=str(Path(self.tmp.name) / "account-19"),
+            identity_mode="native",
+            browser_backend="fingerprint_chromium",
+            browser_runtime_id="fp-149-b",
+        )
+
+        asyncio.run(manager._launch_persistent(identity, headless=False))
+        kwargs = manager._pw.chromium.kwargs
+
+        self.assertEqual(Path(kwargs["executable_path"]), runtime_b.resolve())
+        self.assertEqual(
+            Path(kwargs["user_data_dir"]),
+            Path(identity.profile_dir) / "runtimes" / "fp-149-b")
+        snapshot = manager.environment_snapshot(identity, headless=False)
+        self.assertEqual(snapshot["runtime_id"], "fp-149-b")
+        self.assertEqual(snapshot["runtime_version"], "149.0.1")
+        manager._release_profile_lock(identity.key)
+
 
 class AccountBrowserBackendApiTests(unittest.TestCase):
     def setUp(self):
@@ -202,10 +270,11 @@ class AccountBrowserBackendApiTests(unittest.TestCase):
             def __init__(self):
                 self.closed = []
 
-            def backend_status(self, requested):
+            def backend_status(self, requested, runtime_id=""):
                 return {
                     "name": "fingerprint_chromium",
-                    "available": requested == "fingerprint_chromium",
+                    "available": (requested == "fingerprint_chromium"
+                                  and runtime_id == "fp-148-fixture"),
                     "detail": "",
                 }
 
@@ -229,12 +298,14 @@ class AccountBrowserBackendApiTests(unittest.TestCase):
         result = asyncio.run(main.set_account_browser_backend(
             account_id,
             main.AccountBrowserBackendIn(
-                browser_backend="fingerprint_chromium"),
+                browser_backend="fingerprint_chromium",
+                browser_runtime_id="fp-148-fixture"),
         ))
 
         with db.get_session() as session:
             saved = session.get(DouyinAccount, account_id)
             self.assertEqual(saved.browser_backend, "fingerprint_chromium")
+            self.assertEqual(saved.browser_runtime_id, "fp-148-fixture")
         self.assertEqual(stub.closed, [account_id])
         self.assertEqual(result["browser_backend"], "fingerprint_chromium")
 

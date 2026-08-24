@@ -1063,6 +1063,38 @@ function switchTab(name, pushHistory = false) {
 // ─── 扫码登录(真实浏览器窗口) ───
 let qrTimer = null;
 let preLoginBrowserBackend = "default";
+function browserChoiceParts(choice) {
+  const [backend, runtimeId = ""] = String(choice || "default").split("::", 2);
+  return { backend: backend || "default", runtimeId };
+}
+function browserChoiceOptions(catalog) {
+  const backends = catalog.backends || [];
+  const defaultBackend = backends.find(item => item.name === catalog.default);
+  const local = backends.find(item => item.name === "local");
+  const fingerprint = backends.find(item => item.name === "fingerprint_chromium");
+  const runtimes = catalog.runtimes || [];
+  const options = [{
+    value: "default",
+    label: `跟随全局（${defaultBackend ? defaultBackend.label : catalog.default}）`,
+    disabled: !!defaultBackend && !defaultBackend.available,
+  }];
+  if (local) options.push({
+    value: "local", label: local.label,
+    disabled: !local.available,
+  });
+  runtimes.forEach(runtime => options.push({
+    value: `fingerprint_chromium::${runtime.runtime_id}`,
+    label: `${runtime.name}${runtime.version ? ` · ${runtime.version}` : ""}${runtime.is_default ? " · 默认" : ""}`
+      + (runtime.available ? "" : ` · 不可用：${runtime.detail || "未配置"}`),
+    disabled: !runtime.available,
+  }));
+  if (!runtimes.length && fingerprint) options.push({
+    value: "fingerprint_chromium",
+    label: fingerprint.label + (fingerprint.available ? "" : ` · 不可用：${fingerprint.detail || "未配置"}`),
+    disabled: !fingerprint.available,
+  });
+  return options;
+}
 // 新账号尚未落库，扫码前先确定浏览器内核；成功后该选择随账号持久化。
 async function choosePreLoginBrowserBackend() {
   let catalog;
@@ -1072,20 +1104,7 @@ async function choosePreLoginBrowserBackend() {
     toast("读取登录环境失败：" + e.message, "err");
     return null;
   }
-  const backends = catalog.backends || [];
-  const defaultBackend = backends.find(item => item.name === catalog.default);
-  const options = [
-    {
-      value: "default",
-      label: `跟随全局（${defaultBackend ? defaultBackend.label : catalog.default}）`,
-      disabled: !!defaultBackend && !defaultBackend.available,
-    },
-    ...backends.map(item => ({
-      value: item.name,
-      label: item.label + (item.available ? "" : ` · 不可用：${item.detail || "未配置"}`),
-      disabled: !item.available,
-    })),
-  ];
+  const options = browserChoiceOptions(catalog);
   const selected = await uiSelect({
     title: "选择扫码登录环境",
     hint: "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。",
@@ -1122,8 +1141,10 @@ async function choosePreLoginProxy() {
   return v;
 }
 function loginStartUrl(path, proxy, browserBackend) {
+  const choice = browserChoiceParts(browserBackend);
   return path + "?proxy=" + encodeURIComponent(proxy)
-    + "&browser_backend=" + encodeURIComponent(browserBackend || "default");
+    + "&browser_backend=" + encodeURIComponent(choice.backend)
+    + "&browser_runtime_id=" + encodeURIComponent(choice.runtimeId);
 }
 async function startLogin() {
   const browserBackend = await choosePreLoginBrowserBackend();
@@ -1142,6 +1163,7 @@ async function startLogin() {
 function loginEnvironmentText(env) {
   if (!env || !env.backend_label) return "";
   let text = env.backend_label;
+  if (env.runtime_version && !text.includes(env.runtime_version)) text += " · " + env.runtime_version;
   if (env.has_proxy) text += " · 账号代理";
   if (env.fallback_reason) text += "（" + env.fallback_reason + "）";
   return text;
@@ -1308,6 +1330,7 @@ async function saveCookie() {
 
 // ─── 账号 ───
 let ACCOUNTS = [];
+let BROWSER_RUNTIMES = [];
 let MONITORS = [], WATCHES = [], CONTENTS = [];
 let COLLECTION_JOBS = [], COLLECTION_JOB_ID = 0, COLLECTION_PAGE = 1;
 let DANMAKU_WATCHES = [];
@@ -2555,38 +2578,144 @@ async function setBrowserBackend(id) {
     toast("读取浏览器环境失败:" + e.message, "err");
     return;
   }
-  const backends = catalog.backends || [];
-  const defaultBackend = backends.find(item => item.name === catalog.default);
-  const options = [
-    {
-      value: "default",
-      label: `跟随全局（${defaultBackend ? defaultBackend.label : catalog.default}）`,
-      disabled: !!defaultBackend && !defaultBackend.available,
-    },
-    ...backends.map(item => ({
-      value: item.name,
-      label: item.label + (item.available ? "" : ` · 不可用：${item.detail || "未配置"}`),
-      disabled: !item.available,
-    })),
-  ];
+  const options = browserChoiceOptions(catalog);
+  const currentChoice = account.browser_backend === "fingerprint_chromium" && account.browser_runtime_id
+    ? `fingerprint_chromium::${account.browser_runtime_id}`
+    : (account.browser_backend || "default");
   const selected = await uiSelect({
     title: "账号浏览器环境",
     hint: `${account.nickname} · 切换时会关闭该账号当前浏览器，下次任务使用新内核。`,
     options,
-    value: account.browser_backend || "default",
+    value: currentChoice,
   });
   if (selected === null) return;
   try {
+    const choice = browserChoiceParts(selected);
     const result = await api(`/api/accounts/${id}/browser-backend`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ browser_backend: selected }),
+      body: JSON.stringify({
+        browser_backend: choice.backend,
+        browser_runtime_id: choice.runtimeId,
+      }),
     });
     toast("浏览器环境已切换：" + loginEnvironmentText(result.environment), "ok");
     refreshAccounts();
   } catch (e) {
     toast("切换失败:" + e.message, "err");
   }
+}
+
+async function refreshBrowserRuntimes() {
+  const table = $("runtime-table");
+  if (!table) return;
+  try {
+    const result = await api("/api/browser-runtimes");
+    BROWSER_RUNTIMES = result.runtimes || [];
+    table.querySelector("tbody").innerHTML = BROWSER_RUNTIMES.map(runtime => {
+      const state = !runtime.enabled ? "已停用" : runtime.available
+        ? (runtime.status === "ok" ? "测试通过" : "可用") : "文件缺失";
+      const stateClass = runtime.enabled && runtime.available
+        ? "active" : runtime.status === "bad" ? "invalid" : "bare";
+      return `<tr>
+        <td>
+          <div><b>${esc(runtime.name || runtime.runtime_id)}</b>
+            ${runtime.is_default ? '<span class="pill active">默认</span>' : ""}
+            <span class="pill ${stateClass}">${esc(state)}</span>
+          </div>
+          <div class="mut" style="font-size:11px;margin-top:3px">版本 ${esc(runtime.version || "未知")} · ${esc(runtime.runtime_id)}</div>
+          <div class="mut" style="font-size:11px;margin-top:3px;word-break:break-all"><code>${esc(runtime.executable_path)}</code></div>
+          ${runtime.last_error ? `<div style="font-size:11px;margin-top:3px;color:var(--danger)">${esc(runtime.last_error)}</div>` : ""}
+        </td>
+        <td class="acttd">
+          <button class="ghost sm" onclick="testBrowserRuntime('${esc(runtime.runtime_id)}')">测试启动</button>
+          ${runtime.is_default ? "" : `<button class="ghost sm" onclick="setDefaultBrowserRuntime('${esc(runtime.runtime_id)}')" ${runtime.enabled ? "" : "disabled"}>设为默认</button>`}
+          <button class="ghost sm" onclick="toggleBrowserRuntime('${esc(runtime.runtime_id)}', ${runtime.enabled ? "false" : "true"})">${runtime.enabled ? "停用" : "启用"}</button>
+          <button class="ghost sm danger" onclick="deleteBrowserRuntime('${esc(runtime.runtime_id)}')">${ic("i-trash")}移除</button>
+        </td>
+      </tr>`;
+    }).join("") || empty(2, "尚未发现指纹内核", "i-inbox", "点击扫描目录，或手动添加 chrome.exe");
+  } catch (e) {
+    table.querySelector("tbody").innerHTML = empty(2, "读取内核列表失败", "i-info", e.message);
+  }
+}
+
+async function scanBrowserRuntimes() {
+  const button = evtBtn();
+  await withBusy(button, "扫描中", async () => {
+    try {
+      const result = await api("/api/browser-runtimes/scan", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      toast(`扫描完成：发现 ${result.found} 个内核，新增 ${result.created} 个`, "ok");
+      await refreshBrowserRuntimes();
+    } catch (e) { toast("扫描失败：" + e.message, "err"); }
+  });
+}
+
+async function addBrowserRuntime() {
+  const path = await uiPrompt({
+    title: "添加 Chromium 内核",
+    hint: "填写 chrome.exe 的完整路径。内核文件保留在原目录，不会复制到 C 盘。",
+    value: "D:\\browsers\\fingerprint-chromium\\Application\\chrome.exe",
+    placeholder: "D:\\browsers\\版本目录\\chrome.exe",
+  });
+  if (path === null || !path.trim()) return;
+  try {
+    const result = await api("/api/browser-runtimes", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ executable_path: path.trim() }),
+    });
+    toast(`${result.created ? "已添加" : "已更新"}：${result.runtime.name}`, "ok");
+    await refreshBrowserRuntimes();
+  } catch (e) { toast("添加失败：" + e.message, "err"); }
+}
+
+async function testBrowserRuntime(runtimeId) {
+  const button = evtBtn();
+  await withBusy(button, "测试中", async () => {
+    try {
+      const result = await api(`/api/browser-runtimes/${encodeURIComponent(runtimeId)}/test`, { method: "POST" });
+      toast(`内核启动正常：${result.user_agent || runtimeId}`, "ok", 7000);
+    } catch (e) { toast("内核测试失败：" + e.message, "err", 7000); }
+    await refreshBrowserRuntimes();
+  });
+}
+
+async function setDefaultBrowserRuntime(runtimeId) {
+  try {
+    await api(`/api/browser-runtimes/${encodeURIComponent(runtimeId)}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_default: true }),
+    });
+    toast("默认指纹内核已切换", "ok");
+    await refreshBrowserRuntimes(); await refreshAccounts();
+  } catch (e) { toast("切换失败：" + e.message, "err"); }
+}
+
+async function toggleBrowserRuntime(runtimeId, enabled) {
+  try {
+    await api(`/api/browser-runtimes/${encodeURIComponent(runtimeId)}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    toast(enabled ? "内核已启用" : "内核已停用", "ok");
+    await refreshBrowserRuntimes(); await refreshAccounts();
+  } catch (e) { toast("操作失败：" + e.message, "err"); }
+}
+
+async function deleteBrowserRuntime(runtimeId) {
+  if (!await uiConfirm({
+    title: "移除内核记录",
+    message: "仅移除 CreatorHub 中的内核记录，不会删除 D 盘上的浏览器文件。",
+    okText: "移除",
+  })) return;
+  try {
+    await api(`/api/browser-runtimes/${encodeURIComponent(runtimeId)}`, { method: "DELETE" });
+    toast("内核记录已移除", "ok");
+    await refreshBrowserRuntimes();
+  } catch (e) { toast("移除失败：" + e.message, "err"); }
 }
 
 async function manageFingerprint(id) {
@@ -5891,7 +6020,7 @@ switchHubTab(HUB_TAB);   // 恢复上次停留的子标签(我的作品/关注/�
 PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "douyin", "kuaishou", "shipinhao"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
 applyPlatformUI();
 
-onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshProxies(); refreshChannels(); loop();
+onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshBrowserRuntimes(); refreshProxies(); refreshChannels(); loop();
 enhanceAllSelects();   // 把所有原生 <select> 升级为美化下拉
 enhanceAllMetaControls(); // 分组/标签：当前平台词库下拉，可搜索并新增
 enhanceAllDateTime();  // 把 datetime-local 升级为自定义日期选择器
