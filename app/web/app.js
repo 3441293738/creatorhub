@@ -207,7 +207,8 @@ function _uiClose(val) {
 }
 function _uiKey(e) {
   if (e.key === "Escape") uiModalCancel();
-  else if (e.key === "Enter" && document.activeElement && document.activeElement.tagName !== "TEXTAREA") uiModalOk();
+  else if (e.key === "Enter" && document.activeElement
+      && !["TEXTAREA", "BUTTON"].includes(document.activeElement.tagName)) uiModalOk();
 }
 function uiModalCancel() { _uiClose(_uiCancelVal); }
 function uiModalOk() { _uiClose(_uiGetVal ? _uiGetVal() : ""); }
@@ -2740,9 +2741,25 @@ function uiFingerprintEditor(account, fp) {
     _uiResolve = resolve; _uiCancelVal = null;
     $("ui-body").innerHTML = `
       <div class="hint" style="margin:0 0 14px">自动值可以逐项覆盖。保存后会关闭该账号当前浏览器，下次启动应用新指纹。</div>
-      <div class="form-grid">
+      <div class="fp-edit-tabs" role="tablist" aria-label="指纹设置分组">
+        <button type="button" class="ghost sm active" role="tab" aria-selected="true" data-fp-tab="basic">基础环境</button>
+        <button type="button" class="ghost sm" role="tab" aria-selected="false" data-fp-tab="advanced">高级指纹</button>
+      </div>
+      <div class="form-grid fp-edit-panel active" data-fp-panel="basic">
         <div class="form-field"><label for="fp-edit-seed">指纹种子</label><input id="fp-edit-seed" value="${esc(fp.seed || "")}" maxlength="128"><div class="mut" style="font-size:11px">当前内核 uint32：${esc(String(fp.engine_seed ?? ""))}</div></div>
         <div class="form-field"><label for="fp-edit-ip">来源 IP</label><input id="fp-edit-ip" value="${esc(fp.source_ip || "")}" placeholder="可留空"></div>
+        <div class="form-field"><label for="fp-edit-timezone">IANA 时区</label><input id="fp-edit-timezone" value="${esc(fp.timezone || "Asia/Shanghai")}" placeholder="Asia/Shanghai"></div>
+        <div class="form-field"><label for="fp-edit-locale">浏览器语言</label><input id="fp-edit-locale" value="${esc(fp.locale || "zh-CN")}" placeholder="zh-CN"></div>
+        <div class="form-field"><label for="fp-edit-accept">Accept-Language</label><input id="fp-edit-accept" value="${esc(fp.accept_languages || "")}" placeholder="自动，例如 zh-CN,zh"></div>
+        <div class="form-field"><label for="fp-edit-vw">窗口宽度</label><input id="fp-edit-vw" type="number" min="320" max="7680" value="${Number(fp.viewport_w) || 1280}"></div>
+        <div class="form-field"><label for="fp-edit-vh">窗口高度</label><input id="fp-edit-vh" type="number" min="240" max="4320" value="${Number(fp.viewport_h) || 800}"></div>
+        <div class="form-field"><label for="fp-edit-lat">纬度</label><input id="fp-edit-lat" type="number" min="-90" max="90" step="0.000001" value="${Number(fp.geo_lat) || 0}"></div>
+        <div class="form-field"><label for="fp-edit-lon">经度</label><input id="fp-edit-lon" type="number" min="-180" max="180" step="0.000001" value="${Number(fp.geo_lon) || 0}"></div>
+        <div class="form-field"><label for="fp-edit-country">国家/地区</label><input id="fp-edit-country" value="${esc(fp.country || "")}"></div>
+        <div class="form-field"><label for="fp-edit-region">区域</label><input id="fp-edit-region" value="${esc(fp.region || "")}"></div>
+        <div class="form-field"><label for="fp-edit-city">城市</label><input id="fp-edit-city" value="${esc(fp.city || "")}"></div>
+      </div>
+      <div class="form-grid fp-edit-panel" data-fp-panel="advanced">
         <div class="form-field"><label for="fp-edit-platform">操作系统</label><select id="fp-edit-platform">
           <option value=""${!fp.platform ? " selected" : ""}>按内核自动</option>
           <option value="windows"${fp.platform === "windows" ? " selected" : ""}>Windows</option>
@@ -2755,18 +2772,8 @@ function uiFingerprintEditor(account, fp) {
         <div class="form-field"><label for="fp-edit-cpu">CPU 逻辑核心</label><input id="fp-edit-cpu" type="number" min="0" max="256" value="${Number(fp.hardware_concurrency) || 0}"><div class="mut" style="font-size:11px">0 表示按种子生成</div></div>
         <div class="form-field"><label for="fp-edit-gpu-vendor">GPU Vendor</label><input id="fp-edit-gpu-vendor" value="${esc(fp.gpu_vendor || "")}" placeholder="自动"><div class="mut" style="font-size:11px">仅 Chromium 139–143 支持显式值</div></div>
         <div class="form-field"><label for="fp-edit-gpu-renderer">GPU Renderer</label><input id="fp-edit-gpu-renderer" value="${esc(fp.gpu_renderer || "")}" placeholder="自动"><div class="mut" style="font-size:11px">144+ 由种子生成</div></div>
-        <div class="form-field"><label for="fp-edit-timezone">IANA 时区</label><input id="fp-edit-timezone" value="${esc(fp.timezone || "Asia/Shanghai")}" placeholder="Asia/Shanghai"></div>
-        <div class="form-field"><label for="fp-edit-locale">浏览器语言</label><input id="fp-edit-locale" value="${esc(fp.locale || "zh-CN")}" placeholder="zh-CN"></div>
-        <div class="form-field"><label for="fp-edit-accept">Accept-Language</label><input id="fp-edit-accept" value="${esc(fp.accept_languages || "")}" placeholder="自动，例如 zh-CN,zh"></div>
-        <div class="form-field"><label for="fp-edit-vw">窗口宽度</label><input id="fp-edit-vw" type="number" min="320" max="7680" value="${Number(fp.viewport_w) || 1280}"></div>
-        <div class="form-field"><label for="fp-edit-vh">窗口高度</label><input id="fp-edit-vh" type="number" min="240" max="4320" value="${Number(fp.viewport_h) || 800}"></div>
-        <div class="form-field"><label for="fp-edit-lat">纬度</label><input id="fp-edit-lat" type="number" min="-90" max="90" step="0.000001" value="${Number(fp.geo_lat) || 0}"></div>
-        <div class="form-field"><label for="fp-edit-lon">经度</label><input id="fp-edit-lon" type="number" min="-180" max="180" step="0.000001" value="${Number(fp.geo_lon) || 0}"></div>
-        <div class="form-field"><label for="fp-edit-country">国家/地区</label><input id="fp-edit-country" value="${esc(fp.country || "")}"></div>
-        <div class="form-field"><label for="fp-edit-region">区域</label><input id="fp-edit-region" value="${esc(fp.region || "")}"></div>
-        <div class="form-field"><label for="fp-edit-city">城市</label><input id="fp-edit-city" value="${esc(fp.city || "")}"></div>
       </div>
-      <div style="margin-top:14px"><label class="field">选择停止伪装的模块（默认全部开启伪装）</label>
+      <div class="fp-edit-panel" data-fp-panel="advanced" style="margin-top:14px"><label class="field">选择停止伪装的模块（默认全部开启伪装）</label>
         <div class="row" style="flex-wrap:wrap;gap:12px">
           <label class="check"><input class="fp-spoof" type="checkbox" value="font"${checked("font")}>字体</label>
           <label class="check"><input class="fp-spoof" type="checkbox" value="audio"${checked("audio")}>音频</label>
@@ -2775,11 +2782,24 @@ function uiFingerprintEditor(account, fp) {
           <label class="check"><input class="fp-spoof" type="checkbox" value="gpu"${checked("gpu")}>GPU</label>
         </div>
       </div>
-      ${fp.actual_ua ? `<div class="mut" style="font-size:11px;margin-top:14px;word-break:break-all">上次实际 UA：<code>${esc(fp.actual_ua)}</code></div>` : ""}
+      ${fp.actual_ua ? `<div class="mut fp-edit-panel" data-fp-panel="advanced" style="font-size:11px;margin-top:14px;word-break:break-all">上次实际 UA：<code>${esc(fp.actual_ua)}</code></div>` : ""}
       <div class="form-actions" style="margin-top:16px">
         <button id="fp-auto-generate" type="button" class="ghost">根据当前 IP 恢复自动值</button>
       </div>`;
     enhanceAllSelects($("ui-body"));
+    $("ui-body").querySelectorAll("[data-fp-tab]").forEach(tab => {
+      tab.addEventListener("click", () => {
+        const selected = tab.dataset.fpTab;
+        $("ui-body").querySelectorAll("[data-fp-tab]").forEach(item => {
+          const active = item.dataset.fpTab === selected;
+          item.classList.toggle("active", active);
+          item.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        $("ui-body").querySelectorAll("[data-fp-panel]").forEach(panel =>
+          panel.classList.toggle("active", panel.dataset.fpPanel === selected));
+        $("ui-body").scrollTo({ top: 0, behavior: "smooth" });
+      });
+    });
     const value = id => ($(id) || {}).value || "";
     const number = (id, fallback = 0) => {
       const parsed = Number(value(id)); return Number.isFinite(parsed) ? parsed : fallback;

@@ -1051,12 +1051,44 @@
   .meta-combo-opt.create { color:var(--acc); }
   .meta-combo-opt.create .mark { color:var(--acc); border-color:var(--acc-ring); border-radius:50%; }
   .meta-combo-empty { padding:12px 9px; color:var(--mut-2); font-size:12px; text-align:center; }
-  #uimodal { overflow-y:auto; }
-  #uimodal .rp-box { overflow:visible; margin:auto; }
+  /* 通用表单弹窗：只滚动内容区，标题和底部操作始终留在视口内。 */
+  #uimodal { overflow:hidden; }
+  #uimodal .rp-box {
+    overflow:hidden; margin:auto; display:flex; flex-direction:column;
+    max-height:min(92vh,920px); max-height:min(92dvh,920px);
+  }
+  #uimodal #ui-title, #uimodal #ui-hint { flex:0 0 auto; }
+  #uimodal #ui-body {
+    flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden;
+    overscroll-behavior:contain; scrollbar-gutter:stable;
+    padding:2px 8px 10px 2px;
+  }
+  #uimodal #ui-actions {
+    flex:0 0 auto; margin-top:0; padding-top:14px;
+    border-top:1px solid var(--line-soft); background:var(--surface);
+  }
+  #uimodal .fp-edit-tabs {
+    position:sticky; top:-2px; z-index:2; display:grid;
+    grid-template-columns:1fr 1fr; gap:6px; margin:0 0 14px; padding:2px 0 8px;
+    background:linear-gradient(180deg,var(--surface) 78%,transparent);
+  }
+  #uimodal .fp-edit-tabs button { color:var(--mut); box-shadow:none; }
+  #uimodal .fp-edit-tabs button.active {
+    color:var(--acc); border-color:var(--acc-ring); background:var(--acc-soft);
+  }
+  #uimodal .fp-edit-panel { display:none; }
+  #uimodal .fp-edit-panel.active { display:grid; }
+  #uimodal div.fp-edit-panel.active:not(.form-grid) { display:block; }
   @media(max-width:600px) {
     .manage-toolbar input, .manage-toolbar select, .manage-toolbar .cs { flex:1 1 calc(50% - 8px); max-width:none; }
     .manage-toolbar input[type="search"] { min-width:0; }
     .manage-toolbar .toolbar-spacer { display:none; }
+    #uimodal { padding:8px; }
+    #uimodal .rp-box {
+      width:100%!important; max-height:calc(100vh - 16px); max-height:calc(100dvh - 16px);
+      padding:18px 16px 14px;
+    }
+    #uimodal #ui-actions > button { flex:1 1 0!important; min-height:42px; }
   }
 
   /* table inside a card without extra border for the small acc/notif tables */
@@ -2986,7 +3018,7 @@
     <h2 id="ui-title">选择</h2>
     <div class="mut" id="ui-hint" style="font-size:12px;margin:-8px 0 14px;white-space:pre-line"></div>
     <div id="ui-body" class="stack"></div>
-    <div class="row" style="justify-content:flex-end;margin-top:16px">
+    <div class="row" id="ui-actions" style="justify-content:flex-end">
       <button class="ghost" onclick="uiModalCancel()" style="flex:0 0 auto">取消</button>
       <button id="ui-ok" onclick="uiModalOk()" style="flex:0 0 auto"><svg><use href="#i-check"/></svg>确定</button>
     </div>
