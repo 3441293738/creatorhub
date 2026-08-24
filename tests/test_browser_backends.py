@@ -35,6 +35,7 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertGreaterEqual(first, 0)
         self.assertLessEqual(first, 0xFFFFFFFF)
+        self.assertEqual(fingerprint_seed_u32("2023"), 2023)
 
     def test_launch_plan_uses_engine_level_identity_and_forces_headed_by_default(self):
         backend = FingerprintChromiumBackend(
@@ -71,6 +72,41 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
 
         with self.assertRaises(BrowserBackendUnavailableError):
             backend.launch_plan(identity, requested_headless=False)
+
+    def test_launch_plan_applies_all_supported_account_overrides(self):
+        backend = FingerprintChromiumBackend(
+            str(self.executable), platform="windows",
+            version="142.0.1", runtime_id="fp-142")
+        identity = Identity(
+            account_id=8,
+            profile_dir=str(Path(self.tmp.name) / "profile-8"),
+            browser_backend="fingerprint_chromium",
+            fp_seed="manual-seed",
+            fp_platform="macos",
+            fp_platform_version="15.2.0",
+            fp_brand="Edge",
+            fp_brand_version="142.0.0.0",
+            fp_hardware_concurrency=12,
+            fp_gpu_vendor="Apple Inc.",
+            fp_gpu_renderer="Apple M3",
+            fp_accept_languages="en-US,en",
+            fp_disable_spoofing="canvas,gpu",
+            locale="en-US",
+            timezone_id="America/Los_Angeles",
+        )
+
+        args = backend.launch_plan(
+            identity, requested_headless=False).args
+
+        self.assertIn("--fingerprint-platform=macos", args)
+        self.assertIn("--fingerprint-platform-version=15.2.0", args)
+        self.assertIn("--fingerprint-brand=Edge", args)
+        self.assertIn("--fingerprint-brand-version=142.0.0.0", args)
+        self.assertIn("--fingerprint-hardware-concurrency=12", args)
+        self.assertIn("--fingerprint-gpu-vendor=Apple Inc.", args)
+        self.assertIn("--fingerprint-gpu-renderer=Apple M3", args)
+        self.assertIn("--accept-lang=en-US,en", args)
+        self.assertIn("--disable-spoofing=canvas,gpu", args)
 
     def test_config_loads_fingerprint_runtime_options(self):
         config_path = Path(self.tmp.name) / "config.yaml"
@@ -150,6 +186,9 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
         self.assertNotIn("timezone_id", kwargs)
         self.assertTrue(kwargs["no_viewport"])
         self.assertFalse(kwargs["headless"])
+        self.assertIn("--window-size=1280,800", kwargs["args"])
+        self.assertEqual(kwargs["permissions"], ["geolocation"])
+        self.assertIn("latitude", kwargs["geolocation"])
         self.assertEqual(context.script_calls, [])
 
     def test_xhs_fingerprint_account_bypasses_system_chrome_cdp_backend(self):

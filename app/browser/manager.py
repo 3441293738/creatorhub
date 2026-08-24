@@ -733,12 +733,16 @@ class BrowserManager:
         proxy = _parse_proxy(identity.proxy)
         if fingerprint_plan is not None:
             args = list(fingerprint_plan.args)
+            args.append(
+                f"--window-size={int(identity.viewport_w)},{int(identity.viewport_h)}")
             if proxy:
                 for item in _PROXY_WEBRTC_ARGS:
                     if item not in args:
                         args.append(item)
             kwargs["args"] = args
             kwargs["no_viewport"] = True
+            kwargs["geolocation"] = identity.geolocation
+            kwargs["permissions"] = ["geolocation"]
         elif not legacy:
             # native 账号使用 Chrome/操作系统自己的视口、语言、时区与硬件画像。
             # 仅在显式配置代理时约束 WebRTC，避免 UDP 绕过代理出口。

@@ -91,6 +91,10 @@ class IpFingerprintApiTests(unittest.TestCase):
                 proxy="http://proxy.fixture:8080",
                 browser_backend="fingerprint_chromium",
                 fp_seed="old-seed",
+                fp_platform="macos",
+                fp_brand="Edge",
+                fp_hardware_concurrency=16,
+                fp_disable_spoofing="canvas",
             )
             session.add(account)
             session.commit()
@@ -123,6 +127,10 @@ class IpFingerprintApiTests(unittest.TestCase):
             self.assertEqual(saved.timezone_id, "Asia/Tokyo")
             self.assertEqual(saved.locale, "ja-JP")
             self.assertIsNotNone(saved.fp_generated_at)
+            self.assertEqual(saved.fp_platform, "")
+            self.assertEqual(saved.fp_brand, "")
+            self.assertEqual(saved.fp_hardware_concurrency, 0)
+            self.assertEqual(saved.fp_disable_spoofing, "")
         self.assertTrue(result["ok"])
         self.assertEqual(result["fingerprint"]["source_ip"], "203.0.113.20")
         self.assertEqual(browser.closed, [account_id])
@@ -133,6 +141,63 @@ class IpFingerprintApiTests(unittest.TestCase):
         with db.get_session() as session:
             self.assertEqual(session.get(DouyinAccount, account_id).fp_seed,
                              first_seed)
+
+    def test_every_supported_fingerprint_field_can_be_edited(self):
+        with db.get_session() as session:
+            account = DouyinAccount(
+                nickname="editable", platform="douyin",
+                browser_backend="fingerprint_chromium",
+                fp_seed="initial-seed")
+            session.add(account)
+            session.commit()
+            session.refresh(account)
+            account_id = account.id
+
+        class BrowserStub:
+            def __init__(self):
+                self.closed = []
+
+            async def close_context(self, key):
+                self.closed.append(key)
+
+        main.browser = BrowserStub()
+        body = main.AccountFingerprintUpdateIn(
+            seed="manual-seed",
+            source_ip="2001:db8::2",
+            country="US", region="California", city="Los Angeles",
+            timezone="America/Los_Angeles", locale="en-US",
+            accept_languages="en-US,en",
+            viewport_w=1536, viewport_h=864,
+            geo_lat=34.0522, geo_lon=-118.2437,
+            platform="macos", platform_version="15.2.0",
+            brand="Edge", brand_version="148.0.0.0",
+            hardware_concurrency=12,
+            gpu_vendor="Apple Inc.", gpu_renderer="Apple M3",
+            disable_spoofing=["canvas", "audio"],
+        )
+
+        result = asyncio.run(
+            main.update_account_fingerprint(account_id, body))
+
+        with db.get_session() as session:
+            saved = session.get(DouyinAccount, account_id)
+            self.assertEqual(saved.fp_seed, "manual-seed")
+            self.assertEqual(saved.fp_source_ip, "2001:db8::2")
+            self.assertEqual(saved.fp_platform, "macos")
+            self.assertEqual(saved.fp_brand, "Edge")
+            self.assertEqual(saved.fp_hardware_concurrency, 12)
+            self.assertEqual(saved.fp_gpu_renderer, "Apple M3")
+            self.assertEqual(saved.fp_disable_spoofing, "canvas,audio")
+            self.assertEqual(saved.viewport_w, 1536)
+            self.assertEqual(saved.timezone_id, "America/Los_Angeles")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["fingerprint"]["brand"], "Edge")
+        self.assertEqual(main.browser.closed, [account_id])
+
+    def test_invalid_manual_fingerprint_is_rejected(self):
+        with self.assertRaisesRegex(main.HTTPException, "IANA 时区"):
+            main._validate_fingerprint_update(main.AccountFingerprintUpdateIn(
+                seed="fixture", timezone="not/a-zone"))
 
 
 if __name__ == "__main__":

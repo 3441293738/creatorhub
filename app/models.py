@@ -36,6 +36,16 @@ class DouyinAccount(SQLModel, table=True):
     fp_region: str = ""
     fp_city: str = ""
     fp_generated_at: Optional[datetime] = None
+    # fingerprint-chromium 官方命令行可覆盖项；空/0 表示继续按种子或内核默认生成。
+    fp_platform: str = ""
+    fp_platform_version: str = ""
+    fp_brand: str = ""
+    fp_brand_version: str = ""
+    fp_hardware_concurrency: int = 0
+    fp_gpu_vendor: str = ""
+    fp_gpu_renderer: str = ""
+    fp_accept_languages: str = ""
+    fp_disable_spoofing: str = ""  # comma list: font,audio,canvas,clientrects,gpu
     geo_lat: float = 0.0          # geolocation 伪造纬度(代理体检时按出口 IP 归属地写入;0=按种子派生兜底)
     geo_lon: float = 0.0          # geolocation 伪造经度
     proxy_status: str = "unknown"  # unknown | ok | bad

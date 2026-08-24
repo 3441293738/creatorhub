@@ -71,6 +71,15 @@ class Identity:
     timezone_id: str = DEFAULT_TZ
     locale: str = DEFAULT_LOCALE
     fp_seed: str = ""
+    fp_platform: str = ""
+    fp_platform_version: str = ""
+    fp_brand: str = ""
+    fp_brand_version: str = ""
+    fp_hardware_concurrency: int = 0
+    fp_gpu_vendor: str = ""
+    fp_gpu_renderer: str = ""
+    fp_accept_languages: str = ""
+    fp_disable_spoofing: str = ""
     # geolocation 伪造坐标(与代理 IP 归属地/时区对齐)。0 表示未设定,由 seed 派生兜底。
     geo_lat: float = 0.0
     geo_lon: float = 0.0
@@ -118,6 +127,19 @@ class Identity:
             timezone_id=acc.timezone_id or DEFAULT_TZ,
             locale=acc.locale or DEFAULT_LOCALE,
             fp_seed=acc.fp_seed or seed_from_id(acc.id),
+            fp_platform=getattr(acc, "fp_platform", "") or "",
+            fp_platform_version=(
+                getattr(acc, "fp_platform_version", "") or ""),
+            fp_brand=getattr(acc, "fp_brand", "") or "",
+            fp_brand_version=getattr(acc, "fp_brand_version", "") or "",
+            fp_hardware_concurrency=(
+                getattr(acc, "fp_hardware_concurrency", 0) or 0),
+            fp_gpu_vendor=getattr(acc, "fp_gpu_vendor", "") or "",
+            fp_gpu_renderer=getattr(acc, "fp_gpu_renderer", "") or "",
+            fp_accept_languages=(
+                getattr(acc, "fp_accept_languages", "") or ""),
+            fp_disable_spoofing=(
+                getattr(acc, "fp_disable_spoofing", "") or ""),
             geo_lat=getattr(acc, "geo_lat", 0.0) or 0.0,
             geo_lon=getattr(acc, "geo_lon", 0.0) or 0.0,
             bridge_states=bridge,

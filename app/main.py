@@ -16,6 +16,7 @@ from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from datetime import date, datetime, time, timedelta, timezone
 import uuid as _uuid
@@ -36,7 +37,7 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       fetch_channels_self_profile,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
                       fetch_dm_history)
-from .browser.backends import ACCOUNT_BROWSER_BACKENDS
+from .browser.backends import ACCOUNT_BROWSER_BACKENDS, fingerprint_seed_u32
 from .browser.ip_fingerprint import derive_ip_fingerprint
 from .browser.runtime_catalog import (
     discover_chromium_runtimes,
@@ -1783,15 +1784,32 @@ def _account_fingerprint_payload(account: DouyinAccount) -> dict:
     return {
         "account_id": account.id,
         "fingerprint_id": (account.fp_seed or "")[:12],
+        "seed": account.fp_seed,
+        "engine_seed": fingerprint_seed_u32(account.fp_seed),
         "source_ip": account.fp_source_ip,
         "country": account.fp_country,
         "region": account.fp_region,
         "city": account.fp_city,
         "timezone": account.timezone_id,
         "locale": account.locale,
+        "accept_languages": account.fp_accept_languages,
         "viewport": f"{account.viewport_w}x{account.viewport_h}",
+        "viewport_w": account.viewport_w,
+        "viewport_h": account.viewport_h,
         "geo": ({"latitude": account.geo_lat, "longitude": account.geo_lon}
                 if account.geo_lat or account.geo_lon else None),
+        "geo_lat": account.geo_lat,
+        "geo_lon": account.geo_lon,
+        "platform": account.fp_platform,
+        "platform_version": account.fp_platform_version,
+        "brand": account.fp_brand,
+        "brand_version": account.fp_brand_version,
+        "hardware_concurrency": account.fp_hardware_concurrency,
+        "gpu_vendor": account.fp_gpu_vendor,
+        "gpu_renderer": account.fp_gpu_renderer,
+        "disable_spoofing": [
+            value for value in account.fp_disable_spoofing.split(",") if value],
+        "actual_ua": account.ua,
         "generated_at": (account.fp_generated_at.isoformat()
                          if account.fp_generated_at else None),
         "browser_backend": account.browser_backend,
@@ -1810,6 +1828,138 @@ async def account_fingerprint(account_id: int):
         if account is None:
             raise HTTPException(404, "账号不存在")
         return _account_fingerprint_payload(account)
+
+
+class AccountFingerprintUpdateIn(BaseModel):
+    seed: str
+    source_ip: str = ""
+    country: str = ""
+    region: str = ""
+    city: str = ""
+    timezone: str = "Asia/Shanghai"
+    locale: str = "zh-CN"
+    accept_languages: str = ""
+    viewport_w: int = 1280
+    viewport_h: int = 800
+    geo_lat: float = 0.0
+    geo_lon: float = 0.0
+    platform: str = ""
+    platform_version: str = ""
+    brand: str = ""
+    brand_version: str = ""
+    hardware_concurrency: int = 0
+    gpu_vendor: str = ""
+    gpu_renderer: str = ""
+    disable_spoofing: list[str] = PydanticField(default_factory=list)
+
+
+def _validate_fingerprint_update(body: AccountFingerprintUpdateIn) -> dict:
+    seed = str(body.seed or "").strip()
+    if not seed or len(seed) > 128:
+        raise HTTPException(400, "指纹种子长度必须为 1 到 128 个字符")
+    source_ip = str(body.source_ip or "").strip()
+    if source_ip:
+        try:
+            source_ip = str(ip_address(source_ip))
+        except ValueError as exc:
+            raise HTTPException(400, "指纹来源 IP 格式无效") from exc
+    timezone_id = str(body.timezone or "").strip()
+    try:
+        ZoneInfo(timezone_id)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise HTTPException(400, "请输入有效的 IANA 时区") from exc
+    locale = str(body.locale or "").strip()
+    if not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*", locale):
+        raise HTTPException(400, "语言格式无效，例如 zh-CN 或 en-US")
+    accepted = str(body.accept_languages or "").strip()
+    if len(accepted) > 160 or any(ord(char) < 32 for char in accepted):
+        raise HTTPException(400, "Accept-Language 格式无效")
+    if not 320 <= body.viewport_w <= 7680 \
+            or not 240 <= body.viewport_h <= 4320:
+        raise HTTPException(400, "窗口尺寸超出允许范围")
+    if not -90 <= body.geo_lat <= 90 or not -180 <= body.geo_lon <= 180:
+        raise HTTPException(400, "地理坐标超出允许范围")
+    platform = str(body.platform or "").strip().lower()
+    if platform not in {"", "windows", "linux", "macos"}:
+        raise HTTPException(400, "操作系统类型取值无效")
+    version_pattern = r"[0-9A-Za-z._-]{0,40}"
+    platform_version = str(body.platform_version or "").strip()
+    brand_version = str(body.brand_version or "").strip()
+    if not re.fullmatch(version_pattern, platform_version) \
+            or not re.fullmatch(version_pattern, brand_version):
+        raise HTTPException(400, "平台或浏览器版本格式无效")
+    brand = str(body.brand or "").strip()
+    if len(brand) > 40 or (brand and not re.fullmatch(r"[\w .-]+", brand)):
+        raise HTTPException(400, "浏览器品牌格式无效")
+    if body.hardware_concurrency != 0 \
+            and not 1 <= body.hardware_concurrency <= 256:
+        raise HTTPException(400, "CPU 核心数必须为 1 到 256，0 表示自动")
+    gpu_vendor = str(body.gpu_vendor or "").strip()
+    gpu_renderer = str(body.gpu_renderer or "").strip()
+    if len(gpu_vendor) > 160 or len(gpu_renderer) > 240 \
+            or any(ord(char) < 32 for char in gpu_vendor + gpu_renderer):
+        raise HTTPException(400, "GPU 指纹文本格式无效")
+    allowed_spoofing = {"font", "audio", "canvas", "clientrects", "gpu"}
+    disabled = []
+    for value in body.disable_spoofing:
+        name = str(value or "").strip().lower()
+        if name not in allowed_spoofing:
+            raise HTTPException(400, f"未知指纹模块: {name}")
+        if name not in disabled:
+            disabled.append(name)
+    def _short(value: str, field: str) -> str:
+        result = str(value or "").strip()
+        if len(result) > 100:
+            raise HTTPException(400, f"{field}长度超过限制")
+        return result
+    return {
+        "fp_seed": seed,
+        "fp_source_ip": source_ip,
+        "fp_country": _short(body.country, "国家/地区"),
+        "fp_region": _short(body.region, "区域"),
+        "fp_city": _short(body.city, "城市"),
+        "timezone_id": timezone_id,
+        "locale": locale,
+        "fp_accept_languages": accepted,
+        "viewport_w": body.viewport_w,
+        "viewport_h": body.viewport_h,
+        "geo_lat": body.geo_lat,
+        "geo_lon": body.geo_lon,
+        "fp_platform": platform,
+        "fp_platform_version": platform_version,
+        "fp_brand": brand,
+        "fp_brand_version": brand_version,
+        "fp_hardware_concurrency": body.hardware_concurrency,
+        "fp_gpu_vendor": gpu_vendor,
+        "fp_gpu_renderer": gpu_renderer,
+        "fp_disable_spoofing": ",".join(disabled),
+    }
+
+
+@app.put("/api/accounts/{account_id}/fingerprint")
+async def update_account_fingerprint(
+        account_id: int, body: AccountFingerprintUpdateIn):
+    fields = _validate_fingerprint_update(body)
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "账号不存在")
+        for name, value in fields.items():
+            setattr(account, name, value)
+        account.fp_generated_at = datetime.utcnow()
+        session.add(account)
+        session.commit()
+        session.refresh(account)
+        payload = _account_fingerprint_payload(account)
+    lease = open_browsers.pop(account_id, None)
+    if lease is not None:
+        try:
+            await lease.close()
+        except Exception:
+            pass
+    if browser is not None:
+        await browser.close_context(account_id)
+    return {"ok": True, "fingerprint": payload}
 
 
 @app.post("/api/accounts/{account_id}/fingerprint/from-ip")
@@ -1855,13 +2005,6 @@ async def generate_account_fingerprint_from_ip(account_id: int):
         account = session.get(DouyinAccount, account_id)
         if account is None:
             raise HTTPException(404, "账号不存在")
-        if account.fp_source_ip == fields["source_ip"] and account.fp_seed:
-            # Regenerating against an unchanged sticky exit is idempotent: the
-            # device must not drift merely because the user opened this dialog.
-            fields["fp_seed"] = account.fp_seed
-            fields["fingerprint_id"] = account.fp_seed[:12]
-            fields["viewport_w"] = account.viewport_w
-            fields["viewport_h"] = account.viewport_h
         account.fp_seed = fields["fp_seed"]
         account.fp_source_ip = fields["source_ip"]
         account.fp_country = fields["country"]
@@ -1874,6 +2017,16 @@ async def generate_account_fingerprint_from_ip(account_id: int):
         account.viewport_h = fields["viewport_h"]
         account.geo_lat = fields["geo_lat"]
         account.geo_lon = fields["geo_lon"]
+        # “按 IP 自动生成”同时恢复内核的种子派生值；之后仍可在编辑器逐项覆盖。
+        account.fp_platform = ""
+        account.fp_platform_version = ""
+        account.fp_brand = ""
+        account.fp_brand_version = ""
+        account.fp_hardware_concurrency = 0
+        account.fp_gpu_vendor = ""
+        account.fp_gpu_renderer = ""
+        account.fp_accept_languages = ""
+        account.fp_disable_spoofing = ""
         session.add(account)
         session.commit()
         session.refresh(account)

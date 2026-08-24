@@ -2734,38 +2734,104 @@ async function deleteBrowserRuntime(runtimeId) {
   } catch (e) { toast("移除失败：" + e.message, "err"); }
 }
 
+function uiFingerprintEditor(account, fp) {
+  const checked = name => (fp.disable_spoofing || []).includes(name) ? " checked" : "";
+  return new Promise(resolve => {
+    _uiResolve = resolve; _uiCancelVal = null;
+    $("ui-body").innerHTML = `
+      <div class="hint" style="margin:0 0 14px">自动值可以逐项覆盖。保存后会关闭该账号当前浏览器，下次启动应用新指纹。</div>
+      <div class="form-grid">
+        <div class="form-field"><label for="fp-edit-seed">指纹种子</label><input id="fp-edit-seed" value="${esc(fp.seed || "")}" maxlength="128"><div class="mut" style="font-size:11px">当前内核 uint32：${esc(String(fp.engine_seed ?? ""))}</div></div>
+        <div class="form-field"><label for="fp-edit-ip">来源 IP</label><input id="fp-edit-ip" value="${esc(fp.source_ip || "")}" placeholder="可留空"></div>
+        <div class="form-field"><label for="fp-edit-platform">操作系统</label><select id="fp-edit-platform">
+          <option value=""${!fp.platform ? " selected" : ""}>按内核自动</option>
+          <option value="windows"${fp.platform === "windows" ? " selected" : ""}>Windows</option>
+          <option value="macos"${fp.platform === "macos" ? " selected" : ""}>macOS</option>
+          <option value="linux"${fp.platform === "linux" ? " selected" : ""}>Linux</option>
+        </select></div>
+        <div class="form-field"><label for="fp-edit-platform-version">系统版本</label><input id="fp-edit-platform-version" value="${esc(fp.platform_version || "")}" placeholder="自动，例如 10.0.19045"></div>
+        <div class="form-field"><label for="fp-edit-brand">浏览器品牌</label><input id="fp-edit-brand" value="${esc(fp.brand || "")}" placeholder="自动，例如 Chrome / Edge"></div>
+        <div class="form-field"><label for="fp-edit-brand-version">浏览器品牌版本</label><input id="fp-edit-brand-version" value="${esc(fp.brand_version || "")}" placeholder="自动，例如 148.0.0.0"></div>
+        <div class="form-field"><label for="fp-edit-cpu">CPU 逻辑核心</label><input id="fp-edit-cpu" type="number" min="0" max="256" value="${Number(fp.hardware_concurrency) || 0}"><div class="mut" style="font-size:11px">0 表示按种子生成</div></div>
+        <div class="form-field"><label for="fp-edit-gpu-vendor">GPU Vendor</label><input id="fp-edit-gpu-vendor" value="${esc(fp.gpu_vendor || "")}" placeholder="自动"><div class="mut" style="font-size:11px">仅 Chromium 139–143 支持显式值</div></div>
+        <div class="form-field"><label for="fp-edit-gpu-renderer">GPU Renderer</label><input id="fp-edit-gpu-renderer" value="${esc(fp.gpu_renderer || "")}" placeholder="自动"><div class="mut" style="font-size:11px">144+ 由种子生成</div></div>
+        <div class="form-field"><label for="fp-edit-timezone">IANA 时区</label><input id="fp-edit-timezone" value="${esc(fp.timezone || "Asia/Shanghai")}" placeholder="Asia/Shanghai"></div>
+        <div class="form-field"><label for="fp-edit-locale">浏览器语言</label><input id="fp-edit-locale" value="${esc(fp.locale || "zh-CN")}" placeholder="zh-CN"></div>
+        <div class="form-field"><label for="fp-edit-accept">Accept-Language</label><input id="fp-edit-accept" value="${esc(fp.accept_languages || "")}" placeholder="自动，例如 zh-CN,zh"></div>
+        <div class="form-field"><label for="fp-edit-vw">窗口宽度</label><input id="fp-edit-vw" type="number" min="320" max="7680" value="${Number(fp.viewport_w) || 1280}"></div>
+        <div class="form-field"><label for="fp-edit-vh">窗口高度</label><input id="fp-edit-vh" type="number" min="240" max="4320" value="${Number(fp.viewport_h) || 800}"></div>
+        <div class="form-field"><label for="fp-edit-lat">纬度</label><input id="fp-edit-lat" type="number" min="-90" max="90" step="0.000001" value="${Number(fp.geo_lat) || 0}"></div>
+        <div class="form-field"><label for="fp-edit-lon">经度</label><input id="fp-edit-lon" type="number" min="-180" max="180" step="0.000001" value="${Number(fp.geo_lon) || 0}"></div>
+        <div class="form-field"><label for="fp-edit-country">国家/地区</label><input id="fp-edit-country" value="${esc(fp.country || "")}"></div>
+        <div class="form-field"><label for="fp-edit-region">区域</label><input id="fp-edit-region" value="${esc(fp.region || "")}"></div>
+        <div class="form-field"><label for="fp-edit-city">城市</label><input id="fp-edit-city" value="${esc(fp.city || "")}"></div>
+      </div>
+      <div style="margin-top:14px"><label class="field">选择停止伪装的模块（默认全部开启伪装）</label>
+        <div class="row" style="flex-wrap:wrap;gap:12px">
+          <label class="check"><input class="fp-spoof" type="checkbox" value="font"${checked("font")}>字体</label>
+          <label class="check"><input class="fp-spoof" type="checkbox" value="audio"${checked("audio")}>音频</label>
+          <label class="check"><input class="fp-spoof" type="checkbox" value="canvas"${checked("canvas")}>Canvas</label>
+          <label class="check"><input class="fp-spoof" type="checkbox" value="clientrects"${checked("clientrects")}>ClientRects</label>
+          <label class="check"><input class="fp-spoof" type="checkbox" value="gpu"${checked("gpu")}>GPU</label>
+        </div>
+      </div>
+      ${fp.actual_ua ? `<div class="mut" style="font-size:11px;margin-top:14px;word-break:break-all">上次实际 UA：<code>${esc(fp.actual_ua)}</code></div>` : ""}
+      <div class="form-actions" style="margin-top:16px">
+        <button id="fp-auto-generate" type="button" class="ghost">根据当前 IP 恢复自动值</button>
+      </div>`;
+    enhanceAllSelects($("ui-body"));
+    const value = id => ($(id) || {}).value || "";
+    const number = (id, fallback = 0) => {
+      const parsed = Number(value(id)); return Number.isFinite(parsed) ? parsed : fallback;
+    };
+    _uiGetVal = () => ({ action: "save", data: {
+      seed: value("fp-edit-seed"), source_ip: value("fp-edit-ip"),
+      country: value("fp-edit-country"), region: value("fp-edit-region"), city: value("fp-edit-city"),
+      timezone: value("fp-edit-timezone"), locale: value("fp-edit-locale"),
+      accept_languages: value("fp-edit-accept"),
+      viewport_w: number("fp-edit-vw", 1280), viewport_h: number("fp-edit-vh", 800),
+      geo_lat: number("fp-edit-lat"), geo_lon: number("fp-edit-lon"),
+      platform: value("fp-edit-platform"), platform_version: value("fp-edit-platform-version"),
+      brand: value("fp-edit-brand"), brand_version: value("fp-edit-brand-version"),
+      hardware_concurrency: number("fp-edit-cpu"),
+      gpu_vendor: value("fp-edit-gpu-vendor"), gpu_renderer: value("fp-edit-gpu-renderer"),
+      disable_spoofing: [...document.querySelectorAll("#ui-body .fp-spoof:checked")].map(el => el.value),
+    }});
+    $("fp-auto-generate").addEventListener("click", () => _uiClose({ action: "auto" }));
+    _uiOpen(`${account.nickname} · 编辑浏览器指纹`, `指纹 ${fp.fingerprint_id || "-"}`, { okText: "保存指纹", wide: true });
+  });
+}
+
 async function manageFingerprint(id) {
   const account = ACCOUNTS.find(item => item.id === id);
   if (!account) return;
   let current;
-  try {
-    current = await api(`/api/accounts/${id}/fingerprint`);
-  } catch (e) {
-    toast("读取指纹失败:" + e.message, "err");
-    return;
-  }
-  const place = [current.country, current.region, current.city].filter(Boolean).join(" · ");
-  const summary = current.source_ip
-    ? `当前指纹 ${current.fingerprint_id} · IP ${current.source_ip} · ${place || "未知地区"} · ${current.timezone} · ${current.locale}`
-    : "当前账号尚未根据出口 IP 生成指纹。";
-  const confirmed = await uiConfirm({
-    title: `${account.nickname} · IP 指纹`,
-    message: `${summary} 根据当前代理（未配置代理时使用本机出口）重新探测并生成；相同 IP 保持原指纹，IP 变化才更新。生成后会关闭该账号当前浏览器。`,
-    okText: "根据当前 IP 生成",
-  });
-  if (!confirmed) return;
-  const button = evtBtn();
-  await withBusy(button, "生成中", async () => {
+  try { current = await api(`/api/accounts/${id}/fingerprint`); }
+  catch (e) { toast("读取指纹失败:" + e.message, "err"); return; }
+  const action = await uiFingerprintEditor(account, current);
+  if (!action) return;
+  if (action.action === "auto") {
+    const confirmed = await uiConfirm({
+      title: "恢复自动指纹",
+      message: "将根据账号当前代理或本机出口 IP 重新计算地域、时区、语言、窗口与种子派生项，并清除手动覆盖。",
+      okText: "恢复自动",
+    });
+    if (!confirmed) return;
     try {
       const result = await api(`/api/accounts/${id}/fingerprint/from-ip`, { method: "POST" });
-      const fp = result.fingerprint || {};
-      const location = [fp.country, fp.region, fp.city].filter(Boolean).join(" · ");
-      toast(`指纹已生成：${fp.fingerprint_id || "-"} · ${fp.source_ip || "-"} · ${location || fp.timezone || ""}`, "ok", 7000);
+      toast(`已恢复自动指纹：${result.fingerprint.fingerprint_id || "-"}`, "ok", 7000);
       await refreshAccounts();
-    } catch (e) {
-      toast("生成失败:" + e.message, "err", 8000);
-    }
-  });
+    } catch (e) { toast("自动生成失败:" + e.message, "err", 8000); }
+    return;
+  }
+  try {
+    const result = await api(`/api/accounts/${id}/fingerprint`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(action.data),
+    });
+    toast(`指纹已保存：${result.fingerprint.fingerprint_id || "-"}`, "ok", 7000);
+    await refreshAccounts();
+  } catch (e) { toast("保存指纹失败:" + e.message, "err", 8000); }
 }
 
 // ─── 代理池 ───
