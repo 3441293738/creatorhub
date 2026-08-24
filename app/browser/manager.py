@@ -21,6 +21,14 @@ from patchright.async_api import BrowserContext, async_playwright
 
 from ..windowing import (CHROMIUM_WINDOW_CLASSES, bring_window_to_front,
                          capture_window_snapshot)
+from .backends import (
+    ACCOUNT_BROWSER_BACKENDS,
+    DEFAULT_BACKEND,
+    FINGERPRINT_CHROMIUM_BACKEND,
+    LOCAL_BACKEND,
+    BrowserBackendUnavailableError,
+    FingerprintChromiumBackend,
+)
 from .identity import Identity, fingerprint_script
 from .cdp import (CdpLaunchError, CdpProfileConflictError, CdpProxyError,
                   CdpProxyAuthController, XhsCdpBackend)
@@ -183,7 +191,11 @@ class BrowserManager:
                  native_write_require_system_chrome: bool = True,
                  native_write_require_verified_proxy: bool = True,
                  native_write_proxy_max_age_seconds: int = 86400,
-                 browser_exit_probe_url: str = "https://ipinfo.io/json"):
+                 browser_exit_probe_url: str = "https://ipinfo.io/json",
+                 browser_backend: str = LOCAL_BACKEND,
+                 fingerprint_chromium_path: str = "",
+                 fingerprint_chromium_allow_headless: bool = False,
+                 fingerprint_chromium_platform: str = "auto"):
         self.default_ua = default_ua
         self.profiles_root = profiles_root
         self.max_live = max(1, max_live)
@@ -204,6 +216,17 @@ class BrowserManager:
         self.native_write_proxy_max_age_seconds = max(
             0, int(native_write_proxy_max_age_seconds))
         self.browser_exit_probe_url = str(browser_exit_probe_url or "").strip()
+        requested_backend = str(browser_backend or LOCAL_BACKEND).strip().lower()
+        self.default_browser_backend = (
+            requested_backend
+            if requested_backend in {LOCAL_BACKEND, FINGERPRINT_CHROMIUM_BACKEND}
+            else LOCAL_BACKEND
+        )
+        self._fingerprint_backend = FingerprintChromiumBackend(
+            fingerprint_chromium_path,
+            allow_headless=fingerprint_chromium_allow_headless,
+            platform=fingerprint_chromium_platform,
+        )
         self._pw = None
         self._contexts: Dict[Any, BrowserContext] = {}   # key -> 持久化 context
         self._cdp_sessions: Dict[Any, Any] = {}
@@ -275,11 +298,13 @@ class BrowserManager:
         """返回不含代理凭据的浏览器环境诊断信息。"""
         backend = self._backend_by_key.get(identity.key)
         if backend is None:
-            backend = (
-                "cdp" if self._uses_xhs_cdp(identity)
-                else "patchright"
-            )
+            effective = self.effective_browser_backend(identity)
+            if effective == FINGERPRINT_CHROMIUM_BACKEND:
+                backend = FINGERPRINT_CHROMIUM_BACKEND
+            else:
+                backend = "cdp" if self._uses_xhs_cdp(identity) else "patchright"
         is_cdp = backend == "cdp"
+        is_fingerprint = backend == FINGERPRINT_CHROMIUM_BACKEND
         fallback_reason = self._fallback_reason_by_key.get(identity.key, "")
         # Diagnostics are user-facing, never a transport for debugger URLs or
         # proxy credentials.
@@ -295,13 +320,22 @@ class BrowserManager:
         fallback = bool(fallback_reason)
         backend_label = (
             "系统 Chrome · CDP" if is_cdp
+            else self._fingerprint_backend.label if is_fingerprint
             else "Patchright Chromium · 回退" if fallback
             else "Patchright Chromium"
         )
         return {
-            "browser": "chrome" if is_cdp else (self._browser_channel or "chromium"),
-            "chrome_major": self._chrome_major,
-            "headless": False if is_cdp else bool(headless),
+            "browser": (
+                "chrome" if is_cdp
+                else "fingerprint-chromium" if is_fingerprint
+                else (self._browser_channel or "chromium")
+            ),
+            "chrome_major": None if is_fingerprint else self._chrome_major,
+            "headless": (
+                False if is_cdp
+                else bool(headless and self._fingerprint_backend.allow_headless)
+                if is_fingerprint else bool(headless)
+            ),
             "identity_mode": identity.identity_mode,
             "profile_dir": identity.profile_dir,
             "has_proxy": bool(str(identity.proxy or "").strip()),
@@ -342,6 +376,55 @@ class BrowserManager:
     def identity_for(self, acc) -> Identity:
         return Identity.from_account(acc, self.profiles_root, self.default_ua)
 
+    def effective_browser_backend(self, identity: Identity) -> str:
+        """Resolve an account override without silently accepting bad values."""
+        requested = str(
+            getattr(identity, "browser_backend", DEFAULT_BACKEND)
+            or DEFAULT_BACKEND
+        ).strip().lower()
+        if requested not in ACCOUNT_BROWSER_BACKENDS:
+            requested = DEFAULT_BACKEND
+        return (
+            self.default_browser_backend
+            if requested == DEFAULT_BACKEND else requested
+        )
+
+    def backend_status(self, requested: str = DEFAULT_BACKEND) -> Dict[str, Any]:
+        value = str(requested or DEFAULT_BACKEND).strip().lower()
+        if value not in ACCOUNT_BROWSER_BACKENDS:
+            return {
+                "name": value,
+                "available": False,
+                "detail": "不支持的浏览器后端",
+            }
+        name = self.default_browser_backend if value == DEFAULT_BACKEND else value
+        if name == FINGERPRINT_CHROMIUM_BACKEND:
+            return {
+                "name": name,
+                "available": self._fingerprint_backend.available,
+                "detail": self._fingerprint_backend.unavailable_reason,
+            }
+        return {"name": LOCAL_BACKEND, "available": True, "detail": ""}
+
+    def backend_catalog(self) -> Dict[str, Any]:
+        return {
+            "default": self.default_browser_backend,
+            "backends": [
+                {
+                    "name": LOCAL_BACKEND,
+                    "label": "本地 Patchright / 系统 Chrome",
+                    "available": True,
+                    "detail": "",
+                },
+                {
+                    "name": FINGERPRINT_CHROMIUM_BACKEND,
+                    "label": self._fingerprint_backend.label,
+                    "available": self._fingerprint_backend.available,
+                    "detail": self._fingerprint_backend.unavailable_reason,
+                },
+            ],
+        }
+
     def anon_identity(self) -> Identity:
         return Identity(account_id=None,
                         profile_dir=str(Path(self.profiles_root) / "_anon"),
@@ -351,6 +434,7 @@ class BrowserManager:
         return (
             identity.platform == "xhs"
             and self.xhs_browser_mode in {"auto", "cdp"}
+            and self.effective_browser_backend(identity) == LOCAL_BACKEND
         )
 
     @staticmethod
@@ -392,9 +476,20 @@ class BrowserManager:
             return "write_env_blocked:浏览器管理器未启动"
         if browser_mode and not headed:
             return "write_env_blocked:native 账号写操作必须使用有头浏览器"
+        # Gate tests and queued task projections may pass a lightweight account
+        # view, so resolving the backend must not require full profile fields.
+        effective_backend = self.effective_browser_backend(account)
+        fingerprint_status = self.backend_status(effective_backend)
+        if effective_backend == FINGERPRINT_CHROMIUM_BACKEND \
+                and not fingerprint_status["available"]:
+            return (
+                "write_env_blocked:开源指纹浏览器不可用:"
+                + str(fingerprint_status["detail"])
+            )
         if self.native_write_require_system_chrome \
-                and self._browser_channel != "chrome":
-            return "write_env_blocked:未检测到系统稳定版 Chrome"
+                and self._browser_channel != "chrome" \
+                and effective_backend != FINGERPRINT_CHROMIUM_BACKEND:
+            return "write_env_blocked:未检测到系统稳定版 Chrome 或可用指纹 Chromium"
         proxy = str(getattr(account, "proxy", "") or "").strip()
         if not proxy or not self.native_write_require_verified_proxy:
             return ""
@@ -423,6 +518,16 @@ class BrowserManager:
         was_empty = not any(p.name != ".browser.lock" for p in pdir.iterdir())
         self._acquire_profile_lock(identity)
         ua = self._normalize_ua(identity.ua or self.default_ua)
+        effective_backend = self.effective_browser_backend(identity)
+        fingerprint_plan = None
+        if effective_backend == FINGERPRINT_CHROMIUM_BACKEND:
+            try:
+                fingerprint_plan = self._fingerprint_backend.launch_plan(
+                    identity, requested_headless=headless)
+            except BrowserBackendUnavailableError:
+                self._release_profile_lock(identity.key)
+                raise
+            headless = fingerprint_plan.headless
         kwargs: Dict[str, Any] = dict(
             user_data_dir=str(pdir), headless=headless,
         )
@@ -430,9 +535,16 @@ class BrowserManager:
         # 使用沙箱，新旧账号都显式开启，避免安全警告和不必要的启动差异。
         if os.name == "nt":
             kwargs["chromium_sandbox"] = True
-        if self._browser_channel:
+        if fingerprint_plan is not None:
+            kwargs["executable_path"] = fingerprint_plan.executable_path
+        elif self._browser_channel:
             kwargs["channel"] = self._browser_channel
-        legacy = identity.identity_mode != "native"
+        # Engine-level fingerprint runtimes own the entire identity surface;
+        # mixing the legacy JS hooks into them would make the profile drift.
+        legacy = (
+            identity.identity_mode != "native"
+            and fingerprint_plan is None
+        )
         if legacy:
             kwargs.update(
                 args=list(_LEGACY_ARGS),
@@ -445,7 +557,15 @@ class BrowserManager:
                 permissions=["geolocation"],
             )
         proxy = _parse_proxy(identity.proxy)
-        if not legacy:
+        if fingerprint_plan is not None:
+            args = list(fingerprint_plan.args)
+            if proxy:
+                for item in _PROXY_WEBRTC_ARGS:
+                    if item not in args:
+                        args.append(item)
+            kwargs["args"] = args
+            kwargs["no_viewport"] = True
+        elif not legacy:
             # native 账号使用 Chrome/操作系统自己的视口、语言、时区与硬件画像。
             # 仅在显式配置代理时约束 WebRTC，避免 UDP 绕过代理出口。
             kwargs["no_viewport"] = True
@@ -576,10 +696,12 @@ class BrowserManager:
         """取(或惰性创建)账号专属常驻 context。"""
         key = identity.key
         async with self._cv_lock:
+            effective_backend = self.effective_browser_backend(identity)
             plan = (self._xhs_proxy_plan(identity)
                     if identity.platform == "xhs"
                     else try_proxy_plan(identity.proxy))
-            signature = plan.signature if plan else "direct"
+            proxy_signature = plan.signature if plan else "direct"
+            signature = f"{effective_backend}:{proxy_signature}"
             ctx = self._contexts.get(key)
             session = self._cdp_sessions.get(key)
             if ctx is not None and (
@@ -622,7 +744,11 @@ class BrowserManager:
                 else:
                     ctx = await self._launch_persistent(
                         identity, headless=(identity.platform != "xhs"))
-                    self._backend_by_key[key] = "patchright"
+                    self._backend_by_key[key] = (
+                        FINGERPRINT_CHROMIUM_BACKEND
+                        if effective_backend == FINGERPRINT_CHROMIUM_BACKEND
+                        else "patchright"
+                    )
                 self._contexts[key] = ctx
                 self._proxy_signature_by_key[key] = signature
             self._last_used[key] = time.time()

@@ -1620,7 +1620,7 @@ async function refreshAccounts() {
     const proxyLine = a.has_proxy
       ? `<div class="mut" style="font-size:11px;margin-top:2px">代理 <code>${esc(a.proxy)}</code> <span class="pill ${pxCls}">${pxText[a.proxy_status] || a.proxy_status}</span></div>`
       : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--warn)">${ic("i-info")}未配置代理(走本机真实 IP,多账号有关联风险)</div>`;
-    const browserLine = isXhs && a.environment
+    const browserLine = a.environment
       ? `<div class="mut" style="font-size:11px;margin-top:2px">浏览器 ${esc(loginEnvironmentText(a.environment))}</div>`
       : "";
     return `<tr>
@@ -1644,6 +1644,7 @@ async function refreshAccounts() {
         <button class="ghost sm" onclick="refreshProfile(${a.id})">刷新资料</button>
         <button class="ghost sm" onclick="openAccountHub(${a.id})" title="查看该账号的作品 / 关注 / 粉丝 / 私信">数据</button>
         <button class="ghost sm" onclick="openAccountBrowser(${a.id})" title="用该账号登录态弹出真实浏览器窗口,手动收发私信 / 维护 / 抓接口(关窗即保存)">打开浏览器</button>
+        <button class="ghost sm" onclick="setBrowserBackend(${a.id})" title="选择本地 Chrome/Patchright 或开源 Fingerprint Chromium 内核">环境</button>
         <button class="ghost sm" onclick="setProxy(${a.id})" title="设置/分配该账号专属代理(防多账号关联)">代理</button>
         ${a.has_proxy ? `<button class="ghost sm" onclick="testProxy(${a.id})" title="经该代理实连一次,验证可用">测代理</button>` : ""}
         <button class="ghost sm danger" onclick="delAccount(${a.id})" aria-label="删除账号">${ic("i-trash")}删除</button>
@@ -2487,6 +2488,50 @@ async function setProxy(id) {
     }
     refreshAccounts(); refreshProxies();
   } catch (e) { toast("设置失败:" + e.message, "err"); }
+}
+
+async function setBrowserBackend(id) {
+  const account = ACCOUNTS.find(item => item.id === id);
+  if (!account) return;
+  let catalog;
+  try {
+    catalog = await api("/api/browser-backends");
+  } catch (e) {
+    toast("读取浏览器环境失败:" + e.message, "err");
+    return;
+  }
+  const backends = catalog.backends || [];
+  const defaultBackend = backends.find(item => item.name === catalog.default);
+  const options = [
+    {
+      value: "default",
+      label: `跟随全局（${defaultBackend ? defaultBackend.label : catalog.default}）`,
+      disabled: !!defaultBackend && !defaultBackend.available,
+    },
+    ...backends.map(item => ({
+      value: item.name,
+      label: item.label + (item.available ? "" : ` · 不可用：${item.detail || "未配置"}`),
+      disabled: !item.available,
+    })),
+  ];
+  const selected = await uiSelect({
+    title: "账号浏览器环境",
+    hint: `${account.nickname} · 切换时会关闭该账号当前浏览器，下次任务使用新内核。`,
+    options,
+    value: account.browser_backend || "default",
+  });
+  if (selected === null) return;
+  try {
+    const result = await api(`/api/accounts/${id}/browser-backend`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ browser_backend: selected }),
+    });
+    toast("浏览器环境已切换：" + loginEnvironmentText(result.environment), "ok");
+    refreshAccounts();
+  } catch (e) {
+    toast("切换失败:" + e.message, "err");
+  }
 }
 
 // ─── 代理池 ───

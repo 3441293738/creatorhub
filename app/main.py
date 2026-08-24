@@ -36,6 +36,7 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       fetch_channels_self_profile,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
                       fetch_dm_history)
+from .browser.backends import ACCOUNT_BROWSER_BACKENDS
 from .platforms.douyin import (
     DouyinClient,
     cookie_from_state as douyin_cookie_from_state,
@@ -197,7 +198,13 @@ async def lifespan(app: FastAPI):
         native_write_require_system_chrome=cfg.engine.native_write_require_system_chrome,
         native_write_require_verified_proxy=cfg.engine.native_write_require_verified_proxy,
         native_write_proxy_max_age_seconds=cfg.engine.native_write_proxy_max_age_seconds,
-        browser_exit_probe_url=cfg.engine.browser_exit_probe_url)
+        browser_exit_probe_url=cfg.engine.browser_exit_probe_url,
+        browser_backend=cfg.engine.browser_backend,
+        fingerprint_chromium_path=cfg.engine.fingerprint_chromium_path,
+        fingerprint_chromium_allow_headless=(
+            cfg.engine.fingerprint_chromium_allow_headless),
+        fingerprint_chromium_platform=(
+            cfg.engine.fingerprint_chromium_platform))
     await browser.start()
     engine = MonitorEngine(cfg, browser)
     startup_now = datetime.utcnow()
@@ -741,7 +748,7 @@ async def list_accounts(platform: str | None = None):
             used = len(s.exec(select(MonitorTarget.id)
                               .where(MonitorTarget.account_id == a.id)).all())
             environment = None
-            if a.platform == "xhs" and browser is not None:
+            if browser is not None:
                 try:
                     environment = browser.environment_snapshot(
                         browser.identity_for(a), headless=False)
@@ -770,6 +777,7 @@ async def list_accounts(platform: str | None = None):
                                         if a.write_paused_until else None),
                 "write_pause_reason": a.write_pause_reason,
                 "identity_mode": a.identity_mode,
+                "browser_backend": a.browser_backend,
                 "risk_level": risk_state.risk_level if risk_state else 0,
                 "risk_cooldown_until": (
                     risk_state.cooldown_until.isoformat()
@@ -1161,6 +1169,60 @@ async def account_browser_environment(account_id: int):
             raise HTTPException(404, "账号不存在")
         identity = browser.identity_for(account)
     return browser.environment_snapshot(identity, headless=False)
+
+
+@app.get("/api/browser-backends")
+async def list_browser_backends():
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    return browser.backend_catalog()
+
+
+class AccountBrowserBackendIn(BaseModel):
+    browser_backend: str
+
+
+@app.put("/api/accounts/{account_id}/browser-backend")
+async def set_account_browser_backend(
+        account_id: int, body: AccountBrowserBackendIn):
+    """Select an account runtime and close any context using the old one."""
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    requested = str(body.browser_backend or "").strip().lower()
+    if requested not in ACCOUNT_BROWSER_BACKENDS:
+        raise HTTPException(400, "浏览器后端取值无效")
+    status = browser.backend_status(requested)
+    if not status["available"]:
+        raise HTTPException(
+            400, f"浏览器后端不可用:{status['detail']}")
+
+    # A user-held headed context owns the same profile and must be released
+    # before switching its runtime executable.
+    lease = open_browsers.pop(account_id, None)
+    if lease is not None:
+        try:
+            await lease.close()
+        except Exception:
+            pass
+
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "账号不存在")
+        account.browser_backend = requested
+        session.add(account)
+        session.commit()
+        session.refresh(account)
+        identity = browser.identity_for(account)
+
+    await browser.close_context(account_id)
+    environment = browser.environment_snapshot(identity, headless=False)
+    return {
+        "ok": True,
+        "browser_backend": requested,
+        "effective_backend": status["name"],
+        "environment": environment,
+    }
 
 
 def _mask_proxy(proxy: str) -> str:

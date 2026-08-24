@@ -44,6 +44,11 @@ class EngineConfig:
     # ── 多账号风控隔离 ──
     profiles_dir: str = "./data/profiles"   # 每账号持久化浏览器 profile 根目录
     max_live_contexts: int = 6              # 同时常驻的浏览器 context 上限(LRU 驱逐,控内存)
+    # 全局浏览器运行时；账号可用 browser_backend 单独覆盖。
+    browser_backend: str = "local"          # local | fingerprint_chromium
+    fingerprint_chromium_path: str = ""     # 开源 fingerprint-chromium 的 chrome/chrome.exe
+    fingerprint_chromium_allow_headless: bool = False  # 上游无头画像不完整，默认强制有头
+    fingerprint_chromium_platform: str = "auto"       # auto | windows | linux | macos
     # 小红书浏览器:默认优先连接 CreatorHub 管理的每账号系统 Chrome CDP。
     xhs_browser_mode: str = "auto"          # auto | cdp | patchright
     xhs_cdp_idle_seconds: int = 900          # 0=仅按 LRU、显式关闭或程序退出回收
@@ -155,6 +160,19 @@ def load_config(path: str | None = None) -> Config:
                                      if k in EngineConfig.__dataclass_fields__})
         if cfg.engine.xhs_browser_mode == "playwright":
             cfg.engine.xhs_browser_mode = "patchright"
+        backend = str(cfg.engine.browser_backend or "local").strip().lower()
+        cfg.engine.browser_backend = (
+            backend if backend in {"local", "fingerprint_chromium"}
+            else "local"
+        )
+        fingerprint_platform = str(
+            cfg.engine.fingerprint_chromium_platform or "auto"
+        ).strip().lower()
+        cfg.engine.fingerprint_chromium_platform = (
+            fingerprint_platform
+            if fingerprint_platform in {"auto", "windows", "linux", "macos"}
+            else "auto"
+        )
         risk = raw.get("risk_control", {}) or {}
         risk_values = {
             k: v for k, v in risk.items()

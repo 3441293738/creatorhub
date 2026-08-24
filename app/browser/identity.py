@@ -63,6 +63,7 @@ class Identity:
     account_id: Optional[int]
     profile_dir: str
     identity_mode: str = "legacy"
+    browser_backend: str = "default"
     proxy: str = ""
     ua: str = ""
     viewport_w: int = 1280
@@ -105,6 +106,8 @@ class Identity:
             account_id=acc.id, profile_dir=pdir,
             platform=getattr(acc, "platform", "") or "",
             identity_mode=getattr(acc, "identity_mode", "legacy") or "legacy",
+            browser_backend=(
+                getattr(acc, "browser_backend", "default") or "default"),
             proxy=acc.proxy or "",
             ua=acc.ua or default_ua,
             viewport_w=acc.viewport_w or 1280, viewport_h=acc.viewport_h or 800,

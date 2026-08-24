@@ -176,6 +176,38 @@ npm install
 - 小红书发布和评论默认使用 `browser` 页面模式。提交按钮只点击一次；提交后若浏览器连接中断或缺少成功证据，任务会标记为“结果待确认”，不会自动重试，需先到平台核对。
 - 如需绕过系统 Chrome CDP，可显式设置 `xhs_browser_mode: patchright`。旧配置值 `playwright` 会自动迁移为 `patchright`。
 
+### 可选：开源 Fingerprint Chromium 内核
+
+CreatorHub 可以把开源的
+[`fingerprint-chromium`](https://github.com/adryfish/fingerprint-chromium)
+作为可插拔 Chromium 运行时。账号、Profile、Cookie、代理、LRU 和风控仍由
+CreatorHub 管理，不需要外部商业浏览器或云端账号。
+
+1. 从上游 Release 下载适合当前系统的构建并自行校验文件。
+2. 在 `config.yaml` 配置浏览器路径：
+
+```yaml
+engine:
+  browser_backend: local
+  fingerprint_chromium_path: D:/browsers/fingerprint-chromium/chrome.exe
+  fingerprint_chromium_allow_headless: false
+  fingerprint_chromium_platform: auto
+```
+
+3. 重启 CreatorHub，在「账号」列表点击「环境」，选择
+   `Fingerprint Chromium · 开源内核`。`browser_backend: fingerprint_chromium`
+   可以将它设为所有未单独指定账号的全局默认值。
+
+该后端使用账号现有 `fp_seed` 生成稳定的 32 位内核指纹种子，并由浏览器内核
+统一处理 UA/Client Hints、Canvas、Audio、WebGL、语言和时区；CreatorHub 不会
+再叠加 legacy JavaScript 指纹脚本。默认强制使用有头窗口，因为上游说明无头模式
+只处理了部分无头特征。切换已有账号的浏览器环境会改变其设备画像，建议切换后重新
+检查登录态和代理出口。小红书账号选择该后端后会直接启动该 Chromium，不再进入系统
+Chrome CDP 分支。
+
+项目不捆绑上游浏览器二进制；升级浏览器时请先备份 `data/profiles/` 并在测试账号上
+验证兼容性。
+
 ### 4. 本账号与通知
 
 - 「本账号」中可同步自己的作品、关注、粉丝和私信，具体能力因平台而异。

@@ -45,6 +45,8 @@ class DouyinAccount(SQLModel, table=True):
     write_paused_until: Optional[datetime] = None  # 平台风控后暂停自动写操作
     write_pause_reason: str = ""                    # 最近一次暂停原因
     identity_mode: str = "legacy"                  # legacy=保留存量画像 | native=浏览器原生画像
+    # default=跟随全局；local=现有 Patchright/CDP；fingerprint_chromium=开源内核。
+    browser_backend: str = "default"
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
