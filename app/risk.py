@@ -132,6 +132,13 @@ def classify_platform_error(
         return RiskCategory.NETWORK, "network_failure"
 
     text = str(error or "").strip().lower()
+    # Browser interception failures used to include a list of possible causes,
+    # for example "可能未登录/被风控/无结果".  Those messages are diagnostic
+    # guesses, not evidence of an expired session.  Classifying them by a
+    # substring such as "未登录" incorrectly invalidates a healthy account.
+    if "未拦截到" in text and any(marker in text for marker in (
+            "可能未登录", "或未登录", "未登录/")):
+        return RiskCategory.BUSINESS, "ambiguous_browser_result"
     auth_markers = (
         "登录态已失效", "登录已失效", "未登录", "logged_out", "login expired",
         "session expired", "cookie expired",

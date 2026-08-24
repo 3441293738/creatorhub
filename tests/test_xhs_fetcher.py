@@ -3,7 +3,11 @@ import unittest
 from contextlib import asynccontextmanager
 
 from app.browser.identity import Identity
-from app.browser.xhs_fetcher import FEED_API, fetch_xhs_note_detail
+from app.browser.xhs_fetcher import (
+    FEED_API,
+    _xhs_page_failure,
+    fetch_xhs_note_detail,
+)
 
 
 class _Response:
@@ -59,6 +63,40 @@ class XhsFetcherResponseTests(unittest.TestCase):
                 _Manager(), identity, "note-1")
             self.assertEqual(error, "")
             self.assertEqual(detail["note_id"], "note-1")
+
+        asyncio.run(scenario())
+
+    def test_page_failure_requires_an_explicit_login_or_verification_signal(self):
+        class Locator:
+            first = None
+
+            def __init__(self, visible=False):
+                self.first = self
+                self.visible = visible
+
+            async def is_visible(self, **_kwargs):
+                return self.visible
+
+        class Page:
+            def __init__(self, url, login_visible=False):
+                self.url = url
+                self.login_visible = login_visible
+
+            def get_by_text(self, *_args, **_kwargs):
+                return Locator(self.login_visible)
+
+        async def scenario():
+            self.assertEqual(
+                await _xhs_page_failure(Page(
+                    "https://www.xiaohongshu.com/search_result?keyword=fixture")),
+                "",
+            )
+            self.assertTrue((await _xhs_page_failure(Page(
+                "https://www.xiaohongshu.com/login"))).startswith("logged_out:"))
+            self.assertTrue((await _xhs_page_failure(Page(
+                "https://www.xiaohongshu.com/website-login/captcha"))).startswith("captcha:"))
+            self.assertTrue((await _xhs_page_failure(Page(
+                "https://www.xiaohongshu.com/explore", True))).startswith("logged_out:"))
 
         asyncio.run(scenario())
 

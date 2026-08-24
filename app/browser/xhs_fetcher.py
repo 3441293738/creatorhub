@@ -97,6 +97,28 @@ async def _scroll_collection(mgr: BrowserManager, page, collection: dict,
             stagnant = 0
 
 
+async def _xhs_page_failure(page) -> str:
+    """Return an explicit auth/risk signal only when the page proves it.
+
+    A missing intercepted response can also mean an empty result set or a page
+    revision.  It must not be treated as logged out merely because that is one
+    possible explanation.
+    """
+    current_url = str(getattr(page, "url", "") or "").lower()
+    if "/website-login/captcha" in current_url or "error_code=300012" in current_url:
+        return "captcha:小红书要求安全验证"
+    if "passport" in current_url or "/login" in current_url:
+        return "logged_out:小红书登录态已失效"
+    try:
+        login_visible = await page.get_by_text(
+            "登录", exact=True).first.is_visible(timeout=1200)
+    except Exception:
+        login_visible = False
+    if login_visible:
+        return "logged_out:小红书登录态已失效"
+    return ""
+
+
 async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
                           known_ids: Set[str], xsec_token: str = "", xsec_source: str = "",
                           max_scrolls: int = 8, settle_ms: int = 1800,
@@ -133,6 +155,7 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
             pass
 
     final_url = ""
+    page_failure = ""
     try:
         async with mgr.visible_page(identity) as page:
             page.on("response", on_response)
@@ -166,8 +189,10 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
                 except Exception as e:
                     print(f"[xhs_notes] ssr_fallback failed: {e!r}")
             final_url = page.url
+            if not collected:
+                page_failure = await _xhs_page_failure(page)
         if not collected and not error:
-            error = "未拦截到笔记(可能未登录/被风控/该创作者无公开笔记/链接缺 xsec_token)"
+            error = page_failure or "未拦截到笔记（创作者可能暂无公开笔记，或页面接口已调整）"
         if not collected:
             saw = any("user_posted" in a for a in api_seen)
             print(f"[xhs_notes] user_id={user_id}; saw_posted_api={saw}; "
@@ -206,6 +231,7 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
 
     final_url = ""
     typed = False
+    page_failure = ""
     try:
         async with mgr.visible_page(identity) as page:
             page.on("response", on_response)
@@ -243,8 +269,10 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
             await _scroll_collection(
                 mgr, page, collected, max_scrolls)
             final_url = page.url
+            if not collected:
+                page_failure = await _xhs_page_failure(page)
         if not collected and not error:
-            error = "未拦截到搜索结果(可能未登录/被风控/该关键词无结果)"
+            error = page_failure or "未拦截到搜索结果（关键词可能无结果，或页面接口已调整）"
         if not collected:
             saw = any("search/notes" in a for a in api_seen)
             print(f"[xhs_search] kw={keyword!r}; typed={typed}; saw_search_api={saw}; "
@@ -303,6 +331,7 @@ async def fetch_xhs_comments(mgr: BrowserManager, identity: Identity, note_id: s
     """打开笔记页,下滑评论区,拦截 comment/page 收集评论。返回 (新评论原始列表, error)。"""
     collected: Dict[str, dict] = {}
     error = ""
+    page_failure = ""
 
     async def on_response(resp):
         if COMMENT_API in resp.url:
@@ -329,8 +358,10 @@ async def fetch_xhs_comments(mgr: BrowserManager, identity: Identity, note_id: s
             )
             await _scroll_collection(
                 mgr, page, collected, max_scrolls, known_cids)
+            if not collected:
+                page_failure = await _xhs_page_failure(page)
         if not collected and not error:
-            error = "未拦截到评论(可能未登录/笔记无评论/xsec_token 过期)"
+            error = page_failure or "未拦截到评论（笔记可能暂无评论，或 xsec_token 已过期）"
     except Exception as e:
         error = f"打开笔记页失败: {e!r}"
 

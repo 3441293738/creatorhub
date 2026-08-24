@@ -245,6 +245,13 @@ risk_control:
             RiskCategory.BUSINESS,
         )
 
+    def test_ambiguous_browser_diagnostic_does_not_expire_account(self):
+        category, signal = classify_platform_error(
+            "未拦截到搜索结果(可能未登录/被风控/该关键词无结果)")
+
+        self.assertEqual(category, RiskCategory.BUSINESS)
+        self.assertEqual(signal, "ambiguous_browser_result")
+
     def test_platform_error_classifier_accepts_structured_enum_category(self):
         class StructuredError(Exception):
             category = RiskCategory.RISK
