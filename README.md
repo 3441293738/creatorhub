@@ -359,8 +359,3 @@ data/
 ## 使用说明
 
 本项目用于技术学习和个人内容管理，不提供账号、Cookie、代理或平台数据。使用时请遵守目标平台规则及所在地法律法规，并尊重内容版权和个人隐私。
-
-
-### Resident account browser sessions
-
-小红书账号默认复用同一个常驻浏览器进程、独立 Profile 和任务标签页，登录、资料刷新、监控和详情读取不再每次关闭后重启。默认空闲 30 分钟回收；`resident_browser_sessions: false` 可恢复一次性窗口，`browser_session_idle_seconds: 0` 表示仅在 LRU 上限、环境配置变化、用户关闭或服务退出时回收。多账号只共享 Chromium 内核文件，不共享 Profile、Cookie 或 BrowserContext。
