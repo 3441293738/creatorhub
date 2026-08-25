@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,14 @@ from patchright.async_api import BrowserContext, async_playwright
 
 from ..windowing import (CHROMIUM_WINDOW_CLASSES, bring_window_to_front,
                          capture_window_snapshot)
+from .backends import (
+    ACCOUNT_BROWSER_BACKENDS,
+    DEFAULT_BACKEND,
+    FINGERPRINT_CHROMIUM_BACKEND,
+    LOCAL_BACKEND,
+    BrowserBackendUnavailableError,
+    FingerprintChromiumBackend,
+)
 from .identity import Identity, fingerprint_script
 from .cdp import (CdpLaunchError, CdpProfileConflictError, CdpProxyError,
                   CdpProxyAuthController, XhsCdpBackend)
@@ -44,6 +53,12 @@ _LEGACY_ARGS = [
 
 # storage_state 里允许注入的 Cookie 字段(Patchright add_cookies 接受的键)
 _COOKIE_KEYS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
+
+# 第三方可视化环境体检页。它只负责向用户展示当前浏览器实际暴露的 IP、
+# WebRTC、时区和浏览器指纹，不参与平台登录判定，也不作为“风控通过”证明。
+ENVIRONMENT_CHECK_URL = "https://www.browserscan.net/zh"
+_ENVIRONMENT_CHECK_MARKER_VERSION = 1
+_ENVIRONMENT_CHECK_MARKER = "environment-check.json"
 
 
 class BrowserProfileConflictError(RuntimeError):
@@ -178,12 +193,20 @@ class BrowserManager:
     def __init__(self, default_ua: str, profiles_root: str = "./data/profiles",
                  max_live: int = 6, native_ua_callback=None,
                  xhs_browser_mode: str = "auto",
-                 xhs_cdp_idle_seconds: int = 900,
+                 xhs_cdp_idle_seconds: int | None = None,
+                 resident_sessions: bool = True,
+                 session_idle_seconds: int = 1800,
                  native_write_gate_enabled: bool = True,
                  native_write_require_system_chrome: bool = True,
                  native_write_require_verified_proxy: bool = True,
                  native_write_proxy_max_age_seconds: int = 86400,
-                 browser_exit_probe_url: str = "https://ipinfo.io/json"):
+                 browser_exit_probe_url: str = "https://ipinfo.io/json",
+                 browser_backend: str = LOCAL_BACKEND,
+                 fingerprint_chromium_path: str = "",
+                 fingerprint_chromium_allow_headless: bool = False,
+                 fingerprint_chromium_platform: str = "auto",
+                 fingerprint_chromium_runtimes: list[dict] | None = None,
+                 fingerprint_default_runtime_id: str = ""):
         self.default_ua = default_ua
         self.profiles_root = profiles_root
         self.max_live = max(1, max_live)
@@ -195,7 +218,15 @@ class BrowserManager:
             requested_mode if requested_mode in {"auto", "cdp", "patchright"}
             else "auto"
         )
-        self.xhs_cdp_idle_seconds = max(0, int(xhs_cdp_idle_seconds))
+        # ``xhs_cdp_idle_seconds`` is the pre-resident-session option name.
+        # Keep accepting it so existing config files and integrations retain
+        # their exact timeout while all account browser backends now share the
+        # same lifecycle policy.
+        if xhs_cdp_idle_seconds is not None:
+            session_idle_seconds = xhs_cdp_idle_seconds
+        self.resident_sessions = bool(resident_sessions)
+        self.session_idle_seconds = max(0, int(session_idle_seconds))
+        self.xhs_cdp_idle_seconds = self.session_idle_seconds
         self.native_write_gate_enabled = bool(native_write_gate_enabled)
         self.native_write_require_system_chrome = bool(
             native_write_require_system_chrome)
@@ -204,10 +235,51 @@ class BrowserManager:
         self.native_write_proxy_max_age_seconds = max(
             0, int(native_write_proxy_max_age_seconds))
         self.browser_exit_probe_url = str(browser_exit_probe_url or "").strip()
+        requested_backend = str(browser_backend or LOCAL_BACKEND).strip().lower()
+        self.default_browser_backend = (
+            requested_backend
+            if requested_backend in {LOCAL_BACKEND, FINGERPRINT_CHROMIUM_BACKEND}
+            else LOCAL_BACKEND
+        )
+        self._fingerprint_backends: Dict[str, FingerprintChromiumBackend] = {}
+        self._fingerprint_runtime_enabled: Dict[str, bool] = {}
+        self.default_fingerprint_runtime_id = str(
+            fingerprint_default_runtime_id or "").strip()
+        if fingerprint_chromium_path:
+            configured_id = self.default_fingerprint_runtime_id or "configured"
+            self.register_fingerprint_runtime(
+                configured_id, fingerprint_chromium_path,
+                allow_headless=fingerprint_chromium_allow_headless,
+                platform=fingerprint_chromium_platform,
+                label="Fingerprint Chromium · 开源内核",
+                enabled=True,
+            )
+            if not self.default_fingerprint_runtime_id:
+                self.default_fingerprint_runtime_id = configured_id
+        for runtime in fingerprint_chromium_runtimes or []:
+            runtime_id = str(runtime.get("runtime_id") or "").strip()
+            if not runtime_id:
+                continue
+            self.register_fingerprint_runtime(
+                runtime_id,
+                str(runtime.get("executable_path") or ""),
+                allow_headless=bool(runtime.get("allow_headless", False)),
+                platform=str(runtime.get("platform") or "auto"),
+                version=str(runtime.get("version") or ""),
+                label=str(runtime.get("name") or ""),
+                enabled=bool(runtime.get("enabled", True)),
+            )
+            if runtime.get("is_default"):
+                self.default_fingerprint_runtime_id = runtime_id
+        if not self.default_fingerprint_runtime_id and self._fingerprint_backends:
+            self.default_fingerprint_runtime_id = next(iter(self._fingerprint_backends))
+        # Compatibility alias retained for callers/tests written for one runtime.
+        self._fingerprint_backend = self._default_fingerprint_backend()
         self._pw = None
         self._contexts: Dict[Any, BrowserContext] = {}   # key -> 持久化 context
         self._cdp_sessions: Dict[Any, Any] = {}
         self._backend_by_key: Dict[Any, str] = {}
+        self._runtime_by_key: Dict[Any, str] = {}
         self._fallback_reason_by_key: Dict[Any, str] = {}
         self._proxy_signature_by_key: Dict[Any, str] = {}
         self._profile_process_locks: Dict[Any, _ProfileProcessLock] = {}
@@ -215,6 +287,7 @@ class BrowserManager:
         self.xhs_interaction = XhsInteractionPolicy()
         self._xhs_visible_gate = XhsVisibleActionGate()
         self._xhs_page_locks: Dict[Any, asyncio.Lock] = {}
+        self._task_pages: Dict[Any, Any] = {}
         self._last_used: Dict[Any, float] = {}
         self._locks: Dict[Any, asyncio.Lock] = {}
         self._cv_lock = asyncio.Lock()                   # 保护 context 字典的创建/驱逐
@@ -222,6 +295,200 @@ class BrowserManager:
         # 优先使用机器上安装的稳定版 Chrome；没有时回退到 Patchright
         # 附带的 Chrome for Testing。登录窗口因此更接近用户日常浏览器环境。
         self._browser_channel: Optional[str] = None
+
+    def register_fingerprint_runtime(
+            self, runtime_id: str, executable_path: str, *,
+            allow_headless: bool = False, platform: str = "auto",
+            version: str = "", label: str = "", enabled: bool = True) -> None:
+        runtime_id = str(runtime_id or "").strip()
+        if not runtime_id:
+            raise ValueError("runtime_id 不能为空")
+        self._fingerprint_backends[runtime_id] = FingerprintChromiumBackend(
+            executable_path,
+            allow_headless=allow_headless,
+            platform=platform,
+            runtime_id=runtime_id,
+            version=version,
+            label=(label or f"Fingerprint Chromium {version or runtime_id}"),
+        )
+        self._fingerprint_runtime_enabled[runtime_id] = bool(enabled)
+        if enabled and not self.default_fingerprint_runtime_id:
+            self.default_fingerprint_runtime_id = runtime_id
+        self._fingerprint_backend = self._default_fingerprint_backend()
+
+    def unregister_fingerprint_runtime(self, runtime_id: str) -> None:
+        runtime_id = str(runtime_id or "").strip()
+        self._fingerprint_backends.pop(runtime_id, None)
+        self._fingerprint_runtime_enabled.pop(runtime_id, None)
+        if self.default_fingerprint_runtime_id == runtime_id:
+            self.default_fingerprint_runtime_id = next(
+                (key for key in self._fingerprint_backends
+                 if self._fingerprint_runtime_enabled.get(key, False)), "")
+        self._fingerprint_backend = self._default_fingerprint_backend()
+
+    def set_default_fingerprint_runtime(self, runtime_id: str) -> None:
+        runtime_id = str(runtime_id or "").strip()
+        if runtime_id not in self._fingerprint_backends:
+            raise ValueError("内核运行时不存在")
+        if not self._fingerprint_runtime_enabled.get(runtime_id, False):
+            raise ValueError("内核运行时已停用")
+        self.default_fingerprint_runtime_id = runtime_id
+        self._fingerprint_backend = self._default_fingerprint_backend()
+
+    def clear_default_fingerprint_runtime(self) -> None:
+        self.default_fingerprint_runtime_id = ""
+        self._fingerprint_backend = self._default_fingerprint_backend()
+
+    def _default_fingerprint_backend(self) -> FingerprintChromiumBackend:
+        backend = self._fingerprint_backends.get(
+            self.default_fingerprint_runtime_id)
+        if backend is not None:
+            return backend
+        for runtime_id, candidate in self._fingerprint_backends.items():
+            if self._fingerprint_runtime_enabled.get(runtime_id, False):
+                return candidate
+        return FingerprintChromiumBackend("")
+
+    def effective_fingerprint_runtime_id(self, identity: Identity) -> str:
+        requested = str(
+            getattr(identity, "browser_runtime_id", "") or "").strip()
+        return requested or self.default_fingerprint_runtime_id
+
+    def _fingerprint_backend_for(
+            self, identity: Identity, *, require_available: bool = True,
+            ) -> FingerprintChromiumBackend:
+        runtime_id = self.effective_fingerprint_runtime_id(identity)
+        backend = self._fingerprint_backends.get(runtime_id)
+        if backend is None:
+            raise BrowserBackendUnavailableError(
+                f"账号选择的内核运行时不存在: {runtime_id or '未配置'}")
+        if not self._fingerprint_runtime_enabled.get(runtime_id, False):
+            raise BrowserBackendUnavailableError(
+                f"账号选择的内核运行时已停用: {runtime_id}")
+        if require_available and not backend.available:
+            raise BrowserBackendUnavailableError(backend.unavailable_reason)
+        return backend
+
+    @staticmethod
+    def _runtime_profile_dir(identity: Identity, runtime_id: str) -> Path:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", runtime_id or "default")
+        return Path(identity.profile_dir) / "runtimes" / safe
+
+    def _environment_profile_dir(self, identity: Identity) -> Path:
+        """Return the exact persistent directory that owns this environment."""
+        if self.effective_browser_backend(identity) == FINGERPRINT_CHROMIUM_BACKEND:
+            return self._runtime_profile_dir(
+                identity, self.effective_fingerprint_runtime_id(identity))
+        return Path(identity.profile_dir)
+
+    def _environment_check_signature(self, identity: Identity) -> str:
+        effective = self.effective_browser_backend(identity)
+        runtime_id = (
+            self.effective_fingerprint_runtime_id(identity)
+            if effective == FINGERPRINT_CHROMIUM_BACKEND else ""
+        )
+        return self._context_signature(
+            identity, effective, runtime_id,
+            self.proxy_signature(identity.proxy),
+        )
+
+    def _environment_check_marker_path(self, identity: Identity) -> Path:
+        # 放在账号 Profile 内的 CreatorHub 专用子目录中，仍随独立环境迁移，
+        # 也不会写入系统盘或共享全局目录。
+        return (
+            self._environment_profile_dir(identity)
+            / ".creatorhub" / _ENVIRONMENT_CHECK_MARKER
+        )
+
+    def environment_check_status(self, identity: Identity) -> Dict[str, Any]:
+        """Return the BrowserScan prompt state without launching a browser.
+
+        A marker is valid only for the complete environment signature. Changing
+        runtime, proxy, viewport or fingerprint settings therefore makes the
+        next visible user session show the diagnostic page again.
+        """
+        effective = self.effective_browser_backend(identity)
+        enabled = effective == FINGERPRINT_CHROMIUM_BACKEND
+        base: Dict[str, Any] = {
+            "enabled": enabled,
+            "provider": "BrowserScan",
+            "url": ENVIRONMENT_CHECK_URL,
+            "required": False,
+            "last_opened_at": None,
+            "reason": "not_fingerprint_environment" if not enabled else "",
+        }
+        if not enabled:
+            return base
+        marker_path = self._environment_check_marker_path(identity)
+        marker: Dict[str, Any] = {}
+        if marker_path.exists():
+            try:
+                loaded = json.loads(marker_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    marker = loaded
+            except (OSError, ValueError, TypeError):
+                marker = {}
+        expected = self._environment_check_signature(identity)
+        valid = (
+            marker.get("version") == _ENVIRONMENT_CHECK_MARKER_VERSION
+            and marker.get("signature") == expected
+        )
+        base["required"] = not valid
+        base["last_opened_at"] = marker.get("opened_at") or None
+        if valid:
+            base["reason"] = "already_opened"
+        elif marker:
+            base["reason"] = "environment_changed"
+        else:
+            base["reason"] = "new_environment"
+        return base
+
+    def _mark_environment_check_opened(self, identity: Identity) -> None:
+        marker_path = self._environment_check_marker_path(identity)
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": _ENVIRONMENT_CHECK_MARKER_VERSION,
+            "signature": self._environment_check_signature(identity),
+            "opened_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "provider": "BrowserScan",
+            "url": ENVIRONMENT_CHECK_URL,
+        }
+        temporary = marker_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary.replace(marker_path)
+
+    async def open_environment_check(
+            self, identity: Identity, *, context: BrowserContext | None = None,
+            force: bool = False, bring_to_front: bool = False):
+        """Open BrowserScan in a separate tab for a fingerprint environment.
+
+        The native startup ``about:blank`` tab is intentionally preserved. XHS
+        login relies on that tab for its first platform navigation; consuming it
+        for the diagnostic site would make the subsequent login tab behave
+        differently. The caller owns the returned page/context lifetime.
+        """
+        status = self.environment_check_status(identity)
+        if not status["enabled"] or (not force and not status["required"]):
+            return None
+        ctx = context or await self.context_for(identity)
+        page = await ctx.new_page()
+        try:
+            # ``commit`` keeps the login path responsive while BrowserScan
+            # continues rendering its detailed checks in the visible tab.
+            await page.goto(
+                ENVIRONMENT_CHECK_URL, wait_until="commit", timeout=12_000)
+            self._mark_environment_check_opened(identity)
+            if bring_to_front:
+                with suppress(Exception):
+                    await page.bring_to_front()
+            return page
+        except Exception:
+            with suppress(Exception):
+                await page.close()
+            raise
 
     async def start(self):
         self._pw = await async_playwright().start()
@@ -275,11 +542,24 @@ class BrowserManager:
         """返回不含代理凭据的浏览器环境诊断信息。"""
         backend = self._backend_by_key.get(identity.key)
         if backend is None:
-            backend = (
-                "cdp" if self._uses_xhs_cdp(identity)
-                else "patchright"
-            )
+            effective = self.effective_browser_backend(identity)
+            if effective == FINGERPRINT_CHROMIUM_BACKEND:
+                backend = FINGERPRINT_CHROMIUM_BACKEND
+            else:
+                backend = "cdp" if self._uses_xhs_cdp(identity) else "patchright"
         is_cdp = backend == "cdp"
+        is_fingerprint = backend == FINGERPRINT_CHROMIUM_BACKEND
+        runtime_id = ""
+        runtime_version = ""
+        runtime_label = ""
+        fingerprint_backend = self._fingerprint_backend
+        if is_fingerprint:
+            runtime_id = self._runtime_by_key.get(
+                identity.key, self.effective_fingerprint_runtime_id(identity))
+            fingerprint_backend = self._fingerprint_backends.get(
+                runtime_id, self._fingerprint_backend)
+            runtime_version = fingerprint_backend.version
+            runtime_label = fingerprint_backend.label
         fallback_reason = self._fallback_reason_by_key.get(identity.key, "")
         # Diagnostics are user-facing, never a transport for debugger URLs or
         # proxy credentials.
@@ -295,21 +575,38 @@ class BrowserManager:
         fallback = bool(fallback_reason)
         backend_label = (
             "系统 Chrome · CDP" if is_cdp
+            else runtime_label if is_fingerprint
             else "Patchright Chromium · 回退" if fallback
             else "Patchright Chromium"
         )
-        return {
-            "browser": "chrome" if is_cdp else (self._browser_channel or "chromium"),
-            "chrome_major": self._chrome_major,
-            "headless": False if is_cdp else bool(headless),
+        snapshot = {
+            "browser": (
+                "chrome" if is_cdp
+                else "fingerprint-chromium" if is_fingerprint
+                else (self._browser_channel or "chromium")
+            ),
+            "chrome_major": (
+                int(runtime_version.split(".", 1)[0])
+                if is_fingerprint and runtime_version.split(".", 1)[0].isdigit()
+                else None if is_fingerprint else self._chrome_major),
+            "headless": (
+                False if is_cdp
+                else bool(headless and fingerprint_backend.allow_headless)
+                if is_fingerprint else bool(headless)
+            ),
             "identity_mode": identity.identity_mode,
-            "profile_dir": identity.profile_dir,
+            "profile_dir": (str(self._runtime_profile_dir(identity, runtime_id))
+                            if is_fingerprint else identity.profile_dir),
             "has_proxy": bool(str(identity.proxy or "").strip()),
             "backend": backend,
             "backend_label": backend_label,
             "fallback": fallback,
             "fallback_reason": fallback_reason,
         }
+        if is_fingerprint:
+            snapshot["runtime_id"] = runtime_id
+            snapshot["runtime_version"] = runtime_version
+        return snapshot
 
     def _sec_ch_ua_headers(self, ua: str) -> Optional[Dict[str, str]]:
         """按归一后的 UA 生成一致的 Client Hints 头,覆盖真实内核默认发出的值。"""
@@ -342,6 +639,145 @@ class BrowserManager:
     def identity_for(self, acc) -> Identity:
         return Identity.from_account(acc, self.profiles_root, self.default_ua)
 
+    def direct_request_user_agent(self, identity: Identity) -> str:
+        """Return a UA whose Chromium major matches the account runtime.
+
+        Browser-created cookies are also reused by a few explicit HTTP
+        compatibility paths.  Normalising their UA avoids presenting an old
+        configured Chrome version beside a newer account browser.
+        """
+        ua = str(identity.ua or self.default_ua or "").strip()
+        effective = self.effective_browser_backend(identity)
+        major = 0
+        if effective == FINGERPRINT_CHROMIUM_BACKEND:
+            try:
+                backend = self._fingerprint_backend_for(
+                    identity, require_available=False)
+                head = str(backend.version or "").split(".", 1)[0]
+                major = int(head) if head.isdigit() else 0
+            except (BrowserBackendUnavailableError, ValueError):
+                major = 0
+        else:
+            major = int(self._chrome_major or 0)
+        if major and ua:
+            ua = re.sub(
+                r"Chrome/\d+(?:\.\d+){0,3}",
+                f"Chrome/{major}.0.0.0", ua)
+            ua = re.sub(
+                r"Edg/\d+(?:\.\d+){0,3}",
+                f"Edg/{major}.0.0.0", ua)
+        return ua or self.default_ua
+
+    async def _capture_context_ua(
+            self, ctx: BrowserContext, identity: Identity) -> str:
+        """Persist the exact UA exposed by Patchright or an attached CDP tab."""
+        probe_page = None
+        created_probe = False
+        try:
+            pages = list(ctx.pages)
+            if pages:
+                probe_page = pages[0]
+            else:
+                probe_page = await ctx.new_page()
+                created_probe = True
+            actual_ua = str(
+                await probe_page.evaluate("navigator.userAgent") or "").strip()
+            if actual_ua:
+                identity.ua = actual_ua
+                if identity.account_id is not None and self._native_ua_callback:
+                    self._native_ua_callback(identity.account_id, actual_ua)
+            return actual_ua
+        except Exception:
+            return ""
+        finally:
+            if created_probe and probe_page is not None:
+                with suppress(Exception):
+                    await probe_page.close()
+
+    def effective_browser_backend(self, identity: Identity) -> str:
+        """Resolve an account override without silently accepting bad values."""
+        requested = str(
+            getattr(identity, "browser_backend", DEFAULT_BACKEND)
+            or DEFAULT_BACKEND
+        ).strip().lower()
+        if requested not in ACCOUNT_BROWSER_BACKENDS:
+            requested = DEFAULT_BACKEND
+        return (
+            self.default_browser_backend
+            if requested == DEFAULT_BACKEND else requested
+        )
+
+    def backend_status(
+            self, requested: str = DEFAULT_BACKEND,
+            runtime_id: str = "") -> Dict[str, Any]:
+        value = str(requested or DEFAULT_BACKEND).strip().lower()
+        if value not in ACCOUNT_BROWSER_BACKENDS:
+            return {
+                "name": value,
+                "available": False,
+                "detail": "不支持的浏览器后端",
+            }
+        name = self.default_browser_backend if value == DEFAULT_BACKEND else value
+        if name == FINGERPRINT_CHROMIUM_BACKEND:
+            selected_id = str(runtime_id or self.default_fingerprint_runtime_id).strip()
+            backend = self._fingerprint_backends.get(selected_id)
+            if backend is None:
+                return {
+                    "name": name, "runtime_id": selected_id,
+                    "available": False,
+                    "detail": "未注册可用的 Fingerprint Chromium 内核",
+                }
+            enabled = self._fingerprint_runtime_enabled.get(selected_id, False)
+            return {
+                "name": name,
+                "runtime_id": selected_id,
+                "available": bool(enabled and backend.available),
+                "detail": ("内核运行时已停用" if not enabled
+                           else backend.unavailable_reason),
+            }
+        return {"name": LOCAL_BACKEND, "available": True, "detail": ""}
+
+    def fingerprint_runtime_catalog(self) -> List[Dict[str, Any]]:
+        rows = []
+        for runtime_id, backend in self._fingerprint_backends.items():
+            enabled = self._fingerprint_runtime_enabled.get(runtime_id, False)
+            rows.append({
+                "runtime_id": runtime_id,
+                "name": backend.label,
+                "version": backend.version,
+                "platform": backend.platform,
+                "allow_headless": backend.allow_headless,
+                "enabled": enabled,
+                "is_default": runtime_id == self.default_fingerprint_runtime_id,
+                "available": bool(enabled and backend.available),
+                "detail": ("内核运行时已停用" if not enabled
+                           else backend.unavailable_reason),
+            })
+        return rows
+
+    def backend_catalog(self) -> Dict[str, Any]:
+        return {
+            "default": self.default_browser_backend,
+            "backends": [
+                {
+                    "name": LOCAL_BACKEND,
+                    "label": "本地 Patchright / 系统 Chrome",
+                    "available": True,
+                    "detail": "",
+                },
+                {
+                    "name": FINGERPRINT_CHROMIUM_BACKEND,
+                    "label": self._fingerprint_backend.label,
+                    "available": self.backend_status(
+                        FINGERPRINT_CHROMIUM_BACKEND)["available"],
+                    "detail": self.backend_status(
+                        FINGERPRINT_CHROMIUM_BACKEND)["detail"],
+                },
+            ],
+            "default_runtime_id": self.default_fingerprint_runtime_id,
+            "runtimes": self.fingerprint_runtime_catalog(),
+        }
+
     def anon_identity(self) -> Identity:
         return Identity(account_id=None,
                         profile_dir=str(Path(self.profiles_root) / "_anon"),
@@ -351,6 +787,7 @@ class BrowserManager:
         return (
             identity.platform == "xhs"
             and self.xhs_browser_mode in {"auto", "cdp"}
+            and self.effective_browser_backend(identity) == LOCAL_BACKEND
         )
 
     @staticmethod
@@ -369,10 +806,63 @@ class BrowserManager:
         plan = try_proxy_plan(proxy)
         return plan.signature if plan else "direct"
 
-    def _acquire_profile_lock(self, identity: Identity) -> None:
+    @classmethod
+    def _context_signature(
+            cls, identity: Identity, effective_backend: str,
+            runtime_id: str, proxy_signature: str) -> str:
+        """Hash every setting that defines an account browser environment.
+
+        The in-memory context cache is keyed by the database account id for
+        compatibility with account locks.  SQLite can reuse that id after an
+        account is deleted, so the id alone is not an isolation boundary.  A
+        changed Profile path or fingerprint must force the stale context out.
+        """
+        profile_dir = (
+            cls._runtime_profile_dir(identity, runtime_id)
+            if effective_backend == FINGERPRINT_CHROMIUM_BACKEND
+            else Path(identity.profile_dir)
+        )
+        payload = {
+            "profile_dir": os.path.normcase(str(
+                profile_dir.expanduser().resolve())),
+            "backend": effective_backend,
+            "runtime_id": runtime_id,
+            "proxy": proxy_signature,
+            "identity_mode": identity.identity_mode,
+            "ua": identity.ua,
+            "viewport": [identity.viewport_w, identity.viewport_h],
+            "timezone_id": identity.timezone_id,
+            "locale": identity.locale,
+            "fp_seed": identity.fp_seed,
+            "fp_platform": identity.fp_platform,
+            "fp_platform_version": identity.fp_platform_version,
+            "fp_brand": identity.fp_brand,
+            "fp_brand_version": identity.fp_brand_version,
+            "fp_hardware_concurrency": identity.fp_hardware_concurrency,
+            "fp_gpu_vendor": identity.fp_gpu_vendor,
+            "fp_gpu_renderer": identity.fp_gpu_renderer,
+            "fp_accept_languages": identity.fp_accept_languages,
+            "fp_disable_spoofing": identity.fp_disable_spoofing,
+            "fp_language_mode": identity.fp_language_mode,
+            "fp_timezone_mode": identity.fp_timezone_mode,
+            "fp_viewport_mode": identity.fp_viewport_mode,
+            "fp_location_mode": identity.fp_location_mode,
+            "fp_geolocation_permission": identity.fp_geolocation_permission,
+            "fp_webrtc_mode": identity.fp_webrtc_mode,
+            "fp_extra_args": identity.fp_extra_args,
+            "geo": [identity.geo_lat, identity.geo_lon],
+        }
+        raw = json.dumps(
+            payload, ensure_ascii=True, sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+    def _acquire_profile_lock(
+            self, identity: Identity, profile_dir: Path | None = None) -> None:
         if identity.key in self._profile_process_locks:
             return
-        lock = _ProfileProcessLock(Path(identity.profile_dir))
+        lock = _ProfileProcessLock(profile_dir or Path(identity.profile_dir))
         lock.acquire()
         self._profile_process_locks[identity.key] = lock
 
@@ -380,6 +870,36 @@ class BrowserManager:
         lock = self._profile_process_locks.pop(key, None)
         if lock is not None:
             lock.release()
+
+    @staticmethod
+    def _seed_fingerprint_profile_preferences(profile_dir: Path) -> bool:
+        """Let a new dedicated fingerprint Profile accept third-party cookies.
+
+        Fingerprint Chromium 148 initializes dedicated profiles with third-
+        party cookies blocked.  Cross-site login hand-offs can then be sent to
+        a device-verification page on their very first navigation.  Seed only
+        a brand-new Profile; once Chromium has created Preferences, the user's
+        later browser setting remains authoritative.
+        """
+        preferences = profile_dir / "Default" / "Preferences"
+        if preferences.exists():
+            return False
+        preferences.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "profile": {
+                "block_third_party_cookies": False,
+                # Chromium CookieControlsMode::kIncognitoOnly.  In a regular
+                # persistent Profile this is the UI option “允许第三方 Cookie”.
+                "cookie_controls_mode": 2,
+            },
+        }
+        temporary = preferences.with_suffix(".creatorhub.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary.replace(preferences)
+        return True
 
     def native_write_gate_error(self, account, *, headed: bool = True,
                                 browser_mode: bool = True,
@@ -392,9 +912,22 @@ class BrowserManager:
             return "write_env_blocked:浏览器管理器未启动"
         if browser_mode and not headed:
             return "write_env_blocked:native 账号写操作必须使用有头浏览器"
+        # Gate tests and queued task projections may pass a lightweight account
+        # view, so resolving the backend must not require full profile fields.
+        effective_backend = self.effective_browser_backend(account)
+        fingerprint_status = self.backend_status(
+            effective_backend,
+            str(getattr(account, "browser_runtime_id", "") or ""))
+        if effective_backend == FINGERPRINT_CHROMIUM_BACKEND \
+                and not fingerprint_status["available"]:
+            return (
+                "write_env_blocked:开源指纹浏览器不可用:"
+                + str(fingerprint_status["detail"])
+            )
         if self.native_write_require_system_chrome \
-                and self._browser_channel != "chrome":
-            return "write_env_blocked:未检测到系统稳定版 Chrome"
+                and self._browser_channel != "chrome" \
+                and effective_backend != FINGERPRINT_CHROMIUM_BACKEND:
+            return "write_env_blocked:未检测到系统稳定版 Chrome 或可用指纹 Chromium"
         proxy = str(getattr(account, "proxy", "") or "").strip()
         if not proxy or not self.native_write_require_verified_proxy:
             return ""
@@ -418,11 +951,30 @@ class BrowserManager:
     # ── 持久化 context ──
     async def _launch_persistent(self, identity: Identity, headless: bool = True
                                  ) -> BrowserContext:
-        pdir = Path(identity.profile_dir)
+        effective_backend = self.effective_browser_backend(identity)
+        fingerprint_backend = None
+        runtime_id = ""
+        if effective_backend == FINGERPRINT_CHROMIUM_BACKEND:
+            fingerprint_backend = self._fingerprint_backend_for(identity)
+            runtime_id = fingerprint_backend.runtime_id
+            pdir = self._runtime_profile_dir(identity, runtime_id)
+        else:
+            pdir = Path(identity.profile_dir)
         pdir.mkdir(parents=True, exist_ok=True)
         was_empty = not any(p.name != ".browser.lock" for p in pdir.iterdir())
-        self._acquire_profile_lock(identity)
+        if fingerprint_backend is not None and was_empty:
+            self._seed_fingerprint_profile_preferences(pdir)
+        self._acquire_profile_lock(identity, pdir)
         ua = self._normalize_ua(identity.ua or self.default_ua)
+        fingerprint_plan = None
+        if effective_backend == FINGERPRINT_CHROMIUM_BACKEND:
+            try:
+                fingerprint_plan = fingerprint_backend.launch_plan(
+                    identity, requested_headless=headless)
+            except BrowserBackendUnavailableError:
+                self._release_profile_lock(identity.key)
+                raise
+            headless = fingerprint_plan.headless
         kwargs: Dict[str, Any] = dict(
             user_data_dir=str(pdir), headless=headless,
         )
@@ -430,9 +982,23 @@ class BrowserManager:
         # 使用沙箱，新旧账号都显式开启，避免安全警告和不必要的启动差异。
         if os.name == "nt":
             kwargs["chromium_sandbox"] = True
-        if self._browser_channel:
+        if fingerprint_plan is not None:
+            kwargs["executable_path"] = fingerprint_plan.executable_path
+            # Fingerprint Chromium provides its own native automation surface.
+            # Patchright's Chromium default would otherwise add this switch,
+            # expose an unsupported-command-line warning, and make the first
+            # site navigation differ from a normal user-opened window.
+            kwargs["ignore_default_args"] = [
+                "--disable-blink-features=AutomationControlled",
+            ]
+        elif self._browser_channel:
             kwargs["channel"] = self._browser_channel
-        legacy = identity.identity_mode != "native"
+        # Engine-level fingerprint runtimes own the entire identity surface;
+        # mixing the legacy JS hooks into them would make the profile drift.
+        legacy = (
+            identity.identity_mode != "native"
+            and fingerprint_plan is None
+        )
         if legacy:
             kwargs.update(
                 args=list(_LEGACY_ARGS),
@@ -445,7 +1011,25 @@ class BrowserManager:
                 permissions=["geolocation"],
             )
         proxy = _parse_proxy(identity.proxy)
-        if not legacy:
+        if fingerprint_plan is not None:
+            args = list(fingerprint_plan.args)
+            args.append(
+                f"--window-size={int(identity.viewport_w)},{int(identity.viewport_h)}")
+            if proxy and str(identity.fp_webrtc_mode or "conceal") != "allow":
+                for item in _PROXY_WEBRTC_ARGS:
+                    if item not in args:
+                        args.append(item)
+            geo_permission = str(
+                identity.fp_geolocation_permission or "allow").lower()
+            if geo_permission == "deny":
+                args.append("--deny-permission-prompts")
+            kwargs["args"] = args
+            kwargs["no_viewport"] = True
+            if geo_permission != "deny":
+                kwargs["geolocation"] = identity.geolocation
+            if geo_permission == "allow":
+                kwargs["permissions"] = ["geolocation"]
+        elif not legacy:
             # native 账号使用 Chrome/操作系统自己的视口、语言、时区与硬件画像。
             # 仅在显式配置代理时约束 WebRTC，避免 UDP 绕过代理出口。
             kwargs["no_viewport"] = True
@@ -463,28 +1047,7 @@ class BrowserManager:
         if not legacy:
             # Persist the UA exposed by this exact native context. It is
             # diagnostic state only; native launches still omit any override.
-            probe_page = None
-            created_probe = False
-            try:
-                pages = list(ctx.pages)
-                if pages:
-                    probe_page = pages[0]
-                else:
-                    probe_page = await ctx.new_page()
-                    created_probe = True
-                actual_ua = await probe_page.evaluate("navigator.userAgent")
-                if actual_ua:
-                    identity.ua = str(actual_ua)
-                    if identity.account_id is not None and self._native_ua_callback:
-                        self._native_ua_callback(identity.account_id, identity.ua)
-            except Exception:
-                pass
-            finally:
-                if created_probe and probe_page is not None:
-                    try:
-                        await probe_page.close()
-                    except Exception:
-                        pass
+            await self._capture_context_ua(ctx, identity)
         # Client Hints 与归一后的 UA 保持一致(否则内核按真实版本发 Sec-CH-UA,和 UA 打架)
         sec = self._sec_ch_ua_headers(ua) if legacy else None
         if sec:
@@ -557,8 +1120,10 @@ class BrowserManager:
     async def _close_key_unlocked(self, key: Any) -> None:
         ctx = self._contexts.pop(key, None)
         session = self._cdp_sessions.pop(key, None)
+        self._task_pages.pop(key, None)
         self._last_used.pop(key, None)
         self._backend_by_key.pop(key, None)
+        self._runtime_by_key.pop(key, None)
         self._fallback_reason_by_key.pop(key, None)
         self._proxy_signature_by_key.pop(key, None)
         try:
@@ -572,14 +1137,55 @@ class BrowserManager:
         finally:
             self._release_profile_lock(key)
 
+    async def rebind_context(self, old_key: Any, new_key: Any) -> bool:
+        """Move a live temporary-login session to its persisted account key.
+
+        Fresh logins intentionally use a temporary identity until the QR flow
+        succeeds. Closing Chrome only to reopen the same Profile under the new
+        database id creates an unnecessary cold start immediately after login.
+        Re-keying the ownership maps preserves the process, cookies, page and
+        profile lock without weakening the per-account isolation boundary.
+        """
+        if old_key == new_key:
+            return old_key in self._contexts
+        async with self._cv_lock:
+            if old_key not in self._contexts:
+                return False
+            if new_key in self._contexts:
+                await self._close_key_unlocked(new_key)
+            maps = (
+                self._contexts,
+                self._cdp_sessions,
+                self._task_pages,
+                self._last_used,
+                self._backend_by_key,
+                self._runtime_by_key,
+                self._fallback_reason_by_key,
+                self._proxy_signature_by_key,
+                self._profile_process_locks,
+            )
+            for mapping in maps:
+                if old_key in mapping:
+                    mapping[new_key] = mapping.pop(old_key)
+            page_lock = self._xhs_page_locks.pop(old_key, None)
+            if page_lock is not None:
+                self._xhs_page_locks[new_key] = page_lock
+            return True
+
     async def context_for(self, identity: Identity) -> BrowserContext:
         """取(或惰性创建)账号专属常驻 context。"""
         key = identity.key
         async with self._cv_lock:
+            effective_backend = self.effective_browser_backend(identity)
+            runtime_id = (
+                self.effective_fingerprint_runtime_id(identity)
+                if effective_backend == FINGERPRINT_CHROMIUM_BACKEND else "")
             plan = (self._xhs_proxy_plan(identity)
                     if identity.platform == "xhs"
                     else try_proxy_plan(identity.proxy))
-            signature = plan.signature if plan else "direct"
+            proxy_signature = plan.signature if plan else "direct"
+            signature = self._context_signature(
+                identity, effective_backend, runtime_id, proxy_signature)
             ctx = self._contexts.get(key)
             session = self._cdp_sessions.get(key)
             if ctx is not None and (
@@ -612,6 +1218,7 @@ class BrowserManager:
                         self._backend_by_key[key] = "patchright"
                     else:
                         ctx = session.context
+                        await self._capture_context_ua(ctx, identity)
                         if plan is not None and plan.scheme in {"http", "https"} \
                                 and plan.authenticated:
                             session.auth_controller = CdpProxyAuthController(
@@ -622,9 +1229,21 @@ class BrowserManager:
                 else:
                     ctx = await self._launch_persistent(
                         identity, headless=(identity.platform != "xhs"))
-                    self._backend_by_key[key] = "patchright"
+                    self._backend_by_key[key] = (
+                        FINGERPRINT_CHROMIUM_BACKEND
+                        if effective_backend == FINGERPRINT_CHROMIUM_BACKEND
+                        else "patchright"
+                    )
+                    if effective_backend == FINGERPRINT_CHROMIUM_BACKEND:
+                        self._runtime_by_key[key] = runtime_id
                 self._contexts[key] = ctx
-                self._proxy_signature_by_key[key] = signature
+                # Native/Fingerprint Chromium may fill ``identity.ua`` while
+                # launching the first context. Store the post-launch signature;
+                # keeping the pre-launch (empty-UA) value makes the very next
+                # context_for() call misclassify the fresh context as stale and
+                # visibly close/reopen the browser once.
+                self._proxy_signature_by_key[key] = self._context_signature(
+                    identity, effective_backend, runtime_id, proxy_signature)
             self._last_used[key] = time.time()
             if key in self._cdp_sessions:
                 self._cdp_sessions[key].last_used = self._last_used[key]
@@ -662,10 +1281,70 @@ class BrowserManager:
             with suppress(Exception):
                 await page.close()
 
+    async def probe_fingerprint_runtime(
+            self, runtime_id: str, profile_root: str | Path) -> Dict[str, Any]:
+        """Launch one registered runtime with an isolated disposable profile."""
+        if self._pw is None:
+            raise RuntimeError("浏览器管理器尚未启动")
+        runtime_id = str(runtime_id or "").strip()
+        status = self.backend_status(FINGERPRINT_CHROMIUM_BACKEND, runtime_id)
+        if not status["available"]:
+            raise BrowserBackendUnavailableError(str(status["detail"]))
+        profile = Path(profile_root) / f"probe_{runtime_id}_{time.time_ns()}"
+        identity = Identity(
+            account_id=None,
+            profile_dir=str(profile),
+            identity_mode="native",
+            browser_backend=FINGERPRINT_CHROMIUM_BACKEND,
+            browser_runtime_id=runtime_id,
+            fp_seed=f"runtime-probe-{runtime_id}",
+        )
+        context = None
+        page = None
+        try:
+            context = await self._launch_persistent(identity, headless=False)
+            pages = list(context.pages)
+            page = pages[0] if pages else await context.new_page()
+            details = await page.evaluate("""() => ({
+                userAgent: navigator.userAgent,
+                platform: navigator.platform,
+                language: navigator.language,
+                webdriver: navigator.webdriver
+            })""")
+            return {
+                "ok": True,
+                "runtime_id": runtime_id,
+                "user_agent": str((details or {}).get("userAgent") or ""),
+                "platform": str((details or {}).get("platform") or ""),
+                "language": str((details or {}).get("language") or ""),
+                "webdriver": (details or {}).get("webdriver"),
+            }
+        finally:
+            if context is not None:
+                with suppress(Exception):
+                    await context.close()
+            self._release_profile_lock(identity.key)
+            import shutil
+            with suppress(Exception):
+                shutil.rmtree(profile)
+
     async def new_page(self, identity: Identity, block_media: bool = False):
         """从账号常驻 context 开一个新 page(可屏蔽图片/视频/字体)。用完请 page.close()。"""
         ctx = await self.context_for(identity)
-        page = await ctx.new_page()
+        try:
+            page = await ctx.new_page()
+        except Exception as exc:
+            # A user can close the headed Chromium window directly. Patchright
+            # then leaves the now-closed BrowserContext object in our cache for
+            # a short time, so the next click would otherwise fail forever with
+            # TargetClosedError. Evict and relaunch the same account profile
+            # once; login cookies are bridged again by context_for().
+            detail = f"{type(exc).__name__}: {exc}".lower()
+            if "targetclosed" not in detail and "has been closed" not in detail:
+                raise
+            await self.close_context(identity.key)
+            ctx = await self.context_for(identity)
+            page = await ctx.new_page()
         session = self._cdp_sessions.get(identity.key)
         controller = getattr(session, "auth_controller", None)
         if controller is not None:
@@ -679,27 +1358,124 @@ class BrowserManager:
             await page.route("**/*", _route)
         return page
 
+    async def _visible_task_page(self, identity: Identity):
+        """Reuse the account's owned task tab before creating a CDP page.
+
+        Fingerprint Chromium treats the first navigation of its native startup
+        tab differently from a tab created immediately through ``new_page``.
+        Xiaohongshu can redirect that newly-created automation tab to device
+        verification while the startup tab reaches the homepage normally.
+        Reusing only an untouched ``about:blank`` tab also avoids taking over a
+        page that the user already opened manually.
+        """
+        ctx = await self.context_for(identity)
+        owned = self._task_pages.get(identity.key)
+        if owned is not None:
+            try:
+                if not owned.is_closed():
+                    return owned
+            except Exception:
+                pass
+            self._task_pages.pop(identity.key, None)
+        for candidate in list(getattr(ctx, "pages", ()) or ()):
+            try:
+                if candidate.url != "about:blank" or candidate.is_closed():
+                    continue
+            except Exception:
+                continue
+            session = self._cdp_sessions.get(identity.key)
+            controller = getattr(session, "auth_controller", None)
+            if controller is not None:
+                await controller.install(candidate)
+            self._task_pages[identity.key] = candidate
+            return candidate
+        page = await self.new_page(identity, block_media=False)
+        self._task_pages[identity.key] = page
+        return page
+
+    @staticmethod
+    def _listener_snapshot(emitter: Any, event: str) -> tuple[Any, ...]:
+        getter = getattr(emitter, "listeners", None)
+        if not callable(getter):
+            return ()
+        try:
+            return tuple(getter(event) or ())
+        except Exception:
+            return ()
+
+    @classmethod
+    def _remove_new_listeners(
+            cls, emitter: Any, event: str,
+            before: tuple[Any, ...]) -> None:
+        remover = (getattr(emitter, "remove_listener", None)
+                   or getattr(emitter, "off", None))
+        if not callable(remover):
+            return
+        allowed = {id(listener) for listener in before}
+        for listener in cls._listener_snapshot(emitter, event):
+            if id(listener) in allowed:
+                continue
+            with suppress(Exception):
+                remover(event, listener)
+
     @asynccontextmanager
-    async def visible_action(self, identity: Identity):
-        """Serialize one account's page work and all visible XHS actions."""
-        if self._xhs_visible_gate.owned_by_current_task:
+    async def visible_action(
+            self, identity: Identity, *, keep_context: bool | None = None):
+        """Serialize visible XHS work and retain account browser sessions.
+
+        Resident sessions are the default for XHS: login, profile refresh and
+        scheduled reads therefore use one process/Profile instead of repeatedly
+        cold-starting Chrome. ``keep_context=False`` remains an explicit
+        one-shot escape hatch for probes and cleanup-sensitive callers.
+        """
+        retain = (
+            self.resident_sessions and identity.platform == "xhs"
+            if keep_context is None else bool(keep_context)
+        )
+        nested = self._xhs_visible_gate.owned_by_current_task
+        if nested:
             async with self._xhs_visible_gate.acquire(identity.key):
                 yield
             return
         page_lock = self._xhs_page_locks.setdefault(
             identity.key, asyncio.Lock())
         async with page_lock:
-            async with self._xhs_visible_gate.acquire(identity.key):
-                yield
+            try:
+                async with self._xhs_visible_gate.acquire(identity.key):
+                    yield
+            finally:
+                if not retain:
+                    with suppress(Exception):
+                        await self.close_context(identity.key)
 
     @asynccontextmanager
-    async def visible_page(self, identity: Identity, *, url: str = ""):
-        """Lease one foreground XHS task page without closing shared Chrome."""
-        async with self.visible_action(identity):
+    async def visible_page(
+            self, identity: Identity, *, url: str = "",
+            keep_context: bool | None = None):
+        """Lease a foreground task page, optionally retaining its browser session."""
+        retain = (
+            self.resident_sessions and identity.platform == "xhs"
+            if keep_context is None else bool(keep_context)
+        )
+        async with self.visible_action(
+                identity, keep_context=retain):
             snapshot = capture_window_snapshot(CHROMIUM_WINDOW_CLASSES)
             page = None
+            context = None
+            page_listeners: dict[int, tuple[Any, tuple[Any, ...]]] = {}
+            context_page_listeners: tuple[Any, ...] = ()
             try:
-                page = await self.new_page(identity, block_media=False)
+                page = await self._visible_task_page(identity)
+                context = self._contexts.get(identity.key)
+                if context is not None:
+                    context_page_listeners = self._listener_snapshot(
+                        context, "page")
+                    for candidate in list(
+                            getattr(context, "pages", ()) or ()):
+                        page_listeners[id(candidate)] = (
+                            candidate,
+                            self._listener_snapshot(candidate, "response"),
+                        )
                 if url:
                     await page.goto(
                         url, wait_until="domcontentloaded", timeout=30_000)
@@ -713,28 +1489,48 @@ class BrowserManager:
                     CHROMIUM_WINDOW_CLASSES, title or "小红书", 1.5)
                 yield page
             finally:
+                # A resident Page must not retain one response callback closure
+                # for every scan/login. Keep listeners that predated this
+                # lease (proxy/auth hooks) and remove only task-local handlers.
+                if context is not None:
+                    for candidate in list(
+                            getattr(context, "pages", ()) or ()):
+                        previous = page_listeners.get(id(candidate))
+                        self._remove_new_listeners(
+                            candidate, "response",
+                            previous[1] if previous else ())
+                    self._remove_new_listeners(
+                        context, "page", context_page_listeners)
                 if page is not None:
-                    with suppress(Exception):
-                        await page.close()
+                    if not retain:
+                        if self._task_pages.get(identity.key) is page:
+                            self._task_pages.pop(identity.key, None)
+                        with suppress(Exception):
+                            await page.close()
 
     async def close_context(self, key):
         async with self._cv_lock:
             await self._close_key_unlocked(key)
 
-    async def collect_idle_cdp(self, now: float | None = None) -> int:
-        if self.xhs_cdp_idle_seconds <= 0:
+    async def collect_idle_sessions(self, now: float | None = None) -> int:
+        """Close inactive account sessions across all browser backends."""
+        if self.session_idle_seconds <= 0:
             return 0
         sampled = time.time() if now is None else float(now)
         async with self._cv_lock:
             victims = [
-                key for key in self._cdp_sessions
+                key for key in self._contexts
                 if not self._key_locked(key)
                 and sampled - self._last_used.get(key, sampled)
-                >= self.xhs_cdp_idle_seconds
+                >= self.session_idle_seconds
             ]
             for key in victims:
                 await self._close_key_unlocked(key)
             return len(victims)
+
+    async def collect_idle_cdp(self, now: float | None = None) -> int:
+        """Backward-compatible alias for the former CDP-only collector."""
+        return await self.collect_idle_sessions(now=now)
 
     async def open_headed(self, identity: Identity) -> BrowserContext:
         """Return the shared headed XHS context or a temporary legacy one."""

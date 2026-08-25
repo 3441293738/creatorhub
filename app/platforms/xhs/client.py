@@ -12,13 +12,42 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from ...netfp import impersonate_for_ua
 
 _HOST = "https://edith.xiaohongshu.com"
+_SEARCH_HOST = "https://so.xiaohongshu.com"
 _DOMAIN = "https://www.xiaohongshu.com"
+
+
+def _coherent_direct_headers(user_agent: str, impersonate: str) -> dict[str, str]:
+    """Keep UA, Client Hints and curl_cffi's TLS target on one major."""
+    target = re.search(r"chrome(\d+)", str(impersonate or ""), re.IGNORECASE)
+    major = int(target.group(1)) if target else 0
+    ua = str(user_agent or "").strip()
+    if major and ua:
+        ua = re.sub(
+            r"Chrome/\d+(?:\.\d+){0,3}",
+            f"Chrome/{major}.0.0.0", ua)
+        ua = re.sub(
+            r"Edg/\d+(?:\.\d+){0,3}",
+            f"Edg/{major}.0.0.0", ua)
+    platform = (
+        '"macOS"' if "Mac OS" in ua
+        else '"Linux"' if "Linux" in ua and "Android" not in ua
+        else '"Windows"')
+    brand = "Microsoft Edge" if "Edg/" in ua else "Google Chrome"
+    return {
+        "user-agent": ua,
+        "sec-ch-ua": (
+            f'"Chromium";v="{major}", "{brand}";v="{major}", '
+            '"Not_A Brand";v="99"'),
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": platform,
+    }
 
 
 def cookie_str_from_state(storage_state_json: str) -> str:
@@ -75,6 +104,7 @@ class XhsApiClient:
         # 规范化:裸 host:port 补成 http://...(curl_cffi 必须带 scheme)
         self.proxy = normalize_proxy(proxy) or None  # 该账号专属代理(防多账号同 IP 关联)
         self.impersonate = impersonate_for_ua(user_agent)  # TLS/HTTP2 指纹复刻目标
+        coherent = _coherent_direct_headers(user_agent, self.impersonate)
         self._signer = Xhshow()
         self.base_headers = {
             "accept": "application/json, text/plain, */*",
@@ -85,7 +115,7 @@ class XhsApiClient:
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-site",
-            "user-agent": user_agent,
+            **coherent,
         }
 
     # ── 底层请求 ──
@@ -119,12 +149,13 @@ class XhsApiClient:
                               proxy=self.proxy, timeout=self.timeout)
         return self._unwrap(r)
 
-    async def _post(self, uri: str, data: Dict[str, Any]) -> dict:
+    async def _post(self, uri: str, data: Dict[str, Any], *,
+                    host: str = _HOST) -> dict:
         sign = self._signer.sign_headers_post(uri, self.cookie_str, payload=data or {})
         headers = {**self.base_headers, **sign, "Cookie": self.cookie_str}
         body = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
         async with self._session_cls() as cli:
-            r = await cli.post(f"{_HOST}{uri}", data=body.encode("utf-8"),
+            r = await cli.post(f"{host}{uri}", data=body.encode("utf-8"),
                                headers=headers, impersonate=self.impersonate,
                                proxy=self.proxy, timeout=self.timeout)
         return self._unwrap(r)
@@ -178,12 +209,20 @@ class XhsApiClient:
     # ── 业务接口 ──
     async def search_notes(self, keyword: str, page: int = 1, page_size: int = 20,
                            sort: str = "general", note_type: int = 0) -> List[dict]:
+        # v2 对过小 page_size 会 success=true 但返回空 items；网页端的有效
+        # 区间从 10 开始，统一收敛避免再次出现“接口成功但无结果”。
+        page = max(1, int(page or 1))
+        page_size = max(10, min(40, int(page_size or 20)))
         data = {
             "keyword": keyword, "page": page, "page_size": page_size,
             "search_id": self._signer.get_search_id(),
             "sort": sort, "note_type": note_type,
+            "image_formats": ["jpg", "webp", "avif"],
         }
-        d = await self._post("/api/sns/web/v1/search/notes", data)
+        # 网页搜索已迁移到 so.xiaohongshu.com 的 v2。旧 edith/v1 仍返回
+        # success=true，但 items 恒为空，会把正常关键词误判为无结果。
+        d = await self._post(
+            "/api/sns/web/v2/search/notes", data, host=_SEARCH_HOST)
         return d.get("items") or []
 
     async def note_detail_raw(self, note_id: str, xsec_token: str = "",

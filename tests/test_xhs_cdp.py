@@ -874,6 +874,28 @@ class BrowserManagerCdpTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_new_page_relaunches_once_after_user_closed_persistent_browser(self):
+        class ClosedContext(_ManagerContext):
+            async def new_page(self):
+                raise RuntimeError(
+                    "TargetClosedError: BrowserContext.new_page: "
+                    "Target page, context or browser has been closed")
+
+        async def scenario():
+            manager = self._manager("patchright")
+            stale = ClosedContext()
+            healthy = _ManagerContext()
+            manager._launch_persistent = AsyncMock(
+                side_effect=[stale, healthy])
+
+            page = await manager.new_page(self.identity)
+
+            self.assertIs(page, healthy.pages_created[0])
+            self.assertTrue(stale.closed)
+            self.assertEqual(manager._launch_persistent.await_count, 2)
+
+        asyncio.run(scenario())
+
     def test_proxy_signature_change_rebuilds_session(self):
         async def scenario():
             manager = self._manager("cdp")
@@ -959,7 +981,8 @@ class BrowserManagerCdpTests(unittest.TestCase):
             await manager.context_for(self.identity)
             manager._last_used[self.identity.key] = 100.0
 
-            async with manager.visible_action(self.identity):
+            async with manager.visible_action(
+                    self.identity, keep_context=True):
                 closed = await manager.collect_idle_cdp(now=111.0)
                 self.assertEqual(closed, 0)
                 self.assertIn(self.identity.key, manager._contexts)
@@ -967,6 +990,45 @@ class BrowserManagerCdpTests(unittest.TestCase):
             closed = await manager.collect_idle_cdp(now=111.0)
             self.assertEqual(closed, 1)
             self.assertEqual(len(manager._cdp_backend.close_calls), 1)
+
+        asyncio.run(scenario())
+
+    def test_idle_collection_also_closes_patchright_session(self):
+        async def scenario():
+            manager = self._manager("patchright", idle=10)
+            fallback = _ManagerContext()
+            manager._launch_persistent = AsyncMock(return_value=fallback)
+            await manager.context_for(self.identity)
+            manager._last_used[self.identity.key] = 100.0
+
+            closed = await manager.collect_idle_sessions(now=111.0)
+
+            self.assertEqual(closed, 1)
+            self.assertTrue(fallback.closed)
+            self.assertNotIn(self.identity.key, manager._contexts)
+
+        asyncio.run(scenario())
+
+    def test_successful_temporary_login_context_can_be_rebound(self):
+        async def scenario():
+            manager = self._manager("patchright")
+            fallback = _ManagerContext()
+            manager._launch_persistent = AsyncMock(return_value=fallback)
+            temporary = Identity(
+                account_id=None,
+                profile_dir=str(Path(self.tmp.name) / "new_login_fixture"),
+                identity_mode="native",
+                platform="xhs",
+            )
+            old_key = temporary.key
+            await manager.context_for(temporary)
+
+            rebound = await manager.rebind_context(old_key, 72)
+
+            self.assertTrue(rebound)
+            self.assertNotIn(old_key, manager._contexts)
+            self.assertIs(manager._contexts[72], fallback)
+            self.assertIn(72, manager._last_used)
 
         asyncio.run(scenario())
 

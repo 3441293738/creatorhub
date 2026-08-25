@@ -1051,12 +1051,117 @@
   .meta-combo-opt.create { color:var(--acc); }
   .meta-combo-opt.create .mark { color:var(--acc); border-color:var(--acc-ring); border-radius:50%; }
   .meta-combo-empty { padding:12px 9px; color:var(--mut-2); font-size:12px; text-align:center; }
-  #uimodal { overflow-y:auto; }
-  #uimodal .rp-box { overflow:visible; margin:auto; }
+  /* 通用表单弹窗：只滚动内容区，标题和底部操作始终留在视口内。 */
+  #uimodal { overflow:hidden; }
+  #uimodal .rp-box {
+    overflow:hidden; margin:auto; display:flex; flex-direction:column;
+    max-height:min(92vh,920px); max-height:min(92dvh,920px);
+  }
+  #uimodal #ui-title, #uimodal #ui-hint { flex:0 0 auto; }
+  #uimodal #ui-body {
+    flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden;
+    overscroll-behavior:contain; scrollbar-gutter:stable;
+    padding:2px 8px 10px 2px;
+  }
+  #uimodal #ui-actions {
+    flex:0 0 auto; margin-top:0; padding-top:14px;
+    border-top:1px solid var(--line-soft); background:var(--surface);
+  }
+  #uimodal .fp-edit-tabs {
+    position:sticky; top:-2px; z-index:2; display:grid;
+    grid-template-columns:1fr 1fr; gap:6px; margin:0 0 14px; padding:2px 0 8px;
+    background:linear-gradient(180deg,var(--surface) 78%,transparent);
+  }
+  #uimodal .fp-edit-tabs button { color:var(--mut); box-shadow:none; }
+  #uimodal .fp-edit-tabs button.active {
+    color:var(--acc); border-color:var(--acc-ring); background:var(--acc-soft);
+  }
+  #uimodal .fp-edit-panel { display:none; }
+  #uimodal .fp-edit-panel.active { display:grid; }
+  #uimodal div.fp-edit-panel.active:not(.form-grid) { display:block; }
+  #uimodal .fp-runtime-summary {
+    display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px;
+    margin:0 0 12px; padding:10px; border:1px solid var(--line-soft);
+    border-radius:var(--r-sm); background:var(--bg);
+  }
+  #uimodal .fp-runtime-summary > div { min-width:0; }
+  #uimodal .fp-runtime-summary span {
+    display:block; margin-bottom:3px; color:var(--mut-2); font-size:10px;
+  }
+  #uimodal .fp-runtime-summary b {
+    display:block; overflow:hidden; color:var(--fg); font-size:11.5px;
+    font-weight:600; text-overflow:ellipsis; white-space:nowrap;
+  }
+  #uimodal .fp-settings {
+    overflow:hidden; border:1px solid var(--line-soft); border-radius:var(--r);
+    background:color-mix(in srgb,var(--surface) 86%,var(--bg));
+  }
+  #uimodal .fp-settings > * { margin:0; }
+  #uimodal .fp-settings > .fp-config-row,
+  #uimodal .fp-settings > .form-field,
+  #uimodal .fp-settings > .fp-mode-fields {
+    padding:13px 14px; border-bottom:1px solid var(--line-soft);
+  }
+  #uimodal .fp-settings > :last-child { border-bottom:0; }
+  #uimodal .fp-config-row {
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+  }
+  #uimodal .fp-config-row > div:first-child { min-width:0; }
+  #uimodal .fp-config-row b { display:block; color:var(--fg-strong); font-size:12.5px; }
+  #uimodal .fp-config-row span {
+    display:block; margin-top:3px; color:var(--mut-2); font-size:10.5px; line-height:1.45;
+  }
+  #uimodal .fp-segment {
+    display:inline-flex; flex:0 0 auto; align-items:center; padding:2px;
+    border:1px solid var(--line); border-radius:9px; background:var(--bg);
+  }
+  #uimodal .fp-segment button {
+    min-height:27px; padding:4px 10px; border:0; border-radius:7px;
+    background:transparent; box-shadow:none; color:var(--mut); font-size:11px;
+  }
+  #uimodal .fp-segment button:hover:not(:disabled) { color:var(--fg); background:var(--surface-2); filter:none; }
+  #uimodal .fp-segment button.active {
+    color:#fff; background:var(--acc); box-shadow:0 2px 8px color-mix(in srgb,var(--acc) 25%,transparent);
+  }
+  #uimodal .fp-segment button:disabled { opacity:.35; cursor:not-allowed; }
+  #uimodal .fp-mode-fields {
+    opacity:.48; background:color-mix(in srgb,var(--bg) 48%,transparent);
+    transition:opacity .16s var(--ease),background .16s var(--ease);
+  }
+  #uimodal .fp-mode-fields.enabled { opacity:1; background:transparent; }
+  #uimodal .fp-mode-fields.form-grid { gap:10px; }
+  #uimodal .fp-mode-fields > .form-field { margin:0; }
+  #uimodal .fp-settings .form-field label { margin-bottom:6px; color:var(--mut); font-size:10.5px; }
+  #uimodal .fp-readonly {
+    display:grid; grid-template-columns:112px minmax(0,1fr); gap:12px; align-items:start;
+    padding:12px 14px; border-bottom:1px solid var(--line-soft); background:var(--bg);
+  }
+  #uimodal .fp-readonly span { color:var(--mut); font-size:11px; }
+  #uimodal .fp-readonly code {
+    overflow-wrap:anywhere; color:var(--fg); font-family:var(--mono); font-size:10.5px; line-height:1.5;
+  }
+  #uimodal .fp-seed-badge {
+    flex:0 0 auto; padding:5px 8px; border:1px solid var(--line); border-radius:7px;
+    background:var(--bg); color:var(--mut); font-family:var(--mono); font-size:10.5px;
+  }
+  #uimodal #ui-extra-action { margin-right:auto; }
   @media(max-width:600px) {
     .manage-toolbar input, .manage-toolbar select, .manage-toolbar .cs { flex:1 1 calc(50% - 8px); max-width:none; }
     .manage-toolbar input[type="search"] { min-width:0; }
     .manage-toolbar .toolbar-spacer { display:none; }
+    #uimodal { padding:8px; }
+    #uimodal .rp-box {
+      width:100%!important; max-height:calc(100vh - 16px); max-height:calc(100dvh - 16px);
+      padding:18px 16px 14px;
+    }
+    #uimodal #ui-actions > button { flex:1 1 0!important; min-height:42px; }
+    #uimodal .fp-runtime-summary { grid-template-columns:1fr; }
+    #uimodal .fp-config-row { align-items:flex-start; flex-direction:column; gap:8px; }
+    #uimodal .fp-segment { align-self:stretch; display:grid; grid-auto-flow:column; grid-auto-columns:1fr; }
+    #uimodal .fp-segment button { padding-inline:5px; }
+    #uimodal .fp-readonly { grid-template-columns:1fr; gap:5px; }
+    #uimodal #ui-actions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }
+    #uimodal #ui-extra-action { margin-right:0; }
   }
 
   /* table inside a card without extra border for the small acc/notif tables */
@@ -1425,6 +1530,63 @@
   /* 行/卡片刷新时的轻微"陈旧"提示:配合 INFLIGHT 暂停轮询,这里给手动刷新一个柔和过渡 */
   .table-wrap.stale { opacity:.55; transition:opacity .2s var(--ease); }
 
+  /* ── 统一任务队列 ── */
+  .queue-stats { display:grid; grid-template-columns:repeat(5,minmax(120px,1fr)); gap:10px; }
+  button.queue-stat {
+    min-height:82px; padding:13px 15px; text-align:left; display:grid; gap:5px;
+    background:var(--surface); color:var(--fg); border:1px solid var(--line);
+    border-radius:var(--r); box-shadow:var(--sh-sm); filter:none;
+  }
+  button.queue-stat:hover { background:var(--surface-2); border-color:var(--acc-ring); filter:none; }
+  button.queue-stat.active { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc-soft); }
+  .queue-stat b { font:650 22px/1 var(--mono); color:var(--fg-strong); }
+  .queue-stat span { color:var(--mut); font-size:12px; }
+  .queue-stat[data-tone="info"] b { color:var(--info); }
+  .queue-stat[data-tone="warn"] b { color:var(--warn); }
+  .queue-stat[data-tone="danger"] b { color:var(--danger); }
+  .queue-toolbar {
+    display:grid; grid-template-columns:minmax(130px,.8fr) minmax(150px,1fr) minmax(130px,.8fr) minmax(220px,1.6fr) auto;
+    gap:10px; align-items:end; margin-bottom:14px;
+  }
+  .queue-toolbar .form-field { min-width:0; }
+  .queue-toolbar button { min-height:40px; }
+  .queue-table { min-width:1040px; table-layout:fixed; }
+  .queue-table .queue-col-type { width:122px; }
+  .queue-table .queue-col-content { width:310px; }
+  .queue-table .queue-col-account { width:150px; }
+  .queue-table .queue-col-time { width:160px; }
+  .queue-table .queue-col-status { width:118px; }
+  .queue-table .queue-col-reason { width:230px; }
+  .queue-table .queue-col-action { width:92px; }
+  .queue-copy, .queue-reason { white-space:normal; min-width:0; line-height:1.45; overflow-wrap:anywhere; }
+  .queue-copy b { display:block; color:var(--fg-strong); font-weight:620; }
+  .queue-copy small, .queue-reason small, .queue-account small, .queue-time small {
+    display:block; margin-top:3px; color:var(--mut); font-size:11px; line-height:1.4;
+  }
+  .queue-account { white-space:normal; }
+  .queue-time { font:500 11px/1.45 var(--mono); white-space:normal; color:var(--mut); }
+  .queue-reason { color:var(--mut); font-size:12px; }
+  .queue-reason.has-error { color:var(--danger); }
+  .queue-blocked { background:var(--warn-soft); color:var(--warn); border-color:rgba(251,191,36,.3); }
+  .queue-running { background:var(--info-soft); color:var(--info); border-color:rgba(56,189,248,.25); }
+  .queue-completed { background:var(--success-soft); color:var(--success); border-color:rgba(52,211,153,.25); }
+  .queue-pager { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-top:12px; }
+  .queue-pager-actions { display:flex; align-items:center; gap:7px; }
+  .queue-pager button { min-width:40px; min-height:38px; padding:8px 11px; }
+  .queue-pager .form-field { grid-template-columns:auto auto; align-items:center; gap:7px; }
+  .queue-pager select { min-width:82px; }
+  @media(max-width:1050px) {
+    .queue-stats { grid-template-columns:repeat(3,1fr); }
+    .queue-toolbar { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .queue-toolbar > button { grid-column:1/-1; }
+  }
+  @media(max-width:640px) {
+    .queue-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .queue-toolbar { grid-template-columns:1fr; }
+    .queue-toolbar > button { grid-column:auto; }
+    .queue-pager, .queue-pager-actions { justify-content:center; }
+  }
+
   /* ── navigation helpers ── */
   .skip-link {
     position:fixed; left:16px; top:10px; z-index:500; padding:9px 13px;
@@ -1663,6 +1825,7 @@
     <div class="nav-sep">本账号</div>
     <button class="navitem" data-tab="hub" onclick="switchTab('hub', true)"><svg><use href="#i-user"/></svg><span class="nav-label">账号管理</span></button>
     <div class="nav-sep">工具</div>
+    <button class="navitem" data-tab="queue" onclick="switchTab('queue', true)"><svg><use href="#i-list"/></svg><span class="nav-label">任务队列</span><span class="nav-badge" id="tb-queue">0</span></button>
     <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish', true)"><svg><use href="#i-send"/></svg><span class="nav-label">发布</span><span class="nav-badge" id="tb-pub">0</span></button>
     <button class="navitem notsh-only" data-tab="autocomment" onclick="switchTab('autocomment', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
     <button class="navitem" data-tab="share-download" onclick="switchTab('share-download', true)"><svg><use href="#i-download"/></svg><span class="nav-label">链接下载</span></button>
@@ -1768,6 +1931,25 @@
         <button onclick="saveCookie()"><svg><use href="#i-check"/></svg>保存</button>
       </div>
       <div class="table-wrap mini-table"><table id="acc-table" aria-label="平台账号列表"><tbody></tbody></table></div>
+    </div>
+
+    <!-- 指纹 Chromium 多版本内核 -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-film"/></svg></span>
+        <h2>浏览器内核 <span class="sub">多版本管理 · 账号固定绑定</span></h2>
+      </div>
+      <p class="mut" style="font-size:12px;margin:-4px 0 12px">
+        扫描当前机器的 Chromium 安装目录，或手动添加 <code>chrome.exe</code> / <code>chrome</code>。
+        每台机器可以使用不同路径；每个账号可在上方「环境」中固定选择一个版本，不同版本使用独立 Profile。
+        新指纹环境首次登录或手动打开时会附带 BrowserScan 体检标签；该第三方页面会获取当前出口 IP 与浏览器特征。
+        <br>当前扫描目录：<code id="runtime-root">读取中…</code>
+      </p>
+      <div class="form-actions">
+        <button class="ghost" onclick="scanBrowserRuntimes()"><svg><use href="#i-eye"/></svg>扫描内核目录</button>
+        <button class="ghost" onclick="addBrowserRuntime()"><svg><use href="#i-plus"/></svg>手动添加 chrome.exe</button>
+      </div>
+      <div class="table-wrap mini-table"><table id="runtime-table" aria-label="浏览器内核列表"><tbody></tbody></table></div>
     </div>
 
     <!-- 代理池(提前配置好,账号从池里关联) -->
@@ -1889,6 +2071,45 @@
       </div>
       <div class="form-note" style="margin-top:12px"><svg aria-hidden="true"><use href="#i-info"/></svg><span>保守模式会强制保留评论、社交、私信、发布和共享写入间隔的安全下限；需要完全按输入值运行时选择自定义模式。</span></div>
       <div class="form-actions"><button class="ghost" type="button" onclick="showRiskAudit()"><svg><use href="#i-list"/></svg>查看变更记录</button><span class="actions-spacer"></span><button type="button" onclick="saveRiskConfig()"><svg><use href="#i-check"/></svg>保存并立即生效</button></div>
+    </div>
+  </section>
+
+  <section data-panel="queue">
+    <div class="queue-stats" aria-label="任务队列统计">
+      <button type="button" class="queue-stat active" data-queue-state="active" onclick="setTaskQueueState('active')"><b id="queue-stat-active">—</b><span>处理中 / 等待中</span></button>
+      <button type="button" class="queue-stat" data-queue-state="pending" onclick="setTaskQueueState('pending')"><b id="queue-stat-pending">—</b><span>等待执行</span></button>
+      <button type="button" class="queue-stat" data-queue-state="running" data-tone="info" onclick="setTaskQueueState('running')"><b id="queue-stat-running">—</b><span>正在执行</span></button>
+      <button type="button" class="queue-stat" data-queue-state="blocked" data-tone="warn" onclick="setTaskQueueState('blocked')"><b id="queue-stat-blocked">—</b><span>风控延后</span></button>
+      <button type="button" class="queue-stat" data-queue-state="failed" data-tone="danger" onclick="setTaskQueueState('failed')"><b id="queue-stat-failed">—</b><span>失败 / 待处理</span></button>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-list"/></svg></span>
+        <h2>任务明细 <span class="sub">统一查看采集、发布、评论、账号动作和下载任务</span></h2>
+      </div>
+      <div class="queue-toolbar" aria-label="任务队列筛选">
+        <div class="form-field"><label for="queue-platform">平台范围</label><select id="queue-platform" onchange="refreshTaskQueue(true)"><option value="current" id="queue-platform-current">当前平台</option><option value="all">全部平台</option></select></div>
+        <div class="form-field"><label for="queue-type">队列类型</label><select id="queue-type" onchange="refreshTaskQueue(true)"><option value="">全部队列</option><option value="collections">关键词采集</option><option value="publishes">内容发布</option><option value="comments">自动评论</option><option value="actions">账号动作</option><option value="monitor_downloads">监控下载</option><option value="collection_downloads">采集下载</option></select></div>
+        <div class="form-field"><label for="queue-state">任务状态</label><select id="queue-state" onchange="refreshTaskQueue(true)"><option value="active">活动任务</option><option value="pending">等待执行</option><option value="running">正在执行</option><option value="blocked">风控延后</option><option value="failed">失败任务</option><option value="completed">已完成</option><option value="all">全部状态</option></select></div>
+        <div class="form-field"><label for="queue-query">搜索</label><input id="queue-query" type="search" placeholder="任务内容、账号、错误或风控原因" onkeydown="if(event.key==='Enter'){event.preventDefault();refreshTaskQueue(true)}"></div>
+        <button type="button" class="ghost" onclick="refreshTaskQueue(true)"><svg><use href="#i-bolt"/></svg>刷新</button>
+      </div>
+      <div class="table-wrap" id="queue-table-wrap">
+        <table class="queue-table" aria-label="任务队列明细">
+          <thead><tr><th class="queue-col-type">队列</th><th class="queue-col-content">任务内容</th><th class="queue-col-account">账号</th><th class="queue-col-time">时间</th><th class="queue-col-status">状态</th><th class="queue-col-reason">阻塞 / 错误</th><th class="queue-col-action">操作</th></tr></thead>
+          <tbody id="queue-table"></tbody>
+        </table>
+      </div>
+      <div class="queue-pager" id="queue-pager" hidden>
+        <span class="mut" id="queue-page-info">第 1 / 1 页</span>
+        <div class="queue-pager-actions">
+          <button type="button" class="ghost" id="queue-first" onclick="goTaskQueuePage(1)" aria-label="任务队列第一页">«</button>
+          <button type="button" class="ghost" id="queue-prev" onclick="goTaskQueuePage(TASK_QUEUE_PAGE-1)" aria-label="任务队列上一页">‹</button>
+          <button type="button" class="ghost" id="queue-next" onclick="goTaskQueuePage(TASK_QUEUE_PAGE+1)" aria-label="任务队列下一页">›</button>
+          <button type="button" class="ghost" id="queue-last" onclick="goTaskQueuePage(TASK_QUEUE_PAGES)" aria-label="任务队列最后一页">»</button>
+        </div>
+        <div class="form-field"><label for="queue-page-size">每页</label><select id="queue-page-size" onchange="setTaskQueuePageSize(this.value)"><option value="10">10 条</option><option value="20" selected>20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></div>
+      </div>
     </div>
   </section>
 
@@ -2032,6 +2253,41 @@
               <option value="images">仅图集</option><option value="none">仅记录，不下载</option>
           </select></div>
         </div>
+        <details class="collection-advanced monitor-advanced">
+          <summary>高级抓取与筛选 <span>控制翻页深度、单轮上限和入库条件</span></summary>
+          <div class="collection-advanced-body">
+            <div class="form-grid cols-4">
+              <div class="form-field"><label for="t-max-scrolls">抓取深度</label><select id="t-max-scrolls">
+                <option value="0">平台默认</option><option value="3">3 次下滑</option>
+                <option value="6">6 次下滑</option><option value="12">12 次下滑</option>
+                <option value="20">20 次下滑</option><option value="30">30 次下滑</option>
+              </select></div>
+              <div class="form-field"><label for="t-max-items">每轮作品上限</label><select id="t-max-items">
+                <option value="0">平台默认</option><option value="5">5 条</option>
+                <option value="12">12 条</option><option value="20">20 条</option>
+                <option value="50">50 条</option><option value="100">100 条</option>
+              </select></div>
+              <div class="form-field"><label for="t-record-media">作品类型</label><select id="t-record-media">
+                <option value="all">全部入库</option><option value="video">仅视频</option>
+                <option value="images">仅图文/图集</option>
+              </select></div>
+              <div class="form-field"><label for="t-recent-days">发布时间范围</label>
+                <input id="t-recent-days" type="number" min="0" max="3650" value="0" inputmode="numeric">
+                <div class="field-help">最近 N 天；0 表示不限</div></div>
+            </div>
+            <div class="form-grid cols-4">
+              <div class="form-field"><label for="t-min-likes">最低点赞数</label>
+                <input id="t-min-likes" type="number" min="0" max="1000000000" value="0" inputmode="numeric"></div>
+              <div class="form-field"><label for="t-min-comments">最低评论数</label>
+                <input id="t-min-comments" type="number" min="0" max="1000000000" value="0" inputmode="numeric"></div>
+              <div class="form-field"><label for="t-include-keywords">必须包含</label>
+                <input id="t-include-keywords" maxlength="320" placeholder="多个词用逗号分隔"></div>
+              <div class="form-field"><label for="t-exclude-keywords">排除关键词</label>
+                <input id="t-exclude-keywords" maxlength="320" placeholder="多个词用逗号分隔"></div>
+            </div>
+            <div class="field-help">筛选只决定作品是否进入监控记录；“自动下载范围”仍单独控制下载行为。深度越高，请求耗时与账号访问频率越高。</div>
+          </div>
+        </details>
         <div class="form-actions">
           <span class="status-text" id="add-msg" role="status" aria-live="polite"></span>
           <button onclick="addMonitor()"><svg><use href="#i-target"/></svg>开始监控</button>
@@ -2968,7 +3224,7 @@
     <h2 id="ui-title">选择</h2>
     <div class="mut" id="ui-hint" style="font-size:12px;margin:-8px 0 14px;white-space:pre-line"></div>
     <div id="ui-body" class="stack"></div>
-    <div class="row" style="justify-content:flex-end;margin-top:16px">
+    <div class="row" id="ui-actions" style="justify-content:flex-end">
       <button class="ghost" onclick="uiModalCancel()" style="flex:0 0 auto">取消</button>
       <button id="ui-ok" onclick="uiModalOk()" style="flex:0 0 auto"><svg><use href="#i-check"/></svg>确定</button>
     </div>

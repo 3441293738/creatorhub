@@ -1,0 +1,255 @@
+"""Pluggable browser runtime launch plans.
+
+The account/profile lifecycle remains owned by :mod:`app.browser.manager`.
+Backends in this module only describe which Chromium executable to launch and
+which engine-level identity arguments it needs.  This keeps platform code on
+the existing Playwright-compatible BrowserContext/Page API.
+"""
+from __future__ import annotations
+
+import hashlib
+import os
+import shlex
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
+from .identity import Identity
+
+
+DEFAULT_BACKEND = "default"
+LOCAL_BACKEND = "local"
+FINGERPRINT_CHROMIUM_BACKEND = "fingerprint_chromium"
+ACCOUNT_BROWSER_BACKENDS = {
+    DEFAULT_BACKEND,
+    LOCAL_BACKEND,
+    FINGERPRINT_CHROMIUM_BACKEND,
+}
+
+_BLOCKED_EXTRA_ARG_PREFIXES = {
+    "--user-data-dir", "--remote-debugging-address",
+    "--remote-debugging-port", "--remote-debugging-pipe",
+    "--proxy-server", "--proxy-pac-url", "--no-proxy-server",
+    "--fingerprint", "--fingerprint-platform",
+    "--fingerprint-platform-version", "--fingerprint-brand",
+    "--fingerprint-brand-version", "--fingerprint-hardware-concurrency",
+    "--fingerprint-gpu-vendor", "--fingerprint-gpu-renderer",
+    "--disable-spoofing", "--timezone", "--lang", "--accept-lang",
+    "--window-size", "--no-sandbox", "--disable-web-security",
+    "--ignore-certificate-errors", "--load-extension",
+    "--disable-extensions-except",
+}
+
+
+class BrowserBackendError(RuntimeError):
+    """Base error raised by a configured browser runtime."""
+
+
+class BrowserBackendUnavailableError(BrowserBackendError):
+    """The selected runtime cannot be launched on this machine."""
+
+
+@dataclass(frozen=True)
+class BrowserLaunchPlan:
+    name: str
+    label: str
+    executable_path: str
+    args: tuple[str, ...]
+    headless: bool
+    engine_controlled_identity: bool = False
+    runtime_id: str = ""
+    version: str = ""
+
+
+class BrowserRuntimeBackend(Protocol):
+    name: str
+    label: str
+
+    @property
+    def available(self) -> bool: ...
+
+    @property
+    def unavailable_reason(self) -> str: ...
+
+    def launch_plan(
+        self, identity: Identity, *, requested_headless: bool,
+    ) -> BrowserLaunchPlan: ...
+
+
+def fingerprint_seed_u32(seed: str) -> int:
+    """Map an arbitrary persistent account seed to Chromium's uint32 seed."""
+    value = str(seed or "0").strip()
+    if value.isdigit():
+        numeric = int(value)
+        if 0 <= numeric <= 0xFFFFFFFF:
+            return numeric
+    raw = value.encode("utf-8")
+    return int.from_bytes(hashlib.sha256(raw).digest()[:4], "big")
+
+
+def _host_fingerprint_platform() -> str:
+    if sys.platform == "darwin":
+        return "macos"
+    if os.name == "nt":
+        return "windows"
+    return "linux"
+
+
+def _accept_language(locale: str) -> str:
+    value = str(locale or "zh-CN").strip() or "zh-CN"
+    base = value.split("-", 1)[0]
+    return value if base == value else f"{value},{base}"
+
+
+def parse_extra_launch_args(value: str) -> tuple[str, ...]:
+    """Parse user-supplied Chromium switches while protecting owned settings."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ()
+    if len(raw) > 1200 or any(
+            ord(char) < 32 and char not in "\t\r\n" for char in raw):
+        raise ValueError("浏览器启动参数格式无效")
+    # The UI documents newline/comma separation while shlex keeps quoted
+    # values containing spaces together on every host platform.
+    normalized = raw.replace("\r", " ").replace("\n", " ").replace(",", " ")
+    try:
+        tokens = shlex.split(normalized, posix=True)
+    except ValueError as exc:
+        raise ValueError("浏览器启动参数引号不完整") from exc
+    result = []
+    for token in tokens:
+        if not token.startswith("--") or len(token) > 240:
+            raise ValueError("启动参数必须使用 --参数 或 --参数=值 格式")
+        name = token.split("=", 1)[0].lower()
+        if name in _BLOCKED_EXTRA_ARG_PREFIXES:
+            raise ValueError(f"启动参数与账号环境冲突: {name}")
+        result.append(token)
+    return tuple(dict.fromkeys(result))
+
+
+class FingerprintChromiumBackend:
+    """Engine-level fingerprint Chromium launched by Patchright.
+
+    The browser owns Canvas/WebGL/Audio/navigator identity.  CreatorHub must
+    therefore skip its legacy JavaScript fingerprint injection for this plan.
+    """
+
+    name = FINGERPRINT_CHROMIUM_BACKEND
+    label = "Fingerprint Chromium · 开源内核"
+
+    def __init__(
+        self,
+        executable_path: str = "",
+        *,
+        allow_headless: bool = False,
+        platform: str = "auto",
+        runtime_id: str = "",
+        version: str = "",
+        label: str = "",
+    ):
+        self._raw_path = str(executable_path or "").strip()
+        self.allow_headless = bool(allow_headless)
+        self.runtime_id = str(runtime_id or "").strip()
+        self.version = str(version or "").strip()
+        self.label = str(label or "").strip() or self.__class__.label
+        requested_platform = str(platform or "auto").strip().lower()
+        self.platform = (
+            _host_fingerprint_platform()
+            if requested_platform == "auto"
+            else requested_platform
+        )
+        if self.platform not in {"windows", "linux", "macos"}:
+            self.platform = _host_fingerprint_platform()
+
+    @property
+    def executable_path(self) -> Path | None:
+        if not self._raw_path:
+            return None
+        return Path(self._raw_path).expanduser().resolve()
+
+    @property
+    def available(self) -> bool:
+        path = self.executable_path
+        return bool(path and path.is_file())
+
+    @property
+    def unavailable_reason(self) -> str:
+        if not self._raw_path:
+            return "未配置 engine.fingerprint_chromium_path"
+        if not self.available:
+            return "fingerprint_chromium_path 指向的浏览器不存在"
+        return ""
+
+    def launch_plan(
+        self, identity: Identity, *, requested_headless: bool,
+    ) -> BrowserLaunchPlan:
+        path = self.executable_path
+        if path is None or not path.is_file():
+            raise BrowserBackendUnavailableError(self.unavailable_reason)
+
+        locale = str(identity.locale or "zh-CN").strip() or "zh-CN"
+        timezone = (
+            str(identity.timezone_id or "Asia/Shanghai").strip()
+            or "Asia/Shanghai"
+        )
+        platform = str(identity.fp_platform or self.platform).strip().lower()
+        if platform not in {"windows", "linux", "macos"}:
+            platform = self.platform
+        brand = str(identity.fp_brand or "Chrome").strip() or "Chrome"
+        accepted = (str(identity.fp_accept_languages or "").strip()
+                    or _accept_language(locale))
+        args = [
+            f"--fingerprint={fingerprint_seed_u32(identity.fp_seed)}",
+            f"--fingerprint-platform={platform}",
+            f"--fingerprint-brand={brand}",
+            f"--timezone={timezone}",
+            f"--lang={locale}",
+            f"--accept-lang={accepted}",
+        ]
+        if str(identity.fp_webrtc_mode or "conceal") != "allow":
+            args.append("--disable-non-proxied-udp")
+        if identity.fp_platform_version:
+            args.append(
+                f"--fingerprint-platform-version={identity.fp_platform_version}")
+        if identity.fp_brand_version:
+            args.append(
+                f"--fingerprint-brand-version={identity.fp_brand_version}")
+        if int(identity.fp_hardware_concurrency or 0) > 0:
+            args.append(
+                "--fingerprint-hardware-concurrency="
+                + str(int(identity.fp_hardware_concurrency)))
+        try:
+            runtime_major = int(self.version.split(".", 1)[0])
+        except (TypeError, ValueError):
+            runtime_major = 0
+        # Upstream exposed explicit WebGL vendor/renderer only in 139-143;
+        # Chrome 144+ removed both flags and derives GPU from the seed.
+        if 139 <= runtime_major < 144:
+            if identity.fp_gpu_vendor:
+                args.append(
+                    f"--fingerprint-gpu-vendor={identity.fp_gpu_vendor}")
+            if identity.fp_gpu_renderer:
+                args.append(
+                    f"--fingerprint-gpu-renderer={identity.fp_gpu_renderer}")
+        disabled = [
+            value.strip().lower()
+            for value in str(identity.fp_disable_spoofing or "").split(",")
+            if value.strip().lower()
+            in {"font", "audio", "canvas", "clientrects", "gpu"}
+        ]
+        if disabled:
+            args.append("--disable-spoofing=" + ",".join(dict.fromkeys(disabled)))
+        args.extend(parse_extra_launch_args(identity.fp_extra_args))
+        return BrowserLaunchPlan(
+            name=self.name,
+            label=self.label,
+            executable_path=str(path),
+            args=tuple(args),
+            # The upstream runtime documents that headless only normalizes the
+            # UA and still leaks other headless traits.  Keep it opt-in.
+            headless=bool(requested_headless and self.allow_headless),
+            engine_controlled_identity=True,
+            runtime_id=self.runtime_id,
+            version=self.version,
+        )

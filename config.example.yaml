@@ -9,7 +9,12 @@ engine:
   scan_concurrency: 2             # 同时抓取的目标数(并发浏览器上下文)
   block_media_resources: false    # 屏蔽图片/视频/字体加载(省带宽但会打断抖音 SPA 致拿不到数据,建议保持 false)
   xhs_browser_mode: auto          # auto=优先每账号系统 Chrome CDP;cdp=严格 CDP;patchright=直接使用 Patchright
-  xhs_cdp_idle_seconds: 900       # 小红书专用 Chrome 空闲回收秒数;0=仅按 LRU/退出回收
+  resident_browser_sessions: true # reuse one account browser process/Profile/task page
+  browser_session_idle_seconds: 1800 # idle recycle; 0=LRU/explicit close/shutdown only
+  xhs_read_mode: browser          # browser=读取也复用账号浏览器;api=显式签名 API 兼容模式
+  xhs_keyword_gap_seconds: 10     # 同一任务相邻关键词的最小停顿
+  xhs_item_gap_seconds: 2.5       # 相邻详情/评论读取的最小停顿
+  xhs_request_jitter: 0.35        # 小红书读取停顿的正向随机抖动比例
   xhs_publish_mode: browser       # browser=页面发布;api=显式 API 兼容模式
   monitor_initial_backfill_count: 0  # 新增博主时回填最近 N 条;0=只下载订阅后的新作品,-1=尽可能全量
   comment_recent_works: 5         # 监控评论时,只看每个目标最近 N 条作品
@@ -38,6 +43,11 @@ engine:
   # ── 多账号风控隔离 ──
   profiles_dir: ./data/profiles   # 每账号独立持久化浏览器 profile 根目录
   max_live_contexts: 6            # 同时常驻的浏览器 context 上限(LRU 驱逐,控内存;20+账号无需全开)
+  browser_backend: local          # local=现有 Patchright/CDP;fingerprint_chromium=全局使用开源指纹内核
+  fingerprint_chromium_path: ""   # 本机 chrome/chromium 主程序路径；也可用 CREATORHUB_FINGERPRINT_CHROMIUM_PATH
+  fingerprint_chromium_root: ""   # 本机多内核扫描根目录；不同机器分别配置，不限定盘符；多目录可用环境变量 CREATORHUB_FINGERPRINT_CHROMIUM_ROOTS
+  fingerprint_chromium_allow_headless: false # 上游无头画像不完整,默认所有指纹环境使用可见窗口
+  fingerprint_chromium_platform: auto # auto=跟随宿主系统;也可指定 windows/linux/macos
   active_accounts: 3              # 同一时刻最多并发活跃的账号数(错峰,降低"多号同时活跃"特征)
   scan_jitter: 0.15              # 扫描间隔随机抖动比例(±15%),消除整点齐发特征
   route_download_via_proxy: true  # 媒体下载是否走账号代理(避免 CDN 拉流暴露真实 IP)

@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from .identity import Identity
 from .manager import BrowserManager
+
+_LOG = logging.getLogger(__name__)
 
 # 登录后才会出现的 Cookie(用于判断是否已登录)
 _LOGIN_COOKIES = {"sessionid", "sessionid_ss", "sid_tt", "uid_tt", "sid_guard"}
@@ -21,6 +24,18 @@ async def _focus(page):
         await page.bring_to_front()
     except Exception:
         pass
+
+
+async def _open_first_environment_check(
+        mgr: BrowserManager, identity: Identity, ctx) -> None:
+    """Best-effort first-run diagnostic; never block the platform login flow."""
+    opener = getattr(mgr, "open_environment_check", None)
+    if not callable(opener):
+        return
+    try:
+        await opener(identity, context=ctx)
+    except Exception as exc:
+        _LOG.warning("Fingerprint environment check page failed to open: %r", exc)
 
 
 async def _reuse_or_create_login_page(ctx):
@@ -50,6 +65,7 @@ async def interactive_login(mgr: BrowserManager, identity: Identity,
         # 仍保存着已被服务端撤销的 sessionid；若不先清掉，下面仅按 Cookie 名
         # 轮询会在窗口刚打开时把旧 Cookie 误判为扫码成功。
         await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
     page = await ctx.new_page()
     await _focus(page)
     logged = False
@@ -155,9 +171,77 @@ async def _xhs_web_session(ctx) -> str:
 
 
 _XHS_USER_ME_API = "/api/sns/web/v2/user/me"
+_XHS_QRCODE_STATUS_API = "/api/sns/web/v1/login/qrcode/status"
+_XHS_SECURITY_RETRY_DELAY_SECONDS = 12.0
+_XHS_IDENTITY_RECHECK_DELAY_SECONDS = 2.0
+_XHS_PAGE_IDENTITY_POLL_SECONDS = 1.0
+
+_XHS_PAGE_IDENTITY_JS = """() => {
+  try {
+    const marker = 'window.__INITIAL_STATE__=';
+    let state = window.__INITIAL_STATE__;
+    if (!state || !Object.keys(state).length) {
+      for (const script of document.scripts) {
+        const text = script.textContent || '';
+        const at = text.indexOf(marker);
+        if (at < 0) continue;
+        try {
+          state = (new Function(
+            'return (' + text.slice(at + marker.length) + ')'))();
+        } catch (_) { state = null; }
+        break;
+      }
+    }
+    const unwrap = (input) => {
+      let value = input;
+      for (let i = 0; i < 3 && value && typeof value === 'object'; i++) {
+        if (value._rawValue !== undefined) value = value._rawValue;
+        else if (value._value !== undefined) value = value._value;
+        else break;
+      }
+      return value;
+    };
+    const root = unwrap((state || {}).user) || {};
+    const candidates = [
+      root.userInfo, root.loginUser, root.currentUser, root.me,
+      root.userPageData, root.info
+    ];
+    for (let candidate of candidates) {
+      candidate = unwrap(candidate);
+      if (!candidate || typeof candidate !== 'object') continue;
+      const basic = unwrap(candidate.basicInfo || candidate.basic_info) || {};
+      const userId = candidate.userId || candidate.user_id ||
+        basic.userId || basic.user_id || '';
+      const redId = candidate.redId || candidate.red_id ||
+        basic.redId || basic.red_id || '';
+      if (!userId && !redId) continue;
+      return {
+        user_id: String(userId || ''),
+        red_id: String(redId || ''),
+        nickname: String(candidate.nickname || candidate.nickName ||
+          basic.nickname || basic.nickName || ''),
+        guest: candidate.guest === true
+      };
+    }
+    return null;
+  } catch (_) { return null; }
+}"""
 
 
-def _xhs_login_response_handler(authenticated_user: dict):
+async def _xhs_page_identity(page) -> dict:
+    try:
+        value = await page.evaluate(_XHS_PAGE_IDENTITY_JS)
+    except Exception:
+        return {}
+    if not isinstance(value, dict) or value.get("guest") is True:
+        return {}
+    if not (value.get("user_id") or value.get("red_id")):
+        return {}
+    return value
+
+
+def _xhs_login_response_handler(
+        authenticated_user: dict, login_signals: dict | None = None):
     async def on_response(response):
         try:
             parsed = urlparse(str(response.url or ""))
@@ -165,11 +249,27 @@ def _xhs_login_response_handler(authenticated_user: dict):
             if not (host == "xiaohongshu.com"
                     or host.endswith(".xiaohongshu.com")):
                 return
-            if parsed.path.rstrip("/").lower() != _XHS_USER_ME_API:
-                return
             if int(response.status) != 200:
                 return
             payload = await response.json()
+            path = parsed.path.rstrip("/").lower()
+            if path == _XHS_QRCODE_STATUS_API:
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if not isinstance(data, dict):
+                    data = payload if isinstance(payload, dict) else {}
+                code_status = data.get("codeStatus", data.get("code_status"))
+                try:
+                    code_status = int(code_status)
+                except (TypeError, ValueError):
+                    code_status = -1
+                # Current XHS web client maps 0=waiting, 1=scanned,
+                # 2=login completed, 3=expired and emits onLogin for status 2.
+                if code_status == 2 and login_signals is not None:
+                    login_signals["qr_confirmed"] = True
+                    _LOG.info("XHS QR login confirmed by qrcode/status")
+                return
+            if path != _XHS_USER_ME_API:
+                return
             data = payload.get("data") if isinstance(payload, dict) else None
             if not isinstance(data, dict) or data.get("guest") is True:
                 return
@@ -184,6 +284,7 @@ def _xhs_login_response_handler(authenticated_user: dict):
 async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
                                 timeout_seconds: int = 180,
                                 force_reauth: bool = False,
+                                status_callback=None,
                                 ) -> Tuple[bool, str, str]:
     """小红书扫码登录。打开真实窗口让用户扫码,落地登录态。
     返回 (是否成功, storage_state_json, nickname)。
@@ -194,45 +295,206 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
     ctx = await mgr.context_for(identity)
     if force_reauth:
         await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
     logged = False
     nickname = ""
     state_json = ""
     security_verification_seen = False
     authenticated_user: dict = {}
-    on_response = _xhs_login_response_handler(authenticated_user)
+    login_signals: dict = {}
+    on_response = _xhs_login_response_handler(
+        authenticated_user, login_signals)
+    observed_pages: set[int] = set()
+
+    def observe(candidate) -> None:
+        marker = id(candidate)
+        if marker in observed_pages:
+            return
+        observed_pages.add(marker)
+        try:
+            candidate.on("response", on_response)
+        except Exception:
+            pass
+
+    def context_pages(fallback) -> list:
+        pages = getattr(ctx, "pages", ())
+        if not isinstance(pages, (list, tuple)):
+            pages = ()
+        result = [candidate for candidate in pages if candidate is not None]
+        if fallback is not None and fallback not in result:
+            result.append(fallback)
+        return result
+
+    def usable_page(fallback):
+        # A user may open the homepage manually in a second tab after the first
+        # clean-Profile navigation receives device verification.  Follow that
+        # real tab instead of keeping the login task pinned to the captcha tab.
+        for candidate in reversed(context_pages(fallback)):
+            try:
+                current = str(candidate.url or "")
+                parsed = urlparse(current)
+                host = (parsed.hostname or "").lower()
+                if host != "xiaohongshu.com" and not host.endswith(
+                        ".xiaohongshu.com"):
+                    continue
+                if _is_xhs_security_verification_url(current):
+                    continue
+                if "passport" in current.lower():
+                    continue
+                return candidate
+            except Exception:
+                continue
+        return fallback
+
+    async def report_status(url: str) -> None:
+        if not callable(status_callback):
+            return
+        try:
+            result = status_callback(url)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:
+            pass
+
+    security_notified = False
+    security_cleared_notified = False
+    security_detected_at: float | None = None
+    recovery_attempted = False
+    last_rechecked_session = ""
+    next_identity_recheck_at = 0.0
+    next_page_identity_poll_at = 0.0
     async with mgr.visible_page(identity) as page:
         await _focus(page)
-        page.on("response", on_response)
+        observe(page)
+        context_on = getattr(ctx, "on", None)
+        if callable(context_on):
+            try:
+                context_on("page", observe)
+            except Exception:
+                pass
         # 从官网首页进入登录流程。直接访问 /explore 会让全新隔离 profile
         # 更容易被重定向到 website-login/captcha 的设备安全验证页。
         await page.goto(
             "https://www.xiaohongshu.com/",
             wait_until="domcontentloaded", timeout=30000)
         security_verification_seen = _is_xhs_security_verification_url(page.url)
-        deadline = asyncio.get_running_loop().time() + max(0, timeout_seconds)
-        while asyncio.get_running_loop().time() < deadline:
+        loop = asyncio.get_running_loop()
+        if security_verification_seen:
+            security_detected_at = loop.time()
+        deadline = loop.time() + max(0, timeout_seconds)
+        while loop.time() < deadline:
             if page.is_closed():                  # 没登录就关了窗口 -> 视为未登录
                 break
+            for candidate in context_pages(page):
+                observe(candidate)
             security_verification_seen = (
                 security_verification_seen
                 or _is_xhs_security_verification_url(page.url)
             )
+            if security_verification_seen and security_detected_at is None:
+                security_detected_at = loop.time()
+            if security_verification_seen and not security_notified:
+                security_notified = True
+                _LOG.info("XHS device verification detected: %s", page.url)
+                await report_status(str(page.url or ""))
+            active_page = usable_page(page)
+            active_url = str(getattr(active_page, "url", "") or "")
+            # A clean profile can receive a short-lived device check on its
+            # very first navigation while the same profile reaches /explore
+            # normally a few seconds later.  Retry once in the currently
+            # visible tab after its bootstrap cookies have settled.  A second
+            # CDP-created tab may be opened and closed too quickly when the
+            # platform returns another redirect, making the retry invisible to
+            # the user.  Same-tab navigation is visible and matches a manual
+            # address-bar retry more closely.
+            if (security_verification_seen and not recovery_attempted
+                    and security_detected_at is not None
+                    and loop.time() - security_detected_at
+                    >= _XHS_SECURITY_RETRY_DELAY_SECONDS
+                    and _is_xhs_security_verification_url(active_url)):
+                recovery_attempted = True
+                try:
+                    _LOG.info("Retrying XHS homepage in the visible login tab")
+                    await page.bring_to_front()
+                    await page.goto(
+                        "https://www.xiaohongshu.com/",
+                        wait_until="domcontentloaded", timeout=30000)
+                    active_page = usable_page(page)
+                    active_url = str(
+                        getattr(active_page, "url", "") or "")
+                    _LOG.info("XHS visible-tab retry finished: %s", active_url)
+                except Exception as exc:
+                    _LOG.warning("XHS visible-tab retry failed: %r", exc)
+            if (security_notified and not security_cleared_notified
+                    and not _is_xhs_security_verification_url(active_url)
+                    and "xiaohongshu.com" in active_url.lower()
+                    and "passport" not in active_url.lower()):
+                security_cleared_notified = True
+                await report_status(active_url)
             ws = await _xhs_web_session(ctx)
+            # The QR flow can update web_session without issuing user/me again
+            # in the tab that was already on /explore.  Cookie alone is not a
+            # success signal because guests also receive web_session.  When
+            # its value changes, visibly reload the healthy XHS page once so
+            # the site's own startup request supplies an authoritative
+            # guest/non-guest user/me response to our existing listener.
+            if (ws and len(ws) >= 20 and not authenticated_user
+                    and ws != last_rechecked_session
+                    and loop.time() >= next_identity_recheck_at
+                    and "xiaohongshu.com" in active_url.lower()
+                    and "passport" not in active_url.lower()
+                    and not _is_xhs_security_verification_url(active_url)):
+                last_rechecked_session = ws
+                next_identity_recheck_at = (
+                    loop.time() + _XHS_IDENTITY_RECHECK_DELAY_SECONDS)
+                try:
+                    _LOG.info(
+                        "XHS web_session changed; reloading page to verify identity")
+                    await active_page.reload(
+                        wait_until="domcontentloaded", timeout=30000)
+                    active_url = str(active_page.url or "")
+                except Exception as exc:
+                    _LOG.warning("XHS identity recheck reload failed: %r", exc)
+            # Some successful QR flows update the page's reactive current-user
+            # state but neither rotate web_session nor emit another user/me
+            # request.  Read only the dedicated current-user branch from the
+            # page state; requiring user_id/red_id avoids treating feed authors
+            # or a guest web_session as the logged-in account.
+            if (not authenticated_user
+                    and loop.time() >= next_page_identity_poll_at
+                    and "xiaohongshu.com" in active_url.lower()
+                    and "passport" not in active_url.lower()
+                    and not _is_xhs_security_verification_url(active_url)):
+                next_page_identity_poll_at = (
+                    loop.time() + _XHS_PAGE_IDENTITY_POLL_SECONDS)
+                page_user = await _xhs_page_identity(active_page)
+                if page_user:
+                    authenticated_user.update(page_user)
+                    _LOG.info(
+                        "XHS authenticated identity found in page state: %s",
+                        page_user.get("user_id") or page_user.get("red_id"))
             # Cookie 只作必要条件；user/me 的非游客身份才是授权完成证据。
-            if (ws and len(ws) >= 20 and authenticated_user
-                    and "passport" not in page.url
-                    and not _is_xhs_security_verification_url(page.url)):
+            identity_confirmed = bool(
+                authenticated_user or login_signals.get("qr_confirmed"))
+            if (ws and len(ws) >= 20 and identity_confirmed
+                    and "passport" not in active_url
+                    and not _is_xhs_security_verification_url(active_url)):
                 try:
                     state_json = json.dumps(await ctx.storage_state())
                     logged = True
                 except Exception:
                     pass
                 if logged:
+                    try:
+                        identity.observed_login_profile = dict(
+                            authenticated_user or {})
+                    except Exception:
+                        pass
                     nickname = str(
                         authenticated_user.get("nickname") or "").strip()[:40]
                     if not nickname:
                         try:
-                            nickname = await _read_xhs_nickname(page)
+                            nickname = await _read_xhs_nickname(active_page)
                         except Exception:
                             pass
                     # 普通登录只保存主站读取态。创作平台是独立登录入口，避免在
@@ -257,6 +519,7 @@ async def interactive_xhs_creator_login(mgr: BrowserManager, identity: Identity,
     ctx = await mgr.context_for(identity)
     if force_reauth:
         await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
     logged = False
     nickname = ""
     state_json = ""
@@ -312,6 +575,7 @@ async def interactive_ks_login(mgr: BrowserManager, identity: Identity,
     ctx = await mgr.open_headed(identity)
     if force_reauth:
         await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
     page = await ctx.new_page()
     await _focus(page)
     logged = False
@@ -363,6 +627,7 @@ async def interactive_ks_creator_login(mgr: BrowserManager, identity: Identity,
     ctx = await mgr.open_headed(identity)
     if force_reauth:
         await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
     page = await ctx.new_page()
     await _focus(page)
     logged = False
@@ -467,6 +732,7 @@ async def interactive_channels_login(mgr: BrowserManager, identity: Identity,
     ctx = await mgr.open_headed(identity)
     if force_reauth:
         await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
     page = await ctx.new_page()
     await _focus(page)
     logged = False

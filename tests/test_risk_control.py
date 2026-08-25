@@ -245,6 +245,13 @@ risk_control:
             RiskCategory.BUSINESS,
         )
 
+    def test_ambiguous_browser_diagnostic_does_not_expire_account(self):
+        category, signal = classify_platform_error(
+            "未拦截到搜索结果(可能未登录/被风控/该关键词无结果)")
+
+        self.assertEqual(category, RiskCategory.BUSINESS)
+        self.assertEqual(signal, "ambiguous_browser_result")
+
     def test_platform_error_classifier_accepts_structured_enum_category(self):
         class StructuredError(Exception):
             category = RiskCategory.RISK
@@ -387,6 +394,20 @@ risk_control:
 
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.signal, "auth_required")
+
+    def test_manual_probe_can_recheck_inconclusive_invalid_account(self):
+        account_id = self._account()
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.status = "invalid"
+            session.add(account)
+            session.commit()
+
+        decision = RiskController(self.cfg).preflight(
+            account_id, OperationKind.READ_LIGHT,
+            allow_invalid_probe=True)
+
+        self.assertTrue(decision.allowed)
 
     def test_bad_bound_proxy_blocks_future_platform_operations(self):
         account_id = self._account(proxy="http://proxy.example:8080")
@@ -870,6 +891,69 @@ risk_control:
             record = session.get(ContentRecord, record_id)
             self.assertEqual(record.retry_count, 0)
             self.assertEqual(record.download_status, "failed")
+
+    def test_background_retry_skips_xhs_records_without_media_snapshot(self):
+        with db.get_session() as session:
+            target = MonitorTarget(
+                platform="xhs", sec_uid="fixture", enabled=True)
+            session.add(target)
+            session.commit()
+            session.refresh(target)
+            record = ContentRecord(
+                platform="xhs", target_id=target.id,
+                aweme_id="missing-detail", media_json="",
+                download_status="failed",
+                error="未拦截到笔记详情(xsec_token 可能已过期)")
+            session.add(record)
+            session.commit()
+
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        retried = []
+
+        async def capture(record_id):
+            retried.append(record_id)
+            return {"ok": False}
+
+        engine.retry_download = capture
+        asyncio.run(engine._retry_failed())
+
+        self.assertEqual(retried, [])
+
+    def test_xhs_download_retry_passes_identity_state_and_proxy_in_order(self):
+        state = '{"cookies":[{"name":"a1","value":"fixture-a1"}]}'
+        with db.get_session() as session:
+            account = DouyinAccount(
+                platform="xhs", nickname="fixture-xhs", status="active",
+                storage_state=state, proxy="http://127.0.0.1:8080")
+            session.add(account)
+            session.commit()
+            session.refresh(account)
+            target = MonitorTarget(
+                platform="xhs", target_kind="keyword", keyword="fixture",
+                account_id=account.id, enabled=True)
+            session.add(target)
+            session.commit()
+            session.refresh(target)
+            record = ContentRecord(
+                platform="xhs", target_id=target.id, aweme_id="fixture-note",
+                media_json="", download_status="failed")
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            record_id = record.id
+
+        captured = []
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        def capture_client(identity, received_state, proxy):
+            captured.append((identity, received_state, proxy))
+            return None
+
+        engine._xhs_client = capture_client
+        result = asyncio.run(engine.retry_download(record_id))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(captured, [(None, state, "http://127.0.0.1:8080")])
 
     def test_direct_read_pair_uses_same_budget(self):
         account_id = self._account()

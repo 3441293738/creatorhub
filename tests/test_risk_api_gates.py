@@ -28,6 +28,7 @@ class _Identity:
 class _BrowserStub:
     def __init__(self):
         self._locks = {}
+        self.closed_keys = []
 
     def lock_for(self, key):
         return self._locks.setdefault(key, asyncio.Lock())
@@ -37,6 +38,9 @@ class _BrowserStub:
 
     def anon_identity(self):
         return _Identity()
+
+    async def close_context(self, key):
+        self.closed_keys.append(key)
 
 
 class _CreatorResponse:
@@ -331,7 +335,50 @@ class RiskApiGateTests(unittest.TestCase):
             "platform": "xhs",
             "douyin_id": "",
             "sec_uid": "",
+            "status": "active",
+            "login_scope": "read",
+            "has_read_login": False,
+            "has_creator": False,
         })
+        self.assertEqual(self.browser.closed_keys, [])
+
+    def test_profile_refresh_returns_immediately_while_manual_browser_is_open(self):
+        class Lease:
+            active = True
+
+        main.open_browsers[self.account_id] = Lease()
+        try:
+            result = asyncio.run(main.refresh_account_profile(self.account_id))
+        finally:
+            main.open_browsers.pop(self.account_id, None)
+
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["blocked_by"], "open_browser")
+        self.assertIn("关闭窗口", result["reason"])
+        self.assertEqual(self.browser.closed_keys, [])
+
+    def test_invalid_account_profile_refresh_can_recover_status(self):
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, self.account_id)
+            account.status = "invalid"
+            session.add(account)
+            session.commit()
+
+        async def enrich(account_id, _state, *, detailed=False):
+            with db.get_session() as session:
+                account = session.get(DouyinAccount, account_id)
+                account.status = "active"
+                session.add(account)
+                session.commit()
+            return ("ok", "") if detailed else "ok"
+
+        with patch("app.main._enrich_account_profile", enrich):
+            result = asyncio.run(main.refresh_account_profile(self.account_id))
+
+        self.assertEqual(result["status"], "active")
+        with db.get_session() as session:
+            self.assertEqual(
+                session.get(DouyinAccount, self.account_id).status, "active")
         self.assertEqual(self._operation_kinds(), [OperationKind.READ_LIGHT.value])
 
     def test_note_media_preserves_success_payload(self):
@@ -366,6 +413,63 @@ class RiskApiGateTests(unittest.TestCase):
             }],
         })
         self.assertEqual(self._operation_kinds(), [OperationKind.READ_HEAVY.value])
+
+    def test_note_media_browser_mode_reuses_account_browser(self):
+        work = SimpleNamespace(
+            media_type="image", desc="Fixture", cover="",
+            medias=[SimpleNamespace(
+                url="https://fixture/image.jpg", kind="image",
+                ext="jpg", index=0)],
+        )
+        with patch.object(main.cfg.engine, "xhs_read_mode", "browser"), \
+                patch.object(
+                    self.browser, "visible_page", AsyncMock(), create=True), \
+                patch("app.main.fetch_xhs_note_detail", AsyncMock(
+                    return_value=({}, ""))) as browser_fetch, \
+                patch("app.platforms.xhs.XhsApiClient") as client_cls, \
+                patch("app.platforms.xhs.parse_note_detail", return_value=work):
+            result = asyncio.run(main.publish_note_media(
+                self.account_id, "note-1", "token", "pc_feed"))
+
+        self.assertEqual(result["media_type"], "image")
+        browser_fetch.assert_awaited_once()
+        client_cls.assert_not_called()
+
+    def test_xhs_share_inspection_uses_browser_note_reader(self):
+        identity = SimpleNamespace(proxy="", ua="", key="acc:1")
+        work = SimpleNamespace(
+            platform="xhs", aweme_id="0123456789abcdef01234567",
+            desc="Fixture note", author_name="Fixture author",
+            duration=0, create_time=0, like_count=0, comment_count=0,
+            cover="", media_type="images", quality_label="original",
+            medias=[SimpleNamespace(
+                url="https://fixture/image.jpg", kind="image",
+                ext="jpg", index=0)],
+        )
+        ref = SimpleNamespace(
+            note_id=work.aweme_id, xsec_token="token",
+            xsec_source="pc_feed")
+        with patch("app.main._xhs_browser_reads_enabled", return_value=True), \
+                patch.object(self.browser, "identity_for", return_value=identity), \
+                patch("app.main.xhs_resolve_note", AsyncMock(
+                    return_value=ref)), \
+                patch("app.main.fetch_xhs_note_detail", AsyncMock(
+                    return_value=({"note_id": work.aweme_id}, ""))) as fetcher, \
+                patch("app.platforms.xhs.parse_note_detail", return_value=work):
+            result = asyncio.run(main._xhs_native_share(
+                f"https://www.xiaohongshu.com/explore/{work.aweme_id}",
+                account_id=self.account_id,
+                output_root=Path(self.tmp.name),
+                quality="highest",
+                should_download=False,
+                save_metadata=True,
+                save_thumbnail=True,
+                proxy="",
+            ))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["metadata"]["platform"], "xhs")
+        fetcher.assert_awaited_once()
 
     def test_note_media_preserves_http_400_error_mapping(self):
         with patch("app.platforms.xhs.XhsApiClient") as client_cls:

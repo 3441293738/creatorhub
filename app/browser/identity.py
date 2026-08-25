@@ -12,7 +12,7 @@ import os
 import random
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
@@ -63,6 +63,7 @@ class Identity:
     account_id: Optional[int]
     profile_dir: str
     identity_mode: str = "legacy"
+    browser_backend: str = "default"
     proxy: str = ""
     ua: str = ""
     viewport_w: int = 1280
@@ -70,6 +71,22 @@ class Identity:
     timezone_id: str = DEFAULT_TZ
     locale: str = DEFAULT_LOCALE
     fp_seed: str = ""
+    fp_platform: str = ""
+    fp_platform_version: str = ""
+    fp_brand: str = ""
+    fp_brand_version: str = ""
+    fp_hardware_concurrency: int = 0
+    fp_gpu_vendor: str = ""
+    fp_gpu_renderer: str = ""
+    fp_accept_languages: str = ""
+    fp_disable_spoofing: str = ""
+    fp_language_mode: str = "auto"
+    fp_timezone_mode: str = "auto"
+    fp_viewport_mode: str = "auto"
+    fp_location_mode: str = "auto"
+    fp_geolocation_permission: str = "allow"
+    fp_webrtc_mode: str = "conceal"
+    fp_extra_args: str = ""
     # geolocation 伪造坐标(与代理 IP 归属地/时区对齐)。0 表示未设定,由 seed 派生兜底。
     geo_lat: float = 0.0
     geo_lon: float = 0.0
@@ -77,6 +94,10 @@ class Identity:
     bridge_states: tuple = ()
     # 仅用于选择浏览器后端；放在末尾保持现有位置参数构造兼容。
     platform: str = ""
+    # fingerprint_chromium 下选择的具体本地内核；空表示跟随默认内核。
+    browser_runtime_id: str = ""
+    # 扫码页已经观察到的当前用户资料，仅在本次登录内存中传递；不参与指纹签名。
+    observed_login_profile: dict = field(default_factory=dict, repr=False)
 
     @property
     def key(self):
@@ -105,12 +126,42 @@ class Identity:
             account_id=acc.id, profile_dir=pdir,
             platform=getattr(acc, "platform", "") or "",
             identity_mode=getattr(acc, "identity_mode", "legacy") or "legacy",
+            browser_backend=(
+                getattr(acc, "browser_backend", "default") or "default"),
+            browser_runtime_id=(
+                getattr(acc, "browser_runtime_id", "") or ""),
             proxy=acc.proxy or "",
             ua=acc.ua or default_ua,
             viewport_w=acc.viewport_w or 1280, viewport_h=acc.viewport_h or 800,
             timezone_id=acc.timezone_id or DEFAULT_TZ,
             locale=acc.locale or DEFAULT_LOCALE,
             fp_seed=acc.fp_seed or seed_from_id(acc.id),
+            fp_platform=getattr(acc, "fp_platform", "") or "",
+            fp_platform_version=(
+                getattr(acc, "fp_platform_version", "") or ""),
+            fp_brand=getattr(acc, "fp_brand", "") or "",
+            fp_brand_version=getattr(acc, "fp_brand_version", "") or "",
+            fp_hardware_concurrency=(
+                getattr(acc, "fp_hardware_concurrency", 0) or 0),
+            fp_gpu_vendor=getattr(acc, "fp_gpu_vendor", "") or "",
+            fp_gpu_renderer=getattr(acc, "fp_gpu_renderer", "") or "",
+            fp_accept_languages=(
+                getattr(acc, "fp_accept_languages", "") or ""),
+            fp_disable_spoofing=(
+                getattr(acc, "fp_disable_spoofing", "") or ""),
+            fp_language_mode=(
+                getattr(acc, "fp_language_mode", "auto") or "auto"),
+            fp_timezone_mode=(
+                getattr(acc, "fp_timezone_mode", "auto") or "auto"),
+            fp_viewport_mode=(
+                getattr(acc, "fp_viewport_mode", "auto") or "auto"),
+            fp_location_mode=(
+                getattr(acc, "fp_location_mode", "auto") or "auto"),
+            fp_geolocation_permission=(
+                getattr(acc, "fp_geolocation_permission", "allow") or "allow"),
+            fp_webrtc_mode=(
+                getattr(acc, "fp_webrtc_mode", "conceal") or "conceal"),
+            fp_extra_args=getattr(acc, "fp_extra_args", "") or "",
             geo_lat=getattr(acc, "geo_lat", 0.0) or 0.0,
             geo_lon=getattr(acc, "geo_lon", 0.0) or 0.0,
             bridge_states=bridge,

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,6 +18,7 @@ from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from datetime import date, datetime, time, timedelta, timezone
 import uuid as _uuid
@@ -23,7 +26,7 @@ import uuid as _uuid
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field as PydanticField
+from pydantic import BaseModel, Field as PydanticField, ValidationError
 from sqlalchemy import func, or_
 from sqlmodel import select
 
@@ -32,10 +35,20 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       interactive_xhs_login, interactive_xhs_creator_login,
                       interactive_ks_login, interactive_ks_creator_login,
                       interactive_channels_login, interactive_channels_creator_login,
-                      fetch_self_profile, fetch_xhs_self_profile, fetch_ks_self_profile,
+                      fetch_self_profile, fetch_xhs_self_profile,
+                      fetch_xhs_note_detail, fetch_xhs_comments,
+                      fetch_ks_self_profile,
                       fetch_channels_self_profile,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
                       fetch_dm_history)
+from .browser.backends import (
+    ACCOUNT_BROWSER_BACKENDS, fingerprint_seed_u32, parse_extra_launch_args,
+)
+from .browser.ip_fingerprint import derive_ip_fingerprint
+from .browser.runtime_catalog import (
+    discover_chromium_runtimes,
+    runtime_metadata,
+)
 from .platforms.douyin import (
     DouyinClient,
     cookie_from_state as douyin_cookie_from_state,
@@ -70,14 +83,15 @@ from .engine.share_downloader import (
 from .models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
                      CommentWatch, DanmakuWatch, DanmakuRecord,
                      DouyinAccount, MonitorTarget,
-                     NotificationChannel, ProxyPool, PublishTask,
+                     NotificationChannel, ProxyPool, BrowserRuntime, PublishTask,
                      AccountWork, FollowEdge, DmConversation, DmMessage,
                       AccountActionTask, AccountStatSnapshot,
                       ShareDownloadRecord, AccountRiskState, RiskEvent, RiskAdminAudit,
                       KeywordCollectionJob, KeywordCollectionContent,
                       KeywordCollectionComment)
 from .notifier import CHANNEL_TYPES, send_one
-from .profiles import (ensure_identity, migrate_identities, assign_proxy_from_pool,
+from .profiles import (allocate_profile_dir, ensure_identity, migrate_identities,
+                       assign_proxy_from_pool,
                        release_proxy_reservation, reserve_proxy_from_pool,
                        seed_proxy_pool)
 from .risk import (OperationKind, RiskCategory, RiskController,
@@ -86,7 +100,8 @@ from .risk_admin import (RiskSettingsError, apply_risk_settings,
                          export_risk_settings, load_persisted_risk_settings,
                          save_risk_settings)
 from .settings import get_setting, set_setting
-from .windowing import (EXPLORER_WINDOW_CLASSES, bring_window_to_front,
+from .windowing import (CHROMIUM_WINDOW_CLASSES, EXPLORER_WINDOW_CLASSES,
+                        bring_window_to_front,
                         capture_window_snapshot)
 
 import json
@@ -102,17 +117,111 @@ _file_manager_lock = threading.Lock()
 _share_download_sem = asyncio.Semaphore(2)
 
 
+_ACTIVE_LOGIN_STATUSES = {"opening", "waiting", "verification", "persisted"}
+
+
+def _login_task_state(*, status: str, platform: str,
+                      creator: bool, account_id: int | None,
+                      **details) -> dict:
+    """Build a login task update without dropping its conflict metadata."""
+    return {
+        "status": status,
+        "platform": platform,
+        "creator": bool(creator),
+        "account_id": account_id,
+        **details,
+    }
+
+
+def _active_login_task() -> tuple[str, dict] | None:
+    """Return the most recently started interactive login that still owns a window."""
+    for task_id, state in reversed(list(login_tasks.items())):
+        if str(state.get("status") or "") in _ACTIVE_LOGIN_STATUSES:
+            return task_id, state
+    return None
+
+
+def _active_open_browser_account_ids() -> list[int]:
+    return [
+        account_id for account_id, lease in open_browsers.items()
+        if bool(getattr(lease, "active", True))
+    ]
+
+
+def _login_scope_label(platform: str, creator: bool) -> str:
+    label = {
+        "xhs": "小红书",
+        "kuaishou": "快手",
+        "shipinhao": "视频号",
+        "douyin": "抖音",
+    }.get(platform, platform or "平台")
+    return f"{label}创作者" if creator else label
+
+
+async def _reuse_or_reject_interactive_login(
+        platform: str, creator: bool, account_id: int | None = None,
+) -> dict | None:
+    """Refocus duplicate login clicks; reject a different login instead of queueing forever."""
+    open_account_ids = _active_open_browser_account_ids()
+    if open_account_ids:
+        account_text = "、".join(str(value) for value in open_account_ids[:4])
+        raise HTTPException(
+            409,
+            "已有账号浏览器窗口打开"
+            f"（账号 {account_text}），扫码登录会被可见窗口队列阻塞。"
+            "请先关闭已打开的指纹浏览器窗口，再点击添加账号。",
+        )
+
+    active = _active_login_task()
+    if active is None:
+        return None
+    task_id, state = active
+    same_login = (
+        str(state.get("platform") or "") == platform
+        and bool(state.get("creator")) == bool(creator)
+        and state.get("account_id") == account_id
+    )
+    if not same_login:
+        active_label = _login_scope_label(
+            str(state.get("platform") or ""), bool(state.get("creator")))
+        raise HTTPException(
+            409,
+            f"已有{active_label}扫码登录窗口正在等待操作。"
+            "请先在该窗口完成登录或将其关闭，再启动新的登录。",
+        )
+
+    # A repeated click usually means the existing Chromium window is behind the
+    # dashboard. Raise it instead of creating a second task that waits forever.
+    snapshot = capture_window_snapshot(CHROMIUM_WINDOW_CLASSES)
+    title_hint = _login_scope_label(platform, creator).replace("创作者", "")
+    await asyncio.to_thread(
+        bring_window_to_front, snapshot, CHROMIUM_WINDOW_CLASSES,
+        title_hint, 1.0,
+    )
+    return {
+        "task_id": task_id,
+        "status": state.get("status", "waiting"),
+        "reused": True,
+        "hint": "已有扫码登录窗口，已尝试将它切换到前台",
+    }
+
+
 class _OpenBrowserLease:
     """Keep the unified account/network guard until a headed context closes."""
 
-    def __init__(self, context, guard, close_callback=None):
+    def __init__(self, context, guard, close_callback=None, page=None):
         self.context = context
         self.guard = guard
         self.close_callback = close_callback
+        self.page = page
         self._released = False
         self._closed = False
         self._release_lock = asyncio.Lock()
         self._close_lock = asyncio.Lock()
+
+    @property
+    def active(self) -> bool:
+        return not self._released and not self._closed
 
     async def release(self) -> None:
         async with self._release_lock:
@@ -156,6 +265,168 @@ def _persist_native_ua(account_id: int, ua: str) -> None:
             session.commit()
 
 
+def _browser_backend_status(requested: str, runtime_id: str = "") -> dict:
+    """Call the runtime-aware manager while keeping lightweight test adapters."""
+    checker = browser.backend_status
+    try:
+        return checker(requested, runtime_id)
+    except TypeError:
+        return checker(requested)
+
+
+def _browser_runtime_dict(runtime: BrowserRuntime) -> dict:
+    path = Path(runtime.executable_path)
+    return {
+        "id": runtime.id,
+        "runtime_id": runtime.runtime_id,
+        "name": runtime.name,
+        "backend": runtime.backend,
+        "version": runtime.version,
+        "major": (runtime.version.split(".", 1)[0]
+                  if runtime.version else ""),
+        "executable_path": runtime.executable_path,
+        "platform": runtime.platform,
+        "allow_headless": runtime.allow_headless,
+        "enabled": runtime.enabled,
+        "is_default": runtime.is_default,
+        "status": runtime.status,
+        "last_error": runtime.last_error,
+        "available": path.is_file(),
+        "file_sha256": runtime.file_sha256,
+        "last_checked_at": (runtime.last_checked_at.isoformat()
+                            if runtime.last_checked_at else None),
+        "created_at": (runtime.created_at.isoformat()
+                       if runtime.created_at else None),
+    }
+
+
+def _browser_runtime_executable_candidates() -> list[str]:
+    """Return explicitly configured executable paths without assuming a drive."""
+    values = [
+        str(cfg.engine.fingerprint_chromium_path or "").strip(),
+        os.environ.get("CREATORHUB_FINGERPRINT_CHROMIUM_PATH", "").strip(),
+    ]
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        normalized = os.path.normcase(str(Path(value).expanduser().resolve()))
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(value)
+    return result
+
+
+def _browser_runtime_scan_roots() -> list[str]:
+    """Resolve configured, environment and portable project-local scan roots."""
+    values: list[str] = []
+    configured = str(cfg.engine.fingerprint_chromium_root or "").strip()
+    if configured:
+        values.append(configured)
+    env_roots = os.environ.get(
+        "CREATORHUB_FINGERPRINT_CHROMIUM_ROOTS", "").strip()
+    if env_roots:
+        values.extend(part.strip() for part in env_roots.split(os.pathsep))
+    # Portable deployments can put browser archives beside or inside the
+    # project. Only existing narrow directories are considered; no disk-wide
+    # scan is performed.
+    workspace = Path.cwd()
+    for candidate in (
+        workspace / "browsers",
+        workspace / "browser",
+        workspace / "data" / "browsers",
+        workspace.parent / "browsers",
+    ):
+        if candidate.is_dir():
+            values.append(str(candidate))
+    for executable in _browser_runtime_executable_candidates():
+        path = Path(executable).expanduser()
+        if path.parent.is_dir():
+            values.append(str(path.parent))
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        resolved = str(Path(value).expanduser().resolve())
+        normalized = os.path.normcase(resolved)
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(resolved)
+    return result
+
+
+def _seed_browser_runtimes() -> list[dict]:
+    """Import configured/discovered runtimes and return manager specifications."""
+    discovered: dict[str, dict] = {}
+    configured_paths = _browser_runtime_executable_candidates()
+    for configured_path in configured_paths:
+        try:
+            item = runtime_metadata(configured_path)
+            discovered[item["runtime_id"]] = item
+        except (OSError, ValueError) as exc:
+            print(f"[startup] 指纹内核路径不可用: {exc}")
+    for root in _browser_runtime_scan_roots():
+        try:
+            for item in discover_chromium_runtimes(root):
+                discovered[item["runtime_id"]] = item
+        except (OSError, ValueError) as exc:
+            print(f"[startup] 指纹内核扫描失败 ({root}): {exc}")
+
+    with get_session() as session:
+        existing = {
+            row.runtime_id: row
+            for row in session.exec(select(BrowserRuntime)).all()
+        }
+        configured_runtime_id = ""
+        for runtime_id, item in discovered.items():
+            row = existing.get(runtime_id)
+            if row is None:
+                row = BrowserRuntime(
+                    runtime_id=runtime_id,
+                    name=item["name"],
+                    version=item["version"],
+                    executable_path=item["executable_path"],
+                    platform=cfg.engine.fingerprint_chromium_platform,
+                    allow_headless=cfg.engine.fingerprint_chromium_allow_headless,
+                    file_sha256=item["file_sha256"],
+                )
+                session.add(row)
+                existing[runtime_id] = row
+            else:
+                row.version = item["version"]
+                row.executable_path = item["executable_path"]
+                row.file_sha256 = item["file_sha256"]
+                if not row.name:
+                    row.name = item["name"]
+                session.add(row)
+            if any(os.path.normcase(item["executable_path"])
+                   == os.path.normcase(str(Path(path).expanduser().resolve()))
+                   for path in configured_paths):
+                configured_runtime_id = runtime_id
+        session.commit()
+
+        rows = session.exec(select(BrowserRuntime).order_by(BrowserRuntime.id)).all()
+        default = next(
+            (row for row in rows if row.is_default and row.enabled), None)
+        if default is None:
+            default = next(
+                (row for row in rows
+                 if row.runtime_id == configured_runtime_id and row.enabled), None)
+        if default is None:
+            default = next((row for row in rows if row.enabled), None)
+        if default is not None:
+            for row in rows:
+                wanted = row.id == default.id
+                if row.is_default != wanted:
+                    row.is_default = wanted
+                    session.add(row)
+            session.commit()
+        return [_browser_runtime_dict(row) for row in rows]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global browser, engine, im_receiver
@@ -188,16 +459,35 @@ async def lifespan(app: FastAPI):
             print(f"[startup] 已为 {n} 个存量账号补齐画像(profile/UA/指纹/代理)")
     except Exception as e:
         print(f"[startup] 账号画像迁移失败(不影响启动): {e!r}")
+    try:
+        runtime_specs = _seed_browser_runtimes()
+    except Exception as e:
+        print(f"[startup] 浏览器内核目录导入失败(不影响启动): {e!r}")
+        runtime_specs = []
+    default_runtime_id = next(
+        (item["runtime_id"] for item in runtime_specs
+         if item.get("is_default") and item.get("enabled")), "")
     browser = BrowserManager(
         cfg.engine.user_agent, cfg.engine.profiles_dir,
         cfg.engine.max_live_contexts, native_ua_callback=_persist_native_ua,
         xhs_browser_mode=cfg.engine.xhs_browser_mode,
         xhs_cdp_idle_seconds=cfg.engine.xhs_cdp_idle_seconds,
+        resident_sessions=cfg.engine.resident_browser_sessions,
+        session_idle_seconds=cfg.engine.browser_session_idle_seconds,
         native_write_gate_enabled=cfg.engine.native_write_gate_enabled,
         native_write_require_system_chrome=cfg.engine.native_write_require_system_chrome,
         native_write_require_verified_proxy=cfg.engine.native_write_require_verified_proxy,
         native_write_proxy_max_age_seconds=cfg.engine.native_write_proxy_max_age_seconds,
-        browser_exit_probe_url=cfg.engine.browser_exit_probe_url)
+        browser_exit_probe_url=cfg.engine.browser_exit_probe_url,
+        browser_backend=cfg.engine.browser_backend,
+        fingerprint_chromium_path=(
+            "" if runtime_specs else cfg.engine.fingerprint_chromium_path),
+        fingerprint_chromium_allow_headless=(
+            cfg.engine.fingerprint_chromium_allow_headless),
+        fingerprint_chromium_platform=(
+            cfg.engine.fingerprint_chromium_platform),
+        fingerprint_chromium_runtimes=runtime_specs,
+        fingerprint_default_runtime_id=default_runtime_id)
     await browser.start()
     engine = MonitorEngine(cfg, browser)
     startup_now = datetime.utcnow()
@@ -223,14 +513,48 @@ app = FastAPI(title="CreatorHub", lifespan=lifespan)
 WEB_DIR = Path(__file__).parent / "web"
 
 
+def _xhs_browser_reads_enabled() -> bool:
+    """Whether the configured browser implementation supports page reads."""
+    return bool(
+        cfg.engine.xhs_read_mode == "browser"
+        and browser is not None
+        and callable(getattr(browser, "visible_page", None))
+    )
+
+
+def _direct_request_ua(identity) -> str:
+    resolver = getattr(browser, "direct_request_user_agent", None)
+    if callable(resolver):
+        return resolver(identity)
+    return str(getattr(identity, "ua", "") or cfg.engine.user_agent)
+
+
 # ─────────── 扫码登录(真实浏览器) ───────────
-async def _xhs_profile(state: str, proxy: str = "", *, detailed: bool = False):
+def _storage_has_cookie(state: str, name: str) -> bool:
+    try:
+        cookies = json.loads(state or "{}").get("cookies") or []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return any(
+        str(item.get("name") or "") == name
+        and bool(str(item.get("value") or ""))
+        for item in cookies if isinstance(item, dict)
+    )
+
+
+def _xhs_has_read_login_state(state: str) -> bool:
+    """Main-site XHS reads require web_session; creator cookies are separate."""
+    return _storage_has_cookie(state, "web_session")
+
+
+async def _xhs_profile(state: str, proxy: str = "", *,
+                       detailed: bool = False, user_agent: str = ""):
     """用签名直连 API 拿小红书账号资料(me 身份 + otherinfo 昵称/头像/粉丝)。
     返回 (user dict, error)。error == "logged_out" 表示登录态失效。"""
     cookie_str = cookie_str_from_state(state)
     if not has_a1(cookie_str):
         return {}, "logged_out"
-    client = XhsApiClient(cookie_str, cfg.engine.user_agent,
+    client = XhsApiClient(cookie_str, user_agent or cfg.engine.user_agent,
                           timeout=cfg.engine.request_timeout_seconds, proxy=proxy)
     try:
         me = await client.self_info()
@@ -271,7 +595,8 @@ async def _fetch_channels_profile_with_retry(identity, attempts: int = 3) -> tup
 
 async def _run_account_read(account_id: int, kind: OperationKind, key: str,
                             operation, *, empty_result,
-                            unexpected_detail: str = ""):
+                            unexpected_detail: str = "",
+                            allow_invalid_probe: bool = False):
     """Run one account-bound API read through the engine's unified gates."""
     if engine is None:
         raise HTTPException(503, "引擎未就绪")
@@ -280,7 +605,8 @@ async def _run_account_read(account_id: int, kind: OperationKind, key: str,
         guarded_empty = dict(empty_result)
         guarded_empty["_guard_error"] = True
     payload, error = await engine.guarded_read_pair(
-        account_id, kind, key, operation, empty_result=guarded_empty)
+        account_id, kind, key, operation, empty_result=guarded_empty,
+        allow_invalid_probe=allow_invalid_probe)
     guard_error = False
     if isinstance(payload, dict):
         payload = dict(payload)
@@ -376,7 +702,14 @@ async def _enrich_account_profile(account_id: int, state: str, *,
 
     try:
         if platform == "xhs":
-            u, err = await _xhs_profile(state, proxy, detailed=detailed)
+            # Default to the account browser so profile checks keep the same
+            # UA/TLS/Client-Hints/profile that created the login cookies.
+            if _xhs_browser_reads_enabled():
+                u, err = await fetch_xhs_self_profile(browser, identity)
+            else:
+                u, err = await _xhs_profile(
+                    state, proxy, detailed=detailed,
+                    user_agent=_direct_request_ua(identity))
         elif platform == "kuaishou":
             u, err = await fetch_ks_self_profile(browser, identity)
         elif platform == "shipinhao":
@@ -420,19 +753,88 @@ async def _enrich_account_profile(account_id: int, state: str, *,
     return _done("error", err or "error")
 
 
+def _merge_prelogin_fingerprint_fields(
+        generated: dict, detected: dict | None,
+        overrides: dict | None) -> dict:
+    """Merge an IP-derived baseline with the user's first-login choices."""
+    detected = detected or {}
+    merged = dict(generated)
+    merged.update({
+        "fp_source_ip": detected.get("source_ip", ""),
+        "fp_country": detected.get("country", ""),
+        "fp_region": detected.get("region", ""),
+        "fp_city": detected.get("city", ""),
+        "fp_platform": "",
+        "fp_platform_version": "",
+        "fp_brand": "",
+        "fp_brand_version": "",
+        "fp_hardware_concurrency": 0,
+        "fp_gpu_vendor": "",
+        "fp_gpu_renderer": "",
+        "fp_accept_languages": "",
+        "fp_disable_spoofing": "",
+        "fp_language_mode": "auto",
+        "fp_timezone_mode": "auto",
+        "fp_viewport_mode": "auto",
+        "fp_location_mode": "auto",
+        "fp_geolocation_permission": "allow",
+        "fp_webrtc_mode": "conceal",
+        "fp_extra_args": "",
+    })
+    if detected:
+        for name in ("fp_seed", "timezone_id", "locale", "viewport_w",
+                     "viewport_h", "geo_lat", "geo_lon"):
+            if name in detected:
+                merged[name] = detected[name]
+    if not overrides:
+        return merged
+
+    for name in (
+        "fp_seed", "fp_platform", "fp_platform_version", "fp_brand",
+        "fp_brand_version", "fp_hardware_concurrency", "fp_gpu_vendor",
+        "fp_gpu_renderer", "fp_disable_spoofing", "fp_language_mode",
+        "fp_timezone_mode", "fp_viewport_mode", "fp_location_mode",
+        "fp_geolocation_permission", "fp_webrtc_mode", "fp_extra_args",
+    ):
+        merged[name] = overrides[name]
+
+    # Automatic groups keep the values derived from the selected egress IP.
+    # Custom groups replace only their own settings.
+    if overrides["fp_language_mode"] == "custom":
+        merged["locale"] = overrides["locale"]
+        merged["fp_accept_languages"] = overrides["fp_accept_languages"]
+    if overrides["fp_timezone_mode"] == "custom":
+        merged["timezone_id"] = overrides["timezone_id"]
+    if overrides["fp_viewport_mode"] == "custom":
+        merged["viewport_w"] = overrides["viewport_w"]
+        merged["viewport_h"] = overrides["viewport_h"]
+    if overrides["fp_location_mode"] == "custom":
+        for name in ("fp_source_ip", "fp_country", "fp_region", "fp_city",
+                     "geo_lat", "geo_lon"):
+            merged[name] = overrides[name]
+    return merged
+
+
 async def _run_login(task_id: str, creator: bool = False, account_id: int | None = None,
-                     platform: str = "douyin", proxy_choice: str = "auto"):
+                     platform: str = "douyin", proxy_choice: str = "auto",
+                     browser_backend: str = "default",
+                     browser_runtime_id: str = "",
+                     fingerprint_overrides: dict | None = None):
     """扫码登录。多账号隔离模型:一账号=一持久 profile。
     - 传 account_id:登录进该账号自己的 profile(重新登录/补创作者登录)。
     - 不传:用「临时 profile」登录,**只有登录成功才建账号**;关窗/超时/取消都不留残号。"""
     import os
     import shutil
     from .browser import Identity, generate_identity_fields
-    login_tasks[task_id] = {"status": "waiting"}
+    login_tasks[task_id] = _login_task_state(
+        status="waiting", platform=platform, creator=creator,
+        account_id=account_id)
     fresh_account = account_id is None
     tmp_profile = ""
     proxy_reservation_key = ""
     new_fields = None
+    fingerprint_fields = None
+    is_fingerprint_environment = False
     login_environment = {}
     nm = ("小红书账号" if platform == "xhs"
           else "快手账号" if platform == "kuaishou"
@@ -444,7 +846,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             with get_session() as s:
                 acc = s.get(DouyinAccount, account_id)
                 if not acc:
-                    login_tasks[task_id] = {"status": "error", "error": "账号不存在"}
+                    login_tasks[task_id] = _login_task_state(
+                        status="error", platform=platform, creator=creator,
+                        account_id=account_id, error="账号不存在")
                     return
                 ensure_identity(acc, cfg, session=s, assign_proxy=False)
                 s.add(acc); s.commit(); s.refresh(acc)
@@ -453,7 +857,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
         else:
             acc_id = None
             new_fields = generate_identity_fields()
-            tmp_profile = os.path.join(cfg.engine.profiles_dir, "new_" + uuid.uuid4().hex)
+            tmp_profile = allocate_profile_dir(cfg.engine.profiles_dir)
             # 登录前选定代理:具体地址 / auto(占用最少) / 空(不用代理)
             choice = (proxy_choice or "").strip()
             if choice.lower() in ("", "none"):
@@ -465,20 +869,68 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             else:
                 from .browser.manager import normalize_proxy
                 proxy = normalize_proxy(choice)
+            requested_backend = str(browser_backend or "default").strip().lower()
+            if requested_backend not in ACCOUNT_BROWSER_BACKENDS:
+                requested_backend = "default"
+            backend_status = getattr(browser, "backend_status", None)
+            effective_backend = ""
+            if callable(backend_status):
+                effective_backend = _browser_backend_status(
+                    requested_backend, browser_runtime_id).get("name", "")
+            is_fingerprint_environment = (
+                effective_backend == "fingerprint_chromium")
+            if is_fingerprint_environment:
+                geo = await _proxy_geo(proxy, timeout=6)
+                if geo and geo.get("ip"):
+                    fingerprint_fields = derive_ip_fingerprint(
+                        task_id,
+                        geo.get("ip", ""),
+                        country=geo.get("country", ""),
+                        region=geo.get("region", ""),
+                        city=geo.get("city", ""),
+                        timezone_id=geo.get("timezone", ""),
+                        latitude=geo.get("lat") or 0.0,
+                        longitude=geo.get("lon") or 0.0,
+                    )
+                new_fields = _merge_prelogin_fingerprint_fields(
+                    new_fields, fingerprint_fields, fingerprint_overrides)
             identity = Identity(
                 account_id=None, profile_dir=tmp_profile, identity_mode="native",
+                browser_backend=requested_backend,
+                browser_runtime_id=str(browser_runtime_id or "").strip(),
                 platform=platform,
                 proxy=proxy, ua="", viewport_w=new_fields["viewport_w"],
                 viewport_h=new_fields["viewport_h"], timezone_id=new_fields["timezone_id"],
-                locale=new_fields["locale"], fp_seed=new_fields["fp_seed"])
+                locale=new_fields["locale"], fp_seed=new_fields["fp_seed"],
+                fp_platform=new_fields.get("fp_platform", ""),
+                fp_platform_version=new_fields.get("fp_platform_version", ""),
+                fp_brand=new_fields.get("fp_brand", ""),
+                fp_brand_version=new_fields.get("fp_brand_version", ""),
+                fp_hardware_concurrency=new_fields.get(
+                    "fp_hardware_concurrency", 0),
+                fp_gpu_vendor=new_fields.get("fp_gpu_vendor", ""),
+                fp_gpu_renderer=new_fields.get("fp_gpu_renderer", ""),
+                fp_accept_languages=new_fields.get(
+                    "fp_accept_languages", ""),
+                fp_disable_spoofing=new_fields.get(
+                    "fp_disable_spoofing", ""),
+                fp_language_mode=new_fields.get("fp_language_mode", "auto"),
+                fp_timezone_mode=new_fields.get("fp_timezone_mode", "auto"),
+                fp_viewport_mode=new_fields.get("fp_viewport_mode", "auto"),
+                fp_location_mode=new_fields.get("fp_location_mode", "auto"),
+                fp_geolocation_permission=new_fields.get(
+                    "fp_geolocation_permission", "allow"),
+                fp_webrtc_mode=new_fields.get("fp_webrtc_mode", "conceal"),
+                fp_extra_args=new_fields.get("fp_extra_args", ""),
+                geo_lat=new_fields.get("geo_lat", 0.0),
+                geo_lon=new_fields.get("geo_lon", 0.0))
 
         # 登录轮询返回可诊断但不含代理凭据的实际运行环境。浏览器或版本回退
         # 一眼可见，避免把平台验证误判成单纯的 Cookie/二维码问题。
         login_environment = browser.environment_snapshot(identity, headless=False)
-        login_tasks[task_id] = {
-            "status": "waiting",
-            "environment": login_environment,
-        }
+        login_tasks[task_id] = _login_task_state(
+            status="waiting", platform=platform, creator=creator,
+            account_id=account_id, environment=login_environment)
 
         # 2) 在统一账号/网络入口内扫码，避免与后台任务并行占用 profile。
         @asynccontextmanager
@@ -499,8 +951,27 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     ok, state_json, nickname = await interactive_xhs_creator_login(
                         browser, identity, **reauth_options)
                 else:
+                    async def _xhs_verification_status(url: str) -> None:
+                        verification = (
+                            "/website-login/captcha" in str(url).lower()
+                            or "error_code=300012" in str(url).lower()
+                        )
+                        login_tasks[task_id] = _login_task_state(
+                            status=("verification" if verification else "waiting"),
+                            platform=platform,
+                            creator=creator, account_id=account_id,
+                            hint=(("当前独立 Profile 收到小红书设备安全验证；"
+                                   "系统会等待初始化 Cookie 稳定后自动重试一次。"
+                                   "也可扫描验证二维码，或在同一窗口新标签手动打开"
+                                   "小红书；完成后会自动继续保存登录态")
+                                  if verification else
+                                  "设备验证页已解除，请在当前小红书页面完成登录"),
+                            environment=login_environment,
+                        )
+                    reauth_options["status_callback"] = _xhs_verification_status
                     ok, state_json, nickname = await interactive_xhs_login(
-                        browser, identity, **reauth_options)
+                        browser, identity, timeout_seconds=300,
+                        **reauth_options)
             elif platform == "kuaishou":
                 reauth_options = {"force_reauth": True} if account_id else {}
                 if creator:
@@ -524,31 +995,78 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
 
         # 浏览器已经完成实际后端选择；此时快照能反映系统 Chrome 或真实回退。
         login_environment = browser.environment_snapshot(identity, headless=False)
-        if fresh_account and platform == "xhs":
-            # The temporary identity has no durable account key. Close its CDP
-            # session before persisting the account so the same profile can be
-            # reopened under the newly assigned account id without conflict.
-            await browser.close_context(identity.key)
+        temporary_identity_key = identity.key
 
         # 3) 仅在成功时落库
         if ok and state_json:
             is_xhs = platform == "xhs"
+            observed_profile = {}
+            if is_xhs and not creator:
+                raw_observed = getattr(
+                    identity, "observed_login_profile", {}) or {}
+                if isinstance(raw_observed, dict):
+                    observed_profile = parse_xhs_self_user(raw_observed)
             with get_session() as s:
                 if account_id:
                     acc = s.get(DouyinAccount, acc_id)
                 else:
                     acc = DouyinAccount(
-                        platform=platform, nickname=nickname or nm, status="active",
+                        platform=platform,
+                        nickname=(observed_profile.get("nickname")
+                                  or nickname or nm),
+                        sec_uid=observed_profile.get("sec_uid", ""),
+                        douyin_id=observed_profile.get("douyin_id", ""),
+                        avatar=observed_profile.get("avatar", ""),
+                        follower_count=observed_profile.get(
+                            "follower_count", 0),
+                        aweme_count=observed_profile.get("aweme_count", 0),
+                        status="active",
                         profile_dir=tmp_profile, proxy=identity.proxy,
+                        browser_backend=identity.browser_backend,
+                        browser_runtime_id=identity.browser_runtime_id,
                         identity_mode="native", ua=identity.ua or "",
                         viewport_w=new_fields["viewport_w"],
                         viewport_h=new_fields["viewport_h"],
                         timezone_id=new_fields["timezone_id"], locale=new_fields["locale"],
-                        fp_seed=new_fields["fp_seed"])
+                        fp_seed=new_fields["fp_seed"],
+                        fp_source_ip=new_fields.get("fp_source_ip", ""),
+                        fp_country=new_fields.get("fp_country", ""),
+                        fp_region=new_fields.get("fp_region", ""),
+                        fp_city=new_fields.get("fp_city", ""),
+                        fp_generated_at=(datetime.utcnow()
+                                         if is_fingerprint_environment else None),
+                        fp_platform=new_fields.get("fp_platform", ""),
+                        fp_platform_version=new_fields.get(
+                            "fp_platform_version", ""),
+                        fp_brand=new_fields.get("fp_brand", ""),
+                        fp_brand_version=new_fields.get("fp_brand_version", ""),
+                        fp_hardware_concurrency=new_fields.get(
+                            "fp_hardware_concurrency", 0),
+                        fp_gpu_vendor=new_fields.get("fp_gpu_vendor", ""),
+                        fp_gpu_renderer=new_fields.get("fp_gpu_renderer", ""),
+                        fp_accept_languages=new_fields.get(
+                            "fp_accept_languages", ""),
+                        fp_disable_spoofing=new_fields.get(
+                            "fp_disable_spoofing", ""),
+                        fp_language_mode=new_fields.get(
+                            "fp_language_mode", "auto"),
+                        fp_timezone_mode=new_fields.get(
+                            "fp_timezone_mode", "auto"),
+                        fp_viewport_mode=new_fields.get(
+                            "fp_viewport_mode", "auto"),
+                        fp_location_mode=new_fields.get(
+                            "fp_location_mode", "auto"),
+                        fp_geolocation_permission=new_fields.get(
+                            "fp_geolocation_permission", "allow"),
+                        fp_webrtc_mode=new_fields.get(
+                            "fp_webrtc_mode", "conceal"),
+                        fp_extra_args=new_fields.get("fp_extra_args", ""),
+                        geo_lat=new_fields.get("geo_lat", 0.0),
+                        geo_lon=new_fields.get("geo_lon", 0.0))
                     s.add(acc); s.commit(); s.refresh(acc); acc_id = acc.id
                 if creator:
                     acc.creator_storage_state = state_json
-                    if not is_xhs or not acc.storage_state:   # xhs 创作登录不覆盖读取态
+                    if not is_xhs and not acc.storage_state:
                         acc.storage_state = state_json
                 elif platform == "shipinhao":
                     # 视频号一套登录态即读取又发布,两处都写
@@ -558,28 +1076,60 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     acc.storage_state = state_json
                 if nickname:
                     acc.nickname = nickname
+                if observed_profile:
+                    acc.nickname = (
+                        observed_profile.get("nickname") or acc.nickname)
+                    acc.sec_uid = (
+                        observed_profile.get("sec_uid") or acc.sec_uid)
+                    acc.douyin_id = (
+                        observed_profile.get("douyin_id") or acc.douyin_id)
+                    acc.avatar = observed_profile.get("avatar") or acc.avatar
+                    acc.follower_count = (
+                        observed_profile.get("follower_count")
+                        or acc.follower_count)
+                    acc.aweme_count = (
+                        observed_profile.get("aweme_count")
+                        or acc.aweme_count)
                 if acc.identity_mode == "native" and identity.ua:
                     acc.ua = identity.ua
                 acc.status = "active"
                 s.add(acc); s.commit()
 
+            if fresh_account and platform == "xhs":
+                # Promote the successful temporary login session to the new
+                # durable account id without closing/reopening Chromium.
+                rebound = getattr(browser, "rebind_context", None)
+                if callable(rebound):
+                    await rebound(temporary_identity_key, acc_id)
+                identity.account_id = acc_id
+
             # 登录态已经持久化且账号已经落库：立即通知前端把账号显示出来。
             # 完整资料抓取可能还需数秒，不能让它阻塞“扫码成功”的交互反馈。
-            login_tasks[task_id] = {
-                "status": "persisted",
-                "account_id": acc_id,
-                "nickname": nickname or nm,
-                "hint": "扫码已确认，正在校验登录态并同步账号资料",
-                "environment": login_environment,
-            }
+            login_tasks[task_id] = _login_task_state(
+                status="persisted", platform=platform, creator=creator,
+                account_id=acc_id,
+                nickname=nickname or nm,
+                hint="扫码已确认，正在校验登录态并同步账号资料",
+                environment=login_environment,
+            )
 
-            profile_status = await _enrich_account_profile(acc_id, state_json)   # best-effort
+            if is_xhs and not creator:
+                # 主站登录已经给出 user/me（或二维码完成信号）。保留当前
+                # 账号浏览器会话，缺失资料可在同一会话中按需补全。
+                profile_status = (
+                    "ok" if observed_profile.get("sec_uid")
+                    else "deferred")
+            else:
+                profile_status = await _enrich_account_profile(
+                    acc_id, state_json)   # best-effort
             with get_session() as s:
                 acc = s.get(DouyinAccount, acc_id)
-                login_tasks[task_id] = {"status": "confirmed", "account_id": acc_id,
-                                        "nickname": acc.nickname if acc else (nickname or nm),
-                                        "profile_status": profile_status,
-                                        "environment": login_environment}
+                login_tasks[task_id] = _login_task_state(
+                    status="confirmed", platform=platform, creator=creator,
+                    account_id=acc_id,
+                    nickname=acc.nickname if acc else (nickname or nm),
+                    profile_status=profile_status,
+                    environment=login_environment)
         else:
             if fresh_account and tmp_profile:   # 没建账号,清理临时 profile
                 try:
@@ -587,10 +1137,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 except Exception:
                     pass
                 shutil.rmtree(tmp_profile, ignore_errors=True)
-            login_tasks[task_id] = {
-                "status": "expired",
-                "environment": login_environment,
-            }
+            login_tasks[task_id] = _login_task_state(
+                status="expired", platform=platform, creator=creator,
+                account_id=account_id, environment=login_environment)
     except Exception as e:
         traceback.print_exc()
         if fresh_account and tmp_profile:
@@ -599,96 +1148,224 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             except Exception:
                 pass
             shutil.rmtree(tmp_profile, ignore_errors=True)
-        login_tasks[task_id] = {
-            "status": "error",
-            "error": f"{type(e).__name__}: {e}",
-            "environment": login_environment,
-        }
+        login_tasks[task_id] = _login_task_state(
+            status="error", platform=platform, creator=creator,
+            account_id=account_id, error=f"{type(e).__name__}: {e}",
+            environment=login_environment)
     finally:
         if proxy_reservation_key:
             release_proxy_reservation(proxy_reservation_key)
 
 
+def _validate_login_browser_backend(
+        value: str, runtime_id: str = "") -> tuple[str, str]:
+    requested = str(value or "default").strip().lower()
+    runtime_id = str(runtime_id or "").strip()
+    if requested not in ACCOUNT_BROWSER_BACKENDS:
+        raise HTTPException(400, "浏览器环境取值无效")
+    status = _browser_backend_status(requested, runtime_id)
+    if not status["available"]:
+        raise HTTPException(400, f"浏览器环境不可用：{status['detail']}")
+    return requested, runtime_id
+
+
+def _validate_prelogin_fingerprint(
+        value: dict[str, Any] | None, browser_backend: str,
+        browser_runtime_id: str) -> dict | None:
+    """Validate optional first-login settings with the normal editor rules."""
+    if value is None:
+        return None
+    status = _browser_backend_status(browser_backend, browser_runtime_id)
+    if status.get("name") != "fingerprint_chromium":
+        raise HTTPException(400, "仅指纹浏览器环境支持登录前指纹配置")
+    if len(json.dumps(value, ensure_ascii=False)) > 12000:
+        raise HTTPException(400, "登录前指纹配置超过长度限制")
+    try:
+        body = AccountFingerprintUpdateIn(**value)
+    except ValidationError as exc:
+        raise HTTPException(400, "登录前指纹配置格式无效") from exc
+    return _validate_fingerprint_update(body)
+
+
 @app.post("/api/login/browser/start")
-async def login_browser_start(proxy: str = "auto"):
+async def login_browser_start(proxy: str = "auto", browser_backend: str = "default",
+                              browser_runtime_id: str = "",
+                              fingerprint: dict[str, Any] | None = None):
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("douyin", False)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, proxy_choice=proxy))
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="douyin", creator=False, account_id=None)
+    asyncio.create_task(_run_login(
+        task_id, proxy_choice=proxy, browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开浏览器窗口,请在其中点击“登录”并用抖音 App 扫码"}
 
 
 @app.post("/api/login/creator/start")
-async def login_creator_start(proxy: str = "auto"):
+async def login_creator_start(proxy: str = "auto", browser_backend: str = "default",
+                              browser_runtime_id: str = "",
+                              fingerprint: dict[str, Any] | None = None):
     """创作中心登录(用于自有账号评论模式;其登录态同样可用于公开抓取)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("douyin", True)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, creator=True, proxy_choice=proxy))
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="douyin", creator=True, account_id=None)
+    asyncio.create_task(_run_login(
+        task_id, creator=True, proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开创作中心窗口,请在其中扫码登录你的抖音号"}
 
 
 @app.post("/api/login/xhs/start")
-async def login_xhs_start(proxy: str = "auto"):
+async def login_xhs_start(proxy: str = "auto", browser_backend: str = "default",
+                          browser_runtime_id: str = "",
+                          fingerprint: dict[str, Any] | None = None):
     """小红书扫码登录(用于监控/读取)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("xhs", False)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, platform="xhs", proxy_choice=proxy))
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="xhs", creator=False, account_id=None)
+    asyncio.create_task(_run_login(
+        task_id, platform="xhs", proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开小红书官网首页,请在窗口中点击登录并用小红书 App 扫码"}
 
 
 @app.post("/api/login/xhs-creator/start")
-async def login_xhs_creator_start(proxy: str = "auto"):
+async def login_xhs_creator_start(proxy: str = "auto", browser_backend: str = "default",
+                                  browser_runtime_id: str = "",
+                                  fingerprint: dict[str, Any] | None = None):
     """小红书「创作服务平台」登录(用于发布/已发布列表)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("xhs", True)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, creator=True, platform="xhs", proxy_choice=proxy))
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="xhs", creator=True, account_id=None)
+    asyncio.create_task(_run_login(
+        task_id, creator=True, platform="xhs", proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开小红书创作平台窗口,请扫码登录(发布用)"}
 
 
 @app.post("/api/login/kuaishou/start")
-async def login_ks_start(proxy: str = "auto"):
+async def login_ks_start(proxy: str = "auto", browser_backend: str = "default",
+                         browser_runtime_id: str = "",
+                         fingerprint: dict[str, Any] | None = None):
     """快手扫码登录(用于监控/读取)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("kuaishou", False)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, platform="kuaishou", proxy_choice=proxy))
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="kuaishou", creator=False,
+        account_id=None)
+    asyncio.create_task(_run_login(
+        task_id, platform="kuaishou", proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开快手窗口,请在其中用快手 App 扫码登录"}
 
 
 @app.post("/api/login/kuaishou-creator/start")
-async def login_ks_creator_start(proxy: str = "auto"):
+async def login_ks_creator_start(proxy: str = "auto", browser_backend: str = "default",
+                                 browser_runtime_id: str = "",
+                                 fingerprint: dict[str, Any] | None = None):
     """快手「创作者服务平台」登录(用于发布)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("kuaishou", True)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, creator=True, platform="kuaishou",
-                                   proxy_choice=proxy))
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="kuaishou", creator=True,
+        account_id=None)
+    asyncio.create_task(_run_login(
+        task_id, creator=True, platform="kuaishou", proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开快手创作平台窗口,请扫码登录(发布用)"}
 
 
 @app.post("/api/login/shipinhao/start")
-async def login_channels_start(proxy: str = "auto"):
+async def login_channels_start(proxy: str = "auto", browser_backend: str = "default",
+                               browser_runtime_id: str = "",
+                               fingerprint: dict[str, Any] | None = None):
     """视频号扫码登录(读取/发布共用,微信扫码)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("shipinhao", False)
+    if reused is not None:
+        return reused
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
-    asyncio.create_task(_run_login(task_id, platform="shipinhao", proxy_choice=proxy))
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="shipinhao", creator=False,
+        account_id=None)
+    asyncio.create_task(_run_login(
+        task_id, platform="shipinhao", proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开视频号助手窗口,请用微信扫码登录"}
 
@@ -730,30 +1407,57 @@ async def login_cookie(body: CookieIn):
 async def list_accounts(platform: str | None = None):
     risk_controller = engine.risk if engine else RiskController(cfg)
     with get_session() as s:
+        all_accounts = s.exec(select(DouyinAccount)).all()
+        profile_keys: dict[int, str] = {}
+        profile_counts: dict[str, int] = {}
+        for account in all_accounts:
+            if not account.id or not account.profile_dir:
+                continue
+            normalized = os.path.normcase(str(
+                Path(account.profile_dir).expanduser().resolve()))
+            profile_keys[account.id] = normalized
+            profile_counts[normalized] = profile_counts.get(normalized, 0) + 1
         q = select(DouyinAccount)
         if platform:
             q = q.where(DouyinAccount.platform == platform)
         accs = s.exec(q).all()
         out = []
         for a in accs:
+            profile_key = profile_keys.get(a.id or 0, "")
             risk_state = s.get(AccountRiskState, a.id) if a.id else None
             next_write_at = risk_controller.next_write_at(a.id) if a.id else None
             used = len(s.exec(select(MonitorTarget.id)
                               .where(MonitorTarget.account_id == a.id)).all())
             environment = None
-            if a.platform == "xhs" and browser is not None:
+            environment_check = None
+            if browser is not None:
                 try:
+                    account_identity = browser.identity_for(a)
                     environment = browser.environment_snapshot(
-                        browser.identity_for(a), headless=False)
+                        account_identity, headless=False)
+                    check_status = getattr(
+                        browser, "environment_check_status", None)
+                    if callable(check_status):
+                        environment_check = check_status(account_identity)
                 except Exception:
                     environment = None
+                    environment_check = None
+            has_creator = (
+                bool(a.creator_storage_state)
+                or has_creator_cookies(a.storage_state)
+            )
+            has_read_login = (
+                _xhs_has_read_login_state(a.storage_state)
+                if a.platform == "xhs" else bool(a.storage_state)
+            )
             out.append({
                 "id": a.id, "platform": a.platform, "nickname": a.nickname, "status": a.status,
                 "sec_uid": a.sec_uid, "douyin_id": a.douyin_id, "avatar": a.avatar,
                 "follower_count": a.follower_count, "aweme_count": a.aweme_count,
-                "has_creator": bool(a.creator_storage_state) or has_creator_cookies(a.storage_state),
-                "kind": "creator" if (a.creator_storage_state or has_creator_cookies(a.storage_state)) else "fetch",
-                "has_storage": bool(a.storage_state),
+                "has_creator": has_creator,
+                "has_read_login": has_read_login,
+                "kind": "creator" if has_creator else "fetch",
+                "has_storage": has_read_login,
                 "login_type": "cookie" if a.cookie else "scan",
                 "monitor_count": used,
                 # 风控隔离画像
@@ -770,6 +1474,19 @@ async def list_accounts(platform: str | None = None):
                                         if a.write_paused_until else None),
                 "write_pause_reason": a.write_pause_reason,
                 "identity_mode": a.identity_mode,
+                "browser_backend": a.browser_backend,
+                "browser_runtime_id": a.browser_runtime_id,
+                "fingerprint_id": (a.fp_seed or "")[:12],
+                "fingerprint_ip": a.fp_source_ip,
+                "fingerprint_country": a.fp_country,
+                "fingerprint_region": a.fp_region,
+                "fingerprint_city": a.fp_city,
+                "fingerprint_timezone": a.timezone_id,
+                "fingerprint_locale": a.locale,
+                "fingerprint_generated_at": (
+                    a.fp_generated_at.isoformat() if a.fp_generated_at else None),
+                "fingerprint_ip_matches_exit": bool(
+                    a.fp_source_ip and a.exit_ip and a.fp_source_ip == a.exit_ip),
                 "risk_level": risk_state.risk_level if risk_state else 0,
                 "risk_cooldown_until": (
                     risk_state.cooldown_until.isoformat()
@@ -779,10 +1496,283 @@ async def list_accounts(platform: str | None = None):
                                   if next_write_at else None),
                 "ua": a.ua,
                 "profile_dir": a.profile_dir,
+                "profile_isolated": bool(
+                    profile_key and profile_counts.get(profile_key) == 1),
+                "profile_isolation_id": (
+                    hashlib.sha256(profile_key.encode("utf-8")).hexdigest()[:10]
+                    if profile_key else ""),
                 "environment": environment,
+                "environment_check": environment_check,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
             })
         return out
+
+
+# ─────────── 统一任务队列（只读看板）───────────
+_QUEUE_TYPES = {
+    "collections", "publishes", "comments", "actions",
+    "monitor_downloads", "collection_downloads",
+}
+_QUEUE_STATES = {"active", "pending", "running", "blocked", "failed", "completed", "all"}
+_QUEUE_RUNNING = {"running", "publishing", "doing", "downloading"}
+_QUEUE_FAILED = {"failed", "partial", "uncertain"}
+_QUEUE_COMPLETED = {"done", "canceled", "skipped"}
+
+
+def _queue_iso(value: datetime | None) -> str | None:
+    return value.isoformat(timespec="seconds") + "Z" if value else None
+
+
+def _queue_state(status: str, *, blocked_reason: str = "",
+                 next_allowed_at: datetime | None = None) -> str:
+    status = str(status or "").lower()
+    if status in _QUEUE_FAILED:
+        return "failed"
+    if status in _QUEUE_COMPLETED:
+        return "completed"
+    if blocked_reason or (next_allowed_at and next_allowed_at > datetime.utcnow()):
+        return "blocked"
+    if status in _QUEUE_RUNNING:
+        return "running"
+    return "pending"
+
+
+def _queue_keywords(value: str) -> str:
+    try:
+        values = json.loads(value or "[]")
+    except (TypeError, ValueError):
+        values = []
+    if isinstance(values, list):
+        text = "、".join(str(item).strip() for item in values if str(item).strip())
+        if text:
+            return text
+    return str(value or "").strip() or "未命名关键词任务"
+
+
+@app.get("/api/task-queue")
+async def list_task_queue(platform: str | None = None, queue_type: str = "",
+                          state: str = "active", q: str = "", page: int = 1,
+                          page_size: int = 20):
+    """Return persistent jobs from every worker queue in one normalized view."""
+    platform = str(platform or "").strip().lower()
+    if platform == "all":
+        platform = ""
+    queue_type = str(queue_type or "").strip().lower()
+    state = str(state or "active").strip().lower()
+    if queue_type and queue_type not in _QUEUE_TYPES:
+        raise HTTPException(400, "未知队列类型")
+    if state not in _QUEUE_STATES:
+        raise HTTPException(400, "未知队列状态")
+    q_text = str(q or "").strip()[:200]
+    q_folded = q_text.casefold()
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 20), 100))
+    include_completed = state in {"completed", "all"}
+
+    with get_session() as session:
+        accounts = {row.id: row for row in session.exec(select(DouyinAccount)).all()}
+        targets = {row.id: row for row in session.exec(select(MonitorTarget)).all()}
+        jobs = {row.id: row for row in session.exec(select(KeywordCollectionJob)).all()}
+        items: list[dict[str, Any]] = []
+
+        def account_name(account_id: int | None) -> str:
+            account = accounts.get(account_id)
+            return (account.nickname or account.douyin_id or account.sec_uid) if account else ""
+
+        def add(*, queue: str, queue_label: str, row_id: int | None,
+                row_platform: str, account_id: int | None, title: str, detail: str,
+                status: str, created_at: datetime | None,
+                source_tab: str, scheduled_at: datetime | None = None,
+                blocked_reason: str = "", blocked_signal: str = "",
+                next_allowed_at: datetime | None = None, error: str = "") -> None:
+            queue_state = _queue_state(
+                status, blocked_reason=blocked_reason,
+                next_allowed_at=next_allowed_at)
+            items.append({
+                "key": f"{queue}:{row_id}",
+                "queue_type": queue,
+                "queue_label": queue_label,
+                "id": row_id,
+                "platform": row_platform,
+                "account_id": account_id,
+                "account_name": account_name(account_id),
+                "title": str(title or "未命名任务")[:500],
+                "detail": str(detail or "")[:1000],
+                "status": str(status or "pending"),
+                "state": queue_state,
+                "scheduled_at": _queue_iso(scheduled_at),
+                "created_at": _queue_iso(created_at),
+                "next_allowed_at": _queue_iso(next_allowed_at),
+                "blocked_reason": str(blocked_reason or "")[:1000],
+                "blocked_signal": str(blocked_signal or "")[:120],
+                "error": str(error or "")[:1000],
+                "source_tab": source_tab,
+            })
+
+        task_specs = (
+            (KeywordCollectionJob,
+             ["pending", "running", "failed", "partial"], ["done", "canceled"]),
+            (PublishTask,
+             ["draft", "pending", "publishing", "failed", "uncertain"], ["done", "canceled"]),
+            (CommentTask,
+             ["draft", "pending", "doing", "failed", "uncertain"], ["done", "canceled"]),
+            (AccountActionTask,
+             ["draft", "pending", "doing", "failed", "uncertain"], ["done", "canceled"]),
+            (ContentRecord,
+             ["pending", "downloading", "failed"], ["done"]),
+            (KeywordCollectionContent,
+             ["pending", "downloading", "failed"], ["done", "skipped"]),
+        )
+        loaded: dict[type, list[Any]] = {}
+        for model, current_statuses, finished_statuses in task_specs:
+            status_column = (model.download_status
+                             if model in {ContentRecord, KeywordCollectionContent}
+                             else model.status)
+            active_statuses = [value for value in current_statuses
+                               if value not in _QUEUE_FAILED]
+            failed_statuses = [value for value in current_statuses
+                               if value in _QUEUE_FAILED]
+            rows = list(session.exec(
+                select(model).where(status_column.in_(active_statuses)).order_by(
+                    model.created_at.desc())).all())
+            # 活动任务必须完整展示；历史失败/完成记录只取每类最近 1000 条，
+            # 避免长期运行后“已完成”筛选一次性加载全部媒体记录。
+            if failed_statuses:
+                rows.extend(session.exec(
+                    select(model).where(status_column.in_(failed_statuses)).order_by(
+                        model.created_at.desc()).limit(1000)).all())
+            if include_completed:
+                rows.extend(session.exec(
+                    select(model).where(status_column.in_(finished_statuses)).order_by(
+                        model.created_at.desc()).limit(1000)).all())
+            loaded[model] = rows
+
+        for row in loaded[KeywordCollectionJob]:
+            add(
+                queue="collections", queue_label="关键词采集", row_id=row.id,
+                row_platform=row.platform, account_id=row.account_id,
+                title=_queue_keywords(row.keywords),
+                detail=(f"{row.current_step or '等待执行'} · 已采集 {row.content_count} 个作品 / "
+                        f"{row.comment_count} 条评论"),
+                status=row.status, created_at=row.created_at,
+                scheduled_at=row.started_at, source_tab="collections",
+                blocked_reason=row.blocked_reason, blocked_signal=row.blocked_signal,
+                next_allowed_at=row.next_allowed_at, error=row.error)
+
+        for row in loaded[PublishTask]:
+            add(
+                queue="publishes", queue_label="内容发布", row_id=row.id,
+                row_platform=row.platform, account_id=row.account_id,
+                title=row.title or row.desc or f"{row.media_type} 发布任务",
+                detail=row.desc if row.title else (row.topics or row.media_type),
+                status=row.status, created_at=row.created_at,
+                scheduled_at=row.scheduled_at, source_tab="publish",
+                blocked_reason=row.blocked_reason, blocked_signal=row.blocked_signal,
+                next_allowed_at=row.next_allowed_at, error=row.error)
+
+        for row in loaded[CommentTask]:
+            target = f"回复 {row.target_nick}" if row.target_nick else f"作品 {row.aweme_id}"
+            add(
+                queue="comments", queue_label="自动评论", row_id=row.id,
+                row_platform=row.platform, account_id=row.account_id,
+                title=row.content or "待发送评论", detail=target,
+                status=row.status, created_at=row.created_at,
+                scheduled_at=row.scheduled_at, source_tab="autocomment",
+                blocked_reason=row.blocked_reason, blocked_signal=row.blocked_signal,
+                next_allowed_at=row.next_allowed_at, error=row.error)
+
+        action_labels = {"follow": "关注", "unfollow": "取关", "send_dm": "发送私信"}
+        for row in loaded[AccountActionTask]:
+            action_label = action_labels.get(row.action, row.action or "账号动作")
+            target = row.target_nick or row.target_uid or row.target_sec_uid or "目标账号"
+            add(
+                queue="actions", queue_label="账号动作", row_id=row.id,
+                row_platform=row.platform, account_id=row.account_id,
+                title=f"{action_label} · {target}", detail=row.content,
+                status=row.status, created_at=row.created_at,
+                scheduled_at=row.scheduled_at, source_tab="hub",
+                blocked_reason=row.blocked_reason, blocked_signal=row.blocked_signal,
+                next_allowed_at=row.next_allowed_at, error=row.error)
+
+        for row in loaded[ContentRecord]:
+            target = targets.get(row.target_id)
+            account_id = target.account_id if target else None
+            target_name = ((target.alias or target.nickname or target.keyword)
+                           if target else "作品监控")
+            add(
+                queue="monitor_downloads", queue_label="监控下载", row_id=row.id,
+                row_platform=row.platform, account_id=account_id,
+                title=row.desc or f"作品 {row.aweme_id}", detail=target_name,
+                status=row.download_status, created_at=row.created_at,
+                source_tab="monitors", error=row.error)
+
+        for row in loaded[KeywordCollectionContent]:
+            job = jobs.get(row.job_id)
+            add(
+                queue="collection_downloads", queue_label="采集下载", row_id=row.id,
+                row_platform=row.platform,
+                account_id=job.account_id if job else None,
+                title=row.desc or f"作品 {row.aweme_id}",
+                detail=f"关键词：{row.keyword}" if row.keyword else "关键词采集媒体",
+                status=row.download_status, created_at=row.created_at,
+                source_tab="collections", error=row.error)
+
+    if platform:
+        items = [item for item in items if item["platform"] == platform]
+    if queue_type:
+        items = [item for item in items if item["queue_type"] == queue_type]
+    if q_folded:
+        def matches(item: dict[str, Any]) -> bool:
+            haystack = " ".join(str(item.get(key) or "") for key in (
+                "queue_label", "title", "detail", "account_name", "status",
+                "blocked_reason", "blocked_signal", "error", "platform"))
+            return q_folded in haystack.casefold()
+        items = [item for item in items if matches(item)]
+
+    summary = {name: 0 for name in (
+        "total", "active", "pending", "running", "blocked", "failed", "completed")}
+    summary["total"] = len(items)
+    for item in items:
+        item_state = item["state"]
+        summary[item_state] += 1
+        if item_state in {"pending", "running", "blocked"}:
+            summary["active"] += 1
+
+    if state == "active":
+        filtered = [item for item in items if item["state"] in {"pending", "running", "blocked"}]
+    elif state == "all":
+        filtered = items
+    else:
+        filtered = [item for item in items if item["state"] == state]
+
+    state_rank = {"running": 0, "blocked": 1, "pending": 2, "failed": 3, "completed": 4}
+
+    def sort_key(item: dict[str, Any]) -> tuple[int, float]:
+        timestamp = item.get("scheduled_at") or item.get("created_at") or ""
+        try:
+            epoch = datetime.fromisoformat(timestamp.rstrip("Z")).timestamp()
+        except (TypeError, ValueError):
+            epoch = 0.0
+        rank = state_rank.get(item["state"], 9)
+        if item["state"] in {"failed", "completed"}:
+            epoch = -epoch
+        return rank, epoch
+
+    filtered.sort(key=sort_key)
+    total = len(filtered)
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, pages)
+    start = (page - 1) * page_size
+    return {
+        "items": filtered[start:start + page_size],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": pages,
+        "summary": summary,
+        "history_limit_per_queue": 1000,
+        "generated_at": _queue_iso(datetime.utcnow()),
+    }
 
 
 # ─────────── 风控中心 ───────────
@@ -1163,6 +2153,693 @@ async def account_browser_environment(account_id: int):
     return browser.environment_snapshot(identity, headless=False)
 
 
+@app.get("/api/browser-backends")
+async def list_browser_backends():
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    return browser.backend_catalog()
+
+
+def _register_runtime_with_manager(runtime: BrowserRuntime | dict) -> None:
+    if browser is None:
+        return
+    item = (_browser_runtime_dict(runtime)
+            if isinstance(runtime, BrowserRuntime) else runtime)
+    browser.register_fingerprint_runtime(
+        item["runtime_id"], item["executable_path"],
+        allow_headless=bool(item.get("allow_headless", False)),
+        platform=str(item.get("platform") or "auto"),
+        version=str(item.get("version") or ""),
+        label=str(item.get("name") or ""),
+        enabled=bool(item.get("enabled", True)),
+    )
+
+
+def _upsert_browser_runtime(
+        session, item: dict, *, name: str = "",
+        platform: str = "auto", allow_headless: bool = False,
+        enable_new: bool = True) -> tuple[BrowserRuntime, bool]:
+    row = session.exec(select(BrowserRuntime).where(
+        BrowserRuntime.runtime_id == item["runtime_id"])).first()
+    created = row is None
+    if row is None:
+        row = BrowserRuntime(
+            runtime_id=item["runtime_id"],
+            enabled=enable_new,
+            platform=platform,
+            allow_headless=allow_headless,
+        )
+    row.name = str(name or row.name or item["name"]).strip()[:120]
+    row.version = item["version"]
+    row.executable_path = item["executable_path"]
+    row.file_sha256 = item["file_sha256"]
+    row.platform = str(row.platform or platform or "auto")
+    row.last_error = ""
+    if not row.status:
+        row.status = "unknown"
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row, created
+
+
+def _runtime_account_ids(session, runtime_id: str, *, followers: bool = False) -> list[int]:
+    rows = session.exec(select(DouyinAccount)).all()
+    ids = []
+    for account in rows:
+        if account.id is None:
+            continue
+        selected = str(account.browser_runtime_id or "").strip()
+        if selected == runtime_id or (followers and not selected):
+            effective = (browser.effective_browser_backend(account)
+                         if browser is not None else account.browser_backend)
+            if effective == "fingerprint_chromium":
+                ids.append(account.id)
+    return ids
+
+
+async def _close_runtime_accounts(account_ids: list[int]) -> None:
+    for account_id in set(account_ids):
+        lease = open_browsers.pop(account_id, None)
+        if lease is not None:
+            try:
+                await lease.close()
+            except Exception:
+                pass
+        if browser is not None:
+            try:
+                await browser.close_context(account_id)
+            except Exception:
+                pass
+
+
+class BrowserRuntimeAddIn(BaseModel):
+    executable_path: str
+    name: str = ""
+    platform: str = "auto"
+    allow_headless: bool = False
+
+
+class BrowserRuntimeScanIn(BaseModel):
+    root: str = ""
+
+
+class BrowserRuntimeUpdateIn(BaseModel):
+    name: str | None = None
+    enabled: bool | None = None
+    is_default: bool | None = None
+    allow_headless: bool | None = None
+
+
+@app.get("/api/browser-runtimes")
+async def list_browser_runtimes():
+    roots = _browser_runtime_scan_roots()
+    with get_session() as session:
+        rows = session.exec(select(BrowserRuntime).order_by(
+            BrowserRuntime.is_default.desc(), BrowserRuntime.id)).all()
+        return {
+            "root": roots[0] if roots else "",
+            "scan_roots": roots,
+            "default_runtime_id": next(
+                (row.runtime_id for row in rows if row.is_default), ""),
+            "runtimes": [_browser_runtime_dict(row) for row in rows],
+        }
+
+
+@app.post("/api/browser-runtimes")
+async def add_browser_runtime(body: BrowserRuntimeAddIn):
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    platform = str(body.platform or "auto").strip().lower()
+    if platform not in {"auto", "windows", "linux", "macos"}:
+        raise HTTPException(400, "内核平台取值无效")
+    try:
+        item = runtime_metadata(body.executable_path)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    with get_session() as session:
+        row, created = _upsert_browser_runtime(
+            session, item, name=body.name, platform=platform,
+            allow_headless=body.allow_headless)
+        rows = session.exec(select(BrowserRuntime)).all()
+        if not any(candidate.is_default for candidate in rows):
+            row.is_default = True
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+        payload = _browser_runtime_dict(row)
+    _register_runtime_with_manager(payload)
+    if payload["is_default"]:
+        browser.set_default_fingerprint_runtime(payload["runtime_id"])
+    return {"ok": True, "created": created, "runtime": payload}
+
+
+@app.post("/api/browser-runtimes/scan")
+async def scan_browser_runtimes(body: BrowserRuntimeScanIn | None = None):
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    requested_root = str(body.root if body else "").strip()
+    roots = ([str(Path(requested_root).expanduser().resolve())]
+             if requested_root else _browser_runtime_scan_roots())
+    if not roots:
+        raise HTTPException(400, "请先配置内核目录或输入扫描目录")
+    discovered_by_id: dict[str, dict] = {}
+    errors = []
+    for root in roots:
+        try:
+            for item in discover_chromium_runtimes(root):
+                discovered_by_id[item["runtime_id"]] = item
+        except (OSError, ValueError) as exc:
+            errors.append(f"{root}: {exc}")
+    if requested_root and errors:
+        raise HTTPException(400, errors[0])
+    discovered = list(discovered_by_id.values())
+    payloads = []
+    created_count = 0
+    with get_session() as session:
+        for item in discovered:
+            row, created = _upsert_browser_runtime(
+                session, item,
+                platform=cfg.engine.fingerprint_chromium_platform,
+                allow_headless=cfg.engine.fingerprint_chromium_allow_headless)
+            payloads.append(_browser_runtime_dict(row))
+            created_count += int(created)
+        rows = session.exec(select(BrowserRuntime).order_by(BrowserRuntime.id)).all()
+        if rows and not any(row.is_default and row.enabled for row in rows):
+            default = next((row for row in rows if row.enabled), None)
+            if default is not None:
+                for row in rows:
+                    row.is_default = row.id == default.id
+                    session.add(row)
+                session.commit()
+                payloads = [_browser_runtime_dict(row) for row in session.exec(
+                    select(BrowserRuntime).where(
+                        BrowserRuntime.runtime_id.in_(
+                            [item["runtime_id"] for item in discovered]))).all()]
+        default_id = next(
+            (row.runtime_id for row in session.exec(select(BrowserRuntime)).all()
+             if row.is_default and row.enabled), "")
+    for payload in payloads:
+        _register_runtime_with_manager(payload)
+    if default_id:
+        browser.set_default_fingerprint_runtime(default_id)
+    return {
+        "ok": True, "root": roots[0], "roots": roots,
+        "found": len(discovered), "created": created_count,
+        "runtimes": payloads, "errors": errors,
+    }
+
+
+@app.put("/api/browser-runtimes/{runtime_id}")
+async def update_browser_runtime(runtime_id: str, body: BrowserRuntimeUpdateIn):
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    old_default = ""
+    close_ids: list[int] = []
+    with get_session() as session:
+        row = session.exec(select(BrowserRuntime).where(
+            BrowserRuntime.runtime_id == runtime_id)).first()
+        if row is None:
+            raise HTTPException(404, "内核运行时不存在")
+        old_default = next((candidate.runtime_id for candidate in session.exec(
+            select(BrowserRuntime)).all() if candidate.is_default), "")
+        if body.name is not None:
+            row.name = str(body.name or "").strip()[:120] or row.name
+        if body.allow_headless is not None:
+            row.allow_headless = bool(body.allow_headless)
+        if body.enabled is not None:
+            row.enabled = bool(body.enabled)
+        if body.is_default:
+            row.enabled = True
+            for candidate in session.exec(select(BrowserRuntime)).all():
+                candidate.is_default = candidate.runtime_id == runtime_id
+                session.add(candidate)
+        elif not row.enabled and row.is_default:
+            replacement = session.exec(select(BrowserRuntime).where(
+                BrowserRuntime.runtime_id != runtime_id,
+                BrowserRuntime.enabled == True).order_by(  # noqa: E712
+                    BrowserRuntime.id)).first()
+            row.is_default = False
+            if replacement is not None:
+                replacement.is_default = True
+                session.add(replacement)
+        session.add(row)
+        session.commit()
+        rows = session.exec(select(BrowserRuntime)).all()
+        payload = _browser_runtime_dict(session.exec(select(BrowserRuntime).where(
+            BrowserRuntime.runtime_id == runtime_id)).first())
+        default_id = next(
+            (candidate.runtime_id for candidate in rows
+             if candidate.is_default and candidate.enabled), "")
+        close_ids = _runtime_account_ids(
+            session, runtime_id,
+            followers=(old_default == runtime_id or default_id == runtime_id))
+    _register_runtime_with_manager(payload)
+    if default_id:
+        browser.set_default_fingerprint_runtime(default_id)
+    elif browser.default_fingerprint_runtime_id == runtime_id:
+        browser.clear_default_fingerprint_runtime()
+    await _close_runtime_accounts(close_ids)
+    return {"ok": True, "runtime": payload,
+            "default_runtime_id": default_id}
+
+
+@app.post("/api/browser-runtimes/{runtime_id}/test")
+async def test_browser_runtime(runtime_id: str):
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    with get_session() as session:
+        row = session.exec(select(BrowserRuntime).where(
+            BrowserRuntime.runtime_id == runtime_id)).first()
+        if row is None:
+            raise HTTPException(404, "内核运行时不存在")
+        payload = _browser_runtime_dict(row)
+    _register_runtime_with_manager(payload)
+    checked_at = datetime.utcnow()
+    try:
+        result = await browser.probe_fingerprint_runtime(
+            runtime_id, Path(cfg.engine.profiles_dir) / "_runtime_probes")
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"[:500]
+        with get_session() as session:
+            row = session.exec(select(BrowserRuntime).where(
+                BrowserRuntime.runtime_id == runtime_id)).first()
+            if row is not None:
+                row.status = "bad"
+                row.last_error = detail
+                row.last_checked_at = checked_at
+                session.add(row)
+                session.commit()
+        raise HTTPException(400, detail) from exc
+    with get_session() as session:
+        row = session.exec(select(BrowserRuntime).where(
+            BrowserRuntime.runtime_id == runtime_id)).first()
+        if row is not None:
+            row.status = "ok"
+            row.last_error = ""
+            row.last_checked_at = checked_at
+            session.add(row)
+            session.commit()
+    return result
+
+
+@app.delete("/api/browser-runtimes/{runtime_id}")
+async def delete_browser_runtime(runtime_id: str):
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    with get_session() as session:
+        row = session.exec(select(BrowserRuntime).where(
+            BrowserRuntime.runtime_id == runtime_id)).first()
+        if row is None:
+            raise HTTPException(404, "内核运行时不存在")
+        bound = session.exec(select(DouyinAccount).where(
+            DouyinAccount.browser_runtime_id == runtime_id)).all()
+        if bound:
+            raise HTTPException(
+                409, f"仍有 {len(bound)} 个账号绑定此内核，请先切换账号环境")
+        was_default = row.is_default
+        session.delete(row)
+        session.commit()
+        replacement = session.exec(select(BrowserRuntime).where(
+            BrowserRuntime.enabled == True).order_by(  # noqa: E712
+                BrowserRuntime.id)).first()
+        if was_default and replacement is not None:
+            replacement.is_default = True
+            session.add(replacement)
+            session.commit()
+        default_id = replacement.runtime_id if was_default and replacement else next(
+            (candidate.runtime_id for candidate in session.exec(
+                select(BrowserRuntime)).all() if candidate.is_default), "")
+        follower_ids = _runtime_account_ids(
+            session, runtime_id, followers=was_default)
+    browser.unregister_fingerprint_runtime(runtime_id)
+    if default_id:
+        browser.set_default_fingerprint_runtime(default_id)
+    await _close_runtime_accounts(follower_ids)
+    return {"ok": True, "default_runtime_id": default_id}
+
+
+def _account_fingerprint_payload(account: DouyinAccount) -> dict:
+    return {
+        "account_id": account.id,
+        "fingerprint_id": (account.fp_seed or "")[:12],
+        "seed": account.fp_seed,
+        "engine_seed": fingerprint_seed_u32(account.fp_seed),
+        "source_ip": account.fp_source_ip,
+        "country": account.fp_country,
+        "region": account.fp_region,
+        "city": account.fp_city,
+        "timezone": account.timezone_id,
+        "locale": account.locale,
+        "accept_languages": account.fp_accept_languages,
+        "viewport": f"{account.viewport_w}x{account.viewport_h}",
+        "viewport_w": account.viewport_w,
+        "viewport_h": account.viewport_h,
+        "geo": ({"latitude": account.geo_lat, "longitude": account.geo_lon}
+                if account.geo_lat or account.geo_lon else None),
+        "geo_lat": account.geo_lat,
+        "geo_lon": account.geo_lon,
+        "platform": account.fp_platform,
+        "platform_version": account.fp_platform_version,
+        "brand": account.fp_brand,
+        "brand_version": account.fp_brand_version,
+        "hardware_concurrency": account.fp_hardware_concurrency,
+        "gpu_vendor": account.fp_gpu_vendor,
+        "gpu_renderer": account.fp_gpu_renderer,
+        "disable_spoofing": [
+            value for value in account.fp_disable_spoofing.split(",") if value],
+        "language_mode": account.fp_language_mode,
+        "timezone_mode": account.fp_timezone_mode,
+        "viewport_mode": account.fp_viewport_mode,
+        "location_mode": account.fp_location_mode,
+        "geolocation_permission": account.fp_geolocation_permission,
+        "webrtc_mode": account.fp_webrtc_mode,
+        "extra_args": account.fp_extra_args,
+        "actual_ua": account.ua,
+        "generated_at": (account.fp_generated_at.isoformat()
+                         if account.fp_generated_at else None),
+        "browser_backend": account.browser_backend,
+        "browser_runtime_id": account.browser_runtime_id,
+        "exit_ip": account.exit_ip,
+        "ip_matches_exit": bool(
+            account.fp_source_ip and account.exit_ip
+            and account.fp_source_ip == account.exit_ip),
+    }
+
+
+@app.get("/api/accounts/{account_id}/fingerprint")
+async def account_fingerprint(account_id: int):
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "账号不存在")
+        return _account_fingerprint_payload(account)
+
+
+class AccountFingerprintUpdateIn(BaseModel):
+    seed: str
+    source_ip: str = ""
+    country: str = ""
+    region: str = ""
+    city: str = ""
+    timezone: str = "Asia/Shanghai"
+    locale: str = "zh-CN"
+    accept_languages: str = ""
+    viewport_w: int = 1280
+    viewport_h: int = 800
+    geo_lat: float = 0.0
+    geo_lon: float = 0.0
+    platform: str = ""
+    platform_version: str = ""
+    brand: str = ""
+    brand_version: str = ""
+    hardware_concurrency: int = 0
+    gpu_vendor: str = ""
+    gpu_renderer: str = ""
+    disable_spoofing: list[str] = PydanticField(default_factory=list)
+    language_mode: str = "auto"
+    timezone_mode: str = "auto"
+    viewport_mode: str = "auto"
+    location_mode: str = "auto"
+    geolocation_permission: str = "allow"
+    webrtc_mode: str = "conceal"
+    extra_args: str = ""
+
+
+def _validate_fingerprint_update(body: AccountFingerprintUpdateIn) -> dict:
+    seed = str(body.seed or "").strip()
+    if not seed or len(seed) > 128:
+        raise HTTPException(400, "指纹种子长度必须为 1 到 128 个字符")
+    source_ip = str(body.source_ip or "").strip()
+    if source_ip:
+        try:
+            source_ip = str(ip_address(source_ip))
+        except ValueError as exc:
+            raise HTTPException(400, "指纹来源 IP 格式无效") from exc
+    timezone_id = str(body.timezone or "").strip()
+    try:
+        ZoneInfo(timezone_id)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise HTTPException(400, "请输入有效的 IANA 时区") from exc
+    locale = str(body.locale or "").strip()
+    if not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*", locale):
+        raise HTTPException(400, "语言格式无效，例如 zh-CN 或 en-US")
+    accepted = str(body.accept_languages or "").strip()
+    if len(accepted) > 160 or any(ord(char) < 32 for char in accepted):
+        raise HTTPException(400, "Accept-Language 格式无效")
+    if not 320 <= body.viewport_w <= 7680 \
+            or not 240 <= body.viewport_h <= 4320:
+        raise HTTPException(400, "窗口尺寸超出允许范围")
+    if not -90 <= body.geo_lat <= 90 or not -180 <= body.geo_lon <= 180:
+        raise HTTPException(400, "地理坐标超出允许范围")
+    platform = str(body.platform or "").strip().lower()
+    if platform not in {"", "windows", "linux", "macos"}:
+        raise HTTPException(400, "操作系统类型取值无效")
+    version_pattern = r"[0-9A-Za-z._-]{0,40}"
+    platform_version = str(body.platform_version or "").strip()
+    brand_version = str(body.brand_version or "").strip()
+    if not re.fullmatch(version_pattern, platform_version) \
+            or not re.fullmatch(version_pattern, brand_version):
+        raise HTTPException(400, "平台或浏览器版本格式无效")
+    brand = str(body.brand or "").strip()
+    if len(brand) > 40 or (brand and not re.fullmatch(r"[\w .-]+", brand)):
+        raise HTTPException(400, "浏览器品牌格式无效")
+    if body.hardware_concurrency != 0 \
+            and not 1 <= body.hardware_concurrency <= 256:
+        raise HTTPException(400, "CPU 核心数必须为 1 到 256，0 表示自动")
+    gpu_vendor = str(body.gpu_vendor or "").strip()
+    gpu_renderer = str(body.gpu_renderer or "").strip()
+    if len(gpu_vendor) > 160 or len(gpu_renderer) > 240 \
+            or any(ord(char) < 32 for char in gpu_vendor + gpu_renderer):
+        raise HTTPException(400, "GPU 指纹文本格式无效")
+    allowed_spoofing = {"font", "audio", "canvas", "clientrects", "gpu"}
+    disabled = []
+    for value in body.disable_spoofing:
+        name = str(value or "").strip().lower()
+        if name not in allowed_spoofing:
+            raise HTTPException(400, f"未知指纹模块: {name}")
+        if name not in disabled:
+            disabled.append(name)
+    modes = {
+        "fp_language_mode": (body.language_mode, {"auto", "custom"}, "语言模式"),
+        "fp_timezone_mode": (body.timezone_mode, {"auto", "custom"}, "时区模式"),
+        "fp_viewport_mode": (body.viewport_mode, {"auto", "custom"}, "窗口模式"),
+        "fp_location_mode": (body.location_mode, {"auto", "custom"}, "位置模式"),
+        "fp_geolocation_permission": (
+            body.geolocation_permission, {"ask", "allow", "deny"}, "地理位置权限"),
+        "fp_webrtc_mode": (body.webrtc_mode, {"conceal", "allow"}, "WebRTC 模式"),
+    }
+    normalized_modes = {}
+    for field_name, (raw_value, allowed, label) in modes.items():
+        selected = str(raw_value or "").strip().lower()
+        if selected not in allowed:
+            raise HTTPException(400, f"{label}取值无效")
+        normalized_modes[field_name] = selected
+    extra_args = str(body.extra_args or "").strip()
+    try:
+        parse_extra_launch_args(extra_args)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    def _short(value: str, field: str) -> str:
+        result = str(value or "").strip()
+        if len(result) > 100:
+            raise HTTPException(400, f"{field}长度超过限制")
+        return result
+    result = {
+        "fp_seed": seed,
+        "fp_source_ip": source_ip,
+        "fp_country": _short(body.country, "国家/地区"),
+        "fp_region": _short(body.region, "区域"),
+        "fp_city": _short(body.city, "城市"),
+        "timezone_id": timezone_id,
+        "locale": locale,
+        "fp_accept_languages": accepted,
+        "viewport_w": body.viewport_w,
+        "viewport_h": body.viewport_h,
+        "geo_lat": body.geo_lat,
+        "geo_lon": body.geo_lon,
+        "fp_platform": platform,
+        "fp_platform_version": platform_version,
+        "fp_brand": brand,
+        "fp_brand_version": brand_version,
+        "fp_hardware_concurrency": body.hardware_concurrency,
+        "fp_gpu_vendor": gpu_vendor,
+        "fp_gpu_renderer": gpu_renderer,
+        "fp_disable_spoofing": ",".join(disabled),
+        "fp_extra_args": extra_args,
+    }
+    result.update(normalized_modes)
+    return result
+
+
+@app.put("/api/accounts/{account_id}/fingerprint")
+async def update_account_fingerprint(
+        account_id: int, body: AccountFingerprintUpdateIn):
+    fields = _validate_fingerprint_update(body)
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "账号不存在")
+        for name, value in fields.items():
+            setattr(account, name, value)
+        account.fp_generated_at = datetime.utcnow()
+        session.add(account)
+        session.commit()
+        session.refresh(account)
+        payload = _account_fingerprint_payload(account)
+    lease = open_browsers.pop(account_id, None)
+    if lease is not None:
+        try:
+            await lease.close()
+        except Exception:
+            pass
+    if browser is not None:
+        await browser.close_context(account_id)
+    return {"ok": True, "fingerprint": payload}
+
+
+@app.post("/api/accounts/{account_id}/fingerprint/from-ip")
+async def generate_account_fingerprint_from_ip(account_id: int):
+    """Probe the current egress and persist a stable, locality-aligned device."""
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "账号不存在")
+        proxy = account.proxy or ""
+        fallback = {
+            "ip": account.exit_ip,
+            "country": account.exit_country or account.fp_country,
+            "region": account.fp_region,
+            "city": account.fp_city,
+            "timezone": account.exit_timezone or account.timezone_id,
+            "lat": account.geo_lat,
+            "lon": account.geo_lon,
+        }
+
+    geo = await _proxy_geo(proxy)
+    if not geo or not geo.get("ip"):
+        geo = fallback if fallback.get("ip") else None
+    if not geo:
+        raise HTTPException(400, "未取得当前出口 IP，请先确认代理可用后重试")
+
+    try:
+        fields = derive_ip_fingerprint(
+            account_id,
+            geo.get("ip", ""),
+            country=geo.get("country", ""),
+            region=geo.get("region", ""),
+            city=geo.get("city", ""),
+            timezone_id=geo.get("timezone", ""),
+            latitude=geo.get("lat") or 0.0,
+            longitude=geo.get("lon") or 0.0,
+            fallback_timezone=fallback.get("timezone") or "Asia/Shanghai",
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "账号不存在")
+        account.fp_seed = fields["fp_seed"]
+        account.fp_source_ip = fields["source_ip"]
+        account.fp_country = fields["country"]
+        account.fp_region = fields["region"]
+        account.fp_city = fields["city"]
+        account.fp_generated_at = datetime.utcnow()
+        account.timezone_id = fields["timezone_id"]
+        account.locale = fields["locale"]
+        account.viewport_w = fields["viewport_w"]
+        account.viewport_h = fields["viewport_h"]
+        account.geo_lat = fields["geo_lat"]
+        account.geo_lon = fields["geo_lon"]
+        # “按 IP 自动生成”同时恢复内核的种子派生值；之后仍可在编辑器逐项覆盖。
+        account.fp_platform = ""
+        account.fp_platform_version = ""
+        account.fp_brand = ""
+        account.fp_brand_version = ""
+        account.fp_hardware_concurrency = 0
+        account.fp_gpu_vendor = ""
+        account.fp_gpu_renderer = ""
+        account.fp_accept_languages = ""
+        account.fp_disable_spoofing = ""
+        account.fp_language_mode = "auto"
+        account.fp_timezone_mode = "auto"
+        account.fp_viewport_mode = "auto"
+        account.fp_location_mode = "auto"
+        account.fp_geolocation_permission = "allow"
+        account.fp_webrtc_mode = "conceal"
+        account.fp_extra_args = ""
+        session.add(account)
+        session.commit()
+        session.refresh(account)
+        payload = _account_fingerprint_payload(account)
+
+    # A running context was created with the old engine seed/timezone.  Release
+    # both user-opened and background contexts before returning the new device.
+    lease = open_browsers.pop(account_id, None)
+    if lease is not None:
+        try:
+            await lease.close()
+        except Exception:
+            pass
+    if browser is not None:
+        await browser.close_context(account_id)
+    return {"ok": True, "fingerprint": payload}
+
+
+class AccountBrowserBackendIn(BaseModel):
+    browser_backend: str
+    browser_runtime_id: str = ""
+
+
+@app.put("/api/accounts/{account_id}/browser-backend")
+async def set_account_browser_backend(
+        account_id: int, body: AccountBrowserBackendIn):
+    """Select an account runtime and close any context using the old one."""
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    requested = str(body.browser_backend or "").strip().lower()
+    runtime_id = str(body.browser_runtime_id or "").strip()
+    if requested not in ACCOUNT_BROWSER_BACKENDS:
+        raise HTTPException(400, "浏览器后端取值无效")
+    status = _browser_backend_status(requested, runtime_id)
+    if not status["available"]:
+        raise HTTPException(
+            400, f"浏览器后端不可用:{status['detail']}")
+
+    # A user-held headed context owns the same profile and must be released
+    # before switching its runtime executable.
+    lease = open_browsers.pop(account_id, None)
+    if lease is not None:
+        try:
+            await lease.close()
+        except Exception:
+            pass
+
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "账号不存在")
+        account.browser_backend = requested
+        account.browser_runtime_id = (
+            runtime_id if requested == "fingerprint_chromium" else "")
+        session.add(account)
+        session.commit()
+        session.refresh(account)
+        identity = browser.identity_for(account)
+
+    await browser.close_context(account_id)
+    environment = browser.environment_snapshot(identity, headless=False)
+    return {
+        "ok": True,
+        "browser_backend": requested,
+        "browser_runtime_id": identity.browser_runtime_id,
+        "effective_backend": status["name"],
+        "environment": environment,
+    }
+
+
 def _mask_proxy(proxy: str) -> str:
     """脱敏展示代理(隐藏账号密码)。"""
     if not proxy:
@@ -1180,12 +2857,19 @@ def _mask_proxy(proxy: str) -> str:
 
 @app.delete("/api/accounts/{account_id}")
 async def del_account(account_id: int):
-    import shutil
     pdir = ""
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if acc:
             pdir = acc.profile_dir or ""
+
+    # 先关闭所有手动窗口、后台 context 和 Profile 文件锁，再删除数据库记录。
+    # 账号 id 可能被 SQLite 复用，因此不能把旧 context 留给后续新账号。
+    await _close_runtime_accounts([account_id])
+
+    with get_session() as s:
+        acc = s.get(DouyinAccount, account_id)
+        if acc:
             risk_state = s.get(AccountRiskState, account_id)
             if risk_state:
                 s.delete(risk_state)
@@ -1195,26 +2879,50 @@ async def del_account(account_id: int):
             s.delete(acc)
             s.commit()
     # 删号同时清理其持久 profile(释放磁盘);代理回到池里(占用计数自然下降)
+    profile_removed = False
+    profile_cleanup_error = ""
     if pdir:
+        root = Path(cfg.engine.profiles_dir).expanduser().resolve()
+        candidate = Path(pdir).expanduser().resolve()
         try:
-            await browser.close_context(account_id)
-        except Exception:
-            pass
-        try:
-            shutil.rmtree(pdir, ignore_errors=True)
-        except Exception:
-            pass
-    return {"ok": True}
+            candidate.relative_to(root)
+            managed = candidate != root
+        except ValueError:
+            managed = False
+        if managed:
+            try:
+                if candidate.exists():
+                    shutil.rmtree(candidate)
+                profile_removed = True
+            except OSError as exc:
+                profile_cleanup_error = str(exc)[:240]
+        else:
+            profile_cleanup_error = "Profile 不在受管目录内，已跳过磁盘清理"
+    return {
+        "ok": True,
+        "profile_removed": profile_removed,
+        "profile_cleanup_error": profile_cleanup_error,
+    }
 
 
 @app.post("/api/accounts/{account_id}/refresh-profile")
 async def refresh_account_profile(account_id: int):
+    manual_browser = open_browsers.get(account_id)
+    if manual_browser is not None and bool(
+            getattr(manual_browser, "active", True)):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "该账号浏览器窗口仍开着，请先关闭窗口再刷新资料",
+            "blocked_by": "open_browser",
+        }
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if not acc:
             raise HTTPException(404, "账号不存在")
         state = acc.storage_state or acc.creator_storage_state
         platform = acc.platform
+        creator_state = acc.creator_storage_state or ""
     if not state:
         raise HTTPException(400, "该账号无浏览器登录态(Cookie 粘贴账号可能不含完整态),无法拉取资料")
 
@@ -1225,7 +2933,7 @@ async def refresh_account_profile(account_id: int):
     res, outcome = await _run_account_read(
         account_id, OperationKind.READ_LIGHT,
         f"refresh-profile:{account_id}", _refresh_profile,
-        empty_result={"ok": True})
+        empty_result={"ok": True}, allow_invalid_probe=True)
     if isinstance(outcome, dict):
         return outcome
     if res == "invalid":
@@ -1238,12 +2946,22 @@ async def refresh_account_profile(account_id: int):
                                  "(含它实际看到的请求),把它发我即可定位")
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
+        has_read_login = (
+            _xhs_has_read_login_state(acc.storage_state)
+            if acc and acc.platform == "xhs"
+            else bool(acc and acc.storage_state)
+        )
         return {"ok": True, "nickname": acc.nickname, "platform": acc.platform,
-                "douyin_id": acc.douyin_id, "sec_uid": acc.sec_uid}
+                "douyin_id": acc.douyin_id, "sec_uid": acc.sec_uid,
+                "status": acc.status,
+                "login_scope": ("creator" if platform == "xhs" and creator_state
+                                  else "read"),
+                "has_read_login": has_read_login,
+                "has_creator": bool(acc.creator_storage_state)}
 
 
 @app.post("/api/accounts/{account_id}/relogin/start")
-async def relogin_start(account_id: int):
+async def relogin_start(account_id: int, scope: str = "auto"):
     """重新登录:更新原账号的登录态(账号是创作者号则走创作中心)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
@@ -1251,17 +2969,44 @@ async def relogin_start(account_id: int):
         acc = s.get(DouyinAccount, account_id)
         if not acc:
             raise HTTPException(404, "账号不存在")
-        is_creator = bool(acc.creator_storage_state)
         platform = acc.platform
+        requested_scope = str(scope or "auto").strip().lower()
+        if requested_scope not in {"auto", "read", "creator"}:
+            raise HTTPException(400, "登录范围取值无效")
+        if platform == "xhs" and requested_scope != "auto":
+            is_creator = requested_scope == "creator"
+        else:
+            is_creator = bool(acc.creator_storage_state)
+
+    reused = await _reuse_or_reject_interactive_login(
+        platform, is_creator, account_id)
+    if reused is not None:
+        reused["login_scope"] = "creator" if is_creator else "read"
+        return reused
+
+    with get_session() as s:
+        acc = s.get(DouyinAccount, account_id)
+        if not acc:
+            raise HTTPException(404, "账号不存在")
         # 重登会清空旧认证 Cookie；完成扫码校验前账号不应继续显示“正常”。
-        acc.status = "invalid"
+        other_scope_available = (
+            platform == "xhs" and (
+                (not is_creator and bool(acc.creator_storage_state))
+                or (is_creator and _xhs_has_read_login_state(acc.storage_state))
+            )
+        )
+        if not other_scope_available:
+            acc.status = "invalid"
         s.add(acc)
         s.commit()
     task_id = uuid.uuid4().hex
-    login_tasks[task_id] = {"status": "opening"}
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform=platform, creator=is_creator,
+        account_id=account_id)
     asyncio.create_task(_run_login(task_id, creator=is_creator, account_id=account_id,
                                    platform=platform))
     return {"task_id": task_id, "status": "opening",
+            "login_scope": "creator" if is_creator else "read",
             "hint": "已打开浏览器窗口,请扫码重新登录该账号"}
 
 
@@ -1860,6 +3605,7 @@ async def cancel_account_action(task_id: int):
 
 _PLATFORM_HOST = {"douyin": "douyin.com", "xhs": "xiaohongshu.com",
                   "kuaishou": "kuaishou.com", "shipinhao": "weixin.qq.com"}
+_XHS_USER_ME_API = "/api/sns/web/v2/user/me"
 
 
 def _platform_url_allowed(platform: str, value: str) -> bool:
@@ -1875,13 +3621,96 @@ def _platform_url_allowed(platform: str, value: str) -> bool:
     )
 
 
+def _xhs_open_auth_response_handler(evidence: dict):
+    """Collect authoritative XHS login evidence while the headed page loads."""
+    async def on_response(response):
+        try:
+            parsed = urlsplit(str(response.url or ""))
+            host = (parsed.hostname or "").lower()
+            if not (host == "xiaohongshu.com"
+                    or host.endswith(".xiaohongshu.com")):
+                return
+            if parsed.path.rstrip("/").lower() != _XHS_USER_ME_API:
+                return
+            evidence["seen"] = True
+            if int(response.status) != 200:
+                return
+            payload = await response.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, dict):
+                return
+            if data.get("guest") is True:
+                evidence["guest"] = True
+                return
+            if data.get("user_id") or data.get("red_id"):
+                evidence["authenticated"] = True
+        except Exception:
+            return
+    return on_response
+
+
+async def _opened_page_login_state(page, platform: str,
+                                   xhs_evidence: dict | None = None) -> str:
+    """Classify the opened page without turning transient UI into auth loss."""
+    current_url = str(getattr(page, "url", "") or "").lower()
+    if platform == "xhs_creator":
+        if "passport" in current_url:
+            return "logged_out"
+        try:
+            parsed = urlsplit(current_url)
+            path = parsed.path.rstrip("/").lower()
+            host = (parsed.hostname or "").lower()
+        except (TypeError, ValueError):
+            path, host = "", ""
+        if path == "/login" or path.startswith("/login/"):
+            return "logged_out"
+        if host == "creator.xiaohongshu.com" and current_url:
+            return "authenticated"
+        return "unconfirmed"
+    if platform == "xhs":
+        evidence = xhs_evidence or {}
+        if "/website-login/captcha" in current_url \
+                or "error_code=300012" in current_url:
+            return "verification"
+        if "passport" in current_url:
+            return "logged_out"
+        try:
+            path = urlsplit(current_url).path.rstrip("/")
+        except (TypeError, ValueError):
+            path = ""
+        if path == "/login" or path.startswith("/login/"):
+            return "logged_out"
+        if evidence.get("authenticated"):
+            return "authenticated"
+        if evidence.get("guest"):
+            return "logged_out"
+        # The XHS header can briefly render an exact "登录" button before
+        # user/me resolves.  A button alone is not proof that the session died;
+        # profile refresh remains the authoritative fallback.
+        return "unconfirmed"
+
+    logged_out = (
+        "passport" in current_url
+        or "/login" in current_url
+        or "login.html" in current_url
+    )
+    if not logged_out:
+        try:
+            logged_out = await page.get_by_text(
+                "登录", exact=True).first.is_visible(timeout=1500)
+        except Exception:
+            logged_out = False
+    return "logged_out" if logged_out else "authenticated"
+
+
 @app.post("/api/accounts/{account_id}/open-browser")
-async def open_account_browser(account_id: int, url: str = ""):
+async def open_account_browser(
+        account_id: int, url: str = "", environment_check: bool = False):
     """用该账号登录态弹出一个真实浏览器窗口。默认停在平台首页;传 url 则停在该地址
     (仅允许本平台域名,用于「查看」视频号作品/管理页等需登录态才能打开的页面)。
     留给用户手动操作(查看/收发私信、F12 抓接口、手动维护等)。关闭窗口即落盘 Cookie。
-    小红书复用账号专属 CDP Chrome，窗口开启期间占用全局可见操作队列；其他平台仍使用
-    临时有头 Context。用完关闭窗口后，后台任务会继续执行。"""
+    小红书复用账号专属常驻 Context；手动窗口只占用当前账号 Profile，不长期占用
+    共享网络出口或全局可视操作锁，因此不同账号/平台窗口可以并存。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     with get_session() as s:
@@ -1890,15 +3719,21 @@ async def open_account_browser(account_id: int, url: str = ""):
             raise HTTPException(404, "账号不存在")
         platform = acc.platform
         identity = browser.identity_for(acc)
+        has_read_login = (
+            _xhs_has_read_login_state(acc.storage_state)
+            if platform == "xhs" else bool(acc.storage_state)
+        )
+        has_creator_login = bool(acc.creator_storage_state)
+        open_scope = (
+            "creator" if platform == "xhs" and not has_read_login
+            and has_creator_login else "read"
+        )
         states = [acc.storage_state or "", acc.creator_storage_state or ""]
-    # 该账号已开着窗口就先关旧的(同一 profile 不能并存)
-    old = open_browsers.pop(account_id, None)
-    if old is not None:
-        try:
-            await old.close()
-        except Exception:
-            pass
-    home = {"xhs": "https://www.xiaohongshu.com/",
+    home = {"xhs": ("https://creator.xiaohongshu.com/"
+                     if open_scope == "creator"
+                     # /user/profile/me 不再稳定触发 user/me，可能把有效登录态
+                     # 显示成“未确认”。首页会加载权威的当前用户接口。
+                     else "https://www.xiaohongshu.com/"),
             "kuaishou": "https://www.kuaishou.com/",
             "shipinhao": "https://channels.weixin.qq.com/platform"}.get(
                 platform, "https://www.douyin.com/")
@@ -1906,6 +3741,55 @@ async def open_account_browser(account_id: int, url: str = ""):
     tgt = (url or "").strip()
     if _platform_url_allowed(platform, tgt):
         home = tgt
+        if platform == "xhs":
+            try:
+                open_scope = (
+                    "creator" if (urlsplit(home).hostname or "").lower()
+                    == "creator.xiaohongshu.com" else "read")
+            except (TypeError, ValueError):
+                open_scope = "read"
+
+    # Repeated clicks should raise/navigate the already-owned account window,
+    # not tear down and cold-start the same Profile again.
+    old = open_browsers.get(account_id)
+    if old is not None and old.active:
+        old_page = getattr(old, "page", None)
+        try:
+            if old_page is not None and not old_page.is_closed():
+                check_opened = False
+                foreground_page = old_page
+                if environment_check:
+                    check_opener = getattr(
+                        browser, "open_environment_check", None)
+                    if callable(check_opener):
+                        check_page = await check_opener(
+                            identity, context=old.context, force=True,
+                            bring_to_front=True)
+                        check_opened = check_page is not None
+                        if check_page is not None:
+                            foreground_page = check_page
+                elif tgt:
+                    await old_page.goto(
+                        home, wait_until="domcontentloaded", timeout=30000)
+                await foreground_page.bring_to_front()
+                return {
+                    "ok": True,
+                    "reused": True,
+                    "logged_out": False,
+                    "login_state": "unconfirmed",
+                    "login_scope": open_scope,
+                    "environment_check_only": environment_check,
+                    "environment_check_opened": check_opened,
+                    "environment_check_error": "",
+                    "environment_check": None,
+                }
+        except Exception:
+            pass
+        open_browsers.pop(account_id, None)
+        try:
+            await old.close()
+        except Exception:
+            pass
     # 持久 profile 只在"首次空目录"才注入登录态;为防 profile 里 Cookie 缺失/过期导致
     # 打开后未登录,这里用 DB 里已知的登录态 Cookie 再注入一次(覆盖刷新)。
     from .browser.manager import _sanitize_cookies
@@ -1919,76 +3803,131 @@ async def open_account_browser(account_id: int, url: str = ""):
 
     @asynccontextmanager
     async def _open_guard():
-        @asynccontextmanager
-        async def _engine_guard():
-            if engine is None:
-                yield None
-                return
-            async with engine.operation_guard(
-                    account_id, OperationKind.LOGIN,
-                    fallback_key=f"open-browser:{account_id}",
-                    operation_target=identity) as guarded:
-                yield guarded
+        # A manually-opened window must reserve only its own account Profile.
+        # Holding operation_guard for the whole window lifetime also holds the
+        # shared network-exit semaphore; two direct-connect accounts would then
+        # look like the browser supports only one window. Production managers
+        # expose lock_for(); the fallback keeps lightweight integrations
+        # compatible.
+        lock_factory = getattr(browser, "lock_for", None)
+        if callable(lock_factory):
+            async with lock_factory(f"acc:{account_id}"):
+                yield identity
+            return
+        if engine is None:
+            yield identity
+            return
+        async with engine.operation_guard(
+                account_id, OperationKind.LOGIN,
+                fallback_key=f"open-browser:{account_id}",
+                operation_target=identity) as guarded:
+            yield guarded
 
-        async with _engine_guard() as guarded:
-            if platform == "xhs":
-                # A user-held XHS window participates in the same machine-wide
-                # visible-action queue as scheduled reads and writes.
-                async with browser.visible_action(identity):
-                    yield guarded
-            else:
-                yield guarded
+    @asynccontextmanager
+    async def _startup_visible_guard():
+        # Window startup/navigation is brief and still serialized for XHS so
+        # focus and native-page setup cannot race. Once the page is ready the
+        # global gate is released; the account-specific Profile lock remains.
+        if platform == "xhs":
+            async with browser.visible_action(
+                    identity, keep_context=True):
+                yield
+            return
+        yield
 
     guard = _open_guard()
     await guard.__aenter__()
+    startup_guard = _startup_visible_guard()
+    startup_entered = False
     logged_out = False
+    login_state = "unconfirmed"
+    check_opened = False
+    check_error = ""
+    check_page = None
     try:
+        await startup_guard.__aenter__()
+        startup_entered = True
         ctx = await browser.open_headed(identity)
         if cookies:
             try:
                 await ctx.add_cookies(_sanitize_cookies(cookies))
             except Exception as e:
                 print(f"[open-browser] 注入 Cookie 失败: {e!r}")
-        page = (await browser.new_page(identity, block_media=False)
-                if platform == "xhs" else await ctx.new_page())
-        await page.goto(home, wait_until="domcontentloaded", timeout=30000)
-        # Cookie 存在/未过期不代表服务端仍接受这次会话。若真实页面已回到登录
-        # 地址或明确显示“登录”，立即同步账号状态，避免账号列表误报“正常”。
-        current_url = str(getattr(page, "url", "") or "").lower()
-        logged_out = (
-            "passport" in current_url
-            or "/login" in current_url
-            or "login.html" in current_url
-        )
-        if not logged_out:
+        check_opener = getattr(browser, "open_environment_check", None)
+        if environment_check:
+            if not callable(check_opener):
+                raise RuntimeError("当前浏览器管理器未启用环境检测")
+            check_page = await check_opener(
+                identity, context=ctx, force=True, bring_to_front=True)
+            if check_page is None:
+                raise RuntimeError("环境检测仅适用于 Fingerprint Chromium")
+            page = check_page
+            check_opened = True
+        else:
+            # 新 Profile 或环境签名发生变化时，额外打开 BrowserScan 标签；
+            # 检测页失败不影响账号平台页和登录态检查。
+            if callable(check_opener):
+                try:
+                    check_page = await check_opener(identity, context=ctx)
+                    check_opened = check_page is not None
+                except Exception as check_exc:
+                    check_error = f"{type(check_exc).__name__}: {check_exc}"
+                    print(f"[environment-check] 自动打开失败: {check_exc!r}")
+            page = (await browser.new_page(identity, block_media=False)
+                    if platform == "xhs" else await ctx.new_page())
+            xhs_evidence: dict = {}
+            if platform == "xhs" and open_scope == "read":
+                page.on("response", _xhs_open_auth_response_handler(xhs_evidence))
+            await page.goto(home, wait_until="domcontentloaded", timeout=30000)
             try:
-                await page.wait_for_timeout(1000)
-                logged_out = await page.get_by_text(
-                    "登录", exact=True).first.is_visible(timeout=1500)
-            except Exception:
-                logged_out = False
-        if logged_out:
-            with get_session() as s:
-                opened_account = s.get(DouyinAccount, account_id)
-                if opened_account:
-                    opened_account.status = "invalid"
-                    s.add(opened_account)
-                    s.commit()
-        if platform == "xhs":
-            try:
-                await page.bring_to_front()
+                # Give the async response callback a short opportunity to parse
+                # user/me.  This is stronger than inspecting the first rendered
+                # header frame, which is often still the anonymous skeleton.
+                await page.wait_for_timeout(2500 if platform == "xhs" else 1000)
             except Exception:
                 pass
+            login_state = await _opened_page_login_state(
+                page, ("xhs_creator" if platform == "xhs"
+                       and open_scope == "creator" else platform), xhs_evidence)
+            logged_out = login_state == "logged_out"
+            if logged_out or (platform == "xhs" and login_state == "authenticated"):
+                with get_session() as s:
+                    opened_account = s.get(DouyinAccount, account_id)
+                    if opened_account:
+                        other_scope_available = (
+                            platform == "xhs" and logged_out and (
+                                (open_scope == "read" and has_creator_login)
+                                or (open_scope == "creator" and has_read_login)
+                            )
+                        )
+                        if not other_scope_available:
+                            opened_account.status = (
+                                "invalid" if logged_out else "active")
+                        s.add(opened_account)
+                        s.commit()
+            if platform == "xhs":
+                try:
+                    await page.bring_to_front()
+                except Exception:
+                    pass
     except BaseException as e:
+        if startup_entered:
+            await startup_guard.__aexit__(type(e), e, e.__traceback__)
         await guard.__aexit__(type(e), e, e.__traceback__)
         if not isinstance(e, Exception):
             raise
         raise HTTPException(500, f"打开浏览器失败: {e!r}")
+    try:
+        await startup_guard.__aexit__(None, None, None)
+    except BaseException as e:
+        await guard.__aexit__(type(e), e, e.__traceback__)
+        raise
     close_callback = (
         (lambda: browser.close_context(identity.key))
         if platform == "xhs" else None
     )
-    lease = _OpenBrowserLease(ctx, guard, close_callback=close_callback)
+    lease = _OpenBrowserLease(
+        ctx, guard, close_callback=close_callback, page=page)
     open_browsers[account_id] = lease
     try:                       # 用户手动关窗后,从登记表移除
         ctx.on("close", lambda *_: asyncio.create_task(
@@ -1998,7 +3937,25 @@ async def open_account_browser(account_id: int, url: str = ""):
                 _release_open_browser(account_id, lease)))
     except Exception:
         pass
-    return {"ok": True, "logged_out": logged_out}
+    check_status = None
+    status_reader = getattr(browser, "environment_check_status", None)
+    if callable(status_reader):
+        try:
+            check_status = status_reader(identity)
+        except Exception:
+            pass
+    return {"ok": True, "logged_out": logged_out,
+            "login_state": login_state, "login_scope": open_scope,
+            "environment_check_only": environment_check,
+            "environment_check_opened": check_opened,
+            "environment_check_error": check_error,
+            "environment_check": check_status}
+
+
+@app.post("/api/accounts/{account_id}/environment-check")
+async def open_account_environment_check(account_id: int):
+    """在账号自己的独立指纹 Profile 中手动打开 BrowserScan。"""
+    return await open_account_browser(account_id, environment_check=True)
 
 
 # ─────────── 账号代理(风控隔离)───────────
@@ -2106,30 +4063,42 @@ async def _probe_proxy(url: str, platform: str = "douyin", timeout: float = 15):
 
 
 def _parse_ipinfo(j: dict) -> dict:
+    lat = lon = 0.0
+    loc = str(j.get("loc") or "")
+    if "," in loc:
+        try:
+            lat, lon = (float(value) for value in loc.split(",", 1))
+        except (TypeError, ValueError):
+            lat = lon = 0.0
     return {"ip": j.get("ip", ""), "country": j.get("country", ""),
             "region": j.get("region", ""), "city": j.get("city", ""),
-            "isp": j.get("org", "")}
+            "isp": j.get("org", ""), "timezone": j.get("timezone", ""),
+            "lat": lat, "lon": lon}
 
 
 def _parse_ipapi(j: dict) -> dict:
     if j.get("status") != "success":
         return {}
-    return {"ip": j.get("query", ""), "country": j.get("country", ""),
+    return {"ip": j.get("query", ""),
+            "country": j.get("countryCode") or j.get("country", ""),
             "region": j.get("regionName", ""), "city": j.get("city", ""),
-            "isp": j.get("isp", "")}
+            "isp": j.get("isp", ""), "timezone": j.get("timezone", ""),
+            "lat": j.get("lat") or 0.0, "lon": j.get("lon") or 0.0}
 
 
 async def _proxy_geo(proxy_url: str, timeout: float = 8) -> dict | None:
-    """经代理查出口 IP 及归属地(多源兜底)。返回 {ip,country,region,city,isp} 或 None。"""
+    """经代理查出口 IP/归属地/时区/坐标；空代理表示宿主直连。"""
     import httpx
     sources = [
-        ("http://ip-api.com/json/?lang=zh-CN&fields=status,country,regionName,city,isp,query",
-         _parse_ipapi),
         ("https://ipinfo.io/json", _parse_ipinfo),
+        ("http://ip-api.com/json/?lang=zh-CN&fields=status,country,countryCode,regionName,city,lat,lon,timezone,isp,query",
+         _parse_ipapi),
     ]
     try:
-        async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout,
-                                     follow_redirects=True) as cli:
+        client_options = {"timeout": timeout, "follow_redirects": True}
+        if proxy_url:
+            client_options["proxy"] = proxy_url
+        async with httpx.AsyncClient(**client_options) as cli:
             for url, parser in sources:
                 try:
                     g = parser((await cli.get(url)).json())
@@ -2904,6 +4873,8 @@ def _share_history_dict(record: ShareDownloadRecord) -> dict:
 
 
 def _native_aweme_metadata(aweme, source_url: str) -> dict:
+    platform = str(getattr(aweme, "platform", "") or "douyin")
+    platform_name = "Xhs" if platform == "xhs" else platform.title()
     return {
         "id": aweme.aweme_id,
         "title": aweme.desc or aweme.aweme_id,
@@ -2916,11 +4887,11 @@ def _native_aweme_metadata(aweme, source_url: str) -> dict:
         "thumbnail": aweme.cover,
         "webpage_url": source_url,
         "original_url": source_url,
-        "extractor": "creatorhub:douyin",
-        "extractor_key": "CreatorHubDouyin",
+        "extractor": f"creatorhub:{platform}",
+        "extractor_key": f"CreatorHub{platform_name}",
         "ext": "jpg" if aweme.media_type == "images" else "mp4",
         "format": aweme.quality_label,
-        "platform": "douyin",
+        "platform": platform,
         "media_type": aweme.media_type,
         "media_count": len(aweme.medias),
     }
@@ -3053,6 +5024,166 @@ async def _douyin_native_share(
     }
 
 
+async def _xhs_native_share(
+    source_url: str,
+    *,
+    account_id: int | None,
+    output_root: Path,
+    quality: str,
+    should_download: bool,
+    save_metadata: bool,
+    save_thumbnail: bool,
+    proxy: str,
+) -> dict | None:
+    """Read XHS note metadata in the selected account browser, then fetch CDN media."""
+    if account_id is None or not _xhs_browser_reads_enabled():
+        return None
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if not account or account.platform != "xhs":
+            return None
+        identity = browser.identity_for(account)
+
+    from .browser.manager import normalize_proxy
+    if normalize_proxy(proxy) != normalize_proxy(identity.proxy):
+        raise ShareDownloadError(
+            "小红书链接下载必须复用账号已绑定代理；请先在账号环境中配置代理，"
+            "不要在下载页临时切换出口"
+        )
+
+    async def _read_note():
+        final_url = source_url
+        host = (urlsplit(source_url).hostname or "").lower()
+        if host == "xhslink.com" or host.endswith(".xhslink.com"):
+            try:
+                async with browser.visible_page(
+                        identity, url=source_url) as page:
+                    await page.wait_for_timeout(800)
+                    final_url = str(page.url or source_url)
+            except Exception as exc:
+                return None, f"小红书短链解析失败: {exc}"
+        ref = await xhs_resolve_note(final_url, _direct_request_ua(identity))
+        if ref is None:
+            return None, "没有从链接识别到小红书笔记 ID"
+        card, read_error = await fetch_xhs_note_detail(
+            browser,
+            identity,
+            ref.note_id,
+            xsec_token=ref.xsec_token,
+            xsec_source=ref.xsec_source or "pc_feed",
+            block_media=cfg.engine.block_media_resources,
+        )
+        return {
+            "card": card or {},
+            "note_id": ref.note_id,
+            "final_url": final_url,
+        }, read_error
+
+    payload, outcome = await _run_account_read(
+        account_id,
+        OperationKind.READ_HEAVY,
+        f"share-xhs:{account_id}",
+        _read_note,
+        empty_result={"card": {}, "note_id": "", "final_url": source_url},
+    )
+    if isinstance(outcome, dict):
+        raise ShareDownloadError(
+            f"小红书账号读取正在冷却: {outcome.get('reason') or '稍后重试'}")
+    if outcome:
+        raise ShareDownloadError(f"小红书笔记读取失败: {outcome}")
+
+    from .platforms.xhs import parse_note_detail as parse_xhs_note_detail
+    note_id = str(payload.get("note_id") or "")
+    card = payload.get("card") or {}
+    aweme = parse_xhs_note_detail(card, {"note_id": note_id})
+    if not aweme or not aweme.medias:
+        raise ShareDownloadError("小红书笔记已打开，但没有取得可下载的图片或视频")
+
+    # 不把账号 Cookie 回退给 yt-dlp 直连页面；这样才不会在同一登录态下
+    # 突然切换 TLS/HTTP2 指纹。
+    if quality == "audio" and aweme.media_type == "video":
+        raise ShareDownloadError(
+            "小红书账号浏览器模式暂不执行音频提取，请选择视频画质下载"
+        )
+
+    actual_ua = _direct_request_ua(identity)
+    metadata = _native_aweme_metadata(
+        aweme, str(payload.get("final_url") or source_url))
+    if not should_download:
+        return {
+            "ok": True,
+            "url": source_url,
+            "metadata": metadata,
+            "warnings": [],
+        }
+
+    downloader = Downloader(
+        str(output_root), actual_ua,
+        timeout=max(30.0, cfg.engine.download_timeout_seconds),
+    )
+    ok, _local_path, error = await downloader.download_aweme(
+        aweme, base_dir=str(output_root), proxy=identity.proxy or "")
+    if not ok:
+        raise ShareDownloadError(error or "小红书媒体下载失败")
+
+    target_dir = output_root / safe_title(aweme.author_name or "unknown")
+    title = safe_title(aweme.desc) or aweme.aweme_id
+    if save_metadata:
+        info_path = target_dir / f"{aweme.aweme_id}_{title}.info.json"
+        info_path.write_text(
+            json.dumps({
+                **metadata,
+                "media": [
+                    {"url": media.url, "kind": media.kind,
+                     "ext": media.ext, "index": media.index}
+                    for media in aweme.medias
+                ],
+                "raw": card,
+            }, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+
+    if save_thumbnail and aweme.media_type == "video" and aweme.cover:
+        import httpx
+        cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
+        try:
+            async with httpx.AsyncClient(
+                    timeout=max(30.0, cfg.engine.download_timeout_seconds),
+                    follow_redirects=True,
+                    headers={
+                        "User-Agent": actual_ua,
+                        "Referer": "https://www.xiaohongshu.com/",
+                    },
+                    proxy=normalize_proxy(identity.proxy) or None) as http:
+                await downloader._download_one(http, aweme.cover, cover_path)
+        except Exception:
+            pass
+
+    files = []
+    for path in sorted(target_dir.glob(f"{aweme.aweme_id}_*")):
+        if not path.is_file() or path.suffix.lower() in {".part", ".ytdl"}:
+            continue
+        files.append({
+            "name": path.name,
+            "path": str(path.resolve()),
+            "relative_path": path.relative_to(output_root).as_posix(),
+            "size": path.stat().st_size,
+            "role": _share_file_role(path),
+        })
+    if not any(item["role"] == "media" for item in files):
+        raise ShareDownloadError("小红书笔记解析成功，但本地没有生成媒体文件")
+    return {
+        "ok": True,
+        "job_id": f"xhs_{aweme.aweme_id}",
+        "url": source_url,
+        "output_dir": str(target_dir.resolve()),
+        "metadata": metadata,
+        "files": files,
+        "progress": {"status": "finished"},
+        "warnings": [],
+    }
+
+
 @app.post("/api/share-download/links")
 async def parse_share_links(body: ShareLinksIn):
     """只做本地文本清洗和链接提取，不访问分享站点。"""
@@ -3121,6 +5252,17 @@ async def share_download(body: ShareDownloadIn):
                             save_thumbnail=body.save_thumbnail,
                             proxy=proxy,
                             user_agent=user_agent,
+                        )
+                    elif link.platform == "xhs":
+                        item = await _xhs_native_share(
+                            link.url,
+                            account_id=body.account_id,
+                            output_root=output_root,
+                            quality=body.quality,
+                            should_download=body.download,
+                            save_metadata=body.save_metadata,
+                            save_thumbnail=body.save_thumbnail,
+                            proxy=proxy,
                         )
                     if item is not None:
                         pass
@@ -3964,6 +6106,14 @@ class TargetIn(BaseModel):
     video_quality: str = ""
     download_enabled: bool = True
     media_filter: str = "all"
+    max_scrolls: int = 0
+    max_items_per_scan: int = 0
+    record_media_filter: str = "all"
+    min_like_count: int = 0
+    min_comment_count: int = 0
+    recent_days: int = 0
+    include_keywords: list[str] = PydanticField(default_factory=list)
+    exclude_keywords: list[str] = PydanticField(default_factory=list)
     alias: str = ""
     group_name: str = ""
     tags: list[str] = PydanticField(default_factory=list)
@@ -3976,10 +6126,39 @@ class TargetUpdate(BaseModel):
     video_quality: str | None = None
     download_enabled: bool | None = None
     media_filter: str | None = None
+    max_scrolls: int | None = None
+    max_items_per_scan: int | None = None
+    record_media_filter: str | None = None
+    min_like_count: int | None = None
+    min_comment_count: int | None = None
+    recent_days: int | None = None
+    include_keywords: list[str] | None = None
+    exclude_keywords: list[str] | None = None
     account_id: int | None = None
     alias: str | None = None
     group_name: str | None = None
     tags: list[str] | None = None
+
+
+def _validate_monitor_strategy(*, max_scrolls: int | None,
+                               max_items_per_scan: int | None,
+                               record_media_filter: str | None,
+                               min_like_count: int | None,
+                               min_comment_count: int | None,
+                               recent_days: int | None) -> None:
+    if max_scrolls is not None and not 0 <= max_scrolls <= 30:
+        raise HTTPException(400, "抓取深度须为 0~30；0 表示使用平台默认值")
+    if max_items_per_scan is not None and not 0 <= max_items_per_scan <= 100:
+        raise HTTPException(400, "每轮作品上限须为 0~100；0 表示使用平台默认值")
+    if record_media_filter is not None and record_media_filter not in (
+            "all", "video", "images"):
+        raise HTTPException(400, "作品类型筛选须为 all、video 或 images")
+    if min_like_count is not None and not 0 <= min_like_count <= 1_000_000_000:
+        raise HTTPException(400, "最低点赞数须为 0~1000000000")
+    if min_comment_count is not None and not 0 <= min_comment_count <= 1_000_000_000:
+        raise HTTPException(400, "最低评论数须为 0~1000000000")
+    if recent_days is not None and not 0 <= recent_days <= 3650:
+        raise HTTPException(400, "发布时间范围须为 0~3650 天；0 表示不限")
 
 @app.post("/api/monitors")
 async def add_monitor(body: TargetIn):
@@ -4011,6 +6190,13 @@ async def add_monitor(body: TargetIn):
         raise HTTPException(400, "监控间隔须为 60~86400 秒")
     if body.media_filter not in ("all", "video", "images"):
         raise HTTPException(400, "媒体筛选须为 all、video 或 images")
+    _validate_monitor_strategy(
+        max_scrolls=body.max_scrolls,
+        max_items_per_scan=body.max_items_per_scan,
+        record_media_filter=body.record_media_filter,
+        min_like_count=body.min_like_count,
+        min_comment_count=body.min_comment_count,
+        recent_days=body.recent_days)
     if dl:
         try:
             Path(dl).expanduser().mkdir(parents=True, exist_ok=True)
@@ -4055,7 +6241,17 @@ async def add_monitor(body: TargetIn):
                           interval_seconds=body.interval_seconds, download_dir=dl,
                           initial_backfill_count=backfill_count, video_quality=q,
                           download_enabled=body.download_enabled,
-                          media_filter=body.media_filter)
+                          media_filter=body.media_filter,
+                          max_scrolls=body.max_scrolls,
+                          max_items_per_scan=body.max_items_per_scan,
+                          record_media_filter=body.record_media_filter,
+                          min_like_count=body.min_like_count,
+                          min_comment_count=body.min_comment_count,
+                          recent_days=body.recent_days,
+                          include_keywords=_dump_meta_tags(
+                              _meta_tags(body.include_keywords)),
+                          exclude_keywords=_dump_meta_tags(
+                              _meta_tags(body.exclude_keywords)))
         s.add(t); s.commit(); s.refresh(t)
         return _target_dict(t)
 
@@ -4095,6 +6291,29 @@ async def update_monitor(tid: int, body: TargetUpdate):
             if body.media_filter not in ("all", "video", "images"):
                 raise HTTPException(400, "媒体筛选须为 all、video 或 images")
             t.media_filter = body.media_filter
+        _validate_monitor_strategy(
+            max_scrolls=body.max_scrolls,
+            max_items_per_scan=body.max_items_per_scan,
+            record_media_filter=body.record_media_filter,
+            min_like_count=body.min_like_count,
+            min_comment_count=body.min_comment_count,
+            recent_days=body.recent_days)
+        if body.max_scrolls is not None:
+            t.max_scrolls = body.max_scrolls
+        if body.max_items_per_scan is not None:
+            t.max_items_per_scan = body.max_items_per_scan
+        if body.record_media_filter is not None:
+            t.record_media_filter = body.record_media_filter
+        if body.min_like_count is not None:
+            t.min_like_count = body.min_like_count
+        if body.min_comment_count is not None:
+            t.min_comment_count = body.min_comment_count
+        if body.recent_days is not None:
+            t.recent_days = body.recent_days
+        if body.include_keywords is not None:
+            t.include_keywords = _dump_meta_tags(_meta_tags(body.include_keywords))
+        if body.exclude_keywords is not None:
+            t.exclude_keywords = _dump_meta_tags(_meta_tags(body.exclude_keywords))
         if body.account_id is not None:
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != t.platform or acc.status != "active":
@@ -4891,6 +7110,14 @@ def _target_dict(t: MonitorTarget) -> dict:
         "initial_backfill_count": t.initial_backfill_count,
         "download_dir": t.download_dir, "video_quality": t.video_quality,
         "download_enabled": t.download_enabled, "media_filter": t.media_filter,
+        "max_scrolls": t.max_scrolls,
+        "max_items_per_scan": t.max_items_per_scan,
+        "record_media_filter": t.record_media_filter,
+        "min_like_count": t.min_like_count,
+        "min_comment_count": t.min_comment_count,
+        "recent_days": t.recent_days,
+        "include_keywords": _load_meta_tags(t.include_keywords),
+        "exclude_keywords": _load_meta_tags(t.exclude_keywords),
         "account_id": t.account_id,
         "last_scan_at": t.last_scan_at.isoformat() if t.last_scan_at else None,
         "last_error": t.last_error,
@@ -6033,13 +8260,13 @@ def _first_val(d: dict, *keys, default=""):
 
 
 async def _xhs_account_uid(state: str, proxy: str = "", *,
-                           detailed: bool = False):
+                           detailed: bool = False, user_agent: str = ""):
     """拿到该账号自己的 user_id(self_info → 创作平台资料兜底)。"""
     from .platforms.xhs import XhsApiClient, cookie_str_from_state, has_a1, creator_profile
     cookie = cookie_str_from_state(state)
     if has_a1(cookie):
         try:
-            client = XhsApiClient(cookie, cfg.engine.user_agent,
+            client = XhsApiClient(cookie, user_agent or cfg.engine.user_agent,
                                   timeout=cfg.engine.request_timeout_seconds, proxy=proxy)
             me = await client.self_info()
             uid = str((me or {}).get("user_id") or "")
@@ -6116,8 +8343,18 @@ async def list_published_notes(account_id: int):
             identity = browser.identity_for(current)
         out, good = [], False
         if read_state:
-            uid, uid_error = await _xhs_account_uid(
-                read_state, proxy, detailed=True)
+            uid = str(current.sec_uid or "") if current else ""
+            uid_error = ""
+            if not uid and _xhs_browser_reads_enabled():
+                profile, uid_error = await fetch_xhs_self_profile(
+                    browser, identity)
+                if profile:
+                    uid = str(
+                        (parse_xhs_self_user(profile) or {}).get("sec_uid")
+                        or "")
+            elif not uid:
+                uid, uid_error = await _xhs_account_uid(
+                    read_state, proxy, detailed=True)
             if uid_error:
                 category, _signal = classify_platform_error(uid_error)
                 if category in {
@@ -6220,6 +8457,7 @@ async def publish_note_media(account_id: int, note_id: str,
             raise HTTPException(400, "账号无效")
         state = acc.storage_state or acc.creator_storage_state or ""
         proxy = acc.proxy or ""
+        identity = browser.identity_for(acc) if browser is not None else None
     cookie = cookie_str_from_state(state)
     if not has_a1(cookie):
         raise HTTPException(400, "登录态缺少 a1")
@@ -6227,14 +8465,29 @@ async def publish_note_media(account_id: int, note_id: str,
     no_media = "拿不到该笔记的媒体(xsec_token 对 feed 接口无效)"
 
     async def _fetch_note_media():
-        client = XhsApiClient(
-            cookie, cfg.engine.user_agent,
-            timeout=cfg.engine.request_timeout_seconds, proxy=proxy)
-        try:
-            card = await client.note_detail(
-                note_id, xsec_token=xsec_token, xsec_source=xsec_source)
-        except XhsApiError as exc:
-            return None, exc
+        if _xhs_browser_reads_enabled() and identity is not None:
+            card, read_error = await fetch_xhs_note_detail(
+                browser, identity, note_id,
+                xsec_token=xsec_token, xsec_source=xsec_source,
+                block_media=cfg.engine.block_media_resources)
+            if read_error:
+                category, _signal = classify_platform_error(read_error)
+                if not card or category in {
+                        RiskCategory.RISK, RiskCategory.AUTH,
+                        RiskCategory.NETWORK}:
+                    return None, read_error
+        else:
+            client = XhsApiClient(
+                cookie,
+                (_direct_request_ua(identity)
+                 if browser is not None and identity is not None
+                 else cfg.engine.user_agent),
+                timeout=cfg.engine.request_timeout_seconds, proxy=proxy)
+            try:
+                card = await client.note_detail(
+                    note_id, xsec_token=xsec_token, xsec_source=xsec_source)
+            except XhsApiError as exc:
+                return None, exc
         aw = parse_note_detail(card or {}, {"note_id": note_id})
         if not aw or not aw.medias:
             return None, no_media
@@ -6277,13 +8530,40 @@ async def publish_note_comments(account_id: int, note_id: str,
             raise HTTPException(400, "账号无效")
         state = acc.storage_state or acc.creator_storage_state or ""
         proxy = acc.proxy or ""
+        identity = browser.identity_for(acc) if browser is not None else None
     cookie = cookie_str_from_state(state)
     if not has_a1(cookie):
         raise HTTPException(400, "登录态缺少 a1")
 
     async def _fetch_note_comments():
+        if _xhs_browser_reads_enabled() and identity is not None:
+            raw, read_error = await fetch_xhs_comments(
+                browser, identity, note_id, set(),
+                xsec_token=xsec_token, xsec_source=xsec_source,
+                max_scrolls=cfg.engine.comment_max_scrolls,
+                block_media=cfg.engine.block_media_resources)
+            if read_error:
+                category, _signal = classify_platform_error(read_error)
+                if not raw or category in {
+                        RiskCategory.RISK, RiskCategory.AUTH,
+                        RiskCategory.NETWORK}:
+                    return None, read_error
+            parsed = [item for item in
+                      (parse_xhs_comment(value)
+                       for value in flatten_comments(raw)) if item]
+            parsed.sort(
+                key=lambda comment: comment.get("create_time") or 0,
+                reverse=True)
+            return {
+                "comments": parsed,
+                "total": len(parsed),
+                "has_more": False,
+            }, ""
         client = XhsApiClient(
-            cookie, cfg.engine.user_agent,
+            cookie,
+            (_direct_request_ua(identity)
+             if browser is not None and identity is not None
+             else cfg.engine.user_agent),
             timeout=cfg.engine.request_timeout_seconds, proxy=proxy)
         # 评论接口要 pc_feed 令牌;先调 feed 拿一个新鲜令牌(feed 接受 pc_creatormng 令牌)
         tok, src = xsec_token, xsec_source

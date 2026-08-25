@@ -54,3 +54,71 @@ def test_keyword_collection_tasks_use_responsive_cards_without_clipped_actions()
     assert "collection-job-list" not in html
     assert ".collection-task-actions .collection-task-delete { margin-left:auto; }" in html
     assert "grid-template-columns:repeat(2,minmax(0,1fr))" in html
+
+
+def test_profile_refresh_does_not_report_deferred_probe_as_success():
+    source = APP_JS.read_text(encoding="utf-8")
+    start = source.index("async function refreshProfile(id)")
+    end = source.index("async function setProxy(id)", start)
+    refresh = source[start:end]
+
+    assert "if (r.skipped)" in refresh
+    assert 'r.reason ||' in refresh
+    assert '"info"' in refresh
+    assert "await refreshAccounts()" in refresh
+
+
+def test_monitor_advanced_filters_are_editable_and_retry_reports_real_result():
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    for control in (
+            "t-max-scrolls", "t-max-items", "t-record-media",
+            "t-recent-days", "t-min-likes", "t-min-comments",
+            "t-include-keywords", "t-exclude-keywords"):
+        assert f'id="{control}"' in html
+    assert "高级抓取与筛选" in html
+    assert 'if (!result.ok) throw new Error' in source
+    assert "已重新加入下载队列" not in source[source.index(
+        "async function retryDl"):source.index("async function delContent")]
+
+
+def test_unified_task_queue_page_has_filters_badge_and_source_navigation():
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'data-tab="queue"' in html
+    assert 'data-panel="queue"' in html
+    assert 'id="tb-queue"' in html
+    for control in ("queue-platform", "queue-type", "queue-state", "queue-query"):
+        assert f'id="{control}"' in html
+    assert 'id="queue-table"' in html
+    assert 'id="queue-pager"' in html
+    assert 'queue: {' in source[source.index("const PAGE_META"):source.index("function updatePageContext")]
+    assert 'async function refreshTaskQueue(' in source
+    assert 'async function refreshTaskQueueBadge(' in source
+    assert 'openTaskQueueSource' in source
+    assert '"queue"' in source[source.index("const VALID_TABS"):source.index("const LEGACY_HUB_TABS")]
+
+
+def test_fingerprint_environment_check_has_status_disclosure_and_manual_action():
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "environment_check" in source
+    assert "环境体检" in source
+    assert "checkBrowserEnvironment" in source
+    assert "/environment-check" in source
+    assert "该站点会看到当前出口 IP 和浏览器指纹" in source
+    assert "BrowserScan 体检标签" in html
+
+
+def test_fingerprint_login_can_be_configured_before_first_browser_launch():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert "configurePreLoginFingerprint" in source
+    assert "登录前指纹配置" in source
+    assert "使用此指纹登录" in source
+    assert "使用出口 IP 自动配置" in source
+    assert "loginStartOptions(fingerprint)" in source
+    assert 'body: JSON.stringify(fingerprint)' in source

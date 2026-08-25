@@ -207,11 +207,14 @@ function _uiClose(val) {
 }
 function _uiKey(e) {
   if (e.key === "Escape") uiModalCancel();
-  else if (e.key === "Enter" && document.activeElement && document.activeElement.tagName !== "TEXTAREA") uiModalOk();
+  else if (e.key === "Enter" && document.activeElement
+      && !["TEXTAREA", "BUTTON"].includes(document.activeElement.tagName)) uiModalOk();
 }
 function uiModalCancel() { _uiClose(_uiCancelVal); }
 function uiModalOk() { _uiClose(_uiGetVal ? _uiGetVal() : ""); }
 function _uiOpen(title, hint, { okText = "确定", danger = false, wide = false } = {}) {
+  const previousExtraAction = $("ui-extra-action");
+  if (previousExtraAction) previousExtraAction.remove();
   $("ui-title").textContent = title || "";
   $("ui-hint").textContent = hint || "";
   const ok = $("ui-ok");
@@ -848,6 +851,9 @@ const PAGE_META = {
   publish: {
     title: "内容发布", desc: "准备素材与文案，创建立即或定时发布任务。"
   },
+  queue: {
+    title: "任务队列", desc: "统一查看采集、发布、评论、账号动作与下载任务的排队、执行和阻塞状态。"
+  },
   autocomment: {
     title: "自动评论", desc: "配置评论与回复规则，并审核待发布文案。"
   },
@@ -893,6 +899,8 @@ function switchPlatform(pf) {
   applyPlatformUI();
   // 切换后立刻刷新该平台数据
   refreshAccounts(); refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshCollections();
+  updateTaskQueuePlatformLabel();
+  if (CURRENT_TAB === "queue") refreshTaskQueue(true); else refreshTaskQueueBadge();
   if (CURRENT_TAB === "risk-control") refreshRiskCenter(true);
   populateAcAccount(); onAcMode(); refreshCommentRules(); refreshCommentTasks();
   if (pfHasPublish(PLATFORM)) refreshPublish();
@@ -1057,11 +1065,66 @@ function switchTab(name, pushHistory = false) {
     refreshShareHistory();
   }
   if (name === "collections") { populateCollectionAccount(); refreshCollections(); }
+  if (name === "queue") refreshTaskQueue();
   if (name === "risk-control") refreshRiskCenter();
 }
 
 // ─── 扫码登录(真实浏览器窗口) ───
 let qrTimer = null;
+let preLoginBrowserBackend = "default";
+let preLoginBrowserCatalog = null;
+function browserChoiceParts(choice) {
+  const [backend, runtimeId = ""] = String(choice || "default").split("::", 2);
+  return { backend: backend || "default", runtimeId };
+}
+function browserChoiceOptions(catalog) {
+  const backends = catalog.backends || [];
+  const defaultBackend = backends.find(item => item.name === catalog.default);
+  const local = backends.find(item => item.name === "local");
+  const fingerprint = backends.find(item => item.name === "fingerprint_chromium");
+  const runtimes = catalog.runtimes || [];
+  const options = [{
+    value: "default",
+    label: `跟随全局（${defaultBackend ? defaultBackend.label : catalog.default}）`,
+    disabled: !!defaultBackend && !defaultBackend.available,
+  }];
+  if (local) options.push({
+    value: "local", label: local.label,
+    disabled: !local.available,
+  });
+  runtimes.forEach(runtime => options.push({
+    value: `fingerprint_chromium::${runtime.runtime_id}`,
+    label: `${runtime.name}${runtime.version ? ` · ${runtime.version}` : ""}${runtime.is_default ? " · 默认" : ""}`
+      + (runtime.available ? "" : ` · 不可用：${runtime.detail || "未配置"}`),
+    disabled: !runtime.available,
+  }));
+  if (!runtimes.length && fingerprint) options.push({
+    value: "fingerprint_chromium",
+    label: fingerprint.label + (fingerprint.available ? "" : ` · 不可用：${fingerprint.detail || "未配置"}`),
+    disabled: !fingerprint.available,
+  });
+  return options;
+}
+// 新账号尚未落库，扫码前先确定浏览器内核；成功后该选择随账号持久化。
+async function choosePreLoginBrowserBackend() {
+  let catalog;
+  try {
+    catalog = await api("/api/browser-backends");
+    preLoginBrowserCatalog = catalog;
+  } catch (e) {
+    toast("读取登录环境失败：" + e.message, "err");
+    return null;
+  }
+  const options = browserChoiceOptions(catalog);
+  const selected = await uiSelect({
+    title: "选择扫码登录环境",
+    hint: "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。新的指纹环境会同时打开 BrowserScan 体检标签。",
+    options,
+    value: preLoginBrowserBackend,
+  });
+  if (selected !== null) preLoginBrowserBackend = selected;
+  return selected;
+}
 // 登录前选代理:返回 "" (不用) | "auto" | 具体url | null(取消)
 async function choosePreLoginProxy() {
   let opts = [];
@@ -1088,17 +1151,68 @@ async function choosePreLoginProxy() {
   }
   return v;
 }
-function loginStartUrl(path, proxy) {
-  return path + "?proxy=" + encodeURIComponent(proxy);
+function freshPreLoginFingerprint(browserBackend) {
+  const choice = browserChoiceParts(browserBackend);
+  const runtimes = (preLoginBrowserCatalog || {}).runtimes || [];
+  const runtime = runtimes.find(item => item.runtime_id === choice.runtimeId)
+    || runtimes.find(item => item.is_default) || {};
+  const seed = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
+    ? globalThis.crypto.randomUUID().replaceAll("-", "")
+    : `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+  return {
+    seed, engine_seed: "", fingerprint_id: seed.slice(0, 12),
+    source_ip: "", country: "", region: "", city: "",
+    timezone: "Asia/Shanghai", locale: "zh-CN", accept_languages: "",
+    viewport_w: 1280, viewport_h: 800, geo_lat: 0, geo_lon: 0,
+    platform: "", platform_version: "", brand: "", brand_version: "",
+    hardware_concurrency: 0, gpu_vendor: "", gpu_renderer: "",
+    disable_spoofing: [], language_mode: "auto", timezone_mode: "auto",
+    viewport_mode: "auto", location_mode: "auto",
+    geolocation_permission: "allow", webrtc_mode: "conceal", extra_args: "",
+    runtime_version: runtime.version || "",
+  };
+}
+async function configurePreLoginFingerprint(browserBackend) {
+  const choice = browserChoiceParts(browserBackend);
+  const effectiveBackend = choice.backend === "default"
+    ? (preLoginBrowserCatalog || {}).default
+    : choice.backend;
+  if (effectiveBackend !== "fingerprint_chromium") return "";
+  const draft = freshPreLoginFingerprint(browserBackend);
+  const account = {
+    nickname: "新账号",
+    environment: { runtime_version: draft.runtime_version },
+  };
+  const action = await uiFingerprintEditor(account, draft, { preLogin: true });
+  if (!action) return null;
+  return action.action === "auto" ? "" : action.data;
+}
+function loginStartUrl(path, proxy, browserBackend) {
+  const choice = browserChoiceParts(browserBackend);
+  return path + "?proxy=" + encodeURIComponent(proxy)
+    + "&browser_backend=" + encodeURIComponent(choice.backend)
+    + "&browser_runtime_id=" + encodeURIComponent(choice.runtimeId);
+}
+function loginStartOptions(fingerprint) {
+  if (!fingerprint || typeof fingerprint !== "object") return { method: "POST" };
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fingerprint),
+  };
 }
 async function startLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开浏览器窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/browser/start", proxy), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/browser/start", proxy, browserBackend), loginStartOptions(fingerprint));
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>浏览器窗口已打开</b>，请在该窗口点击「登录」并使用抖音 App 扫码。<br>完成后这里会自动刷新。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("登录启动失败:" + e.message, "err"); }
@@ -1106,6 +1220,7 @@ async function startLogin() {
 function loginEnvironmentText(env) {
   if (!env || !env.backend_label) return "";
   let text = env.backend_label;
+  if (env.runtime_version && !text.includes(env.runtime_version)) text += " · " + env.runtime_version;
   if (env.has_proxy) text += " · 账号代理";
   if (env.fallback_reason) text += "（" + env.fallback_reason + "）";
   return text;
@@ -1121,7 +1236,9 @@ function pollLogin(tid) {
       if (["opening", "waiting"].includes(res.status) && envText) {
         $("qrstatus").innerHTML = `${ic("i-eye")} 浏览器已打开 · <b>${esc(envText)}</b><br>请在可见窗口完成登录。`;
       }
-      if (res.status === "persisted") {
+      if (res.status === "verification") {
+        $("qrstatus").innerHTML = `${ic("i-info")} <b>需要完成一次设备安全验证</b><br>${esc(res.hint || "请扫描浏览器中的验证二维码，验证通过后会自动继续登录。")}`;
+      } else if (res.status === "persisted") {
         $("qrstatus").textContent = "扫码已确认，正在校验登录态并同步账号资料…";
         if (!accountShown) {
           accountShown = true;
@@ -1134,7 +1251,7 @@ function pollLogin(tid) {
           $("qrstatus").textContent = "登录校验未通过，请重新扫码";
           toast((PF_NAME[PLATFORM] || "账号") + "登录校验未通过，请重新扫码", "err");
         } else {
-          const suffix = res.profile_status === "error" ? "（资料稍后同步）" : "";
+          const suffix = ["error", "deferred"].includes(res.profile_status) ? "（资料可稍后刷新）" : "";
           $("qrstatus").textContent = "登录成功 ✓ " + (res.nickname || "") + suffix;
           toast("登录成功 " + (res.nickname || "") + suffix, res.profile_status === "error" ? "info" : "ok");
           setTimeout(() => { $("qrbox").style.display = "none"; }, 650);
@@ -1156,13 +1273,17 @@ function pollLogin(tid) {
 
 // ─── 创作者登录(自有账号评论模式用) ───
 async function startCreatorLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开创作中心窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/creator/start", proxy), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/creator/start", proxy, browserBackend), loginStartOptions(fingerprint));
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>创作中心窗口已打开</b>，请在该窗口扫码登录抖音账号。<br>此登录态也可用于公开抓取。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
@@ -1170,41 +1291,63 @@ async function startCreatorLogin() {
 
 // ─── 小红书扫码登录 ───
 async function startXhsLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开小红书窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/xhs/start", proxy), { method: "POST" });
-    $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书官网首页已打开</b>，请在窗口中点击「登录」并使用小红书 App 扫码。<br>主站登录成功后会保存读取登录态并自动关闭窗口。<br>如需发布，请随后单独点击「创作者登录」。`;
+    const res = await api(loginStartUrl("/api/login/xhs/start", proxy, browserBackend), loginStartOptions(fingerprint));
+    if (res.reused) {
+      $("qrstatus").innerHTML = `${ic("i-eye")} <b>已有小红书扫码窗口</b>，已尝试切换到前台，请直接在该窗口继续。`;
+      toast("已有扫码窗口，已切换到前台", "info");
+    } else {
+      $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书官网首页已打开</b>，请在窗口中点击「登录」并使用小红书 App 扫码。<br>新指纹环境会附带 BrowserScan 体检标签，可先核对 IP、时区和 WebRTC。<br>主站登录成功后会保存读取登录态并自动关闭窗口。<br>如需发布，请随后单独点击「创作者登录」。`;
+    }
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("小红书登录启动失败:" + e.message, "err"); }
 }
 
 // ─── 小红书创作者登录(发布用) ───
 async function startXhsCreatorLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开小红书创作平台窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/xhs-creator/start", proxy), { method: "POST" });
-    $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书创作平台窗口已打开</b>，请扫码登录，此登录态用于发布。<br>登录成功后请稍等片刻再关闭窗口。`;
+    const res = await api(loginStartUrl("/api/login/xhs-creator/start", proxy, browserBackend), loginStartOptions(fingerprint));
+    if (res.reused) {
+      $("qrstatus").innerHTML = `${ic("i-eye")} <b>已有小红书创作平台扫码窗口</b>，已尝试切换到前台，请直接在该窗口继续。`;
+      toast("已有创作者扫码窗口，已切换到前台", "info");
+    } else {
+      $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书创作平台窗口已打开</b>，请扫码登录，此登录态用于发布。<br>登录成功后请稍等片刻再关闭窗口。`;
+    }
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
 }
 
 // ─── 快手扫码登录 ───
 async function startKsLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开快手窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/kuaishou/start", proxy), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/kuaishou/start", proxy, browserBackend), loginStartOptions(fingerprint));
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>快手窗口已打开</b>，请在该窗口点击「登录」并使用快手 App 扫码。<br>完成后这里会自动刷新。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("快手登录启动失败:" + e.message, "err"); }
@@ -1212,13 +1355,17 @@ async function startKsLogin() {
 
 // ─── 快手创作者登录(发布用) ───
 async function startKsCreatorLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开快手创作平台窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/kuaishou-creator/start", proxy), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/kuaishou-creator/start", proxy, browserBackend), loginStartOptions(fingerprint));
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>快手创作平台窗口已打开</b>，请扫码登录，此登录态用于发布。<br>登录成功后请稍等片刻再关闭窗口。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
@@ -1226,13 +1373,17 @@ async function startKsCreatorLogin() {
 
 // ─── 视频号扫码登录(读取/发布共用,微信扫码) ───
 async function startChannelsLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend();
+  if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开视频号助手窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/shipinhao/start", proxy), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/shipinhao/start", proxy, browserBackend), loginStartOptions(fingerprint));
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>视频号助手窗口已打开</b>，请使用微信扫码登录，读取和发布共用此登录态。<br>登录成功后请稍等片刻再关闭窗口。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("视频号登录启动失败:" + e.message, "err"); }
@@ -1260,6 +1411,8 @@ async function saveCookie() {
 
 // ─── 账号 ───
 let ACCOUNTS = [];
+let BROWSER_RUNTIMES = [];
+let BROWSER_RUNTIME_ROOT = "";
 let MONITORS = [], WATCHES = [], CONTENTS = [];
 let COLLECTION_JOBS = [], COLLECTION_JOB_ID = 0, COLLECTION_PAGE = 1;
 let DANMAKU_WATCHES = [];
@@ -1599,13 +1752,17 @@ async function refreshAccounts() {
       a.douyin_id ? idName + esc(a.douyin_id) : null,
       a.sec_uid ? secName + esc(a.sec_uid).slice(0, 16) + "…" : null,
     ].filter(Boolean).join(" · ");
+    const loginDetails = isXhs
+      ? [a.has_read_login ? "读取登录已保存" : "读取登录未配置",
+         a.has_creator ? "创作登录已保存" : "创作登录未配置"]
+      : [a.has_storage
+          ? (a.status === "invalid" ? "登录态已保存但校验失效" : "登录态有效")
+          : "无登录态"];
     const detail = [
       a.aweme_count ? a.aweme_count + (isXhs ? " 笔记" : " 作品") : null,
       a.follower_count ? fmtNum(a.follower_count) + " 粉丝" : null,
       isXhs ? "扫码登录" : (a.login_type === "cookie" ? "Cookie 登录" : "扫码登录"),
-      a.has_storage
-        ? (a.status === "invalid" ? "登录态已保存但校验失效" : "登录态有效")
-        : "无登录态",
+      ...loginDetails,
       `被 ${a.monitor_count} 个监控使用`,
       a.created_at ? "登录于 " + new Date(a.created_at + "Z").toLocaleString() : null,
     ].filter(Boolean).join(" · ");
@@ -1620,9 +1777,30 @@ async function refreshAccounts() {
     const proxyLine = a.has_proxy
       ? `<div class="mut" style="font-size:11px;margin-top:2px">代理 <code>${esc(a.proxy)}</code> <span class="pill ${pxCls}">${pxText[a.proxy_status] || a.proxy_status}</span></div>`
       : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--warn)">${ic("i-info")}未配置代理(走本机真实 IP,多账号有关联风险)</div>`;
-    const browserLine = isXhs && a.environment
+    const browserLine = a.environment
       ? `<div class="mut" style="font-size:11px;margin-top:2px">浏览器 ${esc(loginEnvironmentText(a.environment))}</div>`
       : "";
+    const fingerprintPlace = [a.fingerprint_country, a.fingerprint_region, a.fingerprint_city]
+      .filter(Boolean).join(" · ");
+    const fingerprintLine = a.fingerprint_ip
+      ? `<div class="mut" style="font-size:11px;margin-top:2px">指纹 ${esc(a.fingerprint_id || "-")} · IP ${esc(a.fingerprint_ip)} · ${esc(fingerprintPlace || a.fingerprint_timezone || "未知地区")}${a.exit_ip && !a.fingerprint_ip_matches_exit ? ' <span class="pill invalid">与当前出口不一致</span>' : ""}</div>`
+      : `<div class="mut" style="font-size:11px;margin-top:2px">指纹尚未按出口 IP 生成</div>`;
+    const isolationLine = a.profile_isolated
+      ? `<div class="mut" style="font-size:11px;margin-top:2px">环境隔离 <span class="pill active">独立 Profile ${esc(a.profile_isolation_id || "")}</span></div>`
+      : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--danger)">${ic("i-info")}环境隔离异常：Profile 与其他账号重复或尚未分配</div>`;
+    const environmentCheck = a.environment_check;
+    const checkLine = environmentCheck && environmentCheck.enabled
+      ? `<div class="mut" style="font-size:11px;margin-top:2px">环境体检 <span class="pill ${environmentCheck.required ? "pending" : "active"}">${environmentCheck.required ? "待打开" : "已提示"}</span>${environmentCheck.last_opened_at ? ` · ${new Date(environmentCheck.last_opened_at).toLocaleString()}` : " · 新环境首次启动自动打开"}</div>`
+      : "";
+    const reloginButton = isXhs && !a.has_read_login
+      ? `<button class="sm" style="background:var(--warn);border-color:transparent;color:#1a1a1a" onclick="relogin(${a.id},'read')">补读取登录</button>`
+      : (a.status === "invalid"
+          ? `<button class="sm" style="background:var(--warn);border-color:transparent;color:#1a1a1a" onclick="relogin(${a.id})">重新登录</button>`
+          : `<button class="ghost sm" onclick="relogin(${a.id})" title="${isXhs ? "重新扫码登录当前授权" : "重新扫码登录"}">重新登录</button>`);
+    const creatorLoginButton = isXhs && !a.has_creator
+      ? `<button class="ghost sm" onclick="relogin(${a.id},'creator')">补创作登录</button>` : "";
+    const accountStatusLabel = a.status === "invalid"
+      ? "登录失效" : (isXhs && !a.has_read_login && a.has_creator ? "创作登录正常" : "正常");
     return `<tr>
       <td>
         <div class="user-cell">
@@ -1633,17 +1811,22 @@ async function refreshAccounts() {
             <div class="mut" style="font-size:11px;margin-top:2px">${esc(detail)}</div>
             ${proxyLine}
             ${browserLine}
+            ${fingerprintLine}
+            ${isolationLine}
+            ${checkLine}
           </div>
         </div>
       </td>
-      <td><span class="pill ${a.status}">${a.status === "invalid" ? "登录失效" : "正常"}</span></td>
+      <td><span class="pill ${a.status}">${accountStatusLabel}</span></td>
       <td class="acttd">
-        ${a.status === "invalid"
-          ? `<button class="sm" style="background:var(--warn);border-color:transparent;color:#1a1a1a" onclick="relogin(${a.id})">重新登录</button>`
-          : `<button class="ghost sm" onclick="relogin(${a.id})" title="${isXhs ? "重登可升级创作平台授权(发布需要)" : "重新扫码登录"}">重新登录</button>`}
+        ${reloginButton}
+        ${creatorLoginButton}
         <button class="ghost sm" onclick="refreshProfile(${a.id})">刷新资料</button>
         <button class="ghost sm" onclick="openAccountHub(${a.id})" title="查看该账号的作品 / 关注 / 粉丝 / 私信">数据</button>
         <button class="ghost sm" onclick="openAccountBrowser(${a.id})" title="用该账号登录态弹出真实浏览器窗口,手动收发私信 / 维护 / 抓接口(关窗即保存)">打开浏览器</button>
+        <button class="ghost sm" onclick="setBrowserBackend(${a.id})" title="选择本地 Chrome/Patchright 或开源 Fingerprint Chromium 内核">环境</button>
+        <button class="ghost sm" onclick="manageFingerprint(${a.id})" title="根据账号当前出口 IP 生成稳定指纹、时区、语言和地理位置">指纹</button>
+        ${environmentCheck && environmentCheck.enabled ? `<button class="ghost sm" onclick="checkBrowserEnvironment(${a.id})" title="在该账号独立 Profile 中打开 BrowserScan，查看实际 IP、时区、WebRTC 和指纹">环境检测</button>` : ""}
         <button class="ghost sm" onclick="setProxy(${a.id})" title="设置/分配该账号专属代理(防多账号关联)">代理</button>
         ${a.has_proxy ? `<button class="ghost sm" onclick="testProxy(${a.id})" title="经该代理实连一次,验证可用">测代理</button>` : ""}
         <button class="ghost sm danger" onclick="delAccount(${a.id})" aria-label="删除账号">${ic("i-trash")}删除</button>
@@ -1955,13 +2138,39 @@ async function openAccountBrowser(id) {
   await withBusy(evtBtn(), "打开中", async () => {
     try {
       const result = await api("/api/accounts/" + id + "/open-browser", { method: "POST" });
+      const checkHint = result.environment_check_opened
+        ? " 已同时打开 BrowserScan 环境体检标签。" : "";
       if (result.logged_out) {
-        toast("该账号登录态已失效，请关闭当前窗口后点「重新登录」完成扫码", "err", 8000);
+        toast("该账号登录态已失效，请关闭当前窗口后点「重新登录」完成扫码。" + checkHint, "err", 8000);
         refreshAccounts();
+      } else if (result.login_state === "verification") {
+        toast("浏览器已打开；小红书要求安全验证，请在窗口中按提示完成。" + checkHint, "info", 8000);
+      } else if (result.login_state === "unconfirmed") {
+        toast("浏览器已打开；页面尚未返回登录校验结果，不会因此把账号标记为登录失败。" + checkHint, "info", 7000);
       } else {
-        toast("已弹出该账号浏览器窗口;用完请关窗(关窗即保存登录态)。窗口开着时该账号后台同步会暂停", "ok", 6000);
+        const scope = result.login_scope === "creator" ? "创作平台" : "主站读取";
+        toast("已弹出该账号" + scope + "浏览器窗口;用完请关窗(关窗即保存登录态)。窗口开着时该账号后台同步会暂停。" + checkHint, "ok", 7000);
       }
     } catch (e) { toast("打开失败:" + e.message, "err"); }
+  });
+}
+
+async function checkBrowserEnvironment(id) {
+  const btn = evtBtn();
+  const confirmed = await uiConfirm({
+    title: "打开第三方环境检测",
+    message: "将在该账号的独立指纹环境中访问 BrowserScan。该站点会看到当前出口 IP 和浏览器指纹；检测结果仅用于环境核对，不代表平台风控一定通过。",
+    okText: "打开检测页",
+  });
+  if (!confirmed) return;
+  await withBusy(btn, "打开中", async () => {
+    try {
+      await api("/api/accounts/" + id + "/environment-check", { method: "POST" });
+      toast("BrowserScan 已在该账号独立环境中打开，请核对 IP、时区、WebRTC 与指纹一致性", "ok", 8000);
+      await refreshAccounts();
+    } catch (e) {
+      toast("环境检测打开失败:" + e.message, "err", 8000);
+    }
   });
 }
 
@@ -2442,11 +2651,24 @@ function applyDanmakuForm() {
 }
 async function refreshProfile(id) {
   const btn = evtBtn();
-  await withBusy(btn, "拉取中", async () => {
-    try { const r = await api("/api/accounts/" + id + "/refresh-profile", { method: "POST" }); const idLbl = (r.platform || PLATFORM) === "xhs" ? " · 小红书号 " : " · 抖音号 "; toast("资料已更新:" + (r.nickname || "") + (r.douyin_id ? idLbl + r.douyin_id : ""), "ok"); }
-    catch (e) { toast("刷新失败:" + e.message, "err"); }
+  await withBusy(btn, "\u83b7\u53d6\u4e2d", async () => {
+    try {
+      const r = await api("/api/accounts/" + id + "/refresh-profile", { method: "POST" });
+      if (r.skipped) {
+        toast("\u672c\u6b21\u672a\u6267\u884c\u8d44\u6599\u5237\u65b0:" + (r.reason || "\u8d26\u53f7\u5f53\u524d\u4e0d\u53ef\u63a2\u6d4b"), "info");
+        return;
+      }
+      if ((r.platform || PLATFORM) === "xhs" && r.login_scope === "creator" && !r.has_read_login) {
+        toast("创作平台登录有效，资料已更新；主站读取登录尚未配置", "info", 8000);
+        return;
+      }
+      const idLbl = (r.platform || PLATFORM) === "xhs" ? " \u00b7 \u5c0f\u7ea2\u4e66\u53f7 " : " \u00b7 \u6296\u97f3\u53f7 ";
+      toast("\u8d44\u6599\u5df2\u66f4\u65b0\uff0c\u767b\u5f55\u72b6\u6001\u5df2\u6062\u590d:" + (r.nickname || "") + (r.douyin_id ? idLbl + r.douyin_id : ""), "ok");
+    } catch (e) {
+      toast("\u5237\u65b0\u5931\u8d25:" + e.message, "err");
+    }
   });
-  refreshAccounts();
+  await refreshAccounts();
 }
 async function setProxy(id) {
   const a = ACCOUNTS.find(x => x.id === id);
@@ -2487,6 +2709,378 @@ async function setProxy(id) {
     }
     refreshAccounts(); refreshProxies();
   } catch (e) { toast("设置失败:" + e.message, "err"); }
+}
+
+async function setBrowserBackend(id) {
+  const account = ACCOUNTS.find(item => item.id === id);
+  if (!account) return;
+  let catalog;
+  try {
+    catalog = await api("/api/browser-backends");
+  } catch (e) {
+    toast("读取浏览器环境失败:" + e.message, "err");
+    return;
+  }
+  const options = browserChoiceOptions(catalog);
+  const currentChoice = account.browser_backend === "fingerprint_chromium" && account.browser_runtime_id
+    ? `fingerprint_chromium::${account.browser_runtime_id}`
+    : (account.browser_backend || "default");
+  const selected = await uiSelect({
+    title: "账号浏览器环境",
+    hint: `${account.nickname} · 切换时会关闭该账号当前浏览器，下次任务使用新内核。`,
+    options,
+    value: currentChoice,
+  });
+  if (selected === null) return;
+  try {
+    const choice = browserChoiceParts(selected);
+    const result = await api(`/api/accounts/${id}/browser-backend`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        browser_backend: choice.backend,
+        browser_runtime_id: choice.runtimeId,
+      }),
+    });
+    toast("浏览器环境已切换：" + loginEnvironmentText(result.environment), "ok");
+    refreshAccounts();
+  } catch (e) {
+    toast("切换失败:" + e.message, "err");
+  }
+}
+
+async function refreshBrowserRuntimes() {
+  const table = $("runtime-table");
+  if (!table) return;
+  try {
+    const result = await api("/api/browser-runtimes");
+    BROWSER_RUNTIMES = result.runtimes || [];
+    let rememberedRoot = "";
+    try { rememberedRoot = localStorage.getItem("creatorhub-browser-runtime-root") || ""; } catch (e) {}
+    BROWSER_RUNTIME_ROOT = rememberedRoot || result.root || "";
+    const rootLabel = $("runtime-root");
+    if (rootLabel) rootLabel.textContent = BROWSER_RUNTIME_ROOT || "尚未设置，扫描时输入";
+    table.querySelector("tbody").innerHTML = BROWSER_RUNTIMES.map(runtime => {
+      const state = !runtime.enabled ? "已停用" : runtime.available
+        ? (runtime.status === "ok" ? "测试通过" : "可用") : "文件缺失";
+      const stateClass = runtime.enabled && runtime.available
+        ? "active" : runtime.status === "bad" ? "invalid" : "bare";
+      return `<tr>
+        <td>
+          <div><b>${esc(runtime.name || runtime.runtime_id)}</b>
+            ${runtime.is_default ? '<span class="pill active">默认</span>' : ""}
+            <span class="pill ${stateClass}">${esc(state)}</span>
+          </div>
+          <div class="mut" style="font-size:11px;margin-top:3px">版本 ${esc(runtime.version || "未知")} · ${esc(runtime.runtime_id)}</div>
+          <div class="mut" style="font-size:11px;margin-top:3px;word-break:break-all"><code>${esc(runtime.executable_path)}</code></div>
+          ${runtime.last_error ? `<div style="font-size:11px;margin-top:3px;color:var(--danger)">${esc(runtime.last_error)}</div>` : ""}
+        </td>
+        <td class="acttd">
+          <button class="ghost sm" onclick="testBrowserRuntime('${esc(runtime.runtime_id)}')">测试启动</button>
+          ${runtime.is_default ? "" : `<button class="ghost sm" onclick="setDefaultBrowserRuntime('${esc(runtime.runtime_id)}')" ${runtime.enabled ? "" : "disabled"}>设为默认</button>`}
+          <button class="ghost sm" onclick="toggleBrowserRuntime('${esc(runtime.runtime_id)}', ${runtime.enabled ? "false" : "true"})">${runtime.enabled ? "停用" : "启用"}</button>
+          <button class="ghost sm danger" onclick="deleteBrowserRuntime('${esc(runtime.runtime_id)}')">${ic("i-trash")}移除</button>
+        </td>
+      </tr>`;
+    }).join("") || empty(2, "尚未发现指纹内核", "i-inbox", "点击扫描目录，或手动添加 chrome.exe");
+  } catch (e) {
+    table.querySelector("tbody").innerHTML = empty(2, "读取内核列表失败", "i-info", e.message);
+  }
+}
+
+async function scanBrowserRuntimes() {
+  const button = evtBtn();
+  const root = await uiPrompt({
+    title: "扫描 Chromium 内核目录",
+    hint: "输入当前机器上存放一个或多个 Chromium 版本的目录。路径按本机配置，不限定盘符或操作系统。",
+    value: BROWSER_RUNTIME_ROOT,
+    placeholder: "例如：浏览器安装目录或统一内核目录",
+  });
+  if (root === null) return;
+  if (!root.trim()) { toast("请输入要扫描的目录", "err"); return; }
+  await withBusy(button, "扫描中", async () => {
+    try {
+      const result = await api("/api/browser-runtimes/scan", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ root: root.trim() }),
+      });
+      BROWSER_RUNTIME_ROOT = result.root || root.trim();
+      try { localStorage.setItem("creatorhub-browser-runtime-root", BROWSER_RUNTIME_ROOT); } catch (e) {}
+      toast(`扫描完成：发现 ${result.found} 个内核，新增 ${result.created} 个`, "ok");
+      await refreshBrowserRuntimes();
+    } catch (e) { toast("扫描失败：" + e.message, "err"); }
+  });
+}
+
+async function addBrowserRuntime() {
+  const path = await uiPrompt({
+    title: "添加 Chromium 内核",
+    hint: "填写当前机器上 chrome/chromium 主程序的完整路径。程序只记录路径，不复制或移动浏览器文件。",
+    value: "",
+    placeholder: "chrome.exe、chrome 或 chromium 的完整路径",
+  });
+  if (path === null || !path.trim()) return;
+  try {
+    const result = await api("/api/browser-runtimes", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ executable_path: path.trim() }),
+    });
+    toast(`${result.created ? "已添加" : "已更新"}：${result.runtime.name}`, "ok");
+    await refreshBrowserRuntimes();
+  } catch (e) { toast("添加失败：" + e.message, "err"); }
+}
+
+async function testBrowserRuntime(runtimeId) {
+  const button = evtBtn();
+  await withBusy(button, "测试中", async () => {
+    try {
+      const result = await api(`/api/browser-runtimes/${encodeURIComponent(runtimeId)}/test`, { method: "POST" });
+      toast(`内核启动正常：${result.user_agent || runtimeId}`, "ok", 7000);
+    } catch (e) { toast("内核测试失败：" + e.message, "err", 7000); }
+    await refreshBrowserRuntimes();
+  });
+}
+
+async function setDefaultBrowserRuntime(runtimeId) {
+  try {
+    await api(`/api/browser-runtimes/${encodeURIComponent(runtimeId)}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_default: true }),
+    });
+    toast("默认指纹内核已切换", "ok");
+    await refreshBrowserRuntimes(); await refreshAccounts();
+  } catch (e) { toast("切换失败：" + e.message, "err"); }
+}
+
+async function toggleBrowserRuntime(runtimeId, enabled) {
+  try {
+    await api(`/api/browser-runtimes/${encodeURIComponent(runtimeId)}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    toast(enabled ? "内核已启用" : "内核已停用", "ok");
+    await refreshBrowserRuntimes(); await refreshAccounts();
+  } catch (e) { toast("操作失败：" + e.message, "err"); }
+}
+
+async function deleteBrowserRuntime(runtimeId) {
+  if (!await uiConfirm({
+    title: "移除内核记录",
+    message: "仅移除 CreatorHub 中的内核记录，不会删除原安装目录中的浏览器文件。",
+    okText: "移除",
+  })) return;
+  try {
+    await api(`/api/browser-runtimes/${encodeURIComponent(runtimeId)}`, { method: "DELETE" });
+    toast("内核记录已移除", "ok");
+    await refreshBrowserRuntimes();
+  } catch (e) { toast("移除失败：" + e.message, "err"); }
+}
+
+function uiFingerprintEditor(account, fp, options = {}) {
+  const preLogin = Boolean(options.preLogin);
+  const disabled = new Set(fp.disable_spoofing || []);
+  const runtimeVersion = String((account.environment || {}).runtime_version || "");
+  const runtimeMajor = Number(runtimeVersion.split(".")[0]) || 0;
+  const gpuCustomSupported = runtimeMajor >= 139 && runtimeMajor < 144;
+  const modeButtons = (name, options, current) => `<div class="fp-segment" data-fp-mode="${esc(name)}" role="group">` +
+    options.map(option => `<button type="button" class="${option.value === current ? "active" : ""}" data-value="${esc(option.value)}" aria-pressed="${option.value === current ? "true" : "false"}"${option.disabled ? " disabled" : ""}>${esc(option.label)}</button>`).join("") + `</div>`;
+  const surfaceMode = (name, label, custom = false) => {
+    let current = disabled.has(name) ? "off" : "random";
+    if (custom && gpuCustomSupported && (fp.gpu_vendor || fp.gpu_renderer)) current = "custom";
+    const options = [{ value: "random", label: "随机" }];
+    if (custom) options.push({ value: "custom", label: "自定义", disabled: !gpuCustomSupported });
+    options.push({ value: "off", label: "关闭" });
+    return `<div class="fp-config-row"><div><b>${esc(label)}</b><span>每个账号使用稳定且不同的取值</span></div>${modeButtons(name, options, current)}</div>`;
+  };
+  const platformMode = fp.platform ? "custom" : "auto";
+  const brandMode = fp.brand ? "custom" : "auto";
+  const cpuMode = Number(fp.hardware_concurrency) > 0 ? "custom" : "auto";
+  return new Promise(resolve => {
+    _uiResolve = resolve; _uiCancelVal = null;
+    $("ui-body").innerHTML = `
+      <div class="hint" style="margin:0 0 14px">${preLogin
+        ? "自动项会在启动前根据所选代理或本机出口 IP 生成；切换为自定义后可在第一次登录前逐项覆盖。登录成功后，此配置会随账号和独立 Profile 一起保存。"
+        : "自动项会跟随来源 IP 生成；切换为自定义后可逐项编辑。保存后关闭该账号当前浏览器，下次启动应用新配置。"}</div>
+      <div class="fp-edit-tabs" role="tablist" aria-label="浏览器指纹设置">
+        <button type="button" class="ghost sm active" role="tab" aria-selected="true" data-fp-tab="basic">基础设置</button>
+        <button type="button" class="ghost sm" role="tab" aria-selected="false" data-fp-tab="advanced">高级设置</button>
+      </div>
+      <div class="fp-edit-panel active" data-fp-panel="basic">
+        <div class="fp-runtime-summary">
+          <div><span>浏览器内核</span><b>${esc(runtimeVersion || "跟随所选运行时")}</b></div>
+          <div><span>设备类型</span><b>桌面设备</b></div>
+          <div><span>指纹编号</span><b>${esc(fp.fingerprint_id || "-")}</b></div>
+        </div>
+        <div class="fp-settings">
+          <div class="fp-config-row"><div><b>操作系统</b><span>影响 navigator.platform 与 Client Hints</span></div>${modeButtons("platform", [{value:"auto",label:"自动"},{value:"custom",label:"自定义"}], platformMode)}</div>
+          <div class="form-grid fp-mode-fields" data-fp-custom="platform">
+            <div class="form-field"><label for="fp-edit-platform">系统类型</label><select id="fp-edit-platform"><option value="windows"${fp.platform === "windows" ? " selected" : ""}>Windows</option><option value="macos"${fp.platform === "macos" ? " selected" : ""}>macOS</option><option value="linux"${fp.platform === "linux" ? " selected" : ""}>Linux</option></select></div>
+            <div class="form-field"><label for="fp-edit-platform-version">系统版本</label><input id="fp-edit-platform-version" value="${esc(fp.platform_version || "")}" placeholder="例如 10.0.19045"></div>
+          </div>
+          <div class="fp-config-row"><div><b>浏览器品牌与版本</b><span>影响 User-Agent 与 UA Data</span></div>${modeButtons("brand", [{value:"auto",label:"自动"},{value:"custom",label:"自定义"}], brandMode)}</div>
+          <div class="form-grid fp-mode-fields" data-fp-custom="brand">
+            <div class="form-field"><label for="fp-edit-brand">浏览器品牌</label><input id="fp-edit-brand" value="${esc(fp.brand || "")}" placeholder="Chrome / Edge"></div>
+            <div class="form-field"><label for="fp-edit-brand-version">浏览器版本</label><input id="fp-edit-brand-version" value="${esc(fp.brand_version || "")}" placeholder="例如 148.0.0.0"></div>
+          </div>
+          ${fp.actual_ua ? `<div class="fp-readonly"><span>User Agent</span><code>${esc(fp.actual_ua)}</code></div>` : ""}
+          <div class="fp-config-row"><div><b>语言</b><span>可跟随来源 IP 自动匹配</span></div>${modeButtons("language", [{value:"auto",label:"跟随 IP"},{value:"custom",label:"自定义"}], fp.language_mode || "auto")}</div>
+          <div class="form-grid fp-mode-fields" data-fp-custom="language">
+            <div class="form-field"><label for="fp-edit-locale">浏览器语言</label><input id="fp-edit-locale" value="${esc(fp.locale || "zh-CN")}"></div>
+            <div class="form-field"><label for="fp-edit-accept">Accept-Language</label><input id="fp-edit-accept" value="${esc(fp.accept_languages || "")}" placeholder="例如 zh-CN,zh"></div>
+          </div>
+          <div class="fp-config-row"><div><b>时区</b><span>可跟随来源 IP 匹配 IANA 时区</span></div>${modeButtons("timezone", [{value:"auto",label:"跟随 IP"},{value:"custom",label:"自定义"}], fp.timezone_mode || "auto")}</div>
+          <div class="fp-mode-fields" data-fp-custom="timezone"><div class="form-field"><label for="fp-edit-timezone">IANA 时区</label><input id="fp-edit-timezone" value="${esc(fp.timezone || "Asia/Shanghai")}"></div></div>
+          <div class="fp-config-row"><div><b>WebRTC</b><span>隐藏模式阻止非代理 UDP 暴露本机 IP</span></div>${modeButtons("webrtc", [{value:"conceal",label:"隐藏"},{value:"allow",label:"允许"}], fp.webrtc_mode || "conceal")}</div>
+          <div class="fp-config-row"><div><b>地理位置权限</b><span>控制网站读取浏览器定位的权限</span></div>${modeButtons("geo-permission", [{value:"ask",label:"询问"},{value:"allow",label:"允许"},{value:"deny",label:"禁止"}], fp.geolocation_permission || "allow")}</div>
+          <div class="fp-config-row"><div><b>地理位置数据</b><span>可跟随来源 IP 自动生成坐标</span></div>${modeButtons("location", [{value:"auto",label:"跟随 IP"},{value:"custom",label:"自定义"}], fp.location_mode || "auto")}</div>
+          <div class="form-grid fp-mode-fields" data-fp-custom="location">
+            <div class="form-field"><label for="fp-edit-ip">来源 IP</label><input id="fp-edit-ip" value="${esc(fp.source_ip || "")}"></div>
+            <div class="form-field"><label for="fp-edit-country">国家/地区</label><input id="fp-edit-country" value="${esc(fp.country || "")}"></div>
+            <div class="form-field"><label for="fp-edit-region">区域</label><input id="fp-edit-region" value="${esc(fp.region || "")}"></div>
+            <div class="form-field"><label for="fp-edit-city">城市</label><input id="fp-edit-city" value="${esc(fp.city || "")}"></div>
+            <div class="form-field"><label for="fp-edit-lat">纬度</label><input id="fp-edit-lat" type="number" min="-90" max="90" step="0.000001" value="${Number(fp.geo_lat) || 0}"></div>
+            <div class="form-field"><label for="fp-edit-lon">经度</label><input id="fp-edit-lon" type="number" min="-180" max="180" step="0.000001" value="${Number(fp.geo_lon) || 0}"></div>
+          </div>
+          <div class="fp-config-row"><div><b>窗口尺寸</b><span>设置浏览器窗口打开时的大小</span></div>${modeButtons("viewport", [{value:"auto",label:"自动"},{value:"custom",label:"自定义"}], fp.viewport_mode || "auto")}</div>
+          <div class="form-grid fp-mode-fields" data-fp-custom="viewport">
+            <div class="form-field"><label for="fp-edit-vw">宽度</label><input id="fp-edit-vw" type="number" min="320" max="7680" value="${Number(fp.viewport_w) || 1280}"></div>
+            <div class="form-field"><label for="fp-edit-vh">高度</label><input id="fp-edit-vh" type="number" min="240" max="4320" value="${Number(fp.viewport_h) || 800}"></div>
+          </div>
+        </div>
+      </div>
+      <div class="fp-edit-panel" data-fp-panel="advanced">
+        <div class="fp-settings">
+          <div class="fp-config-row"><div><b>指纹种子</b><span>Canvas、Audio 等随机值由种子稳定派生</span></div><div class="fp-seed-badge">${preLogin ? "内核启动时生成" : `uint32 ${esc(String(fp.engine_seed ?? ""))}`}</div></div>
+          <div class="form-field"><label for="fp-edit-seed">种子值</label><input id="fp-edit-seed" value="${esc(fp.seed || "")}" maxlength="128"></div>
+          ${surfaceMode("font", "字体")}
+          ${surfaceMode("canvas", "Canvas")}
+          ${surfaceMode("gpu", "WebGL / GPU", true)}
+          <div class="form-grid fp-mode-fields" data-fp-custom="gpu">
+            <div class="form-field"><label for="fp-edit-gpu-vendor">WebGL Vendor</label><input id="fp-edit-gpu-vendor" value="${esc(fp.gpu_vendor || "")}" placeholder="例如 Google Inc. (Intel)"></div>
+            <div class="form-field"><label for="fp-edit-gpu-renderer">WebGL Renderer</label><input id="fp-edit-gpu-renderer" value="${esc(fp.gpu_renderer || "")}" placeholder="仅 139–143 内核支持"></div>
+          </div>
+          ${surfaceMode("audio", "AudioContext")}
+          ${surfaceMode("clientrects", "ClientRects")}
+          <div class="fp-config-row"><div><b>硬件并发数</b><span>navigator.hardwareConcurrency</span></div>${modeButtons("cpu", [{value:"auto",label:"自动"},{value:"custom",label:"自定义"}], cpuMode)}</div>
+          <div class="fp-mode-fields" data-fp-custom="cpu"><div class="form-field"><label for="fp-edit-cpu">CPU 逻辑核心</label><input id="fp-edit-cpu" type="number" min="1" max="256" value="${Number(fp.hardware_concurrency) || 8}"></div></div>
+          <div class="form-field"><label for="fp-edit-extra">附加启动参数</label><textarea id="fp-edit-extra" rows="3" placeholder="每行一个安全参数，例如 --mute-audio">${esc(fp.extra_args || "")}</textarea><div class="mut" style="font-size:11px">仅接受安全的 Chromium 参数；代理、调试端口、用户目录和指纹核心参数由系统统一管理。</div></div>
+        </div>
+      </div>
+      `;
+    enhanceAllSelects($("ui-body"));
+    const body = $("ui-body");
+    const selectedMode = name => {
+      const active = body.querySelector(`[data-fp-mode="${name}"] button.active`);
+      return active ? active.dataset.value : "";
+    };
+    const syncCustomFields = name => {
+      const enabled = selectedMode(name) === "custom";
+      body.querySelectorAll(`[data-fp-custom="${name}"] input,[data-fp-custom="${name}"] select,[data-fp-custom="${name}"] textarea`).forEach(control => {
+        control.disabled = !enabled;
+        if (control._csSync) control._csSync();
+      });
+      body.querySelectorAll(`[data-fp-custom="${name}"]`).forEach(group => group.classList.toggle("enabled", enabled));
+    };
+    body.querySelectorAll("[data-fp-mode] button").forEach(button => {
+      button.addEventListener("click", () => {
+        if (button.disabled) return;
+        const segment = button.closest("[data-fp-mode]");
+        segment.querySelectorAll("button").forEach(item => {
+          const active = item === button;
+          item.classList.toggle("active", active);
+          item.setAttribute("aria-pressed", active ? "true" : "false");
+        });
+        syncCustomFields(segment.dataset.fpMode);
+      });
+    });
+    ["platform", "brand", "language", "timezone", "location", "viewport", "gpu", "cpu"].forEach(syncCustomFields);
+    body.querySelectorAll("[data-fp-tab]").forEach(tab => {
+      tab.addEventListener("click", () => {
+        const selected = tab.dataset.fpTab;
+        body.querySelectorAll("[data-fp-tab]").forEach(item => {
+          const active = item.dataset.fpTab === selected;
+          item.classList.toggle("active", active);
+          item.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        body.querySelectorAll("[data-fp-panel]").forEach(panel => panel.classList.toggle("active", panel.dataset.fpPanel === selected));
+        body.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    });
+    const value = id => ($(id) || {}).value || "";
+    const number = (id, fallback = 0) => { const parsed = Number(value(id)); return Number.isFinite(parsed) ? parsed : fallback; };
+    _uiGetVal = () => {
+      const platformCustom = selectedMode("platform") === "custom";
+      const brandCustom = selectedMode("brand") === "custom";
+      const gpuCustom = selectedMode("gpu") === "custom";
+      const surfaces = ["font", "audio", "canvas", "clientrects", "gpu"];
+      return { action: "save", data: {
+        seed: value("fp-edit-seed"), source_ip: value("fp-edit-ip"),
+        country: value("fp-edit-country"), region: value("fp-edit-region"), city: value("fp-edit-city"),
+        timezone: value("fp-edit-timezone"), locale: value("fp-edit-locale"), accept_languages: value("fp-edit-accept"),
+        viewport_w: number("fp-edit-vw", 1280), viewport_h: number("fp-edit-vh", 800),
+        geo_lat: number("fp-edit-lat"), geo_lon: number("fp-edit-lon"),
+        platform: platformCustom ? value("fp-edit-platform") : "",
+        platform_version: platformCustom ? value("fp-edit-platform-version") : "",
+        brand: brandCustom ? value("fp-edit-brand") : "",
+        brand_version: brandCustom ? value("fp-edit-brand-version") : "",
+        hardware_concurrency: selectedMode("cpu") === "custom" ? number("fp-edit-cpu", 8) : 0,
+        gpu_vendor: gpuCustom ? value("fp-edit-gpu-vendor") : "",
+        gpu_renderer: gpuCustom ? value("fp-edit-gpu-renderer") : "",
+        disable_spoofing: surfaces.filter(name => selectedMode(name) === "off"),
+        language_mode: selectedMode("language") || "auto",
+        timezone_mode: selectedMode("timezone") || "auto",
+        viewport_mode: selectedMode("viewport") || "auto",
+        location_mode: selectedMode("location") || "auto",
+        geolocation_permission: selectedMode("geo-permission") || "allow",
+        webrtc_mode: selectedMode("webrtc") || "conceal",
+        extra_args: value("fp-edit-extra"),
+      }};
+    };
+    _uiOpen(
+      `${account.nickname} · ${preLogin ? "登录前指纹配置" : "浏览器指纹"}`,
+      preLogin ? "确认后使用这套指纹创建独立登录环境" : `指纹 ${fp.fingerprint_id || "-"}`,
+      { okText: preLogin ? "使用此指纹登录" : "保存配置", wide: true },
+    );
+    const autoButton = document.createElement("button");
+    autoButton.id = "ui-extra-action";
+    autoButton.type = "button";
+    autoButton.className = "ghost";
+    autoButton.textContent = preLogin ? "使用出口 IP 自动配置" : "按 IP 自动生成";
+    autoButton.addEventListener("click", () => _uiClose({ action: "auto" }));
+    $("ui-actions").insertBefore(autoButton, $("ui-actions").firstElementChild);
+  });
+}
+
+async function manageFingerprint(id) {
+  const account = ACCOUNTS.find(item => item.id === id);
+  if (!account) return;
+  let current;
+  try { current = await api(`/api/accounts/${id}/fingerprint`); }
+  catch (e) { toast("读取指纹失败:" + e.message, "err"); return; }
+  const action = await uiFingerprintEditor(account, current);
+  if (!action) return;
+  if (action.action === "auto") {
+    const confirmed = await uiConfirm({
+      title: "恢复自动指纹",
+      message: "将根据账号当前代理或本机出口 IP 重新计算地域、时区、语言、窗口与种子派生项，并清除手动覆盖。",
+      okText: "恢复自动",
+    });
+    if (!confirmed) return;
+    try {
+      const result = await api(`/api/accounts/${id}/fingerprint/from-ip`, { method: "POST" });
+      toast(`已恢复自动指纹：${result.fingerprint.fingerprint_id || "-"}`, "ok", 7000);
+      await refreshAccounts();
+    } catch (e) { toast("自动生成失败:" + e.message, "err", 8000); }
+    return;
+  }
+  try {
+    const result = await api(`/api/accounts/${id}/fingerprint`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(action.data),
+    });
+    toast(`指纹已保存：${result.fingerprint.fingerprint_id || "-"}`, "ok", 7000);
+    await refreshAccounts();
+  } catch (e) { toast("保存指纹失败:" + e.message, "err", 8000); }
 }
 
 // ─── 代理池 ───
@@ -2643,12 +3237,13 @@ async function testProxy(id) {
   } catch (e) { toast("测试失败:" + e.message, "err"); }
   finally { btn.disabled = false; btn.textContent = old; refreshAccounts(); }
 }
-async function relogin(id) {
+async function relogin(id, scope = "auto") {
   const btn = evtBtn();
   await withBusy(btn, "启动中", async () => {
     try {
-      const res = await api("/api/accounts/" + id + "/relogin/start", { method: "POST" });
-      toast("已打开浏览器窗口,请扫码重新登录该账号", "info");
+      const res = await api("/api/accounts/" + id + "/relogin/start?scope=" + encodeURIComponent(scope), { method: "POST" });
+      const label = res.login_scope === "creator" ? "创作平台" : "主站读取";
+      toast("已打开" + label + "浏览器窗口,请扫码登录该账号", "info");
       pollReloginTask(res.task_id);
     } catch (e) { toast("启动失败:" + e.message, "err"); }
   });
@@ -2668,7 +3263,7 @@ function pollReloginTask(tid) {
         if (r.profile_status === "invalid") {
           toast("登录校验未通过，请重新扫码", "err");
         } else {
-          const suffix = r.profile_status === "error" ? "（资料稍后同步）" : "";
+          const suffix = ["error", "deferred"].includes(r.profile_status) ? "（资料可稍后刷新）" : "";
           toast("重新登录成功 " + (r.nickname || "") + suffix, r.profile_status === "error" ? "info" : "ok");
         }
         refreshAccounts(); return;
@@ -3827,6 +4422,14 @@ async function addMonitor() {
           video_quality: PLATFORM === "xhs" ? "" : $("t-quality").value,
           download_enabled: downloadMode !== "none",
           media_filter: downloadMode === "none" ? "all" : downloadMode,
+          max_scrolls: +$("t-max-scrolls").value,
+          max_items_per_scan: +$("t-max-items").value,
+          record_media_filter: $("t-record-media").value,
+          recent_days: Math.max(0, +$("t-recent-days").value || 0),
+          min_like_count: Math.max(0, +$("t-min-likes").value || 0),
+          min_comment_count: Math.max(0, +$("t-min-comments").value || 0),
+          include_keywords: parseDanmakuKeywords($("t-include-keywords").value),
+          exclude_keywords: parseDanmakuKeywords($("t-exclude-keywords").value),
           alias: $("t-alias").value.trim(), group_name: getMetaValue("t-group").trim(),
           tags: parseTags(getMetaValue("t-tags")),
         }),
@@ -3860,6 +4463,14 @@ async function editMonitor(id) {
   const backfillOptions = numericSelectOptions(item.initial_backfill_count ?? 0, [
     [0, "不回填历史"], [5, "最近 5 条"], [20, "最近 20 条"], [-1, "尽可能全量"],
   ], " 条");
+  const depthOptions = numericSelectOptions(item.max_scrolls ?? 0, [
+    [0, "平台默认"], [3, "3 次下滑"], [6, "6 次下滑"],
+    [12, "12 次下滑"], [20, "20 次下滑"], [30, "30 次下滑"],
+  ]);
+  const itemLimitOptions = numericSelectOptions(item.max_items_per_scan ?? 0, [
+    [0, "平台默认"], [5, "5 条"], [12, "12 条"], [20, "20 条"],
+    [50, "50 条"], [100, "100 条"],
+  ]);
   const value = await new Promise(res => {
     _uiResolve = res; _uiCancelVal = null;
     _uiGetVal = () => {
@@ -3874,6 +4485,14 @@ async function editMonitor(id) {
         video_quality: $("em-quality") ? $("em-quality").value : "",
         download_enabled: downloadMode !== "none",
         media_filter: downloadMode === "none" ? "all" : downloadMode,
+        max_scrolls: +$("em-max-scrolls").value,
+        max_items_per_scan: +$("em-max-items").value,
+        record_media_filter: $("em-record-media").value,
+        recent_days: Math.max(0, +$("em-recent-days").value || 0),
+        min_like_count: Math.max(0, +$("em-min-likes").value || 0),
+        min_comment_count: Math.max(0, +$("em-min-comments").value || 0),
+        include_keywords: parseDanmakuKeywords($("em-include-keywords").value),
+        exclude_keywords: parseDanmakuKeywords($("em-exclude-keywords").value),
       };
       if ($("em-backfill")) result.initial_backfill_count = +$("em-backfill").value;
       return result;
@@ -3897,6 +4516,19 @@ async function editMonitor(id) {
         </div>
         ${item.last_scan_at ? "" : `<div><label class="field" for="em-backfill">首次历史回填</label>
           <select id="em-backfill">${backfillOptions}</select></div>`}
+        <div class="form-grid cols-4">
+          <div><label class="field" for="em-max-scrolls">抓取深度</label><select id="em-max-scrolls">${depthOptions}</select></div>
+          <div><label class="field" for="em-max-items">每轮作品上限</label><select id="em-max-items">${itemLimitOptions}</select></div>
+          <div><label class="field" for="em-record-media">作品类型</label><select id="em-record-media"><option value="all">全部入库</option><option value="video">仅视频</option><option value="images">仅图文/图集</option></select></div>
+          <div><label class="field" for="em-recent-days">发布时间范围</label><input id="em-recent-days" type="number" min="0" max="3650" inputmode="numeric"><div class="field-help">最近 N 天；0 表示不限</div></div>
+        </div>
+        <div class="form-grid cols-4">
+          <div><label class="field" for="em-min-likes">最低点赞数</label><input id="em-min-likes" type="number" min="0" max="1000000000" inputmode="numeric"></div>
+          <div><label class="field" for="em-min-comments">最低评论数</label><input id="em-min-comments" type="number" min="0" max="1000000000" inputmode="numeric"></div>
+          <div><label class="field" for="em-include-keywords">必须包含</label><input id="em-include-keywords" maxlength="320" placeholder="多个词用逗号分隔"></div>
+          <div><label class="field" for="em-exclude-keywords">排除关键词</label><input id="em-exclude-keywords" maxlength="320" placeholder="多个词用逗号分隔"></div>
+        </div>
+        <div class="field-help">筛选决定是否入库；抓取深度越高，单轮耗时和账号访问频率越高。</div>
       </fieldset>
       <fieldset class="monitor-config-group">
         <legend>记录与下载</legend>
@@ -3916,7 +4548,16 @@ async function editMonitor(id) {
     if ($("em-backfill")) $("em-backfill").value = String(item.initial_backfill_count ?? 0);
     if ($("em-quality")) $("em-quality").value = item.video_quality || "";
     $("em-download").value = item.download_enabled === false ? "none" : (item.media_filter || "all");
-    ["em-interval", "em-account", "em-backfill", "em-quality", "em-download"]
+    $("em-max-scrolls").value = String(item.max_scrolls ?? 0);
+    $("em-max-items").value = String(item.max_items_per_scan ?? 0);
+    $("em-record-media").value = item.record_media_filter || "all";
+    $("em-recent-days").value = String(item.recent_days || 0);
+    $("em-min-likes").value = String(item.min_like_count || 0);
+    $("em-min-comments").value = String(item.min_comment_count || 0);
+    $("em-include-keywords").value = (item.include_keywords || []).join(", ");
+    $("em-exclude-keywords").value = (item.exclude_keywords || []).join(", ");
+    ["em-interval", "em-account", "em-backfill", "em-quality", "em-download",
+      "em-max-scrolls", "em-max-items", "em-record-media"]
       .forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
     _uiOpen("编辑作品监控", "监控对象不可修改；需要更换主页、创作者或关键词时，请新建监控。", { okText: "保存修改", wide: true });
   });
@@ -3928,6 +4569,19 @@ async function editMonitor(id) {
     });
     toast("作品监控配置已更新", "ok"); refreshMonitors(); refreshContents();
   } catch (e) { toast("更新失败:" + e.message, "err"); }
+}
+function monitorStrategySummary(t) {
+  const depth = t.max_scrolls || (t.platform === "xhs" ? 6 : 12);
+  const limit = t.max_items_per_scan || (t.platform === "xhs" ? 12 : 0);
+  const filters = [];
+  if (t.record_media_filter && t.record_media_filter !== "all") filters.push(t.record_media_filter === "video" ? "视频" : "图文");
+  if (t.recent_days) filters.push(`${t.recent_days}天内`);
+  if (t.min_like_count) filters.push(`赞≥${fmtNum(t.min_like_count)}`);
+  if (t.min_comment_count) filters.push(`评≥${fmtNum(t.min_comment_count)}`);
+  if ((t.include_keywords || []).length) filters.push(`含 ${t.include_keywords.join("/")}`);
+  if ((t.exclude_keywords || []).length) filters.push(`排除 ${t.exclude_keywords.join("/")}`);
+  const filterLabel = filters.length ? filters.join(" · ") : "无入库筛选";
+  return `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px" title="${esc(filterLabel)}"><span class="pill q bare">深度 ${depth}</span><span class="pill q bare">上限 ${limit || "不限"}</span>${filters.length ? `<span class="pill q bare">${esc(filterLabel)}</span>` : ""}</div>`;
 }
 function monRow(t) {
   const label = t.target_kind === "keyword"
@@ -3946,6 +4600,7 @@ function monRow(t) {
     <td class="num">${Math.round(t.interval_seconds / 60)} 分</td>
     <td class="wrap" style="max-width:230px">
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px"><span class="pill q bare">${downloadLabel}</span></div>
+      ${monitorStrategySummary(t)}
       ${t.platform === "xhs" ? "" : `<span class="pill q bare">${QMAP[t.video_quality] || "默认画质"}</span> `}
       <span class="mut" title="${esc(t.download_dir || "默认目录")}" style="display:inline-block;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${esc(t.download_dir || "默认")}</span></td>
     <td class="mut">${t.last_scan_at ? new Date(t.last_scan_at + "Z").toLocaleString() : "—"}${t.last_error ? ` <span class="warn-ic" title="${esc(t.last_error)}">${ic("i-info")}</span>` : ""}</td>
@@ -3985,7 +4640,7 @@ async function runNow(id) {
     try {
       const r = await api("/api/monitors/" + id + "/run-now", { method: "POST" });
       if (r.error) toast("抓取未成功:" + r.error, "err", 6000);
-      else toast(`抓取完成,新增 ${r.new} 条`, "ok");
+      else toast(`抓取完成,检查 ${r.scanned ?? r.new} 条，筛除 ${r.filtered || 0} 条，新增 ${r.new} 条`, "ok");
     } catch (e) { toast("抓取失败:" + e.message, "err"); }
   });
   refreshMonitors(); refreshContents();
@@ -4254,10 +4909,15 @@ async function refreshContents(resetPage = false) {
   updateContentSelBar(); renderContentPager(meta);
 }
 async function retryDl(id) {
-  const btn = event.target.closest("button"); btn.disabled = true; btn.textContent = "重试中…";
-  try { await api("/api/contents/" + id + "/retry-download", { method: "POST" }); toast("已重新加入下载队列", "ok"); }
-  catch (e) { toast("重试失败:" + e.message, "err"); }
-  setTimeout(() => refreshContents(), 1200);
+  const btn = evtBtn();
+  await withBusy(btn, "重试中", async () => {
+    try {
+      const result = await api("/api/contents/" + id + "/retry-download", { method: "POST" });
+      if (!result.ok) throw new Error(result.error || "下载未完成");
+      toast("重试成功，作品已下载", "ok");
+    } catch (e) { toast("重试失败:" + e.message, "err", 7000); }
+  });
+  await refreshContents();
 }
 async function delContent(id) {
   if (!await uiConfirm({ title: "删除作品", message: "删除这条作品记录及其已下载的本地文件?", okText: "删除", danger: true })) return;
@@ -5719,6 +6379,175 @@ async function delTask(id) {
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 
+// ─── 统一任务队列 ───
+let TASK_QUEUE_PAGE = 1;
+let TASK_QUEUE_PAGE_SIZE = 20;
+let TASK_QUEUE_PAGES = 1;
+let TASK_QUEUE_LOADING = false;
+let TASK_QUEUE_REFRESH_PENDING = false;
+let TASK_QUEUE_BADGE_LOADING = false;
+
+const TASK_QUEUE_RAW_STATUS = {
+  draft: "草稿待审", pending: "等待执行", running: "采集中", publishing: "发布中",
+  doing: "执行中", downloading: "下载中", done: "已完成", failed: "失败",
+  partial: "部分完成", uncertain: "结果待确认", canceled: "已取消", skipped: "已跳过",
+};
+const TASK_QUEUE_STATE_META = {
+  pending: ["等待执行", "pending"], running: ["正在执行", "queue-running"],
+  blocked: ["风控延后", "queue-blocked"], failed: ["执行失败", "failed"],
+  completed: ["已完成", "queue-completed"],
+};
+
+function updateTaskQueuePlatformLabel() {
+  const option = $("queue-platform-current");
+  if (option) option.textContent = `当前平台（${PF_NAME[PLATFORM] || PLATFORM}）`;
+  const select = $("queue-platform");
+  if (select && select._csSync) select._csSync();
+}
+
+function taskQueuePlatform() {
+  const value = $("queue-platform")?.value || "current";
+  return value === "current" ? PLATFORM : value;
+}
+
+function taskQueueDate(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function taskQueueSourceLabel(tab) {
+  return ({
+    collections: "采集任务", publish: "发布任务", autocomment: "评论任务",
+    hub: "账号管理", monitors: "作品监控",
+  })[tab] || "查看";
+}
+
+function taskQueueRow(item) {
+  const stateMeta = TASK_QUEUE_STATE_META[item.state] || [item.state || "未知", "skipped"];
+  const rawStatus = TASK_QUEUE_RAW_STATUS[item.status] || item.status || "未知";
+  const account = item.account_name || (item.account_id ? `账号 #${item.account_id}` : "未绑定账号");
+  const scheduled = item.scheduled_at ? `<b>计划 ${taskQueueDate(item.scheduled_at)}</b>` : "";
+  const created = item.created_at ? `<small>创建 ${taskQueueDate(item.created_at)}</small>` : "";
+  const nextAllowed = item.next_allowed_at ? `<small>最早继续：${taskQueueDate(item.next_allowed_at)}</small>` : "";
+  const reason = item.blocked_reason || item.error || "—";
+  const reasonClass = item.error && !item.blocked_reason ? " has-error" : "";
+  const signal = item.blocked_signal ? `<small>信号：${esc(item.blocked_signal)}</small>` : "";
+  return `<tr>
+    <td><span class="pill q bare">${esc(item.queue_label)}</span><small class="mut" style="display:block;margin-top:5px">${esc(PF_NAME[item.platform] || item.platform || "—")}</small></td>
+    <td><div class="queue-copy"><b title="${esc(item.title)}">${esc(item.title)}</b>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}</div></td>
+    <td><div class="queue-account"><b>${esc(account)}</b>${item.account_id ? `<small>ID ${Number(item.account_id)}</small>` : ""}</div></td>
+    <td><div class="queue-time">${scheduled || "尽快执行"}${created}</div></td>
+    <td><span class="pill ${stateMeta[1]}">${esc(stateMeta[0])}</span><small class="mut" style="display:block;margin-top:5px">${esc(rawStatus)}</small></td>
+    <td><div class="queue-reason${reasonClass}">${esc(reason)}${signal}${nextAllowed}</div></td>
+    <td class="acttd"><button type="button" class="ghost sm" onclick="openTaskQueueSource('${esc(item.source_tab)}')">${esc(taskQueueSourceLabel(item.source_tab))}</button></td>
+  </tr>`;
+}
+
+function renderTaskQueuePager(data) {
+  const pager = $("queue-pager");
+  if (!pager) return;
+  TASK_QUEUE_PAGE = Math.max(1, Number(data.page || 1));
+  TASK_QUEUE_PAGE_SIZE = Math.max(1, Number(data.page_size || TASK_QUEUE_PAGE_SIZE));
+  TASK_QUEUE_PAGES = Math.max(1, Number(data.pages || 1));
+  $("queue-page-info").textContent = `第 ${TASK_QUEUE_PAGE} / ${TASK_QUEUE_PAGES} 页 · 共 ${fmtNum(data.total || 0)} 条`;
+  $("queue-first").disabled = TASK_QUEUE_PAGE <= 1;
+  $("queue-prev").disabled = TASK_QUEUE_PAGE <= 1;
+  $("queue-next").disabled = TASK_QUEUE_PAGE >= TASK_QUEUE_PAGES;
+  $("queue-last").disabled = TASK_QUEUE_PAGE >= TASK_QUEUE_PAGES;
+  if ($("queue-page-size")) $("queue-page-size").value = String(TASK_QUEUE_PAGE_SIZE);
+  pager.hidden = false;
+}
+
+function renderTaskQueueSummary(summary = {}) {
+  ["active", "pending", "running", "blocked", "failed"].forEach(name => {
+    const el = $(`queue-stat-${name}`);
+    if (el) el.textContent = fmtNum(Number(summary[name] || 0));
+  });
+  const badge = $("tb-queue");
+  if (badge) badge.textContent = fmtNum(Number(summary.active || 0));
+  const selected = $("queue-state")?.value || "active";
+  document.querySelectorAll("[data-queue-state]").forEach(button =>
+    button.classList.toggle("active", button.dataset.queueState === selected));
+}
+
+async function refreshTaskQueue(resetPage = false) {
+  const body = $("queue-table");
+  if (resetPage) TASK_QUEUE_PAGE = 1;
+  if (!body) return;
+  if (TASK_QUEUE_LOADING) { TASK_QUEUE_REFRESH_PENDING = true; return; }
+  TASK_QUEUE_LOADING = true;
+  $("queue-table-wrap")?.classList.add("stale");
+  const params = new URLSearchParams({
+    platform: taskQueuePlatform(),
+    queue_type: $("queue-type")?.value || "",
+    state: $("queue-state")?.value || "active",
+    q: $("queue-query")?.value.trim() || "",
+    page: String(TASK_QUEUE_PAGE),
+    page_size: String(TASK_QUEUE_PAGE_SIZE),
+  });
+  try {
+    const data = await api("/api/task-queue?" + params.toString());
+    body.innerHTML = data.items?.length
+      ? data.items.map(taskQueueRow).join("")
+      : empty(7, "当前筛选范围内没有任务", "i-inbox", "切换状态或平台范围后再查看");
+    renderTaskQueueSummary(data.summary || {});
+    renderTaskQueuePager(data);
+  } catch (e) {
+    body.innerHTML = empty(7, "任务队列加载失败", "i-info", e.message || "请稍后重试");
+    if (CURRENT_TAB === "queue") toast("任务队列加载失败：" + e.message, "err");
+  } finally {
+    TASK_QUEUE_LOADING = false;
+    $("queue-table-wrap")?.classList.remove("stale");
+    if (TASK_QUEUE_REFRESH_PENDING) {
+      TASK_QUEUE_REFRESH_PENDING = false;
+      setTimeout(() => refreshTaskQueue(), 0);
+    }
+  }
+}
+
+async function refreshTaskQueueBadge() {
+  if (TASK_QUEUE_BADGE_LOADING || CURRENT_TAB === "queue") return;
+  TASK_QUEUE_BADGE_LOADING = true;
+  try {
+    const params = new URLSearchParams({ platform: PLATFORM, state: "active", page_size: "1" });
+    const data = await api("/api/task-queue?" + params.toString());
+    const badge = $("tb-queue");
+    if (badge) badge.textContent = fmtNum(Number(data.summary?.active || 0));
+  } catch (e) {
+    // 导航徽章是辅助信息，失败时保留上次值，不打断当前页面操作。
+  } finally { TASK_QUEUE_BADGE_LOADING = false; }
+}
+
+function setTaskQueueState(state) {
+  const select = $("queue-state");
+  if (!select) return;
+  select.value = state;
+  if (select._csSync) select._csSync();
+  refreshTaskQueue(true);
+}
+
+function goTaskQueuePage(page) {
+  const target = Math.max(1, Math.min(TASK_QUEUE_PAGES, Number(page) || 1));
+  if (target === TASK_QUEUE_PAGE) return;
+  TASK_QUEUE_PAGE = target;
+  refreshTaskQueue();
+}
+
+function setTaskQueuePageSize(value) {
+  TASK_QUEUE_PAGE_SIZE = Math.max(10, Math.min(100, Number(value) || 20));
+  refreshTaskQueue(true);
+}
+
+function openTaskQueueSource(tab) {
+  if (!PAGE_META[tab]) return;
+  switchTab(tab, true);
+}
+
 function esc(s) { return (s || "").toString().replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 function loop() {
@@ -5726,6 +6555,7 @@ function loop() {
   refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshOverviewChart(); refreshCommentRules(); refreshCommentTasks(); if (pfHasPublish(PLATFORM)) refreshPublish();
   if (CURRENT_TAB === "collections") refreshCollections();
   if (CURRENT_TAB === "risk-control") refreshRiskCenter();
+  if (CURRENT_TAB === "queue") refreshTaskQueue(); else refreshTaskQueueBadge();
 }
 
 // initial skeletons while data loads
@@ -5738,9 +6568,10 @@ $("danmaku-watch-table").innerHTML = skeleton(8);
 $("danmaku-table").innerHTML = skeleton(6);
 $("collection-job-table").innerHTML = collectionTaskSkeleton(3);
 $("collection-content-list").innerHTML = collectionResultSkeleton(4);
+$("queue-table").innerHTML = skeleton(7);
 
 // restore last-selected section (default: 总览);旧版四个独立页已并入「账号管理」
-const VALID_TABS = ["overview", "accounts", "risk-control", "collections", "monitors", "comments", "danmaku", "hub", "publish", "autocomment", "share-download", "notifications", "settings"];
+const VALID_TABS = ["overview", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "publish", "autocomment", "share-download", "notifications", "settings"];
 const LEGACY_HUB_TABS = ["myworks", "following", "fans", "dm"];
 switchTab((() => {
   try {
@@ -5756,8 +6587,9 @@ switchHubTab(HUB_TAB);   // 恢复上次停留的子标签(我的作品/关注/�
 // restore last-selected platform (default: 抖音)
 PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "douyin", "kuaishou", "shipinhao"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
 applyPlatformUI();
+updateTaskQueuePlatformLabel();
 
-onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshProxies(); refreshChannels(); loop();
+onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshBrowserRuntimes(); refreshProxies(); refreshChannels(); loop();
 enhanceAllSelects();   // 把所有原生 <select> 升级为美化下拉
 enhanceAllMetaControls(); // 分组/标签：当前平台词库下拉，可搜索并新增
 enhanceAllDateTime();  // 把 datetime-local 升级为自定义日期选择器

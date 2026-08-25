@@ -10,7 +10,13 @@ from pathlib import Path
 from sqlalchemy import func
 from sqlmodel import select
 
-from ..browser import fetch_comments, fetch_douyin_search
+from ..browser import (
+    fetch_comments,
+    fetch_douyin_search,
+    fetch_xhs_comments,
+    fetch_xhs_note_detail,
+    fetch_xhs_search,
+)
 from ..db import get_session
 from ..models import (
     KeywordCollectionComment,
@@ -69,6 +75,37 @@ class KeywordCollector:
         self.cfg = cfg
         self.browser = browser
         self.downloader = downloader
+
+    async def _xhs_gap(self, seconds: float) -> None:
+        base = max(0.0, float(seconds or 0.0))
+        if not base:
+            return
+        jitter = min(1.0, max(
+            0.0, float(self.cfg.engine.xhs_request_jitter or 0.0)))
+        await asyncio.sleep(base * random.uniform(1.0, 1.0 + jitter))
+
+    def _xhs_browser_reads_enabled(self) -> bool:
+        return bool(
+            self.cfg.engine.xhs_read_mode == "browser"
+            and callable(getattr(self.browser, "visible_page", None))
+        )
+
+    def _direct_request_ua(self, identity) -> str:
+        resolver = getattr(self.browser, "direct_request_user_agent", None)
+        if callable(resolver):
+            return resolver(identity)
+        return str(getattr(identity, "ua", "") or self.cfg.engine.user_agent)
+
+    def _result(self, job_id: int, *, stopped: bool = False) -> dict:
+        contents, comments = self._refresh_counts(job_id)
+        final = self._job(job_id)
+        return {
+            "canceled": False,
+            "stopped": stopped,
+            "errors": final.error_count if final else 0,
+            "contents": contents,
+            "comments": comments,
+        }
 
     @staticmethod
     def _job(job_id: int) -> KeywordCollectionJob | None:
@@ -180,6 +217,19 @@ class KeywordCollector:
             return list(found.values())[:limit], f"小红书搜索失败: {exc}"
         return list(found.values())[:limit], ""
 
+    async def _discover_xhs_browser(
+            self, identity, keyword: str, job: KeywordCollectionJob
+            ) -> tuple[list[dict], str]:
+        values, error = await fetch_xhs_search(
+            self.browser,
+            identity,
+            keyword,
+            set(),
+            max_scrolls=max(1, min(10, int(job.max_pages_per_keyword or 1))),
+            block_media=self.cfg.engine.block_media_resources,
+        )
+        return values[:job.max_contents_per_keyword], error
+
     async def _materialize_xhs(self, client: XhsApiClient, raw: dict) \
             -> tuple[Aweme | None, dict, str]:
         brief = parse_note_brief(raw)
@@ -203,6 +253,30 @@ class KeywordCollector:
             aweme.platform = "xhs"
             aweme.cover = brief.get("cover") or ""
         return aweme, {"brief": brief, "card": card}, error
+
+    async def _materialize_xhs_browser(self, identity, raw: dict) \
+            -> tuple[Aweme | None, dict, str]:
+        brief = parse_note_brief(raw)
+        if not brief:
+            return None, {}, "搜索结果缺少 note_id"
+        card, error = await fetch_xhs_note_detail(
+            self.browser,
+            identity,
+            brief["note_id"],
+            xsec_token=brief.get("xsec_token", ""),
+            xsec_source="pc_search",
+            block_media=self.cfg.engine.block_media_resources,
+        )
+        aweme = parse_note_detail(card or {}, brief) if card else None
+        if aweme is None:
+            aweme = Aweme(
+                aweme_id=brief["note_id"], desc=brief.get("title", ""),
+                create_time=int(brief.get("create_time") or 0), author_name="",
+                media_type="video" if brief.get("type") == "video" else "images",
+            )
+            aweme.platform = "xhs"
+            aweme.cover = brief.get("cover") or ""
+        return aweme, {"brief": brief, "card": card or {}}, error
 
     @staticmethod
     def _upsert_content(job: KeywordCollectionJob, keyword: str, aweme: Aweme,
@@ -341,6 +415,28 @@ class KeywordCollector:
             parsed = [item for item in parsed if not item.get("reply_to")]
         return self._dedupe_comments(parsed, limit), error
 
+    async def _xhs_comments_browser(
+            self, identity, note_id: str, xsec_token: str, limit: int,
+            include_replies: bool) -> tuple[list[dict], str]:
+        if limit <= 0:
+            return [], ""
+        raw, error = await fetch_xhs_comments(
+            self.browser,
+            identity,
+            note_id,
+            set(),
+            xsec_token=xsec_token,
+            xsec_source="pc_search",
+            max_scrolls=max(1, min(20, math.ceil(limit / 10) + 1)),
+            block_media=self.cfg.engine.block_media_resources,
+        )
+        values = flatten_xhs_comments(raw) if include_replies else raw
+        parsed = [item for item in
+                  (parse_xhs_comment(value) for value in values) if item]
+        if not include_replies:
+            parsed = [item for item in parsed if not item.get("reply_to")]
+        return self._dedupe_comments(parsed, limit), error
+
     @staticmethod
     def _dedupe_comments(values: list[dict], limit: int) -> list[dict]:
         found: dict[str, dict] = {}
@@ -400,12 +496,12 @@ class KeywordCollector:
             douyin_client = DouyinClient(
                 douyin_cookie_from_state(account.storage_state), identity.ua,
                 timeout=self.cfg.engine.request_timeout_seconds, proxy=proxy)
-        else:
+        elif not self._xhs_browser_reads_enabled():
             cookie = cookie_str_from_state(account.storage_state)
             if not has_a1(cookie):
                 raise RuntimeError("小红书登录态缺少 a1，请重新扫码登录")
             xhs_client = XhsApiClient(
-                cookie, identity.ua,
+                cookie, self._direct_request_ua(identity),
                 timeout=self.cfg.engine.request_timeout_seconds, proxy=proxy)
 
         if job.platform == "douyin":
@@ -418,14 +514,16 @@ class KeywordCollector:
                     job_id, job, account, keywords, proxy,
                     douyin_client=douyin_client, context=context)
         return await self._run_keywords(
-            job_id, job, account, keywords, proxy, xhs_client=xhs_client)
+            job_id, job, account, keywords, proxy,
+            xhs_client=xhs_client, identity=identity)
 
     async def _run_keywords(self, job_id: int, job: KeywordCollectionJob,
                             account, keywords: list[str], proxy: str,
-                            douyin_client: DouyinClient | None = None,
-                            xhs_client: XhsApiClient | None = None,
-                            context=None) -> dict:
+                             douyin_client: DouyinClient | None = None,
+                             xhs_client: XhsApiClient | None = None,
+                             context=None, identity=None) -> dict:
 
+        browser_reads = self._xhs_browser_reads_enabled()
         for keyword_index, keyword in enumerate(keywords):
             if self._cancel_requested(job_id):
                 return {"canceled": True, "errors": self._job(job_id).error_count}
@@ -433,11 +531,17 @@ class KeywordCollector:
                 gap = max(0.0, float(self.cfg.engine.douyin_keyword_gap_seconds))
                 if gap:
                     await asyncio.sleep(gap * random.uniform(1.0, 1.35))
+            elif job.platform == "xhs" and keyword_index:
+                await self._xhs_gap(
+                    self.cfg.engine.xhs_keyword_gap_seconds)
             self._progress(job_id, keyword=keyword, step="搜索作品")
             if job.platform == "douyin":
                 raw_items, search_error = await self._discover_douyin(
                     account, keyword, job,
                     context=context)
+            elif browser_reads:
+                raw_items, search_error = await self._discover_xhs_browser(
+                    identity, keyword, job)
             else:
                 raw_items, search_error = await self._discover_xhs(
                     xhs_client, keyword, job.max_contents_per_keyword)
@@ -474,12 +578,29 @@ class KeywordCollector:
                         )
                         detail_error = "未取得媒体地址"
                     token = ""
+                elif browser_reads:
+                    aweme, parts, detail_error = \
+                        await self._materialize_xhs_browser(identity, raw)
+                    brief = parts.get("brief") or {}
+                    card = parts.get("card") or {}
+                    detail_raw = card or raw
+                    token = brief.get("xsec_token") or ""
                 else:
                     aweme, parts, detail_error = await self._materialize_xhs(xhs_client, raw)
                     brief = parts.get("brief") or {}
                     card = parts.get("card") or {}
                     detail_raw = card or raw
                     token = brief.get("xsec_token") or ""
+                if job.platform == "xhs" and detail_error:
+                    category, _ = classify_platform_error(detail_error)
+                    if category in {
+                            RiskCategory.RISK, RiskCategory.AUTH,
+                            RiskCategory.NETWORK}:
+                        note_id = str(
+                            (parts.get("brief") or {}).get("note_id") or "")
+                        self._record_error(
+                            job_id, f"{keyword}/{note_id}: {detail_error}")
+                        return self._result(job_id, stopped=True)
                 if aweme is None:
                     self._record_error(job_id, f"{keyword}: 无法解析一条搜索结果")
                     continue
@@ -504,6 +625,10 @@ class KeywordCollector:
                             account, douyin_client, aweme,
                             job.max_comments_per_content, job.include_replies,
                             context=context)
+                    elif browser_reads:
+                        comments, comment_error = await self._xhs_comments_browser(
+                            identity, aweme.aweme_id, token,
+                            job.max_comments_per_content, job.include_replies)
                     else:
                         comments, comment_error = await self._xhs_comments(
                             xhs_client, aweme.aweme_id, token,
@@ -513,14 +638,15 @@ class KeywordCollector:
                     if comment_error:
                         self._record_error(
                             job_id, f"{keyword}/{aweme.aweme_id}: {comment_error}")
+                        if job.platform == "xhs" and classify_platform_error(
+                                comment_error)[0] in {
+                                RiskCategory.RISK, RiskCategory.AUTH,
+                                RiskCategory.NETWORK}:
+                            return self._result(job_id, stopped=True)
                 self._refresh_counts(job_id)
-                await asyncio.sleep(0.4)
+                if job.platform == "xhs":
+                    await self._xhs_gap(self.cfg.engine.xhs_item_gap_seconds)
+                else:
+                    await asyncio.sleep(0.4)
 
-        contents, comments = self._refresh_counts(job_id)
-        final = self._job(job_id)
-        return {
-            "canceled": False,
-            "errors": final.error_count if final else 0,
-            "contents": contents,
-            "comments": comments,
-        }
+        return self._result(job_id)
