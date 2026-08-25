@@ -158,11 +158,77 @@ async def _xhs_web_session(ctx) -> str:
 
 
 _XHS_USER_ME_API = "/api/sns/web/v2/user/me"
+_XHS_QRCODE_STATUS_API = "/api/sns/web/v1/login/qrcode/status"
 _XHS_SECURITY_RETRY_DELAY_SECONDS = 12.0
 _XHS_IDENTITY_RECHECK_DELAY_SECONDS = 2.0
+_XHS_PAGE_IDENTITY_POLL_SECONDS = 1.0
+
+_XHS_PAGE_IDENTITY_JS = """() => {
+  try {
+    const marker = 'window.__INITIAL_STATE__=';
+    let state = window.__INITIAL_STATE__;
+    if (!state || !Object.keys(state).length) {
+      for (const script of document.scripts) {
+        const text = script.textContent || '';
+        const at = text.indexOf(marker);
+        if (at < 0) continue;
+        try {
+          state = (new Function(
+            'return (' + text.slice(at + marker.length) + ')'))();
+        } catch (_) { state = null; }
+        break;
+      }
+    }
+    const unwrap = (input) => {
+      let value = input;
+      for (let i = 0; i < 3 && value && typeof value === 'object'; i++) {
+        if (value._rawValue !== undefined) value = value._rawValue;
+        else if (value._value !== undefined) value = value._value;
+        else break;
+      }
+      return value;
+    };
+    const root = unwrap((state || {}).user) || {};
+    const candidates = [
+      root.userInfo, root.loginUser, root.currentUser, root.me,
+      root.userPageData, root.info
+    ];
+    for (let candidate of candidates) {
+      candidate = unwrap(candidate);
+      if (!candidate || typeof candidate !== 'object') continue;
+      const basic = unwrap(candidate.basicInfo || candidate.basic_info) || {};
+      const userId = candidate.userId || candidate.user_id ||
+        basic.userId || basic.user_id || '';
+      const redId = candidate.redId || candidate.red_id ||
+        basic.redId || basic.red_id || '';
+      if (!userId && !redId) continue;
+      return {
+        user_id: String(userId || ''),
+        red_id: String(redId || ''),
+        nickname: String(candidate.nickname || candidate.nickName ||
+          basic.nickname || basic.nickName || ''),
+        guest: candidate.guest === true
+      };
+    }
+    return null;
+  } catch (_) { return null; }
+}"""
 
 
-def _xhs_login_response_handler(authenticated_user: dict):
+async def _xhs_page_identity(page) -> dict:
+    try:
+        value = await page.evaluate(_XHS_PAGE_IDENTITY_JS)
+    except Exception:
+        return {}
+    if not isinstance(value, dict) or value.get("guest") is True:
+        return {}
+    if not (value.get("user_id") or value.get("red_id")):
+        return {}
+    return value
+
+
+def _xhs_login_response_handler(
+        authenticated_user: dict, login_signals: dict | None = None):
     async def on_response(response):
         try:
             parsed = urlparse(str(response.url or ""))
@@ -170,11 +236,27 @@ def _xhs_login_response_handler(authenticated_user: dict):
             if not (host == "xiaohongshu.com"
                     or host.endswith(".xiaohongshu.com")):
                 return
-            if parsed.path.rstrip("/").lower() != _XHS_USER_ME_API:
-                return
             if int(response.status) != 200:
                 return
             payload = await response.json()
+            path = parsed.path.rstrip("/").lower()
+            if path == _XHS_QRCODE_STATUS_API:
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if not isinstance(data, dict):
+                    data = payload if isinstance(payload, dict) else {}
+                code_status = data.get("codeStatus", data.get("code_status"))
+                try:
+                    code_status = int(code_status)
+                except (TypeError, ValueError):
+                    code_status = -1
+                # Current XHS web client maps 0=waiting, 1=scanned,
+                # 2=login completed, 3=expired and emits onLogin for status 2.
+                if code_status == 2 and login_signals is not None:
+                    login_signals["qr_confirmed"] = True
+                    _LOG.info("XHS QR login confirmed by qrcode/status")
+                return
+            if path != _XHS_USER_ME_API:
+                return
             data = payload.get("data") if isinstance(payload, dict) else None
             if not isinstance(data, dict) or data.get("guest") is True:
                 return
@@ -205,7 +287,9 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
     state_json = ""
     security_verification_seen = False
     authenticated_user: dict = {}
-    on_response = _xhs_login_response_handler(authenticated_user)
+    login_signals: dict = {}
+    on_response = _xhs_login_response_handler(
+        authenticated_user, login_signals)
     observed_pages: set[int] = set()
 
     def observe(candidate) -> None:
@@ -264,6 +348,7 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
     recovery_attempted = False
     last_rechecked_session = ""
     next_identity_recheck_at = 0.0
+    next_page_identity_poll_at = 0.0
     async with mgr.visible_page(identity) as page:
         await _focus(page)
         observe(page)
@@ -356,8 +441,28 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
                     active_url = str(active_page.url or "")
                 except Exception as exc:
                     _LOG.warning("XHS identity recheck reload failed: %r", exc)
+            # Some successful QR flows update the page's reactive current-user
+            # state but neither rotate web_session nor emit another user/me
+            # request.  Read only the dedicated current-user branch from the
+            # page state; requiring user_id/red_id avoids treating feed authors
+            # or a guest web_session as the logged-in account.
+            if (not authenticated_user
+                    and loop.time() >= next_page_identity_poll_at
+                    and "xiaohongshu.com" in active_url.lower()
+                    and "passport" not in active_url.lower()
+                    and not _is_xhs_security_verification_url(active_url)):
+                next_page_identity_poll_at = (
+                    loop.time() + _XHS_PAGE_IDENTITY_POLL_SECONDS)
+                page_user = await _xhs_page_identity(active_page)
+                if page_user:
+                    authenticated_user.update(page_user)
+                    _LOG.info(
+                        "XHS authenticated identity found in page state: %s",
+                        page_user.get("user_id") or page_user.get("red_id"))
             # Cookie 只作必要条件；user/me 的非游客身份才是授权完成证据。
-            if (ws and len(ws) >= 20 and authenticated_user
+            identity_confirmed = bool(
+                authenticated_user or login_signals.get("qr_confirmed"))
+            if (ws and len(ws) >= 20 and identity_confirmed
                     and "passport" not in active_url
                     and not _is_xhs_security_verification_url(active_url)):
                 try:

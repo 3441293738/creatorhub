@@ -9,6 +9,7 @@ from app.browser.login import (
     XhsSecurityVerificationRequired,
     _is_xhs_security_verification_url,
     _reuse_or_create_login_page,
+    _xhs_page_identity,
     interactive_xhs_login,
 )
 
@@ -51,6 +52,21 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         }
         return response
 
+    @staticmethod
+    def _qr_status_response(code_status: int):
+        response = AsyncMock()
+        response.url = (
+            "https://www.xiaohongshu.com"
+            "/api/sns/web/v1/login/qrcode/status"
+        )
+        response.status = 200
+        response.json.return_value = {
+            "code": 0,
+            "success": True,
+            "data": {"code_status": code_status},
+        }
+        return response
+
     async def test_security_verification_url_is_recognized(self):
         self.assertTrue(_is_xhs_security_verification_url(
             "https://www.xiaohongshu.com/website-login/captcha?verifyType=124"
@@ -61,6 +77,19 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(_is_xhs_security_verification_url(
             "https://www.xiaohongshu.com/explore"
         ))
+
+    async def test_page_identity_requires_current_user_id(self):
+        page = AsyncMock()
+        page.evaluate.side_effect = [
+            {"user_id": "", "red_id": "", "nickname": "guest"},
+            {"user_id": "member-id", "nickname": "fixture-member"},
+        ]
+
+        self.assertEqual(await _xhs_page_identity(page), {})
+        self.assertEqual(
+            await _xhs_page_identity(page),
+            {"user_id": "member-id", "nickname": "fixture-member"},
+        )
 
     async def test_unfinished_security_verification_returns_clear_error(self):
         manager = AsyncMock()
@@ -387,6 +416,110 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("member-session", state)
         self.assertEqual(nickname, "fixture-member")
         self.assertEqual(page.reload.await_count, 2)
+
+    async def test_page_state_confirms_login_without_new_user_me_response(self):
+        manager = AsyncMock()
+        context = AsyncMock()
+        page = AsyncMock()
+        manager.context_for.return_value = context
+        context.pages = [page]
+        context.on = MagicMock()
+        context.cookies.return_value = [
+            {"name": "web_session", "value": "stable-session-00000000001"}
+        ]
+        context.storage_state.return_value = {
+            "cookies": [{
+                "name": "web_session",
+                "value": "stable-session-00000000001",
+            }],
+        }
+        page.url = "about:blank"
+        page.is_closed = MagicMock(return_value=False)
+        page.on = MagicMock()
+        page.evaluate.return_value = {
+            "user_id": "page-state-member",
+            "nickname": "page-state-name",
+            "guest": False,
+        }
+
+        async def goto(_url, **_kwargs):
+            page.url = "https://www.xiaohongshu.com/explore"
+
+        page.goto.side_effect = goto
+
+        @asynccontextmanager
+        async def visible_page(_identity):
+            try:
+                yield page
+            finally:
+                await page.close()
+
+        manager.visible_page = visible_page
+        manager.xhs_interaction.pause = AsyncMock()
+
+        logged, state, nickname = await interactive_xhs_login(
+            manager, object(), timeout_seconds=2)
+
+        self.assertTrue(logged)
+        self.assertIn("stable-session", state)
+        self.assertEqual(nickname, "page-state-name")
+
+    async def test_qrcode_status_two_confirms_login_without_user_me(self):
+        manager = AsyncMock()
+        context = AsyncMock()
+        page = AsyncMock()
+        manager.context_for.return_value = context
+        context.pages = [page]
+        context.on = MagicMock()
+        context.cookies.return_value = [
+            {"name": "web_session", "value": "qr-member-session-00000001"}
+        ]
+        context.storage_state.return_value = {
+            "cookies": [{
+                "name": "web_session",
+                "value": "qr-member-session-00000001",
+            }],
+        }
+        page.url = "about:blank"
+        page.is_closed = MagicMock(return_value=False)
+        page.evaluate.return_value = None
+        response_listener = {}
+
+        def on(event, listener):
+            if event == "response":
+                response_listener["handler"] = listener
+
+        page.on = MagicMock(side_effect=on)
+
+        async def goto(_url, **_kwargs):
+            page.url = "https://www.xiaohongshu.com/explore"
+            handler = response_listener.get("handler")
+            if handler is not None:
+                await handler(self._qr_status_response(2))
+
+        page.goto.side_effect = goto
+
+        @asynccontextmanager
+        async def visible_page(_identity):
+            try:
+                yield page
+            finally:
+                await page.close()
+
+        manager.visible_page = visible_page
+        manager.xhs_interaction.pause = AsyncMock()
+
+        with patch(
+            "app.browser.login._read_xhs_nickname",
+            new_callable=AsyncMock,
+            return_value="",
+        ):
+            logged, state, nickname = await interactive_xhs_login(
+                manager, object(), timeout_seconds=2)
+
+        self.assertTrue(logged)
+        self.assertIn("qr-member-session", state)
+        self.assertEqual(nickname, "")
 
     async def test_rotated_guest_web_session_is_not_treated_as_logged_in(self):
         manager = AsyncMock()
