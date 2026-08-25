@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import suppress
+import logging
 from typing import Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from .identity import Identity
 from .manager import BrowserManager
+
+_LOG = logging.getLogger(__name__)
 
 # 登录后才会出现的 Cookie(用于判断是否已登录)
 _LOGIN_COOKIES = {"sessionid", "sessionid_ss", "sid_tt", "uid_tt", "sid_guard"}
@@ -291,41 +293,36 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
                 security_detected_at = loop.time()
             if security_verification_seen and not security_notified:
                 security_notified = True
+                _LOG.info("XHS device verification detected: %s", page.url)
                 await report_status(str(page.url or ""))
             active_page = usable_page(page)
             active_url = str(getattr(active_page, "url", "") or "")
             # A clean profile can receive a short-lived device check on its
             # very first navigation while the same profile reaches /explore
-            # normally a few seconds later.  Keep the verification QR intact,
-            # then make one bounded retry in a second tab after its bootstrap
-            # cookies have settled.  Never loop retries and never replace a
-            # healthy tab the user has already opened manually.
+            # normally a few seconds later.  Retry once in the currently
+            # visible tab after its bootstrap cookies have settled.  A second
+            # CDP-created tab may be opened and closed too quickly when the
+            # platform returns another redirect, making the retry invisible to
+            # the user.  Same-tab navigation is visible and matches a manual
+            # address-bar retry more closely.
             if (security_verification_seen and not recovery_attempted
                     and security_detected_at is not None
                     and loop.time() - security_detected_at
                     >= _XHS_SECURITY_RETRY_DELAY_SECONDS
                     and _is_xhs_security_verification_url(active_url)):
                 recovery_attempted = True
-                recovery_page = None
                 try:
-                    recovery_page = await ctx.new_page()
-                    observe(recovery_page)
-                    await recovery_page.goto(
+                    _LOG.info("Retrying XHS homepage in the visible login tab")
+                    await page.bring_to_front()
+                    await page.goto(
                         "https://www.xiaohongshu.com/",
                         wait_until="domcontentloaded", timeout=30000)
-                    recovery_url = str(recovery_page.url or "")
-                    if not _is_xhs_security_verification_url(recovery_url):
-                        active_page = recovery_page
-                        active_url = recovery_url
-                        with suppress(Exception):
-                            await recovery_page.bring_to_front()
-                    else:
-                        with suppress(Exception):
-                            await recovery_page.close()
-                except Exception:
-                    if recovery_page is not None:
-                        with suppress(Exception):
-                            await recovery_page.close()
+                    active_page = usable_page(page)
+                    active_url = str(
+                        getattr(active_page, "url", "") or "")
+                    _LOG.info("XHS visible-tab retry finished: %s", active_url)
+                except Exception as exc:
+                    _LOG.warning("XHS visible-tab retry failed: %r", exc)
             if (security_notified and not security_cleared_notified
                     and not _is_xhs_security_verification_url(active_url)
                     and "xiaohongshu.com" in active_url.lower()
