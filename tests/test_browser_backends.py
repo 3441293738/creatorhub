@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -390,10 +391,30 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
         self.assertEqual(
             Path(kwargs["user_data_dir"]),
             Path(identity.profile_dir) / "runtimes" / "fp-149-b")
+        preferences = json.loads((
+            Path(kwargs["user_data_dir"]) / "Default" / "Preferences"
+        ).read_text(encoding="utf-8"))
+        self.assertFalse(preferences["profile"]["block_third_party_cookies"])
+        self.assertEqual(preferences["profile"]["cookie_controls_mode"], 2)
         snapshot = manager.environment_snapshot(identity, headless=False)
         self.assertEqual(snapshot["runtime_id"], "fp-149-b")
         self.assertEqual(snapshot["runtime_version"], "149.0.1")
         manager._release_profile_lock(identity.key)
+
+    def test_existing_fingerprint_cookie_choice_is_not_overwritten(self):
+        profile = Path(self.tmp.name) / "existing-profile"
+        preferences_path = profile / "Default" / "Preferences"
+        preferences_path.parent.mkdir(parents=True)
+        preferences_path.write_text(
+            json.dumps({"profile": {"cookie_controls_mode": 1}}),
+            encoding="utf-8",
+        )
+
+        changed = BrowserManager._seed_fingerprint_profile_preferences(profile)
+
+        self.assertFalse(changed)
+        saved = json.loads(preferences_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["profile"]["cookie_controls_mode"], 1)
 
 
 class AccountBrowserBackendApiTests(unittest.TestCase):

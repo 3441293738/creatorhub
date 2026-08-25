@@ -738,6 +738,36 @@ class BrowserManager:
         if lock is not None:
             lock.release()
 
+    @staticmethod
+    def _seed_fingerprint_profile_preferences(profile_dir: Path) -> bool:
+        """Let a new dedicated fingerprint Profile accept third-party cookies.
+
+        Fingerprint Chromium 148 initializes dedicated profiles with third-
+        party cookies blocked.  Cross-site login hand-offs can then be sent to
+        a device-verification page on their very first navigation.  Seed only
+        a brand-new Profile; once Chromium has created Preferences, the user's
+        later browser setting remains authoritative.
+        """
+        preferences = profile_dir / "Default" / "Preferences"
+        if preferences.exists():
+            return False
+        preferences.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "profile": {
+                "block_third_party_cookies": False,
+                # Chromium CookieControlsMode::kIncognitoOnly.  In a regular
+                # persistent Profile this is the UI option “允许第三方 Cookie”.
+                "cookie_controls_mode": 2,
+            },
+        }
+        temporary = preferences.with_suffix(".creatorhub.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary.replace(preferences)
+        return True
+
     def native_write_gate_error(self, account, *, headed: bool = True,
                                 browser_mode: bool = True,
                                 now=None) -> str:
@@ -799,6 +829,8 @@ class BrowserManager:
             pdir = Path(identity.profile_dir)
         pdir.mkdir(parents=True, exist_ok=True)
         was_empty = not any(p.name != ".browser.lock" for p in pdir.iterdir())
+        if fingerprint_backend is not None and was_empty:
+            self._seed_fingerprint_profile_preferences(pdir)
         self._acquire_profile_lock(identity, pdir)
         ua = self._normalize_ua(identity.ua or self.default_ua)
         fingerprint_plan = None
