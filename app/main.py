@@ -880,7 +880,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                         )
                     reauth_options["status_callback"] = _xhs_verification_status
                     ok, state_json, nickname = await interactive_xhs_login(
-                        browser, identity, **reauth_options)
+                        browser, identity, timeout_seconds=300,
+                        **reauth_options)
             elif platform == "kuaishou":
                 reauth_options = {"force_reauth": True} if account_id else {}
                 if creator:

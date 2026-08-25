@@ -159,6 +159,7 @@ async def _xhs_web_session(ctx) -> str:
 
 _XHS_USER_ME_API = "/api/sns/web/v2/user/me"
 _XHS_SECURITY_RETRY_DELAY_SECONDS = 12.0
+_XHS_IDENTITY_RECHECK_DELAY_SECONDS = 2.0
 
 
 def _xhs_login_response_handler(authenticated_user: dict):
@@ -261,6 +262,8 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
     security_cleared_notified = False
     security_detected_at: float | None = None
     recovery_attempted = False
+    last_rechecked_session = ""
+    next_identity_recheck_at = 0.0
     async with mgr.visible_page(identity) as page:
         await _focus(page)
         observe(page)
@@ -330,6 +333,29 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
                 security_cleared_notified = True
                 await report_status(active_url)
             ws = await _xhs_web_session(ctx)
+            # The QR flow can update web_session without issuing user/me again
+            # in the tab that was already on /explore.  Cookie alone is not a
+            # success signal because guests also receive web_session.  When
+            # its value changes, visibly reload the healthy XHS page once so
+            # the site's own startup request supplies an authoritative
+            # guest/non-guest user/me response to our existing listener.
+            if (ws and len(ws) >= 20 and not authenticated_user
+                    and ws != last_rechecked_session
+                    and loop.time() >= next_identity_recheck_at
+                    and "xiaohongshu.com" in active_url.lower()
+                    and "passport" not in active_url.lower()
+                    and not _is_xhs_security_verification_url(active_url)):
+                last_rechecked_session = ws
+                next_identity_recheck_at = (
+                    loop.time() + _XHS_IDENTITY_RECHECK_DELAY_SECONDS)
+                try:
+                    _LOG.info(
+                        "XHS web_session changed; reloading page to verify identity")
+                    await active_page.reload(
+                        wait_until="domcontentloaded", timeout=30000)
+                    active_url = str(active_page.url or "")
+                except Exception as exc:
+                    _LOG.warning("XHS identity recheck reload failed: %r", exc)
             # Cookie 只作必要条件；user/me 的非游客身份才是授权完成证据。
             if (ws and len(ws) >= 20 and authenticated_user
                     and "passport" not in active_url

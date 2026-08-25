@@ -312,6 +312,82 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         context.close.assert_not_awaited()
         page.close.assert_awaited_once()
 
+    async def test_changed_web_session_reloads_and_confirms_identity(self):
+        manager = AsyncMock()
+        context = AsyncMock()
+        page = AsyncMock()
+        manager.context_for.return_value = context
+        context.pages = [page]
+        context.on = MagicMock()
+        context.cookies.side_effect = [
+            [{"name": "web_session", "value": "guest-session-000000000001"}],
+            [{"name": "web_session", "value": "member-session-00000000002"}],
+        ]
+        context.storage_state.return_value = {
+            "cookies": [{
+                "name": "web_session",
+                "value": "member-session-00000000002",
+            }],
+        }
+        page.url = "about:blank"
+        page.is_closed = MagicMock(return_value=False)
+        response_listener = {}
+
+        def on(event, listener):
+            if event == "response":
+                response_listener["handler"] = listener
+
+        page.on = MagicMock(side_effect=on)
+
+        async def goto(_url, **_kwargs):
+            page.url = "https://www.xiaohongshu.com/explore"
+            handler = response_listener.get("handler")
+            if handler is not None:
+                await handler(self._user_me_response(guest=True))
+
+        reload_count = 0
+
+        async def reload(**_kwargs):
+            nonlocal reload_count
+            reload_count += 1
+            handler = response_listener.get("handler")
+            if handler is not None:
+                await handler(self._user_me_response(
+                    guest=reload_count == 1,
+                    user_id="" if reload_count == 1 else "member-user",
+                ))
+
+        page.goto.side_effect = goto
+        page.reload.side_effect = reload
+
+        @asynccontextmanager
+        async def visible_page(_identity):
+            try:
+                yield page
+            finally:
+                await page.close()
+
+        manager.visible_page = visible_page
+        manager.xhs_interaction.pause = AsyncMock()
+
+        with (
+            patch(
+                "app.browser.login._XHS_IDENTITY_RECHECK_DELAY_SECONDS", 0,
+            ),
+            patch(
+                "app.browser.login._read_xhs_nickname",
+                new_callable=AsyncMock,
+                return_value="fixture-member",
+            ),
+        ):
+            logged, state, nickname = await interactive_xhs_login(
+                manager, object(), timeout_seconds=2)
+
+        self.assertTrue(logged)
+        self.assertIn("member-session", state)
+        self.assertEqual(nickname, "fixture-member")
+        self.assertEqual(page.reload.await_count, 2)
+
     async def test_rotated_guest_web_session_is_not_treated_as_logged_in(self):
         manager = AsyncMock()
         context = AsyncMock()
