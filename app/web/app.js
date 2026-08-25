@@ -1072,6 +1072,7 @@ function switchTab(name, pushHistory = false) {
 // ─── 扫码登录(真实浏览器窗口) ───
 let qrTimer = null;
 let preLoginBrowserBackend = "default";
+let preLoginBrowserCatalog = null;
 function browserChoiceParts(choice) {
   const [backend, runtimeId = ""] = String(choice || "default").split("::", 2);
   return { backend: backend || "default", runtimeId };
@@ -1109,6 +1110,7 @@ async function choosePreLoginBrowserBackend() {
   let catalog;
   try {
     catalog = await api("/api/browser-backends");
+    preLoginBrowserCatalog = catalog;
   } catch (e) {
     toast("读取登录环境失败：" + e.message, "err");
     return null;
@@ -1116,7 +1118,7 @@ async function choosePreLoginBrowserBackend() {
   const options = browserChoiceOptions(catalog);
   const selected = await uiSelect({
     title: "选择扫码登录环境",
-    hint: "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。",
+    hint: "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。新的指纹环境会同时打开 BrowserScan 体检标签。",
     options,
     value: preLoginBrowserBackend,
   });
@@ -1149,22 +1151,68 @@ async function choosePreLoginProxy() {
   }
   return v;
 }
+function freshPreLoginFingerprint(browserBackend) {
+  const choice = browserChoiceParts(browserBackend);
+  const runtimes = (preLoginBrowserCatalog || {}).runtimes || [];
+  const runtime = runtimes.find(item => item.runtime_id === choice.runtimeId)
+    || runtimes.find(item => item.is_default) || {};
+  const seed = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
+    ? globalThis.crypto.randomUUID().replaceAll("-", "")
+    : `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+  return {
+    seed, engine_seed: "", fingerprint_id: seed.slice(0, 12),
+    source_ip: "", country: "", region: "", city: "",
+    timezone: "Asia/Shanghai", locale: "zh-CN", accept_languages: "",
+    viewport_w: 1280, viewport_h: 800, geo_lat: 0, geo_lon: 0,
+    platform: "", platform_version: "", brand: "", brand_version: "",
+    hardware_concurrency: 0, gpu_vendor: "", gpu_renderer: "",
+    disable_spoofing: [], language_mode: "auto", timezone_mode: "auto",
+    viewport_mode: "auto", location_mode: "auto",
+    geolocation_permission: "allow", webrtc_mode: "conceal", extra_args: "",
+    runtime_version: runtime.version || "",
+  };
+}
+async function configurePreLoginFingerprint(browserBackend) {
+  const choice = browserChoiceParts(browserBackend);
+  const effectiveBackend = choice.backend === "default"
+    ? (preLoginBrowserCatalog || {}).default
+    : choice.backend;
+  if (effectiveBackend !== "fingerprint_chromium") return "";
+  const draft = freshPreLoginFingerprint(browserBackend);
+  const account = {
+    nickname: "新账号",
+    environment: { runtime_version: draft.runtime_version },
+  };
+  const action = await uiFingerprintEditor(account, draft, { preLogin: true });
+  if (!action) return null;
+  return action.action === "auto" ? "" : action.data;
+}
 function loginStartUrl(path, proxy, browserBackend) {
   const choice = browserChoiceParts(browserBackend);
   return path + "?proxy=" + encodeURIComponent(proxy)
     + "&browser_backend=" + encodeURIComponent(choice.backend)
     + "&browser_runtime_id=" + encodeURIComponent(choice.runtimeId);
 }
+function loginStartOptions(fingerprint) {
+  if (!fingerprint || typeof fingerprint !== "object") return { method: "POST" };
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fingerprint),
+  };
+}
 async function startLogin() {
   const browserBackend = await choosePreLoginBrowserBackend();
   if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开浏览器窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/browser/start", proxy, browserBackend), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/browser/start", proxy, browserBackend), loginStartOptions(fingerprint));
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>浏览器窗口已打开</b>，请在该窗口点击「登录」并使用抖音 App 扫码。<br>完成后这里会自动刷新。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("登录启动失败:" + e.message, "err"); }
@@ -1203,7 +1251,7 @@ function pollLogin(tid) {
           $("qrstatus").textContent = "登录校验未通过，请重新扫码";
           toast((PF_NAME[PLATFORM] || "账号") + "登录校验未通过，请重新扫码", "err");
         } else {
-          const suffix = res.profile_status === "error" ? "（资料稍后同步）" : "";
+          const suffix = ["error", "deferred"].includes(res.profile_status) ? "（资料可稍后刷新）" : "";
           $("qrstatus").textContent = "登录成功 ✓ " + (res.nickname || "") + suffix;
           toast("登录成功 " + (res.nickname || "") + suffix, res.profile_status === "error" ? "info" : "ok");
           setTimeout(() => { $("qrbox").style.display = "none"; }, 650);
@@ -1229,11 +1277,13 @@ async function startCreatorLogin() {
   if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开创作中心窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/creator/start", proxy, browserBackend), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/creator/start", proxy, browserBackend), loginStartOptions(fingerprint));
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>创作中心窗口已打开</b>，请在该窗口扫码登录抖音账号。<br>此登录态也可用于公开抓取。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
@@ -1245,16 +1295,18 @@ async function startXhsLogin() {
   if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开小红书窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/xhs/start", proxy, browserBackend), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/xhs/start", proxy, browserBackend), loginStartOptions(fingerprint));
     if (res.reused) {
       $("qrstatus").innerHTML = `${ic("i-eye")} <b>已有小红书扫码窗口</b>，已尝试切换到前台，请直接在该窗口继续。`;
       toast("已有扫码窗口，已切换到前台", "info");
     } else {
-      $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书官网首页已打开</b>，请在窗口中点击「登录」并使用小红书 App 扫码。<br>主站登录成功后会保存读取登录态并自动关闭窗口。<br>如需发布，请随后单独点击「创作者登录」。`;
+      $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书官网首页已打开</b>，请在窗口中点击「登录」并使用小红书 App 扫码。<br>新指纹环境会附带 BrowserScan 体检标签，可先核对 IP、时区和 WebRTC。<br>主站登录成功后会保存读取登录态并自动关闭窗口。<br>如需发布，请随后单独点击「创作者登录」。`;
     }
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("小红书登录启动失败:" + e.message, "err"); }
@@ -1266,11 +1318,13 @@ async function startXhsCreatorLogin() {
   if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开小红书创作平台窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/xhs-creator/start", proxy, browserBackend), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/xhs-creator/start", proxy, browserBackend), loginStartOptions(fingerprint));
     if (res.reused) {
       $("qrstatus").innerHTML = `${ic("i-eye")} <b>已有小红书创作平台扫码窗口</b>，已尝试切换到前台，请直接在该窗口继续。`;
       toast("已有创作者扫码窗口，已切换到前台", "info");
@@ -1287,11 +1341,13 @@ async function startKsLogin() {
   if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开快手窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/kuaishou/start", proxy, browserBackend), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/kuaishou/start", proxy, browserBackend), loginStartOptions(fingerprint));
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>快手窗口已打开</b>，请在该窗口点击「登录」并使用快手 App 扫码。<br>完成后这里会自动刷新。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("快手登录启动失败:" + e.message, "err"); }
@@ -1303,11 +1359,13 @@ async function startKsCreatorLogin() {
   if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开快手创作平台窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/kuaishou-creator/start", proxy, browserBackend), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/kuaishou-creator/start", proxy, browserBackend), loginStartOptions(fingerprint));
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>快手创作平台窗口已打开</b>，请扫码登录，此登录态用于发布。<br>登录成功后请稍等片刻再关闭窗口。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
@@ -1319,11 +1377,13 @@ async function startChannelsLogin() {
   if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
   $("cookiebox").style.display = "none";
   $("qrbox").style.display = "block";
   $("qrstatus").textContent = "正在打开视频号助手窗口…";
   try {
-    const res = await api(loginStartUrl("/api/login/shipinhao/start", proxy, browserBackend), { method: "POST" });
+    const res = await api(loginStartUrl("/api/login/shipinhao/start", proxy, browserBackend), loginStartOptions(fingerprint));
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>视频号助手窗口已打开</b>，请使用微信扫码登录，读取和发布共用此登录态。<br>登录成功后请稍等片刻再关闭窗口。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("视频号登录启动失败:" + e.message, "err"); }
@@ -1728,6 +1788,10 @@ async function refreshAccounts() {
     const isolationLine = a.profile_isolated
       ? `<div class="mut" style="font-size:11px;margin-top:2px">环境隔离 <span class="pill active">独立 Profile ${esc(a.profile_isolation_id || "")}</span></div>`
       : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--danger)">${ic("i-info")}环境隔离异常：Profile 与其他账号重复或尚未分配</div>`;
+    const environmentCheck = a.environment_check;
+    const checkLine = environmentCheck && environmentCheck.enabled
+      ? `<div class="mut" style="font-size:11px;margin-top:2px">环境体检 <span class="pill ${environmentCheck.required ? "pending" : "active"}">${environmentCheck.required ? "待打开" : "已提示"}</span>${environmentCheck.last_opened_at ? ` · ${new Date(environmentCheck.last_opened_at).toLocaleString()}` : " · 新环境首次启动自动打开"}</div>`
+      : "";
     const reloginButton = isXhs && !a.has_read_login
       ? `<button class="sm" style="background:var(--warn);border-color:transparent;color:#1a1a1a" onclick="relogin(${a.id},'read')">补读取登录</button>`
       : (a.status === "invalid"
@@ -1749,6 +1813,7 @@ async function refreshAccounts() {
             ${browserLine}
             ${fingerprintLine}
             ${isolationLine}
+            ${checkLine}
           </div>
         </div>
       </td>
@@ -1761,6 +1826,7 @@ async function refreshAccounts() {
         <button class="ghost sm" onclick="openAccountBrowser(${a.id})" title="用该账号登录态弹出真实浏览器窗口,手动收发私信 / 维护 / 抓接口(关窗即保存)">打开浏览器</button>
         <button class="ghost sm" onclick="setBrowserBackend(${a.id})" title="选择本地 Chrome/Patchright 或开源 Fingerprint Chromium 内核">环境</button>
         <button class="ghost sm" onclick="manageFingerprint(${a.id})" title="根据账号当前出口 IP 生成稳定指纹、时区、语言和地理位置">指纹</button>
+        ${environmentCheck && environmentCheck.enabled ? `<button class="ghost sm" onclick="checkBrowserEnvironment(${a.id})" title="在该账号独立 Profile 中打开 BrowserScan，查看实际 IP、时区、WebRTC 和指纹">环境检测</button>` : ""}
         <button class="ghost sm" onclick="setProxy(${a.id})" title="设置/分配该账号专属代理(防多账号关联)">代理</button>
         ${a.has_proxy ? `<button class="ghost sm" onclick="testProxy(${a.id})" title="经该代理实连一次,验证可用">测代理</button>` : ""}
         <button class="ghost sm danger" onclick="delAccount(${a.id})" aria-label="删除账号">${ic("i-trash")}删除</button>
@@ -2072,18 +2138,39 @@ async function openAccountBrowser(id) {
   await withBusy(evtBtn(), "打开中", async () => {
     try {
       const result = await api("/api/accounts/" + id + "/open-browser", { method: "POST" });
+      const checkHint = result.environment_check_opened
+        ? " 已同时打开 BrowserScan 环境体检标签。" : "";
       if (result.logged_out) {
-        toast("该账号登录态已失效，请关闭当前窗口后点「重新登录」完成扫码", "err", 8000);
+        toast("该账号登录态已失效，请关闭当前窗口后点「重新登录」完成扫码。" + checkHint, "err", 8000);
         refreshAccounts();
       } else if (result.login_state === "verification") {
-        toast("浏览器已打开；小红书要求安全验证，请在窗口中按提示完成", "info", 8000);
+        toast("浏览器已打开；小红书要求安全验证，请在窗口中按提示完成。" + checkHint, "info", 8000);
       } else if (result.login_state === "unconfirmed") {
-        toast("浏览器已打开；页面尚未返回登录校验结果，不会因此把账号标记为登录失败", "info", 7000);
+        toast("浏览器已打开；页面尚未返回登录校验结果，不会因此把账号标记为登录失败。" + checkHint, "info", 7000);
       } else {
         const scope = result.login_scope === "creator" ? "创作平台" : "主站读取";
-        toast("已弹出该账号" + scope + "浏览器窗口;用完请关窗(关窗即保存登录态)。窗口开着时该账号后台同步会暂停", "ok", 7000);
+        toast("已弹出该账号" + scope + "浏览器窗口;用完请关窗(关窗即保存登录态)。窗口开着时该账号后台同步会暂停。" + checkHint, "ok", 7000);
       }
     } catch (e) { toast("打开失败:" + e.message, "err"); }
+  });
+}
+
+async function checkBrowserEnvironment(id) {
+  const btn = evtBtn();
+  const confirmed = await uiConfirm({
+    title: "打开第三方环境检测",
+    message: "将在该账号的独立指纹环境中访问 BrowserScan。该站点会看到当前出口 IP 和浏览器指纹；检测结果仅用于环境核对，不代表平台风控一定通过。",
+    okText: "打开检测页",
+  });
+  if (!confirmed) return;
+  await withBusy(btn, "打开中", async () => {
+    try {
+      await api("/api/accounts/" + id + "/environment-check", { method: "POST" });
+      toast("BrowserScan 已在该账号独立环境中打开，请核对 IP、时区、WebRTC 与指纹一致性", "ok", 8000);
+      await refreshAccounts();
+    } catch (e) {
+      toast("环境检测打开失败:" + e.message, "err", 8000);
+    }
   });
 }
 
@@ -2789,7 +2876,8 @@ async function deleteBrowserRuntime(runtimeId) {
   } catch (e) { toast("移除失败：" + e.message, "err"); }
 }
 
-function uiFingerprintEditor(account, fp) {
+function uiFingerprintEditor(account, fp, options = {}) {
+  const preLogin = Boolean(options.preLogin);
   const disabled = new Set(fp.disable_spoofing || []);
   const runtimeVersion = String((account.environment || {}).runtime_version || "");
   const runtimeMajor = Number(runtimeVersion.split(".")[0]) || 0;
@@ -2810,7 +2898,9 @@ function uiFingerprintEditor(account, fp) {
   return new Promise(resolve => {
     _uiResolve = resolve; _uiCancelVal = null;
     $("ui-body").innerHTML = `
-      <div class="hint" style="margin:0 0 14px">自动项会跟随来源 IP 生成；切换为自定义后可逐项编辑。保存后关闭该账号当前浏览器，下次启动应用新配置。</div>
+      <div class="hint" style="margin:0 0 14px">${preLogin
+        ? "自动项会在启动前根据所选代理或本机出口 IP 生成；切换为自定义后可在第一次登录前逐项覆盖。登录成功后，此配置会随账号和独立 Profile 一起保存。"
+        : "自动项会跟随来源 IP 生成；切换为自定义后可逐项编辑。保存后关闭该账号当前浏览器，下次启动应用新配置。"}</div>
       <div class="fp-edit-tabs" role="tablist" aria-label="浏览器指纹设置">
         <button type="button" class="ghost sm active" role="tab" aria-selected="true" data-fp-tab="basic">基础设置</button>
         <button type="button" class="ghost sm" role="tab" aria-selected="false" data-fp-tab="advanced">高级设置</button>
@@ -2860,7 +2950,7 @@ function uiFingerprintEditor(account, fp) {
       </div>
       <div class="fp-edit-panel" data-fp-panel="advanced">
         <div class="fp-settings">
-          <div class="fp-config-row"><div><b>指纹种子</b><span>Canvas、Audio 等随机值由种子稳定派生</span></div><div class="fp-seed-badge">uint32 ${esc(String(fp.engine_seed ?? ""))}</div></div>
+          <div class="fp-config-row"><div><b>指纹种子</b><span>Canvas、Audio 等随机值由种子稳定派生</span></div><div class="fp-seed-badge">${preLogin ? "内核启动时生成" : `uint32 ${esc(String(fp.engine_seed ?? ""))}`}</div></div>
           <div class="form-field"><label for="fp-edit-seed">种子值</label><input id="fp-edit-seed" value="${esc(fp.seed || "")}" maxlength="128"></div>
           ${surfaceMode("font", "字体")}
           ${surfaceMode("canvas", "Canvas")}
@@ -2946,12 +3036,16 @@ function uiFingerprintEditor(account, fp) {
         extra_args: value("fp-edit-extra"),
       }};
     };
-    _uiOpen(`${account.nickname} · 浏览器指纹`, `指纹 ${fp.fingerprint_id || "-"}`, { okText: "保存配置", wide: true });
+    _uiOpen(
+      `${account.nickname} · ${preLogin ? "登录前指纹配置" : "浏览器指纹"}`,
+      preLogin ? "确认后使用这套指纹创建独立登录环境" : `指纹 ${fp.fingerprint_id || "-"}`,
+      { okText: preLogin ? "使用此指纹登录" : "保存配置", wide: true },
+    );
     const autoButton = document.createElement("button");
     autoButton.id = "ui-extra-action";
     autoButton.type = "button";
     autoButton.className = "ghost";
-    autoButton.textContent = "按 IP 自动生成";
+    autoButton.textContent = preLogin ? "使用出口 IP 自动配置" : "按 IP 自动生成";
     autoButton.addEventListener("click", () => _uiClose({ action: "auto" }));
     $("ui-actions").insertBefore(autoButton, $("ui-actions").firstElementChild);
   });
@@ -3169,7 +3263,7 @@ function pollReloginTask(tid) {
         if (r.profile_status === "invalid") {
           toast("登录校验未通过，请重新扫码", "err");
         } else {
-          const suffix = r.profile_status === "error" ? "（资料稍后同步）" : "";
+          const suffix = ["error", "deferred"].includes(r.profile_status) ? "（资料可稍后刷新）" : "";
           toast("重新登录成功 " + (r.nickname || "") + suffix, r.profile_status === "error" ? "info" : "ok");
         }
         refreshAccounts(); return;

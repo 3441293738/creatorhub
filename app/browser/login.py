@@ -26,6 +26,18 @@ async def _focus(page):
         pass
 
 
+async def _open_first_environment_check(
+        mgr: BrowserManager, identity: Identity, ctx) -> None:
+    """Best-effort first-run diagnostic; never block the platform login flow."""
+    opener = getattr(mgr, "open_environment_check", None)
+    if not callable(opener):
+        return
+    try:
+        await opener(identity, context=ctx)
+    except Exception as exc:
+        _LOG.warning("Fingerprint environment check page failed to open: %r", exc)
+
+
 async def _reuse_or_create_login_page(ctx):
     """兼容旧调用：复用持久 Context 的空白页，否则创建一个新页。"""
     for candidate in ctx.pages:
@@ -53,6 +65,7 @@ async def interactive_login(mgr: BrowserManager, identity: Identity,
         # 仍保存着已被服务端撤销的 sessionid；若不先清掉，下面仅按 Cookie 名
         # 轮询会在窗口刚打开时把旧 Cookie 误判为扫码成功。
         await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
     page = await ctx.new_page()
     await _focus(page)
     logged = False
@@ -282,6 +295,7 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
     ctx = await mgr.context_for(identity)
     if force_reauth:
         await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
     logged = False
     nickname = ""
     state_json = ""
@@ -471,6 +485,11 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
                 except Exception:
                     pass
                 if logged:
+                    try:
+                        identity.observed_login_profile = dict(
+                            authenticated_user or {})
+                    except Exception:
+                        pass
                     nickname = str(
                         authenticated_user.get("nickname") or "").strip()[:40]
                     if not nickname:
@@ -500,6 +519,7 @@ async def interactive_xhs_creator_login(mgr: BrowserManager, identity: Identity,
     ctx = await mgr.context_for(identity)
     if force_reauth:
         await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
     logged = False
     nickname = ""
     state_json = ""
@@ -555,6 +575,7 @@ async def interactive_ks_login(mgr: BrowserManager, identity: Identity,
     ctx = await mgr.open_headed(identity)
     if force_reauth:
         await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
     page = await ctx.new_page()
     await _focus(page)
     logged = False
@@ -606,6 +627,7 @@ async def interactive_ks_creator_login(mgr: BrowserManager, identity: Identity,
     ctx = await mgr.open_headed(identity)
     if force_reauth:
         await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
     page = await ctx.new_page()
     await _focus(page)
     logged = False
@@ -710,6 +732,7 @@ async def interactive_channels_login(mgr: BrowserManager, identity: Identity,
     ctx = await mgr.open_headed(identity)
     if force_reauth:
         await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
     page = await ctx.new_page()
     await _focus(page)
     logged = False

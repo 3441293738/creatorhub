@@ -52,7 +52,11 @@ class EngineConfig:
     fingerprint_chromium_platform: str = "auto"       # auto | windows | linux | macos
     # 小红书浏览器:默认优先连接 CreatorHub 管理的每账号系统 Chrome CDP。
     xhs_browser_mode: str = "auto"          # auto | cdp | patchright
-    xhs_cdp_idle_seconds: int = 900          # 0=仅按 LRU、显式关闭或程序退出回收
+    # 账号浏览器默认常驻并复用同一 Profile/任务页；空闲后统一回收。旧配置
+    # xhs_cdp_idle_seconds 仍兼容，0 表示仅按 LRU、显式关闭或退出回收。
+    resident_browser_sessions: bool = True
+    browser_session_idle_seconds: int = 1800
+    xhs_cdp_idle_seconds: int | None = None
     # 小红书读取默认也走账号浏览器页面，避免扫码 Cookie 在浏览器与签名直连
     # 客户端之间切换 UA/TLS/Client-Hints。api 只保留为显式兼容模式。
     xhs_read_mode: str = "browser"           # browser | api
@@ -178,6 +182,11 @@ def load_config(path: str | None = None) -> Config:
             0.0, float(cfg.engine.xhs_item_gap_seconds))
         cfg.engine.xhs_request_jitter = min(
             1.0, max(0.0, float(cfg.engine.xhs_request_jitter)))
+        cfg.engine.browser_session_idle_seconds = max(
+            0, int(cfg.engine.browser_session_idle_seconds))
+        if cfg.engine.xhs_cdp_idle_seconds is not None:
+            cfg.engine.xhs_cdp_idle_seconds = max(
+                0, int(cfg.engine.xhs_cdp_idle_seconds))
         backend = str(cfg.engine.browser_backend or "local").strip().lower()
         cfg.engine.browser_backend = (
             backend if backend in {"local", "fingerprint_chromium"}

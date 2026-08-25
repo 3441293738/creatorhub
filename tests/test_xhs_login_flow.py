@@ -12,6 +12,7 @@ from app.browser.login import (
     _xhs_page_identity,
     interactive_xhs_login,
 )
+from app.browser.identity import Identity
 
 
 class XhsLoginPageTests(unittest.IsolatedAsyncioTestCase):
@@ -325,6 +326,9 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         manager.visible_page = visible_page
         manager.xhs_interaction.pause = AsyncMock()
+        identity = Identity(
+            account_id=None, profile_dir="fixture-xhs-login",
+            platform="xhs")
         with (
             patch(
                 "app.browser.login._read_xhs_nickname",
@@ -332,11 +336,14 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 return_value="普通账号",
             ),
         ):
-            logged, state, nickname = await interactive_xhs_login(manager, object())
+            logged, state, nickname = await interactive_xhs_login(
+                manager, identity)
 
         self.assertTrue(logged)
         self.assertEqual(nickname, "普通账号")
         self.assertIn("web_session", state)
+        self.assertEqual(
+            identity.observed_login_profile.get("user_id"), "fixture-user")
         self.assertEqual(visited, ["https://www.xiaohongshu.com/"])
         context.close.assert_not_awaited()
         page.close.assert_awaited_once()

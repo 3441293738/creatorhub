@@ -54,6 +54,12 @@ _LEGACY_ARGS = [
 # storage_state 里允许注入的 Cookie 字段(Patchright add_cookies 接受的键)
 _COOKIE_KEYS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
 
+# 第三方可视化环境体检页。它只负责向用户展示当前浏览器实际暴露的 IP、
+# WebRTC、时区和浏览器指纹，不参与平台登录判定，也不作为“风控通过”证明。
+ENVIRONMENT_CHECK_URL = "https://www.browserscan.net/zh"
+_ENVIRONMENT_CHECK_MARKER_VERSION = 1
+_ENVIRONMENT_CHECK_MARKER = "environment-check.json"
+
 
 class BrowserProfileConflictError(RuntimeError):
     """账号 Profile 已被另一个 CreatorHub 进程占用。"""
@@ -187,7 +193,9 @@ class BrowserManager:
     def __init__(self, default_ua: str, profiles_root: str = "./data/profiles",
                  max_live: int = 6, native_ua_callback=None,
                  xhs_browser_mode: str = "auto",
-                 xhs_cdp_idle_seconds: int = 900,
+                 xhs_cdp_idle_seconds: int | None = None,
+                 resident_sessions: bool = True,
+                 session_idle_seconds: int = 1800,
                  native_write_gate_enabled: bool = True,
                  native_write_require_system_chrome: bool = True,
                  native_write_require_verified_proxy: bool = True,
@@ -210,7 +218,15 @@ class BrowserManager:
             requested_mode if requested_mode in {"auto", "cdp", "patchright"}
             else "auto"
         )
-        self.xhs_cdp_idle_seconds = max(0, int(xhs_cdp_idle_seconds))
+        # ``xhs_cdp_idle_seconds`` is the pre-resident-session option name.
+        # Keep accepting it so existing config files and integrations retain
+        # their exact timeout while all account browser backends now share the
+        # same lifecycle policy.
+        if xhs_cdp_idle_seconds is not None:
+            session_idle_seconds = xhs_cdp_idle_seconds
+        self.resident_sessions = bool(resident_sessions)
+        self.session_idle_seconds = max(0, int(session_idle_seconds))
+        self.xhs_cdp_idle_seconds = self.session_idle_seconds
         self.native_write_gate_enabled = bool(native_write_gate_enabled)
         self.native_write_require_system_chrome = bool(
             native_write_require_system_chrome)
@@ -271,6 +287,7 @@ class BrowserManager:
         self.xhs_interaction = XhsInteractionPolicy()
         self._xhs_visible_gate = XhsVisibleActionGate()
         self._xhs_page_locks: Dict[Any, asyncio.Lock] = {}
+        self._task_pages: Dict[Any, Any] = {}
         self._last_used: Dict[Any, float] = {}
         self._locks: Dict[Any, asyncio.Lock] = {}
         self._cv_lock = asyncio.Lock()                   # 保护 context 字典的创建/驱逐
@@ -356,6 +373,122 @@ class BrowserManager:
     def _runtime_profile_dir(identity: Identity, runtime_id: str) -> Path:
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", runtime_id or "default")
         return Path(identity.profile_dir) / "runtimes" / safe
+
+    def _environment_profile_dir(self, identity: Identity) -> Path:
+        """Return the exact persistent directory that owns this environment."""
+        if self.effective_browser_backend(identity) == FINGERPRINT_CHROMIUM_BACKEND:
+            return self._runtime_profile_dir(
+                identity, self.effective_fingerprint_runtime_id(identity))
+        return Path(identity.profile_dir)
+
+    def _environment_check_signature(self, identity: Identity) -> str:
+        effective = self.effective_browser_backend(identity)
+        runtime_id = (
+            self.effective_fingerprint_runtime_id(identity)
+            if effective == FINGERPRINT_CHROMIUM_BACKEND else ""
+        )
+        return self._context_signature(
+            identity, effective, runtime_id,
+            self.proxy_signature(identity.proxy),
+        )
+
+    def _environment_check_marker_path(self, identity: Identity) -> Path:
+        # 放在账号 Profile 内的 CreatorHub 专用子目录中，仍随独立环境迁移，
+        # 也不会写入系统盘或共享全局目录。
+        return (
+            self._environment_profile_dir(identity)
+            / ".creatorhub" / _ENVIRONMENT_CHECK_MARKER
+        )
+
+    def environment_check_status(self, identity: Identity) -> Dict[str, Any]:
+        """Return the BrowserScan prompt state without launching a browser.
+
+        A marker is valid only for the complete environment signature. Changing
+        runtime, proxy, viewport or fingerprint settings therefore makes the
+        next visible user session show the diagnostic page again.
+        """
+        effective = self.effective_browser_backend(identity)
+        enabled = effective == FINGERPRINT_CHROMIUM_BACKEND
+        base: Dict[str, Any] = {
+            "enabled": enabled,
+            "provider": "BrowserScan",
+            "url": ENVIRONMENT_CHECK_URL,
+            "required": False,
+            "last_opened_at": None,
+            "reason": "not_fingerprint_environment" if not enabled else "",
+        }
+        if not enabled:
+            return base
+        marker_path = self._environment_check_marker_path(identity)
+        marker: Dict[str, Any] = {}
+        if marker_path.exists():
+            try:
+                loaded = json.loads(marker_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    marker = loaded
+            except (OSError, ValueError, TypeError):
+                marker = {}
+        expected = self._environment_check_signature(identity)
+        valid = (
+            marker.get("version") == _ENVIRONMENT_CHECK_MARKER_VERSION
+            and marker.get("signature") == expected
+        )
+        base["required"] = not valid
+        base["last_opened_at"] = marker.get("opened_at") or None
+        if valid:
+            base["reason"] = "already_opened"
+        elif marker:
+            base["reason"] = "environment_changed"
+        else:
+            base["reason"] = "new_environment"
+        return base
+
+    def _mark_environment_check_opened(self, identity: Identity) -> None:
+        marker_path = self._environment_check_marker_path(identity)
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": _ENVIRONMENT_CHECK_MARKER_VERSION,
+            "signature": self._environment_check_signature(identity),
+            "opened_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "provider": "BrowserScan",
+            "url": ENVIRONMENT_CHECK_URL,
+        }
+        temporary = marker_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary.replace(marker_path)
+
+    async def open_environment_check(
+            self, identity: Identity, *, context: BrowserContext | None = None,
+            force: bool = False, bring_to_front: bool = False):
+        """Open BrowserScan in a separate tab for a fingerprint environment.
+
+        The native startup ``about:blank`` tab is intentionally preserved. XHS
+        login relies on that tab for its first platform navigation; consuming it
+        for the diagnostic site would make the subsequent login tab behave
+        differently. The caller owns the returned page/context lifetime.
+        """
+        status = self.environment_check_status(identity)
+        if not status["enabled"] or (not force and not status["required"]):
+            return None
+        ctx = context or await self.context_for(identity)
+        page = await ctx.new_page()
+        try:
+            # ``commit`` keeps the login path responsive while BrowserScan
+            # continues rendering its detailed checks in the visible tab.
+            await page.goto(
+                ENVIRONMENT_CHECK_URL, wait_until="commit", timeout=12_000)
+            self._mark_environment_check_opened(identity)
+            if bring_to_front:
+                with suppress(Exception):
+                    await page.bring_to_front()
+            return page
+        except Exception:
+            with suppress(Exception):
+                await page.close()
+            raise
 
     async def start(self):
         self._pw = await async_playwright().start()
@@ -987,6 +1120,7 @@ class BrowserManager:
     async def _close_key_unlocked(self, key: Any) -> None:
         ctx = self._contexts.pop(key, None)
         session = self._cdp_sessions.pop(key, None)
+        self._task_pages.pop(key, None)
         self._last_used.pop(key, None)
         self._backend_by_key.pop(key, None)
         self._runtime_by_key.pop(key, None)
@@ -1002,6 +1136,41 @@ class BrowserManager:
                     await ctx.close()
         finally:
             self._release_profile_lock(key)
+
+    async def rebind_context(self, old_key: Any, new_key: Any) -> bool:
+        """Move a live temporary-login session to its persisted account key.
+
+        Fresh logins intentionally use a temporary identity until the QR flow
+        succeeds. Closing Chrome only to reopen the same Profile under the new
+        database id creates an unnecessary cold start immediately after login.
+        Re-keying the ownership maps preserves the process, cookies, page and
+        profile lock without weakening the per-account isolation boundary.
+        """
+        if old_key == new_key:
+            return old_key in self._contexts
+        async with self._cv_lock:
+            if old_key not in self._contexts:
+                return False
+            if new_key in self._contexts:
+                await self._close_key_unlocked(new_key)
+            maps = (
+                self._contexts,
+                self._cdp_sessions,
+                self._task_pages,
+                self._last_used,
+                self._backend_by_key,
+                self._runtime_by_key,
+                self._fallback_reason_by_key,
+                self._proxy_signature_by_key,
+                self._profile_process_locks,
+            )
+            for mapping in maps:
+                if old_key in mapping:
+                    mapping[new_key] = mapping.pop(old_key)
+            page_lock = self._xhs_page_locks.pop(old_key, None)
+            if page_lock is not None:
+                self._xhs_page_locks[new_key] = page_lock
+            return True
 
     async def context_for(self, identity: Identity) -> BrowserContext:
         """取(或惰性创建)账号专属常驻 context。"""
@@ -1068,7 +1237,13 @@ class BrowserManager:
                     if effective_backend == FINGERPRINT_CHROMIUM_BACKEND:
                         self._runtime_by_key[key] = runtime_id
                 self._contexts[key] = ctx
-                self._proxy_signature_by_key[key] = signature
+                # Native/Fingerprint Chromium may fill ``identity.ua`` while
+                # launching the first context. Store the post-launch signature;
+                # keeping the pre-launch (empty-UA) value makes the very next
+                # context_for() call misclassify the fresh context as stale and
+                # visibly close/reopen the browser once.
+                self._proxy_signature_by_key[key] = self._context_signature(
+                    identity, effective_backend, runtime_id, proxy_signature)
             self._last_used[key] = time.time()
             if key in self._cdp_sessions:
                 self._cdp_sessions[key].last_used = self._last_used[key]
@@ -1184,7 +1359,7 @@ class BrowserManager:
         return page
 
     async def _visible_task_page(self, identity: Identity):
-        """Reuse Chromium's initial blank tab before creating a CDP page.
+        """Reuse the account's owned task tab before creating a CDP page.
 
         Fingerprint Chromium treats the first navigation of its native startup
         tab differently from a tab created immediately through ``new_page``.
@@ -1194,6 +1369,14 @@ class BrowserManager:
         page that the user already opened manually.
         """
         ctx = await self.context_for(identity)
+        owned = self._task_pages.get(identity.key)
+        if owned is not None:
+            try:
+                if not owned.is_closed():
+                    return owned
+            except Exception:
+                pass
+            self._task_pages.pop(identity.key, None)
         for candidate in list(getattr(ctx, "pages", ()) or ()):
             try:
                 if candidate.url != "about:blank" or candidate.is_closed():
@@ -1204,18 +1387,51 @@ class BrowserManager:
             controller = getattr(session, "auth_controller", None)
             if controller is not None:
                 await controller.install(candidate)
+            self._task_pages[identity.key] = candidate
             return candidate
-        return await self.new_page(identity, block_media=False)
+        page = await self.new_page(identity, block_media=False)
+        self._task_pages[identity.key] = page
+        return page
+
+    @staticmethod
+    def _listener_snapshot(emitter: Any, event: str) -> tuple[Any, ...]:
+        getter = getattr(emitter, "listeners", None)
+        if not callable(getter):
+            return ()
+        try:
+            return tuple(getter(event) or ())
+        except Exception:
+            return ()
+
+    @classmethod
+    def _remove_new_listeners(
+            cls, emitter: Any, event: str,
+            before: tuple[Any, ...]) -> None:
+        remover = (getattr(emitter, "remove_listener", None)
+                   or getattr(emitter, "off", None))
+        if not callable(remover):
+            return
+        allowed = {id(listener) for listener in before}
+        for listener in cls._listener_snapshot(emitter, event):
+            if id(listener) in allowed:
+                continue
+            with suppress(Exception):
+                remover(event, listener)
 
     @asynccontextmanager
-    async def visible_action(self, identity: Identity, *, keep_context: bool = False):
-        """Serialize visible XHS work and close one-shot browser contexts.
+    async def visible_action(
+            self, identity: Identity, *, keep_context: bool | None = None):
+        """Serialize visible XHS work and retain account browser sessions.
 
-        A persistent Chromium context always owns a bootstrap about:blank page.
-        Closing only the task page therefore leaves a blank window behind. The
-        outermost one-shot action releases the whole context; the explicit
-        manual-account window opts out with ``keep_context=True``.
+        Resident sessions are the default for XHS: login, profile refresh and
+        scheduled reads therefore use one process/Profile instead of repeatedly
+        cold-starting Chrome. ``keep_context=False`` remains an explicit
+        one-shot escape hatch for probes and cleanup-sensitive callers.
         """
+        retain = (
+            self.resident_sessions and identity.platform == "xhs"
+            if keep_context is None else bool(keep_context)
+        )
         nested = self._xhs_visible_gate.owned_by_current_task
         if nested:
             async with self._xhs_visible_gate.acquire(identity.key):
@@ -1228,18 +1444,38 @@ class BrowserManager:
                 async with self._xhs_visible_gate.acquire(identity.key):
                     yield
             finally:
-                if not keep_context:
+                if not retain:
                     with suppress(Exception):
                         await self.close_context(identity.key)
 
     @asynccontextmanager
-    async def visible_page(self, identity: Identity, *, url: str = ""):
-        """Lease one foreground XHS task page and close its one-shot context."""
-        async with self.visible_action(identity):
+    async def visible_page(
+            self, identity: Identity, *, url: str = "",
+            keep_context: bool | None = None):
+        """Lease a foreground task page, optionally retaining its browser session."""
+        retain = (
+            self.resident_sessions and identity.platform == "xhs"
+            if keep_context is None else bool(keep_context)
+        )
+        async with self.visible_action(
+                identity, keep_context=retain):
             snapshot = capture_window_snapshot(CHROMIUM_WINDOW_CLASSES)
             page = None
+            context = None
+            page_listeners: dict[int, tuple[Any, tuple[Any, ...]]] = {}
+            context_page_listeners: tuple[Any, ...] = ()
             try:
                 page = await self._visible_task_page(identity)
+                context = self._contexts.get(identity.key)
+                if context is not None:
+                    context_page_listeners = self._listener_snapshot(
+                        context, "page")
+                    for candidate in list(
+                            getattr(context, "pages", ()) or ()):
+                        page_listeners[id(candidate)] = (
+                            candidate,
+                            self._listener_snapshot(candidate, "response"),
+                        )
                 if url:
                     await page.goto(
                         url, wait_until="domcontentloaded", timeout=30_000)
@@ -1253,28 +1489,48 @@ class BrowserManager:
                     CHROMIUM_WINDOW_CLASSES, title or "小红书", 1.5)
                 yield page
             finally:
+                # A resident Page must not retain one response callback closure
+                # for every scan/login. Keep listeners that predated this
+                # lease (proxy/auth hooks) and remove only task-local handlers.
+                if context is not None:
+                    for candidate in list(
+                            getattr(context, "pages", ()) or ()):
+                        previous = page_listeners.get(id(candidate))
+                        self._remove_new_listeners(
+                            candidate, "response",
+                            previous[1] if previous else ())
+                    self._remove_new_listeners(
+                        context, "page", context_page_listeners)
                 if page is not None:
-                    with suppress(Exception):
-                        await page.close()
+                    if not retain:
+                        if self._task_pages.get(identity.key) is page:
+                            self._task_pages.pop(identity.key, None)
+                        with suppress(Exception):
+                            await page.close()
 
     async def close_context(self, key):
         async with self._cv_lock:
             await self._close_key_unlocked(key)
 
-    async def collect_idle_cdp(self, now: float | None = None) -> int:
-        if self.xhs_cdp_idle_seconds <= 0:
+    async def collect_idle_sessions(self, now: float | None = None) -> int:
+        """Close inactive account sessions across all browser backends."""
+        if self.session_idle_seconds <= 0:
             return 0
         sampled = time.time() if now is None else float(now)
         async with self._cv_lock:
             victims = [
-                key for key in self._cdp_sessions
+                key for key in self._contexts
                 if not self._key_locked(key)
                 and sampled - self._last_used.get(key, sampled)
-                >= self.xhs_cdp_idle_seconds
+                >= self.session_idle_seconds
             ]
             for key in victims:
                 await self._close_key_unlocked(key)
             return len(victims)
+
+    async def collect_idle_cdp(self, now: float | None = None) -> int:
+        """Backward-compatible alias for the former CDP-only collector."""
+        return await self.collect_idle_sessions(now=now)
 
     async def open_headed(self, identity: Identity) -> BrowserContext:
         """Return the shared headed XHS context or a temporary legacy one."""

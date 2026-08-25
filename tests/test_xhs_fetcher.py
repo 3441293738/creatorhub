@@ -365,6 +365,57 @@ class XhsFetcherResponseTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_detail_reports_security_page_as_risk_instead_of_expired_token(self):
+        class Locator:
+            first = None
+
+            def __init__(self, text=""):
+                self.first = self
+                self.text = text
+
+            async def is_visible(self, **_kwargs):
+                return False
+
+            async def inner_text(self, **_kwargs):
+                return self.text
+
+        class Page:
+            def __init__(self):
+                self.url = "about:blank"
+
+            def on(self, *_args):
+                return None
+
+            async def goto(self, _url, **_kwargs):
+                self.url = (
+                    "https://www.xiaohongshu.com/website-login/captcha"
+                    "?redirectPath=fixture")
+
+            async def evaluate(self, *_args):
+                return "{}"
+
+            def get_by_text(self, *_args, **_kwargs):
+                return Locator()
+
+            def locator(self, _selector):
+                return Locator("请求太频繁，请一分钟后再试")
+
+        class Manager:
+            @asynccontextmanager
+            async def visible_page(self, _identity):
+                yield Page()
+
+        async def scenario():
+            identity = Identity(
+                account_id=1, profile_dir="fixture", platform="xhs",
+                identity_mode="native")
+            detail, error = await fetch_xhs_note_detail(
+                Manager(), identity, "note-risk")
+            self.assertIsNone(detail)
+            self.assertTrue(error.startswith("captcha:"), error)
+
+        asyncio.run(scenario())
+
 
 if __name__ == "__main__":
     unittest.main()

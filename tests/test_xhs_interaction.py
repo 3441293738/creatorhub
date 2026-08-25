@@ -246,7 +246,7 @@ class XhsInteractionTests(unittest.TestCase):
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=0.5))
 
-    def test_visible_action_closes_context_only_after_outermost_action(self):
+    def test_visible_action_keeps_resident_context_after_outermost_action(self):
         async def scenario():
             with tempfile.TemporaryDirectory() as tmp:
                 manager = BrowserManager("UA", tmp, xhs_browser_mode="cdp")
@@ -260,7 +260,7 @@ class XhsInteractionTests(unittest.TestCase):
                 async with manager.visible_action(identity):
                     async with manager.visible_action(identity):
                         manager.close_context.assert_not_awaited()
-                manager.close_context.assert_awaited_once_with(identity.key)
+                manager.close_context.assert_not_awaited()
 
         asyncio.run(scenario())
 
@@ -279,6 +279,100 @@ class XhsInteractionTests(unittest.TestCase):
                         identity, keep_context=True):
                     pass
                 manager.close_context.assert_not_awaited()
+
+        asyncio.run(scenario())
+
+    def test_batched_visible_page_keeps_context_for_the_next_note(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                manager = BrowserManager("UA", tmp, xhs_browser_mode="cdp")
+                page = _Page()
+
+                class Context:
+                    async def new_page(self):
+                        return page
+
+                manager.context_for = AsyncMock(return_value=Context())
+                manager.close_context = AsyncMock()
+                identity = Identity(
+                    account_id=21,
+                    profile_dir=str(Path(tmp) / "acc_21"),
+                    identity_mode="native",
+                    platform="xhs",
+                )
+                with patch(
+                        "app.browser.manager.bring_window_to_front",
+                        return_value=True):
+                    async with manager.visible_page(
+                            identity, keep_context=True):
+                        pass
+                manager.close_context.assert_not_awaited()
+                self.assertFalse(page.closed)
+                self.assertEqual(page.goto_calls, [])
+
+                # The next task leases the exact same native tab instead of
+                # creating a new CDP page or relaunching Chromium.
+                with patch(
+                        "app.browser.manager.bring_window_to_front",
+                        return_value=True):
+                    async with manager.visible_page(
+                            identity, keep_context=True) as reused:
+                        self.assertIs(reused, page)
+
+        asyncio.run(scenario())
+
+    def test_resident_page_removes_only_task_local_response_listeners(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                class EventPage(_Page):
+                    def __init__(self):
+                        super().__init__()
+                        self.callbacks = {"response": []}
+
+                    def on(self, event, callback):
+                        self.callbacks.setdefault(event, []).append(callback)
+
+                    def listeners(self, event):
+                        return list(self.callbacks.get(event, ()))
+
+                    def remove_listener(self, event, callback):
+                        self.callbacks[event].remove(callback)
+
+                page = EventPage()
+
+                class Context:
+                    pages = [page]
+
+                    async def new_page(self):
+                        return page
+
+                    def listeners(self, _event):
+                        return []
+
+                    def remove_listener(self, _event, _callback):
+                        return None
+
+                context = Context()
+                manager = BrowserManager("UA", tmp)
+                identity = Identity(
+                    account_id=24,
+                    profile_dir=str(Path(tmp) / "acc_24"),
+                    identity_mode="native",
+                    platform="xhs",
+                )
+                manager.context_for = AsyncMock(return_value=context)
+                manager._contexts[identity.key] = context
+                baseline = lambda _response: None
+                temporary = lambda _response: None
+                page.on("response", baseline)
+
+                with patch(
+                        "app.browser.manager.bring_window_to_front",
+                        return_value=True):
+                    async with manager.visible_page(identity) as leased:
+                        leased.on("response", temporary)
+
+                self.assertEqual(page.listeners("response"), [baseline])
 
         asyncio.run(scenario())
 
@@ -326,6 +420,30 @@ class XhsInteractionTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_reading_pause_grows_with_visible_content_but_stays_bounded(self):
+        async def scenario():
+            short_sleeps = []
+            long_sleeps = []
+
+            async def short_sleep(delay):
+                short_sleeps.append(delay)
+
+            async def long_sleep(delay):
+                long_sleeps.append(delay)
+
+            short = XhsInteractionPolicy(
+                rng=random.Random(11), sleep=short_sleep)
+            long = XhsInteractionPolicy(
+                rng=random.Random(11), sleep=long_sleep)
+            short_delay = await short.reading_pause(content_length=80)
+            long_delay = await long.reading_pause(content_length=3000)
+
+            self.assertGreater(long_delay, short_delay)
+            self.assertGreaterEqual(short_delay, 0.4)
+            self.assertLessEqual(long_delay, 3.8)
+
+        asyncio.run(scenario())
+
     def test_long_text_uses_one_controlled_insert(self):
         async def scenario():
             page = _Page()
@@ -367,7 +485,8 @@ class XhsInteractionTests(unittest.TestCase):
                         "app.browser.manager.bring_window_to_front",
                         return_value=True):
                     async with manager.visible_page(
-                            identity, url="https://www.xiaohongshu.com/") as leased:
+                            identity, url="https://www.xiaohongshu.com/",
+                            keep_context=False) as leased:
                         self.assertIs(leased, page)
 
                 self.assertTrue(page.closed)
@@ -406,7 +525,8 @@ class XhsInteractionTests(unittest.TestCase):
                         return_value=True):
                     async with manager.visible_page(
                             identity,
-                            url="https://www.xiaohongshu.com/") as leased:
+                            url="https://www.xiaohongshu.com/",
+                            keep_context=False) as leased:
                         self.assertIs(leased, startup_page)
 
                 context.new_page.assert_not_awaited()

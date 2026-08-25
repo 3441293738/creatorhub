@@ -340,7 +340,7 @@ class RiskApiGateTests(unittest.TestCase):
             "has_read_login": False,
             "has_creator": False,
         })
-        self.assertEqual(self.browser.closed_keys, [self.account_id])
+        self.assertEqual(self.browser.closed_keys, [])
 
     def test_profile_refresh_returns_immediately_while_manual_browser_is_open(self):
         class Lease:

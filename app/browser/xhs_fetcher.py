@@ -216,6 +216,21 @@ async def _scroll_collection(mgr: BrowserManager, page, collection: dict,
             stagnant = 0
 
 
+async def _xhs_reading_pause(
+        mgr: BrowserManager, *, content_length: int = 0) -> None:
+    pause = getattr(getattr(mgr, "xhs_interaction", None),
+                    "reading_pause", None)
+    if callable(pause):
+        await pause(content_length=content_length)
+
+
+def _visible_page_scope(
+        mgr: BrowserManager, identity: Identity, keep_context: bool):
+    if keep_context:
+        return mgr.visible_page(identity, keep_context=True)
+    return mgr.visible_page(identity)
+
+
 async def _xhs_page_failure(page) -> str:
     """Return an explicit auth/risk signal only when the page proves it.
 
@@ -235,6 +250,23 @@ async def _xhs_page_failure(page) -> str:
         login_visible = False
     if login_visible:
         return "logged_out:小红书登录态已失效"
+    # The risk page is occasionally rendered without keeping the captcha URL
+    # (or the URL changes after hydration).  Read only short, explicit page
+    # messages so an empty/changed result page is not misclassified as risk.
+    body_text = ""
+    try:
+        body_text = await page.locator("body").inner_text(timeout=1200)
+    except Exception:
+        try:
+            body_text = await page.evaluate(
+                "() => (document.body && document.body.innerText || '').slice(0, 2000)")
+        except Exception:
+            body_text = ""
+    normalized = " ".join(str(body_text or "").split())
+    if any(marker in normalized for marker in (
+            "请求太频繁", "请求频繁", "操作频繁", "访问频繁",
+            "一分钟后再试", "安全验证", "扫码验证身份")):
+        return f"captcha:小红书平台频控/安全验证：{normalized[:120]}"
     return ""
 
 
@@ -242,7 +274,8 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
                           known_ids: Set[str], xsec_token: str = "", xsec_source: str = "",
                           max_scrolls: int = 8, settle_ms: int = 1800,
                           block_media: bool = True, open_url: str = "",
-                          ssr_fallback: bool = False
+                          ssr_fallback: bool = False,
+                          keep_context: bool = False,
                           ) -> Tuple[List[dict], Optional[dict], str]:
     """打开创作者主页并下滑,拦截 user_posted 收集笔记精简卡片。
     返回 (笔记原始项列表, 作者信息dict, error)。
@@ -276,7 +309,7 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
     final_url = ""
     page_failure = ""
     try:
-        async with mgr.visible_page(identity) as page:
+        async with _visible_page_scope(mgr, identity, keep_context) as page:
             page.on("response", on_response)
             responses = _ResponseInbox(
                 page,
@@ -286,8 +319,13 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
                 wait_until="domcontentloaded", timeout=30000)
             await responses.wait(
                 max(1500, min(5000, settle_ms)), on_response)
-            await _scroll_collection(
-                mgr, page, collected, max_scrolls, known_ids)
+            if not collected:
+                page_failure = await _xhs_page_failure(page)
+            if not page_failure:
+                await _xhs_reading_pause(
+                    mgr, content_length=min(1200, 120 + len(collected) * 90))
+                await _scroll_collection(
+                    mgr, page, collected, max_scrolls, known_ids)
             # SSR 兜底/补全:首屏笔记直出在页面状态里,和拦截结果合并(不覆盖)
             if ssr_fallback:
                 try:
@@ -334,7 +372,8 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
 
 async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str,
                            known_ids: Set[str], max_scrolls: int = 6, settle_ms: int = 1800,
-                           block_media: bool = True
+                           block_media: bool = True,
+                           keep_context: bool = False,
                            ) -> Tuple[List[dict], str]:
     """打开搜索结果页并下滑,拦截 search/notes 收集笔记。返回 (笔记原始项列表, error)。"""
     collected: Dict[str, dict] = {}
@@ -362,7 +401,7 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
     direct_fallback = False
     page_failure = ""
     try:
-        async with mgr.visible_page(identity) as page:
+        async with _visible_page_scope(mgr, identity, keep_context) as page:
             page.on("response", on_response)
             responses = _ResponseInbox(
                 page,
@@ -404,8 +443,14 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
                     f"{_BASE}/search_result?{q}",
                     wait_until="domcontentloaded", timeout=30000)
                 await responses.wait(12000, on_response)
-            await _scroll_collection(
-                mgr, page, collected, max_scrolls)
+            if not collected:
+                page_failure = await _xhs_page_failure(page)
+            if not page_failure:
+                await _xhs_reading_pause(
+                    mgr, content_length=min(
+                        1000, len(keyword) * 35 + len(collected) * 70))
+                await _scroll_collection(
+                    mgr, page, collected, max_scrolls)
             final_url = page.url
             if not collected:
                 page_failure = await _xhs_page_failure(page)
@@ -425,12 +470,14 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
 
 async def fetch_xhs_note_detail(mgr: BrowserManager, identity: Identity, note_id: str,
                                 xsec_token: str = "", xsec_source: str = "pc_feed",
-                                settle_ms: int = 1800, block_media: bool = True
+                                settle_ms: int = 1800, block_media: bool = True,
+                                keep_context: bool = False,
                                 ) -> Tuple[Optional[dict], str]:
     """打开笔记详情页,拦截 feed 接口拿到完整 note_card(含媒体直链)。
     返回 (note_card dict, error)。"""
     result: dict = {}
     error = ""
+    page_failure = ""
 
     async def on_response(resp):
         if FEED_API in resp.url:
@@ -444,7 +491,7 @@ async def fetch_xhs_note_detail(mgr: BrowserManager, identity: Identity, note_id
                     result.update(card)
 
     try:
-        async with mgr.visible_page(identity) as page:
+        async with _visible_page_scope(mgr, identity, keep_context) as page:
             page.on("response", on_response)
             responses = _ResponseInbox(
                 page, lambda r: FEED_API in r.url and r.status == 200)
@@ -461,9 +508,19 @@ async def fetch_xhs_note_detail(mgr: BrowserManager, identity: Identity, note_id
             except Exception:
                 pass
             if not result:
+                page_failure = await _xhs_page_failure(page)
+            if not result and not page_failure:
                 await responses.wait(8000, on_response)
+            if result:
+                content_length = sum(len(str(result.get(name) or "")) for name in (
+                    "title", "display_title", "desc", "description"))
+                await _xhs_reading_pause(
+                    mgr, content_length=max(120, content_length))
+            if not result:
+                page_failure = page_failure or await _xhs_page_failure(page)
         if not result:
-            error = "未拦截到笔记详情(xsec_token 可能已过期或笔记不可见)"
+            error = (page_failure
+                     or "未拦截到笔记详情(xsec_token 可能已过期或笔记不可见)")
     except Exception as e:
         error = f"打开笔记详情失败: {e!r}"
     return (result or None), error
@@ -510,10 +567,15 @@ async def fetch_xhs_comments(mgr: BrowserManager, identity: Identity, note_id: s
             except Exception:
                 pass
             if not collected:
+                page_failure = await _xhs_page_failure(page)
+            if not collected and not page_failure:
                 await responses.wait(
                     max(1500, min(4000, settle_ms)), on_response)
-            await _scroll_collection(
-                mgr, page, collected, max_scrolls, known_cids)
+                if not collected:
+                    page_failure = await _xhs_page_failure(page)
+            if not page_failure:
+                await _scroll_collection(
+                    mgr, page, collected, max_scrolls, known_cids)
             if not collected:
                 page_failure = await _xhs_page_failure(page)
         if not collected and not error:
@@ -652,6 +714,7 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
     final_url = ""
     state_user = None
     has_login_btn = None
+    page_failure = ""
     try:
         async with mgr.visible_page(identity) as page:
             page.on("response", on_response)
@@ -684,6 +747,8 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
                     state_user = await page.evaluate(_XHS_STATE_USER)
                 except Exception:
                     state_user = None
+            if not authenticated_me and not state_user:
+                page_failure = await _xhs_page_failure(page)
     except Exception as e:
         error = f"{e!r}"
 
@@ -702,7 +767,9 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
                     or result.get("red_id")
                     or (result.get("basic_info") or {}).get("nickname"))
     if logged_out or not has_user:
-        if logged_out:
+        if page_failure:
+            error = page_failure
+        elif logged_out:
             error = "logged_out"
         elif not error:
             error = ("no_user_me_xhr" if not user_me_seen

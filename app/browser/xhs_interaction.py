@@ -58,6 +58,8 @@ class XhsInteractionPolicy:
             sleep: Callable[[float], Awaitable[None]] | None = None):
         self.rng = rng or random.SystemRandom()
         self.sleep = sleep or asyncio.sleep
+        self._action_count = 0
+        self._next_rest_at = int(self.rng.randint(14, 24))
 
     async def _pause(self, low: float, high: float) -> None:
         await self.sleep(float(self.rng.uniform(low, high)))
@@ -67,6 +69,24 @@ class XhsInteractionPolicy:
         if low < 0 or high < low:
             raise ValueError("交互停顿范围无效")
         await self._pause(low, high)
+
+    async def _after_action(self) -> None:
+        """Occasionally insert a longer bounded break between action bursts."""
+        self._action_count += 1
+        if self._action_count < self._next_rest_at:
+            return
+        self._action_count = 0
+        self._next_rest_at = int(self.rng.randint(14, 24))
+        await self._pause(1.4, 3.8)
+
+    async def reading_pause(self, *, content_length: int = 0) -> float:
+        """Pause after navigation using a bounded content-aware dwell time."""
+        length = max(0, min(4000, int(content_length or 0)))
+        base = 0.55 + min(2.25, length / 1250)
+        delay = float(self.rng.uniform(base * 0.72, base * 1.28))
+        await self.sleep(delay)
+        await self._after_action()
+        return delay
 
     async def click_visible(
             self, locator: Any, *, timeout: int = 10_000) -> None:
@@ -83,6 +103,7 @@ class XhsInteractionPolicy:
         await locator.hover()
         await self._pause(0.08, 0.22)
         await locator.click()
+        await self._after_action()
 
     async def _prepare_input(self, locator: Any) -> None:
         await locator.wait_for(state="visible", timeout=10_000)
@@ -99,6 +120,7 @@ class XhsInteractionPolicy:
             await locator.press_sequentially(character, delay=0)
             await self._pause(0.035, 0.095)
         await self._verify_text(locator, str(text))
+        await self._after_action()
 
     async def insert_long(
             self, locator: Any, text: str, *, page: Any | None = None) -> None:
@@ -109,6 +131,7 @@ class XhsInteractionPolicy:
         await target_page.keyboard.insert_text(str(text))
         await self._pause(0.08, 0.18)
         await self._verify_text(locator, str(text))
+        await self._after_action()
 
     async def _verify_text(self, locator: Any, expected: str) -> None:
         try:
@@ -120,10 +143,13 @@ class XhsInteractionPolicy:
             raise RuntimeError("小红书文本输入结果与预期不一致")
 
     async def scroll_step(self, page: Any, *, direction: int = 1) -> int:
-        amount = int(self.rng.randint(350, 900))
+        # Triangular sampling avoids a flat machine-like distribution while
+        # remaining bounded enough for deterministic collection progress.
+        amount = int(self.rng.triangular(350, 900, 610))
         signed = amount if direction >= 0 else -amount
         await page.mouse.wheel(0, signed)
         await self._pause(0.18, 0.52)
+        await self._after_action()
         return signed
 
     async def scroll_until(

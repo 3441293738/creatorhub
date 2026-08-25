@@ -99,3 +99,26 @@ def test_unified_task_queue_page_has_filters_badge_and_source_navigation():
     assert 'async function refreshTaskQueueBadge(' in source
     assert 'openTaskQueueSource' in source
     assert '"queue"' in source[source.index("const VALID_TABS"):source.index("const LEGACY_HUB_TABS")]
+
+
+def test_fingerprint_environment_check_has_status_disclosure_and_manual_action():
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "environment_check" in source
+    assert "环境体检" in source
+    assert "checkBrowserEnvironment" in source
+    assert "/environment-check" in source
+    assert "该站点会看到当前出口 IP 和浏览器指纹" in source
+    assert "BrowserScan 体检标签" in html
+
+
+def test_fingerprint_login_can_be_configured_before_first_browser_launch():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert "configurePreLoginFingerprint" in source
+    assert "登录前指纹配置" in source
+    assert "使用此指纹登录" in source
+    assert "使用出口 IP 自动配置" in source
+    assert "loginStartOptions(fingerprint)" in source
+    assert 'body: JSON.stringify(fingerprint)' in source

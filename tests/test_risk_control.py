@@ -892,6 +892,33 @@ risk_control:
             self.assertEqual(record.retry_count, 0)
             self.assertEqual(record.download_status, "failed")
 
+    def test_background_retry_skips_xhs_records_without_media_snapshot(self):
+        with db.get_session() as session:
+            target = MonitorTarget(
+                platform="xhs", sec_uid="fixture", enabled=True)
+            session.add(target)
+            session.commit()
+            session.refresh(target)
+            record = ContentRecord(
+                platform="xhs", target_id=target.id,
+                aweme_id="missing-detail", media_json="",
+                download_status="failed",
+                error="未拦截到笔记详情(xsec_token 可能已过期)")
+            session.add(record)
+            session.commit()
+
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        retried = []
+
+        async def capture(record_id):
+            retried.append(record_id)
+            return {"ok": False}
+
+        engine.retry_download = capture
+        asyncio.run(engine._retry_failed())
+
+        self.assertEqual(retried, [])
+
     def test_xhs_download_retry_passes_identity_state_and_proxy_in_order(self):
         state = '{"cookies":[{"name":"a1","value":"fixture-a1"}]}'
         with db.get_session() as session:

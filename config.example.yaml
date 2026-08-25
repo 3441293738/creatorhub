@@ -9,7 +9,8 @@ engine:
   scan_concurrency: 2             # 同时抓取的目标数(并发浏览器上下文)
   block_media_resources: false    # 屏蔽图片/视频/字体加载(省带宽但会打断抖音 SPA 致拿不到数据,建议保持 false)
   xhs_browser_mode: auto          # auto=优先每账号系统 Chrome CDP;cdp=严格 CDP;patchright=直接使用 Patchright
-  xhs_cdp_idle_seconds: 900       # 小红书专用 Chrome 空闲回收秒数;0=仅按 LRU/退出回收
+  resident_browser_sessions: true # reuse one account browser process/Profile/task page
+  browser_session_idle_seconds: 1800 # idle recycle; 0=LRU/explicit close/shutdown only
   xhs_read_mode: browser          # browser=读取也复用账号浏览器;api=显式签名 API 兼容模式
   xhs_keyword_gap_seconds: 10     # 同一任务相邻关键词的最小停顿
   xhs_item_gap_seconds: 2.5       # 相邻详情/评论读取的最小停顿

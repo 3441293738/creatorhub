@@ -617,14 +617,16 @@ class MonitorEngine:
             return 0
 
     async def _collect_idle_browser_sessions(self, now: float | None = None) -> int:
-        """Reuse the main scheduler to close idle owned XHS Chrome sessions."""
-        collector = getattr(self.browser, "collect_idle_cdp", None)
+        """Reuse the main scheduler to close idle resident browser sessions."""
+        collector = getattr(self.browser, "collect_idle_sessions", None)
+        if not callable(collector):
+            collector = getattr(self.browser, "collect_idle_cdp", None)
         if not callable(collector):
             return 0
         try:
             return int(await collector(now=now))
         except Exception:
-            log.exception("idle XHS CDP collection failed")
+            log.exception("idle browser session collection failed")
             return 0
 
     async def _loop(self):
@@ -1480,6 +1482,12 @@ class MonitorEngine:
             media_filter = target.media_filter or "all"
             strategy = _monitor_strategy(
                 target, default_scrolls=6, default_items=12)
+            configured_max_items = max(
+                0, int(target.max_items_per_scan or 0))
+
+        detail_budget = int(strategy["max_items"] or 0)
+        if detail_budget > 4 and not configured_max_items:
+            detail_budget = random.randint(4, min(8, detail_budget))
 
         # 小红书签名直连需要登录态里的 a1 / web_session 等 Cookie
         cookie_str = cookie_str_from_state(state)
@@ -1509,7 +1517,8 @@ class MonitorEngine:
                 briefs_raw, browser_error = await fetch_xhs_search(
                     self.browser, identity, keyword, known,
                     max_scrolls=strategy["max_scrolls"],
-                    block_media=self.cfg.engine.block_media_resources)
+                    block_media=self.cfg.engine.block_media_resources,
+                    keep_context=True)
                 if browser_error:
                     error = browser_error
             elif browser_reads:
@@ -1517,7 +1526,8 @@ class MonitorEngine:
                     self.browser, identity, user_id, known,
                     xsec_token=xsec_token, xsec_source="pc_feed",
                     max_scrolls=strategy["max_scrolls"],
-                    block_media=self.cfg.engine.block_media_resources)
+                    block_media=self.cfg.engine.block_media_resources,
+                    keep_context=True)
                 if browser_error:
                     error = browser_error
             elif kind == "keyword":
@@ -1550,6 +1560,7 @@ class MonitorEngine:
         seen = set()
         detail_attempts = 0
         filtered_count = 0
+        next_long_pause = random.randint(3, 5)
         for raw in briefs_raw:
             if error and classify_platform_error(error)[0] in {
                     RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
@@ -1558,11 +1569,15 @@ class MonitorEngine:
             if not brief or brief["note_id"] in seen or brief["note_id"] in known:
                 continue
             seen.add(brief["note_id"])
-            if strategy["max_items"] and detail_attempts >= strategy["max_items"]:
+            if detail_budget and detail_attempts >= detail_budget:
                 break
             detail_attempts += 1
             if seen and len(seen) > 1:
-                await self._xhs_gap()
+                if detail_attempts >= next_long_pause:
+                    await self._xhs_gap(random.uniform(6.0, 11.0))
+                    next_long_pause += random.randint(3, 6)
+                else:
+                    await self._xhs_gap()
             note_tok = brief.get("xsec_token", "")
             derr = ""
             card = {}
@@ -1572,7 +1587,8 @@ class MonitorEngine:
                         self.browser, identity, brief["note_id"],
                         xsec_token=note_tok,
                         xsec_source=("pc_search" if kind == "keyword" else "pc_feed"),
-                        block_media=self.cfg.engine.block_media_resources)
+                        block_media=self.cfg.engine.block_media_resources,
+                        keep_context=True)
                     card = card or {}
                     if derr and classify_platform_error(derr)[0] in {
                             RiskCategory.RISK, RiskCategory.AUTH,
@@ -1622,7 +1638,8 @@ class MonitorEngine:
 
         print(f"[xhs_scan] kind={kind} key={keyword or user_id} briefs={len(briefs_raw)} "
               f"new_records={len(new_records)} "
-              f"details={detail_attempts} filtered={filtered_count} "
+              f"details={detail_attempts}/{detail_budget or '不限'} "
+              f"filtered={filtered_count} "
               f"with_media={sum(1 for _, a, _ in new_records if a.medias)} error={error!r}")
 
         target_name = ""
@@ -3969,11 +3986,24 @@ class MonitorEngine:
         return {"ok": ok, "error": err}
 
     async def _retry_failed(self):
-        """自动重试失败且未超过上限的作品。"""
+        """自动重试可安全复用媒体快照的失败作品。
+
+        小红书详情首抓未得到媒体时，继续自动打开详情页会反复消耗过期
+        xsec_token，并可能连续弹出平台安全验证。此类记录保留给用户单次
+        手动重试或目标下一轮刷新，不进入后台自动重试风暴。
+        """
         with get_session() as s:
-            ids = list(s.exec(
+            rows = list(s.exec(
                 select(ContentRecord.id)
                 .where(ContentRecord.download_status == "failed")
                 .where(ContentRecord.retry_count < MAX_AUTO_RETRY)).all())
+            ids = []
+            for rid in rows:
+                record = s.get(ContentRecord, rid)
+                if record is None:
+                    continue
+                if record.platform == "xhs" and not record.media_json:
+                    continue
+                ids.append(rid)
         for rid in ids:
             await self.retry_download(rid)

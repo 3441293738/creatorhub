@@ -83,7 +83,9 @@ class IdentityModeTests(unittest.TestCase):
         engine = Config().engine
 
         self.assertEqual(engine.xhs_browser_mode, "auto")
-        self.assertEqual(engine.xhs_cdp_idle_seconds, 900)
+        self.assertTrue(engine.resident_browser_sessions)
+        self.assertEqual(engine.browser_session_idle_seconds, 1800)
+        self.assertIsNone(engine.xhs_cdp_idle_seconds)
         self.assertEqual(engine.xhs_publish_mode, "browser")
         self.assertEqual(engine.xhs_comment_write_mode, "browser")
 
@@ -97,6 +99,22 @@ class IdentityModeTests(unittest.TestCase):
         cfg = load_config(str(config_path))
 
         self.assertEqual(cfg.engine.xhs_browser_mode, "patchright")
+
+    def test_legacy_cdp_idle_option_remains_available(self):
+        config_path = Path(self.tmp.name) / "legacy-idle.yaml"
+        config_path.write_text(
+            "engine:\n  xhs_cdp_idle_seconds: 900\n",
+            encoding="utf-8",
+        )
+
+        cfg = load_config(str(config_path))
+        manager = BrowserManager(
+            "UA", self.cfg.engine.profiles_dir,
+            xhs_cdp_idle_seconds=cfg.engine.xhs_cdp_idle_seconds,
+            session_idle_seconds=cfg.engine.browser_session_idle_seconds,
+        )
+
+        self.assertEqual(manager.session_idle_seconds, 900)
 
     def test_open_browser_url_requires_the_real_platform_host(self):
         self.assertTrue(main._platform_url_allowed(
@@ -443,13 +461,14 @@ class IdentityModeTests(unittest.TestCase):
         self.assertTrue(result["environment"]["has_proxy"])
         self.assertNotIn("secret", repr(result["environment"]))
 
-    def test_successful_new_xhs_login_releases_temporary_session(self):
+    def test_successful_new_xhs_login_rebinds_temporary_session(self):
         previous_cfg, previous_browser, previous_engine = (
             main.cfg, main.browser, main.engine)
 
         class BrowserStub:
             def __init__(self):
                 self.closed_keys = []
+                self.rebound_keys = []
 
             def environment_snapshot(self, identity, *, headless):
                 return {
@@ -461,22 +480,31 @@ class IdentityModeTests(unittest.TestCase):
             async def close_context(self, key):
                 self.closed_keys.append(key)
 
+            async def rebind_context(self, old_key, new_key):
+                self.rebound_keys.append((old_key, new_key))
+                return True
+
         browser = BrowserStub()
         captured = {}
 
         async def logged_in(_browser, identity, **_kwargs):
             captured["key"] = identity.key
             captured["browser_backend"] = identity.browser_backend
+            identity.observed_login_profile = {
+                "user_id": "xhs-member-73",
+                "red_id": "red-73",
+                "nickname": "fixture",
+            }
             return True, '{"cookies":[{"name":"a1","value":"fixture"}]}', "fixture"
 
         task_id = "successful-xhs-login"
         main.cfg = self.cfg
         main.browser = browser
         main.engine = None
+        enrich = AsyncMock(return_value="ok")
         try:
             with patch("app.main.interactive_xhs_login", logged_in), \
-                    patch("app.main._enrich_account_profile",
-                          AsyncMock(return_value="ok")):
+                    patch("app.main._enrich_account_profile", enrich):
                 asyncio.run(main._run_login(
                     task_id, platform="xhs", proxy_choice="none",
                     browser_backend="fingerprint_chromium"))
@@ -484,6 +512,7 @@ class IdentityModeTests(unittest.TestCase):
             with db.get_session() as session:
                 saved = session.get(DouyinAccount, result["account_id"])
                 saved_browser_backend = saved.browser_backend
+                saved_sec_uid = saved.sec_uid
         finally:
             main.login_tasks.pop(task_id, None)
             main.cfg, main.browser, main.engine = (
@@ -493,10 +522,134 @@ class IdentityModeTests(unittest.TestCase):
         self.assertEqual(saved_browser_backend, "fingerprint_chromium")
         self.assertEqual(captured.get("browser_backend"),
                          "fingerprint_chromium")
+        self.assertEqual(saved_sec_uid, "xhs-member-73")
+        enrich.assert_not_awaited()
+        self.assertEqual(browser.closed_keys, [])
         self.assertEqual(
-            browser.closed_keys,
-            [captured["key"], result["account_id"]],
+            browser.rebound_keys,
+            [(captured["key"], result["account_id"])],
         )
+
+    def test_first_login_custom_fingerprint_is_used_and_persisted(self):
+        previous_cfg, previous_browser, previous_engine = (
+            main.cfg, main.browser, main.engine)
+
+        class BrowserStub:
+            def __init__(self):
+                self.closed_keys = []
+
+            def backend_status(self, requested, _runtime_id=""):
+                return {
+                    "name": requested,
+                    "available": True,
+                    "detail": "",
+                }
+
+            def environment_snapshot(self, identity, *, headless):
+                return {
+                    "browser": "fingerprint-chromium",
+                    "headless": headless,
+                    "profile_dir": identity.profile_dir,
+                }
+
+            async def close_context(self, key):
+                self.closed_keys.append(key)
+
+        captured = {}
+
+        async def logged_in(_browser, identity, **_kwargs):
+            captured["identity"] = identity
+            identity.observed_login_profile = {
+                "user_id": "prelogin-fingerprint-user",
+                "nickname": "prelogin-fixture",
+            }
+            return True, '{"cookies":[{"name":"a1","value":"ok"}]}', "fixture"
+
+        custom = main._validate_fingerprint_update(
+            main.AccountFingerprintUpdateIn(
+                seed="first-login-custom-seed",
+                source_ip="203.0.113.8",
+                country="US",
+                region="California",
+                city="Los Angeles",
+                timezone="America/Los_Angeles",
+                locale="en-US",
+                accept_languages="en-US,en;q=0.9",
+                viewport_w=1440,
+                viewport_h=900,
+                geo_lat=34.0522,
+                geo_lon=-118.2437,
+                platform="windows",
+                platform_version="10.0.19045",
+                brand="Chrome",
+                brand_version="148.0.0.0",
+                hardware_concurrency=12,
+                disable_spoofing=["font"],
+                language_mode="custom",
+                timezone_mode="custom",
+                viewport_mode="custom",
+                location_mode="custom",
+                geolocation_permission="ask",
+                webrtc_mode="conceal",
+                extra_args="--mute-audio",
+            ))
+        browser = BrowserStub()
+        task_id = "first-login-custom-fingerprint"
+        main.cfg = self.cfg
+        main.browser = browser
+        main.engine = None
+        try:
+            with patch("app.main._proxy_geo", AsyncMock(return_value={
+                    "ip": "198.51.100.9", "country": "CN",
+                    "region": "Shanghai", "city": "Shanghai",
+                    "timezone": "Asia/Shanghai", "lat": 31.23,
+                    "lon": 121.47,
+                    })), patch("app.main.interactive_xhs_login", logged_in):
+                asyncio.run(main._run_login(
+                    task_id,
+                    platform="xhs",
+                    proxy_choice="none",
+                    browser_backend="fingerprint_chromium",
+                    fingerprint_overrides=custom,
+                ))
+            result = main.login_tasks[task_id]
+            with db.get_session() as session:
+                saved = session.get(DouyinAccount, result["account_id"])
+                saved_values = {
+                    "seed": saved.fp_seed,
+                    "ip": saved.fp_source_ip,
+                    "timezone": saved.timezone_id,
+                    "locale": saved.locale,
+                    "viewport": (saved.viewport_w, saved.viewport_h),
+                    "platform": saved.fp_platform,
+                    "cpu": saved.fp_hardware_concurrency,
+                    "disabled": saved.fp_disable_spoofing,
+                    "extra": saved.fp_extra_args,
+                }
+        finally:
+            main.login_tasks.pop(task_id, None)
+            main.cfg, main.browser, main.engine = (
+                previous_cfg, previous_browser, previous_engine)
+
+        identity = captured["identity"]
+        self.assertEqual(identity.fp_seed, "first-login-custom-seed")
+        self.assertEqual(identity.timezone_id, "America/Los_Angeles")
+        self.assertEqual(identity.locale, "en-US")
+        self.assertEqual((identity.viewport_w, identity.viewport_h), (1440, 900))
+        self.assertEqual(identity.fp_accept_languages, "en-US,en;q=0.9")
+        self.assertEqual(identity.fp_platform, "windows")
+        self.assertEqual(identity.fp_geolocation_permission, "ask")
+        self.assertEqual(saved_values, {
+            "seed": "first-login-custom-seed",
+            "ip": "203.0.113.8",
+            "timezone": "America/Los_Angeles",
+            "locale": "en-US",
+            "viewport": (1440, 900),
+            "platform": "windows",
+            "cpu": 12,
+            "disabled": "font",
+            "extra": "--mute-audio",
+        })
 
     def test_fresh_xhs_creator_login_does_not_claim_main_read_session(self):
         previous_cfg, previous_browser, previous_engine = (
@@ -614,6 +767,183 @@ class IdentityModeTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(engine.calls[0][1], OperationKind.LOGIN)
 
+    def test_repeated_open_browser_click_reuses_existing_window(self):
+        with db.get_session() as session:
+            account = DouyinAccount(
+                nickname="xhs-resident", platform="xhs",
+                identity_mode="native",
+                profile_dir=str(Path(self.tmp.name) / "resident-profile"),
+            )
+            session.add(account)
+            session.commit()
+            session.refresh(account)
+            account_id = account.id
+
+        class PageStub:
+            def __init__(self):
+                self.goto_calls = []
+                self.front_calls = 0
+
+            def is_closed(self):
+                return False
+
+            async def goto(self, url, **_kwargs):
+                self.goto_calls.append(url)
+
+            async def bring_to_front(self):
+                self.front_calls += 1
+
+        page = PageStub()
+        lease = SimpleNamespace(
+            active=True, page=page, context=object(),
+            close=AsyncMock())
+
+        class BrowserStub:
+            def identity_for(self, account):
+                return Identity.from_account(
+                    account, self_outer.cfg.engine.profiles_dir, "DEFAULT_UA")
+
+        self_outer = self
+        previous_browser = main.browser
+        main.browser = BrowserStub()
+        main.open_browsers[account_id] = lease
+        try:
+            result = asyncio.run(main.open_account_browser(
+                account_id,
+                url="https://www.xiaohongshu.com/explore/resident"))
+        finally:
+            main.open_browsers.pop(account_id, None)
+            main.browser = previous_browser
+
+        self.assertTrue(result["reused"])
+        self.assertEqual(page.goto_calls, [
+            "https://www.xiaohongshu.com/explore/resident"])
+        self.assertEqual(page.front_calls, 1)
+        lease.close.assert_not_awaited()
+
+    def test_manual_windows_for_different_accounts_do_not_share_lifetime_lock(self):
+        account_ids = []
+        with db.get_session() as session:
+            for platform in ("xhs", "douyin"):
+                account = DouyinAccount(
+                    nickname=f"{platform}-window", platform=platform,
+                    identity_mode="native",
+                    profile_dir=str(Path(self.tmp.name) / f"{platform}-window"),
+                )
+                session.add(account)
+                session.commit()
+                session.refresh(account)
+                account_ids.append(account.id)
+
+        class Locator:
+            first = None
+
+            def __init__(self):
+                self.first = self
+
+            async def is_visible(self, **_kwargs):
+                return False
+
+        class PageStub:
+            def __init__(self):
+                self.url = "about:blank"
+
+            async def goto(self, url, **_kwargs):
+                self.url = url
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            def get_by_text(self, *_args, **_kwargs):
+                return Locator()
+
+            async def bring_to_front(self):
+                return None
+
+            def on(self, *_args):
+                return None
+
+            def is_closed(self):
+                return False
+
+        class ContextStub:
+            def __init__(self):
+                self.page = PageStub()
+                self.closed = False
+
+            async def add_cookies(self, _cookies):
+                return None
+
+            async def new_page(self):
+                return self.page
+
+            async def close(self):
+                self.closed = True
+
+            def on(self, *_args):
+                return None
+
+        class BrowserStub:
+            def __init__(self):
+                self.locks = {}
+                self.contexts = {}
+                self.visible_lock = asyncio.Lock()
+
+            def identity_for(self, account):
+                return Identity.from_account(
+                    account, self_outer.cfg.engine.profiles_dir, "DEFAULT_UA")
+
+            def lock_for(self, key):
+                return self.locks.setdefault(key, asyncio.Lock())
+
+            @asynccontextmanager
+            async def visible_action(self, _identity, **_kwargs):
+                async with self.visible_lock:
+                    yield
+
+            async def open_headed(self, identity):
+                return self.contexts.setdefault(identity.key, ContextStub())
+
+            async def new_page(self, identity, **_kwargs):
+                context = self.contexts.setdefault(
+                    identity.key, ContextStub())
+                return context.page
+
+            async def close_context(self, key):
+                context = self.contexts.get(key)
+                if context is not None:
+                    await context.close()
+
+        class EngineStub:
+            @asynccontextmanager
+            async def operation_guard(self, *_args, **_kwargs):
+                raise AssertionError(
+                    "manual resident windows must not hold network guard")
+                yield
+
+        self_outer = self
+        previous_browser, previous_engine = main.browser, main.engine
+        browser = BrowserStub()
+        main.browser, main.engine = browser, EngineStub()
+
+        async def scenario():
+            first = await main.open_account_browser(account_ids[0])
+            second = await asyncio.wait_for(
+                main.open_account_browser(account_ids[1]), timeout=0.5)
+            self.assertTrue(first["ok"])
+            self.assertTrue(second["ok"])
+            self.assertTrue(main.open_browsers[account_ids[0]].active)
+            self.assertTrue(main.open_browsers[account_ids[1]].active)
+            await main.open_browsers[account_ids[0]].close()
+            await main.open_browsers[account_ids[1]].close()
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            for account_id in account_ids:
+                main.open_browsers.pop(account_id, None)
+            main.browser, main.engine = previous_browser, previous_engine
+
     def test_xhs_open_browser_closes_through_manager_and_visible_gate(self):
         with db.get_session() as session:
             account = DouyinAccount(
@@ -717,7 +1047,9 @@ class IdentityModeTests(unittest.TestCase):
             self.assertEqual(result["login_state"], "authenticated")
             self.assertEqual(result["login_scope"], "creator")
             self.assertTrue(state["engine"])
-            self.assertTrue(state["visible"])
+            # The machine-wide XHS visible gate protects only startup and is
+            # released while the user keeps this account window open.
+            self.assertFalse(state["visible"])
             await main.open_browsers[account_id].close()
             self.assertFalse(state["engine"])
             self.assertFalse(state["visible"])

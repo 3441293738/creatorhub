@@ -26,7 +26,7 @@ import uuid as _uuid
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field as PydanticField
+from pydantic import BaseModel, Field as PydanticField, ValidationError
 from sqlalchemy import func, or_
 from sqlmodel import select
 
@@ -209,10 +209,11 @@ async def _reuse_or_reject_interactive_login(
 class _OpenBrowserLease:
     """Keep the unified account/network guard until a headed context closes."""
 
-    def __init__(self, context, guard, close_callback=None):
+    def __init__(self, context, guard, close_callback=None, page=None):
         self.context = context
         self.guard = guard
         self.close_callback = close_callback
+        self.page = page
         self._released = False
         self._closed = False
         self._release_lock = asyncio.Lock()
@@ -471,6 +472,8 @@ async def lifespan(app: FastAPI):
         cfg.engine.max_live_contexts, native_ua_callback=_persist_native_ua,
         xhs_browser_mode=cfg.engine.xhs_browser_mode,
         xhs_cdp_idle_seconds=cfg.engine.xhs_cdp_idle_seconds,
+        resident_sessions=cfg.engine.resident_browser_sessions,
+        session_idle_seconds=cfg.engine.browser_session_idle_seconds,
         native_write_gate_enabled=cfg.engine.native_write_gate_enabled,
         native_write_require_system_chrome=cfg.engine.native_write_require_system_chrome,
         native_write_require_verified_proxy=cfg.engine.native_write_require_verified_proxy,
@@ -750,10 +753,73 @@ async def _enrich_account_profile(account_id: int, state: str, *,
     return _done("error", err or "error")
 
 
+def _merge_prelogin_fingerprint_fields(
+        generated: dict, detected: dict | None,
+        overrides: dict | None) -> dict:
+    """Merge an IP-derived baseline with the user's first-login choices."""
+    detected = detected or {}
+    merged = dict(generated)
+    merged.update({
+        "fp_source_ip": detected.get("source_ip", ""),
+        "fp_country": detected.get("country", ""),
+        "fp_region": detected.get("region", ""),
+        "fp_city": detected.get("city", ""),
+        "fp_platform": "",
+        "fp_platform_version": "",
+        "fp_brand": "",
+        "fp_brand_version": "",
+        "fp_hardware_concurrency": 0,
+        "fp_gpu_vendor": "",
+        "fp_gpu_renderer": "",
+        "fp_accept_languages": "",
+        "fp_disable_spoofing": "",
+        "fp_language_mode": "auto",
+        "fp_timezone_mode": "auto",
+        "fp_viewport_mode": "auto",
+        "fp_location_mode": "auto",
+        "fp_geolocation_permission": "allow",
+        "fp_webrtc_mode": "conceal",
+        "fp_extra_args": "",
+    })
+    if detected:
+        for name in ("fp_seed", "timezone_id", "locale", "viewport_w",
+                     "viewport_h", "geo_lat", "geo_lon"):
+            if name in detected:
+                merged[name] = detected[name]
+    if not overrides:
+        return merged
+
+    for name in (
+        "fp_seed", "fp_platform", "fp_platform_version", "fp_brand",
+        "fp_brand_version", "fp_hardware_concurrency", "fp_gpu_vendor",
+        "fp_gpu_renderer", "fp_disable_spoofing", "fp_language_mode",
+        "fp_timezone_mode", "fp_viewport_mode", "fp_location_mode",
+        "fp_geolocation_permission", "fp_webrtc_mode", "fp_extra_args",
+    ):
+        merged[name] = overrides[name]
+
+    # Automatic groups keep the values derived from the selected egress IP.
+    # Custom groups replace only their own settings.
+    if overrides["fp_language_mode"] == "custom":
+        merged["locale"] = overrides["locale"]
+        merged["fp_accept_languages"] = overrides["fp_accept_languages"]
+    if overrides["fp_timezone_mode"] == "custom":
+        merged["timezone_id"] = overrides["timezone_id"]
+    if overrides["fp_viewport_mode"] == "custom":
+        merged["viewport_w"] = overrides["viewport_w"]
+        merged["viewport_h"] = overrides["viewport_h"]
+    if overrides["fp_location_mode"] == "custom":
+        for name in ("fp_source_ip", "fp_country", "fp_region", "fp_city",
+                     "geo_lat", "geo_lon"):
+            merged[name] = overrides[name]
+    return merged
+
+
 async def _run_login(task_id: str, creator: bool = False, account_id: int | None = None,
                      platform: str = "douyin", proxy_choice: str = "auto",
                      browser_backend: str = "default",
-                     browser_runtime_id: str = ""):
+                     browser_runtime_id: str = "",
+                     fingerprint_overrides: dict | None = None):
     """扫码登录。多账号隔离模型:一账号=一持久 profile。
     - 传 account_id:登录进该账号自己的 profile(重新登录/补创作者登录)。
     - 不传:用「临时 profile」登录,**只有登录成功才建账号**;关窗/超时/取消都不留残号。"""
@@ -768,6 +834,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
     proxy_reservation_key = ""
     new_fields = None
     fingerprint_fields = None
+    is_fingerprint_environment = False
     login_environment = {}
     nm = ("小红书账号" if platform == "xhs"
           else "快手账号" if platform == "kuaishou"
@@ -810,7 +877,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             if callable(backend_status):
                 effective_backend = _browser_backend_status(
                     requested_backend, browser_runtime_id).get("name", "")
-            if effective_backend == "fingerprint_chromium":
+            is_fingerprint_environment = (
+                effective_backend == "fingerprint_chromium")
+            if is_fingerprint_environment:
                 geo = await _proxy_geo(proxy, timeout=6)
                 if geo and geo.get("ip"):
                     fingerprint_fields = derive_ip_fingerprint(
@@ -823,7 +892,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                         latitude=geo.get("lat") or 0.0,
                         longitude=geo.get("lon") or 0.0,
                     )
-                    new_fields.update(fingerprint_fields)
+                new_fields = _merge_prelogin_fingerprint_fields(
+                    new_fields, fingerprint_fields, fingerprint_overrides)
             identity = Identity(
                 account_id=None, profile_dir=tmp_profile, identity_mode="native",
                 browser_backend=requested_backend,
@@ -832,6 +902,26 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 proxy=proxy, ua="", viewport_w=new_fields["viewport_w"],
                 viewport_h=new_fields["viewport_h"], timezone_id=new_fields["timezone_id"],
                 locale=new_fields["locale"], fp_seed=new_fields["fp_seed"],
+                fp_platform=new_fields.get("fp_platform", ""),
+                fp_platform_version=new_fields.get("fp_platform_version", ""),
+                fp_brand=new_fields.get("fp_brand", ""),
+                fp_brand_version=new_fields.get("fp_brand_version", ""),
+                fp_hardware_concurrency=new_fields.get(
+                    "fp_hardware_concurrency", 0),
+                fp_gpu_vendor=new_fields.get("fp_gpu_vendor", ""),
+                fp_gpu_renderer=new_fields.get("fp_gpu_renderer", ""),
+                fp_accept_languages=new_fields.get(
+                    "fp_accept_languages", ""),
+                fp_disable_spoofing=new_fields.get(
+                    "fp_disable_spoofing", ""),
+                fp_language_mode=new_fields.get("fp_language_mode", "auto"),
+                fp_timezone_mode=new_fields.get("fp_timezone_mode", "auto"),
+                fp_viewport_mode=new_fields.get("fp_viewport_mode", "auto"),
+                fp_location_mode=new_fields.get("fp_location_mode", "auto"),
+                fp_geolocation_permission=new_fields.get(
+                    "fp_geolocation_permission", "allow"),
+                fp_webrtc_mode=new_fields.get("fp_webrtc_mode", "conceal"),
+                fp_extra_args=new_fields.get("fp_extra_args", ""),
                 geo_lat=new_fields.get("geo_lat", 0.0),
                 geo_lon=new_fields.get("geo_lon", 0.0))
 
@@ -905,21 +995,32 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
 
         # 浏览器已经完成实际后端选择；此时快照能反映系统 Chrome 或真实回退。
         login_environment = browser.environment_snapshot(identity, headless=False)
-        if fresh_account and platform == "xhs":
-            # The temporary identity has no durable account key. Close its CDP
-            # session before persisting the account so the same profile can be
-            # reopened under the newly assigned account id without conflict.
-            await browser.close_context(identity.key)
+        temporary_identity_key = identity.key
 
         # 3) 仅在成功时落库
         if ok and state_json:
             is_xhs = platform == "xhs"
+            observed_profile = {}
+            if is_xhs and not creator:
+                raw_observed = getattr(
+                    identity, "observed_login_profile", {}) or {}
+                if isinstance(raw_observed, dict):
+                    observed_profile = parse_xhs_self_user(raw_observed)
             with get_session() as s:
                 if account_id:
                     acc = s.get(DouyinAccount, acc_id)
                 else:
                     acc = DouyinAccount(
-                        platform=platform, nickname=nickname or nm, status="active",
+                        platform=platform,
+                        nickname=(observed_profile.get("nickname")
+                                  or nickname or nm),
+                        sec_uid=observed_profile.get("sec_uid", ""),
+                        douyin_id=observed_profile.get("douyin_id", ""),
+                        avatar=observed_profile.get("avatar", ""),
+                        follower_count=observed_profile.get(
+                            "follower_count", 0),
+                        aweme_count=observed_profile.get("aweme_count", 0),
+                        status="active",
                         profile_dir=tmp_profile, proxy=identity.proxy,
                         browser_backend=identity.browser_backend,
                         browser_runtime_id=identity.browser_runtime_id,
@@ -928,12 +1029,38 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                         viewport_h=new_fields["viewport_h"],
                         timezone_id=new_fields["timezone_id"], locale=new_fields["locale"],
                         fp_seed=new_fields["fp_seed"],
-                        fp_source_ip=(fingerprint_fields or {}).get("source_ip", ""),
-                        fp_country=(fingerprint_fields or {}).get("country", ""),
-                        fp_region=(fingerprint_fields or {}).get("region", ""),
-                        fp_city=(fingerprint_fields or {}).get("city", ""),
+                        fp_source_ip=new_fields.get("fp_source_ip", ""),
+                        fp_country=new_fields.get("fp_country", ""),
+                        fp_region=new_fields.get("fp_region", ""),
+                        fp_city=new_fields.get("fp_city", ""),
                         fp_generated_at=(datetime.utcnow()
-                                         if fingerprint_fields else None),
+                                         if is_fingerprint_environment else None),
+                        fp_platform=new_fields.get("fp_platform", ""),
+                        fp_platform_version=new_fields.get(
+                            "fp_platform_version", ""),
+                        fp_brand=new_fields.get("fp_brand", ""),
+                        fp_brand_version=new_fields.get("fp_brand_version", ""),
+                        fp_hardware_concurrency=new_fields.get(
+                            "fp_hardware_concurrency", 0),
+                        fp_gpu_vendor=new_fields.get("fp_gpu_vendor", ""),
+                        fp_gpu_renderer=new_fields.get("fp_gpu_renderer", ""),
+                        fp_accept_languages=new_fields.get(
+                            "fp_accept_languages", ""),
+                        fp_disable_spoofing=new_fields.get(
+                            "fp_disable_spoofing", ""),
+                        fp_language_mode=new_fields.get(
+                            "fp_language_mode", "auto"),
+                        fp_timezone_mode=new_fields.get(
+                            "fp_timezone_mode", "auto"),
+                        fp_viewport_mode=new_fields.get(
+                            "fp_viewport_mode", "auto"),
+                        fp_location_mode=new_fields.get(
+                            "fp_location_mode", "auto"),
+                        fp_geolocation_permission=new_fields.get(
+                            "fp_geolocation_permission", "allow"),
+                        fp_webrtc_mode=new_fields.get(
+                            "fp_webrtc_mode", "conceal"),
+                        fp_extra_args=new_fields.get("fp_extra_args", ""),
                         geo_lat=new_fields.get("geo_lat", 0.0),
                         geo_lon=new_fields.get("geo_lon", 0.0))
                     s.add(acc); s.commit(); s.refresh(acc); acc_id = acc.id
@@ -949,10 +1076,32 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     acc.storage_state = state_json
                 if nickname:
                     acc.nickname = nickname
+                if observed_profile:
+                    acc.nickname = (
+                        observed_profile.get("nickname") or acc.nickname)
+                    acc.sec_uid = (
+                        observed_profile.get("sec_uid") or acc.sec_uid)
+                    acc.douyin_id = (
+                        observed_profile.get("douyin_id") or acc.douyin_id)
+                    acc.avatar = observed_profile.get("avatar") or acc.avatar
+                    acc.follower_count = (
+                        observed_profile.get("follower_count")
+                        or acc.follower_count)
+                    acc.aweme_count = (
+                        observed_profile.get("aweme_count")
+                        or acc.aweme_count)
                 if acc.identity_mode == "native" and identity.ua:
                     acc.ua = identity.ua
                 acc.status = "active"
                 s.add(acc); s.commit()
+
+            if fresh_account and platform == "xhs":
+                # Promote the successful temporary login session to the new
+                # durable account id without closing/reopening Chromium.
+                rebound = getattr(browser, "rebind_context", None)
+                if callable(rebound):
+                    await rebound(temporary_identity_key, acc_id)
+                identity.account_id = acc_id
 
             # 登录态已经持久化且账号已经落库：立即通知前端把账号显示出来。
             # 完整资料抓取可能还需数秒，不能让它阻塞“扫码成功”的交互反馈。
@@ -964,20 +1113,15 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 environment=login_environment,
             )
 
-            try:
+            if is_xhs and not creator:
+                # 主站登录已经给出 user/me（或二维码完成信号）。保留当前
+                # 账号浏览器会话，缺失资料可在同一会话中按需补全。
+                profile_status = (
+                    "ok" if observed_profile.get("sec_uid")
+                    else "deferred")
+            else:
                 profile_status = await _enrich_account_profile(
                     acc_id, state_json)   # best-effort
-            finally:
-                if platform == "xhs":
-                    # XHS profile enrichment uses a persistent headed context.
-                    # Once its temporary task page closes, Chromium otherwise
-                    # leaves the bootstrap about:blank tab visible for the idle
-                    # cache lifetime. Login has already been persisted, so shut
-                    # down that context before reporting completion.
-                    try:
-                        await browser.close_context(acc_id)
-                    except Exception:
-                        pass
             with get_session() as s:
                 acc = s.get(DouyinAccount, acc_id)
                 login_tasks[task_id] = _login_task_state(
@@ -1025,13 +1169,34 @@ def _validate_login_browser_backend(
     return requested, runtime_id
 
 
+def _validate_prelogin_fingerprint(
+        value: dict[str, Any] | None, browser_backend: str,
+        browser_runtime_id: str) -> dict | None:
+    """Validate optional first-login settings with the normal editor rules."""
+    if value is None:
+        return None
+    status = _browser_backend_status(browser_backend, browser_runtime_id)
+    if status.get("name") != "fingerprint_chromium":
+        raise HTTPException(400, "仅指纹浏览器环境支持登录前指纹配置")
+    if len(json.dumps(value, ensure_ascii=False)) > 12000:
+        raise HTTPException(400, "登录前指纹配置超过长度限制")
+    try:
+        body = AccountFingerprintUpdateIn(**value)
+    except ValidationError as exc:
+        raise HTTPException(400, "登录前指纹配置格式无效") from exc
+    return _validate_fingerprint_update(body)
+
+
 @app.post("/api/login/browser/start")
 async def login_browser_start(proxy: str = "auto", browser_backend: str = "default",
-                              browser_runtime_id: str = ""):
+                              browser_runtime_id: str = "",
+                              fingerprint: dict[str, Any] | None = None):
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
     reused = await _reuse_or_reject_interactive_login("douyin", False)
     if reused is not None:
         return reused
@@ -1040,19 +1205,23 @@ async def login_browser_start(proxy: str = "auto", browser_backend: str = "defau
         status="opening", platform="douyin", creator=False, account_id=None)
     asyncio.create_task(_run_login(
         task_id, proxy_choice=proxy, browser_backend=browser_backend,
-        browser_runtime_id=browser_runtime_id))
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开浏览器窗口,请在其中点击“登录”并用抖音 App 扫码"}
 
 
 @app.post("/api/login/creator/start")
 async def login_creator_start(proxy: str = "auto", browser_backend: str = "default",
-                              browser_runtime_id: str = ""):
+                              browser_runtime_id: str = "",
+                              fingerprint: dict[str, Any] | None = None):
     """创作中心登录(用于自有账号评论模式;其登录态同样可用于公开抓取)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
     reused = await _reuse_or_reject_interactive_login("douyin", True)
     if reused is not None:
         return reused
@@ -1062,19 +1231,23 @@ async def login_creator_start(proxy: str = "auto", browser_backend: str = "defau
     asyncio.create_task(_run_login(
         task_id, creator=True, proxy_choice=proxy,
         browser_backend=browser_backend,
-        browser_runtime_id=browser_runtime_id))
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开创作中心窗口,请在其中扫码登录你的抖音号"}
 
 
 @app.post("/api/login/xhs/start")
 async def login_xhs_start(proxy: str = "auto", browser_backend: str = "default",
-                          browser_runtime_id: str = ""):
+                          browser_runtime_id: str = "",
+                          fingerprint: dict[str, Any] | None = None):
     """小红书扫码登录(用于监控/读取)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
     reused = await _reuse_or_reject_interactive_login("xhs", False)
     if reused is not None:
         return reused
@@ -1084,19 +1257,23 @@ async def login_xhs_start(proxy: str = "auto", browser_backend: str = "default",
     asyncio.create_task(_run_login(
         task_id, platform="xhs", proxy_choice=proxy,
         browser_backend=browser_backend,
-        browser_runtime_id=browser_runtime_id))
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开小红书官网首页,请在窗口中点击登录并用小红书 App 扫码"}
 
 
 @app.post("/api/login/xhs-creator/start")
 async def login_xhs_creator_start(proxy: str = "auto", browser_backend: str = "default",
-                                  browser_runtime_id: str = ""):
+                                  browser_runtime_id: str = "",
+                                  fingerprint: dict[str, Any] | None = None):
     """小红书「创作服务平台」登录(用于发布/已发布列表)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
     reused = await _reuse_or_reject_interactive_login("xhs", True)
     if reused is not None:
         return reused
@@ -1106,19 +1283,23 @@ async def login_xhs_creator_start(proxy: str = "auto", browser_backend: str = "d
     asyncio.create_task(_run_login(
         task_id, creator=True, platform="xhs", proxy_choice=proxy,
         browser_backend=browser_backend,
-        browser_runtime_id=browser_runtime_id))
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开小红书创作平台窗口,请扫码登录(发布用)"}
 
 
 @app.post("/api/login/kuaishou/start")
 async def login_ks_start(proxy: str = "auto", browser_backend: str = "default",
-                         browser_runtime_id: str = ""):
+                         browser_runtime_id: str = "",
+                         fingerprint: dict[str, Any] | None = None):
     """快手扫码登录(用于监控/读取)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
     reused = await _reuse_or_reject_interactive_login("kuaishou", False)
     if reused is not None:
         return reused
@@ -1129,19 +1310,23 @@ async def login_ks_start(proxy: str = "auto", browser_backend: str = "default",
     asyncio.create_task(_run_login(
         task_id, platform="kuaishou", proxy_choice=proxy,
         browser_backend=browser_backend,
-        browser_runtime_id=browser_runtime_id))
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开快手窗口,请在其中用快手 App 扫码登录"}
 
 
 @app.post("/api/login/kuaishou-creator/start")
 async def login_ks_creator_start(proxy: str = "auto", browser_backend: str = "default",
-                                 browser_runtime_id: str = ""):
+                                 browser_runtime_id: str = "",
+                                 fingerprint: dict[str, Any] | None = None):
     """快手「创作者服务平台」登录(用于发布)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
     reused = await _reuse_or_reject_interactive_login("kuaishou", True)
     if reused is not None:
         return reused
@@ -1152,19 +1337,23 @@ async def login_ks_creator_start(proxy: str = "auto", browser_backend: str = "de
     asyncio.create_task(_run_login(
         task_id, creator=True, platform="kuaishou", proxy_choice=proxy,
         browser_backend=browser_backend,
-        browser_runtime_id=browser_runtime_id))
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开快手创作平台窗口,请扫码登录(发布用)"}
 
 
 @app.post("/api/login/shipinhao/start")
 async def login_channels_start(proxy: str = "auto", browser_backend: str = "default",
-                               browser_runtime_id: str = ""):
+                               browser_runtime_id: str = "",
+                               fingerprint: dict[str, Any] | None = None):
     """视频号扫码登录(读取/发布共用,微信扫码)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
         browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
     reused = await _reuse_or_reject_interactive_login("shipinhao", False)
     if reused is not None:
         return reused
@@ -1175,7 +1364,8 @@ async def login_channels_start(proxy: str = "auto", browser_backend: str = "defa
     asyncio.create_task(_run_login(
         task_id, platform="shipinhao", proxy_choice=proxy,
         browser_backend=browser_backend,
-        browser_runtime_id=browser_runtime_id))
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
     return {"task_id": task_id, "status": "opening",
             "hint": "已打开视频号助手窗口,请用微信扫码登录"}
 
@@ -1239,12 +1429,19 @@ async def list_accounts(platform: str | None = None):
             used = len(s.exec(select(MonitorTarget.id)
                               .where(MonitorTarget.account_id == a.id)).all())
             environment = None
+            environment_check = None
             if browser is not None:
                 try:
+                    account_identity = browser.identity_for(a)
                     environment = browser.environment_snapshot(
-                        browser.identity_for(a), headless=False)
+                        account_identity, headless=False)
+                    check_status = getattr(
+                        browser, "environment_check_status", None)
+                    if callable(check_status):
+                        environment_check = check_status(account_identity)
                 except Exception:
                     environment = None
+                    environment_check = None
             has_creator = (
                 bool(a.creator_storage_state)
                 or has_creator_cookies(a.storage_state)
@@ -1305,6 +1502,7 @@ async def list_accounts(platform: str | None = None):
                     hashlib.sha256(profile_key.encode("utf-8")).hexdigest()[:10]
                     if profile_key else ""),
                 "environment": environment,
+                "environment_check": environment_check,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
             })
         return out
@@ -2729,20 +2927,8 @@ async def refresh_account_profile(account_id: int):
         raise HTTPException(400, "该账号无浏览器登录态(Cookie 粘贴账号可能不含完整态),无法拉取资料")
 
     async def _refresh_profile():
-        try:
-            return await _enrich_account_profile(
-                account_id, state, detailed=True)
-        finally:
-            if platform == "xhs" and browser is not None:
-                # XHS browser reads use a persistent headed context. The task
-                # page is closed by visible_page(), but Chromium keeps its
-                # bootstrap about:blank tab alive until the context is closed.
-                # A user-triggered refresh is one-shot, so release it while the
-                # account operation guard is still held.
-                try:
-                    await browser.close_context(account_id)
-                except Exception:
-                    pass
+        return await _enrich_account_profile(
+            account_id, state, detailed=True)
 
     res, outcome = await _run_account_read(
         account_id, OperationKind.READ_LIGHT,
@@ -3518,12 +3704,13 @@ async def _opened_page_login_state(page, platform: str,
 
 
 @app.post("/api/accounts/{account_id}/open-browser")
-async def open_account_browser(account_id: int, url: str = ""):
+async def open_account_browser(
+        account_id: int, url: str = "", environment_check: bool = False):
     """用该账号登录态弹出一个真实浏览器窗口。默认停在平台首页;传 url 则停在该地址
     (仅允许本平台域名,用于「查看」视频号作品/管理页等需登录态才能打开的页面)。
     留给用户手动操作(查看/收发私信、F12 抓接口、手动维护等)。关闭窗口即落盘 Cookie。
-    小红书复用账号专属 CDP Chrome，窗口开启期间占用全局可见操作队列；其他平台仍使用
-    临时有头 Context。用完关闭窗口后，后台任务会继续执行。"""
+    小红书复用账号专属常驻 Context；手动窗口只占用当前账号 Profile，不长期占用
+    共享网络出口或全局可视操作锁，因此不同账号/平台窗口可以并存。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     with get_session() as s:
@@ -3542,13 +3729,6 @@ async def open_account_browser(account_id: int, url: str = ""):
             and has_creator_login else "read"
         )
         states = [acc.storage_state or "", acc.creator_storage_state or ""]
-    # 该账号已开着窗口就先关旧的(同一 profile 不能并存)
-    old = open_browsers.pop(account_id, None)
-    if old is not None:
-        try:
-            await old.close()
-        except Exception:
-            pass
     home = {"xhs": ("https://creator.xiaohongshu.com/"
                      if open_scope == "creator"
                      # /user/profile/me 不再稳定触发 user/me，可能把有效登录态
@@ -3568,6 +3748,48 @@ async def open_account_browser(account_id: int, url: str = ""):
                     == "creator.xiaohongshu.com" else "read")
             except (TypeError, ValueError):
                 open_scope = "read"
+
+    # Repeated clicks should raise/navigate the already-owned account window,
+    # not tear down and cold-start the same Profile again.
+    old = open_browsers.get(account_id)
+    if old is not None and old.active:
+        old_page = getattr(old, "page", None)
+        try:
+            if old_page is not None and not old_page.is_closed():
+                check_opened = False
+                foreground_page = old_page
+                if environment_check:
+                    check_opener = getattr(
+                        browser, "open_environment_check", None)
+                    if callable(check_opener):
+                        check_page = await check_opener(
+                            identity, context=old.context, force=True,
+                            bring_to_front=True)
+                        check_opened = check_page is not None
+                        if check_page is not None:
+                            foreground_page = check_page
+                elif tgt:
+                    await old_page.goto(
+                        home, wait_until="domcontentloaded", timeout=30000)
+                await foreground_page.bring_to_front()
+                return {
+                    "ok": True,
+                    "reused": True,
+                    "logged_out": False,
+                    "login_state": "unconfirmed",
+                    "login_scope": open_scope,
+                    "environment_check_only": environment_check,
+                    "environment_check_opened": check_opened,
+                    "environment_check_error": "",
+                    "environment_check": None,
+                }
+        except Exception:
+            pass
+        open_browsers.pop(account_id, None)
+        try:
+            await old.close()
+        except Exception:
+            pass
     # 持久 profile 只在"首次空目录"才注入登录态;为防 profile 里 Cookie 缺失/过期导致
     # 打开后未登录,这里用 DB 里已知的登录态 Cookie 再注入一次(覆盖刷新)。
     from .browser.manager import _sanitize_cookies
@@ -3581,85 +3803,131 @@ async def open_account_browser(account_id: int, url: str = ""):
 
     @asynccontextmanager
     async def _open_guard():
-        @asynccontextmanager
-        async def _engine_guard():
-            if engine is None:
-                yield None
-                return
-            async with engine.operation_guard(
-                    account_id, OperationKind.LOGIN,
-                    fallback_key=f"open-browser:{account_id}",
-                    operation_target=identity) as guarded:
-                yield guarded
+        # A manually-opened window must reserve only its own account Profile.
+        # Holding operation_guard for the whole window lifetime also holds the
+        # shared network-exit semaphore; two direct-connect accounts would then
+        # look like the browser supports only one window. Production managers
+        # expose lock_for(); the fallback keeps lightweight integrations
+        # compatible.
+        lock_factory = getattr(browser, "lock_for", None)
+        if callable(lock_factory):
+            async with lock_factory(f"acc:{account_id}"):
+                yield identity
+            return
+        if engine is None:
+            yield identity
+            return
+        async with engine.operation_guard(
+                account_id, OperationKind.LOGIN,
+                fallback_key=f"open-browser:{account_id}",
+                operation_target=identity) as guarded:
+            yield guarded
 
-        async with _engine_guard() as guarded:
-            if platform == "xhs":
-                # A user-held XHS window participates in the same machine-wide
-                # visible-action queue as scheduled reads and writes.
-                async with browser.visible_action(
-                        identity, keep_context=True):
-                    yield guarded
-            else:
-                yield guarded
+    @asynccontextmanager
+    async def _startup_visible_guard():
+        # Window startup/navigation is brief and still serialized for XHS so
+        # focus and native-page setup cannot race. Once the page is ready the
+        # global gate is released; the account-specific Profile lock remains.
+        if platform == "xhs":
+            async with browser.visible_action(
+                    identity, keep_context=True):
+                yield
+            return
+        yield
 
     guard = _open_guard()
     await guard.__aenter__()
+    startup_guard = _startup_visible_guard()
+    startup_entered = False
     logged_out = False
     login_state = "unconfirmed"
+    check_opened = False
+    check_error = ""
+    check_page = None
     try:
+        await startup_guard.__aenter__()
+        startup_entered = True
         ctx = await browser.open_headed(identity)
         if cookies:
             try:
                 await ctx.add_cookies(_sanitize_cookies(cookies))
             except Exception as e:
                 print(f"[open-browser] 注入 Cookie 失败: {e!r}")
-        page = (await browser.new_page(identity, block_media=False)
-                if platform == "xhs" else await ctx.new_page())
-        xhs_evidence: dict = {}
-        if platform == "xhs" and open_scope == "read":
-            page.on("response", _xhs_open_auth_response_handler(xhs_evidence))
-        await page.goto(home, wait_until="domcontentloaded", timeout=30000)
-        try:
-            # Give the async response callback a short opportunity to parse
-            # user/me.  This is stronger than inspecting the first rendered
-            # header frame, which is often still the anonymous skeleton.
-            await page.wait_for_timeout(2500 if platform == "xhs" else 1000)
-        except Exception:
-            pass
-        login_state = await _opened_page_login_state(
-            page, ("xhs_creator" if platform == "xhs"
-                   and open_scope == "creator" else platform), xhs_evidence)
-        logged_out = login_state == "logged_out"
-        if logged_out or (platform == "xhs" and login_state == "authenticated"):
-            with get_session() as s:
-                opened_account = s.get(DouyinAccount, account_id)
-                if opened_account:
-                    other_scope_available = (
-                        platform == "xhs" and logged_out and (
-                            (open_scope == "read" and has_creator_login)
-                            or (open_scope == "creator" and has_read_login)
-                        )
-                    )
-                    if not other_scope_available:
-                        opened_account.status = (
-                            "invalid" if logged_out else "active")
-                    s.add(opened_account)
-                    s.commit()
-        if platform == "xhs":
+        check_opener = getattr(browser, "open_environment_check", None)
+        if environment_check:
+            if not callable(check_opener):
+                raise RuntimeError("当前浏览器管理器未启用环境检测")
+            check_page = await check_opener(
+                identity, context=ctx, force=True, bring_to_front=True)
+            if check_page is None:
+                raise RuntimeError("环境检测仅适用于 Fingerprint Chromium")
+            page = check_page
+            check_opened = True
+        else:
+            # 新 Profile 或环境签名发生变化时，额外打开 BrowserScan 标签；
+            # 检测页失败不影响账号平台页和登录态检查。
+            if callable(check_opener):
+                try:
+                    check_page = await check_opener(identity, context=ctx)
+                    check_opened = check_page is not None
+                except Exception as check_exc:
+                    check_error = f"{type(check_exc).__name__}: {check_exc}"
+                    print(f"[environment-check] 自动打开失败: {check_exc!r}")
+            page = (await browser.new_page(identity, block_media=False)
+                    if platform == "xhs" else await ctx.new_page())
+            xhs_evidence: dict = {}
+            if platform == "xhs" and open_scope == "read":
+                page.on("response", _xhs_open_auth_response_handler(xhs_evidence))
+            await page.goto(home, wait_until="domcontentloaded", timeout=30000)
             try:
-                await page.bring_to_front()
+                # Give the async response callback a short opportunity to parse
+                # user/me.  This is stronger than inspecting the first rendered
+                # header frame, which is often still the anonymous skeleton.
+                await page.wait_for_timeout(2500 if platform == "xhs" else 1000)
             except Exception:
                 pass
+            login_state = await _opened_page_login_state(
+                page, ("xhs_creator" if platform == "xhs"
+                       and open_scope == "creator" else platform), xhs_evidence)
+            logged_out = login_state == "logged_out"
+            if logged_out or (platform == "xhs" and login_state == "authenticated"):
+                with get_session() as s:
+                    opened_account = s.get(DouyinAccount, account_id)
+                    if opened_account:
+                        other_scope_available = (
+                            platform == "xhs" and logged_out and (
+                                (open_scope == "read" and has_creator_login)
+                                or (open_scope == "creator" and has_read_login)
+                            )
+                        )
+                        if not other_scope_available:
+                            opened_account.status = (
+                                "invalid" if logged_out else "active")
+                        s.add(opened_account)
+                        s.commit()
+            if platform == "xhs":
+                try:
+                    await page.bring_to_front()
+                except Exception:
+                    pass
     except BaseException as e:
+        if startup_entered:
+            await startup_guard.__aexit__(type(e), e, e.__traceback__)
         await guard.__aexit__(type(e), e, e.__traceback__)
         if not isinstance(e, Exception):
             raise
         raise HTTPException(500, f"打开浏览器失败: {e!r}")
+    try:
+        await startup_guard.__aexit__(None, None, None)
+    except BaseException as e:
+        await guard.__aexit__(type(e), e, e.__traceback__)
+        raise
     close_callback = (
         (lambda: browser.close_context(identity.key))
         if platform == "xhs" else None
     )
-    lease = _OpenBrowserLease(ctx, guard, close_callback=close_callback)
+    lease = _OpenBrowserLease(
+        ctx, guard, close_callback=close_callback, page=page)
     open_browsers[account_id] = lease
     try:                       # 用户手动关窗后,从登记表移除
         ctx.on("close", lambda *_: asyncio.create_task(
@@ -3669,8 +3937,25 @@ async def open_account_browser(account_id: int, url: str = ""):
                 _release_open_browser(account_id, lease)))
     except Exception:
         pass
+    check_status = None
+    status_reader = getattr(browser, "environment_check_status", None)
+    if callable(status_reader):
+        try:
+            check_status = status_reader(identity)
+        except Exception:
+            pass
     return {"ok": True, "logged_out": logged_out,
-            "login_state": login_state, "login_scope": open_scope}
+            "login_state": login_state, "login_scope": open_scope,
+            "environment_check_only": environment_check,
+            "environment_check_opened": check_opened,
+            "environment_check_error": check_error,
+            "environment_check": check_status}
+
+
+@app.post("/api/accounts/{account_id}/environment-check")
+async def open_account_environment_check(account_id: int):
+    """在账号自己的独立指纹 Profile 中手动打开 BrowserScan。"""
+    return await open_account_browser(account_id, environment_check=True)
 
 
 # ─────────── 账号代理(风控隔离)───────────

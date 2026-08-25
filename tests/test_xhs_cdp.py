@@ -993,6 +993,45 @@ class BrowserManagerCdpTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_idle_collection_also_closes_patchright_session(self):
+        async def scenario():
+            manager = self._manager("patchright", idle=10)
+            fallback = _ManagerContext()
+            manager._launch_persistent = AsyncMock(return_value=fallback)
+            await manager.context_for(self.identity)
+            manager._last_used[self.identity.key] = 100.0
+
+            closed = await manager.collect_idle_sessions(now=111.0)
+
+            self.assertEqual(closed, 1)
+            self.assertTrue(fallback.closed)
+            self.assertNotIn(self.identity.key, manager._contexts)
+
+        asyncio.run(scenario())
+
+    def test_successful_temporary_login_context_can_be_rebound(self):
+        async def scenario():
+            manager = self._manager("patchright")
+            fallback = _ManagerContext()
+            manager._launch_persistent = AsyncMock(return_value=fallback)
+            temporary = Identity(
+                account_id=None,
+                profile_dir=str(Path(self.tmp.name) / "new_login_fixture"),
+                identity_mode="native",
+                platform="xhs",
+            )
+            old_key = temporary.key
+            await manager.context_for(temporary)
+
+            rebound = await manager.rebind_context(old_key, 72)
+
+            self.assertTrue(rebound)
+            self.assertNotIn(old_key, manager._contexts)
+            self.assertIs(manager._contexts[72], fallback)
+            self.assertIn(72, manager._last_used)
+
+        asyncio.run(scenario())
+
     def test_environment_snapshot_labels_backend_and_redacts_endpoints(self):
         manager = self._manager("auto")
         self.identity.proxy = "http://alice:secret@proxy.local:8080"

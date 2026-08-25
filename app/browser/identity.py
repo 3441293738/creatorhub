@@ -12,7 +12,7 @@ import os
 import random
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
@@ -96,6 +96,8 @@ class Identity:
     platform: str = ""
     # fingerprint_chromium 下选择的具体本地内核；空表示跟随默认内核。
     browser_runtime_id: str = ""
+    # 扫码页已经观察到的当前用户资料，仅在本次登录内存中传递；不参与指纹签名。
+    observed_login_profile: dict = field(default_factory=dict, repr=False)
 
     @property
     def key(self):

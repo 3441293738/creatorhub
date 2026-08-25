@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from sqlmodel import select
 
@@ -419,6 +419,123 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
         self.assertFalse(changed)
         saved = json.loads(preferences_path.read_text(encoding="utf-8"))
         self.assertEqual(saved["profile"]["cookie_controls_mode"], 1)
+
+    def test_new_fingerprint_environment_opens_browserscan_once_in_separate_tab(self):
+        manager = BrowserManager(
+            "UA", self.tmp.name,
+            browser_backend="fingerprint_chromium",
+            fingerprint_chromium_path=str(self.executable),
+        )
+        identity = Identity(
+            account_id=31,
+            profile_dir=str(Path(self.tmp.name) / "account-31"),
+            identity_mode="native",
+            browser_backend="fingerprint_chromium",
+            fp_seed="environment-a",
+            proxy="http://proxy.fixture:8080",
+        )
+
+        class PageStub:
+            def __init__(self, url="about:blank"):
+                self.url = url
+                self.goto_kwargs = None
+
+            async def goto(self, url, **kwargs):
+                self.url = url
+                self.goto_kwargs = kwargs
+
+            async def bring_to_front(self):
+                return None
+
+            async def close(self):
+                return None
+
+        class ContextStub:
+            def __init__(self):
+                self.bootstrap = PageStub()
+                self.pages = [self.bootstrap]
+                self.created = []
+
+            async def new_page(self):
+                page = PageStub()
+                self.created.append(page)
+                self.pages.append(page)
+                return page
+
+        context = ContextStub()
+        initial = manager.environment_check_status(identity)
+        self.assertTrue(initial["enabled"])
+        self.assertTrue(initial["required"])
+        self.assertEqual(initial["reason"], "new_environment")
+
+        page = asyncio.run(manager.open_environment_check(
+            identity, context=context))
+
+        self.assertIs(page, context.created[0])
+        self.assertEqual(context.bootstrap.url, "about:blank")
+        self.assertEqual(page.url, "https://www.browserscan.net/zh")
+        self.assertEqual(page.goto_kwargs["wait_until"], "commit")
+        opened = manager.environment_check_status(identity)
+        self.assertFalse(opened["required"])
+        self.assertEqual(opened["reason"], "already_opened")
+        self.assertTrue(opened["last_opened_at"])
+
+        second = asyncio.run(manager.open_environment_check(
+            identity, context=context))
+        self.assertIsNone(second)
+        self.assertEqual(len(context.created), 1)
+
+        identity.fp_seed = "environment-b"
+        changed = manager.environment_check_status(identity)
+        self.assertTrue(changed["required"])
+        self.assertEqual(changed["reason"], "environment_changed")
+
+    def test_local_browser_environment_does_not_prompt_browserscan(self):
+        manager = BrowserManager("UA", self.tmp.name)
+        identity = Identity(
+            account_id=32,
+            profile_dir=str(Path(self.tmp.name) / "account-32"),
+            browser_backend="local",
+        )
+
+        status = manager.environment_check_status(identity)
+
+        self.assertFalse(status["enabled"])
+        self.assertFalse(status["required"])
+        self.assertEqual(status["reason"], "not_fingerprint_environment")
+
+    def test_native_ua_capture_does_not_relaunch_fresh_context(self):
+        manager = BrowserManager(
+            "UA", self.tmp.name,
+            browser_backend="fingerprint_chromium",
+            fingerprint_chromium_path=str(self.executable),
+        )
+        identity = Identity(
+            account_id=None,
+            profile_dir=str(Path(self.tmp.name) / "ua-capture-profile"),
+            platform="xhs",
+            identity_mode="native",
+            browser_backend="fingerprint_chromium",
+            ua="",
+        )
+        context = object()
+
+        async def launch(current, headless=True):
+            current.ua = "Mozilla/5.0 Chrome/148.0.0.0 Safari/537.36"
+            return context
+
+        manager._launch_persistent = AsyncMock(side_effect=launch)
+
+        async def scenario():
+            first = await manager.context_for(identity)
+            second = await manager.context_for(identity)
+            return first, second
+
+        first, second = asyncio.run(scenario())
+
+        self.assertIs(first, context)
+        self.assertIs(second, context)
+        self.assertEqual(manager._launch_persistent.await_count, 1)
 
 
 class AccountBrowserBackendApiTests(unittest.TestCase):
