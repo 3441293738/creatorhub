@@ -260,6 +260,10 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
         self.assertNotIn("timezone_id", kwargs)
         self.assertTrue(kwargs["no_viewport"])
         self.assertFalse(kwargs["headless"])
+        self.assertEqual(
+            kwargs["ignore_default_args"],
+            ["--disable-blink-features=AutomationControlled"],
+        )
         self.assertIn("--window-size=1280,800", kwargs["args"])
         self.assertEqual(kwargs["permissions"], ["geolocation"])
         self.assertIn("latitude", kwargs["geolocation"])

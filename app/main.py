@@ -117,7 +117,7 @@ _file_manager_lock = threading.Lock()
 _share_download_sem = asyncio.Semaphore(2)
 
 
-_ACTIVE_LOGIN_STATUSES = {"opening", "waiting", "persisted"}
+_ACTIVE_LOGIN_STATUSES = {"opening", "waiting", "verification", "persisted"}
 
 
 def _login_task_state(*, status: str, platform: str,
@@ -861,6 +861,24 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     ok, state_json, nickname = await interactive_xhs_creator_login(
                         browser, identity, **reauth_options)
                 else:
+                    async def _xhs_verification_status(url: str) -> None:
+                        verification = (
+                            "/website-login/captcha" in str(url).lower()
+                            or "error_code=300012" in str(url).lower()
+                        )
+                        login_tasks[task_id] = _login_task_state(
+                            status=("verification" if verification else "waiting"),
+                            platform=platform,
+                            creator=creator, account_id=account_id,
+                            hint=(("当前独立 Profile 收到小红书设备安全验证；"
+                                   "系统会等待初始化 Cookie 稳定后自动重试一次。"
+                                   "也可扫描验证二维码，或在同一窗口新标签手动打开"
+                                   "小红书；完成后会自动继续保存登录态")
+                                  if verification else
+                                  "设备验证页已解除，请在当前小红书页面完成登录"),
+                            environment=login_environment,
+                        )
+                    reauth_options["status_callback"] = _xhs_verification_status
                     ok, state_json, nickname = await interactive_xhs_login(
                         browser, identity, **reauth_options)
             elif platform == "kuaishou":

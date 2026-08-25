@@ -851,6 +851,13 @@ class BrowserManager:
             kwargs["chromium_sandbox"] = True
         if fingerprint_plan is not None:
             kwargs["executable_path"] = fingerprint_plan.executable_path
+            # Fingerprint Chromium provides its own native automation surface.
+            # Patchright's Chromium default would otherwise add this switch,
+            # expose an unsupported-command-line warning, and make the first
+            # site navigation differ from a normal user-opened window.
+            kwargs["ignore_default_args"] = [
+                "--disable-blink-features=AutomationControlled",
+            ]
         elif self._browser_channel:
             kwargs["channel"] = self._browser_channel
         # Engine-level fingerprint runtimes own the entire identity surface;

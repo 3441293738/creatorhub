@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -66,6 +67,8 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         context = AsyncMock()
         page = AsyncMock()
         manager.context_for.return_value = context
+        context.pages = [page]
+        context.on = MagicMock()
         context.cookies.side_effect = [[], []]
         page.url = "about:blank"
         page.is_closed = MagicMock(side_effect=[False, True])
@@ -88,21 +91,176 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         manager.visible_page = visible_page
         manager.xhs_interaction.pause = AsyncMock()
+        status_callback = AsyncMock()
 
         with self.assertRaisesRegex(
             XhsSecurityVerificationRequired,
             "小红书要求完成设备安全验证",
         ):
-            await interactive_xhs_login(manager, object())
+            await interactive_xhs_login(
+                manager, object(), status_callback=status_callback)
 
+        status_callback.assert_awaited_once()
         context.close.assert_not_awaited()
         page.close.assert_awaited_once()
+
+    async def test_login_accepts_authenticated_second_xhs_tab(self):
+        manager = AsyncMock()
+        context = AsyncMock()
+        captcha_page = AsyncMock()
+        healthy_page = AsyncMock()
+        manager.context_for.return_value = context
+        context.pages = [captcha_page, healthy_page]
+        context.on = MagicMock()
+        context.storage_state.return_value = {
+            "cookies": [{"name": "web_session", "value": "w" * 24}]
+        }
+        captcha_page.url = "about:blank"
+        captcha_page.is_closed = MagicMock(return_value=False)
+        captcha_page.on = MagicMock()
+        healthy_page.url = "https://www.xiaohongshu.com/explore"
+        response = self._user_me_response(
+            guest=False, user_id="manual-tab-user")
+
+        def healthy_on(event, listener):
+            if event == "response":
+                asyncio.get_running_loop().create_task(listener(response))
+
+        healthy_page.on = MagicMock(side_effect=healthy_on)
+
+        async def cookies():
+            # Let the response listener scheduled for the manually opened tab
+            # finish before the login state is evaluated.
+            await asyncio.sleep(0)
+            return [{"name": "web_session", "value": "w" * 24}]
+
+        context.cookies.side_effect = cookies
+
+        async def goto(_url, **_kwargs):
+            captcha_page.url = (
+                "https://www.xiaohongshu.com/website-login/captcha"
+                "?verifyType=124&verifyBiz=461"
+            )
+
+        captcha_page.goto.side_effect = goto
+
+        @asynccontextmanager
+        async def visible_page(_identity):
+            try:
+                yield captcha_page
+            finally:
+                await captcha_page.close()
+
+        manager.visible_page = visible_page
+        manager.xhs_interaction.pause = AsyncMock()
+
+        with patch(
+            "app.browser.login._read_xhs_nickname",
+            new_callable=AsyncMock,
+            return_value="",
+        ):
+            logged, state, nickname = await interactive_xhs_login(
+                manager, object(), timeout_seconds=2)
+
+        self.assertTrue(logged)
+        self.assertIn("web_session", state)
+        self.assertEqual(nickname, "")
+        healthy_page.on.assert_called()
+        captcha_page.close.assert_awaited_once()
+
+    async def test_security_page_gets_one_delayed_recovery_navigation(self):
+        manager = AsyncMock()
+        context = AsyncMock()
+        captcha_page = AsyncMock()
+        recovery_page = AsyncMock()
+        manager.context_for.return_value = context
+        context.pages = [captcha_page]
+        context.on = MagicMock()
+        context.new_page.return_value = recovery_page
+        context.storage_state.return_value = {
+            "cookies": [{"name": "web_session", "value": "r" * 24}]
+        }
+        context.cookies.return_value = [
+            {"name": "web_session", "value": "r" * 24}
+        ]
+        captcha_page.url = "about:blank"
+        captcha_page.is_closed = MagicMock(return_value=False)
+        captcha_page.on = MagicMock()
+        recovery_page.url = "about:blank"
+        response_listener = {}
+
+        def recovery_on(event, listener):
+            if event == "response":
+                response_listener["handler"] = listener
+
+        recovery_page.on = MagicMock(side_effect=recovery_on)
+
+        async def initial_goto(_url, **_kwargs):
+            captcha_page.url = (
+                "https://www.xiaohongshu.com/website-login/captcha"
+                "?verifyType=124&verifyBiz=461"
+            )
+
+        async def recovery_goto(url, **_kwargs):
+            recovery_page.url = "https://www.xiaohongshu.com/explore"
+            handler = response_listener.get("handler")
+            if handler is not None:
+                await handler(self._user_me_response(
+                    guest=False, user_id="recovered-user"))
+
+        captcha_page.goto.side_effect = initial_goto
+        recovery_page.goto.side_effect = recovery_goto
+
+        @asynccontextmanager
+        async def visible_page(_identity):
+            try:
+                yield captcha_page
+            finally:
+                await captcha_page.close()
+
+        manager.visible_page = visible_page
+        manager.xhs_interaction.pause = AsyncMock()
+        status_callback = AsyncMock()
+
+        with (
+            patch(
+                "app.browser.login._XHS_SECURITY_RETRY_DELAY_SECONDS", 0,
+            ),
+            patch(
+                "app.browser.login._read_xhs_nickname",
+                new_callable=AsyncMock,
+                return_value="",
+            ),
+        ):
+            logged, state, nickname = await interactive_xhs_login(
+                manager, object(), timeout_seconds=2,
+                status_callback=status_callback)
+
+        self.assertTrue(logged)
+        self.assertIn("web_session", state)
+        self.assertEqual(nickname, "")
+        context.new_page.assert_awaited_once()
+        recovery_page.goto.assert_awaited_once_with(
+            "https://www.xiaohongshu.com/",
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+        recovery_page.bring_to_front.assert_awaited_once()
+        self.assertEqual(status_callback.await_count, 2)
+        self.assertIn("website-login/captcha",
+                      status_callback.await_args_list[0].args[0])
+        self.assertEqual(
+            status_callback.await_args_list[1].args[0],
+            "https://www.xiaohongshu.com/explore",
+        )
 
     async def test_web_login_starts_from_homepage_and_skips_creator_platform(self):
         manager = AsyncMock()
         context = AsyncMock()
         page = AsyncMock()
         manager.context_for.return_value = context
+        context.pages = [page]
+        context.on = MagicMock()
         context.cookies.side_effect = [
             [],
             [{"name": "web_session", "value": "w" * 24}],
@@ -162,6 +320,8 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         context = AsyncMock()
         page = AsyncMock()
         manager.context_for.return_value = context
+        context.pages = [page]
+        context.on = MagicMock()
         context.cookies.side_effect = [
             [{"name": "web_session", "value": "guest-session-before-0001"}],
             [{"name": "web_session", "value": "guest-session-after-00002"}],

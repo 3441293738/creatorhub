@@ -417,7 +417,7 @@ class IdentityModeTests(unittest.TestCase):
             async def close_context(self, _key):
                 return None
 
-        async def expired_login(_browser, _identity):
+        async def expired_login(_browser, _identity, **_kwargs):
             return False, "", ""
 
         task_id = "environment-diagnostic"
@@ -464,7 +464,7 @@ class IdentityModeTests(unittest.TestCase):
         browser = BrowserStub()
         captured = {}
 
-        async def logged_in(_browser, identity):
+        async def logged_in(_browser, identity, **_kwargs):
             captured["key"] = identity.key
             captured["browser_backend"] = identity.browser_backend
             return True, '{"cookies":[{"name":"a1","value":"fixture"}]}', "fixture"

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
 from typing import Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
@@ -155,6 +156,7 @@ async def _xhs_web_session(ctx) -> str:
 
 
 _XHS_USER_ME_API = "/api/sns/web/v2/user/me"
+_XHS_SECURITY_RETRY_DELAY_SECONDS = 12.0
 
 
 def _xhs_login_response_handler(authenticated_user: dict):
@@ -184,6 +186,7 @@ def _xhs_login_response_handler(authenticated_user: dict):
 async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
                                 timeout_seconds: int = 180,
                                 force_reauth: bool = False,
+                                status_callback=None,
                                 ) -> Tuple[bool, str, str]:
     """小红书扫码登录。打开真实窗口让用户扫码,落地登录态。
     返回 (是否成功, storage_state_json, nickname)。
@@ -200,28 +203,140 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
     security_verification_seen = False
     authenticated_user: dict = {}
     on_response = _xhs_login_response_handler(authenticated_user)
+    observed_pages: set[int] = set()
+
+    def observe(candidate) -> None:
+        marker = id(candidate)
+        if marker in observed_pages:
+            return
+        observed_pages.add(marker)
+        try:
+            candidate.on("response", on_response)
+        except Exception:
+            pass
+
+    def context_pages(fallback) -> list:
+        pages = getattr(ctx, "pages", ())
+        if not isinstance(pages, (list, tuple)):
+            pages = ()
+        result = [candidate for candidate in pages if candidate is not None]
+        if fallback is not None and fallback not in result:
+            result.append(fallback)
+        return result
+
+    def usable_page(fallback):
+        # A user may open the homepage manually in a second tab after the first
+        # clean-Profile navigation receives device verification.  Follow that
+        # real tab instead of keeping the login task pinned to the captcha tab.
+        for candidate in reversed(context_pages(fallback)):
+            try:
+                current = str(candidate.url or "")
+                parsed = urlparse(current)
+                host = (parsed.hostname or "").lower()
+                if host != "xiaohongshu.com" and not host.endswith(
+                        ".xiaohongshu.com"):
+                    continue
+                if _is_xhs_security_verification_url(current):
+                    continue
+                if "passport" in current.lower():
+                    continue
+                return candidate
+            except Exception:
+                continue
+        return fallback
+
+    async def report_status(url: str) -> None:
+        if not callable(status_callback):
+            return
+        try:
+            result = status_callback(url)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:
+            pass
+
+    security_notified = False
+    security_cleared_notified = False
+    security_detected_at: float | None = None
+    recovery_attempted = False
     async with mgr.visible_page(identity) as page:
         await _focus(page)
-        page.on("response", on_response)
+        observe(page)
+        context_on = getattr(ctx, "on", None)
+        if callable(context_on):
+            try:
+                context_on("page", observe)
+            except Exception:
+                pass
         # 从官网首页进入登录流程。直接访问 /explore 会让全新隔离 profile
         # 更容易被重定向到 website-login/captcha 的设备安全验证页。
         await page.goto(
             "https://www.xiaohongshu.com/",
             wait_until="domcontentloaded", timeout=30000)
         security_verification_seen = _is_xhs_security_verification_url(page.url)
-        deadline = asyncio.get_running_loop().time() + max(0, timeout_seconds)
-        while asyncio.get_running_loop().time() < deadline:
+        loop = asyncio.get_running_loop()
+        if security_verification_seen:
+            security_detected_at = loop.time()
+        deadline = loop.time() + max(0, timeout_seconds)
+        while loop.time() < deadline:
             if page.is_closed():                  # 没登录就关了窗口 -> 视为未登录
                 break
+            for candidate in context_pages(page):
+                observe(candidate)
             security_verification_seen = (
                 security_verification_seen
                 or _is_xhs_security_verification_url(page.url)
             )
+            if security_verification_seen and security_detected_at is None:
+                security_detected_at = loop.time()
+            if security_verification_seen and not security_notified:
+                security_notified = True
+                await report_status(str(page.url or ""))
+            active_page = usable_page(page)
+            active_url = str(getattr(active_page, "url", "") or "")
+            # A clean profile can receive a short-lived device check on its
+            # very first navigation while the same profile reaches /explore
+            # normally a few seconds later.  Keep the verification QR intact,
+            # then make one bounded retry in a second tab after its bootstrap
+            # cookies have settled.  Never loop retries and never replace a
+            # healthy tab the user has already opened manually.
+            if (security_verification_seen and not recovery_attempted
+                    and security_detected_at is not None
+                    and loop.time() - security_detected_at
+                    >= _XHS_SECURITY_RETRY_DELAY_SECONDS
+                    and _is_xhs_security_verification_url(active_url)):
+                recovery_attempted = True
+                recovery_page = None
+                try:
+                    recovery_page = await ctx.new_page()
+                    observe(recovery_page)
+                    await recovery_page.goto(
+                        "https://www.xiaohongshu.com/",
+                        wait_until="domcontentloaded", timeout=30000)
+                    recovery_url = str(recovery_page.url or "")
+                    if not _is_xhs_security_verification_url(recovery_url):
+                        active_page = recovery_page
+                        active_url = recovery_url
+                        with suppress(Exception):
+                            await recovery_page.bring_to_front()
+                    else:
+                        with suppress(Exception):
+                            await recovery_page.close()
+                except Exception:
+                    if recovery_page is not None:
+                        with suppress(Exception):
+                            await recovery_page.close()
+            if (security_notified and not security_cleared_notified
+                    and not _is_xhs_security_verification_url(active_url)
+                    and "xiaohongshu.com" in active_url.lower()
+                    and "passport" not in active_url.lower()):
+                security_cleared_notified = True
+                await report_status(active_url)
             ws = await _xhs_web_session(ctx)
             # Cookie 只作必要条件；user/me 的非游客身份才是授权完成证据。
             if (ws and len(ws) >= 20 and authenticated_user
-                    and "passport" not in page.url
-                    and not _is_xhs_security_verification_url(page.url)):
+                    and "passport" not in active_url
+                    and not _is_xhs_security_verification_url(active_url)):
                 try:
                     state_json = json.dumps(await ctx.storage_state())
                     logged = True
@@ -232,7 +347,7 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
                         authenticated_user.get("nickname") or "").strip()[:40]
                     if not nickname:
                         try:
-                            nickname = await _read_xhs_nickname(page)
+                            nickname = await _read_xhs_nickname(active_page)
                         except Exception:
                             pass
                     # 普通登录只保存主站读取态。创作平台是独立登录入口，避免在

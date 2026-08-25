@@ -1188,7 +1188,9 @@ function pollLogin(tid) {
       if (["opening", "waiting"].includes(res.status) && envText) {
         $("qrstatus").innerHTML = `${ic("i-eye")} 浏览器已打开 · <b>${esc(envText)}</b><br>请在可见窗口完成登录。`;
       }
-      if (res.status === "persisted") {
+      if (res.status === "verification") {
+        $("qrstatus").innerHTML = `${ic("i-info")} <b>需要完成一次设备安全验证</b><br>${esc(res.hint || "请扫描浏览器中的验证二维码，验证通过后会自动继续登录。")}`;
+      } else if (res.status === "persisted") {
         $("qrstatus").textContent = "扫码已确认，正在校验登录态并同步账号资料…";
         if (!accountShown) {
           accountShown = true;
