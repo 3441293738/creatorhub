@@ -42,6 +42,10 @@ class _Page:
         self.front_calls = 0
         self.goto_calls = []
         self.closed = False
+        self.url = "about:blank"
+
+    def is_closed(self):
+        return self.closed
 
     async def bring_to_front(self):
         self.front_calls += 1
@@ -372,6 +376,46 @@ class XhsInteractionTests(unittest.TestCase):
                 self.assertEqual(page.front_calls, 1)
                 self.assertEqual(page.goto_calls[0][0],
                                  "https://www.xiaohongshu.com/")
+
+        asyncio.run(scenario())
+
+    def test_visible_page_reuses_fingerprint_chromium_startup_tab(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                manager = BrowserManager("UA", tmp)
+                startup_page = _Page()
+
+                class Context:
+                    pages = [startup_page]
+                    new_page = AsyncMock(side_effect=AssertionError(
+                        "不应新建自动化标签页"))
+
+                context = Context()
+                manager.context_for = AsyncMock(return_value=context)
+                manager.close_context = AsyncMock()
+                identity = Identity(
+                    account_id=19,
+                    profile_dir=str(Path(tmp) / "account-19"),
+                    identity_mode="native",
+                    browser_backend="fingerprint_chromium",
+                    platform="xhs",
+                )
+
+                with patch(
+                        "app.browser.manager.bring_window_to_front",
+                        return_value=True):
+                    async with manager.visible_page(
+                            identity,
+                            url="https://www.xiaohongshu.com/") as leased:
+                        self.assertIs(leased, startup_page)
+
+                context.new_page.assert_not_awaited()
+                self.assertTrue(startup_page.closed)
+                self.assertEqual(
+                    startup_page.goto_calls[0][0],
+                    "https://www.xiaohongshu.com/",
+                )
+                manager.close_context.assert_awaited_once_with(identity.key)
 
         asyncio.run(scenario())
 

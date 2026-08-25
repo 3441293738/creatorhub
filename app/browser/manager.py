@@ -1176,6 +1176,30 @@ class BrowserManager:
             await page.route("**/*", _route)
         return page
 
+    async def _visible_task_page(self, identity: Identity):
+        """Reuse Chromium's initial blank tab before creating a CDP page.
+
+        Fingerprint Chromium treats the first navigation of its native startup
+        tab differently from a tab created immediately through ``new_page``.
+        Xiaohongshu can redirect that newly-created automation tab to device
+        verification while the startup tab reaches the homepage normally.
+        Reusing only an untouched ``about:blank`` tab also avoids taking over a
+        page that the user already opened manually.
+        """
+        ctx = await self.context_for(identity)
+        for candidate in list(getattr(ctx, "pages", ()) or ()):
+            try:
+                if candidate.url != "about:blank" or candidate.is_closed():
+                    continue
+            except Exception:
+                continue
+            session = self._cdp_sessions.get(identity.key)
+            controller = getattr(session, "auth_controller", None)
+            if controller is not None:
+                await controller.install(candidate)
+            return candidate
+        return await self.new_page(identity, block_media=False)
+
     @asynccontextmanager
     async def visible_action(self, identity: Identity, *, keep_context: bool = False):
         """Serialize visible XHS work and close one-shot browser contexts.
@@ -1208,7 +1232,7 @@ class BrowserManager:
             snapshot = capture_window_snapshot(CHROMIUM_WINDOW_CLASSES)
             page = None
             try:
-                page = await self.new_page(identity, block_media=False)
+                page = await self._visible_task_page(identity)
                 if url:
                     await page.goto(
                         url, wait_until="domcontentloaded", timeout=30_000)
