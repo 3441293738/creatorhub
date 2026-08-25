@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -672,6 +673,58 @@ class BrowserManager:
         plan = try_proxy_plan(proxy)
         return plan.signature if plan else "direct"
 
+    @classmethod
+    def _context_signature(
+            cls, identity: Identity, effective_backend: str,
+            runtime_id: str, proxy_signature: str) -> str:
+        """Hash every setting that defines an account browser environment.
+
+        The in-memory context cache is keyed by the database account id for
+        compatibility with account locks.  SQLite can reuse that id after an
+        account is deleted, so the id alone is not an isolation boundary.  A
+        changed Profile path or fingerprint must force the stale context out.
+        """
+        profile_dir = (
+            cls._runtime_profile_dir(identity, runtime_id)
+            if effective_backend == FINGERPRINT_CHROMIUM_BACKEND
+            else Path(identity.profile_dir)
+        )
+        payload = {
+            "profile_dir": os.path.normcase(str(
+                profile_dir.expanduser().resolve())),
+            "backend": effective_backend,
+            "runtime_id": runtime_id,
+            "proxy": proxy_signature,
+            "identity_mode": identity.identity_mode,
+            "ua": identity.ua,
+            "viewport": [identity.viewport_w, identity.viewport_h],
+            "timezone_id": identity.timezone_id,
+            "locale": identity.locale,
+            "fp_seed": identity.fp_seed,
+            "fp_platform": identity.fp_platform,
+            "fp_platform_version": identity.fp_platform_version,
+            "fp_brand": identity.fp_brand,
+            "fp_brand_version": identity.fp_brand_version,
+            "fp_hardware_concurrency": identity.fp_hardware_concurrency,
+            "fp_gpu_vendor": identity.fp_gpu_vendor,
+            "fp_gpu_renderer": identity.fp_gpu_renderer,
+            "fp_accept_languages": identity.fp_accept_languages,
+            "fp_disable_spoofing": identity.fp_disable_spoofing,
+            "fp_language_mode": identity.fp_language_mode,
+            "fp_timezone_mode": identity.fp_timezone_mode,
+            "fp_viewport_mode": identity.fp_viewport_mode,
+            "fp_location_mode": identity.fp_location_mode,
+            "fp_geolocation_permission": identity.fp_geolocation_permission,
+            "fp_webrtc_mode": identity.fp_webrtc_mode,
+            "fp_extra_args": identity.fp_extra_args,
+            "geo": [identity.geo_lat, identity.geo_lon],
+        }
+        raw = json.dumps(
+            payload, ensure_ascii=True, sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
     def _acquire_profile_lock(
             self, identity: Identity, profile_dir: Path | None = None) -> None:
         if identity.key in self._profile_process_locks:
@@ -923,7 +976,8 @@ class BrowserManager:
                     if identity.platform == "xhs"
                     else try_proxy_plan(identity.proxy))
             proxy_signature = plan.signature if plan else "direct"
-            signature = f"{effective_backend}:{runtime_id}:{proxy_signature}"
+            signature = self._context_signature(
+                identity, effective_backend, runtime_id, proxy_signature)
             ctx = self._contexts.get(key)
             session = self._cdp_sessions.get(key)
             if ctx is not None and (

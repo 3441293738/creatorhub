@@ -267,6 +267,72 @@ class IdentityModeTests(unittest.TestCase):
         self.assertEqual(account.ua, "")
         self.assertTrue(account.fp_seed)
 
+    def test_profile_allocation_does_not_reuse_database_account_id(self):
+        first = DouyinAccount(id=1, nickname="first", identity_mode="native")
+        replacement = DouyinAccount(
+            id=1, nickname="replacement", identity_mode="native")
+
+        ensure_identity(first, self.cfg, assign_proxy=False)
+        ensure_identity(replacement, self.cfg, assign_proxy=False)
+
+        self.assertNotEqual(first.profile_dir, replacement.profile_dir)
+        self.assertTrue(Path(first.profile_dir).name.startswith("account_"))
+        self.assertTrue(Path(replacement.profile_dir).name.startswith("account_"))
+
+    def test_context_signature_includes_profile_and_fingerprint(self):
+        manager = BrowserManager("DEFAULT_UA", self.cfg.engine.profiles_dir)
+        first = Identity(
+            account_id=1,
+            profile_dir=str(Path(self.tmp.name) / "profile-first"),
+            identity_mode="native",
+            fp_seed="first-seed",
+        )
+        replacement = Identity(
+            account_id=1,
+            profile_dir=str(Path(self.tmp.name) / "profile-replacement"),
+            identity_mode="native",
+            fp_seed="replacement-seed",
+        )
+
+        first_signature = manager._context_signature(
+            first, "patchright", "", "direct")
+        replacement_signature = manager._context_signature(
+            replacement, "patchright", "", "direct")
+
+        self.assertNotEqual(first_signature, replacement_signature)
+
+    def test_delete_account_closes_leases_and_removes_only_its_profile(self):
+        profile = Path(self.cfg.engine.profiles_dir) / "account_delete_fixture"
+        profile.mkdir(parents=True)
+        (profile / "Cookies").write_text("fixture", encoding="utf-8")
+        with db.get_session() as session:
+            account = DouyinAccount(
+                nickname="delete", profile_dir=str(profile),
+                identity_mode="native")
+            session.add(account)
+            session.commit()
+            session.refresh(account)
+            account_id = account.id
+
+        lease = SimpleNamespace(close=AsyncMock())
+        manager = SimpleNamespace(close_context=AsyncMock())
+        previous_cfg, previous_browser = main.cfg, main.browser
+        main.cfg, main.browser = self.cfg, manager
+        main.open_browsers[account_id] = lease
+        try:
+            result = asyncio.run(main.del_account(account_id))
+        finally:
+            main.cfg, main.browser = previous_cfg, previous_browser
+            main.open_browsers.pop(account_id, None)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["profile_removed"])
+        self.assertFalse(profile.exists())
+        lease.close.assert_awaited_once()
+        manager.close_context.assert_awaited_once_with(account_id)
+        with db.get_session() as session:
+            self.assertIsNone(session.get(DouyinAccount, account_id))
+
     def test_cookie_login_creates_native_account(self):
         previous_cfg = main.cfg
         main.cfg = self.cfg

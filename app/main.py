@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -88,7 +90,8 @@ from .models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
                       KeywordCollectionJob, KeywordCollectionContent,
                       KeywordCollectionComment)
 from .notifier import CHANNEL_TYPES, send_one
-from .profiles import (ensure_identity, migrate_identities, assign_proxy_from_pool,
+from .profiles import (allocate_profile_dir, ensure_identity, migrate_identities,
+                       assign_proxy_from_pool,
                        release_proxy_reservation, reserve_proxy_from_pool,
                        seed_proxy_pool)
 from .risk import (OperationKind, RiskCategory, RiskController,
@@ -787,7 +790,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
         else:
             acc_id = None
             new_fields = generate_identity_fields()
-            tmp_profile = os.path.join(cfg.engine.profiles_dir, "new_" + uuid.uuid4().hex)
+            tmp_profile = allocate_profile_dir(cfg.engine.profiles_dir)
             # 登录前选定代理:具体地址 / auto(占用最少) / 空(不用代理)
             choice = (proxy_choice or "").strip()
             if choice.lower() in ("", "none"):
@@ -1195,12 +1198,23 @@ async def login_cookie(body: CookieIn):
 async def list_accounts(platform: str | None = None):
     risk_controller = engine.risk if engine else RiskController(cfg)
     with get_session() as s:
+        all_accounts = s.exec(select(DouyinAccount)).all()
+        profile_keys: dict[int, str] = {}
+        profile_counts: dict[str, int] = {}
+        for account in all_accounts:
+            if not account.id or not account.profile_dir:
+                continue
+            normalized = os.path.normcase(str(
+                Path(account.profile_dir).expanduser().resolve()))
+            profile_keys[account.id] = normalized
+            profile_counts[normalized] = profile_counts.get(normalized, 0) + 1
         q = select(DouyinAccount)
         if platform:
             q = q.where(DouyinAccount.platform == platform)
         accs = s.exec(q).all()
         out = []
         for a in accs:
+            profile_key = profile_keys.get(a.id or 0, "")
             risk_state = s.get(AccountRiskState, a.id) if a.id else None
             next_write_at = risk_controller.next_write_at(a.id) if a.id else None
             used = len(s.exec(select(MonitorTarget.id)
@@ -1266,6 +1280,11 @@ async def list_accounts(platform: str | None = None):
                                   if next_write_at else None),
                 "ua": a.ua,
                 "profile_dir": a.profile_dir,
+                "profile_isolated": bool(
+                    profile_key and profile_counts.get(profile_key) == 1),
+                "profile_isolation_id": (
+                    hashlib.sha256(profile_key.encode("utf-8")).hexdigest()[:10]
+                    if profile_key else ""),
                 "environment": environment,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
             })
@@ -1983,8 +2002,6 @@ def _runtime_account_ids(session, runtime_id: str, *, followers: bool = False) -
 
 
 async def _close_runtime_accounts(account_ids: list[int]) -> None:
-    if browser is None:
-        return
     for account_id in set(account_ids):
         lease = open_browsers.pop(account_id, None)
         if lease is not None:
@@ -1992,10 +2009,11 @@ async def _close_runtime_accounts(account_ids: list[int]) -> None:
                 await lease.close()
             except Exception:
                 pass
-        try:
-            await browser.close_context(account_id)
-        except Exception:
-            pass
+        if browser is not None:
+            try:
+                await browser.close_context(account_id)
+            except Exception:
+                pass
 
 
 class BrowserRuntimeAddIn(BaseModel):
@@ -2622,12 +2640,19 @@ def _mask_proxy(proxy: str) -> str:
 
 @app.delete("/api/accounts/{account_id}")
 async def del_account(account_id: int):
-    import shutil
     pdir = ""
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if acc:
             pdir = acc.profile_dir or ""
+
+    # 先关闭所有手动窗口、后台 context 和 Profile 文件锁，再删除数据库记录。
+    # 账号 id 可能被 SQLite 复用，因此不能把旧 context 留给后续新账号。
+    await _close_runtime_accounts([account_id])
+
+    with get_session() as s:
+        acc = s.get(DouyinAccount, account_id)
+        if acc:
             risk_state = s.get(AccountRiskState, account_id)
             if risk_state:
                 s.delete(risk_state)
@@ -2637,16 +2662,30 @@ async def del_account(account_id: int):
             s.delete(acc)
             s.commit()
     # 删号同时清理其持久 profile(释放磁盘);代理回到池里(占用计数自然下降)
+    profile_removed = False
+    profile_cleanup_error = ""
     if pdir:
+        root = Path(cfg.engine.profiles_dir).expanduser().resolve()
+        candidate = Path(pdir).expanduser().resolve()
         try:
-            await browser.close_context(account_id)
-        except Exception:
-            pass
-        try:
-            shutil.rmtree(pdir, ignore_errors=True)
-        except Exception:
-            pass
-    return {"ok": True}
+            candidate.relative_to(root)
+            managed = candidate != root
+        except ValueError:
+            managed = False
+        if managed:
+            try:
+                if candidate.exists():
+                    shutil.rmtree(candidate)
+                profile_removed = True
+            except OSError as exc:
+                profile_cleanup_error = str(exc)[:240]
+        else:
+            profile_cleanup_error = "Profile 不在受管目录内，已跳过磁盘清理"
+    return {
+        "ok": True,
+        "profile_removed": profile_removed,
+        "profile_cleanup_error": profile_cleanup_error,
+    }
 
 
 @app.post("/api/accounts/{account_id}/refresh-profile")

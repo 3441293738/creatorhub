@@ -1723,6 +1723,9 @@ async function refreshAccounts() {
     const fingerprintLine = a.fingerprint_ip
       ? `<div class="mut" style="font-size:11px;margin-top:2px">指纹 ${esc(a.fingerprint_id || "-")} · IP ${esc(a.fingerprint_ip)} · ${esc(fingerprintPlace || a.fingerprint_timezone || "未知地区")}${a.exit_ip && !a.fingerprint_ip_matches_exit ? ' <span class="pill invalid">与当前出口不一致</span>' : ""}</div>`
       : `<div class="mut" style="font-size:11px;margin-top:2px">指纹尚未按出口 IP 生成</div>`;
+    const isolationLine = a.profile_isolated
+      ? `<div class="mut" style="font-size:11px;margin-top:2px">环境隔离 <span class="pill active">独立 Profile ${esc(a.profile_isolation_id || "")}</span></div>`
+      : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--danger)">${ic("i-info")}环境隔离异常：Profile 与其他账号重复或尚未分配</div>`;
     const reloginButton = isXhs && !a.has_read_login
       ? `<button class="sm" style="background:var(--warn);border-color:transparent;color:#1a1a1a" onclick="relogin(${a.id},'read')">补读取登录</button>`
       : (a.status === "invalid"
@@ -1743,6 +1746,7 @@ async function refreshAccounts() {
             ${proxyLine}
             ${browserLine}
             ${fingerprintLine}
+            ${isolationLine}
           </div>
         </div>
       </td>

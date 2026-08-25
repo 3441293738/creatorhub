@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import threading
+import uuid
 from pathlib import Path
 
 from sqlmodel import select
@@ -19,6 +20,21 @@ from .models import DouyinAccount, ProxyPool
 
 _proxy_reservation_lock = threading.RLock()
 _proxy_reservations: dict[str, str] = {}
+
+
+def allocate_profile_dir(profiles_root: str, prefix: str = "account") -> str:
+    """Allocate a never-reused browser profile path.
+
+    SQLite may reuse a deleted integer primary key.  Profile directories must
+    therefore not be derived from ``account.id``; otherwise a newly added
+    account can inherit cookies/cache left by the deleted account when an old
+    directory could not be removed immediately on Windows.
+    """
+    root = Path(profiles_root)
+    while True:
+        candidate = root / f"{prefix}_{uuid.uuid4().hex}"
+        if not candidate.exists():
+            return str(candidate)
 
 
 def _pool_urls(session, cfg) -> list:
@@ -114,7 +130,7 @@ def ensure_identity(acc: DouyinAccount, cfg, session=None, assign_proxy: bool = 
     if not acc.fp_seed:                       # 兜底(理论不会到这)
         acc.fp_seed = seed_from_id(acc.id); changed = True
     if not acc.profile_dir and acc.id is not None:
-        acc.profile_dir = str(Path(cfg.engine.profiles_dir) / f"acc_{acc.id}")
+        acc.profile_dir = allocate_profile_dir(cfg.engine.profiles_dir)
         changed = True
     if assign_proxy and not acc.proxy and session is not None:
         p = assign_proxy_from_pool(session, cfg)
