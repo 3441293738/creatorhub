@@ -51,6 +51,7 @@ class ChromeLocatorTests(unittest.TestCase):
         self.assertNotIn("--no-sandbox", args)
         self.assertFalse(any("AutomationControlled" in arg for arg in args))
         self.assertIn("--proxy-server=http://127.0.0.1:8080", args)
+        self.assertIn("--start-minimized", args)
 
     def test_zero_debugging_port_is_rejected_before_launch(self):
         with self.assertRaisesRegex(ValueError, "非零"):

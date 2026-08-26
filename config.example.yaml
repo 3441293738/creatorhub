@@ -16,6 +16,14 @@ engine:
   xhs_item_gap_seconds: 2.5       # 相邻详情/评论读取的最小停顿
   xhs_request_jitter: 0.35        # 小红书读取停顿的正向随机抖动比例
   xhs_publish_mode: browser       # browser=页面发布;api=显式 API 兼容模式
+  xhs_dm_monitor_enabled: false   # 低频检查 Web 私信；首次只建立基线
+  xhs_dm_poll_interval_seconds: 120
+  xhs_dm_realtime_enabled: true   # 监听页面原生 WebSocket；推送只用于唤醒
+  xhs_dm_realtime_debounce_seconds: 1.5
+  xhs_dm_fallback_interval_seconds: 600
+  xhs_dm_max_conversations_per_poll: 2
+  xhs_dm_poll_jitter: 0.35
+  xhs_dm_auto_reply_enabled: false # 开启后仍需创建并启用账号规则
   monitor_initial_backfill_count: 0  # 新增博主时回填最近 N 条;0=只下载订阅后的新作品,-1=尽可能全量
   comment_recent_works: 5         # 监控评论时,只看每个目标最近 N 条作品
   comment_recent_days: 7          # 且仅限最近多少天内发布的作品

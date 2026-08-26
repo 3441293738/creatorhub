@@ -226,9 +226,15 @@ async def _xhs_reading_pause(
 
 def _visible_page_scope(
         mgr: BrowserManager, identity: Identity, keep_context: bool):
+    kwargs = {"foreground": False}
     if keep_context:
-        return mgr.visible_page(identity, keep_context=True)
-    return mgr.visible_page(identity)
+        kwargs["keep_context"] = True
+    try:
+        return mgr.visible_page(identity, **kwargs)
+    except TypeError:  # compatibility with compact manager stubs in integrations
+        if keep_context:
+            return mgr.visible_page(identity, keep_context=True)
+        return mgr.visible_page(identity)
 
 
 async def _xhs_page_failure(page) -> str:
@@ -548,7 +554,7 @@ async def fetch_xhs_comments(mgr: BrowserManager, identity: Identity, note_id: s
                     collected[cid] = c
 
     try:
-        async with mgr.visible_page(identity) as page:
+        async with _visible_page_scope(mgr, identity, False) as page:
             page.on("response", on_response)
             responses = _ResponseInbox(
                 page, lambda r: COMMENT_API in r.url and r.status == 200)
@@ -645,7 +651,7 @@ async def fetch_creator_published(mgr: BrowserManager, identity: Identity,
                     break
 
     try:
-        async with mgr.visible_page(identity) as page:
+        async with _visible_page_scope(mgr, identity, False) as page:
             page.on("response", on_response)
             responses = _ResponseInbox(
                 page,
@@ -716,7 +722,7 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
     has_login_btn = None
     page_failure = ""
     try:
-        async with mgr.visible_page(identity) as page:
+        async with _visible_page_scope(mgr, identity, False) as page:
             page.on("response", on_response)
             # user/me 常在 DOMContentLoaded 前返回，导航前先挂同步事件队列。
             responses = _ResponseInbox(

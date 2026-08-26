@@ -64,6 +64,7 @@ from ..risk import (
 from ..settings import get_setting
 from .downloader import Downloader
 from .collection import KeywordCollector
+from .dm_automation import XhsDmAutomation
 
 MAX_AUTO_RETRY = 3
 _BROWSER_SUBMIT_MARKER = "write_submitted:browser"
@@ -236,6 +237,10 @@ class MonitorEngine:
             cfg.engine.download_timeout_seconds,
         )
         self.keyword_collector = KeywordCollector(cfg, browser, self.downloader)
+        self.dm_automation = XhsDmAutomation(cfg, browser)
+        self.dm_automation.set_wake_callback(self._on_xhs_dm_wake)
+        self._dm_poll_locks: dict[int, asyncio.Lock] = {}
+        self._dm_event_sink = None
         self._sem = asyncio.Semaphore(cfg.engine.worker_pool_size)
         # 限制并发抓取的目标数(多个浏览器上下文并行,但不无限开)
         self._scan_sem = asyncio.Semaphore(max(1, cfg.engine.scan_concurrency))
@@ -368,6 +373,19 @@ class MonitorEngine:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._collection_tasks.clear()
+        await self.dm_automation.stop()
+
+    def set_dm_event_sink(self, sink) -> None:
+        self._dm_event_sink = sink
+
+    def _publish_dm_events(self, result: dict) -> None:
+        if not callable(self._dm_event_sink):
+            return
+        for event in result.get("events") or []:
+            try:
+                self._dm_event_sink(int(event.get("account_id") or 0), event)
+            except Exception:
+                log.exception("publish XHS DM event failed")
 
     # ── 账号隔离调度 ──
     @staticmethod
@@ -477,6 +495,31 @@ class MonitorEngine:
                 self.risk.record_failure(account_id, kind, exc)
             return empty_result, repr(exc)
         return payload, error
+
+    async def guarded_interactive_read_pair(
+            self, account_id, kind: OperationKind, fallback_key: str,
+            operation, *, empty_result):
+        """Serialize an explicit UI read without inserting a gap between
+        naturally adjacent page steps (for example: open chat list, then click
+        one conversation). Automatic/background reads continue to use the
+        stricter ``guarded_read_pair`` scheduler.
+        """
+        try:
+            async with self._operation_guard(
+                    account_id, kind, fallback_key=fallback_key):
+                payload, error = await operation()
+                if account_id:
+                    if not error or error == "empty":
+                        self.risk.record_success(account_id, kind)
+                    else:
+                        self.risk.record_failure(account_id, kind, error)
+                if isinstance(error, BaseException):
+                    error = str(error)
+                return payload, error
+        except Exception as exc:
+            if account_id:
+                self.risk.record_failure(account_id, kind, exc)
+            return empty_result, repr(exc)
 
     def _identity_proxy(self, acc):
         """由账号行构建 (Identity, proxy)。acc 为空则匿名画像。"""
@@ -643,6 +686,7 @@ class MonitorEngine:
                 await self._process_risk_recovery()
                 await self._check_accounts()
                 await self._check_work_health()
+                await self._process_xhs_dm_automation()
                 await self._process_publish()
                 await self._process_comment_rules()
                 await self._process_comment_tasks()
@@ -651,6 +695,85 @@ class MonitorEngine:
             except Exception as e:
                 log.exception("scan loop error: %s", e)
             await asyncio.sleep(15)
+
+    async def poll_xhs_dm_now(self, account_id: int, *, trigger: str = "manual") -> dict:
+        with get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            if not account or account.platform != "xhs":
+                return {"ok": False, "error": "小红书账号不存在"}
+
+        lock = self._dm_poll_locks.setdefault(account_id, asyncio.Lock())
+        async with lock:
+            async def operation():
+                result = await self.dm_automation.poll(account, trigger=trigger)
+                return result, str(result.get("error") or "")
+
+            if trigger in {"push", "reconnect"}:
+                # A native push is passive and justifies exactly one compact
+                # frontier fetch. Do not apply the periodic heavy-read gap or a
+                # real message could wait a minute before appearing.
+                try:
+                    async with self._operation_guard(
+                            account_id, OperationKind.READ_LIGHT,
+                            fallback_key=f"xhs-dm-{trigger}:{account_id}"):
+                        result, error = await operation()
+                    if error:
+                        self.risk.record_failure(
+                            account_id, OperationKind.READ_LIGHT, error)
+                    else:
+                        self.risk.record_success(
+                            account_id, OperationKind.READ_LIGHT)
+                except Exception as exc:
+                    self.risk.record_failure(
+                        account_id, OperationKind.READ_LIGHT, exc)
+                    result, error = {}, repr(exc)
+            else:
+                result, error = await self.guarded_read_pair(
+                    account_id, OperationKind.READ_HEAVY, f"xhs-dm:{account_id}",
+                    operation, empty_result={})
+        if trigger != "push":
+            self.dm_automation.postpone(account_id)
+        if error.startswith("risk_deferred:"):
+            return {"ok": True, "skipped": True,
+                    "reason": error.split(":", 1)[-1]}
+        if error and not result:
+            return {"ok": False, "error": error}
+        self._publish_dm_events(result)
+        return result
+
+    async def _on_xhs_dm_wake(self, account_id: int, reason: str) -> None:
+        result = await self.poll_xhs_dm_now(account_id, trigger=reason)
+        if not result.get("ok"):
+            log.warning("XHS DM %s wake failed for account %s: %s",
+                        reason, account_id, result.get("error"))
+
+    async def _process_xhs_dm_automation(self) -> None:
+        enabled = bool(self.cfg.engine.xhs_dm_monitor_enabled
+                       or self.cfg.engine.xhs_dm_auto_reply_enabled)
+        if not enabled:
+            return
+        with get_session() as session:
+            accounts = session.exec(select(DouyinAccount).where(
+                DouyinAccount.platform == "xhs",
+                DouyinAccount.status == "active",
+            ).order_by(DouyinAccount.last_active_at.asc())).all()
+        for account in accounts:
+            account_id = int(account.id or 0)
+            if not account_id:
+                continue
+            realtime = self.dm_automation.realtime_status(account_id)
+            if bool(self.cfg.engine.xhs_dm_realtime_enabled) and not bool(
+                    realtime.get("connected")):
+                try:
+                    await self.dm_automation.ensure_realtime(account)
+                except Exception as exc:
+                    log.warning("XHS DM realtime bootstrap failed for account %s: %s",
+                                account_id, exc)
+            if not self.dm_automation.due(account_id):
+                continue
+            await self.poll_xhs_dm_now(account_id, trigger="scheduled")
+            # Stagger accounts across engine ticks instead of synchronized polling.
+            break
 
     def enqueue_collection_job(self, job_id: int) -> bool:
         """立即把关键词任务交给后台执行；同一时刻仅跑一个批量任务。"""

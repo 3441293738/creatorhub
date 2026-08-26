@@ -578,7 +578,51 @@ class DmMessage(SQLModel, table=True):
     text: str = ""
     create_time: int = 0
     raw_json: str = ""
+    # Empty means the message has not participated in auto-reply evaluation.
+    # ``baseline`` prevents replying to historical mail when automation starts.
+    auto_reply_state: str = Field(default="", index=True)
+    auto_reply_rule_id: Optional[int] = Field(default=None, index=True)
+    auto_reply_task_id: Optional[int] = Field(default=None, index=True)
+    auto_reply_processed_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class DmAutoReplyRule(SQLModel, table=True):
+    """Per-account private-message reply rule."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    platform: str = Field(default="xhs", index=True)
+    account_id: int = Field(index=True)
+    name: str = "自动回复"
+    enabled: bool = True
+    match_mode: str = "keywords"       # all | keywords
+    keywords: str = "[]"               # JSON array; any term matches
+    exclude_keywords: str = "[]"       # JSON array; any term excludes
+    reply_templates: str = "[]"        # JSON array
+    review_before_send: bool = True
+    min_delay_seconds: int = 75
+    max_delay_seconds: int = 300
+    cooldown_seconds: int = 21600
+    max_message_age_seconds: int = 1800
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class DmMonitorState(SQLModel, table=True):
+    """Durable account-wide XHS DM monitoring cursor state.
+
+    The baseline belongs to an account, not to each conversation. Once the
+    account baseline exists, a conversation first seen later is considered a
+    genuinely new conversation and is eligible for rule evaluation.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    platform: str = Field(default="xhs", index=True)
+    account_id: int = Field(index=True)
+    baseline_initialized: bool = False
+    baseline_at: Optional[datetime] = None
+    last_poll_at: Optional[datetime] = None
+    last_push_at: Optional[datetime] = None
+    last_error: str = ""
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class AccountActionTask(SQLModel, table=True):
@@ -592,6 +636,8 @@ class AccountActionTask(SQLModel, table=True):
     target_nick: str = ""             # 展示用
     conv_id: str = ""                 # send_dm:会话 id(可空,用 target_uid 新开)
     content: str = ""                 # send_dm 的文案
+    source_msg_id: str = Field(default="", index=True)  # 自动回复去重键
+    source_rule_id: Optional[int] = Field(default=None, index=True)
     scheduled_at: Optional[datetime] = None
     status: str = "pending"        # draft | pending | doing | done | failed | uncertain | canceled
     result: str = ""

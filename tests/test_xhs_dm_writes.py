@@ -244,6 +244,51 @@ class XhsDmWriteTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_account_hub_reuses_resident_xhs_page_in_background(self):
+        from app.browser import account_hub
+
+        class HubPage:
+            def __init__(self):
+                self.url = "about:blank"
+                self.closed = False
+
+            async def goto(self, url, **_kwargs):
+                self.url = url
+
+            async def close(self):
+                self.closed = True
+
+        class HubManager:
+            def __init__(self):
+                self.page = HubPage()
+                self.foreground = None
+                self.xhs_interaction = type(
+                    "Interaction", (), {"pause": AsyncMock()})()
+
+            @asynccontextmanager
+            async def visible_page(self, _identity, *, foreground=True):
+                self.foreground = foreground
+                yield self.page
+
+        async def scenario():
+            manager = HubManager()
+            state_machine = AsyncMock(return_value=(True, ""))
+            with unittest.mock.patch.object(
+                    account_hub, "send_xhs_dm_page", state_machine,
+                    create=True):
+                result = await account_hub.send_dm(
+                    manager, object(), "xhs", target_uid="fixture-user",
+                    text="resident message")
+
+            self.assertEqual(result, (True, ""))
+            self.assertFalse(manager.foreground)
+            self.assertFalse(manager.page.closed)
+            self.assertEqual(
+                manager.page.url,
+                "https://www.xiaohongshu.com/chat/fixture-user")
+
+        asyncio.run(scenario())
+
     def test_button_disconnect_marks_once_and_never_falls_back_to_enter(self):
         async def scenario():
             page = _Page(click_error=RuntimeError("disconnected"))

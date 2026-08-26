@@ -64,6 +64,15 @@ class EngineConfig:
     xhs_item_gap_seconds: float = 2.5         # 相邻详情/评论读取的最小停顿
     xhs_request_jitter: float = 0.35          # 上述停顿的正向随机抖动比例
     xhs_publish_mode: str = "browser"       # browser | api(API 仅为显式兼容模式)
+    # 小红书 Web 私信。监控只读；命中规则后仍进入统一 DM 限速队列。
+    xhs_dm_monitor_enabled: bool = False
+    xhs_dm_poll_interval_seconds: int = 120
+    xhs_dm_realtime_enabled: bool = True
+    xhs_dm_realtime_debounce_seconds: float = 1.5
+    xhs_dm_fallback_interval_seconds: int = 600
+    xhs_dm_max_conversations_per_poll: int = 2
+    xhs_dm_poll_jitter: float = 0.35
+    xhs_dm_auto_reply_enabled: bool = False
     active_accounts: int = 3                # 同一时刻最多并发活跃的账号数(错峰)
     scan_jitter: float = 0.15              # 扫描间隔随机抖动比例(±15%),消除整点齐发特征
     route_download_via_proxy: bool = True   # 媒体下载是否走账号代理(避免 CDN 拉流暴露真实 IP)
@@ -182,6 +191,16 @@ def load_config(path: str | None = None) -> Config:
             0.0, float(cfg.engine.xhs_item_gap_seconds))
         cfg.engine.xhs_request_jitter = min(
             1.0, max(0.0, float(cfg.engine.xhs_request_jitter)))
+        cfg.engine.xhs_dm_poll_interval_seconds = max(
+            30, int(cfg.engine.xhs_dm_poll_interval_seconds))
+        cfg.engine.xhs_dm_realtime_debounce_seconds = min(
+            10.0, max(0.3, float(cfg.engine.xhs_dm_realtime_debounce_seconds)))
+        cfg.engine.xhs_dm_fallback_interval_seconds = max(
+            120, int(cfg.engine.xhs_dm_fallback_interval_seconds))
+        cfg.engine.xhs_dm_max_conversations_per_poll = max(
+            1, min(10, int(cfg.engine.xhs_dm_max_conversations_per_poll)))
+        cfg.engine.xhs_dm_poll_jitter = min(
+            1.0, max(0.0, float(cfg.engine.xhs_dm_poll_jitter)))
         cfg.engine.browser_session_idle_seconds = max(
             0, int(cfg.engine.browser_session_idle_seconds))
         if cfg.engine.xhs_cdp_idle_seconds is not None:

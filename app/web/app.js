@@ -2236,7 +2236,7 @@ function refreshHubPanel() {
   if (HUB_TAB === "myworks") refreshMyWorks();
   else if (HUB_TAB === "following") refreshFollows("following");
   else if (HUB_TAB === "fans") refreshFollows("fan");
-  else if (HUB_TAB === "dm") { refreshDmConvs(); startDmStream(); }
+  else if (HUB_TAB === "dm") { refreshDmConvs(); refreshDmAutomation(); startDmStream(); }
   else if (HUB_TAB === "stats") loadHubStats();
 }
 
@@ -2469,13 +2469,15 @@ async function actFollow(action, edgeId) {
 
 // ── 私信 ──
 // ─── 私信实时接收(SSE):进 DM 面板订阅,新消息即时刷新;离开断开 ───
-let DM_SSE = null, DM_SSE_ACC = "";
+let DM_SSE = null, DM_SSE_ACC = "", DM_AUTO_TASKS = [], DM_AUTO_RULES = [], DM_REFRESH_TIMER = null;
 function startDmStream() {
   // 幂等:同账号已连就不重连(避免每次面板刷新/收到消息都断开重来)
-  if (DM_SSE && DM_SSE_ACC === HUB_ACC && DM_SSE.readyState !== 2) return;
+  if ((DM_SSE || DM_REFRESH_TIMER) && DM_SSE_ACC === HUB_ACC &&
+      (!DM_SSE || DM_SSE.readyState !== 2)) return;
   stopDmStream();
-  if (!HUB_ACC || PLATFORM !== "douyin") return;
+  if (!HUB_ACC) return;
   DM_SSE_ACC = HUB_ACC;
+  if (PLATFORM !== "douyin" && PLATFORM !== "xhs") return;
   try {
     DM_SSE = new EventSource(`/api/dm/stream?account_id=${HUB_ACC}`);
     DM_SSE.onmessage = (e) => {
@@ -2484,11 +2486,16 @@ function startDmStream() {
       // 当前打开的会话:实时刷新线程 + 标记已读(不让红点冒出来);否则只刷列表(会有红点)
       if (evt.conv_id === DM_CONV) { refreshDmMessages(); markDmRead(evt.conv_id); }
       else refreshDmConvs();
+      if (PLATFORM === "xhs" && evt.type === "auto_reply") refreshDmAutomation();
     };
     DM_SSE.onerror = () => { /* EventSource 自带重连 */ };
   } catch (_) {}
 }
-function stopDmStream() { if (DM_SSE) { try { DM_SSE.close(); } catch (_) {} DM_SSE = null; DM_SSE_ACC = ""; } }
+function stopDmStream() {
+  if (DM_SSE) { try { DM_SSE.close(); } catch (_) {} DM_SSE = null; }
+  if (DM_REFRESH_TIMER) { clearInterval(DM_REFRESH_TIMER); DM_REFRESH_TIMER = null; }
+  DM_SSE_ACC = "";
+}
 
 async function refreshDmConvs() {
   const box = $("dm-convs"); if (!box) return;
@@ -2513,10 +2520,16 @@ function convRow(c) {
 async function syncDm() {
   if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
   await withBusy(evtBtn(), "同步中", async () => {
-    try { const r = await api("/api/accounts/" + HUB_ACC + "/dm/sync", { method: "POST" }); toast(`同步完成:抓到 ${r.fetched} 个会话,新增 ${r.added}`, "ok"); }
+    try {
+      const r = await api("/api/accounts/" + HUB_ACC + "/dm/sync", { method: "POST" });
+      if (r.skipped && r.cached) toast(`检查间隔保护中，已展示 ${r.fetched} 个现有会话`, "ok");
+      else if (r.skipped) toast(`检查间隔保护中，请稍后再试`, "ok");
+      else toast(`同步完成：${r.fetched} 个会话，新增消息 ${r.added}`, "ok");
+    }
     catch (e) { toast("同步失败:" + e.message, "err"); }
   });
   refreshDmConvs();
+  refreshDmAutomation();
 }
 async function openDmConv(convId) {
   DM_CONV = convId;
@@ -2524,12 +2537,102 @@ async function openDmConv(convId) {
   const thread = $("dm-thread");
   if (thread) thread.innerHTML = `<div class="empty"><div class="empty-t">加载聊天记录…</div></div>`;
   // 抖音:点开会话时无头拉历史(imapi get_by_conversation),落库后再渲染
-  if (PLATFORM === "douyin") {
+  if (PLATFORM === "douyin" || PLATFORM === "xhs") {
     try { await api(`/api/accounts/${HUB_ACC}/dm/conversations/${convId}/fetch-history`, { method: "POST" }); }
     catch (e) { /* 拉取失败也照常显示库里已有的(最后一条) */ }
   }
   markDmRead(convId);
   await refreshDmMessages();
+}
+
+function dmRuleSummary(rule) {
+  const trigger = rule.match_mode === "all" ? "全部文本消息" : (rule.keywords || []).join("、");
+  const mode = rule.review_before_send ? "先审核" : "自动入队";
+  return `<div class="dm-auto-row">
+    <div class="grow"><b>${esc(rule.name)}</b>${rule.enabled ? "" : " · 已停用"}<div class="sub">${esc(trigger)} · ${mode} · 延迟 ${rule.min_delay_seconds}-${rule.max_delay_seconds} 秒 · 冷却 ${Math.round(rule.cooldown_seconds / 3600)} 小时</div></div>
+    <button class="ghost sm" onclick="toggleDmRule(${rule.id})">${rule.enabled ? "停用" : "启用"}</button>
+    <button class="ghost sm" onclick="deleteDmRule(${rule.id})">删除</button>
+  </div>`;
+}
+function dmDraftSummary(task) {
+  return `<div class="dm-auto-row">
+    <div class="grow"><b>${esc(task.target_nick || "私信会话")}</b><div class="sub">${esc(task.content || "")}</div></div>
+    <button class="ghost sm" onclick="editDmDraft(${task.id})">编辑</button>
+    <button class="sm" onclick="approveDmDraft(${task.id})">通过</button>
+    <button class="ghost sm" onclick="cancelDmDraft(${task.id})">取消</button>
+  </div>`;
+}
+async function refreshDmAutomation() {
+  const panel = $("dm-auto-panel"), rulesBox = $("dm-auto-rules"), tasksBox = $("dm-auto-tasks");
+  if (!panel || !rulesBox || !tasksBox) return;
+  panel.style.display = PLATFORM === "xhs" ? "" : "none";
+  if (PLATFORM !== "xhs" || !HUB_ACC) return;
+  try {
+    const [rules, tasks, monitor] = await Promise.all([
+      api(`/api/dm/auto-reply-rules?account_id=${HUB_ACC}`),
+      api(`/api/account-actions?account_id=${HUB_ACC}&limit=100`),
+      api(`/api/accounts/${HUB_ACC}/dm/automation/status`)
+    ]);
+    const statusBox = $("dm-monitor-status");
+    if (statusBox) {
+      const live = monitor.realtime || {};
+      const state = live.connected ? "实时监听已连接" : (live.state === "reconnecting" ? "实时监听重连中" : "低频补偿监听");
+      statusBox.innerHTML = `<b>${state}</b> · 账号级监控 · 新会话自动纳入 · ${Math.round((monitor.fallback_interval_seconds || 600) / 60)} 分钟完整补偿检查`;
+    }
+    DM_AUTO_RULES = rules;
+    rulesBox.innerHTML = rules.length ? rules.map(dmRuleSummary).join("") : `<div class="hint">暂无规则。建议先使用“先审核”观察一段时间。</div>`;
+    DM_AUTO_TASKS = tasks;
+    const drafts = tasks.filter(t => t.action === "send_dm" && t.source_rule_id && t.status === "draft");
+    tasksBox.innerHTML = drafts.length ? drafts.map(dmDraftSummary).join("") : `<div class="hint">暂无待审核回复</div>`;
+  } catch (e) { rulesBox.innerHTML = `<div class="hint">加载失败：${esc(e.message)}</div>`; }
+}
+async function saveDmRule() {
+  if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
+  const keywords = ($("dm-rule-keywords").value || "").split(/[，,]/).map(x => x.trim()).filter(Boolean);
+  const excludes = ($("dm-rule-excludes").value || "").split(/[，,]/).map(x => x.trim()).filter(Boolean);
+  const templates = ($("dm-rule-templates").value || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const body = {
+    account_id: +HUB_ACC, name: ($("dm-rule-name").value || "自动回复").trim(),
+    enabled: true, match_mode: "keywords", keywords, exclude_keywords: excludes,
+    reply_templates: templates, review_before_send: !$("dm-rule-auto").checked,
+    min_delay_seconds: +$("dm-rule-delay-min").value || 75,
+    max_delay_seconds: +$("dm-rule-delay-max").value || 300,
+    cooldown_seconds: (+$("dm-rule-cooldown").value || 6) * 3600,
+    max_message_age_seconds: 1800
+  };
+  try {
+    await api("/api/dm/auto-reply-rules", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+    toast("自动回复规则已保存", "ok"); refreshDmAutomation();
+  } catch (e) { toast("保存失败：" + e.message, "err"); }
+}
+async function deleteDmRule(id) {
+  try { await api(`/api/dm/auto-reply-rules/${id}`, {method:"DELETE"}); toast("规则已删除", "ok"); refreshDmAutomation(); }
+  catch (e) { toast("删除失败：" + e.message, "err"); }
+}
+async function toggleDmRule(id) {
+  const rule = DM_AUTO_RULES.find(r => +r.id === +id); if (!rule) return;
+  const body = Object.assign({}, rule, {enabled: !rule.enabled});
+  try {
+    await api(`/api/dm/auto-reply-rules/${id}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    toast(body.enabled ? "规则已启用" : "规则已停用", "ok"); refreshDmAutomation();
+  } catch (e) { toast("更新失败：" + e.message, "err"); }
+}
+async function approveDmDraft(id) {
+  try { await api(`/api/account-actions/${id}/approve`, {method:"POST"}); toast("已进入限速发送队列", "ok"); refreshDmAutomation(); }
+  catch (e) { toast("通过失败：" + e.message, "err"); }
+}
+async function cancelDmDraft(id) {
+  try { await api(`/api/account-actions/${id}/cancel`, {method:"POST"}); toast("草稿已取消", "ok"); refreshDmAutomation(); }
+  catch (e) { toast("取消失败：" + e.message, "err"); }
+}
+async function editDmDraft(id) {
+  const current = (DM_AUTO_TASKS.find(t => +t.id === +id) || {}).content || "";
+  const content = prompt("编辑回复内容", current);
+  if (content === null || !content.trim()) return;
+  try {
+    await api(`/api/account-actions/${id}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({content:content.trim()})});
+    toast("草稿已更新", "ok"); refreshDmAutomation();
+  } catch (e) { toast("更新失败：" + e.message, "err"); }
 }
 // 标记已读:清红点,刷新左侧列表
 function markDmRead(convId) {

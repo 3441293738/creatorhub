@@ -9,6 +9,7 @@ from .xhs_selectors import find_visible, selector_diagnostic
 
 
 _DM_WRITE_PATHS = (
+    "/api/im/web/short_link/send_message",
     "/api/im/web/message/send",
     "/api/im/web/msg/send",
     "/api/im/web/chat/send",
@@ -111,6 +112,18 @@ async def _exact_text_count(page: Any, text: str) -> int | None:
         return None
 
 
+async def _sent_bubble_count(page: Any, text: str) -> int | None:
+    """Count rendered message bubbles without counting the editor itself."""
+    try:
+        return max(0, int(await page.evaluate(
+            """value => [...document.querySelectorAll(
+              '.xhs-im-bubble__text,[class*="xhs-im-bubble__text"]')]
+              .filter(node => (node.textContent || '').trim() === value).length""",
+            text)))
+    except Exception:
+        return None
+
+
 async def _wait_visible(
         page: Any, interaction: Any, group: str, *,
         require_enabled: bool = False,
@@ -146,19 +159,23 @@ async def send_xhs_dm_page(
     listener_installed = False
 
     try:
-        entry, _ = await _wait_visible(
-            page, interaction, "dm.entry", attempts=8)
-        if entry is None:
-            diagnostic = await selector_diagnostic(page, "dm.entry")
-            return False, f"未找到私信入口(页面可能改版)；{diagnostic}"
-        try:
-            await interaction.click_visible(entry)
-            await interaction.pause(0.25, 0.55)
-        except Exception as exc:
-            return False, f"打开私信入口失败: {exc!r}"
-
         editor, _ = await _wait_visible(
-            page, interaction, "dm.editor", attempts=8)
+            page, interaction, "dm.editor", attempts=5)
+        # Direct /chat/{uid} routes already contain the editor.  Profile routes
+        # still use the legacy entry button, preserving new-conversation support.
+        if editor is None:
+            entry, _ = await _wait_visible(
+                page, interaction, "dm.entry", attempts=8)
+            if entry is None:
+                diagnostic = await selector_diagnostic(page, "dm.entry")
+                return False, f"未找到私信入口(页面可能改版)；{diagnostic}"
+            try:
+                await interaction.click_visible(entry)
+                await interaction.pause(0.25, 0.55)
+            except Exception as exc:
+                return False, f"打开私信入口失败: {exc!r}"
+            editor, _ = await _wait_visible(
+                page, interaction, "dm.editor", attempts=8)
         if editor is None:
             diagnostic = await selector_diagnostic(page, "dm.editor")
             return False, f"未找到私信输入框(页面可能改版)；{diagnostic}"
@@ -171,6 +188,8 @@ async def send_xhs_dm_page(
         except Exception as exc:
             return False, f"私信内容输入失败: {exc!r}"
         existing_matches = await _exact_text_count(page, text)
+        existing_bubbles = await _sent_bubble_count(page, text)
+        await interaction.pause(0.7, 1.6)
 
         submit, _ = await _wait_visible(
             page, interaction, "dm.submit",
@@ -199,6 +218,10 @@ async def send_xhs_dm_page(
             if await _consume_responses(evidence):
                 return True, ""
             current_matches = await _exact_text_count(page, text)
+            current_bubbles = await _sent_bubble_count(page, text)
+            if existing_bubbles is not None and current_bubbles is not None \
+                    and current_bubbles > existing_bubbles:
+                return True, ""
             if existing_matches is not None and current_matches is not None \
                     and current_matches > existing_matches:
                 return True, ""

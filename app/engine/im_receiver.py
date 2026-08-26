@@ -33,7 +33,12 @@ class ImReceiverManager:
             self._accts[account_id] = st
         q: asyncio.Queue = asyncio.Queue(maxsize=100)
         st["queues"].add(q)
-        if not st["task"] or st["task"].done():
+        with get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            platform = str(account.platform if account else "")
+        # XHS owns one account-wide socket in the resident first-party page.
+        # SSE subscribers only consume events; they never create another socket.
+        if platform == "douyin" and (not st["task"] or st["task"].done()):
             st["task"] = asyncio.create_task(self._run(account_id))
         return q
 
@@ -51,6 +56,17 @@ class ImReceiverManager:
             if st.get("task"):
                 st["task"].cancel()
         self._accts.clear()
+
+    def publish(self, account_id: int, event: dict) -> None:
+        """Publish an externally received account DM event to SSE clients."""
+        st = self._accts.get(account_id)
+        if not st:
+            return
+        for queue in list(st["queues"]):
+            try:
+                queue.put_nowait(event)
+            except Exception:
+                pass
 
     async def _run(self, account_id: int):
         # 等 uid(允许"先开面板后同步"):最多轮询 ~30s 读 DB,同步存下 uid 即自愈

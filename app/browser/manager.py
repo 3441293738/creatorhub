@@ -1461,22 +1461,42 @@ class BrowserManager:
     @asynccontextmanager
     async def visible_page(
             self, identity: Identity, *, url: str = "",
-            keep_context: bool | None = None):
-        """Lease a foreground task page, optionally retaining its browser session."""
+            keep_context: bool | None = None, foreground: bool = True):
+        """Lease the account-owned task page.
+
+        ``foreground=False`` is for routine background reads/writes. It keeps
+        the same headed Chrome process and tab, but does not steal focus from
+        the CreatorHub window. Login and explicit "open browser" operations
+        retain the foreground default.
+        """
         retain = (
             self.resident_sessions and identity.platform == "xhs"
             if keep_context is None else bool(keep_context)
         )
         async with self.visible_action(
                 identity, keep_context=retain):
-            snapshot = capture_window_snapshot(CHROMIUM_WINDOW_CLASSES)
+            snapshot = (capture_window_snapshot(CHROMIUM_WINDOW_CLASSES)
+                        if foreground else None)
             page = None
             context = None
+            restore_minimized = False
             page_listeners: dict[int, tuple[Any, tuple[Any, ...]]] = {}
             context_page_listeners: tuple[Any, ...] = ()
             try:
+                previous_page = self._task_pages.get(identity.key)
                 page = await self._visible_task_page(identity)
                 context = self._contexts.get(identity.key)
+                if not foreground:
+                    # A background lease must preserve a user's explicitly
+                    # opened/restored window, while a newly-created resident
+                    # browser (or one that was already minimized) must remain
+                    # minimized even if Chromium restores it during navigation.
+                    restore_minimized = previous_page is not page
+                    if not restore_minimized and context is not None:
+                        restore_minimized = (
+                            await self._chromium_window_state(context, page)
+                            == "minimized"
+                        )
                 if context is not None:
                     context_page_listeners = self._listener_snapshot(
                         context, "page")
@@ -1489,16 +1509,27 @@ class BrowserManager:
                 if url:
                     await page.goto(
                         url, wait_until="domcontentloaded", timeout=30_000)
-                with suppress(Exception):
-                    await page.bring_to_front()
-                title = ""
-                with suppress(Exception):
-                    title = await page.title()
-                await asyncio.to_thread(
-                    bring_window_to_front, snapshot,
-                    CHROMIUM_WINDOW_CLASSES, title or "小红书", 1.5)
+                if restore_minimized and context is not None:
+                    await self._set_chromium_window_state(
+                        context, page, "minimized")
+                if foreground:
+                    with suppress(Exception):
+                        await page.bring_to_front()
+                    title = ""
+                    with suppress(Exception):
+                        title = await page.title()
+                    await asyncio.to_thread(
+                        bring_window_to_front, snapshot,
+                        CHROMIUM_WINDOW_CLASSES, title or "小红书", 1.5)
                 yield page
             finally:
+                if (restore_minimized and context is not None
+                        and page is not None):
+                    # Some XHS navigations restore the native window after
+                    # DOMContentLoaded. Re-apply the original background state
+                    # when the lease ends as well.
+                    await self._set_chromium_window_state(
+                        context, page, "minimized")
                 # A resident Page must not retain one response callback closure
                 # for every scan/login. Keep listeners that predated this
                 # lease (proxy/auth hooks) and remove only task-local handlers.
@@ -1517,6 +1548,43 @@ class BrowserManager:
                             self._task_pages.pop(identity.key, None)
                         with suppress(Exception):
                             await page.close()
+
+    @staticmethod
+    async def _chromium_window_state(context, page) -> str:
+        """Read the native Chromium window state for one exact task page."""
+        session = None
+        try:
+            session = await context.new_cdp_session(page)
+            result = await session.send("Browser.getWindowForTarget")
+            return str((result.get("bounds") or {}).get("windowState") or "")
+        except Exception:
+            return ""
+        finally:
+            if session is not None:
+                with suppress(Exception):
+                    await session.detach()
+
+    @staticmethod
+    async def _set_chromium_window_state(context, page, state: str) -> bool:
+        """Set the native Chromium window state through the page's CDP target."""
+        session = None
+        try:
+            session = await context.new_cdp_session(page)
+            result = await session.send("Browser.getWindowForTarget")
+            window_id = result.get("windowId")
+            if window_id is None:
+                return False
+            await session.send("Browser.setWindowBounds", {
+                "windowId": window_id,
+                "bounds": {"windowState": state},
+            })
+            return True
+        except Exception:
+            return False
+        finally:
+            if session is not None:
+                with suppress(Exception):
+                    await session.detach()
 
     async def close_context(self, key):
         async with self._cv_lock:

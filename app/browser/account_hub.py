@@ -84,7 +84,11 @@ async def _self_profile_link(mgr: BrowserManager, identity, platform: str
     href = ""
     if platform == "xhs":
         try:
-            async with mgr.visible_page(identity) as page:
+            try:
+                lease = mgr.visible_page(identity, foreground=False)
+            except TypeError:  # compatibility with compact manager stubs
+                lease = mgr.visible_page(identity)
+            async with lease as page:
                 await page.goto(
                     home, wait_until="domcontentloaded", timeout=30000)
                 for _ in range(6):
@@ -845,7 +849,7 @@ _DM_NAV = {
     "douyin":   "https://www.douyin.com/follow",
     # 小红书:/im 直开会 goto 失败(api_seen=0)。回到首页(能正常加载并触发 message/entry),
     # 靠采样 entry 响应体 + 点私信入口来标定
-    "xhs":      "https://www.xiaohongshu.com/",
+    "xhs":      "https://www.xiaohongshu.com/chat",
     "kuaishou": "https://www.kuaishou.com/",
 }
 # 私信/会话接口的 URL 关键词(抖音实测:/v1/message/、/v1/stranger/get_conversation_list)。
@@ -859,7 +863,8 @@ _DM_URL_HINTS = ("/v1/message/", "/v1/stranger/", "get_conversation_list",
                  "imapi.douyin.com", "/v2/conversation/create",
                  "/v2/conversation/get_info_list", "/v1/message/send",
                  "/api/im/web/chat", "/api/im/web/session", "/api/im/web/conversation",
-                 "/api/im/web/msg")
+                 "/api/im/web/msg", "/api/im/web/v3/chats",
+                 "/api/im/web/messages/history")
 
 # 「私信面板真的打开了」的信号:只认会话/消息数据接口。
 # 不含 im/strategy/config、im/resources/*、im/user/active/* 等 —— 它们随便哪个页面加载都会发,
@@ -867,7 +872,8 @@ _DM_URL_HINTS = ("/v1/message/", "/v1/stranger/", "get_conversation_list",
 _IM_BOOTSTRAP_SIGNALS = ("/v1/message/", "/v1/stranger/", "get_message_by_init",
                          "get_conversation_list", "/imapi/", "/v2/conversation/",
                          "/aweme/v1/web/im/user/info", "/api/im/web/chat",
-                         "/api/im/web/session", "/api/im/web/msg")
+                         "/api/im/web/session", "/api/im/web/msg",
+                         "/api/im/web/v3/chats", "/api/im/web/messages/history")
 
 # 抖音顶栏「消息」是 <div>(无 href),React onClick 绑在祖先上。
 # ⚠️ 向上找可点祖先只用来判定「这一项可点」,坐标必须取文本元素自身的中心 ——
@@ -1099,6 +1105,10 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                                  *, _xhs_visible: bool = False
                                  ) -> Tuple[List[dict], str]:
     """打开私信页,拦截会话列表 XHR,启发式抽会话。无公开接口,首版用于标定。"""
+    if platform == "xhs":
+        from .xhs_im import fetch_conversations as fetch_xhs_conversations
+        return await fetch_xhs_conversations(
+            mgr, identity, settle_ms=settle_ms, _visible=_xhs_visible)
     if platform == "xhs" and not _xhs_visible:
         async with mgr.visible_action(identity):
             return await fetch_dm_conversations(
@@ -1536,10 +1546,16 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
 async def fetch_dm_history(mgr: BrowserManager, identity, platform: str,
                            conv_id: str, conv_short_id: str, conv_type: int = 1,
                            cursor: int = 0, count: int = 50,
-                           debug: bool = False) -> Tuple[dict, str]:
+                           debug: bool = False, *, peer_uid: str = "",
+                           self_uid: str = "") -> Tuple[dict, str]:
     """无头抓单个会话的历史消息:imapi/v1/message/get_by_conversation(cmd 301)。
     该接口纯 cookie 鉴权、无 a_bogus/签名,用账号常驻 context 的 request 直接 POST。
     返回 (parse_messages 结果, error)。debug=True 时额外打印原始响应 b64(标定用)。"""
+    if platform == "xhs":
+        from .xhs_im import fetch_history as fetch_xhs_history
+        return await fetch_xhs_history(
+            mgr, identity, conv_id, peer_uid=peer_uid or conv_id,
+            self_uid=self_uid, count=count)
     import base64 as _b64
     from .douyin_im_pb import build_history_request, parse_messages, GET_BY_CONV_URL
     if platform != "douyin":
@@ -1790,7 +1806,7 @@ _DM_INPUT = [
 _DM_SEND = ['button:has-text("发送")', 'span:has-text("发送")', '.send-btn']
 _DM_ENTRY_URL = {
     "douyin": "https://www.douyin.com/user/{sec}",
-    "xhs": "https://www.xiaohongshu.com/user/profile/{uid}",
+    "xhs": "https://www.xiaohongshu.com/chat/{uid}",
     "kuaishou": "https://www.kuaishou.com/profile/{uid}",
 }
 
@@ -1838,17 +1854,49 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
                    _xhs_visible: bool = False) -> Tuple[bool, str]:
     """给目标发私信(UI 自动化):打开对方主页 → 点「私信」→ 输入 → 发送。
     ⚠️ 各平台私信入口/选择器差异大,首版尽力而为,失败有诊断。"""
-    if platform == "xhs" and not _xhs_visible:
-        async with mgr.visible_action(identity):
-            return await send_dm(
-                mgr, identity, platform, target_uid, target_sec_uid, text,
-                on_submit=on_submit, _xhs_visible=True)
     text = (text or "").strip()
     if not text:
         return False, "空内容"
     sec = target_sec_uid or target_uid
     url = _DM_ENTRY_URL.get(platform, _DM_ENTRY_URL["douyin"]).format(
         sec=sec, uid=target_uid or sec)
+    if platform == "xhs" and not _xhs_visible:
+        async def _send_on_page(page):
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await mgr.xhs_interaction.pause(0.25, 0.55)
+            if "passport" in page.url or "/login" in page.url:
+                return False, "logged_out:账号未登录"
+            return await send_xhs_dm_page(
+                mgr, page, text, on_submit=on_submit)
+
+        visible_page = getattr(mgr, "visible_page", None)
+        if callable(visible_page):
+            try:
+                lease = visible_page(identity, foreground=False)
+            except TypeError:  # compatibility with compact manager stubs
+                lease = visible_page(identity)
+            try:
+                async with lease as page:
+                    return await _send_on_page(page)
+            except Exception as exc:
+                return False, f"发私信异常: {exc!r}"
+
+        # Compatibility path for older manager implementations: still one
+        # temporary page, while current BrowserManager always takes the
+        # resident-page branch above.
+        async with mgr.visible_action(identity):
+            page = None
+            try:
+                page = await mgr.new_page(identity, block_media=False)
+                return await _send_on_page(page)
+            except Exception as exc:
+                return False, f"发私信异常: {exc!r}"
+            finally:
+                if page is not None:
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
     ctx = None
     page = None
     try:

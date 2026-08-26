@@ -539,6 +539,43 @@ class XhsInteractionTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_background_visible_page_reuses_tab_without_stealing_focus(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                manager = BrowserManager("UA", tmp, resident_sessions=True)
+                startup_page = _Page()
+
+                class Context:
+                    pages = [startup_page]
+                    new_page = AsyncMock(side_effect=AssertionError(
+                        "background lease should reuse startup tab"))
+
+                context = Context()
+                manager.context_for = AsyncMock(return_value=context)
+                manager.close_context = AsyncMock()
+                identity = Identity(
+                    account_id=29,
+                    profile_dir=str(Path(tmp) / "account-29"),
+                    identity_mode="native",
+                    platform="xhs",
+                )
+
+                with patch(
+                        "app.browser.manager.bring_window_to_front",
+                        return_value=True) as bring:
+                    async with manager.visible_page(
+                            identity, url="https://www.xiaohongshu.com/chat",
+                            foreground=False) as leased:
+                        self.assertIs(leased, startup_page)
+
+                context.new_page.assert_not_awaited()
+                self.assertEqual(startup_page.front_calls, 0)
+                self.assertFalse(startup_page.closed)
+                bring.assert_not_called()
+                manager.close_context.assert_not_awaited()
+
+        asyncio.run(scenario())
+
 
 if __name__ == "__main__":
     unittest.main()

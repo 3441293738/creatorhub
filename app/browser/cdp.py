@@ -107,6 +107,9 @@ def chrome_launch_args(
         f"--remote-debugging-port={port}",
         "--no-first-run",
         "--no-default-browser-check",
+        # Routine account tasks reuse one headed page in the background.
+        # Login/explicit-open flows restore the same window when required.
+        "--start-minimized",
     ]
     if proxy_server:
         args.append(f"--proxy-server={proxy_server}")

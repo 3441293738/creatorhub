@@ -87,6 +87,8 @@ SELECTOR_GROUPS: Mapping[str, tuple[SelectorCandidate, ...]] = MappingProxyType(
         _text("dm_entry_send_private_message", "发私信"),
     ),
     "dm.editor": (
+        _css("dm_editor_web_chat", '.xhs-im-input-bar-editor[contenteditable="true"]'),
+        _css("dm_editor_web_chat_class", '[class*="xhs-im-input-bar-editor"][contenteditable="true"]'),
         _css("dm_editor_send_textarea", 'textarea[placeholder*="发送"]'),
         _css(
             "dm_editor_send_contenteditable",
@@ -98,6 +100,7 @@ SELECTOR_GROUPS: Mapping[str, tuple[SelectorCandidate, ...]] = MappingProxyType(
         _css("dm_editor_text_input", 'input[type="text"]'),
     ),
     "dm.submit": (
+        _css("dm_submit_web_chat", '[class*="xhs-im-input-bar"] [class*="send"]'),
         _css("dm_submit_button", 'button:has-text("发送")'),
         _css("dm_submit_text", 'span:has-text("发送")'),
         _css("dm_submit_class", ".send-btn"),

@@ -396,6 +396,16 @@
   .dm-composer { display:flex; gap:8px; padding:12px; border-top:1px solid var(--line-soft); }
   .dm-composer input { flex:1; }
   .dm-composer button { flex:0 0 auto; }
+  .dm-auto { margin:0 0 12px; padding:12px; border:1px solid var(--line-soft); border-radius:var(--r); background:var(--surface-2); }
+  .dm-auto summary { cursor:pointer; font-weight:650; color:var(--fg-strong); }
+  .dm-auto-grid { display:grid; grid-template-columns:1.2fr 1.5fr 1.5fr auto; gap:8px; margin-top:10px; align-items:end; }
+  .dm-auto-grid label { display:flex; flex-direction:column; gap:5px; font-size:11px; color:var(--mut); }
+  .dm-auto-grid input, .dm-auto-grid textarea, .dm-auto-grid select { width:100%; }
+  .dm-auto-rules, .dm-auto-tasks { display:flex; flex-direction:column; gap:7px; margin-top:10px; }
+  .dm-auto-row { display:flex; gap:8px; align-items:center; padding:8px 10px; border:1px solid var(--line-soft); border-radius:8px; background:var(--surface); font-size:12px; }
+  .dm-auto-row .grow { flex:1; min-width:0; }
+  .dm-auto-row .sub { color:var(--mut); font-size:11px; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  @media(max-width:900px){ .dm-auto-grid{grid-template-columns:1fr 1fr} }
   @media(max-width:700px){ .dm-wrap{grid-template-columns:1fr} .dm-list{max-height:200px} }
 
   /* ── stats strip ── */
@@ -3109,10 +3119,31 @@
 
       <div data-hubpanel="dm" style="display:none">
         <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:12px">
-          <div class="hint" style="margin:0;flex:1"><span class="ic-text"><svg aria-hidden="true"><use href="#i-msg"/></svg><b>抖音私信</b></span>：点「<b>同步</b>」拉取会话列表，打开会话后自动加载完整聊天记录。发消息使用「<b>打开浏览器收发</b>」。小红书网页端暂未开放私信，快手能力待验证。</div>
+          <div class="hint" style="margin:0;flex:1"><span class="ic-text"><svg aria-hidden="true"><use href="#i-msg"/></svg><b>网页私信</b></span>：抖音与小红书均可同步会话和历史。小红书复用账号 Chrome 的原生实时推送，并以低频检查补偿漏推；自动回复默认先生成待审核草稿。</div>
           <button class="ghost sm" style="flex:0 0 auto" onclick="syncDm()"><svg><use href="#i-download"/></svg>同步</button>
           <button style="flex:0 0 auto" onclick="openHubAccountBrowser()"><svg><use href="#i-send"/></svg>打开浏览器收发</button>
         </div>
+        <details class="dm-auto" id="dm-auto-panel">
+          <summary>自动回复规则与待审核回复</summary>
+          <div class="hint" style="margin-top:8px">仅处理建立监控基线后收到的新消息。默认先生成草稿；自动发送仍受活跃时段、15 分钟私信间隔、小时/每日配额和风险冷却控制。</div>
+          <div class="hint" id="dm-monitor-status" style="margin-top:8px">正在读取账号级实时监听状态…</div>
+          <div class="dm-auto-grid">
+            <label>规则名称<input id="dm-rule-name" value="常用问询"></label>
+            <label>关键词（逗号分隔）<input id="dm-rule-keywords" placeholder="价格,合作,购买"></label>
+            <label>回复模板（每行一条）<textarea id="dm-rule-templates" rows="2" placeholder="你好 {nickname}，已收到你的消息，我们稍后回复。"></textarea></label>
+            <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+              <label style="flex-direction:row"><input id="dm-rule-auto" type="checkbox">免审核自动发送</label>
+              <button class="sm" onclick="saveDmRule()">新增规则</button>
+            </div>
+            <label>排除词（逗号分隔）<input id="dm-rule-excludes" placeholder="停止,不要联系"></label>
+            <label>最短延迟（秒）<input id="dm-rule-delay-min" type="number" min="15" max="3600" value="75"></label>
+            <label>最长延迟（秒）<input id="dm-rule-delay-max" type="number" min="15" max="7200" value="300"></label>
+            <label>同会话冷却（小时）<input id="dm-rule-cooldown" type="number" min="1" max="168" value="6"></label>
+          </div>
+          <div class="dm-auto-rules" id="dm-auto-rules"></div>
+          <div style="font-weight:650;margin-top:12px">待审核回复</div>
+          <div class="dm-auto-tasks" id="dm-auto-tasks"></div>
+        </details>
         <div class="dm-wrap">
           <div class="dm-list" id="dm-convs"></div>
           <div class="dm-main">
