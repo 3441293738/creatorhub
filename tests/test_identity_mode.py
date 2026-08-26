@@ -519,9 +519,8 @@ class IdentityModeTests(unittest.TestCase):
                 previous_cfg, previous_browser, previous_engine)
 
         self.assertEqual(result["status"], "confirmed")
-        self.assertEqual(saved_browser_backend, "fingerprint_chromium")
-        self.assertEqual(captured.get("browser_backend"),
-                         "fingerprint_chromium")
+        self.assertEqual(saved_browser_backend, "local")
+        self.assertEqual(captured.get("browser_backend"), "local")
         self.assertEqual(saved_sec_uid, "xhs-member-73")
         enrich.assert_not_awaited()
         self.assertEqual(browser.closed_keys, [])
@@ -604,10 +603,12 @@ class IdentityModeTests(unittest.TestCase):
                     "region": "Shanghai", "city": "Shanghai",
                     "timezone": "Asia/Shanghai", "lat": 31.23,
                     "lon": 121.47,
-                    })), patch("app.main.interactive_xhs_login", logged_in):
+                    })), patch("app.main.interactive_login", logged_in), \
+                    patch("app.main._enrich_account_profile",
+                          AsyncMock(return_value="ok")):
                 asyncio.run(main._run_login(
                     task_id,
-                    platform="xhs",
+                    platform="douyin",
                     proxy_choice="none",
                     browser_backend="fingerprint_chromium",
                     fingerprint_overrides=custom,

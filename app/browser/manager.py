@@ -695,7 +695,17 @@ class BrowserManager:
                     await probe_page.close()
 
     def effective_browser_backend(self, identity: Identity) -> str:
-        """Resolve an account override without silently accepting bad values."""
+        """Resolve an account override without silently accepting bad values.
+
+        Xiaohongshu is intentionally pinned to the local/system-Chrome path.
+        Mixing a third-party fingerprint runtime with its own identity surface
+        into an existing account profile creates cross-layer inconsistencies
+        (runtime, UA/client hints, GPU and persisted site state).  Treat that
+        combination as unsupported instead of trying to patch around a device
+        verification page.
+        """
+        if str(getattr(identity, "platform", "") or "").lower() == "xhs":
+            return LOCAL_BACKEND
         requested = str(
             getattr(identity, "browser_backend", DEFAULT_BACKEND)
             or DEFAULT_BACKEND

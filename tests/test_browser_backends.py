@@ -313,7 +313,7 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
         self.assertNotIn("geolocation", kwargs)
         self.assertNotIn("permissions", kwargs)
 
-    def test_xhs_fingerprint_account_bypasses_system_chrome_cdp_backend(self):
+    def test_xhs_account_is_pinned_to_system_chrome_cdp_backend(self):
         manager = BrowserManager(
             "UA",
             str(Path(self.tmp.name) / "profiles"),
@@ -327,12 +327,12 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
             browser_backend="fingerprint_chromium",
         )
 
-        self.assertFalse(manager._uses_xhs_cdp(identity))
+        self.assertEqual(manager.effective_browser_backend(identity), "local")
+        self.assertTrue(manager._uses_xhs_cdp(identity))
         snapshot = manager.environment_snapshot(identity, headless=True)
-        self.assertEqual(snapshot["backend"], "fingerprint_chromium")
-        self.assertEqual(snapshot["browser"], "fingerprint-chromium")
-        self.assertEqual(snapshot["backend_label"],
-                         "Fingerprint Chromium · 开源内核")
+        self.assertEqual(snapshot["backend"], "cdp")
+        self.assertEqual(snapshot["browser"], "chrome")
+        self.assertEqual(snapshot["backend_label"], "系统 Chrome · CDP")
         self.assertFalse(snapshot["headless"])
 
     def test_account_runtime_selects_executable_and_isolated_profile(self):
@@ -513,7 +513,7 @@ class FingerprintChromiumBackendTests(unittest.TestCase):
         identity = Identity(
             account_id=None,
             profile_dir=str(Path(self.tmp.name) / "ua-capture-profile"),
-            platform="xhs",
+            platform="douyin",
             identity_mode="native",
             browser_backend="fingerprint_chromium",
             ua="",
@@ -609,6 +609,62 @@ class AccountBrowserBackendApiTests(unittest.TestCase):
             self.assertEqual(saved.browser_runtime_id, "fp-148-fixture")
         self.assertEqual(stub.closed, [account_id])
         self.assertEqual(result["browser_backend"], "fingerprint_chromium")
+
+    def test_xhs_account_rejects_fingerprint_backend(self):
+        with db.get_session() as session:
+            account = DouyinAccount(
+                platform="xhs", nickname="xhs-fixture",
+                browser_backend="local",
+            )
+            session.add(account)
+            session.commit()
+            session.refresh(account)
+            account_id = account.id
+
+        class BrowserStub:
+            def __init__(self):
+                self.closed = []
+
+            def backend_status(self, requested, runtime_id=""):
+                return {
+                    "name": "fingerprint_chromium",
+                    "available": True,
+                    "detail": "",
+                }
+
+            async def close_context(self, key):
+                self.closed.append(key)
+
+        stub = BrowserStub()
+        main.browser = stub
+
+        with self.assertRaisesRegex(Exception, "小红书账号仅支持系统 Chrome"):
+            asyncio.run(main.set_account_browser_backend(
+                account_id,
+                main.AccountBrowserBackendIn(
+                    browser_backend="fingerprint_chromium",
+                    browser_runtime_id="fp-148-fixture"),
+            ))
+
+        with db.get_session() as session:
+            saved = session.get(DouyinAccount, account_id)
+            self.assertEqual(saved.browser_backend, "local")
+            self.assertEqual(saved.browser_runtime_id, "")
+        self.assertEqual(stub.closed, [])
+
+    def test_xhs_login_validation_rejects_fingerprint_backend(self):
+        class BrowserStub:
+            def backend_status(self, requested, runtime_id=""):
+                return {
+                    "name": "fingerprint_chromium",
+                    "available": True,
+                    "detail": "",
+                }
+
+        main.browser = BrowserStub()
+        with self.assertRaisesRegex(Exception, "小红书仅支持系统 Chrome"):
+            main._validate_login_browser_backend(
+                "fingerprint_chromium", "fp-148-fixture", platform="xhs")
 
     def test_runtime_scan_accepts_machine_specific_directory(self):
         install_root = Path(self.tmp.name) / "custom-browser-location"

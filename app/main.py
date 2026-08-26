@@ -42,7 +42,8 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
                       fetch_dm_history)
 from .browser.backends import (
-    ACCOUNT_BROWSER_BACKENDS, fingerprint_seed_u32, parse_extra_launch_args,
+    ACCOUNT_BROWSER_BACKENDS, LOCAL_BACKEND, fingerprint_seed_u32,
+    parse_extra_launch_args,
 )
 from .browser.ip_fingerprint import derive_ip_fingerprint
 from .browser.runtime_catalog import (
@@ -872,6 +873,13 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             requested_backend = str(browser_backend or "default").strip().lower()
             if requested_backend not in ACCOUNT_BROWSER_BACKENDS:
                 requested_backend = "default"
+            # Internal callers cannot opt Xiaohongshu back into a fingerprint
+            # runtime after the public API validation below.  Keep one native
+            # system-Chrome identity surface for login and subsequent tasks.
+            if platform == "xhs":
+                requested_backend = LOCAL_BACKEND
+                browser_runtime_id = ""
+                fingerprint_overrides = None
             backend_status = getattr(browser, "backend_status", None)
             effective_backend = ""
             if callable(backend_status):
@@ -960,10 +968,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                             status=("verification" if verification else "waiting"),
                             platform=platform,
                             creator=creator, account_id=account_id,
-                            hint=(("当前独立 Profile 收到小红书设备安全验证；"
-                                   "系统会等待初始化 Cookie 稳定后自动重试一次。"
-                                   "也可扫描验证二维码，或在同一窗口新标签手动打开"
-                                   "小红书；完成后会自动继续保存登录态")
+                            hint=(("当前账号 Profile 收到小红书设备安全验证；"
+                                   "自动任务已暂停，请只在当前可见窗口按平台提示"
+                                   "完成人工验证；系统不会自动重试或绕过验证页")
                                   if verification else
                                   "设备验证页已解除，请在当前小红书页面完成登录"),
                             environment=login_environment,
@@ -1158,7 +1165,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
 
 
 def _validate_login_browser_backend(
-        value: str, runtime_id: str = "") -> tuple[str, str]:
+        value: str, runtime_id: str = "", *,
+        platform: str = "") -> tuple[str, str]:
     requested = str(value or "default").strip().lower()
     runtime_id = str(runtime_id or "").strip()
     if requested not in ACCOUNT_BROWSER_BACKENDS:
@@ -1166,6 +1174,12 @@ def _validate_login_browser_backend(
     status = _browser_backend_status(requested, runtime_id)
     if not status["available"]:
         raise HTTPException(400, f"浏览器环境不可用：{status['detail']}")
+    if str(platform or "").lower() == "xhs" \
+            and status.get("name") != LOCAL_BACKEND:
+        raise HTTPException(
+            400,
+            "小红书仅支持系统 Chrome/CDP 原生环境；指纹内核会造成环境不一致",
+        )
     return requested, runtime_id
 
 
@@ -1245,7 +1259,7 @@ async def login_xhs_start(proxy: str = "auto", browser_backend: str = "default",
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
-        browser_backend, browser_runtime_id)
+        browser_backend, browser_runtime_id, platform="xhs")
     fingerprint_overrides = _validate_prelogin_fingerprint(
         fingerprint, browser_backend, browser_runtime_id)
     reused = await _reuse_or_reject_interactive_login("xhs", False)
@@ -1271,7 +1285,7 @@ async def login_xhs_creator_start(proxy: str = "auto", browser_backend: str = "d
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     browser_backend, browser_runtime_id = _validate_login_browser_backend(
-        browser_backend, browser_runtime_id)
+        browser_backend, browser_runtime_id, platform="xhs")
     fingerprint_overrides = _validate_prelogin_fingerprint(
         fingerprint, browser_backend, browser_runtime_id)
     reused = await _reuse_or_reject_interactive_login("xhs", True)
@@ -2808,6 +2822,16 @@ async def set_account_browser_backend(
         raise HTTPException(
             400, f"浏览器后端不可用:{status['detail']}")
 
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if account is None:
+            raise HTTPException(404, "账号不存在")
+        if account.platform == "xhs" and status.get("name") != LOCAL_BACKEND:
+            raise HTTPException(
+                400,
+                "小红书账号仅支持系统 Chrome/CDP 原生环境，不能切换到指纹内核",
+            )
+
     # A user-held headed context owns the same profile and must be released
     # before switching its runtime executable.
     lease = open_browsers.pop(account_id, None)
@@ -2819,7 +2843,7 @@ async def set_account_browser_backend(
 
     with get_session() as session:
         account = session.get(DouyinAccount, account_id)
-        if account is None:
+        if account is None:  # pragma: no cover - guarded above; handles races
             raise HTTPException(404, "账号不存在")
         account.browser_backend = requested
         account.browser_runtime_id = (

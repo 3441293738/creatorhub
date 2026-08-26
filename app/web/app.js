@@ -1077,28 +1077,29 @@ function browserChoiceParts(choice) {
   const [backend, runtimeId = ""] = String(choice || "default").split("::", 2);
   return { backend: backend || "default", runtimeId };
 }
-function browserChoiceOptions(catalog) {
+function browserChoiceOptions(catalog, { localOnly = false } = {}) {
   const backends = catalog.backends || [];
   const defaultBackend = backends.find(item => item.name === catalog.default);
   const local = backends.find(item => item.name === "local");
   const fingerprint = backends.find(item => item.name === "fingerprint_chromium");
   const runtimes = catalog.runtimes || [];
-  const options = [{
-    value: "default",
-    label: `跟随全局（${defaultBackend ? defaultBackend.label : catalog.default}）`,
-    disabled: !!defaultBackend && !defaultBackend.available,
-  }];
+  const options = [];
+  if (!localOnly || catalog.default === "local") options.push({
+      value: "default",
+      label: `跟随全局（${defaultBackend ? defaultBackend.label : catalog.default}）`,
+      disabled: !!defaultBackend && !defaultBackend.available,
+  });
   if (local) options.push({
     value: "local", label: local.label,
     disabled: !local.available,
   });
-  runtimes.forEach(runtime => options.push({
+  if (!localOnly) runtimes.forEach(runtime => options.push({
     value: `fingerprint_chromium::${runtime.runtime_id}`,
     label: `${runtime.name}${runtime.version ? ` · ${runtime.version}` : ""}${runtime.is_default ? " · 默认" : ""}`
       + (runtime.available ? "" : ` · 不可用：${runtime.detail || "未配置"}`),
     disabled: !runtime.available,
   }));
-  if (!runtimes.length && fingerprint) options.push({
+  if (!localOnly && !runtimes.length && fingerprint) options.push({
     value: "fingerprint_chromium",
     label: fingerprint.label + (fingerprint.available ? "" : ` · 不可用：${fingerprint.detail || "未配置"}`),
     disabled: !fingerprint.available,
@@ -1106,7 +1107,7 @@ function browserChoiceOptions(catalog) {
   return options;
 }
 // 新账号尚未落库，扫码前先确定浏览器内核；成功后该选择随账号持久化。
-async function choosePreLoginBrowserBackend() {
+async function choosePreLoginBrowserBackend({ platform = "" } = {}) {
   let catalog;
   try {
     catalog = await api("/api/browser-backends");
@@ -1115,12 +1116,15 @@ async function choosePreLoginBrowserBackend() {
     toast("读取登录环境失败：" + e.message, "err");
     return null;
   }
-  const options = browserChoiceOptions(catalog);
+  const localOnly = platform === "xhs";
+  const options = browserChoiceOptions(catalog, { localOnly });
   const selected = await uiSelect({
     title: "选择扫码登录环境",
-    hint: "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。新的指纹环境会同时打开 BrowserScan 体检标签。",
+    hint: localOnly
+      ? "小红书固定使用系统 Chrome/CDP 原生环境；扫码、Cookie 和后续任务共用同一持久 Profile。"
+      : "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。新的指纹环境会同时打开 BrowserScan 体检标签。",
     options,
-    value: preLoginBrowserBackend,
+    value: localOnly ? "local" : preLoginBrowserBackend,
   });
   if (selected !== null) preLoginBrowserBackend = selected;
   return selected;
@@ -1291,7 +1295,7 @@ async function startCreatorLogin() {
 
 // ─── 小红书扫码登录 ───
 async function startXhsLogin() {
-  const browserBackend = await choosePreLoginBrowserBackend();
+  const browserBackend = await choosePreLoginBrowserBackend({ platform: "xhs" });
   if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
@@ -1306,7 +1310,7 @@ async function startXhsLogin() {
       $("qrstatus").innerHTML = `${ic("i-eye")} <b>已有小红书扫码窗口</b>，已尝试切换到前台，请直接在该窗口继续。`;
       toast("已有扫码窗口，已切换到前台", "info");
     } else {
-      $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书官网首页已打开</b>，请在窗口中点击「登录」并使用小红书 App 扫码。<br>新指纹环境会附带 BrowserScan 体检标签，可先核对 IP、时区和 WebRTC。<br>主站登录成功后会保存读取登录态并自动关闭窗口。<br>如需发布，请随后单独点击「创作者登录」。`;
+      $("qrstatus").innerHTML = `${ic("i-eye")} <b>小红书官网首页已用系统 Chrome 打开</b>，请在窗口中点击「登录」并使用小红书 App 扫码。<br>如出现平台安全验证，自动任务会暂停，请只在当前窗口按提示完成。<br>主站登录成功后会保存读取登录态并自动关闭窗口。<br>如需发布，请随后单独点击「创作者登录」。`;
     }
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("小红书登录启动失败:" + e.message, "err"); }
@@ -1314,7 +1318,7 @@ async function startXhsLogin() {
 
 // ─── 小红书创作者登录(发布用) ───
 async function startXhsCreatorLogin() {
-  const browserBackend = await choosePreLoginBrowserBackend();
+  const browserBackend = await choosePreLoginBrowserBackend({ platform: "xhs" });
   if (browserBackend === null) return;
   const proxy = await choosePreLoginProxy();
   if (proxy === null) return;
@@ -2721,13 +2725,17 @@ async function setBrowserBackend(id) {
     toast("读取浏览器环境失败:" + e.message, "err");
     return;
   }
-  const options = browserChoiceOptions(catalog);
-  const currentChoice = account.browser_backend === "fingerprint_chromium" && account.browser_runtime_id
+  const localOnly = account.platform === "xhs";
+  const options = browserChoiceOptions(catalog, { localOnly });
+  const currentChoice = localOnly ? "local"
+    : account.browser_backend === "fingerprint_chromium" && account.browser_runtime_id
     ? `fingerprint_chromium::${account.browser_runtime_id}`
     : (account.browser_backend || "default");
   const selected = await uiSelect({
     title: "账号浏览器环境",
-    hint: `${account.nickname} · 切换时会关闭该账号当前浏览器，下次任务使用新内核。`,
+    hint: localOnly
+      ? `${account.nickname} · 小红书固定使用系统 Chrome/CDP 原生环境。`
+      : `${account.nickname} · 切换时会关闭该账号当前浏览器，下次任务使用新内核。`,
     options,
     value: currentChoice,
   });

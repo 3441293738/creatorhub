@@ -198,44 +198,23 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         healthy_page.on.assert_called()
         captcha_page.close.assert_awaited_once()
 
-    async def test_security_page_gets_one_visible_recovery_navigation(self):
+    async def test_security_page_is_left_for_manual_completion_without_retry(self):
         manager = AsyncMock()
         context = AsyncMock()
         captcha_page = AsyncMock()
         manager.context_for.return_value = context
         context.pages = [captcha_page]
         context.on = MagicMock()
-        context.storage_state.return_value = {
-            "cookies": [{"name": "web_session", "value": "r" * 24}]
-        }
-        context.cookies.return_value = [
-            {"name": "web_session", "value": "r" * 24}
-        ]
+        context.cookies.return_value = []
         captcha_page.url = "about:blank"
-        captcha_page.is_closed = MagicMock(return_value=False)
-        response_listener = {}
-
-        def page_on(event, listener):
-            if event == "response":
-                response_listener["handler"] = listener
-
-        captcha_page.on = MagicMock(side_effect=page_on)
-        navigation_count = 0
+        captcha_page.is_closed = MagicMock(side_effect=[False, True])
+        captcha_page.on = MagicMock()
 
         async def initial_goto(_url, **_kwargs):
-            nonlocal navigation_count
-            navigation_count += 1
-            if navigation_count == 1:
-                captcha_page.url = (
-                    "https://www.xiaohongshu.com/website-login/captcha"
-                    "?verifyType=124&verifyBiz=461"
-                )
-                return
-            captcha_page.url = "https://www.xiaohongshu.com/explore"
-            handler = response_listener.get("handler")
-            if handler is not None:
-                await handler(self._user_me_response(
-                    guest=False, user_id="recovered-user"))
+            captcha_page.url = (
+                "https://www.xiaohongshu.com/website-login/captcha"
+                "?verifyType=124&verifyBiz=461"
+            )
 
         captcha_page.goto.side_effect = initial_goto
 
@@ -250,36 +229,17 @@ class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):
         manager.xhs_interaction.pause = AsyncMock()
         status_callback = AsyncMock()
 
-        with (
-            patch(
-                "app.browser.login._XHS_SECURITY_RETRY_DELAY_SECONDS", 0,
-            ),
-            patch(
-                "app.browser.login._read_xhs_nickname",
-                new_callable=AsyncMock,
-                return_value="",
-            ),
-        ):
-            logged, state, nickname = await interactive_xhs_login(
+        with self.assertRaises(XhsSecurityVerificationRequired):
+            await interactive_xhs_login(
                 manager, object(), timeout_seconds=2,
                 status_callback=status_callback)
 
-        self.assertTrue(logged)
-        self.assertIn("web_session", state)
-        self.assertEqual(nickname, "")
-        self.assertEqual(captcha_page.goto.await_count, 2)
-        self.assertEqual(
-            captcha_page.goto.await_args_list[1].args[0],
-            "https://www.xiaohongshu.com/",
-        )
-        self.assertGreaterEqual(captcha_page.bring_to_front.await_count, 2)
-        self.assertEqual(status_callback.await_count, 2)
+        self.assertEqual(captcha_page.goto.await_count, 1)
+        self.assertEqual(captcha_page.goto.await_args.args[0],
+                         "https://www.xiaohongshu.com/")
+        self.assertEqual(status_callback.await_count, 1)
         self.assertIn("website-login/captcha",
                       status_callback.await_args_list[0].args[0])
-        self.assertEqual(
-            status_callback.await_args_list[1].args[0],
-            "https://www.xiaohongshu.com/explore",
-        )
 
     async def test_web_login_starts_from_homepage_and_skips_creator_platform(self):
         manager = AsyncMock()

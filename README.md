@@ -187,12 +187,14 @@ npm install
 - 小红书发布和评论默认使用 `browser` 页面模式。提交按钮只点击一次；提交后若浏览器连接中断或缺少成功证据，任务会标记为“结果待确认”，不会自动重试，需先到平台核对。
 - 如需直接使用 Patchright，可显式设置 `xhs_browser_mode: patchright`。旧配置值 `playwright` 会自动迁移为 `patchright`。
 
-### 可选：Fingerprint Chromium 开源内核
+### 可选：Fingerprint Chromium 开源内核（小红书除外）
 
 CreatorHub 可以把开源的
 [`fingerprint-chromium`](https://github.com/adryfish/fingerprint-chromium)
-作为可插拔 Chromium 运行时。账号、Profile、Cookie、代理、LRU 和风控仍由
-CreatorHub 管理，不需要外部商业浏览器或云端账号。
+作为其他平台的可插拔 Chromium 运行时。账号、Profile、Cookie、代理、LRU 和风控仍由
+CreatorHub 管理，不需要外部商业浏览器或云端账号。小红书始终使用系统 Chrome/CDP：
+第三方指纹内核与既有 Profile 混用容易造成 UA/Client Hints、GPU 和站点持久状态不一致，
+从而增加设备安全验证；后端、登录接口和账号设置页都会拒绝该组合。
 
 1. 从上游 Release 下载适合当前系统的构建并自行校验文件。
 2. 在账号页的「浏览器内核」区域扫描安装目录，或手动添加当前机器上的
@@ -210,9 +212,9 @@ engine:
 
 4. 重启 CreatorHub，在账号的「环境」设置中选择具体内核版本。
    `browser_backend: fingerprint_chromium` 可以将默认指纹内核应用到所有未单独
-   指定环境的账号。
+   指定环境的非小红书账号；小红书仍固定走系统 Chrome/CDP。
 
-添加新账号时，选择具体 Fingerprint Chromium 内核和代理后，会在浏览器首次启动前
+添加新的非小红书账号时，选择具体 Fingerprint Chromium 内核和代理后，会在浏览器首次启动前
 打开「登录前指纹配置」。语言、时区、位置和窗口可继续跟随出口 IP 自动生成，也可切换
 为自定义；操作系统、浏览器品牌、CPU、WebGL、Canvas、WebRTC 和附加参数同样可编辑。
 登录成功后，这套配置与该账号的独立 Profile 一起持久化，后续仍可通过账号行的「指纹」
@@ -222,8 +224,9 @@ engine:
 统一处理 UA/Client Hints、Canvas、Audio、WebGL、语言和时区；CreatorHub 不会
 再叠加 `legacy` JavaScript 指纹脚本。默认强制使用有头窗口，因为上游说明无头模式
 只处理了部分无头特征。切换已有账号的浏览器环境会改变其设备画像，建议切换后重新
-检查登录态和代理出口。小红书账号选择该后端后会直接启动该 Chromium，不再进入系统
-Chrome CDP 分支。
+检查登录态和代理出口。小红书登录和后续任务不会进入该分支，也不会在出现设备验证时
+自动刷新、跳转或重试；验证页会保留在可见系统 Chrome 窗口中供账号本人完成，期间
+自动任务保持暂停。
 
 每个新的指纹 Profile（以及内核、代理或指纹配置变化后的新环境）首次进入可见登录/
 账号浏览器时，会额外打开 `https://www.browserscan.net/zh` 体检标签，供用户核对实际
@@ -325,7 +328,7 @@ data/
 | macOS 安装依赖时报 `command /usr/bin/clang++ failed with code 1` | 更新代码后删除旧的 `.venv`，再运行 `./start.sh install`；安装器会先升级 pip/setuptools/wheel。 |
 | Patchright 启动失败或找不到浏览器 | 运行 `python -m patchright install chromium` |
 | 扫码登录没有弹窗 | 确认当前机器有桌面环境；抖音也可使用 Cookie 登录 |
-| 小红书扫码登录出现设备安全验证 | 尽量安装或更新本机稳定版 Google Chrome，并保持同一账号的 Profile 和网络出口稳定；没有 Chrome 时项目会回退到 Patchright Chromium |
+| 小红书扫码登录出现设备安全验证 | 安装或更新本机稳定版 Google Chrome，并保持同一账号的 Profile 和网络出口稳定；验证页出现后自动任务会暂停且不刷新、不跳转、不自动重试，请在当前可见窗口按平台提示完成 |
 | Windows 下出现 Patchright 子进程错误 | 使用单 worker 启动，不要添加 `--workers` |
 | 抓取不到作品或评论 | 检查登录态、目标链接和网络状态，必要时重新登录并降低频率 |
 | 小红书链接解析失败 | 重新复制包含有效 `xsec_token` 的完整链接 |

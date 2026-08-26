@@ -43,7 +43,7 @@ engine:
   # ── 多账号风控隔离 ──
   profiles_dir: ./data/profiles   # 每账号独立持久化浏览器 profile 根目录
   max_live_contexts: 6            # 同时常驻的浏览器 context 上限(LRU 驱逐,控内存;20+账号无需全开)
-  browser_backend: local          # local=现有 Patchright/CDP;fingerprint_chromium=全局使用开源指纹内核
+  browser_backend: local          # local=现有 Patchright/CDP;fingerprint_chromium=其他平台可选；小红书固定使用系统 Chrome/CDP
   fingerprint_chromium_path: ""   # 本机 chrome/chromium 主程序路径；也可用 CREATORHUB_FINGERPRINT_CHROMIUM_PATH
   fingerprint_chromium_root: ""   # 本机多内核扫描根目录；不同机器分别配置，不限定盘符；多目录可用环境变量 CREATORHUB_FINGERPRINT_CHROMIUM_ROOTS
   fingerprint_chromium_allow_headless: false # 上游无头画像不完整,默认所有指纹环境使用可见窗口
