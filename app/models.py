@@ -290,6 +290,7 @@ class CommentRecord(SQLModel, table=True):
     comment_id: str = Field(index=True)        # 抖音 cid
     text: str = ""
     user_nickname: str = ""
+    user_sec_uid: str = ""                    # 抖音评论用户 sec_uid
     like_count: int = 0
     create_time: int = 0                       # 评论时间(unix 秒)
     reply_to: str = ""                         # 上级评论 cid(子评论时)

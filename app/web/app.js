@@ -2387,6 +2387,7 @@ async function loadWorkComments() {
 function cmtRow(c) {
   return `<div class="wc-item${c.is_reply ? " reply" : ""}">
     <div class="wc-head"><b>${esc(c.user_nickname || "匿名")}</b><span class="wc-time">${fmtTime(c.create_time)}</span></div>
+    ${c.user_sec_uid ? `<div class="comment-user-sec" title="${esc(c.user_sec_uid)}">sec_uid: ${esc(c.user_sec_uid)}</div>` : ""}
     <div class="wc-text">${esc(c.text || "")}</div>
     <div class="wc-meta">${ic("i-heart")}${fmtNum(c.like_count)}${c.is_reply ? " · 回复" : ""}</div>
   </div>`;
@@ -5554,7 +5555,7 @@ async function refreshComments(resetPage = false) {
     return `<tr>
     <td><input type="checkbox" data-id="${r.id}" onchange="commentToggleOne(${r.id}, this.checked)" ${selComment.has(r.id) ? "checked" : ""}></td>
     <td class="wrap" style="max-width:360px">${r.is_reply ? '<span class="mut">↳</span> ' : ""}${esc(r.text || "").slice(0, 60)}${src}</td>
-    <td class="mut">${esc(r.user_nickname || "")}</td>
+    <td class="mut comment-user"><div>${esc(r.user_nickname || "")}</div>${r.user_sec_uid ? `<div class="comment-user-sec" title="${esc(r.user_sec_uid)}">sec_uid: ${esc(r.user_sec_uid)}</div>` : ""}</td>
     <td class="mut num">${fmtNum(r.like_count)}</td>
     <td class="mut num">${fmtTime(r.create_time)}</td>
     <td class="acttd"><button class="ghost sm danger" onclick="delComment(${r.id})">${ic("i-trash")}删除</button></td>

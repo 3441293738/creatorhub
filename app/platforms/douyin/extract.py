@@ -137,6 +137,8 @@ def parse_comment(raw: dict) -> Optional[dict]:
         "comment_id": cid,
         "text": (raw.get("text") or "").strip(),
         "user_nickname": user.get("nickname") or "",
+        "user_sec_uid": str(_first_value(
+            user, "sec_uid", "secUid", "sec_user_id", "secUserId", default="") or ""),
         "like_count": int(raw.get("digg_count") or 0),
         "create_time": int(raw.get("create_time") or 0),
         "reply_to": str(raw.get("reply_id") or "") if raw.get("reply_id") not in (None, "0") else "",
@@ -268,6 +270,8 @@ def parse_creator_comment(raw: dict) -> Optional[dict]:
         "comment_id": cid,
         "text": str(_first(raw, "text", "content", "comment_text", default="")).strip(),
         "user_nickname": _first(user, "nickname", "name", "user_name", default="") or "",
+        "user_sec_uid": str(_first(
+            user, "sec_uid", "secUid", "sec_user_id", "secUserId", default="") or ""),
         "like_count": int(_first(raw, "digg_count", "like_count", "diggCount",
                                  default=0) or 0),
         "create_time": int(_first(raw, "create_time", "createTime", "comment_time",

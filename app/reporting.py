@@ -506,7 +506,7 @@ _CONTENT_HEADERS = (
 )
 _COMMENT_HEADERS = (
     "ID", "评论监控", "平台", "作品ID", "评论ID", "评论内容", "用户昵称",
-    "点赞数", "评论时间", "采集时间", "类型", "上级评论ID",
+    "用户sec_uid", "点赞数", "评论时间", "采集时间", "类型", "上级评论ID",
 )
 _DANMAKU_HEADERS = (
     "ID", "弹幕监控", "平台", "作品ID", "弹幕ID", "弹幕内容", "用户ID",
@@ -561,6 +561,7 @@ def _comment_row(row: Any, watch_names: dict[Any, str]) -> tuple[Any, ...]:
         _text(_value(row, "comment_id")),
         _text(_value(row, "text")),
         _text(_value(row, "user_nickname")),
+        _text(_value(row, "user_sec_uid")),
         _value(row, "like_count", 0),
         _timestamp(_value(row, "create_time")),
         _excel_datetime(_value(row, "created_at")),
@@ -724,10 +725,10 @@ def build_comments_report(
         headers=_COMMENT_HEADERS,
         rows=(_comment_row(row, watch_names) for row in comments),
         filters=filters,
-        widths=(10, 28, 12, 24, 24, 56, 22, 12, 20, 20, 14, 24),
-        date_columns={9, 10},
-        number_columns={1, 8},
-        number_formats={1: "0", 8: "#,##0"},
+        widths=(10, 28, 12, 24, 24, 56, 22, 38, 12, 20, 20, 14, 24),
+        date_columns={10, 11},
+        number_columns={1, 9},
+        number_formats={1: "0", 9: "#,##0"},
         tab_color="14B8A6",
         freeze_panes="F2",
         row_height=36,
@@ -1213,7 +1214,7 @@ def build_monitor_report(
     _write_table(
         workbook,
         "评论数据",
-        ("ID", "评论监控", "平台", "作品ID", "评论ID", "评论内容", "用户昵称", "点赞数", "评论时间", "采集时间", "类型", "上级评论ID"),
+        ("ID", "评论监控", "平台", "作品ID", "评论ID", "评论内容", "用户昵称", "用户sec_uid", "点赞数", "评论时间", "采集时间", "类型", "上级评论ID"),
         (
             (
                 _value(row, "id"),
@@ -1223,6 +1224,7 @@ def build_monitor_report(
                 _text(_value(row, "comment_id")),
                 _text(_value(row, "text")),
                 _text(_value(row, "user_nickname")),
+                _text(_value(row, "user_sec_uid")),
                 _value(row, "like_count", 0),
                 _timestamp(_value(row, "create_time")),
                 _excel_datetime(_value(row, "created_at")),
@@ -1231,10 +1233,10 @@ def build_monitor_report(
             )
             for row in comments
         ),
-        widths=(10, 28, 12, 24, 24, 56, 22, 12, 20, 20, 14, 24),
-        date_columns={9, 10},
-        number_columns={1, 8},
-        number_formats={1: "0", 8: "#,##0"},
+        widths=(10, 28, 12, 24, 24, 56, 22, 38, 12, 20, 20, 14, 24),
+        date_columns={10, 11},
+        number_columns={1, 9},
+        number_formats={1: "0", 9: "#,##0"},
         tab_color="14B8A6",
         freeze_panes="F2",
         row_height=36,

@@ -64,6 +64,7 @@ class MonitorReportTests(unittest.TestCase):
             aweme_id="aweme-1",
             comment_id="comment-1",
             text="+engagement",
+            user_sec_uid="MS4wLj-commenter",
             created_at=captured_at,
         )
         danmaku_watch = DanmakuWatch(
@@ -104,6 +105,7 @@ class MonitorReportTests(unittest.TestCase):
         self.assertEqual(workbook.worksheets[2]["D2"].value, "aweme-1")
         self.assertEqual(workbook.worksheets[2]["E2"].value, "'=SUM(1, 1)")
         self.assertEqual(workbook.worksheets[3]["F2"].value, "'+engagement")
+        self.assertEqual(workbook.worksheets[3]["H2"].value, "MS4wLj-commenter")
         self.assertEqual(workbook.worksheets[4]["F2"].value, "'@viewer")
 
     def test_report_can_be_built_with_empty_data(self):

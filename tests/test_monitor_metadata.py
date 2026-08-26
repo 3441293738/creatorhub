@@ -88,7 +88,7 @@ class MonitorMetadataTests(unittest.TestCase):
             session.refresh(watch_other_platform)
             session.add(CommentRecord(
                 platform="douyin", watch_id=watch_a.id, aweme_id="v1",
-                comment_id="c1",
+                comment_id="c1", user_sec_uid="commenter-sec-1",
             ))
             session.add(CommentRecord(
                 platform="douyin", watch_id=watch_b.id, aweme_id="v2",
@@ -108,6 +108,11 @@ class MonitorMetadataTests(unittest.TestCase):
         ))
         self.assertEqual([row["aweme_id"] for row in contents], ["a1"])
         self.assertEqual([row["comment_id"] for row in comments], ["c1"])
+        self.assertEqual(comments[0]["user_sec_uid"], "commenter-sec-1")
+        by_sec_uid = asyncio.run(list_comments(
+            platform="douyin", q="commenter-sec-1",
+        ))
+        self.assertEqual([row["comment_id"] for row in by_sec_uid], ["c1"])
 
     def test_content_and_comment_pagination_and_record_filters(self):
         with db.get_session() as session:
@@ -169,6 +174,12 @@ class MonitorMetadataMigrationTests(unittest.TestCase):
                 "platform VARCHAR NOT NULL DEFAULT 'douyin', "
                 "aweme_id VARCHAR NOT NULL DEFAULT '')"
             )
+            connection.execute(
+                "CREATE TABLE commentrecord ("
+                "id INTEGER PRIMARY KEY, "
+                "aweme_id VARCHAR NOT NULL DEFAULT '', "
+                "comment_id VARCHAR NOT NULL DEFAULT '')"
+            )
             connection.commit()
             connection.close()
 
@@ -184,6 +195,11 @@ class MonitorMetadataMigrationTests(unittest.TestCase):
                         "PRAGMA table_info(commentwatch)"
                     )
                 }
+                comment_columns = {
+                    row[1] for row in connection.exec_driver_sql(
+                        "PRAGMA table_info(commentrecord)"
+                    )
+                }
             engine.dispose()
             db._engine = previous_engine
 
@@ -195,6 +211,7 @@ class MonitorMetadataMigrationTests(unittest.TestCase):
         }
         self.assertTrue(expected <= monitor_columns)
         self.assertTrue({"alias", "group_name", "tags"} <= watch_columns)
+        self.assertIn("user_sec_uid", comment_columns)
 
 
 if __name__ == "__main__":

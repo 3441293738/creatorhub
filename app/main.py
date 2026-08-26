@@ -7001,6 +7001,7 @@ async def export_comments_report(
         if q:
             stmt = stmt.where(or_(CommentRecord.text.contains(q),
                                   CommentRecord.user_nickname.contains(q),
+                                  CommentRecord.user_sec_uid.contains(q),
                                   CommentRecord.aweme_id.contains(q)))
         if reply_type == "top":
             stmt = stmt.where(CommentRecord.reply_to == "")
@@ -7544,6 +7545,7 @@ def _comment_dict(c: CommentRecord) -> dict:
     return {
         "id": c.id, "watch_id": c.watch_id, "aweme_id": c.aweme_id,
         "comment_id": c.comment_id, "text": c.text, "user_nickname": c.user_nickname,
+        "user_sec_uid": c.user_sec_uid,
         "like_count": c.like_count, "create_time": c.create_time,
         "is_reply": bool(c.reply_to),
     }
@@ -7572,6 +7574,7 @@ async def list_comments(limit: int = 100, watch_id: int | None = None,
         if text_query:
             stmt = stmt.where(or_(CommentRecord.text.contains(text_query),
                                   CommentRecord.user_nickname.contains(text_query),
+                                  CommentRecord.user_sec_uid.contains(text_query),
                                   CommentRecord.aweme_id.contains(text_query)))
         if reply_type == "top":
             stmt = stmt.where(CommentRecord.reply_to == "")
