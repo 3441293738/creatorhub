@@ -36,22 +36,59 @@ SELECTOR_GROUPS: Mapping[str, tuple[SelectorCandidate, ...]] = MappingProxyType(
         _text("video_text", "视频"),
     ),
     "publish.file": (
+        # Current creator builds mount more than one hidden file input. Prefer
+        # the upload input selected by class/accept before the generic fallback.
+        _css("publish_upload_input", "input.upload-input"),
+        _css("publish_image_accept", 'input[type="file"][accept*="image"]'),
+        _css("publish_video_accept", 'input[type="file"][accept*="video"]'),
         _css("publish_file_input", 'input[type="file"]'),
     ),
     "publish.title": (
         _css("title_placeholder", 'input[placeholder*="标题"]'),
+        _css("title_textarea_id", "#title-textarea"),
+        _css("title_textarea_placeholder", 'textarea[placeholder*="标题"]'),
+        _css("title_d_input_container", "div.d-input input"),
+        _css("title_d_input", "input.d-text"),
         _css("title_d_text_input", ".d-text input"),
         _css("title_c_input_inner", "input.c-input_inner"),
     ),
     "publish.body": (
+        # Part of the July/August 2026 rollout moved from Quill to TipTap.
+        # Specific editor selectors must precede the broad contenteditable
+        # fallback so title scaffolding is never selected as the body.
+        _css(
+            "body_role_textbox",
+            'div[role="textbox"][contenteditable="true"]',
+        ),
+        _css("body_tiptap", 'div.tiptap[contenteditable="true"]'),
+        _css(
+            "body_tiptap_prosemirror",
+            'div.tiptap.ProseMirror[contenteditable="true"]',
+        ),
+        _css(
+            "body_prosemirror",
+            'div.ProseMirror[contenteditable="true"]',
+        ),
+        _css(
+            "body_description_placeholder",
+            '[contenteditable="true"][data-placeholder*="正文"]',
+        ),
         _css("body_ql_editor", ".ql-editor"),
         _css("body_post_textarea", "#post-textarea"),
         _css("body_contenteditable", '[contenteditable="true"]'),
         _css("body_textarea", "textarea"),
     ),
     "publish.submit": (
+        # The new action control is a custom element whose real button lives
+        # in a closed shadow root. The caller clicks its inner node via CDP.
+        _css("publish_web_component", "xhs-publish-btn"),
         _css("publish_button", 'button:has-text("发布")'),
         _css("publish_submit_button", "div.submit button"),
+        _css(
+            "publish_page_red_button",
+            ".publish-page-publish-btn button.bg-red",
+        ),
+        _css("publish_page_button", ".publish-page-publish-btn button"),
         _text("publish_note_text", "发布笔记"),
     ),
     "publish.progress": (

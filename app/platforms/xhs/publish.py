@@ -86,6 +86,7 @@ async def publish_xhs(mgr: BrowserManager, identity: Identity, storage_state_jso
                       topics: str = "", headed: bool = True,
                       timeout_seconds: int = 180,
                       mode: str = "browser",
+                      visibility: str = "public",
                       on_submit=None) -> Tuple[bool, str, str]:
     """发布一条小红书笔记。返回 (ok, result_url, error)。
     页面模式使用账号持久 Profile；API 仅为显式兼容模式。"""
@@ -104,7 +105,8 @@ async def publish_xhs(mgr: BrowserManager, identity: Identity, storage_state_jso
     if mode == "browser":
         outcome = await publish_xhs_browser(
             mgr, identity, media_type, title, desc, tags, files,
-            timeout_seconds=timeout_seconds, on_submit=on_submit)
+            timeout_seconds=timeout_seconds, visibility=visibility,
+            on_submit=on_submit)
         return outcome.legacy()
 
     # 显式 API 兼容模式；失败后不切换到浏览器，避免一次任务被重复提交。

@@ -9,7 +9,8 @@ from app.browser.identity import Identity
 
 
 class _Locator:
-    def __init__(self, page, name, *, visible=True, enabled=True):
+    def __init__(self, page, name, *, visible=True, enabled=True,
+                 text="", attrs=None):
         self.page = page
         self.name = name
         self.visible = visible
@@ -17,6 +18,8 @@ class _Locator:
         self.value = ""
         self.click_count = 0
         self.files = []
+        self.text = text
+        self.attrs = attrs or {}
 
     @property
     def first(self):
@@ -56,6 +59,8 @@ class _Locator:
                 self.page.closed = True
                 raise RuntimeError("Target page, context or browser has been closed")
             self.page.posted_text = self.page.composer.value
+        if self.name == "private-option":
+            self.page.visibility_current.text = "仅自己可见"
 
     async def set_input_files(self, files, **_kwargs):
         self.files = list(files)
@@ -72,6 +77,15 @@ class _Locator:
 
     async def input_value(self):
         return self.value
+
+    async def get_attribute(self, name):
+        return self.attrs.get(name)
+
+    async def inner_text(self):
+        return self.text
+
+    def nth(self, index):
+        return self if index == 0 else _MissingLocator(self.page)
 
 
 class _MissingLocator(_Locator):
@@ -104,8 +118,15 @@ class _Page:
         self.title = _Locator(self, "title")
         self.body = _Locator(self, "body")
         self.publish = _Locator(self, "publish")
+        self.visibility_current = _Locator(
+            self, "visibility-current", text="公开可见",
+            attrs={"class": "d-select-description"})
 
     def locator(self, selector):
+        if selector == "xhs-publish-btn":
+            return _MissingLocator(self)
+        if selector == ".d-select-description":
+            return self.visibility_current
         if selector == 'input[type="file"]':
             return self.file_input
         if "标题" in selector or selector in {".d-text input", "input.c-input_inner"}:
@@ -124,6 +145,12 @@ class _Page:
             return self.image_tab
         if text in {"发布成功", "发布完成"}:
             return _Locator(self, "success", visible="success" in self.url)
+        if "/new/note-manager" in self.url \
+                and text == self.title.value and self.title.value:
+            return _Locator(self, "confirmed-note", text=text)
+        if text == "仅自己可见":
+            return _Locator(
+                self, "private-option", text=text, attrs={"class": "name"})
         return _MissingLocator(self)
 
     def on(self, event, listener):
@@ -136,6 +163,117 @@ class _Page:
 
     def is_closed(self):
         return self.closed
+
+    async def goto(self, url, **_kwargs):
+        self.url = url
+
+    async def reload(self, **_kwargs):
+        return None
+
+
+class _CdpSession:
+    def __init__(self, page):
+        self.page = page
+        self.calls = []
+        self.detached = False
+
+    async def send(self, method, params=None):
+        self.calls.append((method, params or {}))
+        if method == "DOM.getDocument":
+            return {"root": {
+                "nodeName": "#document",
+                "children": [{
+                    "nodeName": "XHS-PUBLISH-BTN",
+                    "attributes": ["submit-disabled", "false"],
+                    "shadowRoots": [{
+                        "nodeName": "#document-fragment",
+                        "shadowRootType": "closed",
+                        "children": [{
+                            "nodeName": "BUTTON",
+                            "backendNodeId": 99,
+                            "children": [{
+                                "nodeName": "#text",
+                                "nodeValue": "发布",
+                            }],
+                        }],
+                    }],
+                }],
+            }}
+        if method == "DOM.getBoxModel":
+            return {"model": {"border": [10, 20, 110, 20, 110, 60, 10, 60]}}
+        if method == "Input.dispatchMouseEvent" \
+                and (params or {}).get("type") == "mouseReleased":
+            self.page.url = "https://creator.xiaohongshu.com/publish/success"
+        return {}
+
+    async def detach(self):
+        self.detached = True
+
+
+class _CdpContext:
+    def __init__(self, page):
+        self.session = _CdpSession(page)
+
+    async def new_cdp_session(self, _page):
+        return self.session
+
+
+class _WebComponentPage(_Page):
+    def __init__(self):
+        super().__init__(publish_success_url=False)
+        self.web_component = _Locator(self, "web-component")
+        self.context = _CdpContext(self)
+
+    def locator(self, selector):
+        if selector == "xhs-publish-btn":
+            return self.web_component
+        return super().locator(selector)
+
+
+class _DelayedFileInputPage(_Page):
+    def __init__(self):
+        super().__init__()
+        self.file_queries = 0
+
+    def locator(self, selector):
+        if selector in {
+                "input.upload-input",
+                'input[type="file"][accept*="image"]',
+                'input[type="file"][accept*="video"]',
+                'input[type="file"]'}:
+            self.file_queries += 1
+            if self.file_queries <= 4:
+                return _MissingLocator(self)
+            return self.file_input
+        return super().locator(selector)
+
+
+class _LocatorList:
+    def __init__(self, locators):
+        self.locators = list(locators)
+
+    async def count(self):
+        return len(self.locators)
+
+    def nth(self, index):
+        return self.locators[index]
+
+    @property
+    def first(self):
+        return self.locators[0]
+
+
+class _HiddenVisibilityScaffoldPage(_Page):
+    def __init__(self):
+        super().__init__()
+        self.hidden_visibility = _Locator(
+            self, "hidden-visibility", visible=False, text="")
+
+    def locator(self, selector):
+        if selector == ".d-select-description":
+            return _LocatorList([
+                self.hidden_visibility, self.visibility_current])
+        return super().locator(selector)
 
 
 class _CommentPage:
@@ -272,6 +410,85 @@ class XhsBrowserWriteTests(unittest.TestCase):
             media.write_bytes(b"fixture")
             asyncio.run(scenario(str(media)))
 
+    def test_new_web_component_publish_button_uses_one_closed_shadow_click(self):
+        from app.platforms.xhs.browser_writes import publish_xhs_browser
+
+        async def scenario(media_path):
+            page = _WebComponentPage()
+            manager = _Manager(page)
+            on_submit = AsyncMock()
+            outcome = await publish_xhs_browser(
+                manager, self._identity(Path(media_path).parent), "images",
+                "新版标题", "新版正文", [], [media_path],
+                on_submit=on_submit)
+            self.assertEqual(outcome.status, "success")
+            on_submit.assert_awaited_once_with()
+            events = [
+                params["type"] for method, params in page.context.session.calls
+                if method == "Input.dispatchMouseEvent"
+            ]
+            self.assertEqual(events, [
+                "mouseMoved", "mousePressed", "mouseReleased"])
+            self.assertTrue(page.context.session.detached)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "one.jpg"
+            media.write_bytes(b"fixture")
+            asyncio.run(scenario(str(media)))
+
+    def test_publish_waits_for_file_input_mounted_after_tab_switch(self):
+        from app.platforms.xhs.browser_writes import publish_xhs_browser
+
+        async def scenario(media_path):
+            page = _DelayedFileInputPage()
+            manager = _Manager(page)
+            outcome = await publish_xhs_browser(
+                manager, self._identity(Path(media_path).parent), "images",
+                "标题", "正文", [], [media_path])
+            self.assertEqual(outcome.status, "success")
+            self.assertGreater(page.file_queries, 4)
+            self.assertEqual(page.file_input.files, [media_path])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "one.jpg"
+            media.write_bytes(b"fixture")
+            asyncio.run(scenario(str(media)))
+
+    def test_publish_applies_private_visibility_before_submit(self):
+        from app.platforms.xhs.browser_writes import publish_xhs_browser
+
+        async def scenario(media_path):
+            page = _Page()
+            manager = _Manager(page)
+            outcome = await publish_xhs_browser(
+                manager, self._identity(Path(media_path).parent), "images",
+                "标题", "正文", [], [media_path], visibility="private")
+            self.assertEqual(outcome.status, "success")
+            self.assertEqual(page.visibility_current.text, "仅自己可见")
+            self.assertEqual(page.publish.click_count, 1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "one.jpg"
+            media.write_bytes(b"fixture")
+            asyncio.run(scenario(str(media)))
+
+    def test_visibility_skips_hidden_video_scaffolding(self):
+        from app.platforms.xhs.browser_writes import publish_xhs_browser
+
+        async def scenario(media_path):
+            page = _HiddenVisibilityScaffoldPage()
+            manager = _Manager(page)
+            outcome = await publish_xhs_browser(
+                manager, self._identity(Path(media_path).parent), "video",
+                "标题", "正文", [], [media_path], visibility="private")
+            self.assertEqual(outcome.status, "success")
+            self.assertEqual(page.visibility_current.text, "仅自己可见")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "one.mp4"
+            media.write_bytes(b"fixture")
+            asyncio.run(scenario(str(media)))
+
     def test_publish_page_open_failure_stays_a_pre_submit_failure(self):
         from app.platforms.xhs.browser_writes import publish_xhs_browser
 
@@ -305,6 +522,16 @@ class XhsBrowserWriteTests(unittest.TestCase):
 
         self.assertFalse(asyncio.run(_visible_success(
             PageWithPublishedNavigation())))
+
+    def test_navigation_away_from_publish_form_is_success_evidence(self):
+        from app.platforms.xhs.browser_writes import _visible_success
+
+        page = _Page(publish_success_url=False)
+        page.url = "https://creator.xiaohongshu.com/publish/manager"
+        self.assertTrue(asyncio.run(_visible_success(page)))
+
+        page.url = "https://creator.xiaohongshu.com/passport/login"
+        self.assertFalse(asyncio.run(_visible_success(page)))
 
     def test_http_200_business_rejection_is_not_publish_success(self):
         from app.platforms.xhs.browser_writes import publish_xhs_browser

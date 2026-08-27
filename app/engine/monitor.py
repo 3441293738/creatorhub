@@ -2848,6 +2848,7 @@ class MonitorEngine:
                                              title, desc, files, topics=topics,
                                              headed=True,
                                              mode=xhs_mode,
+                                             visibility=visibility,
                                              on_submit=(
                                                  lambda: self._mark_browser_submit(
                                                      PublishTask, task_id)

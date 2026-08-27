@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Sequence
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
@@ -19,7 +20,145 @@ from ...browser.xhs_selectors import (
 
 
 PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official"
+PUBLISH_MANAGER_URL = "https://creator.xiaohongshu.com/new/note-manager"
 _SUCCESS_TEXTS = ("发布成功", "发布完成")
+
+
+def _publish_url(media_type: str) -> str:
+    target = "video" if media_type == "video" else "image"
+    return f"{PUBLISH_URL}&from=tab_switch&target={target}"
+
+
+def _node_attributes(node: dict) -> dict[str, str]:
+    raw = list(node.get("attributes") or ())
+    return {
+        str(raw[index]).lower(): str(raw[index + 1])
+        for index in range(0, len(raw) - 1, 2)
+    }
+
+
+def _node_children(node: dict):
+    yield from node.get("children") or ()
+    yield from node.get("shadowRoots") or ()
+    content = node.get("contentDocument")
+    if isinstance(content, dict):
+        yield content
+
+
+def _node_text(node: dict) -> str:
+    value = str(node.get("nodeValue") or "")
+    return value + "".join(_node_text(child) for child in _node_children(node))
+
+
+def _find_publish_component_button(root: dict) -> dict | None:
+    """Return the real button even when it lives in a closed shadow root."""
+    hosts: list[dict] = []
+
+    def collect(node: dict) -> None:
+        if str(node.get("nodeName") or "").upper() == "XHS-PUBLISH-BTN":
+            hosts.append(node)
+        for child in _node_children(node):
+            collect(child)
+
+    collect(root)
+    for host in hosts:
+        buttons: list[dict] = []
+
+        def find_buttons(node: dict) -> None:
+            if str(node.get("nodeName") or "").upper() == "BUTTON":
+                buttons.append(node)
+            for child in _node_children(node):
+                find_buttons(child)
+
+        for shadow in host.get("shadowRoots") or ():
+            find_buttons(shadow)
+        if not buttons:
+            continue
+        enabled = [
+            button for button in buttons
+            if "disabled" not in _node_attributes(button)
+        ] or buttons
+        for button in enabled:
+            if "发布" in _node_text(button):
+                return button
+        return enabled[0]
+    return None
+
+
+def _quad_center(model: dict) -> tuple[float, float] | None:
+    box = model.get("model") or {}
+    quad = box.get("border") or box.get("content") or ()
+    if len(quad) < 8:
+        return None
+    xs = [float(quad[index]) for index in range(0, 8, 2)]
+    ys = [float(quad[index]) for index in range(1, 8, 2)]
+    return sum(xs) / 4, sum(ys) / 4
+
+
+async def _click_closed_shadow_publish_button(page: Any) -> None:
+    """Dispatch one trusted click to the closed-shadow publish button."""
+    session = await page.context.new_cdp_session(page)
+    try:
+        await session.send("DOM.enable")
+        document = await session.send(
+            "DOM.getDocument", {"depth": -1, "pierce": True})
+        button = _find_publish_component_button(document.get("root") or {})
+        if button is None:
+            raise RuntimeError("新版发布组件的内部按钮尚未就绪")
+        backend_node_id = button.get("backendNodeId")
+        if backend_node_id is None:
+            raise RuntimeError("新版发布组件缺少可点击节点")
+        with suppress(Exception):
+            await session.send(
+                "DOM.scrollIntoViewIfNeeded",
+                {"backendNodeId": backend_node_id},
+            )
+        center = _quad_center(await session.send(
+            "DOM.getBoxModel", {"backendNodeId": backend_node_id}))
+        if center is None:
+            raise RuntimeError("新版发布按钮当前没有可见点击区域")
+        x, y = center
+        await session.send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved", "x": x, "y": y,
+        })
+        await session.send("Input.dispatchMouseEvent", {
+            "type": "mousePressed", "x": x, "y": y,
+            "button": "left", "clickCount": 1,
+        })
+        await session.send("Input.dispatchMouseEvent", {
+            "type": "mouseReleased", "x": x, "y": y,
+            "button": "left", "clickCount": 1,
+        })
+    finally:
+        with suppress(Exception):
+            await session.detach()
+
+
+class _PublishWebComponentLocator:
+    """Locator facade for the creator-center closed-shadow publish control."""
+
+    def __init__(self, page: Any, host: Any):
+        self._page = page
+        self._host = host
+
+    def __getattr__(self, name: str):
+        return getattr(self._host, name)
+
+    async def is_enabled(self) -> bool:
+        try:
+            disabled = str(
+                await self._host.get_attribute("submit-disabled") or ""
+            ).strip().lower()
+            loading = str(
+                await self._host.get_attribute("submit-loading") or ""
+            ).strip().lower()
+            return disabled not in {"true", "1"} and loading not in {
+                "true", "1"}
+        except Exception:
+            return True
+
+    async def click(self, *_args, **_kwargs):
+        await _click_closed_shadow_publish_button(self._page)
 
 
 @dataclass(frozen=True)
@@ -53,6 +192,79 @@ async def _wait_until_enabled(locator: Any, interaction: Any,
             pass
         await interaction.pause(0.2, 0.45)
     return False
+
+
+async def _wait_for_visible(page: Any, group: str, interaction: Any,
+                            *, attempts: int = 40) -> tuple[Any | None, str]:
+    """Poll editors/widgets that are mounted after asynchronous upload work."""
+    for index in range(max(1, attempts)):
+        locator, name = await find_visible(page, group)
+        if locator is not None:
+            return locator, name
+        if index + 1 < attempts:
+            await interaction.pause(0.18, 0.32)
+    return None, ""
+
+
+async def _wait_for_present(page: Any, group: str, interaction: Any,
+                            *, attempts: int = 60) -> tuple[Any | None, str]:
+    """Poll hidden controls that are mounted shortly after a tab transition."""
+    for index in range(max(1, attempts)):
+        locator, name = await find_present(page, group)
+        if locator is not None:
+            return locator, name
+        if index + 1 < attempts:
+            await interaction.pause(0.18, 0.32)
+    return None, ""
+
+
+_VISIBILITY_LABELS = {
+    "public": "公开可见",
+    "private": "仅自己可见",
+    "friends": "仅互关好友可见",
+}
+
+
+async def _set_publish_visibility(page: Any, interaction: Any,
+                                  visibility: str) -> None:
+    desired = _VISIBILITY_LABELS.get(str(visibility or "public"), "公开可见")
+    candidates = page.locator(".d-select-description")
+    current = None
+    for index in range(int(await candidates.count())):
+        candidate = candidates.nth(index)
+        try:
+            if await candidate.is_visible():
+                current = candidate
+                break
+        except Exception:
+            continue
+    if current is not None:
+        try:
+            if str(await current.inner_text()).strip() == desired:
+                return
+        except Exception:
+            pass
+        await interaction.click_visible(current)
+        await interaction.pause(0.15, 0.3)
+    else:
+        raise RuntimeError("未找到可见范围设置")
+
+    options = page.get_by_text(desired, exact=True)
+    for index in range(int(await options.count())):
+        option = options.nth(index)
+        try:
+            cls = str(await option.get_attribute("class") or "")
+            if await option.is_visible() and "name" in cls.split():
+                await interaction.click_visible(option)
+                await interaction.pause(0.15, 0.3)
+                if str(await current.inner_text()).strip() != desired:
+                    raise RuntimeError("可见范围设置后读回不一致")
+                return
+        except RuntimeError:
+            raise
+        except Exception:
+            continue
+    raise RuntimeError(f"未找到可见范围选项：{desired}")
 
 
 async def _upload_is_busy(page: Any) -> bool:
@@ -150,9 +362,24 @@ async def _consume_publish_responses(evidence: dict) -> bool:
 
 
 async def _visible_success(page: Any) -> bool:
-    if any(marker in str(getattr(page, "url", "")).lower()
+    raw_url = str(getattr(page, "url", "") or "")
+    lower_url = raw_url.lower()
+    if any(marker in lower_url
            for marker in ("/publish/success", "publish_success")):
         return True
+    # Current creator-center variants return to content management rather than
+    # a dedicated success route. This check only runs after the one submit
+    # click, and excludes auth/risk/error routes from success evidence.
+    try:
+        parsed = urlsplit(raw_url)
+        path = (parsed.path or "/").lower()
+        if parsed.hostname == "creator.xiaohongshu.com" \
+                and "/publish/publish" not in path \
+                and not any(marker in lower_url for marker in (
+                    "login", "passport", "verify", "captcha", "error")):
+            return True
+    except Exception:
+        pass
     for text in _SUCCESS_TEXTS:
         try:
             locator = page.get_by_text(text, exact=False).first
@@ -163,10 +390,39 @@ async def _visible_success(page: Any) -> bool:
     return False
 
 
+async def _confirm_published_title(page: Any, title: str, interaction: Any,
+                                   *, attempts: int = 40) -> bool:
+    """Confirm the submitted note is present in creator note management."""
+    title = str(title or "").strip()
+    if not title:
+        return False
+    try:
+        await page.goto(
+            PUBLISH_MANAGER_URL,
+            wait_until="domcontentloaded",
+            timeout=40_000,
+        )
+    except Exception:
+        return False
+    for index in range(max(1, attempts)):
+        try:
+            match = page.get_by_text(title, exact=True).first
+            if await match.count() and await match.is_visible():
+                return True
+        except Exception:
+            pass
+        if index + 1 < attempts:
+            await interaction.pause(0.45, 0.8)
+            with suppress(Exception):
+                await page.reload(wait_until="domcontentloaded", timeout=40_000)
+    return False
+
+
 async def publish_xhs_browser(
         mgr: BrowserManager, identity: Identity, media_type: str,
         title: str, desc: str, topics: Sequence[str], files: Sequence[str],
         *, timeout_seconds: int = 180,
+        visibility: str = "public",
         on_submit: Any = None) -> XhsWriteOutcome:
     """Submit one note once; never retry or switch transport after submission."""
     paths = [str(Path(path)) for path in files if path and Path(path).exists()]
@@ -192,20 +448,18 @@ async def publish_xhs_browser(
     on_response = _publish_response_handler(evidence, submitted)
 
     try:
-        async with mgr.visible_page(identity, url=PUBLISH_URL) as page:
+        async with mgr.visible_page(
+                identity, url=_publish_url(media_type)) as page:
             if "login" in page.url or "passport" in page.url:
                 return XhsWriteOutcome("failed", error="logged_out:创作平台未登录")
 
-            tab, _ = await find_visible(
-                page,
-                "publish.kind.video" if media_type == "video"
-                else "publish.kind.image",
-            )
-            if tab is not None:
-                await interaction.click_visible(tab)
-                await interaction.pause(0.2, 0.45)
+            # The URL already selects image/video mode.  New builds render the
+            # active tab's text inside an overlaying child, so clicking that
+            # text can be intercepted by its own active tab.  Do not click an
+            # already-selected mode; wait for its file input instead.
 
-            file_input, _ = await find_present(page, "publish.file")
+            file_input, _ = await _wait_for_present(
+                page, "publish.file", interaction)
             if file_input is None:
                 diagnostic = await selector_diagnostic(page, "publish.file")
                 return XhsWriteOutcome(
@@ -215,7 +469,8 @@ async def publish_xhs_browser(
                 return XhsWriteOutcome("failed", error="媒体上传在限定时间内未完成")
 
             if title:
-                title_input, _ = await find_visible(page, "publish.title")
+                title_input, _ = await _wait_for_visible(
+                    page, "publish.title", interaction)
                 if title_input is None:
                     diagnostic = await selector_diagnostic(
                         page, "publish.title")
@@ -223,7 +478,8 @@ async def publish_xhs_browser(
                         "failed", error=f"未找到标题输入框(发布页可能改版)；{diagnostic}")
                 await interaction.type_short(title_input, title)
             if body:
-                body_input, _ = await find_visible(page, "publish.body")
+                body_input, _ = await _wait_for_visible(
+                    page, "publish.body", interaction)
                 if body_input is None:
                     diagnostic = await selector_diagnostic(
                         page, "publish.body")
@@ -231,11 +487,21 @@ async def publish_xhs_browser(
                         "failed", error=f"未找到正文输入框(发布页可能改版)；{diagnostic}")
                 await interaction.insert_long(body_input, body, page=page)
 
-            publish_button, _ = await find_visible(page, "publish.submit")
+            try:
+                await _set_publish_visibility(page, interaction, visibility)
+            except Exception as exc:
+                return XhsWriteOutcome(
+                    "failed", error=f"设置可见范围失败: {exc}")
+
+            publish_button, publish_selector = await _wait_for_visible(
+                page, "publish.submit", interaction)
             if publish_button is None:
                 diagnostic = await selector_diagnostic(page, "publish.submit")
                 return XhsWriteOutcome(
                     "failed", error=f"未找到发布按钮(发布页可能改版)；{diagnostic}")
+            if publish_selector == "publish_web_component":
+                publish_button = _PublishWebComponentLocator(
+                    page, publish_button)
             if not await _wait_until_enabled(
                     publish_button, interaction,
                     attempts=max(4, min(120, timeout_seconds * 2))):
@@ -258,10 +524,29 @@ async def publish_xhs_browser(
 
             attempts = max(4, min(80, int(timeout_seconds * 2)))
             for _ in range(attempts):
-                if await _consume_publish_responses(evidence) \
-                        or await _visible_success(page):
-                    result = str(getattr(page, "url", "") or evidence["url"])
-                    return XhsWriteOutcome("success", result=result)
+                await _consume_publish_responses(evidence)
+                if await _visible_success(page):
+                    result = str(
+                        getattr(page, "url", "") or evidence["url"])
+                    await interaction.pause(0.8, 1.2)
+                    confirmed = await _confirm_published_title(
+                        page, title, interaction,
+                        attempts=max(
+                            4,
+                            min(
+                                120,
+                                timeout_seconds if media_type == "video"
+                                else timeout_seconds // 3,
+                            ),
+                        ),
+                    )
+                    if confirmed:
+                        return XhsWriteOutcome("success", result=result)
+                    return XhsWriteOutcome(
+                        "uncertain",
+                        error=("平台进入了发布成功页，但笔记管理中未找到"
+                               "本次标题，请到平台核对"),
+                    )
                 try:
                     if page.is_closed():
                         break
