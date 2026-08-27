@@ -1,0 +1,111 @@
+name: Creator Star Chart
+description: Generate customizable light/dark GitHub star history charts without exposing a personal token.
+author: 3441293738
+
+branding:
+  icon: star
+  color: red
+
+inputs:
+  repo:
+    description: Repository in OWNER/NAME format.
+    default: ${{ github.repository }}
+  token:
+    description: GitHub token used only inside the runner.
+    default: ${{ github.token }}
+  theme:
+    description: creatorhub, github, ocean, sunset, forest, lavender, or mono.
+    default: creatorhub
+  style:
+    description: card, minimal, glass, or neon.
+    default: card
+  curve:
+    description: smooth, straight, or step.
+    default: smooth
+  accent:
+    description: Optional primary hex color override.
+    default: ''
+  accent-2:
+    description: Optional secondary hex color override.
+    default: ''
+  title:
+    description: Optional chart title. Defaults to the repository name.
+    default: ''
+  width:
+    description: SVG width.
+    default: '960'
+  height:
+    description: SVG height.
+    default: '540'
+  show-points:
+    description: Show sampled point markers.
+    default: 'false'
+  show-growth:
+    description: Show seven-day growth.
+    default: 'true'
+  animate:
+    description: Animate the line while respecting reduced-motion preferences.
+    default: 'true'
+  branch:
+    description: Dedicated data branch used to publish the charts.
+    default: star-history
+  output-dir:
+    description: Chart directory inside the data branch.
+    default: assets
+  commit-message:
+    description: Generated chart commit message.
+    default: 'chore: update star history chart'
+
+runs:
+  using: composite
+  steps:
+    - name: Generate light and dark charts
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}/src
+        GITHUB_TOKEN: ${{ inputs.token }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_THEME: ${{ inputs.theme }}
+        INPUT_STYLE: ${{ inputs.style }}
+        INPUT_CURVE: ${{ inputs.curve }}
+        INPUT_ACCENT: ${{ inputs.accent }}
+        INPUT_ACCENT_2: ${{ inputs.accent-2 }}
+        INPUT_TITLE: ${{ inputs.title }}
+        INPUT_WIDTH: ${{ inputs.width }}
+        INPUT_HEIGHT: ${{ inputs.height }}
+        INPUT_SHOW_POINTS: ${{ inputs.show-points }}
+        INPUT_SHOW_GROWTH: ${{ inputs.show-growth }}
+        INPUT_ANIMATE: ${{ inputs.animate }}
+      run: |
+        set -euo pipefail
+        output="$RUNNER_TEMP/github-star-chart"
+        rm -rf "$output"
+        python3 -m star_chart.cli \
+          --repo "$INPUT_REPO" \
+          --output-dir "$output" \
+          --theme "$INPUT_THEME" \
+          --style "$INPUT_STYLE" \
+          --curve "$INPUT_CURVE" \
+          --accent "$INPUT_ACCENT" \
+          --accent-2 "$INPUT_ACCENT_2" \
+          --title "$INPUT_TITLE" \
+          --width "$INPUT_WIDTH" \
+          --height "$INPUT_HEIGHT" \
+          --show-points "$INPUT_SHOW_POINTS" \
+          --show-growth "$INPUT_SHOW_GROWTH" \
+          --animate "$INPUT_ANIMATE"
+
+    - name: Publish charts to data branch
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}/src
+        INPUT_BRANCH: ${{ inputs.branch }}
+        INPUT_OUTPUT_DIR: ${{ inputs.output-dir }}
+        INPUT_COMMIT_MESSAGE: ${{ inputs.commit-message }}
+      run: |
+        set -euo pipefail
+        python3 -m star_chart.publish \
+          --source "$RUNNER_TEMP/github-star-chart" \
+          --branch "$INPUT_BRANCH" \
+          --destination "$INPUT_OUTPUT_DIR" \
+          --message "$INPUT_COMMIT_MESSAGE"

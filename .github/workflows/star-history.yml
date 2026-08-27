@@ -1,0 +1,38 @@
+name: Update star history chart
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  watch:
+    types: [started]
+  workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/workflows/star-history.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: star-history
+  cancel-in-progress: true
+
+jobs:
+  update:
+    if: github.repository == '3441293738/creatorhub'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Generate and publish charts
+        uses: ./.github/actions/github-star-chart
+        with:
+          theme: creatorhub
+          style: card
+          curve: smooth
+          title: CreatorHub
+          show-growth: "true"
+          animate: "true"
+          branch: star-history
+          commit-message: "chore: update Star History chart"
