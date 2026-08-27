@@ -761,6 +761,14 @@ class MonitorEngine:
             account_id = int(account.id or 0)
             if not account_id:
                 continue
+            # A creator-center-only login has publishing cookies but no
+            # consumer-web session.  Opening /chat for such a row can only show
+            # the login dialog, and the 15-second scheduler used to keep trying
+            # forever.  Leave it available for publishing, but do not bootstrap
+            # a DM browser for it until the normal XHS login has been completed.
+            if not (str(account.storage_state or "").strip()
+                    or str(account.cookie or "").strip()):
+                continue
             realtime = self.dm_automation.realtime_status(account_id)
             if bool(self.cfg.engine.xhs_dm_realtime_enabled) and not bool(
                     realtime.get("connected")):

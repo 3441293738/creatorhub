@@ -123,6 +123,51 @@ class XhsDmAutomation:
         self._next_poll[account_id] = (now if now is not None else time.time()) + delay
 
     @staticmethod
+    async def _page_requires_login(page: Any) -> bool:
+        """Detect the consumer-web login wall without clicking the dialog."""
+        try:
+            return bool(await page.evaluate("""() => {
+                const text = (document.body && document.body.innerText) || '';
+                const loginCopy = text.includes('登录后查看消息') ||
+                    text.includes('手机号登录');
+                const loginControls = text.includes('获取验证码') ||
+                    text.includes('新用户可直接登录');
+                return loginCopy && loginControls;
+            }"""))
+        except Exception:
+            return False
+
+    def _mark_logged_out(self, account_id: int) -> None:
+        self._realtime_status[account_id] = {
+            "mode": "realtime", "connected": False,
+            "state": "logged_out", "last_push_at": None,
+            # Background scheduling stays suspended until an explicit manual
+            # check/re-login.  A timeout here would make the dialog pop again.
+            "retry_at": None,
+            "error": "logged_out:小红书网页端未登录，后台私信监控已暂停",
+        }
+        self._next_poll[account_id] = time.time() + 315_360_000
+
+    def _logged_out_suspended(self, account_id: int) -> bool:
+        status = self._realtime_status.get(account_id) or {}
+        return status.get("state") == "logged_out"
+
+    @staticmethod
+    def _is_logged_out_error(error: str) -> bool:
+        lowered = str(error or "").lower()
+        return ("logged_out" in lowered or "code=-104" in lowered
+                or "http 401" in lowered or "http 403" in lowered)
+
+    async def _close_context_safely(self, key: Any) -> None:
+        closer = getattr(self.browser, "close_context", None)
+        if not callable(closer):
+            return
+        try:
+            await closer(key)
+        except Exception:
+            pass
+
+    @staticmethod
     def _business_push(payload: Any) -> bool:
         if isinstance(payload, bytes):
             try:
@@ -170,13 +215,17 @@ class XhsDmAutomation:
 
         self._wake_tasks[account_id] = asyncio.create_task(run())
 
-    async def ensure_realtime(self, account: DouyinAccount) -> bool:
+    async def ensure_realtime(
+            self, account: DouyinAccount, *, force: bool = False) -> bool:
         """Attach to the page's native account-wide push socket once."""
         account_id = int(account.id or 0)
         if not account_id:
             return False
+        if not force and self._logged_out_suspended(account_id):
+            return False
         enabled = bool(self.cfg.engine.xhs_dm_realtime_enabled)
         identity = self.browser.identity_for(account)
+        logged_out = False
         async with _background_page(self.browser, identity) as page:
             previous = self._observer_pages.get(account_id)
             attached = False
@@ -237,7 +286,20 @@ class XhsDmAutomation:
                 # observable connection; later polls are navigation-free.
                 await page.reload(wait_until="domcontentloaded", timeout=30000)
                 await self.browser.xhs_interaction.pause(0.25, 0.5)
-            return enabled
+            logged_out = await self._page_requires_login(page)
+        if logged_out:
+            callback = self._observer_callbacks.pop(account_id, None)
+            observed_page = self._observer_pages.pop(account_id, None)
+            if callback is not None and observed_page is not None:
+                try:
+                    observed_page.remove_listener("websocket", callback)
+                except Exception:
+                    pass
+            self._active_sockets.pop(account_id, None)
+            self._mark_logged_out(account_id)
+            await self._close_context_safely(identity.key)
+            return False
+        return enabled
 
     async def stop(self) -> None:
         for task in list(self._wake_tasks.values()):
@@ -258,7 +320,14 @@ class XhsDmAutomation:
     async def poll(self, account: DouyinAccount, *, trigger: str = "scheduled") -> dict:
         account_id = int(account.id or 0)
         identity = self.browser.identity_for(account)
-        await self.ensure_realtime(account)
+        await self.ensure_realtime(account, force=(trigger == "manual"))
+        if self._logged_out_suspended(account_id):
+            return {
+                "ok": False,
+                "error": "logged_out:小红书网页端未登录，后台私信监控已暂停",
+                "conversations": 0, "messages": 0, "queued": 0, "drafts": 0,
+                "realtime": self.realtime_status(account_id),
+            }
         with get_session() as session:
             monitor = session.exec(select(DmMonitorState).where(
                 DmMonitorState.account_id == account_id,
@@ -278,6 +347,16 @@ class XhsDmAutomation:
             convs, error = await fetch_conversations_in_page(
                 page, pages=5 if global_baseline else 1)
             if error:
+                if self._is_logged_out_error(error):
+                    self._mark_logged_out(account_id)
+                    if callable(getattr(self.browser, "close_context", None)):
+                        # The page lease still owns the account lock here.
+                        # Schedule cleanup so it runs immediately after the
+                        # context manager releases that lock.
+                        asyncio.create_task(
+                            self._close_context_safely(identity.key))
+                    error = ("logged_out:小红书网页端未登录，"
+                             "后台私信监控已暂停")
                 with get_session() as session:
                     row = session.get(DmMonitorState, monitor.id)
                     if row:

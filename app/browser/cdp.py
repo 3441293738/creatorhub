@@ -107,6 +107,11 @@ def chrome_launch_args(
         f"--remote-debugging-port={port}",
         "--no-first-run",
         "--no-default-browser-check",
+        # A managed session is occasionally recycled after being idle.  If an
+        # older CreatorHub build had to terminate Chrome before it finished
+        # flushing the profile, do not keep showing Chrome's "restore pages"
+        # bubble on every later background launch.
+        "--disable-session-crashed-bubble",
         # Routine account tasks reuse one headed page in the background.
         # Login/explicit-open flows restore the same window when required.
         "--start-minimized",
@@ -466,7 +471,19 @@ class XhsCdpBackend:
         with suppress(Exception):
             await session.browser.close()
         if session.owned.process is not None:
-            await self._stop_process(session.owned.process)
+            # ``Browser.close`` acknowledges before the native Windows process
+            # has necessarily flushed Preferences/Current Session.  Killing it
+            # immediately in that small gap marks the profile as crashed; the
+            # next monitor pass then restores every old /chat tab and displays
+            # the recovery prompt.  Give the graceful CDP shutdown a short
+            # chance to finish before falling back to terminate/kill.
+            process = session.owned.process
+            if process.poll() is None:
+                try:
+                    await asyncio.to_thread(process.wait, 3)
+                except Exception:
+                    pass
+            await self._stop_process(process)
         elif session.owned.recovered:
             info = await asyncio.to_thread(
                 self.process_inspector.inspect, session.owned.pid)

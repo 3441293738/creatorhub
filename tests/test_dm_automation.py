@@ -86,6 +86,64 @@ class DmAutomationTests(unittest.TestCase):
         self.assertTrue(XhsDmAutomation._business_push(
             '{"v":1,"t":2,"b":{"d":{"biz":"im"}}}'))
 
+    def test_login_wall_closes_context_and_suspends_background_retries(self):
+        class Page:
+            url = "about:blank"
+
+            def on(self, *_args):
+                pass
+
+            def remove_listener(self, *_args):
+                pass
+
+            async def goto(self, url, **_kwargs):
+                self.url = url
+
+            async def reload(self, **_kwargs):
+                pass
+
+            async def evaluate(self, _script):
+                return True
+
+        class Browser:
+            def __init__(self):
+                self.page = Page()
+                self.leases = 0
+                self.close_context = AsyncMock()
+                self.xhs_interaction = SimpleNamespace(pause=AsyncMock())
+
+            def identity_for(self, _account):
+                return SimpleNamespace(key=7)
+
+            @asynccontextmanager
+            async def visible_page(self, _identity, **_kwargs):
+                self.leases += 1
+                yield self.page
+
+        cfg = SimpleNamespace(engine=SimpleNamespace(
+            xhs_dm_realtime_enabled=True,
+            xhs_dm_realtime_debounce_seconds=1.5,
+            xhs_dm_fallback_interval_seconds=600,
+            xhs_dm_poll_interval_seconds=120,
+            xhs_dm_poll_jitter=0.3,
+        ))
+
+        async def scenario():
+            browser = Browser()
+            automation = XhsDmAutomation(cfg, browser)
+            account = SimpleNamespace(id=7)
+            self.assertFalse(await automation.ensure_realtime(account))
+            self.assertEqual(automation.realtime_status(7)["state"], "logged_out")
+            browser.close_context.assert_awaited_once_with(7)
+
+            # The scheduler may run every 15 seconds; it must not reopen the
+            # same login dialog after the first detection.
+            self.assertFalse(await automation.ensure_realtime(account))
+            self.assertEqual(browser.leases, 1)
+
+        import asyncio
+        asyncio.run(scenario())
+
     def test_new_conversation_after_account_baseline_is_processed(self):
         class Page:
             url = "https://www.xiaohongshu.com/chat"

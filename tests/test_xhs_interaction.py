@@ -576,6 +576,40 @@ class XhsInteractionTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_background_page_adopts_one_restored_chat_tab(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                manager = BrowserManager("UA", tmp, resident_sessions=True)
+                old_chat = _Page()
+                old_chat.url = "https://www.xiaohongshu.com/chat"
+                newest_chat = _Page()
+                newest_chat.url = "https://www.xiaohongshu.com/chat/"
+
+                class Context:
+                    pages = [old_chat, newest_chat]
+                    new_page = AsyncMock(side_effect=AssertionError(
+                        "restored chat tab should be adopted"))
+
+                context = Context()
+                manager.context_for = AsyncMock(return_value=context)
+                manager.close_context = AsyncMock()
+                identity = Identity(
+                    account_id=39,
+                    profile_dir=str(Path(tmp) / "account-39"),
+                    identity_mode="native",
+                    platform="xhs",
+                )
+
+                async with manager.visible_page(
+                        identity, foreground=False) as leased:
+                    self.assertIs(leased, newest_chat)
+
+                self.assertTrue(old_chat.closed)
+                self.assertFalse(newest_chat.closed)
+                context.new_page.assert_not_awaited()
+
+        asyncio.run(scenario())
+
 
 if __name__ == "__main__":
     unittest.main()

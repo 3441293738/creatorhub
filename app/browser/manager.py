@@ -1387,7 +1387,48 @@ class BrowserManager:
             except Exception:
                 pass
             self._task_pages.pop(identity.key, None)
-        for candidate in list(getattr(ctx, "pages", ()) or ()):
+        marker = f"creatorhub-task:{identity.key}"
+        pages = list(getattr(ctx, "pages", ()) or ())
+
+        # CDP disconnect/reconnect creates fresh Python Page objects while the
+        # native profile can remain alive.  Recover the task tab by its durable
+        # window.name marker instead of opening another /chat tab on every
+        # application restart.
+        for candidate in pages:
+            try:
+                if candidate.is_closed():
+                    continue
+                candidate_marker = await candidate.evaluate("window.name")
+                if candidate_marker != marker:
+                    continue
+            except Exception:
+                continue
+            self._task_pages[identity.key] = candidate
+            return candidate
+
+        # Compatibility cleanup for tabs created before the marker existed.
+        # The background DM observer owns the exact /chat landing page; adopt
+        # one restored copy and close only identical duplicates.  User-opened
+        # conversations (/chat/<id>) and unrelated XHS pages are untouched.
+        restored_chat_pages = []
+        for candidate in pages:
+            try:
+                url = str(candidate.url or "").rstrip("/")
+                if not candidate.is_closed() and url == (
+                        "https://www.xiaohongshu.com/chat"):
+                    restored_chat_pages.append(candidate)
+            except Exception:
+                continue
+        if restored_chat_pages:
+            candidate = restored_chat_pages[-1]
+            for duplicate in restored_chat_pages[:-1]:
+                with suppress(Exception):
+                    await duplicate.close()
+            with suppress(Exception):
+                await candidate.evaluate("(name) => { window.name = name; }", marker)
+            self._task_pages[identity.key] = candidate
+            return candidate
+        for candidate in pages:
             try:
                 if candidate.url != "about:blank" or candidate.is_closed():
                     continue
@@ -1397,9 +1438,13 @@ class BrowserManager:
             controller = getattr(session, "auth_controller", None)
             if controller is not None:
                 await controller.install(candidate)
+            with suppress(Exception):
+                await candidate.evaluate("(name) => { window.name = name; }", marker)
             self._task_pages[identity.key] = candidate
             return candidate
         page = await self.new_page(identity, block_media=False)
+        with suppress(Exception):
+            await page.evaluate("(name) => { window.name = name; }", marker)
         self._task_pages[identity.key] = page
         return page
 
@@ -1480,6 +1525,7 @@ class BrowserManager:
             page = None
             context = None
             restore_minimized = False
+            minimize_task = None
             page_listeners: dict[int, tuple[Any, tuple[Any, ...]]] = {}
             context_page_listeners: tuple[Any, ...] = ()
             try:
@@ -1506,6 +1552,16 @@ class BrowserManager:
                             candidate,
                             self._listener_snapshot(candidate, "response"),
                         )
+                if restore_minimized and context is not None:
+                    # Minimize before navigation and keep enforcing the state
+                    # while the caller owns the background lease.  XHS can
+                    # restore its native window while /chat initializes, so a
+                    # one-time minimize after DOMContentLoaded is too late and
+                    # causes the login dialog to flash on the desktop.
+                    await self._set_chromium_window_state(
+                        context, page, "minimized")
+                    minimize_task = asyncio.create_task(
+                        self._hold_chromium_window_minimized(context, page))
                 if url:
                     await page.goto(
                         url, wait_until="domcontentloaded", timeout=30_000)
@@ -1523,6 +1579,10 @@ class BrowserManager:
                         CHROMIUM_WINDOW_CLASSES, title or "小红书", 1.5)
                 yield page
             finally:
+                if minimize_task is not None:
+                    minimize_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await minimize_task
                 if (restore_minimized and context is not None
                         and page is not None):
                     # Some XHS navigations restore the native window after
@@ -1548,6 +1608,13 @@ class BrowserManager:
                             self._task_pages.pop(identity.key, None)
                         with suppress(Exception):
                             await page.close()
+
+    async def _hold_chromium_window_minimized(self, context, page) -> None:
+        """Prevent a background navigation from restoring its native window."""
+        while True:
+            await self._set_chromium_window_state(
+                context, page, "minimized")
+            await asyncio.sleep(0.1)
 
     @staticmethod
     async def _chromium_window_state(context, page) -> str:
