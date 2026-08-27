@@ -60,6 +60,11 @@ from .platforms.douyin import (
 )
 from .config import load_config
 from .db import get_session, init_db
+from .account_merge import (
+    cleanup_merged_profiles,
+    duplicate_xhs_account_ids,
+    reconcile_xhs_accounts,
+)
 from .platforms.douyin import resolve_sec_uid, resolve_aweme_id, looks_like_video
 from .platforms.xhs import (resolve_note as xhs_resolve_note,
                   resolve_user as xhs_resolve_user,
@@ -433,6 +438,15 @@ def _seed_browser_runtimes() -> list[dict]:
 async def lifespan(app: FastAPI):
     global browser, engine, im_receiver
     init_db(cfg.db_path)
+    try:
+        with get_session() as session:
+            merged_accounts = reconcile_xhs_accounts(session)
+        if merged_accounts:
+            cleanup_merged_profiles(merged_accounts, cfg.engine.profiles_dir)
+            print(
+                f"[startup] 已自动合并 {len(merged_accounts)} 条重复的小红书登录记录")
+    except Exception as e:
+        print(f"[startup] 小红书账号自动合并失败(不影响启动): {e!r}")
     if load_persisted_risk_settings(cfg):
         print("[startup] 已加载风控中心保存的运行时规则")
     try:
@@ -1133,6 +1147,24 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             else:
                 profile_status = await _enrich_account_profile(
                     acc_id, state_json)   # best-effort
+            # 主站与创作平台可能被用户分别从顶部入口登录。资料同步拿到
+            # user_id/red_id 后即可权威判断是否为同一个小红书账号，并把
+            # 两份登录态自动折叠到稳定的旧账号 id。
+            if is_xhs:
+                with get_session() as s:
+                    duplicate_ids = duplicate_xhs_account_ids(s, acc_id)
+                if len(duplicate_ids) > 1:
+                    await _close_runtime_accounts(duplicate_ids)
+                    with get_session() as s:
+                        merged_accounts = reconcile_xhs_accounts(
+                            s, account_id=acc_id)
+                    if merged_accounts:
+                        cleanup_merged_profiles(
+                            merged_accounts, cfg.engine.profiles_dir)
+                        for merge in merged_accounts:
+                            if acc_id == merge.removed_id:
+                                acc_id = merge.kept_id
+
             with get_session() as s:
                 acc = s.get(DouyinAccount, acc_id)
                 login_tasks[task_id] = _login_task_state(
