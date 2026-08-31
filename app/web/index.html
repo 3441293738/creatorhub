@@ -2512,6 +2512,14 @@
         <input type="checkbox" id="ai-enabled">
         <span class="switch-copy"><b>启用大模型生成文案</b><span>关闭后只使用规则中的本地模板库</span></span>
       </label>
+      <div class="form-field">
+        <label for="ai-provider">服务商预设</label>
+        <select id="ai-provider" onchange="applyAiProvider()" aria-label="AI 服务商预设">
+          <option value="">自定义服务（手动填写 Base URL / 模型）</option>
+          <option value="orcarouter">OrcaRouter（AI 网关 · 自适应路由）</option>
+        </select>
+        <div class="field-help">选择预设自动填充接口地址与模型名称，也支持手动填写任意 OpenAI 兼容服务</div>
+      </div>
       <div class="form-grid">
         <div class="form-field">
           <label for="ai-base">接口地址</label>
@@ -2542,7 +2550,7 @@
       </div>
       <div class="form-note">
         <svg aria-hidden="true"><use href="#i-info"/></svg>
-        <span>兼容 OpenAI <code>/chat/completions</code> 的服务。调用失败时会自动回退到当前规则的模板库。</span>
+        <span>兼容 OpenAI <code>/chat/completions</code> 的服务，已内置 <a href="https://www.orcarouter.ai" target="_blank" rel="noopener noreferrer">OrcaRouter</a> 网关预设（自适应路由与故障切换）。调用失败时会自动回退到当前规则的模板库。</span>
       </div>
       <div class="form-actions">
         <span class="status-text" id="ai-msg" role="status" aria-live="polite"></span>

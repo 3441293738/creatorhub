@@ -3575,9 +3575,30 @@ async function loadSettings() {
       $("ai-temp").value = s.ai_temperature || "0.9";
       $("ai-prompt").value = s.ai_prompt || "";
       $("ai-key").placeholder = s.ai_api_key_set ? "已保存(留空=不修改)" : "API Key";
+      if ($("ai-provider")) {
+        // Keep the preset selector in sync when the saved base URL matches one.
+        $("ai-provider").value = Object.keys(AI_PROVIDERS).find(k =>
+          AI_PROVIDERS[k].base_url === ($("ai-base").value.trim() || "")) || "";
+      }
     }
     csSyncAll();
   } catch (e) {}
+}
+// ─── AI 文案生成设置 ───
+// Named provider presets for the OpenAI-compatible comment-copy generator.
+// Selecting one fills Base URL / model so the gateway is a first-class provider
+// instead of an anonymous custom base URL. Custom services remain supported.
+const AI_PROVIDERS = {
+  orcarouter: { name: "OrcaRouter", base_url: "https://api.orcarouter.ai/v1", model: "orcarouter/auto" },
+};
+
+function applyAiProvider() {
+  const p = AI_PROVIDERS[$("ai-provider").value];
+  if (!p) return;
+  $("ai-base").value = p.base_url;
+  $("ai-model").value = p.model;
+  validateAiField($("ai-base"), false);
+  validateAiField($("ai-model"), false);
 }
 async function saveAiSettings() {
   if (!validateAiSettings(false)) return;
