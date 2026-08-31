@@ -333,6 +333,25 @@ def require_share_urls(value: str | bytes, limit: int = 10) -> list[ShareURL]:
     return links
 
 
+def clean_platform_share_target(
+    value: str | bytes,
+    platform: str,
+    *,
+    limit: int = 20,
+) -> tuple[str, list[ShareURL]]:
+    """清洗单目标输入，并优先返回分享文案中属于指定平台的链接。
+
+    监控、采集等单目标表单既允许直接填写平台 ID，也允许粘贴整段分享
+    文案。没有链接时保留规范化后的原输入，让上层继续按 ID/关键词解析；
+    有多个链接时只选择与当前平台匹配的第一条，同时把全部识别结果返回给
+    上层，以便生成“平台不匹配”这类更明确的错误提示。
+    """
+    normalized = normalize_share_text(value)
+    links = extract_share_urls(normalized, limit=max(1, min(int(limit), 20)))
+    selected = next((item for item in links if item.platform == platform), None)
+    return (selected.url if selected else normalized.strip()), links
+
+
 def is_private_url(url: str) -> bool:
     """判断显式 localhost/内网 IP；域名不做 DNS 查询，避免解析阶段产生网络请求。"""
     try:

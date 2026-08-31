@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from app.engine.share_downloader import (
+    clean_platform_share_target,
     _clean_ydl_error,
     _download_format_options,
     _quality_format,
@@ -18,6 +19,34 @@ from app.engine.share_downloader import (
 
 
 class ShareURLTests(unittest.TestCase):
+    def test_clean_platform_target_extracts_link_from_full_share_copy(self):
+        value, links = clean_platform_share_target(
+            "3.21 复制打开抖音，看看TA的更多作品 https://v.douyin.com/AbC_12/ 😄",
+            "douyin",
+        )
+        self.assertEqual(value, "https://v.douyin.com/AbC_12/")
+        self.assertEqual(len(links), 1)
+
+    def test_clean_platform_target_prefers_current_platform(self):
+        value, links = clean_platform_share_target(
+            "说明 https://example.com/help 抖音 https://v.douyin.com/target/",
+            "douyin",
+        )
+        self.assertEqual(value, "https://v.douyin.com/target/")
+        self.assertEqual(len(links), 2)
+
+    def test_clean_platform_target_keeps_plain_id(self):
+        value, links = clean_platform_share_target("  MS4wExampleTarget1234567890  ", "douyin")
+        self.assertEqual(value, "MS4wExampleTarget1234567890")
+        self.assertEqual(links, [])
+
+    def test_clean_platform_target_reports_mismatched_links(self):
+        value, links = clean_platform_share_target(
+            "快手主页 https://v.kuaishou.com/Ab_cd-1/", "douyin"
+        )
+        self.assertIn("v.kuaishou.com", value)
+        self.assertEqual([item.platform for item in links], ["kuaishou"])
+
     def test_chinese_share_text_and_punctuation(self):
         text = "复制这段乱七八糟的内容 😄《标题》 https://v.douyin.com/AbC_12/，打开抖音看看！"
         links = extract_share_urls(text)

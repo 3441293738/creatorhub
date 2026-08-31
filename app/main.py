@@ -78,6 +78,7 @@ from .platforms.kuaishou import (resolve_ks_user_id, resolve_ks_photo_id,
 from .platforms.channels import parse_self_user as parse_channels_self_user
 from .engine import Downloader, MonitorEngine
 from .engine.share_downloader import (
+    clean_platform_share_target,
     ShareDownloadError,
     ShareDownloader,
     ShareLinkError,
@@ -6459,6 +6460,30 @@ def _validate_monitor_strategy(*, max_scrolls: int | None,
     if recent_days is not None and not 0 <= recent_days <= 3650:
         raise HTTPException(400, "发布时间范围须为 0~3650 天；0 表示不限")
 
+
+def _clean_platform_target_input(value: str, platform: str) -> str:
+    """复用分享链接下载的清洗器，返回当前平台的第一条有效链接或原始 ID。"""
+    target_input, detected_links = clean_platform_share_target(value, platform)
+    if detected_links and not any(
+            item.platform == platform for item in detected_links):
+        platform_name = {
+            "douyin": "抖音", "xhs": "小红书", "kuaishou": "快手",
+        }.get(platform, platform)
+        detected_names = {
+            "douyin": "抖音", "xhs": "小红书", "kuaishou": "快手",
+            "generic": "其他站点",
+        }
+        names = "、".join(dict.fromkeys(
+            detected_names.get(item.platform, item.platform)
+            for item in detected_links
+        ))
+        raise HTTPException(
+            400,
+            f"分享文案中识别到{names}链接，但当前页面是{platform_name}；"
+            f"请粘贴{platform_name}链接或完整分享文案",
+        )
+    return target_input
+
 @app.post("/api/monitors")
 async def add_monitor(body: TargetIn):
     platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou") else "douyin"
@@ -6470,19 +6495,22 @@ async def add_monitor(body: TargetIn):
         keyword = body.url_or_secuid.strip()
         if not keyword:
             raise HTTPException(400, "请输入要监控的搜索关键词")
-    elif platform == "xhs":
-        ref = await xhs_resolve_user(body.url_or_secuid, cfg.engine.user_agent)
+    else:
+        target_input = _clean_platform_target_input(body.url_or_secuid, platform)
+
+    if platform == "xhs" and kind != "keyword":
+        ref = await xhs_resolve_user(target_input, cfg.engine.user_agent)
         if not ref:
-            raise HTTPException(400, "无法解析小红书 user_id,请粘贴创作者主页链接 / xhslink 短链 / 24 位 user_id")
+            raise HTTPException(400, "无法解析小红书 user_id,请粘贴完整分享文案、创作者主页链接 / xhslink 短链 / 24 位 user_id")
         sec_uid, xsec_token = ref.user_id, ref.xsec_token
     elif platform == "kuaishou":
-        sec_uid = await resolve_ks_user_id(body.url_or_secuid, cfg.engine.user_agent)
+        sec_uid = await resolve_ks_user_id(target_input, cfg.engine.user_agent)
         if not sec_uid:
-            raise HTTPException(400, "无法解析快手 user_id,请粘贴创作者主页链接 / v.kuaishou.com 短链 / user_id")
-    else:
-        sec_uid = await resolve_sec_uid(body.url_or_secuid, cfg.engine.user_agent)
+            raise HTTPException(400, "无法解析快手 user_id,请粘贴完整分享文案、创作者主页链接 / v.kuaishou.com 短链 / user_id")
+    elif platform == "douyin":
+        sec_uid = await resolve_sec_uid(target_input, cfg.engine.user_agent)
         if not sec_uid:
-            raise HTTPException(400, "无法解析 sec_uid,请粘贴主页链接 / v.douyin.com 短链 / sec_uid")
+            raise HTTPException(400, "无法解析 sec_uid,请粘贴完整分享文案、主页链接 / v.douyin.com 短链 / sec_uid")
 
     dl = body.download_dir.strip()
     if not 60 <= body.interval_seconds <= 86400:
@@ -7659,6 +7687,7 @@ async def add_watch(body: WatchIn):
     platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou") else "douyin"
     aweme_id = sec_uid = xsec_token = ""
     title = ""
+    target_input = _clean_platform_target_input(body.url_or_id, platform)
 
     if not 60 <= body.interval_seconds <= 86400:
         raise HTTPException(400, "监控间隔须为 60~86400 秒")
@@ -7671,46 +7700,59 @@ async def add_watch(body: WatchIn):
     if platform == "xhs":
         kind = body.kind
         if kind == "auto":
-            kind = "video" if xhs_looks_like_note(body.url_or_id) else "user"
+            note_ref = None
+            if xhs_looks_like_note(target_input) or "://" in target_input:
+                note_ref = await xhs_resolve_note(target_input, cfg.engine.user_agent)
+            if note_ref:
+                kind = "video"
+                aweme_id, xsec_token = note_ref.note_id, note_ref.xsec_token
+            else:
+                kind = "user"
         if kind == "video":
-            ref = await xhs_resolve_note(body.url_or_id, cfg.engine.user_agent)
-            if not ref:
-                raise HTTPException(400, "无法解析小红书笔记,请粘贴 explore 笔记链接 / xhslink 短链 / 24 位 note_id")
-            aweme_id, xsec_token = ref.note_id, ref.xsec_token
+            if not aweme_id:
+                ref = await xhs_resolve_note(target_input, cfg.engine.user_agent)
+                if not ref:
+                    raise HTTPException(400, "无法解析小红书笔记,请粘贴完整分享文案、explore 笔记链接 / xhslink 短链 / 24 位 note_id")
+                aweme_id, xsec_token = ref.note_id, ref.xsec_token
             title = "笔记 " + aweme_id
         else:
-            ref = await xhs_resolve_user(body.url_or_id, cfg.engine.user_agent)
+            ref = await xhs_resolve_user(target_input, cfg.engine.user_agent)
             if not ref:
-                raise HTTPException(400, "无法解析小红书创作者,请粘贴主页链接 / xhslink 短链 / 24 位 user_id")
+                raise HTTPException(400, "无法解析小红书创作者,请粘贴完整分享文案、主页链接 / xhslink 短链 / 24 位 user_id")
             sec_uid, xsec_token = ref.user_id, ref.xsec_token
         mode = "public"
     elif platform == "kuaishou":
         kind = body.kind
         if kind == "auto":
-            kind = "video" if ks_looks_like_photo(body.url_or_id) else "user"
+            if ks_looks_like_photo(target_input) or "://" in target_input:
+                aweme_id = await resolve_ks_photo_id(target_input, cfg.engine.user_agent) or ""
+            kind = "video" if aweme_id else "user"
         if kind == "video":
-            aweme_id = await resolve_ks_photo_id(body.url_or_id, cfg.engine.user_agent)
             if not aweme_id:
-                raise HTTPException(400, "无法解析快手作品 id,请粘贴作品链接 / v.kuaishou.com 短链 / photo_id")
+                aweme_id = await resolve_ks_photo_id(target_input, cfg.engine.user_agent)
+            if not aweme_id:
+                raise HTTPException(400, "无法解析快手作品 id,请粘贴完整分享文案、作品链接 / v.kuaishou.com 短链 / photo_id")
             title = "作品 " + aweme_id
         else:
-            sec_uid = await resolve_ks_user_id(body.url_or_id, cfg.engine.user_agent)
+            sec_uid = await resolve_ks_user_id(target_input, cfg.engine.user_agent)
             if not sec_uid:
-                raise HTTPException(400, "无法解析快手 user_id,请粘贴主页链接 / 短链 / user_id")
+                raise HTTPException(400, "无法解析快手 user_id,请粘贴完整分享文案、主页链接 / 短链 / user_id")
         mode = "public"
     else:
         kind = body.kind
         if kind == "auto":
-            kind = "video" if looks_like_video(body.url_or_id) else "user"
+            aweme_id = await resolve_aweme_id(target_input, cfg.engine.user_agent) or ""
+            kind = "video" if aweme_id else "user"
         if kind == "video":
-            aweme_id = await resolve_aweme_id(body.url_or_id, cfg.engine.user_agent)
             if not aweme_id:
-                raise HTTPException(400, "无法解析视频 id,请粘贴作品链接 / 短链 / 数字 id")
+                aweme_id = await resolve_aweme_id(target_input, cfg.engine.user_agent)
+            if not aweme_id:
+                raise HTTPException(400, "无法解析视频 id,请粘贴完整分享文案、作品链接 / 短链 / 数字 id")
             title = "视频 " + aweme_id
         else:
-            sec_uid = await resolve_sec_uid(body.url_or_id, cfg.engine.user_agent)
+            sec_uid = await resolve_sec_uid(target_input, cfg.engine.user_agent)
             if not sec_uid:
-                raise HTTPException(400, "无法解析 sec_uid,请粘贴主页链接 / 短链 / sec_uid")
+                raise HTTPException(400, "无法解析 sec_uid,请粘贴完整分享文案、主页链接 / 短链 / sec_uid")
         mode = body.mode if body.mode in ("public", "creator") else "public"
         if mode == "creator":
             if kind != "user":
@@ -8073,6 +8115,7 @@ async def list_danmaku_watches(platform: str | None = None):
 async def add_danmaku_watch(body: DanmakuWatchIn):
     if body.platform != "douyin":
         raise HTTPException(400, "短视频弹幕监控当前仅支持抖音")
+    target_input = _clean_platform_target_input(body.url_or_id, "douyin")
     if body.interval_seconds != 0 and not 60 <= body.interval_seconds <= 86400:
         raise HTTPException(400, "监控间隔须为 60~86400 秒,或填 0 跟随全局")
     if not 0 <= body.recent_works <= 50:
@@ -8100,23 +8143,25 @@ async def add_danmaku_watch(body: DanmakuWatchIn):
     if not 0 <= body.max_records_total <= 1_000_000:
         raise HTTPException(400, "总记录上限须为 0~1000000")
 
+    aweme_id = sec_uid = ""
     kind = body.kind
     if kind == "auto":
-        kind = "video" if looks_like_video(body.url_or_id) else "user"
+        aweme_id = await resolve_aweme_id(target_input, cfg.engine.user_agent) or ""
+        kind = "video" if aweme_id else "user"
     if kind not in ("video", "user"):
         raise HTTPException(400, "监控对象类型须为 video 或 user")
     mode = body.mode if body.mode in ("public", "creator") else "public"
-    aweme_id = sec_uid = ""
     title = ""
     if kind == "video":
-        aweme_id = await resolve_aweme_id(body.url_or_id, cfg.engine.user_agent)
         if not aweme_id:
-            raise HTTPException(400, "无法解析视频 id,请粘贴作品链接、短链或数字 id")
+            aweme_id = await resolve_aweme_id(target_input, cfg.engine.user_agent)
+        if not aweme_id:
+            raise HTTPException(400, "无法解析视频 id,请粘贴完整分享文案、作品链接、短链或数字 id")
         title = "视频 " + aweme_id
     else:
-        sec_uid = await resolve_sec_uid(body.url_or_id, cfg.engine.user_agent)
+        sec_uid = await resolve_sec_uid(target_input, cfg.engine.user_agent)
         if not sec_uid:
-            raise HTTPException(400, "无法解析 sec_uid,请粘贴账号主页、短链或 sec_uid")
+            raise HTTPException(400, "无法解析 sec_uid,请粘贴完整分享文案、账号主页、短链或 sec_uid")
         title = "账号 " + sec_uid[:12]
 
     if mode == "creator":

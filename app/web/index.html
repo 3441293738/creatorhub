@@ -683,6 +683,27 @@
   }
   button.input-action:hover { color:var(--fg); background:var(--surface-2); filter:none; }
   button.input-action:active { transform:translateY(-50%); }
+  .smart-target-input { position:relative; }
+  .smart-target-input > input { padding-right:98px; }
+  .smart-target-action {
+    position:absolute; top:50%; right:5px; transform:translateY(-50%);
+    min-height:30px; padding:5px 9px; gap:5px; border:0; border-radius:7px;
+    color:var(--mut); background:transparent; box-shadow:none; font-size:11.5px;
+  }
+  .smart-target-action svg { width:14px; height:14px; }
+  .smart-target-action:hover { color:var(--fg); background:var(--surface-2); filter:none; }
+  .smart-target-action:active { transform:translateY(-50%) scale(.985); }
+  .smart-target-feedback {
+    display:flex; align-items:center; gap:6px; min-height:19px; margin-top:5px;
+    color:var(--mut-2); font-size:11.5px; line-height:1.45;
+  }
+  .smart-target-feedback::before {
+    content:""; width:5px; height:5px; flex:0 0 5px; border-radius:50%;
+    background:currentColor; opacity:.62;
+  }
+  .smart-target-feedback.parsing { color:var(--info); }
+  .smart-target-feedback.success { color:var(--success); }
+  .smart-target-feedback.error { color:var(--danger); }
   .switch-row {
     display:flex; align-items:center; gap:11px; padding:11px 12px;
     color:var(--fg); background:var(--control-bg); border:1px solid var(--line-soft); border-radius:var(--r-sm); cursor:pointer;
@@ -2228,8 +2249,20 @@
           </select>
         </div>
         <div>
-          <label class="field" for="t-url" id="t-url-label">主页链接 / 短链 / sec_uid</label>
-          <input id="t-url" placeholder="粘贴抖音主页链接、v.douyin.com 短链或 sec_uid">
+          <label class="field" for="t-url" id="t-url-label">创作者主页 / 完整分享文案 / sec_uid</label>
+          <div class="smart-target-input">
+            <input id="t-url" maxlength="100000" autocomplete="off"
+              placeholder="直接粘贴整段主页分享文案，将自动提取有效链接"
+              onpaste="handleMonitorTargetPaste()" oninput="resetMonitorTargetState()"
+              onkeydown="handleMonitorTargetKeydown(event)">
+            <button type="button" class="smart-target-action" onclick="normalizeMonitorTarget(this)"
+              aria-label="识别并清洗分享文案" title="识别并清洗分享文案">
+              <svg><use href="#i-bolt"/></svg><span>识别</span>
+            </button>
+          </div>
+          <div class="smart-target-feedback" id="t-url-feedback" role="status" aria-live="polite">
+            支持完整分享文案、主页长链、平台短链或用户 ID
+          </div>
         </div>
         <div>
           <label class="field" for="t-dir">下载目录(可选)</label>
@@ -2823,8 +2856,20 @@
       </div>
       <div class="stack">
         <div>
-          <label class="field" for="w-url" id="w-url-label">视频链接 / 账号主页 / sec_uid / 视频 id</label>
-          <input id="w-url" placeholder="作品链接=盯单条视频;主页链接或 sec_uid=盯账号近期作品">
+          <label class="field" for="w-url" id="w-url-label">作品 / 创作者主页 / 完整分享文案 / ID</label>
+          <div class="smart-target-input">
+            <input id="w-url" maxlength="100000" autocomplete="off"
+              placeholder="直接粘贴整段分享文案，将自动提取作品或主页链接"
+              onpaste="handleWatchTargetPaste()" oninput="resetWatchTargetState()"
+              onkeydown="handleWatchTargetKeydown(event)">
+            <button type="button" class="smart-target-action" onclick="normalizeWatchTarget(this)"
+              aria-label="识别并清洗评论监控分享文案" title="识别并清洗分享文案">
+              <svg><use href="#i-bolt"/></svg><span>识别</span>
+            </button>
+          </div>
+          <div class="smart-target-feedback" id="w-url-feedback" role="status" aria-live="polite">
+            支持完整分享文案、作品链接、创作者主页、平台短链或 ID
+          </div>
         </div>
         <div class="form-grid cols-auto">
           <div class="form-field"><label for="w-kind">监控对象类型</label><select id="w-kind">
@@ -2956,8 +3001,20 @@
       </div>
       <div class="stack">
         <div>
-          <label class="field" for="d-w-url" id="d-w-url-label">视频链接 / 账号主页 / aweme_id</label>
-          <input id="d-w-url" placeholder="作品链接=单条视频；主页链接=账号近期作品">
+          <label class="field" for="d-w-url" id="d-w-url-label">视频 / 账号主页 / 完整分享文案 / ID</label>
+          <div class="smart-target-input">
+            <input id="d-w-url" maxlength="100000" autocomplete="off"
+              placeholder="直接粘贴整段抖音分享文案，将自动提取视频或主页链接"
+              onpaste="handleDanmakuTargetPaste()" oninput="resetDanmakuTargetState()"
+              onkeydown="handleDanmakuTargetKeydown(event)">
+            <button type="button" class="smart-target-action" onclick="normalizeDanmakuTarget(this)"
+              aria-label="识别并清洗弹幕监控分享文案" title="识别并清洗分享文案">
+              <svg><use href="#i-bolt"/></svg><span>识别</span>
+            </button>
+          </div>
+          <div class="smart-target-feedback" id="d-w-url-feedback" role="status" aria-live="polite">
+            支持完整抖音分享文案、视频链接、账号主页、短链或 ID
+          </div>
         </div>
         <div class="form-grid cols-auto">
           <div class="form-field"><label for="d-w-kind">监控对象</label><select id="d-w-kind" onchange="applyDanmakuForm()">

@@ -962,13 +962,14 @@ function applyPlatformUI() {
   }
   const wl = $("w-url-label");
   if (wl) wl.textContent = PLATFORM === "xhs"
-    ? "笔记链接 / 创作者主页 / xhslink 短链 / id"
-    : PLATFORM === "kuaishou" ? "作品链接 / 创作者主页 / v.kuaishou.com 短链 / id"
-    : "视频链接 / 账号主页 / sec_uid / 视频 id";
+    ? "笔记 / 创作者主页 / 完整分享文案 / ID"
+    : PLATFORM === "kuaishou" ? "作品 / 创作者主页 / 完整分享文案 / ID"
+    : "视频 / 账号主页 / 完整分享文案 / ID";
   if ($("w-url")) $("w-url").placeholder = PLATFORM === "xhs"
-    ? "笔记链接=盯单条笔记;创作者主页或 user_id=盯创作者近期笔记"
-    : PLATFORM === "kuaishou" ? "作品链接=盯单条作品;主页或 user_id=盯创作者近期作品"
-    : "作品链接=盯单条视频;主页链接或 sec_uid=盯账号近期作品";
+    ? "直接粘贴整段小红书分享文案，将自动提取笔记或主页链接"
+    : PLATFORM === "kuaishou" ? "直接粘贴整段快手分享文案，将自动提取作品或主页链接"
+    : "直接粘贴整段抖音分享文案，将自动提取视频或主页链接";
+  resetWatchTargetState();
   const ckl = $("ck-label");
   if (ckl) ckl.textContent = PLATFORM === "xhs"
     ? "完整 Cookie(含 a1;发布需创作者会话)"
@@ -997,17 +998,177 @@ function applyPlatformUI() {
   csSyncAll();   // 平台切换可能改了下拉选项/值,同步自定义下拉显示
   updatePageContext();
 }
+const SMART_TARGET_PARSE_SEQ = Object.create(null);
+
+function smartTargetPlatformName(platform = PLATFORM) {
+  return PF_NAME[platform] || (platform === "generic" ? "其他站点" : String(platform || "当前平台"));
+}
+
+function setSmartTargetFeedback(feedbackId, message, state = "") {
+  const feedback = $(feedbackId);
+  if (!feedback) return;
+  feedback.textContent = message;
+  feedback.className = `smart-target-feedback${state ? ` ${state}` : ""}`;
+}
+
+function resetSmartTargetState(inputId, feedbackId, message) {
+  const input = $(inputId);
+  if (input) input.removeAttribute("aria-invalid");
+  SMART_TARGET_PARSE_SEQ[inputId] = (SMART_TARGET_PARSE_SEQ[inputId] || 0) + 1;
+  setSmartTargetFeedback(feedbackId, message);
+}
+
+async function normalizePlatformShareTarget({
+  inputId, feedbackId, platform, button = null, quiet = false,
+}) {
+  const input = $(inputId);
+  if (!input) return null;
+  const raw = input.value.trim();
+  if (!raw) return raw;
+
+  const seq = (SMART_TARGET_PARSE_SEQ[inputId] || 0) + 1;
+  SMART_TARGET_PARSE_SEQ[inputId] = seq;
+  const old = button && button.innerHTML;
+  if (button) {
+    button.disabled = true;
+    button.innerHTML = `<span class="spin"></span><span>识别中</span>`;
+  }
+  input.removeAttribute("aria-invalid");
+  setSmartTargetFeedback(feedbackId, "正在清洗分享文案并识别链接…", "parsing");
+  try {
+    const result = await api("/api/share-download/links", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ share_text: raw, limit: 20 }),
+    });
+    if (seq !== SMART_TARGET_PARSE_SEQ[inputId]) return input.value.trim();
+    const links = Array.isArray(result.links) ? result.links : [];
+    if (!links.length) {
+      setSmartTargetFeedback(feedbackId, "未发现链接，将按作品或用户 ID 直接解析");
+      if (!quiet) toast("没有发现链接；也可以直接填写作品或用户 ID", "err");
+      return raw;
+    }
+    const matched = links.find(item => item && item.platform === platform);
+    if (!matched) {
+      const names = [...new Set(links.map(item => smartTargetPlatformName(item.platform)))].join("、");
+      const message = `识别到${names}链接，与当前${smartTargetPlatformName(platform)}页面不匹配`;
+      input.setAttribute("aria-invalid", "true");
+      setSmartTargetFeedback(feedbackId, message, "error");
+      if (!quiet) toast(message, "err");
+      return null;
+    }
+    const cleaned = String(matched.url || "").trim();
+    const changed = cleaned && cleaned !== raw;
+    if (changed) input.value = cleaned;
+    setSmartTargetFeedback(
+      feedbackId,
+      changed
+        ? `已去除无关文案，提取出${smartTargetPlatformName(platform)}链接 ✓`
+        : `${smartTargetPlatformName(platform)}链接已识别 ✓`,
+      "success",
+    );
+    return cleaned || raw;
+  } catch (e) {
+    if (seq !== SMART_TARGET_PARSE_SEQ[inputId]) return input.value.trim();
+    setSmartTargetFeedback(feedbackId, "自动识别暂未完成，提交时仍会在服务端解析", "error");
+    if (!quiet) toast("识别失败：" + e.message, "err");
+    return raw;
+  } finally {
+    if (button && button.isConnected) {
+      button.disabled = false;
+      button.innerHTML = old;
+    }
+  }
+}
+
+function resetMonitorTargetState() {
+  const keywordMode = PLATFORM === "xhs" && $("t-kind") && $("t-kind").value === "keyword";
+  resetSmartTargetState("t-url", "t-url-feedback", keywordMode
+    ? "输入要持续监控的搜索关键词"
+    : "支持完整分享文案、主页长链、平台短链或用户 ID");
+}
+
+async function normalizeMonitorTarget(button = null, { quiet = false } = {}) {
+  const keywordMode = PLATFORM === "xhs" && $("t-kind") && $("t-kind").value === "keyword";
+  if (keywordMode) return $("t-url").value.trim();
+  return normalizePlatformShareTarget({
+    inputId: "t-url", feedbackId: "t-url-feedback", platform: PLATFORM, button, quiet,
+  });
+}
+
+function handleMonitorTargetPaste() {
+  setTimeout(() => normalizeMonitorTarget(null, { quiet: true }), 0);
+}
+
+function handleMonitorTargetKeydown(event) {
+  if (!event || event.key !== "Enter" || event.isComposing) return;
+  event.preventDefault();
+  addMonitor();
+}
+
+function resetWatchTargetState() {
+  resetSmartTargetState(
+    "w-url", "w-url-feedback",
+    "支持完整分享文案、作品链接、创作者主页、平台短链或 ID",
+  );
+}
+
+function normalizeWatchTarget(button = null, options = {}) {
+  return normalizePlatformShareTarget({
+    inputId: "w-url", feedbackId: "w-url-feedback", platform: PLATFORM,
+    button, quiet: !!options.quiet,
+  });
+}
+
+function handleWatchTargetPaste() {
+  setTimeout(() => normalizeWatchTarget(null, { quiet: true }), 0);
+}
+
+function handleWatchTargetKeydown(event) {
+  if (!event || event.key !== "Enter" || event.isComposing) return;
+  event.preventDefault();
+  addWatch();
+}
+
+function resetDanmakuTargetState() {
+  resetSmartTargetState(
+    "d-w-url", "d-w-url-feedback",
+    "支持完整抖音分享文案、视频链接、账号主页、短链或 ID",
+  );
+}
+
+function normalizeDanmakuTarget(button = null, options = {}) {
+  return normalizePlatformShareTarget({
+    inputId: "d-w-url", feedbackId: "d-w-url-feedback", platform: "douyin",
+    button, quiet: !!options.quiet,
+  });
+}
+
+function handleDanmakuTargetPaste() {
+  setTimeout(() => normalizeDanmakuTarget(null, { quiet: true }), 0);
+}
+
+function handleDanmakuTargetKeydown(event) {
+  if (!event || event.key !== "Enter" || event.isComposing) return;
+  event.preventDefault();
+  addDanmakuWatch();
+}
+
 function applyMonitorForm() {
   const title = $("mon-add-title");
   const lbl = $("t-url-label");
+  const parseButton = document.querySelector('[data-panel="monitors"] .smart-target-action');
   if (PLATFORM === "douyin" || PLATFORM === "kuaishou") {
     const isKs = PLATFORM === "kuaishou";
     if (title) title.innerHTML = (isKs ? '添加创作者监控' : '添加作品监控')
       + ' <span class="sub">监控并下载新作品</span>';
-    if (lbl) lbl.textContent = isKs ? "创作者主页链接 / 短链 / user_id" : "主页链接 / 短链 / sec_uid";
+    if (lbl) lbl.textContent = isKs
+      ? "创作者主页 / 完整分享文案 / user_id"
+      : "创作者主页 / 完整分享文案 / sec_uid";
     $("t-url").placeholder = isKs
-      ? "粘贴快手创作者主页链接、v.kuaishou.com 短链或 user_id"
-      : "粘贴抖音主页链接、v.douyin.com 短链或 sec_uid";
+      ? "直接粘贴整段快手主页分享文案，将自动提取有效链接"
+      : "直接粘贴整段抖音主页分享文案，将自动提取有效链接";
+    if (parseButton) parseButton.classList.remove("hidden");
+    resetMonitorTargetState();
     return;
   }
   const kind = $("t-kind") ? $("t-kind").value : "creator";
@@ -1015,11 +1176,14 @@ function applyMonitorForm() {
     if (title) title.innerHTML = '添加关键词监控 <span class="sub">盯一个搜索词的新笔记</span>';
     if (lbl) lbl.textContent = "搜索关键词";
     $("t-url").placeholder = "例如:口红试色 / 露营装备";
+    if (parseButton) parseButton.classList.add("hidden");
   } else {
     if (title) title.innerHTML = '添加创作者监控 <span class="sub">监控并下载新笔记</span>';
-    if (lbl) lbl.textContent = "创作者主页链接 / xhslink 短链 / user_id";
-    $("t-url").placeholder = "粘贴小红书创作者主页链接、xhslink 短链或 24 位 user_id";
+    if (lbl) lbl.textContent = "创作者主页 / 完整分享文案 / user_id";
+    $("t-url").placeholder = "直接粘贴整段小红书主页分享文案，将自动提取有效链接";
+    if (parseButton) parseButton.classList.remove("hidden");
   }
+  resetMonitorTargetState();
 }
 
 // ─── 标签页切换 ───
@@ -2741,12 +2905,13 @@ function applyDanmakuForm() {
   if (daysWrap) daysWrap.hidden = isVideo;
   const urlLabel = $("d-w-url-label");
   if (urlLabel) urlLabel.textContent = isVideo
-    ? "视频链接 / aweme_id"
-    : kind === "user" ? "账号主页 / sec_uid" : "视频链接 / 账号主页 / aweme_id";
+    ? "视频 / 完整分享文案 / aweme_id"
+    : kind === "user" ? "账号主页 / 完整分享文案 / sec_uid" : "视频 / 账号主页 / 完整分享文案 / ID";
   if ($("d-w-url")) $("d-w-url").placeholder = isVideo
-    ? "作品链接或 aweme_id=监控单条视频弹幕"
-    : kind === "user" ? "账号主页或 sec_uid=监控账号近期作品"
-    : "作品链接=单条视频；主页链接=账号近期作品";
+    ? "粘贴视频分享文案、作品链接或 aweme_id"
+    : kind === "user" ? "粘贴主页分享文案、账号主页或 sec_uid"
+    : "直接粘贴整段抖音分享文案，将自动识别视频或账号";
+  resetDanmakuTargetState();
   const accLabel = $("d-w-acc-label");
   if (accLabel) accLabel.textContent = mode === "creator"
     ? "创作中心账号（必选）" : "播放页账号（可选）";
@@ -4510,8 +4675,12 @@ function exportCollection(jobId) {
 }
 
 async function addMonitor() {
-  const url_or_secuid = $("t-url").value.trim();
   const target_kind = (PLATFORM === "xhs" && $("t-kind")) ? $("t-kind").value : "creator";
+  const normalizedTarget = target_kind === "keyword"
+    ? $("t-url").value.trim()
+    : await normalizeMonitorTarget(null, { quiet: true });
+  if (normalizedTarget === null) return;
+  const url_or_secuid = $("t-url").value.trim();
   if (!url_or_secuid) { toast(target_kind === "keyword" ? "请输入搜索关键词" : "请输入主页链接 / 短链 / id", "err"); return; }
   if ((PLATFORM === "xhs" || PLATFORM === "douyin") && !$("t-acc").value) {
     const platformName = PLATFORM === "xhs" ? "小红书" : "抖音";
@@ -5104,6 +5273,8 @@ function renderDanmakuWatchRows() {
           DANMAKU_WATCHES.length ? "调整筛选条件" : "在上方添加一个弹幕监控");
 }
 async function addDanmakuWatch() {
+  const normalizedTarget = await normalizeDanmakuTarget(null, { quiet: true });
+  if (normalizedTarget === null) return;
   const url = $("d-w-url").value.trim();
   if (!url) { toast("请粘贴视频链接 / 账号主页 / aweme_id", "err"); return; }
   const mode = $("d-w-mode").value;
@@ -5139,6 +5310,7 @@ async function addDanmakuWatch() {
       ["d-w-url", "d-w-alias", "d-w-include", "d-w-exclude"].forEach(id => $(id).value = "");
       ["d-w-time-start", "d-w-time-end", "d-w-min-len", "d-w-max-len", "d-w-min-like", "d-w-scan-cap", "d-w-total-cap"].forEach(id => $(id).value = "0");
       setMetaValue("d-w-group", ""); setMetaValue("d-w-tags", "");
+      resetDanmakuTargetState();
       $("d-w-msg").textContent = "已添加 ✓";
       toast("已开始监控弹幕", "ok");
     } catch (e) {
@@ -5407,6 +5579,8 @@ async function clearDanmaku() {
 // ─── 评论监控(独立) ───
 const SRC = { public: "公开", creator: "创作中心" };
 async function addWatch() {
+  const normalizedTarget = await normalizeWatchTarget(null, { quiet: true });
+  if (normalizedTarget === null) return;
   const url_or_id = $("w-url").value.trim();
   if (!url_or_id) { toast("请粘贴视频链接 / 账号主页 / sec_uid", "err"); return; }
   if (PLATFORM === "xhs" && !$("w-acc").value) {
@@ -5433,6 +5607,7 @@ async function addWatch() {
       });
       ["w-url", "w-alias"].forEach(id => $(id).value = "");
       setMetaValue("w-group", ""); setMetaValue("w-tags", "");
+      resetWatchTargetState();
       $("w-msg").textContent = "已添加 ✓"; toast("已开始监控评论", "ok");
     } catch (e) { $("w-msg").textContent = "失败: " + e.message; toast("添加失败:" + e.message, "err"); }
   });
