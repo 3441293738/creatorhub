@@ -1516,7 +1516,7 @@ async function startKsLogin() {
   $("qrstatus").textContent = "正在打开快手窗口…";
   try {
     const res = await api(loginStartUrl("/api/login/kuaishou/start", proxy, browserBackend), loginStartOptions(fingerprint));
-    $("qrstatus").innerHTML = `${ic("i-eye")} <b>快手窗口已打开</b>，请在该窗口点击「登录」并使用快手 App 扫码。<br>完成后这里会自动刷新。`;
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>快手扫码窗口已打开</b>，登录二维码会自动弹出，请使用快手 App 扫码。<br>完成后这里会自动识别并刷新资料。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("快手登录启动失败:" + e.message, "err"); }
 }
@@ -1534,7 +1534,7 @@ async function startKsCreatorLogin() {
   $("qrstatus").textContent = "正在打开快手创作平台窗口…";
   try {
     const res = await api(loginStartUrl("/api/login/kuaishou-creator/start", proxy, browserBackend), loginStartOptions(fingerprint));
-    $("qrstatus").innerHTML = `${ic("i-eye")} <b>快手创作平台窗口已打开</b>，请扫码登录，此登录态用于发布。<br>登录成功后请稍等片刻再关闭窗口。`;
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>快手创作平台窗口已打开</b>。普通快手扫码登录已可同时用于发布；仅在创作平台仍提示登录时使用此备用入口。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
 }
@@ -1915,10 +1915,12 @@ async function refreshAccounts() {
     const isKs = a.platform === "kuaishou";
     const isChannels = a.platform === "shipinhao";
     const idName = isXhs ? "小红书号 " : isKs ? "快手号 " : isChannels ? "视频号 " : "抖音号 ";
-    const secName = isChannels ? "finder_id " : (isXhs || isKs) ? "user_id " : "sec_uid ";
+    const secName = isChannels ? "finder_id " : isKs ? "主页ID " : isXhs ? "user_id " : "sec_uid ";
+    const rawSecUid = String(a.sec_uid || "");
+    const shortSecUid = rawSecUid.length > 18 ? rawSecUid.slice(0, 18) + "…" : rawSecUid;
     const idline = [
       a.douyin_id ? idName + esc(a.douyin_id) : null,
-      a.sec_uid ? secName + esc(a.sec_uid).slice(0, 16) + "…" : null,
+      a.sec_uid ? secName + esc(shortSecUid) : null,
     ].filter(Boolean).join(" · ");
     const loginDetails = isXhs
       ? [a.has_read_login ? "读取登录已保存" : "读取登录未配置",
@@ -1926,9 +1928,15 @@ async function refreshAccounts() {
       : [a.has_storage
           ? (a.status === "invalid" ? "登录态已保存但校验失效" : "登录态有效")
           : "无登录态"];
+    const ksGender = ({ M: "男", F: "女", MALE: "男", FEMALE: "女" })[
+      String(a.gender || "").toUpperCase()
+    ] || String(a.gender || "");
     const detail = [
-      a.aweme_count ? a.aweme_count + (isXhs ? " 笔记" : " 作品") : null,
-      a.follower_count ? fmtNum(a.follower_count) + " 粉丝" : null,
+      isKs || a.aweme_count ? fmtNum(a.aweme_count || 0) + (isXhs ? " 笔记" : " 作品") : null,
+      isKs ? fmtNum(a.following_count || 0) + " 关注" : null,
+      isKs || a.follower_count ? fmtNum(a.follower_count || 0) + " 粉丝" : null,
+      isKs ? fmtNum(a.total_favorited || 0) + " 获赞" : null,
+      isKs && ksGender ? "性别 " + ksGender : null,
       isXhs ? "扫码登录" : (a.login_type === "cookie" ? "Cookie 登录" : "扫码登录"),
       ...loginDetails,
       `被 ${a.monitor_count} 个监控使用`,
@@ -2935,7 +2943,10 @@ async function refreshProfile(id) {
         toast("创作平台登录有效，资料已更新；主站读取登录尚未配置", "info", 8000);
         return;
       }
-      const idLbl = (r.platform || PLATFORM) === "xhs" ? " \u00b7 \u5c0f\u7ea2\u4e66\u53f7 " : " \u00b7 \u6296\u97f3\u53f7 ";
+      const refreshedPlatform = r.platform || PLATFORM;
+      const idLbl = refreshedPlatform === "xhs" ? " · 小红书号 "
+        : refreshedPlatform === "kuaishou" ? " · 快手号 "
+        : refreshedPlatform === "shipinhao" ? " · 视频号 " : " · 抖音号 ";
       toast("\u8d44\u6599\u5df2\u66f4\u65b0\uff0c\u767b\u5f55\u72b6\u6001\u5df2\u6062\u590d:" + (r.nickname || "") + (r.douyin_id ? idLbl + r.douyin_id : ""), "ok");
     } catch (e) {
       toast("\u5237\u65b0\u5931\u8d25:" + e.message, "err");
@@ -5999,7 +6010,7 @@ function populatePubAcc() {
   // 小红书发布需创作者号;抖音 / 快手发布有登录态即可(走浏览器自动化)
   const list = PLATFORM === "xhs" ? ACCOUNTS.filter(a => a.has_creator) : ACCOUNTS;
   const ph = list.length ? "选择发布账号"
-    : (PLATFORM === "kuaishou" ? "请先完成「快手扫码/创作者登录」"
+    : (PLATFORM === "kuaishou" ? "请先完成「快手扫码登录」"
       : PLATFORM === "douyin" ? "请先完成「抖音扫码/创作者登录」" : "请先完成「小红书创作者登录」");
   sel.innerHTML = accOptions(list, ph);
   if (list.length) sel.value = String(list[0].id);
@@ -6144,7 +6155,7 @@ async function refreshPublish() {
     <td class="num">${t.media_count}</td>
     <td>${t.source_platform ? esc(t.source_platform) + " 转发" : "手动"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}</td>
-    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? (t.platform === "shipinhao" ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${t.account_id}, '${esc(t.result_url)}')">查看</a>` : ` <a href="${esc(t.result_url)}" target="_blank">查看</a>`) : ""}</td>
+    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? (["kuaishou", "shipinhao"].includes(t.platform) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${t.account_id}, '${esc(t.result_url)}', '${t.platform}')">查看</a>` : ` <a href="${esc(t.result_url)}" target="_blank">查看</a>`) : ""}</td>
     <td class="acttd">
       ${["pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">编辑</button>` : ""}
       ${["pending", "failed"].includes(t.status) ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
@@ -6154,10 +6165,11 @@ async function refreshPublish() {
       : PLATFORM === "douyin" ? "上传图集/视频加入队列(发布到抖音创作平台)"
       : "上传图集/视频加入队列,或在抖音作品上点「发小红书」转发过来");
 }
-// 视频号作品无公开链接:用该账号已登录浏览器打开图文/视频管理页查看
-async function openPubInBrowser(accountId, url) {
+// 快手创作页、视频号管理页都必须复用账号自己的登录态，不能交给系统浏览器。
+async function openPubInBrowser(accountId, url, platform = "shipinhao") {
   if (!accountId) { toast("缺少账号信息", "err"); return; }
-  toast("正在用该账号浏览器打开视频号管理页…", "info", 5000);
+  const pageName = platform === "kuaishou" ? "快手作品管理页" : "视频号管理页";
+  toast("正在用该账号浏览器打开" + pageName + "…", "info", 5000);
   try {
     await api("/api/accounts/" + accountId + "/open-browser?url=" + encodeURIComponent(url || ""), { method: "POST" });
   } catch (e) { toast("打开失败:" + e.message, "err"); }

@@ -188,7 +188,8 @@ def flatten_ks_comments(root_comments: list) -> list:
         if not isinstance(rc, dict):
             continue
         out.append(rc)
-        for sc in (rc.get("subComments") or rc.get("subComment") or []):
+        for sc in (rc.get("subCommentsV2") or rc.get("subComments")
+                   or rc.get("subComment") or []):
             if isinstance(sc, dict):
                 out.append(sc)
     return out
@@ -199,20 +200,29 @@ def parse_self_user(u: dict) -> dict:
     结构:userProfile = {profile:{user_id,user_name,headurl,...}, ownerCount:{fan,photo,...}}"""
     if not isinstance(u, dict):
         return {"nickname": "", "sec_uid": "", "douyin_id": "", "avatar": "",
-                "follower_count": 0, "aweme_count": 0}
+                "follower_count": 0, "following_count": 0,
+                "aweme_count": 0, "total_favorited": 0, "gender": ""}
     # 兼容直接传 profile 或传整个 userProfile
     profile = _first(u, "profile", default=None) or u
     counts = _first(u, "ownerCount", "counts", default={}) or {}
-    avatar = _first(profile, "headurl", "headerUrl", "headUrl", "avatar", default="") or ""
+    avatar = _first(profile, "headurl", "headerUrl", "headUrl", "userHead",
+                    "avatar", default="") or ""
     if isinstance(avatar, list):
         avatar = avatar[0] if avatar else ""
     return {
         "nickname": _first(profile, "user_name", "name", "userName", default="") or "",
-        "sec_uid": str(_first(profile, "user_id", "userId", "id", default="") or ""),
-        "douyin_id": str(_first(profile, "kwaiId", "eid", default="") or ""),  # 快手号
+        "sec_uid": str(_first(profile, "user_id", "eid", "encryptedUserId",
+                               "userId", "id", default="") or ""),
+        "douyin_id": str(_first(profile, "kwaiId", "userDefineId", default="") or ""),  # 快手号
         "avatar": avatar,
-        "follower_count": _to_int(_first(counts, "fan", "follower", "fanCount", default=0)),
+        "follower_count": _to_int(_first(counts, "fan", "fans", "follower",
+                                              "fanCount", default=0)),
+        "following_count": _to_int(_first(
+            counts, "follow", "follows", "following", "followCount", default=0)),
         # 作品数:快手 ownerCount 用 photo_public(实测),兜底 photo
         "aweme_count": _to_int(_first(counts, "photo_public", "photo", "photoCount",
                                       "work", default=0)),
+        "total_favorited": _to_int(_first(
+            counts, "like", "likes", "liked", "likeCount", default=0)),
+        "gender": str(_first(profile, "gender", "sex", default="") or ""),
     }

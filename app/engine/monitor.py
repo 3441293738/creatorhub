@@ -1122,8 +1122,15 @@ class MonitorEngine:
                 account.sec_uid = parsed.get("sec_uid") or account.sec_uid
                 account.douyin_id = parsed.get("douyin_id") or account.douyin_id
                 account.avatar = parsed.get("avatar") or account.avatar
-                account.follower_count = parsed.get("follower_count") or account.follower_count
-                account.aweme_count = parsed.get("aweme_count") or account.aweme_count
+                if platform == "kuaishou":
+                    account.follower_count = int(parsed.get("follower_count") or 0)
+                    account.following_count = int(parsed.get("following_count") or 0)
+                    account.aweme_count = int(parsed.get("aweme_count") or 0)
+                    account.total_favorited = int(parsed.get("total_favorited") or 0)
+                    account.gender = str(parsed.get("gender") or "")
+                else:
+                    account.follower_count = parsed.get("follower_count") or account.follower_count
+                    account.aweme_count = parsed.get("aweme_count") or account.aweme_count
                 got_profile = True
             elif err == "logged_out":
                 account.status = "invalid"
@@ -2812,7 +2819,9 @@ class MonitorEngine:
             try:
                 ok, url, err = await publish_kuaishou(self.browser, identity, state,
                                                       media_type, title, desc, files,
-                                                      topics=topics, headed=True)
+                                                      topics=topics, headed=True,
+                                                      visibility=visibility,
+                                                      allow_save=allow_save)
             except Exception as e:
                 ok, url, err = False, "", f"发布异常: {e!r}"
             return await self._finish_publish(task_id, ok, url, err, platform="kuaishou")

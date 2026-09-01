@@ -526,16 +526,63 @@ async def interactive_xhs_creator_login(mgr: BrowserManager, identity: Identity,
 
 
 # ── 快手登录 ──
-# 登录判定:出现 passToken 即视为已登录(实测的权威信号);
-# userId / web_st 作为附加信号兜底。
-_KS_LOGIN_COOKIES = {"passToken", "userId", "kuaishou.server.web_st"}
+# 快手主站根路径在未登录的新浏览器里偶尔只返回一段 ``result=2`` JSON，
+# 不会渲染登录入口；新版推荐页才是稳定的 Web 登录落点。
+_KS_HOME_URL = "https://www.kuaishou.com/new-reco"
+# 登录判定:passToken 是强信号；新版主站也会写 webday7_st，旧版则是 web_st。
+_KS_LOGIN_COOKIES = {
+    "passToken", "userId", "kuaishou.server.web_st",
+    "kuaishou.server.webday7_st",
+}
 # 创作平台(cp.kuaishou.com)登录后才会写入的 Cookie(发布需要)
 _KS_CREATOR_COOKIES = {"kuaishou.web.cp.api_st", "kuaishou.web.cp.api_ph"}
+
+_KS_WEB_LOGIN_BUTTONS = (
+    '[role="button"].sidebar-login-button',
+    'span[role="button"]:has-text("登录")',
+    'button:has-text("登录")',
+    '[class*="login-button"]',
+)
+_KS_CREATOR_LOGIN_BUTTONS = (
+    'button:has-text("立即登录")',
+    '[role="button"]:has-text("立即登录")',
+    'text=立即登录',
+    'button:has-text("登录")',
+)
+
+
+def _ks_web_login_ready(cookie_names) -> bool:
+    """兼容当前 webday7_st 与旧 web_st 的快手主站登录态。"""
+    names = set(cookie_names or ())
+    if "passToken" in names:
+        return True
+    has_web_st = any(
+        name in {"web_st", "kuaishou.server.web_st"}
+        or name.endswith(".webday7_st")
+        for name in names
+    )
+    return "userId" in names and has_web_st
+
+
+async def _click_ks_login_button(page, selectors) -> bool:
+    """只点击可见的登录按钮，避免旧的 ``[class*=login]`` 点中整块容器。"""
+    for selector in selectors:
+        try:
+            loc = page.locator(selector)
+            for index in range(await loc.count()):
+                candidate = loc.nth(index)
+                if not await candidate.is_visible():
+                    continue
+                await candidate.click(timeout=3000)
+                return True
+        except Exception:
+            continue
+    return False
 
 
 async def interactive_ks_login(mgr: BrowserManager, identity: Identity,
                                timeout_seconds: int = 180,
-                               start_url: str = "https://www.kuaishou.com/",
+                               start_url: str = _KS_HOME_URL,
                                force_reauth: bool = False,
                                ) -> Tuple[bool, str, str]:
     """快手扫码登录。打开真实窗口让用户扫码,落地登录态。
@@ -554,13 +601,9 @@ async def interactive_ks_login(mgr: BrowserManager, identity: Identity,
     try:
         await page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
         await _focus(page)
-        # 尝试自动弹出登录框(失败也没关系,用户可自行点“登录”)
-        for sel in ('text=登录', 'button:has-text("登录")', '[class*="login"]'):
-            try:
-                await page.click(sel, timeout=2500)
-                break
-            except Exception:
-                continue
+        # 新版按钮是 ``span[role=button].sidebar-login-button``，文案被拆成
+        # “立即”+“登录”，旧的 text=登录 / [class*=login] 会点不中或点到容器。
+        await _click_ks_login_button(page, _KS_WEB_LOGIN_BUTTONS)
         waited = 0
         while waited < timeout_seconds:
             if page.is_closed():
@@ -570,12 +613,11 @@ async def interactive_ks_login(mgr: BrowserManager, identity: Identity,
             except Exception:
                 break
             names = {c["name"] for c in cookies}
-            # passToken 是登录成功的权威信号(游客态没有)
-            if "passToken" in names:
+            if _ks_web_login_ready(names):
                 logged = True
                 break
-            await asyncio.sleep(2)
-            waited += 2
+            await asyncio.sleep(0.5)
+            waited += 0.5
         if logged:
             await page.wait_for_timeout(1500)
             state_json = json.dumps(await ctx.storage_state())
@@ -607,12 +649,7 @@ async def interactive_ks_creator_login(mgr: BrowserManager, identity: Identity,
         await page.goto("https://cp.kuaishou.com/", wait_until="domcontentloaded",
                         timeout=30000)
         await _focus(page)
-        for sel in ('text=登录', 'button:has-text("登录")', '[class*="login"]'):
-            try:
-                await page.click(sel, timeout=2500)
-                break
-            except Exception:
-                continue
+        await _click_ks_login_button(page, _KS_CREATOR_LOGIN_BUTTONS)
         waited = 0
         while waited < timeout_seconds:
             if page.is_closed():
@@ -623,7 +660,8 @@ async def interactive_ks_creator_login(mgr: BrowserManager, identity: Identity,
                 break
             names = {c["name"] for c in cookies}
             on_cp = "cp.kuaishou.com" in page.url and "/passport" not in page.url
-            if (names & _KS_CREATOR_COOKIES) or (on_cp and "userId" in names):
+            if (names & _KS_CREATOR_COOKIES) or (
+                    on_cp and _ks_web_login_ready(names)):
                 await page.wait_for_timeout(1500)
                 try:
                     state_json = json.dumps(await ctx.storage_state())
@@ -633,8 +671,8 @@ async def interactive_ks_creator_login(mgr: BrowserManager, identity: Identity,
                     pass
                 if logged:
                     break
-            await asyncio.sleep(2)
-            waited += 2
+            await asyncio.sleep(0.5)
+            waited += 0.5
     finally:
         try:
             await ctx.close()

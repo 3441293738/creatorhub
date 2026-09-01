@@ -74,7 +74,8 @@ from .platforms.xhs import (resolve_note as xhs_resolve_note,
                   has_creator_cookies)
 from .platforms.kuaishou import (resolve_ks_user_id, resolve_ks_photo_id,
                   looks_like_photo as ks_looks_like_photo,
-                  parse_self_user as parse_ks_self_user)
+                  parse_self_user as parse_ks_self_user,
+                  MANAGE_URL as KS_MANAGE_URL)
 from .platforms.channels import parse_self_user as parse_channels_self_user
 from .engine import Downloader, MonitorEngine
 from .engine.share_downloader import (
@@ -760,8 +761,17 @@ async def _enrich_account_profile(account_id: int, state: str, *,
             acc.sec_uid = p.get("sec_uid") or acc.sec_uid
             acc.douyin_id = p.get("douyin_id") or acc.douyin_id
             acc.avatar = p.get("avatar") or acc.avatar
-            acc.follower_count = p.get("follower_count") or acc.follower_count
-            acc.aweme_count = p.get("aweme_count") or acc.aweme_count
+            if platform == "kuaishou":
+                # 快手资料接口会明确返回 0；不能用 ``or`` 保留旧值，否则
+                # 取消关注、删光作品等场景会让账号卡片一直显示过期数据。
+                acc.follower_count = int(p.get("follower_count") or 0)
+                acc.following_count = int(p.get("following_count") or 0)
+                acc.aweme_count = int(p.get("aweme_count") or 0)
+                acc.total_favorited = int(p.get("total_favorited") or 0)
+                acc.gender = str(p.get("gender") or "")
+            else:
+                acc.follower_count = p.get("follower_count") or acc.follower_count
+                acc.aweme_count = p.get("aweme_count") or acc.aweme_count
             acc.status = "active"
             s.add(acc); s.commit()
             return _done("ok")
@@ -1094,6 +1104,11 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     acc.creator_storage_state = state_json
                     if not is_xhs and not acc.storage_state:
                         acc.storage_state = state_json
+                elif platform == "kuaishou":
+                    # 当前快手 passToken 会在 cp.kuaishou.com 自动换取创作会话；
+                    # 一次主站扫码同时可读取和发布，不再要求用户重复扫“创作者登录”。
+                    acc.storage_state = state_json
+                    acc.creator_storage_state = state_json
                 elif platform == "shipinhao":
                     # 视频号一套登录态即读取又发布,两处都写
                     acc.storage_state = state_json
@@ -1495,7 +1510,9 @@ async def list_accounts(platform: str | None = None):
                     environment_check = None
             has_creator = (
                 bool(a.creator_storage_state)
-                or has_creator_cookies(a.storage_state)
+                or (a.platform in ("kuaishou", "douyin", "shipinhao")
+                    and bool(a.storage_state))
+                or (a.platform == "xhs" and has_creator_cookies(a.storage_state))
             )
             has_read_login = (
                 _xhs_has_read_login_state(a.storage_state)
@@ -1504,7 +1521,11 @@ async def list_accounts(platform: str | None = None):
             out.append({
                 "id": a.id, "platform": a.platform, "nickname": a.nickname, "status": a.status,
                 "sec_uid": a.sec_uid, "douyin_id": a.douyin_id, "avatar": a.avatar,
-                "follower_count": a.follower_count, "aweme_count": a.aweme_count,
+                "follower_count": a.follower_count,
+                "following_count": a.following_count,
+                "aweme_count": a.aweme_count,
+                "total_favorited": a.total_favorited,
+                "gender": a.gender,
                 "has_creator": has_creator,
                 "has_read_login": has_read_login,
                 "kind": "creator" if has_creator else "fetch",
@@ -3012,13 +3033,19 @@ async def refresh_account_profile(account_id: int):
             if acc and acc.platform == "xhs"
             else bool(acc and acc.storage_state)
         )
+        has_creator_login = bool(acc and (
+            acc.creator_storage_state
+            or (acc.platform in ("kuaishou", "douyin", "shipinhao")
+                and acc.storage_state)
+            or (acc.platform == "xhs" and has_creator_cookies(acc.storage_state))
+        ))
         return {"ok": True, "nickname": acc.nickname, "platform": acc.platform,
                 "douyin_id": acc.douyin_id, "sec_uid": acc.sec_uid,
                 "status": acc.status,
                 "login_scope": ("creator" if platform == "xhs" and creator_state
                                   else "read"),
                 "has_read_login": has_read_login,
-                "has_creator": bool(acc.creator_storage_state)}
+                "has_creator": has_creator_login}
 
 
 @app.post("/api/accounts/{account_id}/relogin/start")
@@ -8481,11 +8508,21 @@ class PublishUpdate(BaseModel):
 
 
 def _publish_dict(t: PublishTask) -> dict:
+    result_url = t.result_url or ""
+    if t.platform == "kuaishou" and t.status == "done":
+        try:
+            result_path = urlsplit(result_url).path.lower()
+        except (TypeError, ValueError):
+            result_path = ""
+        # 旧任务把发布表单地址存成结果地址；列表输出时即时修正，历史记录
+        # 无需重新发布即可打开真正的作品管理页。
+        if not result_url or "/article/publish/" in result_path:
+            result_url = KS_MANAGE_URL
     return {
         "id": t.id, "platform": t.platform, "account_id": t.account_id,
         "media_type": t.media_type, "title": t.title, "desc": t.desc,
         "topics": t.topics, "location": t.location,
-        "status": t.status, "result_url": t.result_url,
+        "status": t.status, "result_url": result_url,
         "visibility": t.visibility, "allow_save": t.allow_save,
         "error": t.error, "media_count": len(json.loads(t.media_json or "[]")),
         "source_platform": t.source_platform, "source_content_id": t.source_content_id,

@@ -122,3 +122,48 @@ def test_fingerprint_login_can_be_configured_before_first_browser_launch():
     assert "使用出口 IP 自动配置" in source
     assert "loginStartOptions(fingerprint)" in source
     assert 'body: JSON.stringify(fingerprint)' in source
+
+
+def test_kuaishou_login_copy_matches_the_automatic_qr_and_shared_publish_session():
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    ks_login = source[source.index("async function startKsLogin()"):
+                      source.index("async function startKsCreatorLogin()")]
+
+    assert "登录二维码会自动弹出" in ks_login
+    assert "完成后这里会自动识别并刷新资料" in ks_login
+    assert '"请先完成「快手扫码登录」"' in source
+    assert "创作平台登录（备用）" in html
+    assert "请在该窗口点击「登录」" not in ks_login
+
+
+def test_kuaishou_account_card_uses_human_profile_labels():
+    source = APP_JS.read_text(encoding="utf-8")
+    start = source.index("async function refreshAccounts()")
+    end = source.index("function populateAccountSelect", start)
+    refresh = source[start:end]
+
+    assert 'isKs ? "主页ID "' in refresh
+    assert 'a.following_count || 0) + " 关注"' in refresh
+    assert 'a.total_favorited || 0) + " 获赞"' in refresh
+    assert '(isXhs || isKs) ? "user_id "' not in refresh
+
+
+def test_refresh_profile_uses_kuaishou_id_label():
+    source = APP_JS.read_text(encoding="utf-8")
+    start = source.index("async function refreshProfile(id)")
+    end = source.index("async function setProxy", start)
+    refresh = source[start:end]
+
+    assert 'refreshedPlatform === "kuaishou" ? " · 快手号 "' in refresh
+
+
+def test_kuaishou_publish_view_reuses_the_account_browser():
+    source = APP_JS.read_text(encoding="utf-8")
+    start = source.index("async function refreshPublish()")
+    end = source.index("async function runPublish", start)
+    publish = source[start:end]
+
+    assert '["kuaishou", "shipinhao"].includes(t.platform)' in publish
+    assert "快手作品管理页" in publish
+    assert "不能交给系统浏览器" in publish

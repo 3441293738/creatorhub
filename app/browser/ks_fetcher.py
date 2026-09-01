@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -85,7 +87,10 @@ def _dig_comments(data: dict) -> list:
     for key in ("visionCommentList", "commentListQuery"):
         v = d.get(key)
         if isinstance(v, dict):
-            rc = v.get("rootComments") or v.get("commentList") or v.get("comments")
+            # 2026 详情页 commentListQuery 已切到 rootCommentsV2；旧解析只看
+            # rootComments，导致页面明明显示评论却返回空列表。
+            rc = (v.get("rootCommentsV2") or v.get("rootComments")
+                  or v.get("commentList") or v.get("comments"))
             if isinstance(rc, list):
                 return rc
     return []
@@ -229,6 +234,7 @@ async def fetch_ks_comments(mgr: BrowserManager, identity: Identity, photo_id: s
                 collected[cid] = c
 
     page.on("response", on_response)
+    final_url = ""
     try:
         await page.goto(PHOTO_URL.format(pid=photo_id),
                         wait_until="domcontentloaded", timeout=30000)
@@ -237,7 +243,18 @@ async def fetch_ks_comments(mgr: BrowserManager, identity: Identity, photo_id: s
         for _ in range(max_scrolls):
             before = len(collected)
             try:
-                await page.evaluate("() => window.scrollBy(0, document.body.scrollHeight)")
+                # 新版详情页评论区是固定面板，滚 window 不会翻页；同时滚动所有
+                # 真正可滚容器，旧版页面则继续由 window.scrollTo 兜底。
+                await page.evaluate("""() => {
+                  window.scrollTo(0, document.body.scrollHeight);
+                  for (const el of document.querySelectorAll('*')) {
+                    const style = getComputedStyle(el);
+                    if ((style.overflowY === 'auto' || style.overflowY === 'scroll')
+                        && el.scrollHeight > el.clientHeight + 20) {
+                      el.scrollTop = el.scrollHeight;
+                    }
+                  }
+                }""")
             except Exception:
                 pass
             await page.wait_for_timeout(settle_ms)
@@ -247,6 +264,7 @@ async def fetch_ks_comments(mgr: BrowserManager, identity: Identity, photo_id: s
                     break
             else:
                 stagnant = 0
+        final_url = page.url
     except Exception as e:
         error = f"打开作品页失败: {e!r}"
     finally:
@@ -256,7 +274,10 @@ async def fetch_ks_comments(mgr: BrowserManager, identity: Identity, photo_id: s
             pass
 
     if not collected and not error:
-        error = "未拦截到评论(可能未登录/评论区未加载/作品无评论)"
+        if "passport" in final_url or "/login" in final_url:
+            error = "logged_out:登录态失效,请重新登录"
+        else:
+            error = "未拦截到评论(评论区未加载或作品暂无评论)"
     new = [c for cid, c in collected.items() if cid not in known_cids]
     return new, error
 
@@ -326,6 +347,32 @@ def _extract_rest_profile(data: dict):
     快手该接口字段未知,这里多形状兜底;并把扁平计数归并进 ownerCount。"""
     if not isinstance(data, dict):
         return None, []
+    # 2026 /rest/v/profile/get 当前直接返回扁平字段：
+    # {eid,userName,userId,userDefineId,userHead,fans,follows,...}。
+    # eid 才是 /profile/{id} 可用的公开 id；数字 userId 不能直开主页。
+    if data.get("result") in (1, "1") and (
+            data.get("userName") or data.get("user_name")):
+        public_id = (data.get("eid") or data.get("encryptedUserId")
+                     or data.get("user_id") or "")
+        display_id = (data.get("userDefineId") or data.get("kwaiId")
+                      or data.get("userId") or "")
+        profile = {
+            "user_id": str(public_id or ""),
+            "user_name": data.get("userName") or data.get("user_name") or "",
+            "kwaiId": str(display_id or ""),
+            "eid": str(public_id or ""),
+            "gender": data.get("sex") or data.get("gender") or "",
+            "headurl": (data.get("userHead") or data.get("headurl")
+                        or data.get("headUrl") or ""),
+        }
+        counts = {
+            "fan": data.get("fans", data.get("fan", 0)),
+            "follow": data.get("follows", data.get("follow", 0)),
+            "like": data.get("like", data.get("likes", 0)),
+            "photo_public": data.get(
+                "photo_public", data.get("photoCount", data.get("photo", 0))),
+        }
+        return {"profile": profile, "ownerCount": counts}, list(data.keys())
     # 1) 已是 graphql 形状
     up = data.get("userProfile")
     if isinstance(up, dict) and up.get("profile"):
@@ -340,7 +387,7 @@ def _extract_rest_profile(data: dict):
             # 扁平计数兜底
             flat = {k: c.get(k) or data.get(k) for k in
                     ("fan", "photo", "photo_public", "follow", "fanCount",
-                     "photoCount", "follower")}
+                     "photoCount", "follower", "fans", "follows")}
             merged = {**{k: v for k, v in flat.items() if v is not None}, **oc}
             return {"profile": c, "ownerCount": merged}, list(c.keys())
     # 3) 顶层就是扁平 profile
@@ -397,6 +444,7 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
     logged_out = False
     has_login_btn = None
     attempts: List[str] = []
+    profile_seen = asyncio.Event()
 
     # 先取 cookie(在导航前就绪,这样响应监听里能用 uid 匹配)
     uid_cookie = ""
@@ -413,10 +461,23 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
     hit_urls: list = []      # 命中响应的 URL(诊断用)
 
     async def on_response(resp):
-        if not uid_cookie or len(hits) >= 3:
-            return
+        nonlocal result
         rt = resp.request.resource_type
         if rt not in ("xhr", "fetch", "document"):
+            return
+        # 首屏自己的 profile/get 请求由快手页面签过名；直接复用这个响应。
+        # 在 page.evaluate 里另发同 URL 会被 result=50「签名验证失败」拒绝。
+        if "/rest/v/profile/get" in resp.url:
+            try:
+                payload = await resp.json()
+            except Exception:
+                payload = None
+            up, keys = _extract_rest_profile(payload or {})
+            attempts.append(f"captured_rest:top_keys={keys[:14]}")
+            if up and up.get("profile"):
+                result = up
+                profile_seen.set()
+        if not uid_cookie or len(hits) >= 3:
             return
         try:
             txt = await resp.text()
@@ -447,38 +508,50 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
         return up if (up and up.get("profile")) else None
 
     try:
-        await page.goto("https://www.kuaishou.com", wait_until="domcontentloaded",
+        await page.goto("https://www.kuaishou.com/new-reco",
+                        wait_until="domcontentloaded",
                         timeout=30000)
-        await page.wait_for_timeout(3000)     # 等头部自身信息接口回来
         try:
-            has_login_btn = await page.get_by_text(
-                "登录", exact=True).first.is_visible(timeout=1200)
+            await asyncio.wait_for(profile_seen.wait(), timeout=4.0)
+        except asyncio.TimeoutError:
+            await page.wait_for_timeout(500)
+        try:
+            has_login_btn = await page.locator(
+                '[role="button"].sidebar-login-button').first.is_visible(
+                    timeout=1200)
         except Exception:
-            has_login_btn = None
+            try:
+                has_login_btn = await page.get_by_text(
+                    "登录", exact=True).first.is_visible(timeout=1200)
+            except Exception:
+                has_login_btn = None
 
-        # ① 主路径:直接调本人资料 REST 接口 /rest/v/profile/get
+        # ① 主路径:使用页面首屏已经签名的 /rest/v/profile/get 响应。
         self3x = ""
-        try:
-            rp = await page.evaluate(_KS_REST_PROFILE_JS)
-        except Exception as e:
-            rp = {"__err": repr(e)}
-        up, top_keys = _extract_rest_profile(rp or {})
-        attempts.append(f"rest:method={(rp or {}).get('__method')},top_keys={top_keys[:12]}"
-                        + (f",err={rp.get('__err')}" if (rp or {}).get("__err") else ""))
-        if up and up.get("profile"):
-            pf = up["profile"]
-            result = up
+        if result and result.get("profile"):
+            pf = result["profile"]
             # 真实 web profile id 是 3x... 形式,可能落在 user_id / eid / kwaiId 任一字段,
             # 直接扫描所有字符串值找 3x 开头的那个
             self3x = next((str(v) for v in pf.values()
                            if isinstance(v, str) and v.startswith("3x")), "")
-            attempts.append(f"rest_profile:name={pf.get('user_name') or pf.get('userName') or pf.get('name') or '-'},"
+            attempts.append(f"captured_profile:name={pf.get('user_name') or pf.get('userName') or pf.get('name') or '-'},"
                             f"3x={self3x or '-'},pf_keys={list(pf.keys())[:14]}")
 
         # ② 用真实 3x id 调 visionProfile 拿权威资料(含正确头像 + 粉丝/作品数,字段对齐)
         if self3x:
             full = await _vp(self3x)
             if full and full.get("profile"):
+                captured = (result or {}).get("profile") or {}
+                captured_counts = (result or {}).get("ownerCount") or {}
+                # visionProfile 当前不回显用户自定义快手号；保留首屏
+                # profile/get 的快手号、性别、关注和获赞，避免补全资料时丢失。
+                for key in ("kwaiId", "gender"):
+                    if captured.get(key) and not full["profile"].get(key):
+                        full["profile"][key] = captured[key]
+                full_counts = full.setdefault("ownerCount", {})
+                for key in ("follow", "like"):
+                    if key in captured_counts and key not in full_counts:
+                        full_counts[key] = captured_counts[key]
                 result = full      # graphql 字段与 parse_self_user 完全对齐(头像=headurl)
 
         # ③ 兜底:用"含本人 uid 的响应"里 harvest 出的 3x id / 资料
