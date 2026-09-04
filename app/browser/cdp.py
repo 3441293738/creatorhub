@@ -29,6 +29,108 @@ _WEBRTC_PROXY_ARGS = (
     "--webrtc-ip-handling-policy=disable_non_proxied_udp",
 )
 
+# Chrome 会在用户数据目录被占用时创建以下锁文件。使用同一目录再次启动
+# Chrome 不会创建第二个浏览器，而是把 URL 转发给现有进程后立即退出
+# （标准输出通常包含“正在现有的浏览器会话中打开”）。此时 Playwright 会
+# 报告 TargetClosedError；如果继续重试，每次都会在现有窗口中增加一个空白页。
+# 启动前先检查原生锁，将外部或残留的浏览器识别为 Profile 冲突，避免误判为
+# 临时 CDP 端口竞争。
+_CHROME_PROFILE_LOCK_FILES = ("lockfile", "SingletonLock")
+
+
+def _singleton_lock_is_live(path: Path, profile_dir: Path) -> bool:
+    """检查 Chromium 的 POSIX SingletonLock 符号链接是否仍由活动进程持有。"""
+    if not path.is_symlink():
+        return False
+    try:
+        target = os.readlink(path)
+    except OSError:
+        return False
+    # Chromium 将链接命名为 ``<host>-<pid>``。所有者 PID 已退出时视为残留
+    # 链接并忽略；进程仍存在时继续保护 Profile。没有 /proc 的系统上，只要
+    # PID 仍存活就保守地视为所有者（该符号链接仅由 Chromium 使用）。
+    match = re.search(r"-(\d+)$", str(target))
+    if match is None:
+        return True
+    try:
+        pid = int(match.group(1))
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError):
+        return False
+    if platform.system() == "Linux":
+        try:
+            command = (Path("/proc") / str(pid) / "cmdline").read_bytes()
+            command_text = command.replace(b"\0", b" ").decode(
+                "utf-8", "replace")
+            profile_key = os.path.normcase(str(profile_dir.resolve()))
+            command_key = os.path.normcase(command_text)
+            return profile_key in command_key
+        except (OSError, UnicodeError):
+            return False
+    return True
+
+
+def profile_is_locked(profile_dir: str | os.PathLike[str] | Path) -> bool:
+    """检查 Chrome 当前是否持有 *profile_dir* 的原生锁。
+
+    此处使用操作系统的文件锁原语，而不是简单判断文件是否存在。Chrome
+    崩溃后可能留下残留锁文件，因此未被进程打开的文件可以安全复用；Windows
+    的打开句柄或 POSIX 的咨询锁仍然表示 Profile 正在被占用。
+    """
+    root = Path(profile_dir)
+    for name in _CHROME_PROFILE_LOCK_FILES:
+        path = root / name
+        # Linux/macOS 上的 ``SingletonLock`` 是符号链接，通常指向特意不
+        # 存在的 ``host-pid`` 目标；使用 lexists 才能在这种情况下看到锁。
+        if not os.path.lexists(path):
+            continue
+        if name == "SingletonLock" and path.is_symlink():
+            if _singleton_lock_is_live(path, root):
+                return True
+            continue
+        handle = None
+        try:
+            # Windows Chrome 会以禁止共享的方式打开 ``lockfile``；Chrome
+            # 运行时再次以读写方式打开会触发 PermissionError。POSIX 上可以
+            # 正常打开，再由下面的 flock 检测咨询锁。
+            handle = path.open("r+b", buffering=0)
+            if os.name == "nt":
+                import msvcrt
+                handle.seek(0)
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                except (OSError, IOError):
+                    return True
+                finally:
+                    with suppress(Exception):
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except (OSError, IOError):
+                    return True
+                finally:
+                    with suppress(Exception):
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            # 文件存在但没有锁时属于残留标记，不应仅因上次 Chrome 崩溃就阻止启动。
+        except FileNotFoundError:
+            # SingletonLock 符号链接可能在检查和打开之间消失。
+            continue
+        except (PermissionError, OSError, IOError):
+            # Windows 上 PermissionError 通常表示 Chrome 已打开 lockfile。
+            # 其他访问错误也保守地视为占用，否则启动可能把标签页转发给未知进程。
+            return True
+        finally:
+            if handle is not None:
+                with suppress(Exception):
+                    handle.close()
+    return False
+
 
 class CdpLaunchError(RuntimeError):
     """Stable Chrome or its CDP endpoint could not be initialized."""
@@ -395,6 +497,15 @@ class XhsCdpBackend:
             profile_dir, Path(executable).resolve(), proxy_plan)
         if recovered is not None:
             return recovered
+        # 外部打开的浏览器（或没有所有者标记的旧版 CreatorHub 进程）仍可能
+        # 占用该 Profile。Chrome 会将每次启动转发给它并退出，因此在创建进程
+        # 前直接报冲突，避免不断累积空白标签页。
+        if profile_is_locked(profile_dir):
+            # 刚关闭的 Chromium 可能需要短暂时间释放 Profile 句柄，先留出窗口。
+            await self.sleep(0.25)
+        if profile_is_locked(profile_dir):
+            raise CdpProfileConflictError(
+                f"Chrome profile is already in use: {profile_dir}")
         relay: Socks5AuthRelay | None = None
         process = None
         browser = None
@@ -433,6 +544,14 @@ class XhsCdpBackend:
                     await self._stop_process(process)
                     self._remove_owned_marker(marker_path, owned.pid)
                     process = None
+                    # Profile 可能在预检查和创建进程之间被占用。此时 Chrome 会
+                    # 将 URL 转发给现有所有者后退出；不要再次启动，否则每次
+                    # 重试都会在所有者窗口中增加空白标签页。
+                    if profile_is_locked(profile_dir):
+                        await self.sleep(0.25)
+                    if profile_is_locked(profile_dir):
+                        raise CdpProfileConflictError(
+                            f"Chrome profile is already in use: {profile_dir}")
                     if attempt == 2:
                         raise CdpLaunchError(
                             "系统 Chrome 连续未能绑定随机 CDP 端口")

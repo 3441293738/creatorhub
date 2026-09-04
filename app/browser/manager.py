@@ -32,7 +32,7 @@ from .backends import (
 )
 from .identity import Identity, fingerprint_script
 from .cdp import (CdpLaunchError, CdpProfileConflictError, CdpProxyError,
-                  CdpProxyAuthController, XhsCdpBackend)
+                  CdpProxyAuthController, XhsCdpBackend, profile_is_locked)
 from .proxy import ProxyConfigError, ProxyPlan, try_proxy_plan
 from .xhs_interaction import XhsInteractionPolicy, XhsVisibleActionGate
 
@@ -971,6 +971,16 @@ class BrowserManager:
         else:
             pdir = Path(identity.profile_dir)
         pdir.mkdir(parents=True, exist_ok=True)
+        # Chrome 会把相同 Profile 的持久化启动转发给已运行的浏览器后退出，
+        # Patchright 随后表现为 TargetClosedError。先探测原生锁，将其转换为
+        # 明确的 Profile 冲突，并避免在已有窗口中重复创建 about:blank 标签页。
+        if profile_is_locked(pdir):
+            # 刚关闭的 Chromium 在写回 Profile 时可能短暂持有文件句柄，
+            # 先等待一小段时间；如果仍被占用，则不再启动新的浏览器。
+            await asyncio.sleep(0.25)
+        if profile_is_locked(pdir):
+            raise BrowserProfileConflictError(
+                f"Chrome profile is already in use: {pdir}")
         was_empty = not any(p.name != ".browser.lock" for p in pdir.iterdir())
         if fingerprint_backend is not None and was_empty:
             self._seed_fingerprint_profile_preferences(pdir)
@@ -1049,7 +1059,16 @@ class BrowserManager:
             kwargs["proxy"] = proxy
         try:
             ctx = await self._pw.chromium.launch_persistent_context(**kwargs)
-        except Exception:
+        except Exception as exc:
+            # 浏览器可能在预检查之后、真正启动之前抢先取得原生锁。此时 Chrome
+            # 会把启动转发给现有会话，Patchright 抛出 TargetClosedError。将其
+            # 转换为明确的 Profile 冲突，避免向上层暴露误导性的自动化错误。
+            if profile_is_locked(pdir):
+                await asyncio.sleep(0.25)
+                if profile_is_locked(pdir):
+                    self._release_profile_lock(identity.key)
+                    raise BrowserProfileConflictError(
+                        f"Chrome profile is already in use: {pdir}") from exc
             self._release_profile_lock(identity.key)
             raise
         with suppress(Exception):
