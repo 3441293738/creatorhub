@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
 from patchright.async_api import async_playwright
 
 from app.browser.cdp import (
@@ -130,6 +131,7 @@ class _AuthenticatedSocksHttpProxy:
                 pass
 
 
+@pytest.mark.local_cdp
 @unittest.skipUnless(RUN_LOCAL, "set CREATORHUB_RUN_LOCAL_CDP=1 for visible Chrome integration")
 class XhsCdpLocalIntegrationTests(unittest.TestCase):
     def test_authenticated_http_proxy_handles_real_chrome_407(self):

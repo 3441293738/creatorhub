@@ -144,6 +144,7 @@ class XhsRiskClassificationTests(unittest.TestCase):
             captured["data"]["image_formats"], ["jpg", "webp", "avif"])
 
     def test_account_health_risk_does_not_mark_account_invalid(self):
+        self.cfg.engine.xhs_read_mode = "api"  # explicit direct-client fixture
         with db.get_session() as session:
             account = DouyinAccount(
                 platform="xhs", nickname="fixture", status="active",
@@ -243,6 +244,7 @@ class XhsRiskClassificationTests(unittest.TestCase):
         self.assertEqual([event.outcome for event in events], ["risk"])
 
     def test_comment_watch_risk_persists_state_and_scheduler_continues(self):
+        self.cfg.engine.initial_scan_spread_seconds = 0
         failed_account_id = self._account_with_xhs_state("failed")
         next_account_id = self._account_with_xhs_state("next")
         with db.get_session() as session:

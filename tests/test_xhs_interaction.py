@@ -415,8 +415,10 @@ class XhsInteractionTests(unittest.TestCase):
             typed = [call[1] for call in locator.calls if call[0] == "type"]
             self.assertEqual(typed, ["露", "营"])
             self.assertEqual(await locator.input_value(), "露营")
-            character_sleeps = [delay for delay in sleeps if delay >= 0.035]
-            self.assertTrue(all(delay <= 0.22 for delay in character_sleeps))
+            # Focus, two keypress pauses, then a separate text-review dwell.
+            self.assertEqual(len(sleeps), 4)
+            self.assertTrue(all(0.06 <= delay <= 0.16 for delay in sleeps[:-1]))
+            self.assertGreaterEqual(sleeps[-1], 0.765)
 
         asyncio.run(scenario())
 
@@ -440,7 +442,40 @@ class XhsInteractionTests(unittest.TestCase):
 
             self.assertGreater(long_delay, short_delay)
             self.assertGreaterEqual(short_delay, 0.4)
-            self.assertLessEqual(long_delay, 3.8)
+            self.assertLessEqual(long_delay, 7.68)
+
+        asyncio.run(scenario())
+
+    def test_short_text_preserves_punctuation_and_pauses_at_sentence_end(self):
+        async def scenario():
+            locator = _Locator(_Page())
+            sleeps = []
+
+            async def record_sleep(delay):
+                sleeps.append(delay)
+
+            policy = XhsInteractionPolicy(rng=random.Random(3), sleep=record_sleep)
+            await policy.type_short(locator, "你好！")
+            self.assertEqual(await locator.input_value(), "你好！")
+            self.assertEqual(len(sleeps), 6)
+            self.assertTrue(all(0.06 <= d <= 0.16 for d in sleeps[:4]))
+            self.assertTrue(0.2 <= sleeps[4] <= 0.55)
+            self.assertGreater(sleeps[-1], sleeps[4])
+
+        asyncio.run(scenario())
+
+    def test_cancellation_during_input_stops_before_next_character(self):
+        async def scenario():
+            locator = _Locator(_Page())
+
+            async def cancel_after_first_character(_delay):
+                if locator.value == "a":
+                    raise asyncio.CancelledError()
+
+            policy = XhsInteractionPolicy(sleep=cancel_after_first_character)
+            with self.assertRaises(asyncio.CancelledError):
+                await policy.type_short(locator, "abcdef")
+            self.assertEqual(await locator.input_value(), "a")
 
         asyncio.run(scenario())
 

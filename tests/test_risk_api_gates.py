@@ -119,7 +119,7 @@ class RiskApiGateTests(unittest.TestCase):
             transport = httpx.ASGITransport(
                 app=main.app, raise_app_exceptions=False)
             async with httpx.AsyncClient(
-                    transport=transport, base_url="http://fixture") as client:
+                    transport=transport, base_url="http://127.0.0.1") as client:
                 return await client.get(path)
 
         return asyncio.run(request())
@@ -1008,7 +1008,7 @@ class RiskApiGateTests(unittest.TestCase):
         self.assertEqual(payload, {"detail": "取笔记失败"})
 
 
-    def test_delete_account_removes_risk_rows_before_id_reuse(self):
+    def test_delete_account_keeps_audit_without_reusing_identity(self):
         main.engine.risk.record_failure(
             self.account_id,
             OperationKind.COMMENT,
@@ -1018,15 +1018,15 @@ class RiskApiGateTests(unittest.TestCase):
 
         with db.get_session() as session:
             self.assertIsNone(session.get(AccountRiskState, self.account_id))
-            self.assertEqual(session.exec(select(RiskEvent).where(
-                RiskEvent.account_id == self.account_id)).all(), [])
+            self.assertEqual(len(session.exec(select(RiskEvent).where(
+                RiskEvent.account_id == self.account_id)).all()), 1)
             replacement = DouyinAccount(nickname="replacement")
             session.add(replacement)
             session.commit()
             session.refresh(replacement)
             replacement_id = replacement.id
 
-        self.assertEqual(replacement_id, self.account_id)
+        self.assertGreater(replacement_id, self.account_id)
         decision = main.engine.risk.preflight(
             replacement_id, OperationKind.READ_LIGHT)
         self.assertTrue(decision.allowed)

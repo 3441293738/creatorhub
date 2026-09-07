@@ -1,9 +1,8 @@
 import asyncio
 import unittest
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-
-from patchright.async_api import async_playwright
 
 from app.browser.login import (
     XhsSecurityVerificationRequired,
@@ -17,29 +16,42 @@ from app.browser.identity import Identity
 
 class XhsLoginPageTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(headless=True)
-        self.context = await self.browser.new_context()
-        self.page = await self.context.new_page()
+        # This helper only selects a page by URL/closed state. A real Chromium
+        # process adds no coverage and makes ordinary unit tests launch apps.
+        self.page = SimpleNamespace(url="about:blank", is_closed=lambda: False)
+        self.context = SimpleNamespace(pages=[self.page])
 
-    async def asyncTearDown(self):
-        await self.browser.close()
-        await self.playwright.stop()
+        async def new_page():
+            page = SimpleNamespace(url="about:blank", is_closed=lambda: False)
+            self.context.pages.append(page)
+            return page
+
+        self.context.new_page = AsyncMock(side_effect=new_page)
 
     async def test_login_reuses_persistent_context_initial_blank_page(self):
         login_page = await _reuse_or_create_login_page(self.context)
 
         self.assertIs(login_page, self.page)
         self.assertEqual(len(self.context.pages), 1)
+        self.context.new_page.assert_not_awaited()
 
     async def test_login_creates_page_when_context_has_no_blank_page(self):
-        await self.page.goto("data:text/html,<main>existing</main>")
+        self.page.url = "data:text/html,<main>existing</main>"
 
         login_page = await _reuse_or_create_login_page(self.context)
 
         self.assertIsNot(login_page, self.page)
         self.assertEqual(login_page.url, "about:blank")
         self.assertEqual(len(self.context.pages), 2)
+        self.context.new_page.assert_awaited_once()
+
+    async def test_login_does_not_reuse_closed_blank_page(self):
+        self.page.is_closed = lambda: True
+
+        login_page = await _reuse_or_create_login_page(self.context)
+
+        self.assertIsNot(login_page, self.page)
+        self.context.new_page.assert_awaited_once()
 
 
 class XhsWebLoginIntegrationTests(unittest.IsolatedAsyncioTestCase):

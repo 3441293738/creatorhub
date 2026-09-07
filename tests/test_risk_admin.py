@@ -171,6 +171,7 @@ class RiskAdminTests(unittest.TestCase):
         self.assertEqual(task.next_allowed_at, next_at)
 
     def test_recovery_scheduler_probes_and_wakes_collection_job(self):
+        self.cfg.engine.xhs_read_mode = "api"  # explicit creator API fixture
         self.cfg.risk_control.recovery_successes = 1
         self.cfg.risk_control.recovery_probe_gap_seconds = 1
         self.cfg.engine.verify_proxy_region = False
@@ -264,7 +265,7 @@ class RiskAdminTests(unittest.TestCase):
         async def scenario():
             transport = httpx.ASGITransport(app=main.app)
             async with httpx.AsyncClient(
-                    transport=transport, base_url="http://test") as client:
+                    transport=transport, base_url="http://127.0.0.1") as client:
                 config = (await client.get("/api/risk-control/config")).json()
                 config["risk_control"]["recovery_successes"] = 6
                 updated = await client.put("/api/risk-control/config", json={

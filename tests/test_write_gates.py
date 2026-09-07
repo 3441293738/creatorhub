@@ -11,6 +11,7 @@ from app.engine.monitor import MonitorEngine
 from app.risk import OperationKind
 from app.models import (
     AccountActionTask,
+    AccountRiskState,
     CommentRule,
     CommentTask,
     DmConversation,
@@ -175,7 +176,11 @@ class WriteGateTests(unittest.TestCase):
             account = session.get(DouyinAccount, account_id)
             self.assertIsNotNone(account.write_paused_until)
         engine.risk.clear_account(account_id)
-        self.assertEqual(engine._comment_gate_error(account_id), "")
+        # Manual risk clearance does not erase normal inter-operation pacing.
+        self.assertEqual(engine.risk.preflight(
+            account_id, OperationKind.COMMENT).signal, "operation_pacing")
+        with patch("app.risk._utcnow", return_value=datetime.utcnow() + timedelta(seconds=26)):
+            self.assertEqual(engine._comment_gate_error(account_id), "")
 
     def test_publish_outside_active_window_stays_pending(self):
         account_id = self._account()
@@ -203,7 +208,8 @@ class WriteGateTests(unittest.TestCase):
         with db.get_session() as session:
             task = session.get(PublishTask, task_id)
             self.assertEqual(task.status, "pending")
-            self.assertIsNotNone(task.scheduled_at)
+            self.assertIsNone(task.scheduled_at)
+            self.assertIsNotNone(task.next_allowed_at)
 
     def test_publish_with_missing_account_fails_before_browser_use(self):
         browser = _BrowserStub()
@@ -235,7 +241,7 @@ class WriteGateTests(unittest.TestCase):
         with db.get_session() as session:
             task = session.get(PublishTask, task_id)
             self.assertEqual(task.status, "pending")
-            self.assertGreater(task.scheduled_at, datetime.utcnow())
+            self.assertGreater(task.next_allowed_at, datetime.utcnow())
 
     def test_successful_comment_blocks_immediate_cross_feature_write(self):
         account_id = self._account()
@@ -255,7 +261,8 @@ class WriteGateTests(unittest.TestCase):
         with db.get_session() as session:
             task = session.get(AccountActionTask, action_id)
             self.assertEqual(task.status, "pending")
-            self.assertIsNotNone(task.scheduled_at)
+            self.assertIsNone(task.scheduled_at)
+            self.assertIsNotNone(task.next_allowed_at)
 
     def test_dm_risk_response_does_not_retry_through_browser(self):
         account_id = self._account()
@@ -336,8 +343,9 @@ class WriteGateTests(unittest.TestCase):
         with db.get_session() as session:
             task = session.get(PublishTask, task_id)
             self.assertEqual(task.status, "pending")
-            self.assertIsNotNone(task.scheduled_at)
-            self.assertGreater(task.scheduled_at, datetime.utcnow())
+            self.assertIsNone(task.scheduled_at)
+            self.assertIsNotNone(task.next_allowed_at)
+            self.assertGreater(task.next_allowed_at, datetime.utcnow())
 
     def test_publish_auth_expiry_keeps_task_pending_and_invalidates_account(self):
         account_id = self._account()
@@ -355,7 +363,8 @@ class WriteGateTests(unittest.TestCase):
             task = session.get(PublishTask, task_id)
             account = session.get(DouyinAccount, account_id)
             self.assertEqual(task.status, "pending")
-            self.assertIsNotNone(task.scheduled_at)
+            self.assertIsNone(task.scheduled_at)
+            self.assertIsNotNone(task.next_allowed_at)
             self.assertEqual(account.status, "invalid")
 
     def test_xhs_publish_uncertain_is_not_retried_or_recorded_as_done(self):
@@ -439,7 +448,8 @@ class WriteGateTests(unittest.TestCase):
         with db.get_session() as session:
             task = session.get(CommentTask, task_id)
             self.assertEqual(task.status, "pending")
-            self.assertIsNotNone(task.scheduled_at)
+            self.assertIsNone(task.scheduled_at)
+            self.assertIsNotNone(task.next_allowed_at)
 
     def test_startup_recovers_interrupted_write_tasks(self):
         account_id = self._account()
@@ -486,8 +496,8 @@ class WriteGateTests(unittest.TestCase):
                 session.get(PublishTask, publish_id),
             ]
             for row in rows:
-                self.assertEqual(row.status, "pending")
-                self.assertEqual(row.scheduled_at, now + timedelta(minutes=5))
+                self.assertEqual(row.status, "uncertain")
+                self.assertIsNone(row.scheduled_at)
             submitted_rows = [
                 session.get(CommentTask, submitted_comment_id),
                 session.get(PublishTask, submitted_publish_id),
@@ -716,6 +726,15 @@ class WriteGateTests(unittest.TestCase):
                 return {"comment": {"id": "fixture-sent"}}
 
         engine._xhs_client = lambda *_args, **_kwargs: _XhsClientStub()
+        deferred = asyncio.run(engine.execute_comment_task(task_id))
+        self.assertFalse(deferred["ok"])
+        # A completed discovery read also paces the subsequent approved write.
+        with db.get_session() as session:
+            state = session.get(AccountRiskState, account_id)
+            state.operation_not_before = datetime.utcnow() - timedelta(seconds=1)
+            task = session.get(CommentTask, task_id)
+            task.next_allowed_at = state.operation_not_before
+            session.add(state); session.add(task); session.commit()
         sent = asyncio.run(engine.execute_comment_task(task_id))
         self.assertTrue(sent["ok"])
         with db.get_session() as session:
