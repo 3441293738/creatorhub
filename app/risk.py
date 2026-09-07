@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import random
 import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -157,7 +158,7 @@ def classify_platform_error(
     risk_markers = (
         "风控", "频控", "访问频繁", "操作频繁", "环境异常", "验证码", "验证",
         "限流", "安全验证", "设备异常", "账号异常", "滑块", "人机验证",
-        "risk", "captcha", "security verification", "verifycenter",
+        "risk", "captcha", "security verification", "human verification", "verifycenter",
         "website-login/captcha", "rate limit", "too frequent", "http 429",
         "http 403", "status_code=8",
     )
@@ -190,6 +191,41 @@ class RiskController:
         self._decision_lock = threading.RLock()
         self._network_locks: dict[str, asyncio.Semaphore] = {}
         self._network_lock_guard = threading.Lock()
+        self._rng = random.SystemRandom()
+
+    def _record_pacing(self, state: AccountRiskState, kind: OperationKind,
+                       now: datetime) -> None:
+        """Sample deadlines once per completed attempt, never during polling.
+
+        Counting failures too avoids bursts of unsuccessful platform requests.
+        Persisting deadlines keeps rest periods intact across service restarts.
+        """
+        if kind in {OperationKind.LOGIN, OperationKind.DOWNLOAD}:
+            return
+        gap_min = max(0, int(self.policy.operation_gap_min_seconds))
+        gap_max = max(gap_min, int(self.policy.operation_gap_max_seconds))
+        if gap_max:
+            proposed = now + timedelta(seconds=self._rng.uniform(gap_min, gap_max))
+            state.operation_not_before = max(state.operation_not_before or proposed, proposed)
+        rest_min = max(1, int(self.policy.session_rest_min_seconds))
+        rest_max = max(rest_min, int(self.policy.session_rest_max_seconds))
+        if ((state.last_operation_at and
+             (now - state.last_operation_at).total_seconds() >= rest_min)
+                or (state.session_rest_until and state.session_rest_until <= now)):
+            state.session_operation_count = 0
+            state.session_rest_until = None
+        state.session_operation_count += 1
+        limit = max(0, int(self.policy.session_operation_limit))
+        if limit and state.session_operation_count >= limit:
+            proposed = now + timedelta(seconds=self._rng.uniform(rest_min, rest_max))
+            state.session_rest_until = max(state.session_rest_until or proposed, proposed)
+
+    @staticmethod
+    def _needs_manual_review(error: object, signal: str) -> bool:
+        text = f"{signal} {error}".lower()
+        return any(marker in text for marker in (
+            "captcha", "人机验证", "安全验证", "滑块", "验证码", "设备验证", "verifycenter",
+            "security verification", "human verification"))
 
     def update_policy(self, policy) -> None:
         """Apply a saved policy to subsequent decisions without restarting."""
@@ -453,6 +489,7 @@ class RiskController:
         *,
         now: datetime | None = None,
         allow_invalid_probe: bool = False,
+        interactive_read: bool = False,
     ) -> RiskDecision:
         if not self.policy.enabled:
             return RiskDecision(True)
@@ -460,6 +497,10 @@ class RiskController:
         if not account_id:
             return RiskDecision(True)
         now = now or _utcnow()
+        # Explicit adjacent UI reads may skip the normal read cadence, never
+        # platform challenges, backoff, cooldown, recovery or session rests.
+        interactive_read = interactive_read and kind in {
+            OperationKind.READ_LIGHT, OperationKind.READ_HEAVY}
 
         with self._decision_lock, get_session() as session:
             account = self._load_account(session, account_or_id)
@@ -501,6 +542,14 @@ class RiskController:
                     "proxy_unavailable",
                 )
             state = self._state(session, account_id)
+            if state.manual_review_required and kind != OperationKind.LOGIN:
+                return RiskDecision(
+                    False, "平台要求人工验证；请在账号浏览器中处理后人工解除暂停",
+                    signal="manual_review_required")
+            if state.retry_not_before and state.retry_not_before > now \
+                    and kind != OperationKind.LOGIN:
+                return RiskDecision(False, "网络异常后等待再尝试",
+                                    state.retry_not_before, "network_backoff")
             if state.cooldown_until and state.cooldown_until > now:
                 return RiskDecision(
                     False,
@@ -538,7 +587,7 @@ class RiskController:
             gap, hourly_cap, daily_cap = self._limits(kind)
             kind_value = kind.value
             latest = self._latest_success(session, account_id, [kind_value])
-            if latest and gap > 0:
+            if latest and gap > 0 and not interactive_read:
                 next_at = latest + timedelta(seconds=gap)
                 if next_at > now:
                     return RiskDecision(False, "尚未达到该操作最小间隔", next_at, "kind_gap")
@@ -586,6 +635,15 @@ class RiskController:
                     next_at = next_local.astimezone(timezone.utc).replace(tzinfo=None)
                     return RiskDecision(False, "已达到账号每日账号动作总上限",
                                         next_at, "combined_daily_cap")
+            if kind not in {OperationKind.LOGIN, OperationKind.DOWNLOAD}:
+                for deadline, message, signal in (
+                    (state.session_rest_until, "账号连续操作后休息中", "session_rest"),
+                    (state.operation_not_before, "账号操作节奏等待中", "operation_pacing"),
+                ):
+                    if interactive_read and signal == "operation_pacing":
+                        continue
+                    if deadline and deadline > now:
+                        return RiskDecision(False, message, deadline, signal)
             session.commit()
         return RiskDecision(True)
 
@@ -607,6 +665,7 @@ class RiskController:
             if account is None:
                 return
             state = self._state(session, account_id)
+            self._record_pacing(state, kind, now)
             state.last_operation_at = now
             state.updated_at = now
             state.consecutive_network_failures = 0
@@ -615,7 +674,10 @@ class RiskController:
                 state.last_write_at = now
             if kind == OperationKind.READ_HEAVY:
                 state.last_heavy_read_at = now
-            if state.risk_level > 0 and kind == OperationKind.READ_LIGHT:
+            if state.retry_not_before and state.retry_not_before <= now:
+                state.retry_not_before = None
+            if state.risk_level > 0 and kind == OperationKind.READ_LIGHT \
+                    and not state.manual_review_required:
                 gap = max(1, self.policy.recovery_probe_gap_seconds)
                 if state.last_recovery_at is None \
                         or (now - state.last_recovery_at).total_seconds() >= gap:
@@ -665,6 +727,7 @@ class RiskController:
             if account is None:
                 return FailureDecision(category, signal)
             state = self._state(session, account_id)
+            self._record_pacing(state, kind, now)
             state.last_operation_at = now
             state.updated_at = now
             if category == RiskCategory.RISK:
@@ -681,10 +744,17 @@ class RiskController:
                 state.probe_only_until = next_at
                 state.last_risk_at = now
                 state.last_risk_reason = str(error or signal).strip()[:240]
+                if self._needs_manual_review(error, signal):
+                    state.manual_review_required = True
+                    state.manual_review_reason = "平台安全验证待处理；请在账号浏览器完成后人工解除暂停"
                 account.write_paused_until = next_at
                 account.write_pause_reason = state.last_risk_reason
             elif category == RiskCategory.NETWORK:
-                next_at = now + timedelta(minutes=5)
+                extra = self._rng.uniform(0, max(0, min(
+                    300, int(self.policy.network_retry_jitter_seconds))))
+                next_at = now + timedelta(seconds=300 + extra)
+                state.retry_not_before = max(state.retry_not_before or next_at, next_at)
+                next_at = state.retry_not_before
                 proxy_failure = bool(account.proxy) and signal in {
                     "network_failure", "proxy_auth"}
                 current_key = network_key(account.proxy) if proxy_failure else ""
@@ -741,6 +811,9 @@ class RiskController:
         with self._decision_lock, get_session() as session:
             state = session.get(AccountRiskState, account_id)
             if state:
+                state.manual_review_required = False
+                state.manual_review_reason = ""
+                state.retry_not_before = None
                 state.risk_level = 0
                 state.cooldown_until = None
                 state.probe_only_until = None
@@ -774,7 +847,9 @@ class RiskController:
             state = session.get(AccountRiskState, account_id)
             if state is None:
                 return None
-            candidates = [value for value in (state.cooldown_until,)
+            candidates = [value for value in (
+                state.cooldown_until, state.retry_not_before,
+                state.operation_not_before, state.session_rest_until)
                           if value is not None]
             if state.last_write_at is not None:
                 candidates.append(

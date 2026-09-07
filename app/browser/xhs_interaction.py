@@ -82,8 +82,8 @@ class XhsInteractionPolicy:
     async def reading_pause(self, *, content_length: int = 0) -> float:
         """Pause after navigation using a bounded content-aware dwell time."""
         length = max(0, min(4000, int(content_length or 0)))
-        base = 0.55 + min(2.25, length / 1250)
-        delay = float(self.rng.uniform(base * 0.72, base * 1.28))
+        base = 0.9 + min(5.5, length / 600)
+        delay = float(self.rng.uniform(base * 0.85, base * 1.2))
         await self.sleep(delay)
         await self._after_action()
         return delay
@@ -101,7 +101,7 @@ class XhsInteractionPolicy:
             else:
                 raise RuntimeError("小红书页面控件当前不可用")
         await locator.hover()
-        await self._pause(0.08, 0.22)
+        await self._pause(0.18, 0.48)
         await locator.click()
         await self._after_action()
 
@@ -116,11 +116,19 @@ class XhsInteractionPolicy:
 
     async def type_short(self, locator: Any, text: str) -> None:
         await self._prepare_input(locator)
+        # Keep the requested text exact; vary pauses, not content or targets.
+        burst_left = int(self.rng.randint(3, 7))
         for character in str(text):
             await locator.press_sequentially(character, delay=0)
-            await self._pause(0.035, 0.095)
+            await self._pause(0.06, 0.16)
+            burst_left -= 1
+            if character in ",，。.!！?？;；:：\n":
+                await self._pause(0.2, 0.55)
+            elif character.isspace() or burst_left <= 0:
+                await self._pause(0.1, 0.3)
+                burst_left = int(self.rng.randint(3, 7))
         await self._verify_text(locator, str(text))
-        await self._after_action()
+        await self.reading_pause(content_length=len(str(text)))
 
     async def insert_long(
             self, locator: Any, text: str, *, page: Any | None = None) -> None:
@@ -131,7 +139,7 @@ class XhsInteractionPolicy:
         await target_page.keyboard.insert_text(str(text))
         await self._pause(0.08, 0.18)
         await self._verify_text(locator, str(text))
-        await self._after_action()
+        await self.reading_pause(content_length=len(str(text)))
 
     async def _verify_text(self, locator: Any, expected: str) -> None:
         try:

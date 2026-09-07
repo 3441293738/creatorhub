@@ -51,11 +51,16 @@ class ImReceiverManager:
             st["task"].cancel()
             st["task"] = None
 
+    async def stop_account(self, account_id: int):
+        state = self._accts.pop(account_id, None)
+        task = state.get("task") if state else None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def stop_all(self):
-        for st in self._accts.values():
-            if st.get("task"):
-                st["task"].cancel()
-        self._accts.clear()
+        for account_id in list(self._accts):
+            await self.stop_account(account_id)
 
     def publish(self, account_id: int, event: dict) -> None:
         """Publish an externally received account DM event to SSE clients."""

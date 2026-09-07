@@ -27,7 +27,7 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field as PydanticField, ValidationError
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, update
 from sqlmodel import select
 
 from .browser import (BrowserManager, cookie_string_to_state,
@@ -65,6 +65,7 @@ from .account_merge import (
     duplicate_xhs_account_ids,
     reconcile_xhs_accounts,
 )
+from .account_lifecycle import active_account_task, retire_account_tasks
 from .platforms.douyin import resolve_sec_uid, resolve_aweme_id, looks_like_video
 from .platforms.xhs import (resolve_note as xhs_resolve_note,
                   resolve_user as xhs_resolve_user,
@@ -109,6 +110,11 @@ from .risk_admin import (RiskSettingsError, apply_risk_settings,
                          export_risk_settings, load_persisted_risk_settings,
                          save_risk_settings)
 from .settings import get_setting, set_setting
+from .scheduling import parse_schedule, utc_iso
+from .engine.cadence import row_deadline
+from .local_access import LocalAccessMiddleware
+from .submissions import submit_once, replay_if_exists
+from .notification_config import parse_config, redact_config, merge_config, redact_detail
 from .windowing import (CHROMIUM_WINDOW_CLASSES, EXPLORER_WINDOW_CLASSES,
                         bring_window_to_front,
                         capture_window_snapshot)
@@ -531,6 +537,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CreatorHub", lifespan=lifespan)
+app.add_middleware(LocalAccessMiddleware)
 WEB_DIR = Path(__file__).parent / "web"
 
 
@@ -1469,6 +1476,23 @@ async def login_cookie(body: CookieIn):
         return {"account_id": acc.id, "nickname": acc.nickname}
 
 
+@app.get("/api/overview/summary")
+async def overview_summary(platform: str = "douyin"):
+    if platform not in {"douyin", "xhs", "kuaishou", "shipinhao"}:
+        raise HTTPException(422, "平台类型无效")
+    with get_session() as session:
+        def count(model, *conditions):
+            return int(session.exec(select(func.count()).select_from(model).where(
+                model.platform == platform, *conditions)).one())
+        return {
+            "platform": platform,
+            "accounts": count(DouyinAccount),
+            "monitors": count(MonitorTarget, MonitorTarget.enabled == True),  # noqa:E712
+            "downloaded": count(ContentRecord, ContentRecord.download_status == "done"),
+            "comments": count(CommentRecord),
+        }
+
+
 @app.get("/api/accounts")
 async def list_accounts(platform: str | None = None):
     risk_controller = engine.risk if engine else RiskController(cfg)
@@ -1580,7 +1604,7 @@ async def list_accounts(platform: str | None = None):
         return out
 
 
-# ─────────── 统一任务队列（只读看板）───────────
+# ─────────── 统一任务队列 ───────────
 _QUEUE_TYPES = {
     "collections", "publishes", "comments", "actions",
     "monitor_downloads", "collection_downloads",
@@ -1655,6 +1679,7 @@ async def list_task_queue(platform: str | None = None, queue_type: str = "",
                 row_platform: str, account_id: int | None, title: str, detail: str,
                 status: str, created_at: datetime | None,
                 source_tab: str, scheduled_at: datetime | None = None,
+                schedule_is_utc: bool = True,
                 blocked_reason: str = "", blocked_signal: str = "",
                 next_allowed_at: datetime | None = None, error: str = "") -> None:
             queue_state = _queue_state(
@@ -1672,7 +1697,9 @@ async def list_task_queue(platform: str | None = None, queue_type: str = "",
                 "detail": str(detail or "")[:1000],
                 "status": str(status or "pending"),
                 "state": queue_state,
-                "scheduled_at": _queue_iso(scheduled_at),
+                "scheduled_at": (_queue_iso(scheduled_at) if schedule_is_utc
+                                 else scheduled_at.isoformat() if scheduled_at else None),
+                "schedule_needs_confirmation": bool(scheduled_at and not schedule_is_utc),
                 "created_at": _queue_iso(created_at),
                 "next_allowed_at": _queue_iso(next_allowed_at),
                 "blocked_reason": str(blocked_reason or "")[:1000],
@@ -1739,6 +1766,7 @@ async def list_task_queue(platform: str | None = None, queue_type: str = "",
                 detail=row.desc if row.title else (row.topics or row.media_type),
                 status=row.status, created_at=row.created_at,
                 scheduled_at=row.scheduled_at, source_tab="publish",
+                schedule_is_utc=row.scheduled_at_is_utc,
                 blocked_reason=row.blocked_reason, blocked_signal=row.blocked_signal,
                 next_allowed_at=row.next_allowed_at, error=row.error)
 
@@ -1847,6 +1875,48 @@ async def list_task_queue(platform: str | None = None, queue_type: str = "",
     }
 
 
+class TaskResolutionIn(BaseModel):
+    outcome: str
+    note: str = PydanticField(min_length=1, max_length=500)
+
+
+@app.post("/api/task-queue/{queue_type}/{task_id}/resolve")
+async def resolve_task_result(queue_type: str, task_id: int,
+                              body: TaskResolutionIn, request: Request):
+    """Record a human platform-result check; never execute or retry a write."""
+    actor = _require_risk_admin(request)
+    model = {"publishes": PublishTask, "comments": CommentTask,
+             "actions": AccountActionTask}.get(queue_type)
+    if model is None or body.outcome not in {"done", "canceled"}:
+        raise HTTPException(422, "仅支持将写操作核对为已完成或取消，不会自动重试")
+    note = body.note.strip()
+    if not note:
+        raise HTTPException(422, "请填写平台核对说明")
+    with get_session() as session:
+        row = session.get(model, task_id)
+        if row is None:
+            raise HTTPException(404, "任务不存在")
+        if row.status != "uncertain":
+            raise HTTPException(409, "只有结果待确认的任务可以人工核对")
+        account_id, previous_error = row.account_id, row.error
+        result = session.exec(update(model).where(
+            model.id == task_id, model.status == "uncertain").values(
+                status=body.outcome, scheduled_at=None,
+                done_at=datetime.utcnow() if body.outcome == "done" else None,
+                error="已人工核对：" + note,
+                blocked_reason="", blocked_signal="", blocked_operation="",
+                blocked_at=None, next_allowed_at=None))
+        if result.rowcount != 1:
+            raise HTTPException(409, "任务状态已变化，请刷新后再核对")
+        session.add(RiskAdminAudit(
+            action="task_result_resolved", account_id=account_id, actor=actor,
+            detail=json.dumps({"queue_type": queue_type, "task_id": task_id,
+                               "outcome": body.outcome, "note": note,
+                               "previous_error": previous_error[:1000]}, ensure_ascii=False)))
+        session.commit()
+    return {"ok": True, "status": body.outcome}
+
+
 # ─────────── 风控中心 ───────────
 def _risk_iso(value: datetime | None) -> str | None:
     return value.isoformat(timespec="seconds") + "Z" if value else None
@@ -1859,7 +1929,7 @@ def _risk_admin_required() -> bool:
 def _require_risk_admin(request: Request) -> str:
     expected = os.environ.get("CREATORHUB_ADMIN_TOKEN", "").strip()
     supplied = request.headers.get("X-CreatorHub-Admin-Token", "").strip()
-    if expected and not secrets.compare_digest(expected, supplied):
+    if expected and not secrets.compare_digest(expected.encode(), supplied.encode()):
         raise HTTPException(403, "需要风控管理口令")
     actor = request.headers.get("X-CreatorHub-Actor", "").strip()[:64]
     if actor:
@@ -1940,7 +2010,10 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
     reason = state.last_risk_reason if state else ""
     cooldown_until = state.cooldown_until if state else None
     status_code, status_label, status_tone = "normal", "正常", "success"
-    if account.status == "invalid":
+    if state and state.manual_review_required:
+        status_code, status_label, status_tone = "verification_required", "待人工验证", "danger"
+        reason = state.manual_review_reason or "请在账号浏览器中处理验证，然后人工解除暂停"
+    elif account.status == "invalid":
         status_code, status_label, status_tone = "auth_invalid", "登录失效", "danger"
         reason = "账号登录态已失效，需要重新登录"
     elif account.proxy_status in {"bad", "auth_error", "blocked", "drifted"}:
@@ -1958,13 +2031,20 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
     elif account.write_paused_until and account.write_paused_until > now:
         status_code, status_label, status_tone = "write_paused", "写入暂停", "warn"
         reason = account.write_pause_reason or "账号写操作暂时停用"
+    elif state and state.retry_not_before and state.retry_not_before > now:
+        status_code, status_label, status_tone = "network_backoff", "网络退避", "warn"
+        reason = "网络异常后等待再尝试"
+    elif state and state.session_rest_until and state.session_rest_until > now:
+        reason = "连续操作后的正常休息，任务保留在队列中"
+    elif state and state.operation_not_before and state.operation_not_before > now:
+        reason = "正常操作间隔，任务保留在队列中"
     elif status_code == "normal":
         reason = "未检测到风险信号"
 
     recovery_successes = state.recovery_successes if state else 0
     recovery_target = max(1, cfg.risk_control.recovery_successes)
     next_probe = None
-    if risk_level > 0:
+    if risk_level > 0 and not (state and state.manual_review_required):
         if cooldown_until and cooldown_until > now:
             next_probe = cooldown_until
         elif state and (state.last_recovery_at or state.last_operation_at):
@@ -2008,6 +2088,11 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
         "recovery_target": recovery_target,
         "last_risk_at": _risk_iso(state.last_risk_at if state else None),
         "last_operation_at": _risk_iso(state.last_operation_at if state else None),
+        "manual_review_required": bool(state and state.manual_review_required),
+        "retry_not_before": _risk_iso(state.retry_not_before if state else None),
+        "operation_not_before": _risk_iso(state.operation_not_before if state else None),
+        "session_rest_until": _risk_iso(state.session_rest_until if state else None),
+        "session_operation_count": state.session_operation_count if state else 0,
         "last_operation_kind": latest_event.operation_kind if latest_event else "",
         "proxy": _mask_proxy(account.proxy),
         "proxy_status": account.proxy_status,
@@ -2107,7 +2192,8 @@ async def get_risk_control_summary(platform: str | None = None):
     counts = {
         key: sum(1 for row in rows if row["status"] == key)
         for key in ("normal", "cooldown", "recovering", "auth_invalid",
-                    "proxy_error", "network_circuit", "write_paused")
+                    "proxy_error", "network_circuit", "write_paused",
+                    "verification_required", "network_backoff")
     }
     return {
         "total": len(rows),
@@ -2189,6 +2275,8 @@ async def clear_account_risk(account_id: int, body: RiskClearIn, request: Reques
             "risk_level": state.risk_level if state else 0,
             "cooldown_until": _risk_iso(state.cooldown_until if state else None),
             "last_risk_reason": state.last_risk_reason if state else "",
+            "manual_review_required": bool(state and state.manual_review_required),
+            "manual_review_reason": state.manual_review_reason if state else "",
         }
     controller = engine.risk if engine else RiskController(cfg)
     controller.clear_account(account_id, reason=reason, actor=actor)
@@ -2940,29 +3028,51 @@ def _mask_proxy(proxy: str) -> str:
 @app.delete("/api/accounts/{account_id}")
 async def del_account(account_id: int):
     pdir = ""
-    with get_session() as s:
-        acc = s.get(DouyinAccount, account_id)
-        if acc:
-            pdir = acc.profile_dir or ""
-
-    # 先关闭所有手动窗口、后台 context 和 Profile 文件锁，再删除数据库记录。
-    # 账号 id 可能被 SQLite 复用，因此不能把旧 context 留给后续新账号。
-    await _close_runtime_accounts([account_id])
-
-    with get_session() as s:
-        acc = s.get(DouyinAccount, account_id)
-        if acc:
-            risk_state = s.get(AccountRiskState, account_id)
-            if risk_state:
-                s.delete(risk_state)
-            for event in s.exec(select(RiskEvent).where(
-                    RiskEvent.account_id == account_id)).all():
-                s.delete(event)
-            s.delete(acc)
-            s.commit()
+    shared_profile = False
+    runtime_cleanup_error = ""
+    counts = {"canceled_tasks": 0, "disabled_rules": 0, "disabled_monitors": 0}
+    if any(state.get("account_id") == account_id
+           and state.get("status") in _ACTIVE_LOGIN_STATUSES
+           for state in login_tasks.values()):
+        raise HTTPException(409, "该账号正在登录，请先完成或关闭登录窗口")
+    lock_for = getattr(browser, "lock_for", None)
+    lock = lock_for(f"acc:{account_id}") if callable(lock_for) else asyncio.Lock()
+    if lock.locked():
+        raise HTTPException(409, "该账号有操作正在执行，请等待完成后删除")
+    async with lock:
+        with get_session() as s:
+            acc = s.get(DouyinAccount, account_id)
+            if acc:
+                active = active_account_task(s, account_id)
+                if active:
+                    raise HTTPException(409, active)
+                pdir = acc.profile_dir or ""
+                if pdir:
+                    key = os.path.normcase(str(Path(pdir).expanduser().resolve()))
+                    shared_profile = any(
+                        other.profile_dir and os.path.normcase(str(
+                            Path(other.profile_dir).expanduser().resolve())) == key
+                        for other in s.exec(select(DouyinAccount).where(
+                            DouyinAccount.id != account_id)).all())
+                counts = retire_account_tasks(s, account_id)
+                risk_state = s.get(AccountRiskState, account_id)
+                if risk_state:
+                    s.delete(risk_state)
+                # Keep task/content history and RiskEvent audit records. The
+                # independent ID reservation prevents reassignment to new users.
+                s.delete(acc)
+                s.commit()
+        for manager in (getattr(engine, "dm_automation", None), im_receiver):
+            stop_account = getattr(manager, "stop_account", None)
+            if callable(stop_account):
+                try:
+                    await stop_account(account_id)
+                except Exception:
+                    runtime_cleanup_error = "账号已删除；后台监听清理失败，已保留 Profile，请重启服务后清理"
+        await _close_runtime_accounts([account_id])
     # 删号同时清理其持久 profile(释放磁盘);代理回到池里(占用计数自然下降)
     profile_removed = False
-    profile_cleanup_error = ""
+    profile_cleanup_error = runtime_cleanup_error
     if pdir:
         root = Path(cfg.engine.profiles_dir).expanduser().resolve()
         candidate = Path(pdir).expanduser().resolve()
@@ -2971,7 +3081,11 @@ async def del_account(account_id: int):
             managed = candidate != root
         except ValueError:
             managed = False
-        if managed:
+        if runtime_cleanup_error:
+            pass
+        elif shared_profile:
+            profile_cleanup_error = "其他账号仍使用此 Profile，已保留目录"
+        elif managed:
             try:
                 if candidate.exists():
                     shutil.rmtree(candidate)
@@ -2984,6 +3098,7 @@ async def del_account(account_id: int):
         "ok": True,
         "profile_removed": profile_removed,
         "profile_cleanup_error": profile_cleanup_error,
+        **counts,
     }
 
 
@@ -3686,7 +3801,7 @@ def _clean_string_list(values: list[str], *, limit: int, item_limit: int) -> lis
     return cleaned
 
 
-def _rule_dict(rule: DmAutoReplyRule) -> dict:
+def _dm_rule_dict(rule: DmAutoReplyRule) -> dict:
     def load(raw: str) -> list:
         try:
             value = json.loads(raw or "[]")
@@ -3741,19 +3856,22 @@ async def list_dm_auto_reply_rules(account_id: int):
         rows = session.exec(select(DmAutoReplyRule).where(
             DmAutoReplyRule.account_id == account_id
         ).order_by(DmAutoReplyRule.id.asc())).all()
-        return [_rule_dict(row) for row in rows]
+        return [_dm_rule_dict(row) for row in rows]
 
 
 @app.post("/api/dm/auto-reply-rules")
-async def create_dm_auto_reply_rule(body: DmAutoReplyRuleIn):
+async def create_dm_auto_reply_rule(body: DmAutoReplyRuleIn, request: Request = None):
     with get_session() as session:
-        account = session.get(DouyinAccount, body.account_id)
-        if not account or account.platform != "xhs":
-            raise HTTPException(404, "小红书账号不存在")
-        rule = DmAutoReplyRule(account_id=body.account_id, platform="xhs")
-        _apply_rule_input(rule, body)
-        session.add(rule); session.commit(); session.refresh(rule)
-        return _rule_dict(rule)
+        def create():
+            account = session.get(DouyinAccount, body.account_id)
+            if not account or account.platform != "xhs":
+                raise HTTPException(404, "小红书账号不存在")
+            rule = DmAutoReplyRule(account_id=body.account_id, platform="xhs")
+            _apply_rule_input(rule, body)
+            session.add(rule); session.flush()
+            return _dm_rule_dict(rule)
+        payload, _ = submit_once(session, request=request, scope="dm-rule", body=body, create=create)
+        return payload
 
 
 @app.put("/api/dm/auto-reply-rules/{rule_id}")
@@ -3766,7 +3884,7 @@ async def update_dm_auto_reply_rule(rule_id: int, body: DmAutoReplyRuleIn):
             raise HTTPException(400, "规则与账号不匹配")
         _apply_rule_input(rule, body)
         session.add(rule); session.commit(); session.refresh(rule)
-        return _rule_dict(rule)
+        return _dm_rule_dict(rule)
 
 
 @app.delete("/api/dm/auto-reply-rules/{rule_id}")
@@ -3854,7 +3972,7 @@ async def list_account_actions(account_id: int | None = None, limit: int = 100):
 
 
 @app.post("/api/account-actions")
-async def create_account_action(body: ActionIn):
+async def create_account_action(body: ActionIn, request: Request = None):
     if body.action not in ("follow", "unfollow", "send_dm"):
         raise HTTPException(400, "action 仅支持 follow | unfollow | send_dm")
     if body.action == "send_dm" and not body.content.strip():
@@ -3862,22 +3980,33 @@ async def create_account_action(body: ActionIn):
     if not (body.target_uid or body.target_sec_uid):
         raise HTTPException(400, "缺目标用户")
     with get_session() as s:
-        acc = s.get(DouyinAccount, body.account_id)
-        if not acc:
-            raise HTTPException(404, "账号不存在")
-        t = AccountActionTask(
-            platform=acc.platform, account_id=body.account_id, action=body.action,
-            target_uid=body.target_uid, target_sec_uid=body.target_sec_uid,
-            target_nick=body.target_nick, conv_id=body.conv_id,
-            content=body.content.strip(), status="pending")
-        s.add(t); s.commit(); s.refresh(t)
-        task_id = t.id
-    if body.run_now:
-        ok, detail = await _exec_action(task_id)
-        if not ok:
-            raise HTTPException(400, f"执行失败:{detail}")
-        return {"ok": True, "id": task_id, "ran": True}
-    return {"ok": True, "id": task_id, "ran": False}
+        def create():
+            acc = s.get(DouyinAccount, body.account_id)
+            if not acc:
+                raise HTTPException(404, "账号不存在")
+            t = AccountActionTask(
+                platform=acc.platform, account_id=body.account_id, action=body.action,
+                target_uid=body.target_uid, target_sec_uid=body.target_sec_uid,
+                target_nick=body.target_nick, conv_id=body.conv_id,
+                content=body.content.strip(), status="pending")
+            s.add(t); s.flush()
+            return {"ok": True, "id": t.id, "ran": False}
+        payload, created = submit_once(s, request=request, scope="account-action",
+                                       body=body, create=create)
+    # The durable receipt already exists before any external write. An HTTP
+    # retry returns that task and never executes its run_now a second time.
+    detail = ""
+    if created and body.run_now:
+        try:
+            _, detail = await _exec_action(payload["id"])
+        except HTTPException as exc:
+            detail = str(exc.detail)
+    with get_session() as s:
+        task = s.get(AccountActionTask, payload["id"])
+        payload.update(status=task.status if task else "deleted",
+                       ran=bool(task and task.status == "done"),
+                       execution_error=detail or (task.error if task else ""))
+    return payload
 
 
 @app.post("/api/account-actions/{task_id}/run-now")
@@ -6127,27 +6256,29 @@ def _collection_comment_dict(row: KeywordCollectionComment) -> dict:
 
 
 @app.post("/api/collections")
-async def create_keyword_collection(body: KeywordCollectionIn):
-    platform, keywords, quality, download_dir, options = _validated_collection_input(body)
+async def create_keyword_collection(body: KeywordCollectionIn, request: Request = None):
     with get_session() as session:
-        account = session.get(DouyinAccount, body.account_id)
-        if (not account or account.platform != platform
-                or account.status != "active" or not account.storage_state):
-            raise HTTPException(400, "所选账号不存在、登录态失效或与平台不匹配")
-        job = KeywordCollectionJob(
-            platform=platform, account_id=body.account_id,
-            keywords=json.dumps(keywords, ensure_ascii=False),
-            max_contents_per_keyword=body.max_contents_per_keyword,
-            **options,
-            max_comments_per_content=body.max_comments_per_content,
-            include_replies=body.include_replies,
-            download_media=body.download_media,
-            video_quality=quality, download_dir=download_dir,
-        )
-        session.add(job); session.commit(); session.refresh(job)
-        payload = _collection_job_dict(job)
-    if engine:
-        engine.enqueue_collection_job(job.id)
+        def create():
+            platform, keywords, quality, download_dir, options = _validated_collection_input(body)
+            account = session.get(DouyinAccount, body.account_id)
+            if (not account or account.platform != platform
+                    or account.status != "active" or not account.storage_state):
+                raise HTTPException(400, "所选账号不存在、登录态失效或与平台不匹配")
+            job = KeywordCollectionJob(
+                platform=platform, account_id=body.account_id,
+                keywords=json.dumps(keywords, ensure_ascii=False),
+                max_contents_per_keyword=body.max_contents_per_keyword,
+                **options,
+                max_comments_per_content=body.max_comments_per_content,
+                include_replies=body.include_replies,
+                download_media=body.download_media,
+                video_quality=quality, download_dir=download_dir,
+            )
+            session.add(job); session.flush()
+            return _collection_job_dict(job)
+        payload, created = submit_once(session, request=request, scope="collection", body=body, create=create)
+    if engine and created:
+        engine.enqueue_collection_job(payload["id"])
     return payload
 
 
@@ -7475,6 +7606,7 @@ def _target_dict(t: MonitorTarget) -> dict:
         "exclude_keywords": _load_meta_tags(t.exclude_keywords),
         "account_id": t.account_id,
         "last_scan_at": t.last_scan_at.isoformat() if t.last_scan_at else None,
+        "next_auto_run_at": utc_iso(row_deadline(t, cfg, kind="monitor")),
         "last_error": t.last_error,
     }
 
@@ -7696,6 +7828,7 @@ def _watch_dict(w: CommentWatch) -> dict:
         "max_scrolls": w.max_scrolls,
         "enabled": w.enabled, "comment_count": w.comment_count,
         "last_scan_at": w.last_scan_at.isoformat() if w.last_scan_at else None,
+        "next_auto_run_at": utc_iso(row_deadline(w, cfg, kind="comment_watch")),
         "last_error": w.last_error,
     }
 
@@ -8074,6 +8207,7 @@ def _danmaku_watch_dict(w: DanmakuWatch) -> dict:
         "effective_max_records_total": w.max_records_total or cfg.engine.danmaku_max_records_total,
         "danmaku_count": w.danmaku_count,
         "last_scan_at": w.last_scan_at.isoformat() if w.last_scan_at else None,
+        "next_auto_run_at": utc_iso(row_deadline(w, cfg, kind="danmaku")),
         "last_error": w.last_error,
     }
 
@@ -8493,7 +8627,7 @@ class PublishIn(BaseModel):
     media_paths: list[str] = []
     visibility: str = "public"            # 抖音:public | friends | private
     allow_save: bool = True               # 抖音:是否允许他人保存
-    scheduled_at: str | None = None       # ISO 时间(本地),空=尽快发
+    scheduled_at: str | None = None       # ISO 带偏移；无偏移按账号时区，空=尽快发
 
 
 class PublishUpdate(BaseModel):
@@ -8526,18 +8660,20 @@ def _publish_dict(t: PublishTask) -> dict:
         "visibility": t.visibility, "allow_save": t.allow_save,
         "error": t.error, "media_count": len(json.loads(t.media_json or "[]")),
         "source_platform": t.source_platform, "source_content_id": t.source_content_id,
-        "scheduled_at": t.scheduled_at.isoformat() if t.scheduled_at else None,
-        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "scheduled_at": (utc_iso(t.scheduled_at) if t.scheduled_at_is_utc
+                         else t.scheduled_at.isoformat() if t.scheduled_at else None),
+        "schedule_needs_confirmation": bool(t.scheduled_at and not t.scheduled_at_is_utc),
+        "next_allowed_at": utc_iso(t.next_allowed_at),
+        "blocked_reason": t.blocked_reason,
+        "created_at": utc_iso(t.created_at),
     }
 
 
-def _parse_when(s: str | None) -> datetime | None:
-    if not s:
-        return None
+def _parse_when(s: str | None, timezone_name: str = "Asia/Shanghai") -> datetime | None:
     try:
-        return datetime.fromisoformat(s.replace("Z", ""))
-    except Exception:
-        return None
+        return parse_schedule(s, timezone_name)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.get("/api/publish")
@@ -8551,34 +8687,37 @@ async def list_publish(platform: str | None = None):
 
 
 @app.post("/api/publish")
-async def add_publish(body: PublishIn):
-    if body.media_type not in ("images", "video"):
-        raise HTTPException(400, "media_type 须为 images 或 video")
-    paths = [p for p in body.media_paths if Path(p).exists()]
-    if not paths:
-        raise HTTPException(400, "没有可用的媒体文件,请先上传")
+async def add_publish(body: PublishIn, request: Request = None):
     with get_session() as s:
-        acc = s.get(DouyinAccount, body.account_id)
-        if not acc or acc.platform not in ("xhs", "kuaishou", "douyin", "shipinhao"):
-            raise HTTPException(400, "请选择一个已登录的抖音 / 小红书 / 快手 / 视频号账号")
-        pname = {"kuaishou": "快手", "douyin": "抖音",
-                 "shipinhao": "视频号"}.get(acc.platform, "小红书")
-        if acc.platform in ("kuaishou", "douyin", "shipinhao"):
-            # 抖音 / 快手 / 视频号发布走浏览器自动化,登录态在该账号持久 profile 里
-            if not (acc.creator_storage_state or acc.storage_state):
-                raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成登录")
-        elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
-            raise HTTPException(400, "该账号不可发布:请对该号完成「小红书扫码登录」或「创作者登录」")
-        vis = body.visibility if body.visibility in ("public", "friends", "private") else "public"
-        t = PublishTask(
-            platform=acc.platform, account_id=body.account_id, media_type=body.media_type,
-            title=body.title.strip()[:20], desc=body.desc, topics=body.topics,
-            location=(body.location or "").strip()[:60],
-            visibility=vis, allow_save=bool(body.allow_save),
-            media_json=json.dumps(paths), scheduled_at=_parse_when(body.scheduled_at),
-        )
-        s.add(t); s.commit(); s.refresh(t)
-        return _publish_dict(t)
+        def create():
+            if body.media_type not in ("images", "video"):
+                raise HTTPException(400, "media_type 须为 images 或 video")
+            paths = [p for p in body.media_paths if Path(p).is_file()]
+            if not paths:
+                raise HTTPException(400, "没有可用的媒体文件,请先上传")
+            acc = s.get(DouyinAccount, body.account_id)
+            if not acc or acc.platform not in ("xhs", "kuaishou", "douyin", "shipinhao"):
+                raise HTTPException(400, "请选择一个已登录的抖音 / 小红书 / 快手 / 视频号账号")
+            pname = {"kuaishou": "快手", "douyin": "抖音",
+                     "shipinhao": "视频号"}.get(acc.platform, "小红书")
+            if acc.platform in ("kuaishou", "douyin", "shipinhao"):
+                if not (acc.creator_storage_state or acc.storage_state):
+                    raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成登录")
+            elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
+                raise HTTPException(400, "该账号不可发布:请对该号完成「小红书扫码登录」或「创作者登录」")
+            vis = body.visibility if body.visibility in ("public", "friends", "private") else "public"
+            t = PublishTask(
+                platform=acc.platform, account_id=body.account_id, media_type=body.media_type,
+                title=body.title.strip()[:20], desc=body.desc, topics=body.topics,
+                location=(body.location or "").strip()[:60],
+                visibility=vis, allow_save=bool(body.allow_save),
+                media_json=json.dumps(paths),
+                scheduled_at=_parse_when(body.scheduled_at, acc.timezone_id),
+            )
+            s.add(t); s.flush()
+            return _publish_dict(t)
+        payload, _ = submit_once(s, request=request, scope="publish", body=body, create=create)
+        return payload
 
 
 @app.put("/api/publish/{tid}")
@@ -8587,8 +8726,10 @@ async def update_publish(tid: int, body: PublishUpdate):
         t = s.get(PublishTask, tid)
         if not t:
             raise HTTPException(404)
-        if t.status not in ("pending", "failed", "canceled"):
+        if t.status not in ("draft", "pending", "failed", "canceled"):
             raise HTTPException(400, f"任务状态为 {t.status},不可编辑")
+        if t.scheduled_at and not t.scheduled_at_is_utc and "scheduled_at" not in body.model_fields_set:
+            raise HTTPException(422, "请确认预约时间，或明确清空时间选择尽快发布")
         if body.account_id is not None:
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != t.platform or acc.status != "active":
@@ -8609,10 +8750,10 @@ async def update_publish(tid: int, body: PublishUpdate):
         if body.allow_save is not None:
             t.allow_save = body.allow_save
         if "scheduled_at" in body.model_fields_set:
-            if body.scheduled_at and _parse_when(body.scheduled_at) is None:
-                raise HTTPException(400, "定时发布时间格式无效")
-            t.scheduled_at = _parse_when(body.scheduled_at)
-        if t.status in ("failed", "canceled"):
+            account = s.get(DouyinAccount, t.account_id) if t.account_id else None
+            t.scheduled_at = _parse_when(body.scheduled_at, account.timezone_id if account else "Asia/Shanghai")
+            t.scheduled_at_is_utc = True
+        if t.status in ("draft", "failed", "canceled"):
             t.status = "pending"
             t.error = ""
         s.add(t); s.commit(); s.refresh(t)
@@ -8631,6 +8772,8 @@ async def del_publish(tid: int):
     with get_session() as s:
         t = s.get(PublishTask, tid)
         if t:
+            if t.status in ("publishing", "uncertain"):
+                raise HTTPException(409, "任务正在执行或结果待核对，请先确认平台结果")
             s.delete(t); s.commit()
     return {"ok": True}
 
@@ -9011,66 +9154,55 @@ class RepostIn(BaseModel):
     media_order: list[int] | None = None  # 剔除/调序后保留的图片原始序号(按新顺序);None=全部原序
 
 
-async def _repost_content(cid: int, body: RepostIn, target_platform: str):
+async def _repost_content(cid: int, body: RepostIn, target_platform: str, request: Request = None):
     """把已下载作品转成目标平台(xhs / douyin / shipinhao)的发布任务。"""
     if not engine:
         raise HTTPException(503, "引擎未就绪")
-    # 1) 只在会话内做校验,取出需要的值后退出会话,不把 ORM 对象带出去
     with get_session() as s:
-        rec = s.get(ContentRecord, cid)
-        if not rec:
-            raise HTTPException(404, "作品不存在")
-        if rec.download_status != "done":
-            raise HTTPException(400, "该作品尚未下载完成,无法转发")
-        acc = s.get(DouyinAccount, body.account_id)
-        if not acc or acc.platform != target_platform:
-            pname = {"douyin": "抖音", "shipinhao": "视频号"}.get(
-                target_platform, "小红书")
-            raise HTTPException(400, f"请选择一个已登录的{pname}账号")
-        if target_platform in ("douyin", "shipinhao"):
-            # 抖音/视频号发布走浏览器自动化，有任一持久登录态即可。
-            if not (acc.creator_storage_state or acc.storage_state):
-                pname = "视频号" if target_platform == "shipinhao" else "抖音"
-                action = "视频号登录" if target_platform == "shipinhao" else "创作者登录"
-                raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成「{action}」")
-        elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
-            raise HTTPException(400, "该账号不可发布:请对该号完成「小红书扫码登录」或「创作者登录」")
-    # 2) 退出会话后再创建发布任务(create_relay_publish 内部自开会话)
-    #    若前端传了编辑后的标题/正文/话题,则用编辑值覆盖作品原始内容
-    vis = body.visibility if body.visibility in ("public", "friends", "private") else "public"
-    tid = engine.create_relay_publish(
-        cid, body.account_id, target_platform=target_platform,
-        title=body.title, desc=body.desc, topics=body.topics,
-        visibility=vis, allow_save=bool(body.allow_save),
-        media_order=body.media_order)
-    if not tid:
-        raise HTTPException(400, "未找到该作品的本地文件,无法转发")
-    # 3) 定时时间另开一个会话更新
-    if body.scheduled_at:
-        with get_session() as s:
-            t = s.get(PublishTask, tid)
-            if t:
-                t.scheduled_at = _parse_when(body.scheduled_at)
-                s.add(t); s.commit()
-    return {"ok": True, "task_id": tid}
+        def create():
+            rec = s.get(ContentRecord, cid)
+            if not rec:
+                raise HTTPException(404, "作品不存在")
+            if rec.download_status != "done":
+                raise HTTPException(400, "该作品尚未下载完成,无法转发")
+            acc = s.get(DouyinAccount, body.account_id)
+            if not acc or acc.platform != target_platform:
+                raise HTTPException(400, "请选择与目标平台匹配的已登录账号")
+            if target_platform in ("douyin", "shipinhao"):
+                if not (acc.creator_storage_state or acc.storage_state):
+                    raise HTTPException(400, "请先在账号页完成登录")
+            elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
+                raise HTTPException(400, "请先完成小红书扫码登录或创作者登录")
+            tid = engine.create_relay_publish(
+                cid, body.account_id, target_platform=target_platform,
+                title=body.title, desc=body.desc, topics=body.topics,
+                visibility=body.visibility if body.visibility in ("public", "friends", "private") else "public",
+                allow_save=bool(body.allow_save), media_order=body.media_order,
+                scheduled_at=_parse_when(body.scheduled_at, acc.timezone_id), session=s)
+            if not tid:
+                raise HTTPException(400, "未找到该作品的本地文件,无法转发")
+            return {"ok": True, "task_id": tid}
+        payload, _ = submit_once(s, request=request, scope=f"repost:{target_platform}:{cid}",
+                                 body=body, create=create)
+        return payload
 
 
 @app.post("/api/contents/{cid}/repost-xhs")
-async def repost_to_xhs(cid: int, body: RepostIn):
+async def repost_to_xhs(cid: int, body: RepostIn, request: Request = None):
     """把一条已下载的抖音作品转成小红书发布任务。"""
-    return await _repost_content(cid, body, "xhs")
+    return await _repost_content(cid, body, "xhs", request)
 
 
 @app.post("/api/contents/{cid}/repost-douyin")
-async def repost_to_douyin(cid: int, body: RepostIn):
+async def repost_to_douyin(cid: int, body: RepostIn, request: Request = None):
     """把一条已下载的小红书作品转成抖音发布任务(反向转发)。"""
-    return await _repost_content(cid, body, "douyin")
+    return await _repost_content(cid, body, "douyin", request)
 
 
 @app.post("/api/contents/{cid}/repost-shipinhao")
-async def repost_to_channels(cid: int, body: RepostIn):
+async def repost_to_channels(cid: int, body: RepostIn, request: Request = None):
     """把一条已下载的抖音作品转成视频号发布任务。"""
-    return await _repost_content(cid, body, "shipinhao")
+    return await _repost_content(cid, body, "shipinhao", request)
 
 
 # ─────────── 自动评论(规则 + 任务)───────────
@@ -9124,6 +9256,7 @@ def _rule_dict(r: CommentRule) -> dict:
         "max_per_run": r.max_per_run, "interval_seconds": r.interval_seconds,
         "enabled": r.enabled, "last_error": r.last_error,
         "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
+        "next_auto_run_at": utc_iso(row_deadline(r, cfg, kind="comment_rule")),
     }
 
 
@@ -9182,6 +9315,8 @@ def _task_dict(t: CommentTask) -> dict:
         "content": t.content, "status": t.status, "result": t.result,
         "error": t.error, "method": t.method,
         "scheduled_at": t.scheduled_at.isoformat() if t.scheduled_at else None,
+        "next_allowed_at": utc_iso(t.next_allowed_at),
+        "blocked_reason": t.blocked_reason,
         "done_at": t.done_at.isoformat() if t.done_at else None,
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
@@ -9197,7 +9332,11 @@ async def list_comment_rules(platform: str | None = None):
 
 
 @app.post("/api/comment-rules")
-async def add_comment_rule(body: CommentRuleIn):
+async def add_comment_rule(body: CommentRuleIn, request: Request = None):
+    with get_session() as s:
+        previous = replay_if_exists(s, request=request, scope="comment-rule", body=body)
+        if previous is not None:
+            return previous
     platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou") else "douyin"
     mode = body.mode if body.mode in ("auto_reply", "auto_comment") else "auto_reply"
     templates = [t.strip() for t in body.templates if t.strip()]
@@ -9215,18 +9354,21 @@ async def add_comment_rule(body: CommentRuleIn):
         platform, mode, body.target_kind, body.target)
 
     with get_session() as s:
-        r = CommentRule(
-            platform=platform, name=body.name or ("自动回复" if mode == "auto_reply" else "自动评论"),
-            mode=mode, account_id=body.account_id, target_kind=kind,
-            keyword=keyword, sec_uid=sec_uid, aweme_id=aweme_id, xsec_token=xsec_token,
-            templates=json.dumps(templates, ensure_ascii=False), use_ai=body.use_ai,
-            require_review=body.require_review,
-            reply_filter=body.reply_filter.strip(), skip_keywords=body.skip_keywords.strip(),
-            daily_cap=max(0, body.daily_cap), min_gap_seconds=max(1, body.min_gap_seconds),
-            max_per_run=max(1, body.max_per_run),
-            interval_seconds=max(60, body.interval_seconds), enabled=body.enabled)
-        s.add(r); s.commit(); s.refresh(r)
-        return _rule_dict(r)
+        def create():
+            r = CommentRule(
+                platform=platform, name=body.name or ("自动回复" if mode == "auto_reply" else "自动评论"),
+                mode=mode, account_id=body.account_id, target_kind=kind,
+                keyword=keyword, sec_uid=sec_uid, aweme_id=aweme_id, xsec_token=xsec_token,
+                templates=json.dumps(templates, ensure_ascii=False), use_ai=body.use_ai,
+                require_review=body.require_review,
+                reply_filter=body.reply_filter.strip(), skip_keywords=body.skip_keywords.strip(),
+                daily_cap=max(0, body.daily_cap), min_gap_seconds=max(1, body.min_gap_seconds),
+                max_per_run=max(1, body.max_per_run),
+                interval_seconds=max(60, body.interval_seconds), enabled=body.enabled)
+            s.add(r); s.flush()
+            return _rule_dict(r)
+        payload, _ = submit_once(s, request=request, scope="comment-rule", body=body, create=create)
+        return payload
 
 
 @app.put("/api/comment-rules/{rid}")
@@ -9336,7 +9478,7 @@ async def run_comment_task_now(tid: int):
         t = s.get(CommentTask, tid)
         if not t:
             raise HTTPException(404)
-        if t.status in ("done", "doing"):
+        if t.status not in ("pending", "failed"):
             raise HTTPException(400, f"任务状态为 {t.status}")
         t.status = "pending"; t.scheduled_at = None; t.error = ""
         s.add(t); s.commit()
@@ -9383,7 +9525,8 @@ async def edit_comment_task(tid: int, body: TaskContentIn):
 def _approve_one(s, t) -> bool:
     """把 draft 任务转为 pending(通过审核)。返回是否改动。"""
     if t and t.status == "draft":
-        t.status = "pending"; t.error = ""; t.scheduled_at = None
+        # Approval changes review state, not the generated spacing/appointment.
+        t.status = "pending"; t.error = ""
         s.add(t)
         return True
     return False
@@ -9402,19 +9545,31 @@ async def approve_comment_task(tid: int):
     return {"ok": True}
 
 
+class CommentBatchApproveIn(BaseModel):
+    ids: list[int] = PydanticField(default_factory=list, max_length=500)
+    platform: str
+    account_id: int | None = None
+
+
 @app.post("/api/comment-tasks/batch-approve")
-async def batch_approve_comment_tasks(body: IdsIn2):
-    """批量通过草稿。ids 为空时通过该平台所有草稿(由前端传 platform 过滤的 ids 更精确)。"""
+async def batch_approve_comment_tasks(body: CommentBatchApproveIn):
+    """Only approve an explicit, scope-checked selection, atomically."""
+    if body.platform not in {"douyin", "xhs", "kuaishou", "shipinhao"}:
+        raise HTTPException(422, "平台类型无效")
+    ids = list(dict.fromkeys(body.ids))
+    if not ids or any(value <= 0 for value in ids):
+        raise HTTPException(422, "请选择明确的草稿 ID；空列表不会审核任何任务")
     n = 0
     with get_session() as s:
-        if body.ids:
-            for tid in body.ids:
-                if _approve_one(s, s.get(CommentTask, tid)):
-                    n += 1
-        else:
-            for t in s.exec(select(CommentTask).where(CommentTask.status == "draft")).all():
-                if _approve_one(s, t):
-                    n += 1
+        rows = s.exec(select(CommentTask).where(CommentTask.id.in_(ids))).all()
+        if len(rows) != len(ids) or any(
+                t.status != "draft" or t.platform != body.platform
+                or (body.account_id is not None and t.account_id != body.account_id)
+                for t in rows):
+            raise HTTPException(409, "所选草稿的状态或平台/账号范围已变化，本批次未审核，请刷新后重选")
+        for t in rows:
+            if _approve_one(s, t):
+                n += 1
         s.commit()
     return {"ok": True, "approved": n}
 
@@ -9424,6 +9579,8 @@ async def del_comment_task(tid: int):
     with get_session() as s:
         t = s.get(CommentTask, tid)
         if t:
+            if t.status in ("doing", "uncertain"):
+                raise HTTPException(409, "任务正在执行或结果待核对，请先确认平台结果")
             s.delete(t); s.commit()
     return {"ok": True}
 
@@ -9435,6 +9592,8 @@ async def batch_del_comment_tasks(body: IdsIn2):
         for tid in body.ids:
             t = s.get(CommentTask, tid)
             if t:
+                if t.status in ("doing", "uncertain"):
+                    raise HTTPException(409, f"任务 #{tid} 正在执行或结果待核对，本批次未删除")
                 s.delete(t); n += 1
         s.commit()
     return {"ok": True, "deleted": n}
@@ -9455,12 +9614,9 @@ class ChannelUpdate(BaseModel):
 
 
 def _channel_dict(c: NotificationChannel) -> dict:
-    try:
-        cfg = json.loads(c.config or "{}")
-    except Exception:
-        cfg = {}
+    config = parse_config(c.config)
     return {"id": c.id, "name": c.name, "type": c.type,
-            "enabled": c.enabled, "config": cfg}
+            "enabled": c.enabled, "config": redact_config(c.type, config)}
 
 
 @app.get("/api/notifications")
@@ -9475,7 +9631,7 @@ async def add_channel(body: ChannelIn):
         raise HTTPException(400, f"渠道类型须为 {CHANNEL_TYPES}")
     with get_session() as s:
         c = NotificationChannel(name=body.name or body.type, type=body.type,
-                                config=json.dumps(body.config), enabled=body.enabled)
+                                config=json.dumps(merge_config({}, body.config)), enabled=body.enabled)
         s.add(c); s.commit(); s.refresh(c)
         return _channel_dict(c)
 
@@ -9489,7 +9645,7 @@ async def update_channel(cid: int, body: ChannelUpdate):
         if body.name is not None:
             c.name = body.name
         if body.config is not None:
-            c.config = json.dumps(body.config)
+            c.config = json.dumps(merge_config(parse_config(c.config), body.config))
         if body.enabled is not None:
             c.enabled = body.enabled
         s.add(c); s.commit(); s.refresh(c)
@@ -9514,7 +9670,7 @@ async def test_channel(cid: int):
         ch_type, cfg = c.type, json.loads(c.config or "{}")
     ok, detail = await send_one(ch_type, cfg, "CreatorHub · 测试通知",
                                 "这是一条测试消息,收到说明渠道配置正常 ✓")
-    return {"ok": ok, "detail": detail}
+    return {"ok": ok, "detail": redact_detail(ch_type, cfg, detail)}
 
 
 # ─────────── 前端 ───────────
@@ -9523,8 +9679,9 @@ async def index():
     html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
     # 给 app.js 带上基于 mtime 的版本号,前端改动后自动击穿浏览器缓存(免手动强刷)
     try:
-        ver = int((WEB_DIR / "app.js").stat().st_mtime)
-        html = html.replace("/static/app.js", f"/static/app.js?v={ver}")
+        for asset in ("app.js", "submissions.js"):
+            ver = int((WEB_DIR / asset).stat().st_mtime)
+            html = html.replace(f"/static/{asset}", f"/static/{asset}?v={ver}")
     except Exception:
         pass
     # 首页(含内联 CSS)禁缓存:否则 webview 缓存旧 HTML,改了样式也不生效

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict
 from typing import Any
 
@@ -17,6 +18,8 @@ _SCHEDULE_FIELDS = {
     "active_hours_end",
     "account_check_interval_seconds",
     "douyin_captcha_wait_seconds",
+    "scan_jitter", "comment_jitter", "xhs_dm_poll_jitter",
+    "initial_scan_spread_seconds",
 }
 
 _RISK_BOUNDS: dict[str, tuple[int, int]] = {
@@ -44,6 +47,12 @@ _RISK_BOUNDS: dict[str, tuple[int, int]] = {
     "network_group_risk_accounts": (0, 1000),
     "network_group_risk_window_seconds": (1, 604800),
     "network_group_cooldown_seconds": (1, 604800),
+    "operation_gap_min_seconds": (0, 3600),
+    "operation_gap_max_seconds": (0, 3600),
+    "session_operation_limit": (0, 1000),
+    "session_rest_min_seconds": (1, 86400),
+    "session_rest_max_seconds": (1, 86400),
+    "network_retry_jitter_seconds": (0, 300),
 }
 
 _SCHEDULE_BOUNDS: dict[str, tuple[int, int]] = {
@@ -51,6 +60,7 @@ _SCHEDULE_BOUNDS: dict[str, tuple[int, int]] = {
     "active_hours_end": (1, 47),
     "account_check_interval_seconds": (0, 604800),
     "douyin_captcha_wait_seconds": (0, 86400),
+    "initial_scan_spread_seconds": (0, 600),
 }
 
 
@@ -73,11 +83,25 @@ def _bounded_int(value: Any, name: str, bounds: tuple[int, int]) -> int:
         raise RiskSettingsError(f"{name} 必须是整数")
     try:
         parsed = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise RiskSettingsError(f"{name} 必须是整数") from None
+    if isinstance(value, float) and value != parsed:
+        raise RiskSettingsError(f"{name} 必须是整数")
     low, high = bounds
     if parsed < low or parsed > high:
         raise RiskSettingsError(f"{name} 必须在 {low}–{high} 之间")
+    return parsed
+
+
+def _bounded_ratio(value: Any, name: str) -> float:
+    if isinstance(value, bool):
+        raise RiskSettingsError(f"{name} 必须是 0–1 的数值")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise RiskSettingsError(f"{name} 必须是 0–1 的数值") from None
+    if not math.isfinite(parsed) or not 0 <= parsed <= 1:
+        raise RiskSettingsError(f"{name} 必须是 0–1 的数值")
     return parsed
 
 
@@ -109,6 +133,9 @@ def apply_risk_settings(cfg: Config, payload: dict[str, Any]) -> dict[str, Any]:
 
     for name, bounds in _RISK_BOUNDS.items():
         merged[name] = _bounded_int(merged.get(name), name, bounds)
+    for prefix in ("operation_gap", "session_rest"):
+        if merged[f"{prefix}_max_seconds"] < merged[f"{prefix}_min_seconds"]:
+            raise RiskSettingsError(f"{prefix} 最大间隔须不小于最小间隔")
 
     steps = merged.get("cooldown_steps_seconds")
     if not isinstance(steps, list) or not 1 <= len(steps) <= 8:
@@ -130,6 +157,8 @@ def apply_risk_settings(cfg: Config, payload: dict[str, Any]) -> dict[str, Any]:
         raise RiskSettingsError("quiet_hours_enabled 必须是布尔值")
     for name, bounds in _SCHEDULE_BOUNDS.items():
         next_schedule[name] = _bounded_int(next_schedule[name], name, bounds)
+    for name in ("scan_jitter", "comment_jitter", "xhs_dm_poll_jitter"):
+        next_schedule[name] = _bounded_ratio(next_schedule[name], name)
     if next_schedule["active_hours_end"] <= next_schedule["active_hours_start"]:
         raise RiskSettingsError("活跃结束时间必须晚于开始时间")
 

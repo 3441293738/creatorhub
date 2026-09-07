@@ -2023,7 +2023,7 @@
       <div class="risk-stat" data-tone="success"><b id="risk-stat-normal">—</b><span>正常账号</span></div>
       <div class="risk-stat" data-tone="danger"><b id="risk-stat-cooldown">—</b><span>冷却 / 暂停 / 熔断</span></div>
       <div class="risk-stat" data-tone="warn"><b id="risk-stat-recovering">—</b><span>渐进恢复</span></div>
-      <div class="risk-stat" data-tone="danger"><b id="risk-stat-invalid">—</b><span>登录 / 代理异常</span></div>
+      <div class="risk-stat" data-tone="danger"><b id="risk-stat-invalid">—</b><span>登录 / 代理 / 验证</span></div>
       <div class="risk-stat" data-tone="warn"><b id="risk-stat-blocked">—</b><span>受阻任务</span></div>
       <div class="risk-stat"><b id="risk-stat-today">—</b><span>今日风险事件</span></div>
     </div>
@@ -2040,6 +2040,7 @@
           <option value="recovering">渐进恢复</option><option value="auth_invalid">登录失效</option>
           <option value="proxy_error">代理异常</option><option value="network_circuit">网络熔断</option>
           <option value="write_paused">写入暂停</option>
+          <option value="verification_required">待人工验证</option><option value="network_backoff">网络退避</option>
         </select>
         <span class="filter-count" id="risk-filter-count" role="status" aria-live="polite"></span>
         <span class="spacer"></span>
@@ -2047,7 +2048,7 @@
         <button class="ghost sm" type="button" onclick="refreshRiskCenter(true)"><svg><use href="#i-play"/></svg>刷新状态</button>
       </div>
       <div class="table-wrap"><table aria-label="账号风险状态列表">
-        <thead><tr><th>账号</th><th>状态</th><th>等级</th><th>原因</th><th>冷却 / 探测</th><th>恢复</th><th>任务</th><th>网络</th><th>操作</th></tr></thead>
+        <thead><tr><th>账号</th><th>状态</th><th>等级</th><th>原因</th><th>等待 / 探测</th><th>恢复</th><th>任务</th><th>网络</th><th>操作</th></tr></thead>
         <tbody id="risk-account-table"></tbody>
       </table></div>
     </div>
@@ -2087,6 +2088,28 @@
             <div class="form-field"><label for="risk-active-start">开始小时</label><input id="risk-active-start" type="number" min="0" max="23"></div>
             <div class="form-field"><label for="risk-active-end">结束小时</label><input id="risk-active-end" type="number" min="1" max="47"></div>
           </div>
+        </fieldset>
+        <fieldset class="risk-config-group wide">
+          <legend>账号操作节奏</legend>
+          <div class="form-grid">
+            <div class="form-field"><label for="risk-operation-min">跨功能间隔下限（秒）</label><input id="risk-operation-min" type="number" min="0" max="3600"></div>
+            <div class="form-field"><label for="risk-operation-max">跨功能间隔上限（秒）</label><input id="risk-operation-max" type="number" min="0" max="3600"></div>
+            <div class="form-field"><label for="risk-session-limit">连续操作次数（0 关闭休息）</label><input id="risk-session-limit" type="number" min="0" max="1000"></div>
+            <div class="form-field"><label for="risk-rest-min">连续操作后休息下限（秒）</label><input id="risk-rest-min" type="number" min="1" max="86400"></div>
+            <div class="form-field"><label for="risk-rest-max">连续操作后休息上限（秒）</label><input id="risk-rest-max" type="number" min="1" max="86400"></div>
+          </div>
+          <p class="mut">同一账号的读写任务共享节奏，失败尝试也计数；等待时间在重启后保留，原有最小间隔和额度继续生效。登录与媒体下载不计入连续操作。遇到平台安全验证时暂停自动操作，留待人工处理。</p>
+        </fieldset>
+        <fieldset class="risk-config-group wide">
+          <legend>自动任务错峰</legend>
+          <div class="form-grid">
+            <div class="form-field"><label for="risk-scan-jitter">周期扫描额外等待上限（%）</label><input id="risk-scan-jitter" type="number" min="0" max="100" aria-describedby="risk-jitter-help"></div>
+            <div class="form-field"><label for="risk-comment-jitter">评论基础间隔额外等待上限（%）</label><input id="risk-comment-jitter" type="number" min="0" max="100" aria-describedby="risk-jitter-help"></div>
+            <div class="form-field"><label for="risk-dm-poll-jitter">私信轮询额外等待上限（%）</label><input id="risk-dm-poll-jitter" type="number" min="0" max="100" aria-describedby="risk-jitter-help"></div>
+            <div class="form-field"><label for="risk-initial-spread">新监控首次错峰上限（秒）</label><input id="risk-initial-spread" type="number" min="0" max="600" aria-describedby="risk-jitter-help"></div>
+            <div class="form-field"><label for="risk-retry-jitter">网络重试额外等待上限（秒）</label><input id="risk-retry-jitter" type="number" min="0" max="300" aria-describedby="risk-jitter-help"></div>
+          </div>
+          <p id="risk-jitter-help" class="mut">只增加等待，不缩短基础间隔。例：300 秒扫描周期加 15%，最早调度间隔为 300–345 秒；同一轮不会因轮询或重启重新抽取。首次错峰适用于新监控和评论规则，不改变预约发布。评论排队参数用于新生成任务，仍会叠加连续休息及账号风控等待；已有排队时间保持不变。网络重试在至少 5 分钟退避后再增加等待；验证仍需人工处理。填 0 关闭对应的额外等待。</p>
         </fieldset>
         <fieldset class="risk-config-group wide">
           <legend>写操作间隔与额度</legend>
@@ -3338,6 +3361,7 @@
 <div id="toasts" aria-live="polite" aria-atomic="false"></div>
 <button id="backtop" class="ghost" type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="返回顶部" title="返回顶部"><svg><use href="#i-next"/></svg></button>
 
+<script src="/static/submissions.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

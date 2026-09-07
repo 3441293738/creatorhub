@@ -169,7 +169,7 @@ def install(*, skip_browser: bool = False, skip_node: bool = False) -> None:
 
 def read_server_defaults() -> tuple[str, int]:
     """用轻量解析读取 server 配置，避免启动器依赖 PyYAML。"""
-    host = "0.0.0.0"
+    host = "127.0.0.1"
     port = 8000
     if not CONFIG_FILE.exists():
         return host, port

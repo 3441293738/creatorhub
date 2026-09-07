@@ -5,7 +5,7 @@ let INFLIGHT = 0;
 // 全局忙碌徽章:>350ms 才显示(快速轮询不闪),圆环转圈 + 已等待秒数 + 并发数。
 // 拿不到真实进度百分比(浏览器自动化/接口都是不透明操作),用计时给"在进行"的清晰感知。
 // 判忙 = 有未完成请求(_apiActive)或有用户慢操作(INFLIGHT);并发数用 INFLIGHT(用户点的操作数)。
-let _apiActive = 0, _barTimer = null, _busyStart = 0, _busyTick = null;
+let _apiActive = 0, _apiFailures = 0, _barTimer = null, _busyStart = 0, _busyTick = null;
 function _isBusy() { return _apiActive > 0 || INFLIGHT > 0; }
 function _busyShow() {
   const sp = $("busy-spinner");
@@ -30,10 +30,61 @@ function _barSync() {
     const l = $("bs-label"); if (l) l.textContent = "处理中";
   }
 }
+// A late response must never repaint another platform/account or an older query.
+const VIEW_REQUESTS = new Map();
+let VIEW_SERIAL = 0;
+function beginViewRequest(key, scope = () => "") {
+  const serial = ++VIEW_SERIAL, platform = PLATFORM, extra = scope();
+  VIEW_REQUESTS.set(key, serial);
+  return () => VIEW_REQUESTS.get(key) === serial && PLATFORM === platform && scope() === extra;
+}
+function apiErrorMessage(detail, status) {
+  if (Array.isArray(detail)) return detail.map(item => {
+    const field = (item.loc || []).filter(x => x !== "body").join(".");
+    return `${field ? field + ": " : ""}${item.msg || "输入格式有误"}`;
+  }).join("；");
+  return typeof detail === "string" ? detail : `请求失败（${status}）`;
+}
+function scheduleToApi(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new Error("预约时间格式无效");
+  if (localDateTimeValue(date.toISOString()) !== value.slice(0, 16)) throw new Error("该本地时间不存在，请重新选择");
+  return date.toISOString();
+}
+function localDateTimeValue(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const pad = n => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+function safeMediaUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw, typeof location === "undefined" ? "http://localhost" : location.href);
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch (_) { return ""; }
+}
+// JSON encoding handles the JS string, then HTML encoding handles the attribute.
+function jsArg(value) { return esc(JSON.stringify(String(value ?? ""))); }
+
+function apiFetch(path, options) {
+  return fetch(path, { ...options, credentials: "same-origin" });
+}
+
 const api = async (path, opts) => {
   _apiActive++; _barSync();
+  let timeout = null, timedOut = false;
   try {
     opts = { ...(opts || {}) };
+    // Bound read-only refreshes; never abort a write and imply it was not sent.
+    if ((!opts.method || opts.method.toUpperCase() === "GET") && !opts.signal) {
+      const controller = new AbortController();
+      opts.signal = controller.signal;
+      timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 60000);
+    }
     const headers = new Headers(opts.headers || {});
     try {
       const adminToken = sessionStorage.getItem("creatorhub-risk-admin-token") || "";
@@ -41,10 +92,22 @@ const api = async (path, opts) => {
     } catch (e) {}
     headers.set("X-CreatorHub-Actor", "creatorhub-web");
     opts.headers = headers;
-    const r = await fetch(path, opts);
-    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.status); }
-    return await r.json();
-  } finally { _apiActive--; _barSync(); }
+    const send = async options => {
+      const r = await apiFetch(path, options);
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        const error = new Error(apiErrorMessage(body.detail, r.status));
+        error.status = r.status;
+        throw error;
+      }
+      return await r.json();
+    };
+    return window.CreatorHubSubmissions ? await window.CreatorHubSubmissions.run(path, opts, send) : await send(opts);
+  } catch (e) {
+    _apiFailures++;
+    if (timedOut) throw new Error("读取超时，请稍后重试");
+    throw e;
+  } finally { clearTimeout(timeout); _apiActive--; _barSync(); }
 };
 
 // ─── UI helpers ───
@@ -604,11 +667,13 @@ function dtSyncAll() { document.querySelectorAll("input[type=datetime-local][dat
 
 // ─── 总览迷你图表(近 7 天采集,纯 SVG 分组柱状)───
 async function refreshOverviewChart() {
+  const isCurrent = beginViewRequest("overview-chart");
   const box = $("overview-chart");
   if (!box) return;
   let d;
   try { d = await api("/api/stats/series?days=7&platform=" + PLATFORM); }
-  catch (e) { box.innerHTML = `<div class="chart-empty">图表加载失败</div>`; return; }
+  catch (e) { if (isCurrent()) box.innerHTML = `<div class="chart-empty">图表加载失败</div>`; return; }
+  if (!isCurrent()) return;
   const days = d.days || [], A = d.contents || [], B = d.comments || [];
   const total = A.reduce((s, n) => s + n, 0) + B.reduce((s, n) => s + n, 0);
   if (!days.length || total === 0) {
@@ -650,7 +715,7 @@ async function exportMonitorReport(explicitBtn = null) {
   const params = new URLSearchParams({ platform: PLATFORM });
   await withBusy(btn, "导出中", async () => {
     try {
-      const response = await fetch("/api/reports/monitor.xlsx?" + params.toString());
+      const response = await apiFetch("/api/reports/monitor.xlsx?" + params.toString());
       if (!response.ok) {
         let message = response.status;
         try {
@@ -681,7 +746,7 @@ async function exportMonitorReport(explicitBtn = null) {
 
 
 async function _downloadExcelReport(path, fallbackName) {
-  const response = await fetch(path);
+  const response = await apiFetch(path);
   if (!response.ok) {
     let message = response.status;
     try {
@@ -882,6 +947,9 @@ function pfIsChannels(pf) { return pf === "shipinhao"; }
 function switchPlatform(pf) {
   if (!["douyin", "xhs", "kuaishou", "shipinhao"].includes(pf)) pf = "douyin";
   PLATFORM = pf;
+  VIEW_REQUESTS.clear();
+  CONTENT_PAGE = COMMENT_PAGE = 1;
+  selContent.clear(); selComment.clear();
   CONTENT_SRC = CONTENT_GROUP = CONTENT_TAG = "";
   COMMENT_SRC = COMMENT_GROUP = COMMENT_TAG = "";
   DANMAKU_SRC = "";
@@ -904,6 +972,7 @@ function switchPlatform(pf) {
   if (CURRENT_TAB === "risk-control") refreshRiskCenter(true);
   populateAcAccount(); onAcMode(); refreshCommentRules(); refreshCommentTasks();
   if (pfHasPublish(PLATFORM)) refreshPublish();
+  if (CURRENT_TAB === "overview") loop();
 }
 function applyPlatformUI() {
   document.body.classList.toggle("pf-douyin", PLATFORM === "douyin");
@@ -1231,6 +1300,7 @@ function switchTab(name, pushHistory = false) {
   if (name === "collections") { populateCollectionAccount(); refreshCollections(); }
   if (name === "queue") refreshTaskQueue();
   if (name === "risk-control") refreshRiskCenter();
+  if (changed && !["hub", "share-download", "collections", "queue", "risk-control"].includes(name)) loop();
 }
 
 // ─── 扫码登录(真实浏览器窗口) ───
@@ -1907,7 +1977,9 @@ function matchesMeta(item, groupName, tag) {
 function onMonitorFilter() { renderMonitorRows(); }
 function onWatchFilter() { renderWatchRows(); }
 async function refreshAccounts() {
+  const isCurrent = beginViewRequest("accounts");
   const accs = await api("/api/accounts?platform=" + PLATFORM);
+  if (!isCurrent()) return;
   ACCOUNTS = accs;
   $("stat-acc").textContent = accs.length;
   $("acc-table").querySelector("tbody").innerHTML = accs.map(a => {
@@ -1980,7 +2052,7 @@ async function refreshAccounts() {
     return `<tr>
       <td>
         <div class="user-cell">
-          ${a.avatar ? `<img class="avatar" src="${a.avatar}" alt="" referrerpolicy="no-referrer">` : ""}
+          ${a.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(a.avatar))}" alt="" referrerpolicy="no-referrer">` : ""}
           <div>
             <div><b>${esc(a.nickname)}</b> ${pill}</div>
             ${idline ? `<div class="mut" style="font-size:11px;margin-top:2px">${idline}</div>` : ""}
@@ -2035,13 +2107,20 @@ function riskTime(value) {
   const date = riskDate(value);
   return date ? date.toLocaleString() : "—";
 }
+function autoRunHint(value) {
+  const date = riskDate(value);
+  if (!date) return "";
+  const label = date.getTime() > Date.now() ? `下次最早 ${riskTime(value)}` : "已到期，等待调度";
+  return `<div class="mut" title="自动任务的最早调度时间；仍需满足账号风控、并发和队列条件">${esc(label)}</div>`;
+}
 function riskDuration(seconds) {
   let left = Math.max(0, Math.ceil(Number(seconds) || 0));
   if (!left) return "已到期";
   const days = Math.floor(left / 86400); left %= 86400;
   const hours = Math.floor(left / 3600); left %= 3600;
-  const minutes = Math.ceil(left / 60);
-  return [days ? `${days}天` : "", hours ? `${hours}小时` : "", minutes ? `${minutes}分钟` : ""].filter(Boolean).join("");
+  const minutes = Math.floor(left / 60), remainder = left % 60;
+  return [days ? `${days}天` : "", hours ? `${hours}小时` : "", minutes ? `${minutes}分钟` : "",
+    !days && !hours && remainder ? `${remainder}秒` : ""].filter(Boolean).join("");
 }
 function riskRemaining(value) {
   const date = riskDate(value);
@@ -2058,6 +2137,7 @@ const RISK_OUTCOME_LABELS = {
 };
 
 async function refreshRiskCenter(force = false) {
+  const isCurrent = beginViewRequest("risk-center");
   try {
     const shouldFillConfig = !RISK_CONFIG || force;
     const configPromise = shouldFillConfig ? api("/api/risk-control/config") : Promise.resolve(RISK_CONFIG);
@@ -2067,6 +2147,7 @@ async function refreshRiskCenter(force = false) {
       api("/api/risk-control/accounts" + platformQuery),
       configPromise,
     ]);
+    if (!isCurrent()) return;
     RISK_ACCOUNTS = accounts;
     RISK_CONFIG = config;
     renderRiskSummary(summary);
@@ -2074,19 +2155,37 @@ async function refreshRiskCenter(force = false) {
     if (shouldFillConfig) fillRiskConfig(config);
     if (force) toast("风控状态已刷新", "ok");
   } catch (e) {
-    if (force || CURRENT_TAB === "risk-control") toast("风控中心加载失败：" + e.message, "err");
+    if (isCurrent() && (force || CURRENT_TAB === "risk-control")) toast("风控中心加载失败：" + e.message, "err");
   }
 }
 
 function renderRiskSummary(summary) {
   const counts = summary.counts || {};
   $("risk-stat-normal").textContent = counts.normal || 0;
-  $("risk-stat-cooldown").textContent = (counts.cooldown || 0) + (counts.network_circuit || 0) + (counts.write_paused || 0);
+  $("risk-stat-cooldown").textContent = (counts.cooldown || 0) + (counts.network_circuit || 0) + (counts.write_paused || 0) + (counts.network_backoff || 0);
   $("risk-stat-recovering").textContent = counts.recovering || 0;
-  $("risk-stat-invalid").textContent = (counts.auth_invalid || 0) + (counts.proxy_error || 0);
+  $("risk-stat-invalid").textContent = (counts.auth_invalid || 0) + (counts.proxy_error || 0) + (counts.verification_required || 0);
   $("risk-stat-blocked").textContent = summary.blocked_tasks || 0;
   $("risk-stat-today").textContent = summary.risk_events_today || 0;
   if ($("tb-risk")) $("tb-risk").textContent = summary.abnormal || 0;
+}
+
+function riskAccountWait(account, now = Date.now()) {
+  if (account.manual_review_required || account.status === "verification_required") {
+    return { label: "等待人工验证", until: null, waiting: true, manual: true,
+      title: "请在账号浏览器中处理平台验证，确认完成后填写原因并人工解除暂停" };
+  }
+  const deadlines = [
+    [account.cooldown_until, "风险冷却"], [account.next_probe_at, "下次探测"],
+    [account.retry_not_before, "网络退避"], [account.session_rest_until, "连续操作休息"],
+    [account.operation_not_before, "操作间隔"],
+  ].map(([until, label]) => ({ until, label, time: riskDate(until)?.getTime() || 0 }))
+    .filter(item => item.time > now).sort((a, b) => b.time - a.time);
+  const hold = deadlines[0];
+  return hold ? { ...hold, waiting: true, manual: false,
+    title: `${hold.label}，最早 ${riskTime(hold.until)} 再探测` }
+    : { label: account.status === "recovering" ? "已到探测时间" : "无需等待",
+      until: null, waiting: false, manual: false, title: "执行一次受风控闸门约束的轻量账号探测" };
 }
 
 function renderRiskAccounts() {
@@ -2105,15 +2204,12 @@ function renderRiskAccounts() {
     const progress = account.risk_level > 0
       ? Math.min(100, Math.round((account.recovery_successes || 0) * 100 / Math.max(1, account.recovery_target || 1)))
       : 100;
-    const timing = account.status === "cooldown" || account.status === "network_circuit"
-      ? `<b>${esc(riskRemaining(account.cooldown_until))}</b><small>截止 ${esc(riskTime(account.cooldown_until))}</small>`
-      : account.status === "recovering"
-        ? `<b>下次探测</b><small>${esc(riskTime(account.next_probe_at))}</small>`
-        : `<span class="mut">无需等待</span>`;
+    const wait = riskAccountWait(account);
+    const timing = wait.until
+      ? `<b>${esc(wait.label)} · ${esc(riskRemaining(wait.until))}</b><small>最早 ${esc(riskTime(wait.until))}</small>`
+      : `<span class="mut">${esc(wait.label)}</span>${wait.manual ? "<small>浏览器处理后人工解除</small>" : ""}`;
     const queue = account.queued_tasks || { total: 0 };
     const reason = account.reason || "未检测到风险信号";
-    const nextProbe = riskDate(account.next_probe_at);
-    const probeWaiting = !!(nextProbe && nextProbe.getTime() > Date.now());
     const actualAccountId = account.platform_account_id
       ? `${account.platform_account_id_label || "账号 ID"} ${account.platform_account_id}`
       : "尚未获取平台账号 ID";
@@ -2127,7 +2223,7 @@ function renderRiskAccounts() {
       <td><b class="num">${account.blocked_tasks || 0} / ${queue.total || 0}</b><div class="mut" style="font-size:11px" title="${esc(account.latest_block_reason || "")}">受阻 / 待执行${account.task_next_allowed_at ? ` · ${esc(riskRemaining(account.task_next_allowed_at))}` : ""}</div></td>
       <td><div class="risk-account"><span>${account.proxy ? `<code>${esc(account.proxy)}</code>` : "本机直连"}</span><small>${esc(account.proxy_status || "unknown")} · ${esc(account.network_key || "—")}</small></div></td>
       <td class="acttd">
-        <button class="ghost sm" onclick="probeRiskAccount(${account.account_id})" ${probeWaiting ? "disabled" : ""} title="${probeWaiting ? `下次探测 ${esc(riskTime(account.next_probe_at))}` : "执行一次受风控闸门约束的轻量账号探测"}">${probeWaiting ? "等待探测" : "探测"}</button>
+        <button class="ghost sm" onclick="probeRiskAccount(${account.account_id})" ${wait.waiting ? "disabled" : ""} title="${esc(wait.title)}">${wait.manual ? "待验证" : wait.waiting ? "等待探测" : "探测"}</button>
         <button class="ghost sm" onclick="showRiskEvents(${account.account_id})">记录</button>
         <button class="ghost sm" onclick="openAccountBrowser(${account.account_id})">浏览器</button>
         ${account.status !== "normal" ? `<button class="ghost sm danger" onclick="clearRiskAccount(${account.account_id})">解除</button>` : ""}
@@ -2143,6 +2239,14 @@ function fillRiskConfig(config) {
   $("risk-enabled").checked = !!r.enabled;
   set("risk-mode", r.mode); set("risk-retention", r.event_retention_days);
   set("risk-read-light", r.read_light_gap_seconds); set("risk-read-heavy", r.read_heavy_gap_seconds);
+  set("risk-operation-min", r.operation_gap_min_seconds); set("risk-operation-max", r.operation_gap_max_seconds);
+  set("risk-session-limit", r.session_operation_limit);
+  set("risk-rest-min", r.session_rest_min_seconds); set("risk-rest-max", r.session_rest_max_seconds);
+  set("risk-retry-jitter", r.network_retry_jitter_seconds);
+  set("risk-scan-jitter", Math.round((s.scan_jitter || 0) * 100));
+  set("risk-comment-jitter", Math.round((s.comment_jitter || 0) * 100));
+  set("risk-dm-poll-jitter", Math.round((s.xhs_dm_poll_jitter || 0) * 100));
+  set("risk-initial-spread", s.initial_scan_spread_seconds);
   set("risk-recovery-count", r.recovery_successes); set("risk-probe-gap", (r.recovery_probe_gap_seconds || 0) / 60);
   set("risk-cooldown-steps", (r.cooldown_steps_seconds || []).map(v => v / 60).join(", "));
   set("risk-network-concurrency", r.network_group_concurrency); set("risk-network-accounts", r.network_group_risk_accounts);
@@ -2180,8 +2284,13 @@ async function setRiskAdminToken() {
 }
 
 function riskNumber(id, multiplier = 1) {
-  const value = Number($(id).value);
-  if (!Number.isFinite(value) || value < Number($(id).min || 0)) throw new Error($(id).labels?.[0]?.textContent + "填写不正确");
+  const field = $(id), raw = String(field.value ?? "").trim(), value = Number(raw);
+  field.removeAttribute("aria-invalid");
+  if (!raw || !Number.isFinite(value) || value < Number(field.min || 0)
+      || (field.max !== undefined && field.max !== "" && value > Number(field.max))) {
+    field.setAttribute("aria-invalid", "true"); field.focus?.();
+    throw new Error((field.labels?.[0]?.textContent || id) + "填写不正确，请检查取值范围");
+  }
   return Math.round(value * multiplier);
 }
 
@@ -2196,6 +2305,10 @@ async function saveRiskConfig() {
       enabled: $("risk-enabled").checked, mode: $("risk-mode").value,
       network_group_concurrency: riskNumber("risk-network-concurrency"),
       read_light_gap_seconds: riskNumber("risk-read-light"), read_heavy_gap_seconds: riskNumber("risk-read-heavy"),
+      operation_gap_min_seconds: riskNumber("risk-operation-min"), operation_gap_max_seconds: riskNumber("risk-operation-max"),
+      session_operation_limit: riskNumber("risk-session-limit"),
+      session_rest_min_seconds: riskNumber("risk-rest-min"), session_rest_max_seconds: riskNumber("risk-rest-max"),
+      network_retry_jitter_seconds: riskNumber("risk-retry-jitter"),
       shared_write_gap_seconds: riskNumber("risk-shared-write", 60),
       cooldown_steps_seconds: steps.map(v => Math.round(v * 60)),
       recovery_successes: riskNumber("risk-recovery-count"), recovery_probe_gap_seconds: riskNumber("risk-probe-gap", 60),
@@ -2205,6 +2318,8 @@ async function saveRiskConfig() {
       network_group_cooldown_seconds: riskNumber("risk-network-cooldown", 60),
       combined_action_hourly_cap: riskNumber("risk-combined-hourly"), combined_action_daily_cap: riskNumber("risk-combined-daily"),
     };
+    if (r.operation_gap_max_seconds < r.operation_gap_min_seconds) throw new Error("跨功能间隔上限应不小于下限");
+    if (r.session_rest_max_seconds < r.session_rest_min_seconds) throw new Error("休息上限应不小于下限");
     ["comment", "social", "dm", "publish"].forEach(key => {
       r[`${key}_min_gap_seconds`] = riskNumber(`risk-${key}-gap`, 60);
       r[`${key}_hourly_cap`] = riskNumber(`risk-${key}-hourly`);
@@ -2215,6 +2330,10 @@ async function saveRiskConfig() {
       active_hours_start: riskNumber("risk-active-start"), active_hours_end: riskNumber("risk-active-end"),
       account_check_interval_seconds: riskNumber("risk-account-check", 60),
       douyin_captcha_wait_seconds: riskNumber("risk-captcha-wait", 60),
+      scan_jitter: riskNumber("risk-scan-jitter") / 100,
+      comment_jitter: riskNumber("risk-comment-jitter") / 100,
+      xhs_dm_poll_jitter: riskNumber("risk-dm-poll-jitter") / 100,
+      initial_scan_spread_seconds: riskNumber("risk-initial-spread"),
     };
     msg.textContent = "保存中…";
     RISK_CONFIG = await api("/api/risk-control/config", {
@@ -2286,11 +2405,11 @@ async function showRiskAudit() {
   try {
     const rows = await api("/api/risk-control/audit?limit=100");
     $("risk-event-subtitle").textContent = `最近 ${rows.length} 条 · 包含规则修改、人工探测和解除操作`;
-    const labels = { policy_updated: "规则修改", manual_probe: "人工探测", account_risk_cleared: "人工解除" };
+    const labels = { policy_updated: "规则修改", manual_probe: "人工探测", account_risk_cleared: "人工解除", task_result_resolved: "任务结果核对" };
     $("risk-event-list").innerHTML = rows.map(row => {
       const detail = row.detail || {};
       const changeCount = Object.values(detail.changes || {}).reduce((sum, section) => sum + Object.keys(section || {}).length, 0);
-      const summary = detail.reason || (changeCount ? `修改 ${changeCount} 项规则` : detail.skipped ? `探测延后：${detail.reason || "风控闸门未放行"}` : "操作完成");
+      const summary = detail.note || detail.reason || (changeCount ? `修改 ${changeCount} 项规则` : detail.skipped ? `探测延后：${detail.reason || "风控闸门未放行"}` : "操作完成");
       return `<div class="risk-event"><time>${esc(riskTime(row.created_at))}</time><span class="risk-status warn">${esc(labels[row.action] || row.action)}</span><b>${row.account_id ? `账号 ${row.account_id}` : "全局"}</b><div class="risk-event-detail">${esc(summary)}<small>${esc(row.actor || "local-ui")}</small></div></div>`;
     }).join("") || '<div class="hint">暂无风控管理变更记录。</div>';
   } catch (e) { $("risk-event-list").innerHTML = `<div class="hint">加载失败：${esc(e.message)}</div>`; }
@@ -2396,11 +2515,12 @@ function switchHubTab(name) {
 }
 // 计数徽章:纯查库汇总,进面板/换账号/切平台即刷新,不用点进子页才有数
 async function refreshHubSummary() {
+  const isCurrent = beginViewRequest("hub-summary", () => String(HUB_ACC));
   const ids = { works: "hb-myworks", following: "hb-following", fans: "hb-fans", dm: "hb-dm" };
   const setAll = r => Object.entries(ids).forEach(([k, i]) => { const el = $(i); if (el) el.textContent = (r && r[k]) || 0; });
   if (!HUB_ACC) { setAll(null); return; }
-  try { setAll(await api("/api/hub/summary?account_id=" + HUB_ACC)); }
-  catch (e) { setAll(null); }
+  try { const data = await api("/api/hub/summary?account_id=" + HUB_ACC); if (isCurrent()) setAll(data); }
+  catch (e) { if (isCurrent()) setAll(null); }
 }
 function refreshHubPanel() {
   const active = document.querySelector('.navitem.active');
@@ -2435,11 +2555,13 @@ function _spark(vals) {
   </svg>`;
 }
 async function loadHubStats() {
+  const isCurrent = beginViewRequest("hub-stats", () => String(HUB_ACC));
   const kpi = $("stats-kpi"), tr = $("stats-trend"), wb = $("stats-works");
   if (!kpi) return;
   if (!HUB_ACC) { kpi.innerHTML = ""; if (tr) tr.innerHTML = ""; if (wb) wb.innerHTML = `<tr><td colspan="5" class="mut">请先选择账号</td></tr>`; return; }
   try {
     const d = await api("/api/account-stats/" + HUB_ACC + "?days=30");
+    if (!isCurrent()) return;
     if ($("hb-stats")) $("hb-stats").textContent = (d.works || []).length;
     kpi.innerHTML = _kpiCard("粉丝", d.account.follower_count || 0, d.fans_delta)
       + _kpiCard("作品数", d.account.aweme_count || 0)
@@ -2455,7 +2577,7 @@ async function loadHubStats() {
         + `<td class="num">${fmtNum(w.play_count || 0)}</td><td class="num">${fmtNum(w.like_count || 0)}</td><td class="num">${fmtNum(w.comment_count || 0)}</td>`
         + `<td><span class="pill bare">${esc(w.status || "—")}</span></td></tr>`).join("")
       : `<tr><td colspan="5" class="mut">暂无作品数据,先到「我的作品」点「同步作品」</td></tr>`;
-  } catch (e) {
+  } catch (e) { if (!isCurrent()) return;
     kpi.innerHTML = `<div class="mut">加载失败:${esc(e.message)}</div>`;
   }
 }
@@ -2466,14 +2588,16 @@ function hubGridEmpty(text, sub = "") {
 
 // ── 我的作品 ──
 async function refreshMyWorks() {
+  const isCurrent = beginViewRequest("my-works", () => String(HUB_ACC));
   const grid = $("mw-grid"); if (!grid) return;
   if (!HUB_ACC) { grid.innerHTML = hubGridEmpty("请先选择已登录账号"); return; }
   try {
     const list = await api("/api/account-works?account_id=" + HUB_ACC);
+    if (!isCurrent()) return;
     if ($("hb-myworks")) $("hb-myworks").textContent = list.length;
     grid.innerHTML = list.length ? list.map(workCard).join("")
       : hubGridEmpty("暂无作品", "点右上「同步作品」抓取本账号已发布作品");
-  } catch (e) { grid.innerHTML = hubGridEmpty("加载失败:" + e.message); }
+  } catch (e) { if (!isCurrent()) return; grid.innerHTML = hubGridEmpty("加载失败:" + e.message); }
 }
 function workLink(platform, id) {
   id = encodeURIComponent(id);
@@ -2484,10 +2608,10 @@ function workLink(platform, id) {
 }
 function openWork(platform, id) { try { window.open(workLink(platform, id), "_blank", "noopener"); } catch (e) {} }
 function workCard(w) {
-  const oc = `onclick="openWork('${esc(w.platform)}','${esc(w.item_id).replace(/'/g, "\'")}')"`;
+  const oc = `onclick="openWork(${jsArg(w.platform)},${jsArg(w.item_id)})"`;
   // 图裂时回退占位(onerror 换成灰底图标),避免绝对角标压到标题
   const cover = w.cover_url
-    ? `<img class="ncard-cover" src="${w.cover_url}" referrerpolicy="no-referrer" loading="lazy" alt="" ${oc}
+    ? `<img class="ncard-cover" src="${esc(safeMediaUrl(w.cover_url))}" referrerpolicy="no-referrer" loading="lazy" alt="" ${oc}
          onerror="this.onerror=null;this.removeAttribute('src');this.style.visibility='hidden'">`
     : `<div class="ncard-cover ph" ${oc}>${ic("i-image")}</div>`;
   const title = esc(w.desc || "无描述");
@@ -2503,8 +2627,8 @@ function workCard(w) {
         <span class="like">${fmtTime(w.create_time)}</span>
       </div>
       <div class="ncard-actions">
-        ${w.platform === "douyin" ? '<button class="ghost sm" onclick="monitorOwnWorkDanmaku(\'' + esc(w.item_id) + '\',' + (w.account_id || "null") + ')">' + ic("i-msg") + '弹幕</button>' : ""}
-        <button class="ghost sm" onclick="openWorkComments(${w.id},'${esc(w.platform)}','${title.replace(/'/g, "\'")}')">${ic("i-msg")}评论</button>
+        ${w.platform === "douyin" ? `<button class="ghost sm" onclick="monitorOwnWorkDanmaku(${jsArg(w.item_id)},${Number(w.account_id) || "null"})">${ic("i-msg")}弹幕</button>` : ""}
+        <button class="ghost sm" onclick="openWorkComments(${Number(w.id)},${jsArg(w.platform)},${jsArg(w.desc || "无描述")})">${ic("i-msg")}评论</button>
       </div>
     </div>
   </div>`;
@@ -2577,6 +2701,7 @@ async function syncWorkComments() {
 // 小红书网页端不提供关注/粉丝列表(App 专属:实测无接口、无弹层),不做无用的同步
 const XHS_FOLLOW_NA = "小红书网页端不提供关注 / 粉丝列表(仅 App 可见),无法同步。抖音 / 快手可正常同步。";
 async function refreshFollows(direction) {
+  const isCurrent = beginViewRequest(`follows:${direction}`, () => String(HUB_ACC));
   const tbody = $(direction === "fan" ? "fans-table" : "following-table"); if (!tbody) return;
   if (PLATFORM === "xhs") {
     const badge = $(direction === "fan" ? "hb-fans" : "hb-following");
@@ -2588,11 +2713,12 @@ async function refreshFollows(direction) {
   if (!HUB_ACC) { tbody.innerHTML = empty(3, "请先选择已登录账号", "i-user"); return; }
   try {
     const list = await api(`/api/follows?account_id=${HUB_ACC}&direction=${direction}`);
+    if (!isCurrent()) return;
     const badge = $(direction === "fan" ? "hb-fans" : "hb-following");
     if (badge) badge.textContent = list.length;
     tbody.innerHTML = list.length ? list.map(f => followRow(f, direction)).join("")
       : empty(3, direction === "fan" ? "暂无粉丝数据" : "暂无关注数据", "i-user", "点右上「同步」抓取");
-  } catch (e) { tbody.innerHTML = empty(3, "加载失败:" + e.message, "i-info"); }
+  } catch (e) { if (!isCurrent()) return; tbody.innerHTML = empty(3, "加载失败:" + e.message, "i-info"); }
 }
 function followRow(f, direction) {
   const rel = f.is_mutual ? `<span class="pill active bare">互相关注</span>`
@@ -2603,7 +2729,7 @@ function followRow(f, direction) {
     : `<button class="ghost sm" onclick="actFollow('follow',${f.id})">回关</button>`;
   return `<tr>
     <td><div class="fu-cell">
-      ${f.avatar ? `<img class="avatar" src="${f.avatar}" referrerpolicy="no-referrer" alt="">` : `<span class="avatar"></span>`}
+      ${f.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(f.avatar))}" referrerpolicy="no-referrer" alt="">` : `<span class="avatar"></span>`}
       <div><div><b>${esc(f.nickname)}</b></div>${f.signature ? `<div class="fu-sign">${esc(f.signature)}</div>` : ""}</div>
     </div></td>
     <td>${rel}</td>
@@ -2621,22 +2747,25 @@ async function syncFollows(direction) {
 }
 async function actFollow(action, edgeId) {
   // 取该行 follow 边的目标信息(从已渲染列表里拿)
+  const accountId = HUB_ACC;
   const dir = HUB_TAB === "fans" ? "fan" : "following";
   let edge = null;
-  try { const list = await api(`/api/follows?account_id=${HUB_ACC}&direction=${dir}`); edge = list.find(x => x.id === edgeId); } catch (e) {}
+  try { const list = await api(`/api/follows?account_id=${accountId}&direction=${dir}`); edge = list.find(x => x.id === edgeId); } catch (e) {}
+  if (HUB_ACC !== accountId) return;
   if (!edge) { toast("找不到该用户,请重新同步", "err"); return; }
   const label = action === "unfollow" ? "取关" : "回关";
   if (!await uiConfirm({ title: label + "确认", message: `确认对「${edge.nickname}」${label}?将打开浏览器窗口执行(有头窗口,可手动过验证码)。`, danger: action === "unfollow" })) return;
+  if (HUB_ACC !== accountId) { toast("账号已切换，本次操作已取消", "info"); return; }
   await withBusy(evtBtn(), label + "中", async () => {
     try {
-      await api("/api/account-actions", {
+      const result = await api("/api/account-actions", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ account_id: +HUB_ACC, action, target_uid: edge.uid, target_sec_uid: edge.sec_uid || "", target_nick: edge.nickname, run_now: true })
+        body: JSON.stringify({ account_id: +accountId, action, target_uid: edge.uid, target_sec_uid: edge.sec_uid || "", target_nick: edge.nickname, run_now: true })
       });
-      toast(label + "成功", "ok");
+      toast(result.ran ? label + "成功" : `任务 #${result.id} 已保留：${result.execution_error || "等待队列执行"}`, result.ran ? "ok" : "info", 6000);
     } catch (e) { toast(label + "失败:" + e.message, "err"); }
   });
-  refreshFollows(dir);
+  if (HUB_ACC === accountId) refreshFollows(dir);
 }
 
 // ── 私信 ──
@@ -2670,21 +2799,23 @@ function stopDmStream() {
 }
 
 async function refreshDmConvs() {
+  const isCurrent = beginViewRequest("dm-convs", () => String(HUB_ACC));
   const box = $("dm-convs"); if (!box) return;
   if (!HUB_ACC) { box.innerHTML = `<div class="empty" style="padding:24px"><div class="empty-t">请先选择账号</div></div>`; return; }
   try {
     const list = await api("/api/dm/conversations?account_id=" + HUB_ACC);
+    if (!isCurrent()) return;
     DM_CONVS = list;
     if ($("hb-dm")) $("hb-dm").textContent = list.length;
     box.innerHTML = list.length ? list.map(convRow).join("")
       : `<div class="empty" style="padding:24px"><div class="empty-ic">${ic("i-send")}</div><div class="empty-t">暂无会话</div><div class="empty-sub">点右上「同步私信」</div></div>`;
     if (DM_CONV) { const el = box.querySelector(`.dm-conv[data-conv="${cssAttr(DM_CONV)}"]`); if (el) el.classList.add("active"); }
-  } catch (e) { box.innerHTML = `<div class="empty" style="padding:24px"><div class="empty-t">加载失败:${esc(e.message)}</div></div>`; }
+  } catch (e) { if (!isCurrent()) return; box.innerHTML = `<div class="empty" style="padding:24px"><div class="empty-t">加载失败:${esc(e.message)}</div></div>`; }
 }
 function cssAttr(s) { return (s || "").toString().replace(/"/g, '\\"'); }
 function convRow(c) {
-  return `<div class="dm-conv" data-conv="${esc(c.conv_id)}" onclick="openDmConv('${esc(c.conv_id).replace(/'/g, "\'")}')">
-    ${c.peer_avatar ? `<img class="avatar" src="${c.peer_avatar}" referrerpolicy="no-referrer" alt="">` : `<span class="avatar"></span>`}
+  return `<div class="dm-conv" data-conv="${esc(c.conv_id)}" onclick="openDmConv(this.dataset.conv)">
+    ${c.peer_avatar ? `<img class="avatar" src="${esc(safeMediaUrl(c.peer_avatar))}" referrerpolicy="no-referrer" alt="">` : `<span class="avatar"></span>`}
     <div class="meta"><b>${esc(c.peer_nickname)}</b><div class="last">${esc(c.last_text || "")}</div></div>
     ${c.unread_count ? `<span class="unread">${c.unread_count}</span>` : ""}
   </div>`;
@@ -2705,14 +2836,17 @@ async function syncDm() {
 }
 async function openDmConv(convId) {
   DM_CONV = convId;
+  const isCurrent = beginViewRequest("open-dm-conv", () => `${HUB_ACC}:${DM_CONV}`);
+  const accountId = HUB_ACC;
   document.querySelectorAll("#dm-convs .dm-conv").forEach(e => e.classList.toggle("active", e.dataset.conv === convId));
   const thread = $("dm-thread");
   if (thread) thread.innerHTML = `<div class="empty"><div class="empty-t">加载聊天记录…</div></div>`;
   // 抖音:点开会话时无头拉历史(imapi get_by_conversation),落库后再渲染
   if (PLATFORM === "douyin" || PLATFORM === "xhs") {
-    try { await api(`/api/accounts/${HUB_ACC}/dm/conversations/${convId}/fetch-history`, { method: "POST" }); }
+    try { await api(`/api/accounts/${accountId}/dm/conversations/${encodeURIComponent(convId)}/fetch-history`, { method: "POST" }); }
     catch (e) { /* 拉取失败也照常显示库里已有的(最后一条) */ }
   }
+  if (!isCurrent()) return;
   markDmRead(convId);
   await refreshDmMessages();
 }
@@ -2735,6 +2869,7 @@ function dmDraftSummary(task) {
   </div>`;
 }
 async function refreshDmAutomation() {
+  const isCurrent = beginViewRequest("dm-automation", () => HUB_ACC);
   const panel = $("dm-auto-panel"), rulesBox = $("dm-auto-rules"), tasksBox = $("dm-auto-tasks");
   if (!panel || !rulesBox || !tasksBox) return;
   panel.style.display = PLATFORM === "xhs" ? "" : "none";
@@ -2745,6 +2880,7 @@ async function refreshDmAutomation() {
       api(`/api/account-actions?account_id=${HUB_ACC}&limit=100`),
       api(`/api/accounts/${HUB_ACC}/dm/automation/status`)
     ]);
+    if (!isCurrent()) return;
     const statusBox = $("dm-monitor-status");
     if (statusBox) {
       const live = monitor.realtime || {};
@@ -2756,7 +2892,7 @@ async function refreshDmAutomation() {
     DM_AUTO_TASKS = tasks;
     const drafts = tasks.filter(t => t.action === "send_dm" && t.source_rule_id && t.status === "draft");
     tasksBox.innerHTML = drafts.length ? drafts.map(dmDraftSummary).join("") : `<div class="hint">暂无待审核回复</div>`;
-  } catch (e) { rulesBox.innerHTML = `<div class="hint">加载失败：${esc(e.message)}</div>`; }
+  } catch (e) { if (isCurrent()) rulesBox.innerHTML = `<div class="hint">加载失败：${esc(e.message)}</div>`; }
 }
 async function saveDmRule() {
   if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
@@ -2834,14 +2970,16 @@ function dmBody(m) {
   return esc(m.text);
 }
 async function refreshDmMessages() {
+  const isCurrent = beginViewRequest("dm-messages", () => `${HUB_ACC}:${DM_CONV}`);
   const thread = $("dm-thread"); if (!thread || !HUB_ACC || !DM_CONV) return;
   try {
     const msgs = await api(`/api/dm/messages?account_id=${HUB_ACC}&conv_id=${encodeURIComponent(DM_CONV)}`);
+    if (!isCurrent()) return;
     thread.innerHTML = msgs.length
       ? msgs.map(m => `<div class="dm-bubble ${m.direction === "out" ? "out" : "in"}${m.card ? " card" : ""}">${dmBody(m)}<span class="t">${fmtTime(m.create_time)}</span></div>`).join("")
       : `<div class="empty"><div class="empty-t">暂无消息记录</div><div class="empty-sub">该会话没有可拉取的历史(或对方为系统号)</div></div>`;
     thread.scrollTop = thread.scrollHeight;
-  } catch (e) { thread.innerHTML = `<div class="empty"><div class="empty-t">加载失败:${esc(e.message)}</div></div>`; }
+  } catch (e) { if (!isCurrent()) return; thread.innerHTML = `<div class="empty"><div class="empty-t">加载失败:${esc(e.message)}</div></div>`; }
 }
 async function sendDm() {
   const inp = $("dm-input"); const text = (inp.value || "").trim();
@@ -2849,16 +2987,18 @@ async function sendDm() {
   if (!DM_CONV) { toast("请先选择左侧会话", "err"); return; }
   if (!text) return;
   const c = DM_CONVS.find(x => x.conv_id === DM_CONV) || {};
+  const accountId = HUB_ACC, conversationId = DM_CONV;
   await withBusy(evtBtn(), "发送中", async () => {
     try {
-      await api("/api/account-actions", {
+      const result = await api("/api/account-actions", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ account_id: +HUB_ACC, action: "send_dm", target_uid: c.peer_uid || "", target_sec_uid: c.peer_sec_uid || "", target_nick: c.peer_nickname || "", conv_id: DM_CONV, content: text, run_now: true })
+        body: JSON.stringify({ account_id: +accountId, action: "send_dm", target_uid: c.peer_uid || "", target_sec_uid: c.peer_sec_uid || "", target_nick: c.peer_nickname || "", conv_id: conversationId, content: text, run_now: true })
       });
-      inp.value = ""; toast("已发送", "ok");
+      if (HUB_ACC === accountId && DM_CONV === conversationId && inp.value.trim() === text) inp.value = "";
+      toast(result.ran ? "已发送" : `任务 #${result.id} 已保留：${result.execution_error || "等待队列发送"}`, result.ran ? "ok" : "info", 6000);
       // 发完重拉历史,展示刚发出的消息(imapi 有短暂延迟,稍等再拉)
       await new Promise(r => setTimeout(r, 700));
-      await openDmConv(DM_CONV);
+      if (HUB_ACC === accountId && DM_CONV === conversationId) await openDmConv(conversationId);
     } catch (e) { toast("发送失败:" + e.message, "err"); }
   });
 }
@@ -3567,9 +3707,14 @@ function pollReloginTask(tid) {
 }
 async function delAccount(id) {
   const a = ACCOUNTS.find(x => x.id === id);
-  const warn = a && a.monitor_count > 0 ? `\n⚠️ 有 ${a.monitor_count} 个监控正在用它,删除后这些监控将无登录态(需改用其它账号)。` : "";
-  if (!await uiConfirm({ title: "删除账号", message: "删除该账号?" + warn, okText: "删除", danger: true })) return;
-  try { await api("/api/accounts/" + id, { method: "DELETE" }); toast("账号已删除", "ok"); refreshAccounts(); }
+  const warn = a && a.monitor_count > 0 ? `\n关联的 ${a.monitor_count} 个作品监控也会暂停。` : "";
+  if (!await uiConfirm({ title: "删除账号", message: "删除该账号将取消未执行任务、停用关联规则并清理独占登录环境；历史内容保留。执行中的操作需要先结束。" + warn, okText: "删除并停止关联任务", danger: true })) return;
+  try {
+    const result = await api("/api/accounts/" + id, { method: "DELETE" });
+    toast(`账号已删除，取消 ${result.canceled_tasks || 0} 个任务，暂停 ${(result.disabled_rules || 0) + (result.disabled_monitors || 0)} 项规则/监控`, "ok", 6000);
+    if (result.profile_cleanup_error) toast(result.profile_cleanup_error, "info", 7000);
+    refreshAccounts(); refreshMonitors(); refreshCommentRules(); refreshCommentTasks(); refreshPublish();
+  }
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 
@@ -4225,8 +4370,9 @@ async function editChannel(id, draft = null) {
       <div><label class="field" for="ec-name">渠道名称</label>
         <input id="ec-name" value="${esc(initial.name)}" maxlength="60"></div>
       <div><label class="field" for="ec-config">配置 JSON</label>
-        <textarea id="ec-config" rows="9" spellcheck="false">${esc(initial.raw)}</textarea></div>`;
-    _uiOpen("编辑通知渠道", `类型：${c.type} · 修改密钥或地址后建议立即发送测试通知。`, { okText: "保存修改", wide: true });
+        <textarea id="ec-config" rows="9" spellcheck="false" aria-describedby="ec-config-hint">${esc(initial.raw)}</textarea>
+        <p id="ec-config-hint" class="mut">密钥以 ******** 显示。保留占位或省略字段即保留原值；填写新值则替换，填写空字符串或 null 才会清空。</p></div>`;
+    _uiOpen("编辑通知渠道", `类型：${c.type} · 密钥不回传到页面。修改后可发送测试通知。`, { okText: "保存修改", wide: true });
   });
   if (value === null) return;
   let config;
@@ -4383,9 +4529,12 @@ function renderCollectionJobs() {
   }).join("") || collectionTaskEmpty();
 }
 async function refreshCollections() {
+  const isCurrent = beginViewRequest("collections");
   if (!$("collection-job-table") || PLATFORM !== "douyin") return;
   try {
-    COLLECTION_JOBS = await api("/api/collections?platform=douyin");
+    const jobs = await api("/api/collections?platform=douyin");
+    if (!isCurrent()) return;
+    COLLECTION_JOBS = jobs;
     const active = COLLECTION_JOBS.filter(j => ["pending", "running"].includes(j.status)).length;
     if ($("tb-col")) $("tb-col").textContent = active || COLLECTION_JOBS.length;
     renderCollectionJobs();
@@ -4398,7 +4547,7 @@ async function refreshCollections() {
       else closeCollectionResults();
     }
   } catch (e) {
-    if (CURRENT_TAB === "collections") toast("采集任务刷新失败：" + e.message, "err");
+    if (isCurrent() && CURRENT_TAB === "collections") toast("采集任务刷新失败：" + e.message, "err");
   }
 }
 async function editCollection(jobId, draft = null) {
@@ -4622,10 +4771,12 @@ async function copyCollectionPath(button) {
 async function loadCollectionContents(page = COLLECTION_PAGE, quiet = false) {
   if (!COLLECTION_JOB_ID) return;
   COLLECTION_PAGE = Math.max(1, Number(page) || 1);
+  const isCurrent = beginViewRequest("collection-contents", () => `${COLLECTION_JOB_ID}:${COLLECTION_PAGE}`);
   const body = $("collection-content-list");
   if (!quiet) body.innerHTML = collectionResultSkeleton(4);
   try {
     const result = await api(`/api/collections/${COLLECTION_JOB_ID}/contents?page=${COLLECTION_PAGE}&page_size=20`);
+    if (!isCurrent()) return;
     COLLECTION_PAGE = result.page;
     body.innerHTML = (result.items || []).map(collectionResultCard).join("") || collectionEmpty("任务暂时没有作品结果", "采集中可稍后刷新；失败任务可查看错误并续跑");
     $("collection-result-count").textContent = `共 ${fmtNum(result.total)} 个作品`;
@@ -4633,6 +4784,7 @@ async function loadCollectionContents(page = COLLECTION_PAGE, quiet = false) {
     pager.innerHTML = `<button class="ghost sm" onclick="loadCollectionContents(${result.page - 1})"${result.page <= 1 ? " disabled" : ""}>${ic("i-prev")}上一页</button><span class="mut">第 ${result.page} / ${result.pages} 页 · 共 ${fmtNum(result.total)} 条</span><button class="ghost sm" onclick="loadCollectionContents(${result.page + 1})"${result.page >= result.pages ? " disabled" : ""}>下一页${ic("i-next")}</button>`;
     pager.hidden = result.pages <= 1;
   } catch (e) {
+    if (!isCurrent()) return;
     body.innerHTML = collectionEmpty("结果加载失败", e.message);
     $("collection-result-count").textContent = "";
   }
@@ -4886,7 +5038,7 @@ function monRow(t) {
   const downloadLabel = t.download_enabled === false ? "仅记录"
     : ({ all: "全部下载", video: "仅视频", images: "仅图集" }[t.media_filter] || "全部下载");
   return `<tr>
-    <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${t.avatar}" alt="" referrerpolicy="no-referrer">` : ""}<div><span>${label}</span>${t.alias ? `<div class="alias-line">${esc(t.alias)}</div>` : ""}${accTag}</div></div></td>
+    <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(t.avatar))}" alt="" referrerpolicy="no-referrer">` : ""}<div><span>${label}</span>${t.alias ? `<div class="alias-line">${esc(t.alias)}</div>` : ""}${accTag}</div></div></td>
     <td>${metaChips(t)}</td>
     <td class="num">${t.content_count}</td>
     <td class="num">${Math.round(t.interval_seconds / 60)} 分</td>
@@ -4895,7 +5047,7 @@ function monRow(t) {
       ${monitorStrategySummary(t)}
       ${t.platform === "xhs" ? "" : `<span class="pill q bare">${QMAP[t.video_quality] || "默认画质"}</span> `}
       <span class="mut" title="${esc(t.download_dir || "默认目录")}" style="display:inline-block;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${esc(t.download_dir || "默认")}</span></td>
-    <td class="mut">${t.last_scan_at ? new Date(t.last_scan_at + "Z").toLocaleString() : "—"}${t.last_error ? ` <span class="warn-ic" title="${esc(t.last_error)}">${ic("i-info")}</span>` : ""}</td>
+    <td class="mut">${t.last_scan_at ? new Date(t.last_scan_at + "Z").toLocaleString() : "—"}${t.last_error ? ` <span class="warn-ic" title="${esc(t.last_error)}">${ic("i-info")}</span>` : ""}${autoRunHint(t.next_auto_run_at)}</td>
     <td><span class="pill ${t.enabled ? "active" : "invalid"}">${t.enabled ? "监控中" : "已暂停"}</span></td>
     <td class="acttd">
       <button class="ghost sm" onclick="runNow(${t.id})">立即抓取</button>
@@ -4919,7 +5071,9 @@ function renderMonitorRows() {
     || empty(8, "没有匹配的监控", "i-target", MONITORS.length ? "调整分组、标签或搜索条件" : "在上方添加一个作品监控");
 }
 async function refreshMonitors() {
+  const isCurrent = beginViewRequest("monitors");
   const ts = await api("/api/monitors?platform=" + PLATFORM);
+  if (!isCurrent()) return;
   MONITORS = ts; populateMonitorFacets(); populateContentSrc();
   $("stat-mon").textContent = ts.filter(t => t.enabled).length;
   if ($("tb-mon")) $("tb-mon").textContent = ts.length;
@@ -5057,7 +5211,7 @@ function noteCard(r) {
   const typeIc = r.media_type === "images" ? "i-image" : "i-play";
   const typeLabel = r.media_type === "images" ? "图文" : "视频";
   const cover = r.cover_url
-    ? `<img class="ncard-cover" src="${r.cover_url}" alt="${esc((r.desc || "笔记").slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy" onclick="openPreview(${r.id})">`
+    ? `<img class="ncard-cover" src="${esc(safeMediaUrl(r.cover_url))}" alt="${esc((r.desc || "笔记").slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy" onclick="openPreview(${r.id})">`
     : `<div class="ncard-cover ph" onclick="openPreview(${r.id})">${ic("i-image")}</div>`;
   return `<div class="ncard">
     ${cover}
@@ -5132,6 +5286,7 @@ function setContentPageSize() {
   refreshContents();
 }
 async function refreshContents(resetPage = false) {
+  const isCurrent = beginViewRequest("contents");
   if (resetPage) CONTENT_PAGE = 1;
   const params = new URLSearchParams({
     platform: PLATFORM, page: String(CONTENT_PAGE),
@@ -5152,6 +5307,7 @@ async function refreshContents(resetPage = false) {
   if (Number.isFinite(minComments) && minComments > 0) params.set("min_comment_count", String(Math.floor(minComments)));
   params.set("sort", ($('content-sort') && $('content-sort').value) || "create_desc");
   const payload = await api("/api/contents?" + params.toString());
+  if (!isCurrent()) return;
   const meta = Array.isArray(payload)
     ? { items: payload, total: payload.length, page: 1, page_size: CONTENT_PAGE_SIZE,
         pages: Math.max(1, Math.ceil(payload.length / CONTENT_PAGE_SIZE)) }
@@ -5160,7 +5316,6 @@ async function refreshContents(resetPage = false) {
   if (CONTENT_PAGE > pages) { CONTENT_PAGE = pages; return refreshContents(); }
   const rows = Array.isArray(meta.items) ? meta.items : [];
   CONTENTS = rows;
-  $("stat-dl").textContent = rows.filter(r => r.download_status === "done").length;
   if ($("content-filter-count")) $("content-filter-count").textContent =
     `显示 ${rows.length} / ${Number(meta.total || rows.length)}`;
   const xhs = PLATFORM === "xhs";
@@ -5178,7 +5333,7 @@ async function refreshContents(resetPage = false) {
     const description = esc(r.desc || "(无描述)");
     return `<tr>
       <td class="content-check-cell"><input type="checkbox" data-id="${r.id}" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></td>
-      <td class="content-cover-cell">${r.cover_url ? `<img class="thumb" src="${r.cover_url}" alt="封面" referrerpolicy="no-referrer" onclick="openPreview(${r.id})">` : `<span class="content-cover-empty">${ic(r.media_type === "images" ? "i-image" : "i-film")}</span>`}</td>
+      <td class="content-cover-cell">${r.cover_url ? `<img class="thumb" src="${esc(safeMediaUrl(r.cover_url))}" alt="封面" referrerpolicy="no-referrer" onclick="openPreview(${r.id})">` : `<span class="content-cover-empty">${ic(r.media_type === "images" ? "i-image" : "i-film")}</span>`}</td>
       <td class="content-desc-cell">
         <div class="content-desc-text" title="${description}">${description}</div>
         ${monitor ? `<div class="content-desc-meta">${sourceMeta(monitor)}</div>` : ""}
@@ -5254,7 +5409,7 @@ function danmakuWatchRow(w) {
     "<td>" + source + "</td>" +
     '<td class="num">' + fmtNum(w.danmaku_count || 0) + "</td>" +
     '<td class="num">' + interval + "</td>" +
-    '<td class="mut">' + (w.last_scan_at ? new Date(w.last_scan_at + "Z").toLocaleString() : "—") + error + "</td>" +
+    '<td class="mut">' + (w.last_scan_at ? new Date(w.last_scan_at + "Z").toLocaleString() : "—") + error + autoRunHint(w.next_auto_run_at) + "</td>" +
     '<td><span class="pill ' + (w.enabled ? "active" : "invalid") + '">' +
       (w.enabled ? "监控中" : "已暂停") + "</span></td>" +
     '<td class="acttd">' +
@@ -5332,8 +5487,10 @@ async function addDanmakuWatch() {
   refreshDanmakuWatches();
 }
 async function refreshDanmakuWatches() {
+  const isCurrent = beginViewRequest("danmaku-watches");
   if (PLATFORM !== "douyin") return;
   const rows = await api("/api/danmaku-watches?platform=douyin");
+  if (!isCurrent()) return;
   DANMAKU_WATCHES = rows;
   populateDanmakuFacets();
   if ($("tb-danmaku")) $("tb-danmaku").textContent = rows.length;
@@ -5498,6 +5655,7 @@ function renderDanmakuPager(meta) {
   pager.hidden = total <= pageSize;
 }
 async function refreshDanmaku(resetPage = false) {
+  const isCurrent = beginViewRequest("danmaku");
   if (PLATFORM !== "douyin" || !$("danmaku-table")) return;
   if (resetPage) DANMAKU_PAGE = 1;
   const params = new URLSearchParams({
@@ -5513,6 +5671,7 @@ async function refreshDanmaku(resetPage = false) {
   if (end > 0) params.set("max_video_time_ms", String(Math.round(end * 1000)));
   params.set("sort", ($("danmaku-sort") && $("danmaku-sort").value) || "video_asc");
   const payload = await api("/api/danmaku?" + params.toString());
+  if (!isCurrent()) return;
   const meta = Array.isArray(payload)
     ? { items: payload, total: payload.length, page: 1, page_size: DANMAKU_PAGE_SIZE,
         pages: Math.max(1, Math.ceil(payload.length / DANMAKU_PAGE_SIZE)) }
@@ -5627,14 +5786,14 @@ async function addWatch() {
 function watchRow(w) {
   const base = esc(watchBaseName(w));
   return `<tr>
-    <td><div class="user-cell">${w.avatar ? `<img class="avatar" src="${w.avatar}" referrerpolicy="no-referrer">` : ""}<div><span>${base}</span>${w.alias ? `<div class="alias-line">${esc(w.alias)}</div>` : ""}</div></div></td>
+    <td><div class="user-cell">${w.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(w.avatar))}" referrerpolicy="no-referrer">` : ""}<div><span>${base}</span>${w.alias ? `<div class="alias-line">${esc(w.alias)}</div>` : ""}</div></div></td>
     <td>${metaChips(w)}</td>
     <td>${w.kind === "video" ? (w.platform === "xhs" ? "笔记" : "视频") : (w.platform === "xhs" ? "创作者" : "账号")}</td>
     <td>${w.platform === "xhs" ? "公开" : (SRC[w.mode] || w.mode)}</td>
     <td class="num">${w.comment_count}</td>
     <td class="num">${Math.round(w.interval_seconds / 60)} 分
       ${w.kind === "user" && (w.recent_works || w.recent_days) ? `<div class="mut" style="font-size:11px">${w.recent_works ? `近 ${w.recent_works} 个` : "全局作品数"} · ${w.recent_days ? `${w.recent_days} 天` : "全局天数"}</div>` : ""}</td>
-    <td class="mut">${w.last_scan_at ? new Date(w.last_scan_at + "Z").toLocaleString() : "—"}${w.last_error ? ` <span class="warn-ic" title="${esc(w.last_error)}">${ic("i-info")}</span>` : ""}</td>
+    <td class="mut">${w.last_scan_at ? new Date(w.last_scan_at + "Z").toLocaleString() : "—"}${w.last_error ? ` <span class="warn-ic" title="${esc(w.last_error)}">${ic("i-info")}</span>` : ""}${autoRunHint(w.next_auto_run_at)}</td>
     <td><span class="pill ${w.enabled ? "active" : "invalid"}">${w.enabled ? "监控中" : "已暂停"}</span></td>
     <td class="acttd">
       <button class="ghost sm" onclick="scanWatch(${w.id})">立即抓取</button>
@@ -5658,7 +5817,9 @@ function renderWatchRows() {
     || empty(9, "没有匹配的评论监控", "i-msg", WATCHES.length ? "调整分组、标签或搜索条件" : "在上方添加一个评论监控");
 }
 async function refreshWatches() {
+  const isCurrent = beginViewRequest("watches");
   const ws = await api("/api/comment-watches?platform=" + PLATFORM);
+  if (!isCurrent()) return;
   WATCHES = ws; populateWatchFacets(); populateCommentSrc();
   if ($("tb-watch")) $("tb-watch").textContent = ws.length;
   renderWatchRows();
@@ -5812,6 +5973,7 @@ function setCommentPageSize() {
   refreshComments();
 }
 async function refreshComments(resetPage = false) {
+  const isCurrent = beginViewRequest("comments");
   if (resetPage) COMMENT_PAGE = 1;
   const params = new URLSearchParams({
     platform: PLATFORM, page: String(COMMENT_PAGE),
@@ -5828,6 +5990,7 @@ async function refreshComments(resetPage = false) {
   if (Number.isFinite(minLikes) && minLikes > 0) params.set("min_like_count", String(Math.floor(minLikes)));
   params.set("sort", ($('comment-sort') && $('comment-sort').value) || "latest");
   const payload = await api("/api/comments?" + params.toString());
+  if (!isCurrent()) return;
   const meta = Array.isArray(payload)
     ? { items: payload, total: payload.length, page: 1, page_size: COMMENT_PAGE_SIZE,
         pages: Math.max(1, Math.ceil(payload.length / COMMENT_PAGE_SIZE)) }
@@ -5835,7 +5998,6 @@ async function refreshComments(resetPage = false) {
   const pages = Math.max(1, Number(meta.pages || 1));
   if (COMMENT_PAGE > pages) { COMMENT_PAGE = pages; return refreshComments(); }
   const rows = Array.isArray(meta.items) ? meta.items : [];
-  $("stat-cmt").textContent = rows.length;
   if ($("comment-filter-count")) $("comment-filter-count").textContent =
     `显示 ${rows.length} / ${Number(meta.total || rows.length)}`;
   $("comment-table").innerHTML = rows.map(r => {
@@ -5892,7 +6054,7 @@ function _pvRender(d) {
       box.innerHTML = `<div class="pv-loading">暂无可预览的媒体</div>`;
     } else {
       PV_N = list.length; PV_I = 0;
-      const slides = list.map(m => `<div class="pv-slide"><img src="${m.url}" referrerpolicy="no-referrer" alt=""></div>`).join("");
+      const slides = list.map(m => `<div class="pv-slide"><img src="${esc(safeMediaUrl(m.url))}" referrerpolicy="no-referrer" alt=""></div>`).join("");
       const nav = PV_N > 1 ? `
         <button class="pv-arrow left" id="pv-prev" onclick="pvNav(-1)" aria-label="上一张">${ic("i-prev")}</button>
         <button class="pv-arrow right" id="pv-next" onclick="pvNav(1)" aria-label="下一张">${ic("i-next")}</button>
@@ -6057,37 +6219,57 @@ function bindPubFilePicker() {
   ["dragleave", "drop"].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); if (ev === "dragleave" && zone.contains(e.relatedTarget)) return; zone.classList.remove("drag"); }));
   zone.addEventListener("drop", e => { if (e.dataTransfer && e.dataTransfer.files.length) pubAddFiles(e.dataTransfer.files); });
 }
+let PUB_SUBMITTING = false, PUB_UPLOAD_CACHE = null;
+function publishFormPayload() {
+  return { account_id: +$("pub-acc").value, media_type: $("pub-type").value,
+    title: $("pub-title").value.trim(), desc: $("pub-desc").value,
+    topics: $("pub-topics").value.trim(), scheduled_at: scheduleToApi($("pub-when").value || null),
+    location: $("pub-location") ? $("pub-location").value.trim() : "",
+    visibility: $("pub-visibility") ? $("pub-visibility").value : "public",
+    allow_save: $("pub-allowsave") ? $("pub-allowsave").value !== "0" : true };
+}
 async function addPublish() {
+  if (PUB_SUBMITTING) return;
   const acc = $("pub-acc").value;
   if (!acc) { toast("请选择" + (PF_NAME[PLATFORM] || "发布") + "账号", "err"); return; }
-  const files = $("pub-files").files;
+  const files = Array.from($("pub-files").files);
   if (!files.length) { toast("请先选择要发布的文件", "err"); return; }
+  let body;
+  try { body = publishFormPayload(); }
+  catch (e) { $("pub-msg").textContent = e.message; toast(e.message, "err"); return; }
   const btn = evtBtn();
+  PUB_SUBMITTING = true;
   $("pub-msg").textContent = "上传中…";
-  await withBusy(btn, "上传中", async () => {
+  try { await withBusy(btn, "提交中", async () => {
     try {
-      const fd = new FormData(); for (const f of files) fd.append("files", f);
-      const ur = await fetch("/api/publish/upload", { method: "POST", body: fd });
-      if (!ur.ok) throw new Error("上传失败 " + ur.status);
-      const up = await ur.json();
-      const paths = (up.files || []).map(f => f.path);
-      const when = $("pub-when").value || null;
+      if (!PUB_UPLOAD_CACHE || PUB_UPLOAD_CACHE.files.length !== files.length ||
+          !PUB_UPLOAD_CACHE.files.every((file, index) => file === files[index])) {
+        const fd = new FormData(); for (const f of files) fd.append("files", f);
+        const up = await api("/api/publish/upload", { method: "POST", body: fd });
+        PUB_UPLOAD_CACHE = { files, paths: (up.files || []).map(f => f.path) };
+      }
+      const paths = PUB_UPLOAD_CACHE.paths;
       await api("/api/publish", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ account_id: +acc, media_type: $("pub-type").value, title: $("pub-title").value.trim(), desc: $("pub-desc").value, topics: $("pub-topics").value.trim(), media_paths: paths, scheduled_at: when,
-          location: $("pub-location") ? $("pub-location").value.trim() : "",
-          visibility: $("pub-visibility") ? $("pub-visibility").value : "public",
-          allow_save: $("pub-allowsave") ? $("pub-allowsave").value !== "0" : true }),
+        body: JSON.stringify({ ...body, media_paths: paths }),
       });
-      pubFilesClear(); $("pub-title").value = ""; $("pub-desc").value = ""; $("pub-topics").value = ""; $("pub-when").value = ""; if ($("pub-location")) $("pub-location").value = ""; dtSyncAll();
-      $("pub-msg").textContent = when ? "已加入定时队列 ✓" : "已加入队列,即将发布 ✓";
+      // A late response must not erase edits made during a slow upload.
+      let unchanged = false;
+      try { unchanged = JSON.stringify(publishFormPayload()) === JSON.stringify(body) &&
+          Array.from($("pub-files").files).length === files.length &&
+          Array.from($("pub-files").files).every((file, index) => file === files[index]); } catch (_) {}
+      if (unchanged) {
+        pubFilesClear(); $("pub-title").value = ""; $("pub-desc").value = ""; $("pub-topics").value = ""; $("pub-when").value = ""; if ($("pub-location")) $("pub-location").value = ""; dtSyncAll();
+        PUB_UPLOAD_CACHE = null;
+      }
+      $("pub-msg").textContent = body.scheduled_at ? "已加入定时队列 ✓" : "已加入发布队列 ✓";
       toast("已加入发布队列", "ok");
-    } catch (e) { $("pub-msg").textContent = "失败: " + e.message; toast("发布失败:" + e.message, "err"); }
-  });
+    } catch (e) { $("pub-msg").textContent = "提交未确认: " + e.message + "；重试相同内容会沿用原提交编号。"; toast("提交未确认:" + e.message, "err"); }
+  }); } finally { PUB_SUBMITTING = false; }
   refreshPublish();
 }
-const PUB_ST = { pending: "排队中", publishing: "发布中", uncertain: "结果待确认", done: "已发布", failed: "失败", canceled: "已取消" };
-const PUB_PILL = { pending: "pending", publishing: "downloading", uncertain: "downloading", done: "done", failed: "failed", canceled: "invalid" };
+const PUB_ST = { draft: "待确认预约", pending: "排队中", publishing: "发布中", uncertain: "结果待确认", done: "已发布", failed: "失败", canceled: "已取消" };
+const PUB_PILL = { draft: "pending", pending: "pending", publishing: "downloading", uncertain: "downloading", done: "done", failed: "failed", canceled: "invalid" };
 async function editPublish(id) {
   const task = PUBLISH_TASKS.find(x => x.id === id); if (!task) return;
   const accounts = ACCOUNTS.filter(a => a.platform === task.platform);
@@ -6127,7 +6309,7 @@ async function editPublish(id) {
           <select id="ep-allowsave"><option value="1">允许他人保存</option><option value="0">不允许</option></select></div>
       </fieldset>` : ""}`;
     $("ep-account").value = task.account_id ? String(task.account_id) : "";
-    $("ep-when").value = task.scheduled_at ? task.scheduled_at.slice(0, 16) : "";
+    $("ep-when").value = localDateTimeValue(task.scheduled_at);
     if ($("ep-visibility")) $("ep-visibility").value = task.visibility || "public";
     if ($("ep-allowsave")) $("ep-allowsave").value = task.allow_save === false ? "0" : "1";
     ["ep-account", "ep-visibility", "ep-allowsave"].forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
@@ -6137,6 +6319,7 @@ async function editPublish(id) {
   if (value === null) return;
   if (!value.account_id) { toast("请选择发布账号", "err"); return; }
   try {
+    value.scheduled_at = scheduleToApi(value.scheduled_at);
     await api("/api/publish/" + id, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(value),
@@ -6145,8 +6328,10 @@ async function editPublish(id) {
   } catch (e) { toast("更新失败:" + e.message, "err"); }
 }
 async function refreshPublish() {
+  const isCurrent = beginViewRequest("publish");
   if (!$("pub-table")) return;
   const rows = await api("/api/publish?platform=" + (pfHasPublish(PLATFORM) ? PLATFORM : "xhs"));
+  if (!isCurrent()) return;
   PUBLISH_TASKS = rows;
   if ($("tb-pub")) $("tb-pub").textContent = rows.length;
   $("pub-table").innerHTML = rows.map(t => `<tr>
@@ -6154,12 +6339,12 @@ async function refreshPublish() {
     <td>${t.media_type === "video" ? "视频" : "图文"}</td>
     <td class="num">${t.media_count}</td>
     <td>${t.source_platform ? esc(t.source_platform) + " 转发" : "手动"}</td>
-    <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}</td>
-    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? (["kuaishou", "shipinhao"].includes(t.platform) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${t.account_id}, '${esc(t.result_url)}', '${t.platform}')">查看</a>` : ` <a href="${esc(t.result_url)}" target="_blank">查看</a>`) : ""}</td>
+    <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>
+    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? (["kuaishou", "shipinhao"].includes(t.platform) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeMediaUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}</td>
     <td class="acttd">
-      ${["pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">编辑</button>` : ""}
+      ${["draft", "pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">${t.schedule_needs_confirmation ? "确认预约时间" : "编辑"}</button>` : ""}
       ${["pending", "failed"].includes(t.status) ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
-      <button class="ghost sm danger" onclick="delPublish(${t.id})">${ic("i-trash")}删除</button>
+      ${t.status === "uncertain" ? `<button class="ghost sm" onclick="resolveTaskResult('publishes',${t.id})">核对结果</button>` : t.status === "publishing" ? `<span class="mut">执行中，请等待结果</span>` : `<button class="ghost sm danger" onclick="delPublish(${t.id})">${ic("i-trash")}删除</button>`}
     </td></tr>`).join("") || empty(7, "暂无发布任务", "i-send",
       PLATFORM === "kuaishou" ? "上传图集/视频加入队列(发布到快手创作平台)"
       : PLATFORM === "douyin" ? "上传图集/视频加入队列(发布到抖音创作平台)"
@@ -6204,7 +6389,7 @@ async function loadPublished() {
       $("published-msg").innerHTML = `共 ${d.total} 条` + (PUB_GOOD ? "" :
         ` · <span style="color:var(--warn)">视频预览/评论需先对该账号做「小红书扫码登录」(读取登录)</span>`);
       $("published-grid").innerHTML = PUB_NOTES.map((n, i) => `<div class="ncard">
-        ${n.cover ? `<img class="ncard-cover" src="${n.cover}" referrerpolicy="no-referrer" loading="lazy" alt="" onclick="pubPreview(${i})">` : `<div class="ncard-cover ph" onclick="pubPreview(${i})">${ic("i-image")}</div>`}
+        ${n.cover ? `<img class="ncard-cover" src="${esc(safeMediaUrl(n.cover))}" referrerpolicy="no-referrer" loading="lazy" alt="" onclick="pubPreview(${i})">` : `<div class="ncard-cover ph" onclick="pubPreview(${i})">${ic("i-image")}</div>`}
         <span class="ncard-type">${ic(n.type === "video" ? "i-play" : "i-image")}${n.type === "video" ? "视频" : "图文"}</span>
         <div class="ncard-body"><p class="ncard-title">${esc(n.title || "(无标题)")}</p>
           <div class="ncard-foot"><span>${n.time ? new Date((n.time + "").length > 10 ? n.time : n.time * 1000).toLocaleDateString() : ""}</span><span class="like">${ic("i-heart")}${fmtNum(n.like)}</span></div>
@@ -6386,7 +6571,7 @@ async function submitRepost() {
     title: $("rp-title").value.trim(),
     desc: $("rp-desc").value,
     topics: $("rp-topics").value.trim(),
-    scheduled_at: $("rp-when").value || null,
+    scheduled_at: $("rp-when").value,
     visibility: $("rp-visibility") ? $("rp-visibility").value : "public",
     allow_save: $("rp-allowsave") ? $("rp-allowsave").value !== "0" : true,
     media_order: rpMediaOrder(),
@@ -6394,6 +6579,7 @@ async function submitRepost() {
   const pname = REPOST_TARGET === "douyin" ? "抖音"
     : REPOST_TARGET === "shipinhao" ? "视频号" : "小红书";
   try {
+    body.scheduled_at = scheduleToApi(body.scheduled_at);
     const r = await api("/api/contents/" + REPOST_ID + "/repost-" + REPOST_TARGET, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
@@ -6563,8 +6749,10 @@ function editRule(id) {
   });
 }
 async function refreshCommentRules() {
+  const isCurrent = beginViewRequest("comment-rules");
   if (!$("ac-rule-table")) return;
   const rows = await api("/api/comment-rules?platform=" + PLATFORM);
+  if (!isCurrent()) return;
   if ($("tb-ac")) $("tb-ac").textContent = rows.length;
   AC_RULES = rows;
   $("ac-rule-table").innerHTML = rows.map(r => {
@@ -6580,7 +6768,7 @@ async function refreshCommentRules() {
       <td class="wrap" style="max-width:160px">${AC_KIND_T[r.target_kind] || r.target_kind}<br><span class="mut">${tgt}</span></td>
       <td>${esc(acc)}</td>
       <td class="mut num">${r.daily_cap}/日 · ${Math.round(r.interval_seconds / 60)}分</td>
-      <td class="mut num">${r.last_run_at ? new Date(r.last_run_at + "Z").toLocaleString() : "—"}${r.last_error ? ` <span class="warn-ic" title="${esc(r.last_error)}">${ic("i-info")}</span>` : ""}</td>
+      <td class="mut num">${r.last_run_at ? new Date(r.last_run_at + "Z").toLocaleString() : "—"}${r.last_error ? ` <span class="warn-ic" title="${esc(r.last_error)}">${ic("i-info")}</span>` : ""}${autoRunHint(r.next_auto_run_at)}</td>
       <td><span class="pill ${r.enabled ? "done" : "invalid"}">${r.enabled ? "运行中" : "已停用"}</span></td>
       <td class="acttd">
         <button class="ghost sm" onclick="toggleRule(${r.id}, ${r.enabled ? "false" : "true"})">${r.enabled ? "停用" : "启用"}</button>
@@ -6613,9 +6801,11 @@ async function delRule(id) {
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 async function refreshCommentTasks() {
+  const isCurrent = beginViewRequest("comment-tasks");
   if (!$("ac-task-table")) return;
   const st = $("ac-task-filter") ? $("ac-task-filter").value : "";
   const rows = await api("/api/comment-tasks?platform=" + PLATFORM + (st ? "&status=" + st : ""));
+  if (!isCurrent()) return;
   AC_TASKS = rows;
   const drafts = rows.filter(t => t.status === "draft");
   if ($("ac-draft-bar")) {
@@ -6628,7 +6818,7 @@ async function refreshCommentTasks() {
     <td class="wrap" style="max-width:240px">${esc(t.content)}</td>
     <td class="mut">${esc((t.aweme_id || "").slice(0, 16))}</td>
     <td>${t.target_comment_id ? "回复 " + esc(t.target_nick || "") : "顶层评论"}</td>
-    <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at + "Z").toLocaleString() : "尽快"}</td>
+    <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at + "Z").toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>
     <td class="mut">${t.method === "browser" ? "浏览器页面" : t.method === "api" ? "API 兼容模式" : t.method === "manual" ? "人工草稿" : "—"}</td>
     <td><span class="pill ${AC_TASK_PILL[t.status] || "pending"}">${AC_TASK_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}</td>
     <td class="acttd">
@@ -6636,7 +6826,7 @@ async function refreshCommentTasks() {
       ${(isDraft || canSend) ? `<button class="ghost sm" onclick="editTaskContent(${t.id})">编辑</button>` : ""}
       ${canSend ? `<button class="ghost sm" onclick="runTask(${t.id})">立即发</button>` : ""}
       ${(isDraft || canSend) ? `<button class="ghost sm" onclick="cancelTask(${t.id})">${isDraft ? "弃用" : "取消"}</button>` : ""}
-      <button class="ghost sm danger" onclick="delTask(${t.id})">${ic("i-trash")}删除</button>
+      ${t.status === "uncertain" ? `<button class="ghost sm" onclick="resolveTaskResult('comments',${t.id})">核对结果</button>` : t.status !== "doing" ? `<button class="ghost sm danger" onclick="delTask(${t.id})">${ic("i-trash")}删除</button>` : ""}
     </td></tr>`;
   }).join("") || empty(7, "暂无评论任务", "i-msg", "启用规则或点「试跑」后,这里会出现待发评论");
 }
@@ -6645,10 +6835,11 @@ async function approveTask(id) {
   catch (e) { toast("操作失败:" + e.message, "err"); }
 }
 async function approveAllDrafts() {
+  const platform = PLATFORM;
   const ids = AC_TASKS.filter(t => t.status === "draft").map(t => t.id);
   if (!ids.length) return;
-  if (!await uiConfirm({ title: "全部通过草稿", message: `通过 ${ids.length} 条草稿?通过后引擎按节流(每账号每日上限/最小间隔)陆续发出。`, okText: "全部通过" })) return;
-  try { const r = await api("/api/comment-tasks/batch-approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) }); toast(`已通过 ${r.approved} 条`, "ok"); refreshCommentTasks(); }
+  if (!await uiConfirm({ title: "审核当前列表草稿", message: `通过当前列表中 ${PF_NAME[platform] || platform} 的 ${ids.length} 条草稿？通过后引擎按每账号每日上限和最小间隔陆续发出。`, okText: "通过这些草稿" })) return;
+  try { const r = await api("/api/comment-tasks/batch-approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids, platform }) }); toast(`已通过 ${r.approved} 条`, "ok"); refreshCommentTasks(); }
   catch (e) { toast("操作失败:" + e.message, "err"); }
 }
 async function editTaskContent(id) {
@@ -6730,7 +6921,7 @@ function taskQueueRow(item) {
   const stateMeta = TASK_QUEUE_STATE_META[item.state] || [item.state || "未知", "skipped"];
   const rawStatus = TASK_QUEUE_RAW_STATUS[item.status] || item.status || "未知";
   const account = item.account_name || (item.account_id ? `账号 #${item.account_id}` : "未绑定账号");
-  const scheduled = item.scheduled_at ? `<b>计划 ${taskQueueDate(item.scheduled_at)}</b>` : "";
+  const scheduled = item.scheduled_at ? `<b>计划 ${taskQueueDate(item.scheduled_at)}${item.schedule_needs_confirmation ? "（待确认时区）" : ""}</b>` : "";
   const created = item.created_at ? `<small>创建 ${taskQueueDate(item.created_at)}</small>` : "";
   const nextAllowed = item.next_allowed_at ? `<small>最早继续：${taskQueueDate(item.next_allowed_at)}</small>` : "";
   const reason = item.blocked_reason || item.error || "—";
@@ -6743,8 +6934,34 @@ function taskQueueRow(item) {
     <td><div class="queue-time">${scheduled || "尽快执行"}${created}</div></td>
     <td><span class="pill ${stateMeta[1]}">${esc(stateMeta[0])}</span><small class="mut" style="display:block;margin-top:5px">${esc(rawStatus)}</small></td>
     <td><div class="queue-reason${reasonClass}">${esc(reason)}${signal}${nextAllowed}</div></td>
-    <td class="acttd"><button type="button" class="ghost sm" onclick="openTaskQueueSource('${esc(item.source_tab)}')">${esc(taskQueueSourceLabel(item.source_tab))}</button></td>
+    <td class="acttd">${item.status === "uncertain" ? `<button type="button" class="ghost sm" onclick="resolveTaskResult(${jsArg(item.queue_type)},${Number(item.id)})">核对结果</button>` : ""}<button type="button" class="ghost sm" onclick="openTaskQueueSource(${jsArg(item.source_tab)})">${esc(taskQueueSourceLabel(item.source_tab))}</button></td>
   </tr>`;
+}
+
+async function resolveTaskResult(queueType, id) {
+  const outcome = await uiSelect({
+    title: `核对任务 #${id} 的平台结果`,
+    hint: "请先到平台检查是否已生效。本操作只记录核对结果，不会发送或重试。尚未查清请取消。",
+    value: "",
+    options: [{ value: "", label: "请选择核对结论", disabled: true },
+      { value: "done", label: "已核实：平台操作已成功" },
+      { value: "canceled", label: "取消后续处理，不再重试" }],
+  });
+  if (!["done", "canceled"].includes(outcome)) return;
+  const note = await uiPrompt({ title: "填写核对说明", hint: "例如平台作品链接、核对时间和结果；请勿填写账号凭据。", placeholder: "必填，最多 500 字" });
+  if (note === null) return;
+  if (!note.trim() || note.trim().length > 500) { toast("核对说明需填写 1–500 字", "err"); return; }
+  try {
+    await api(`/api/task-queue/${encodeURIComponent(queueType)}/${Number(id)}/resolve`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ outcome, note: note.trim() }),
+    });
+    toast("核对结果已保存，任务不会自动重试", "ok");
+    if (CURRENT_TAB === "publish") await refreshPublish();
+    else if (CURRENT_TAB === "autocomment") await refreshCommentTasks();
+    else if (CURRENT_TAB === "queue") await refreshTaskQueue();
+    await refreshTaskQueueBadge();
+  } catch (e) { toast("保存核对结果失败：" + e.message, "err"); }
 }
 
 function renderTaskQueuePager(data) {
@@ -6778,7 +6995,8 @@ async function refreshTaskQueue(resetPage = false) {
   const body = $("queue-table");
   if (resetPage) TASK_QUEUE_PAGE = 1;
   if (!body) return;
-  if (TASK_QUEUE_LOADING) { TASK_QUEUE_REFRESH_PENDING = true; return; }
+  if (TASK_QUEUE_LOADING) { VIEW_REQUESTS.delete("task-queue"); TASK_QUEUE_REFRESH_PENDING = true; return; }
+  const isCurrent = beginViewRequest("task-queue");
   TASK_QUEUE_LOADING = true;
   $("queue-table-wrap")?.classList.add("stale");
   const params = new URLSearchParams({
@@ -6791,12 +7009,14 @@ async function refreshTaskQueue(resetPage = false) {
   });
   try {
     const data = await api("/api/task-queue?" + params.toString());
+    if (!isCurrent()) return;
     body.innerHTML = data.items?.length
       ? data.items.map(taskQueueRow).join("")
       : empty(7, "当前筛选范围内没有任务", "i-inbox", "切换状态或平台范围后再查看");
     renderTaskQueueSummary(data.summary || {});
     renderTaskQueuePager(data);
   } catch (e) {
+    if (!isCurrent()) return;
     body.innerHTML = empty(7, "任务队列加载失败", "i-info", e.message || "请稍后重试");
     if (CURRENT_TAB === "queue") toast("任务队列加载失败：" + e.message, "err");
   } finally {
@@ -6811,10 +7031,12 @@ async function refreshTaskQueue(resetPage = false) {
 
 async function refreshTaskQueueBadge() {
   if (TASK_QUEUE_BADGE_LOADING || CURRENT_TAB === "queue") return;
+  const isCurrent = beginViewRequest("task-queue-badge");
   TASK_QUEUE_BADGE_LOADING = true;
   try {
     const params = new URLSearchParams({ platform: PLATFORM, state: "active", page_size: "1" });
     const data = await api("/api/task-queue?" + params.toString());
+    if (!isCurrent() || CURRENT_TAB === "queue") return;
     const badge = $("tb-queue");
     if (badge) badge.textContent = fmtNum(Number(data.summary?.active || 0));
   } catch (e) {
@@ -6849,12 +7071,56 @@ function openTaskQueueSource(tab) {
 
 function esc(s) { return (s || "").toString().replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
-function loop() {
-  if (INFLIGHT > 0 || document.hidden) return;   // 慢操作/后台标签页不刷新,减少干扰与无效请求
-  refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshOverviewChart(); refreshCommentRules(); refreshCommentTasks(); if (pfHasPublish(PLATFORM)) refreshPublish();
-  if (CURRENT_TAB === "collections") refreshCollections();
-  if (CURRENT_TAB === "risk-control") refreshRiskCenter();
-  if (CURRENT_TAB === "queue") refreshTaskQueue(); else refreshTaskQueueBadge();
+async function refreshOverviewSummary() {
+  const isCurrent = beginViewRequest("overview-summary");
+  const data = await api("/api/overview/summary?platform=" + PLATFORM);
+  if (!isCurrent()) return;
+  for (const [key, id] of Object.entries({ accounts: "stat-acc", monitors: "stat-mon", downloaded: "stat-dl", comments: "stat-cmt" })) {
+    if ($(id)) $(id).textContent = fmtNum(data[key]);
+  }
+}
+let POLL_RUNNING = false, POLL_TIMER = null, POLL_DELAY = 8000;
+async function loop() {
+  if (POLL_RUNNING) return;
+  clearTimeout(POLL_TIMER);
+  if (INFLIGHT > 0 || document.hidden) {
+    POLL_TIMER = setTimeout(loop, POLL_DELAY);
+    return;
+  }
+  POLL_RUNNING = true;
+  const tab = CURRENT_TAB, platform = PLATFORM;
+  const failuresBefore = _apiFailures;
+  const focused = document.activeElement;
+  const editing = focused && focused.matches("input, textarea, select, .cs-trg, .dt-trg, [contenteditable='true']");
+  const refreshers = {
+    overview: [refreshOverviewSummary, refreshOverviewChart],
+    accounts: [refreshAccounts],
+    monitors: [refreshMonitors, refreshContents],
+    comments: [refreshWatches, refreshComments],
+    danmaku: [refreshDanmakuWatches, refreshDanmaku],
+    autocomment: [refreshCommentRules, refreshCommentTasks],
+    publish: [refreshPublish],
+    collections: [refreshCollections],
+    "risk-control": [refreshRiskCenter],
+    queue: [refreshTaskQueue],
+    hub: [refreshHubSummary],
+  };
+  const jobs = editing ? [] : (refreshers[tab] || []);
+  if (tab !== "queue") jobs.push(refreshTaskQueueBadge);
+  try {
+    const results = await Promise.allSettled(jobs.map(fn => Promise.resolve().then(() => fn())));
+    const failed = _apiFailures > failuresBefore || results.some(result => result.status === "rejected");
+    POLL_DELAY = failed ? Math.min(POLL_DELAY * 2, 60000) : 8000;
+    const panel = document.querySelector(`[data-panel="${tab}"]`);
+    if (panel && CURRENT_TAB === tab && PLATFORM === platform) {
+      panel.dataset.refreshState = failed ? "stale" : "ready";
+      if (failed) panel.setAttribute("aria-label", "刷新暂时失败，显示上次结果，将自动重试");
+      else panel.removeAttribute("aria-label");
+    }
+  } finally {
+    POLL_RUNNING = false;
+    POLL_TIMER = setTimeout(loop, CURRENT_TAB !== tab || PLATFORM !== platform ? 0 : POLL_DELAY);
+  }
 }
 
 // initial skeletons while data loads
@@ -6928,4 +7194,3 @@ window.addEventListener("scroll", () => {
   });
 }, { passive: true });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loop(); });
-setInterval(loop, 8000);

@@ -301,6 +301,22 @@ class XhsDmAutomation:
             return False
         return enabled
 
+    async def stop_account(self, account_id: int) -> None:
+        task = self._wake_tasks.pop(account_id, None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        page = self._observer_pages.pop(account_id, None)
+        callback = self._observer_callbacks.pop(account_id, None)
+        if page is not None and callback is not None:
+            try:
+                page.remove_listener("websocket", callback)
+            except Exception:
+                pass
+        for mapping in (self._active_sockets, self._realtime_status,
+                        self._next_poll, self._last_poll_monotonic):
+            mapping.pop(account_id, None)
+
     async def stop(self) -> None:
         for task in list(self._wake_tasks.values()):
             task.cancel()

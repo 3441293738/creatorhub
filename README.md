@@ -96,7 +96,7 @@ python -m patchright install chromium
 
 # 复制 config.example.yaml 为 config.yaml 后启动
 python selftest.py
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 仅当显式启用小红书 API 发布兼容模式时，才需安装 Node.js 依赖：
@@ -264,8 +264,6 @@ Web 面板的「任务队列」统一展示采集、发布、自动评论、账�
 ### 风控中心与恢复
 
 「风控中心」集中展示正常、冷却、渐进恢复、登录失效、代理异常和网络熔断账号，并提供触发原因、冷却截止、恢复进度、任务级受阻原因、网络出口及事件时间线。规则页可调整读取间隔、冷却阶梯、恢复探测、写操作额度、出口组熔断和活跃时段；配置保存到本地数据库并立即生效。人工解除、规则修改和人工探测都会写入审计记录。
-
-服务暴露到局域网时，建议设置环境变量 `CREATORHUB_ADMIN_TOKEN`。设置后，风控规则保存、人工探测和解除接口必须携带管理口令；Web 风控中心可通过“设置管理口令”仅在当前浏览器会话中保存它。
 
 完整参数及保守默认值见 [`config.example.yaml`](config.example.yaml) 的 `risk_control` 段。
 

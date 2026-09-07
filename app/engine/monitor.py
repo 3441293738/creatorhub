@@ -8,12 +8,13 @@ import json
 import logging
 import random
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 from sqlmodel import select
+from sqlalchemy import or_
 
 from ..browser import (BrowserManager, fetch_videos, fetch_comments,
                        fetch_creator_comments, fetch_danmaku, fetch_creator_danmaku,
@@ -29,6 +30,7 @@ from ..browser import (BrowserManager, fetch_videos, fetch_comments,
                        do_follow, send_dm, send_dm_api)
 from . import compose
 from ..config import Config
+from ..account_lifecycle import AccountUnavailableError
 from ..db import get_session
 from ..platforms.douyin import (parse_aweme, parse_comment, parse_creator_comment,
                        parse_danmaku,
@@ -65,6 +67,7 @@ from ..settings import get_setting
 from .downloader import Downloader
 from .collection import KeywordCollector
 from .dm_automation import XhsDmAutomation
+from .cadence import bounded_ratio, periodic_deadline, row_deadline
 
 MAX_AUTO_RETRY = 3
 _BROWSER_SUBMIT_MARKER = "write_submitted:browser"
@@ -303,9 +306,9 @@ class MonitorEngine:
 
     def recover_interrupted_tasks(self, *, now: datetime | None = None,
                                   delay_seconds: int = 300) -> int:
-        """Return crash-left transient write states to their durable queues."""
-        scheduled_at = (now or datetime.utcnow()) + timedelta(
-            seconds=max(1, delay_seconds))
+        """Never replay a write whose outcome was lost during a restart."""
+        # Keep delay_seconds for older callers; interrupted writes no longer
+        # have an automatic retry deadline.
         recovered = 0
         with get_session() as s:
             for model, transient in (
@@ -314,23 +317,17 @@ class MonitorEngine:
                     (PublishTask, "publishing")):
                 rows = s.exec(select(model).where(model.status == transient)).all()
                 for row in rows:
-                    submitted = (
-                        getattr(row, "platform", "") == "xhs"
-                        and str(getattr(row, "error", "") or "")
-                        .startswith(_BROWSER_SUBMIT_MARKER)
-                    )
-                    if submitted:
-                        row.status = "uncertain"
-                        row.scheduled_at = None
-                        if hasattr(row, "done_at"):
-                            row.done_at = None
-                        row.error = (
-                            "服务重启前浏览器已进入提交边界，结果需到平台核对；"
-                            "任务不会自动重试")
-                    else:
-                        row.status = "pending"
-                        row.scheduled_at = scheduled_at
-                        row.error = "服务重启后已恢复到待执行队列"
+                    # Not every platform adapter can durably signal the exact
+                    # submit boundary. A missing marker is not proof of no
+                    # submission, including for legacy API-mode writes.
+                    row.status = "uncertain"
+                    row.scheduled_at = None
+                    if hasattr(row, "done_at"):
+                        row.done_at = None
+                    self._clear_row_block(row)
+                    row.error = (
+                        "服务重启/中断时任务正在执行，结果需到平台核对；"
+                        "任务不会自动重试")
                     s.add(row)
                     recovered += 1
             for job in s.exec(
@@ -365,7 +362,10 @@ class MonitorEngine:
     async def stop(self):
         self._running = False
         if self._task:
-            self._task.cancel()
+            task = self._task
+            task.cancel()
+            if task is not asyncio.current_task():
+                await asyncio.gather(task, return_exceptions=True)
             self._task = None
         tasks = list(self._collection_tasks.values())
         for task in tasks:
@@ -405,7 +405,21 @@ class MonitorEngine:
         async with self._active_sem:
             async with self.risk.network_guard(account):
                 async with lock:
+                    if account_id and self._load_account(account_id) is None:
+                        raise AccountUnavailableError("绑定账号已删除，操作已停止")
                     yield account
+
+    def _fail_missing_account_task(self, model, task_id: int) -> dict:
+        with get_session() as session:
+            row = session.get(model, task_id)
+            if row and row.status in {"pending", "failed"}:
+                row.status = "failed"
+                row.scheduled_at = None
+                self._clear_row_block(row)
+                row.error = "绑定账号已删除，请重新选择账号"
+                session.add(row)
+                session.commit()
+        return {"ok": False, "error": "account_missing"}
 
     @asynccontextmanager
     async def operation_guard(self, account_id, kind: OperationKind,
@@ -467,11 +481,13 @@ class MonitorEngine:
 
     async def guarded_read_pair(self, account_id, kind: OperationKind,
                                 fallback_key: str, operation, *, empty_result,
-                                allow_invalid_probe: bool = False):
+                                allow_invalid_probe: bool = False,
+                                interactive_read: bool = False):
         """Budget a direct read returning ``(payload, error)``."""
         decision = self.risk.preflight(
             account_id, kind,
-            allow_invalid_probe=allow_invalid_probe)
+            allow_invalid_probe=allow_invalid_probe,
+            interactive_read=interactive_read)
         if not decision.allowed:
             return empty_result, f"risk_deferred:{decision.reason}"
         try:
@@ -479,7 +495,8 @@ class MonitorEngine:
                     account_id, kind, fallback_key=fallback_key):
                 decision = self.risk.preflight(
                     account_id, kind,
-                    allow_invalid_probe=allow_invalid_probe)
+                    allow_invalid_probe=allow_invalid_probe,
+                    interactive_read=interactive_read)
                 if not decision.allowed:
                     return empty_result, f"risk_deferred:{decision.reason}"
                 payload, error = await operation()
@@ -499,27 +516,10 @@ class MonitorEngine:
     async def guarded_interactive_read_pair(
             self, account_id, kind: OperationKind, fallback_key: str,
             operation, *, empty_result):
-        """Serialize an explicit UI read without inserting a gap between
-        naturally adjacent page steps (for example: open chat list, then click
-        one conversation). Automatic/background reads continue to use the
-        stricter ``guarded_read_pair`` scheduler.
-        """
-        try:
-            async with self._operation_guard(
-                    account_id, kind, fallback_key=fallback_key):
-                payload, error = await operation()
-                if account_id:
-                    if not error or error == "empty":
-                        self.risk.record_success(account_id, kind)
-                    else:
-                        self.risk.record_failure(account_id, kind, error)
-                if isinstance(error, BaseException):
-                    error = str(error)
-                return payload, error
-        except Exception as exc:
-            if account_id:
-                self.risk.record_failure(account_id, kind, exc)
-            return empty_result, repr(exc)
+        """Keep adjacent UI reads responsive, but honor every hard risk hold."""
+        return await self.guarded_read_pair(
+            account_id, kind, fallback_key, operation,
+            empty_result=empty_result, interactive_read=True)
 
     def _identity_proxy(self, acc):
         """由账号行构建 (Identity, proxy)。acc 为空则匿名画像。"""
@@ -586,9 +586,8 @@ class MonitorEngine:
                    fallback_seconds: int = 300, signal: str = "") -> None:
         now = datetime.utcnow()
         proposed = next_at or (now + timedelta(seconds=max(1, fallback_seconds)))
-        if hasattr(row, "scheduled_at") \
-                and (row.scheduled_at is None or row.scheduled_at < proposed):
-            row.scheduled_at = proposed
+        # User scheduling and policy deferral are independent deadlines.
+        # Never replace an appointment with a retry/cooldown timestamp.
         row.status = "pending"
         row.error = str(reason or "平台操作已延后").strip()[:500]
         if hasattr(row, "blocked_reason"):
@@ -596,7 +595,20 @@ class MonitorEngine:
             row.blocked_signal = signal or cls._blocked_signal(row.error)
             row.blocked_operation = cls._blocked_operation(row)
             row.blocked_at = now
-            row.next_allowed_at = proposed
+            row.next_allowed_at = max(row.next_allowed_at or proposed, proposed)
+
+    @staticmethod
+    def _task_due(row, now: datetime) -> bool:
+        return all(value is None or value <= now for value in (
+            row.scheduled_at, row.next_allowed_at))
+
+    @staticmethod
+    def _task_deferral(row) -> dict | None:
+        if row.next_allowed_at and row.next_allowed_at > datetime.utcnow():
+            return {"ok": False, "deferred": True,
+                    "error": row.blocked_reason or row.error or "任务仍在等待执行间隔",
+                    "next_allowed_at": row.next_allowed_at.isoformat() + "Z"}
+        return None
 
     @staticmethod
     def _clear_row_block(row) -> None:
@@ -709,24 +721,11 @@ class MonitorEngine:
                 return result, str(result.get("error") or "")
 
             if trigger in {"push", "reconnect"}:
-                # A native push is passive and justifies exactly one compact
-                # frontier fetch. Do not apply the periodic heavy-read gap or a
-                # real message could wait a minute before appearing.
-                try:
-                    async with self._operation_guard(
-                            account_id, OperationKind.READ_LIGHT,
-                            fallback_key=f"xhs-dm-{trigger}:{account_id}"):
-                        result, error = await operation()
-                    if error:
-                        self.risk.record_failure(
-                            account_id, OperationKind.READ_LIGHT, error)
-                    else:
-                        self.risk.record_success(
-                            account_id, OperationKind.READ_LIGHT)
-                except Exception as exc:
-                    self.risk.record_failure(
-                        account_id, OperationKind.READ_LIGHT, exc)
-                    result, error = {}, repr(exc)
+                # Passive pushes justify one compact read, not bypassing a
+                # challenge, network backoff, cooldown or session rest.
+                result, error = await self.guarded_interactive_read_pair(
+                    account_id, OperationKind.READ_LIGHT,
+                    f"xhs-dm-{trigger}:{account_id}", operation, empty_result={})
             else:
                 result, error = await self.guarded_read_pair(
                     account_id, OperationKind.READ_HEAVY, f"xhs-dm:{account_id}",
@@ -769,14 +768,8 @@ class MonitorEngine:
             if not (str(account.storage_state or "").strip()
                     or str(account.cookie or "").strip()):
                 continue
-            realtime = self.dm_automation.realtime_status(account_id)
-            if bool(self.cfg.engine.xhs_dm_realtime_enabled) and not bool(
-                    realtime.get("connected")):
-                try:
-                    await self.dm_automation.ensure_realtime(account)
-                except Exception as exc:
-                    log.warning("XHS DM realtime bootstrap failed for account %s: %s",
-                                account_id, exc)
+            # poll() attaches the observer inside the unified account/risk
+            # guard. Never open a page here before its periodic deadline.
             if not self.dm_automation.due(account_id):
                 continue
             await self.poll_xhs_dm_now(account_id, trigger="scheduled")
@@ -806,14 +799,21 @@ class MonitorEngine:
         if self._collection_tasks:
             return
         with get_session() as s:
-            job = s.exec(
+            jobs = s.exec(
                 select(KeywordCollectionJob)
                 .where(KeywordCollectionJob.status == "pending")
                 .where(KeywordCollectionJob.cancel_requested == False)  # noqa:E712
+                .where(or_(KeywordCollectionJob.next_allowed_at == None,  # noqa:E711
+                           KeywordCollectionJob.next_allowed_at <= datetime.utcnow()))
                 .order_by(KeywordCollectionJob.created_at)
-            ).first()
-        if job:
-            self.enqueue_collection_job(job.id)
+            ).all()
+        for job in jobs:
+            decision = self.risk.preflight(job.account_id, OperationKind.READ_HEAVY)
+            if not decision.allowed and decision.signal != "account_missing":
+                continue
+            # A held account must not block later jobs on healthy accounts.
+            if self.enqueue_collection_job(job.id):
+                break
 
     async def run_collection_job(self, job_id: int) -> dict:
         """执行一个持久化关键词任务，并维护可恢复的状态机。"""
@@ -827,6 +827,12 @@ class MonitorEngine:
                 job.finished_at = datetime.utcnow()
                 s.add(job); s.commit()
                 return {"ok": True, "canceled": True}
+            if job.status != "pending":
+                return {"ok": False, "error": f"任务状态为 {job.status}，请先通过重试入口重新排队"}
+            if job.next_allowed_at and job.next_allowed_at > datetime.utcnow():
+                return {"ok": True, "deferred": True,
+                        "reason": job.blocked_reason or "等待执行间隔",
+                        "next_allowed_at": job.next_allowed_at.isoformat() + "Z"}
             account = s.get(DouyinAccount, job.account_id)
             if (not account or account.platform != job.platform
                     or account.status != "active" or not account.storage_state):
@@ -880,6 +886,11 @@ class MonitorEngine:
                     job = s.get(KeywordCollectionJob, job_id)
                     if not job:
                         return {"ok": False, "error": "任务不存在"}
+                    if job.status != "pending" or job.cancel_requested:
+                        return {"ok": False, "error": "任务状态已变化，停止执行"}
+                    if job.next_allowed_at and job.next_allowed_at > datetime.utcnow():
+                        return {"ok": True, "deferred": True,
+                                "reason": job.blocked_reason or "等待执行间隔"}
                     job.status = "running"
                     job.current_step = "准备搜索"
                     self._clear_row_block(job)
@@ -960,15 +971,13 @@ class MonitorEngine:
                 a.last_active_at = datetime.utcnow()
                 s.add(a); s.commit()
 
-    def _keepalive_due(self, last_active_at) -> bool:
-        """闲置判定:从未活跃、或距上次活跃超过 idle_keepalive_hours(带 ±jitter 错峰)才需保活。
+    def _keepalive_due(self, last_active_at, *, account_id=None) -> bool:
+        """闲置判定:在 idle_keepalive_hours 之后稳定地增加错峰等待。
         idle_keepalive_hours<=0 时退回旧行为(每轮都摸)。"""
         hours = self.cfg.engine.idle_keepalive_hours
         if hours <= 0 or last_active_at is None:
             return True
-        jitter = max(0.0, self.cfg.engine.scan_jitter)
-        factor = 1.0 + random.uniform(-jitter, jitter) if jitter else 1.0
-        return (datetime.utcnow() - last_active_at).total_seconds() >= hours * 3600 * factor
+        return self._due(last_active_at, hours * 3600, key=f"keepalive:{account_id}")
 
     async def _verify_proxy_region(self, account_id, proxy: str, timezone_id: str) -> None:
         """探测代理出口国家,与账号时区期望不一致时告警(best-effort,只记日志)。
@@ -1013,7 +1022,6 @@ class MonitorEngine:
 
     def _wake_deferred_tasks(self, account_id: int) -> int:
         """Wake rows that were explicitly deferred by a now-cleared risk gate."""
-        now = datetime.utcnow()
         woken = 0
         with get_session() as session:
             for model in (PublishTask, CommentTask, AccountActionTask):
@@ -1023,7 +1031,6 @@ class MonitorEngine:
                     model.blocked_reason != "",
                 )).all()
                 for row in rows:
-                    row.scheduled_at = now
                     row.error = ""
                     self._clear_row_block(row)
                     session.add(row)
@@ -1066,7 +1073,22 @@ class MonitorEngine:
                             "reason": decision.reason,
                             "next_allowed_at": decision.next_allowed_at}
                 await self._verify_proxy_region(aid, proxy, identity.timezone_id)
-                if platform == "xhs" and creator_state:
+                if platform == "xhs" and self.cfg.engine.xhs_read_mode == "browser":
+                    if not self._xhs_browser_reads_enabled():
+                        return {"ok": False, "indeterminate": True,
+                                "error": "浏览器读取能力未就绪，已跳过账号探测"}
+                    try:
+                        cookies = json.loads(state or "{}").get("cookies", [])
+                        has_web_session = any(
+                            cookie.get("name") == "web_session" and cookie.get("value")
+                            for cookie in cookies if isinstance(cookie, dict))
+                    except (ValueError, TypeError, AttributeError):
+                        has_web_session = False
+                    if creator_state and not has_web_session:
+                        return {"ok": False, "indeterminate": True,
+                                "error": "仅有创作者登录态，请在账号浏览器中确认；未启动直连探测"}
+                    u, err = await fetch_xhs_self_profile(self.browser, identity)
+                elif platform == "xhs" and creator_state:
                     chk = await creator_check(creator_state, proxy=proxy)
                     if chk is None:
                         return {"ok": False, "indeterminate": True}
@@ -1191,7 +1213,7 @@ class MonitorEngine:
                       for account in session.exec(select(DouyinAccount)).all()
                       if (account.storage_state or account.creator_storage_state)
                       and account.status != "invalid"
-                      and self._keepalive_due(account.last_active_at)]
+                      and self._keepalive_due(account.last_active_at, account_id=account.id)]
         for probe in probes:
             await self._probe_account_health(probe)
 
@@ -1317,20 +1339,21 @@ class MonitorEngine:
                 snap.total_play = sum((w.get("play_count") or 0) for w in items)
             s.add(snap); s.commit()
 
-    def _due(self, last_scan_at, interval_seconds) -> bool:
-        """到点判断,叠加 ±jitter 随机,避免所有目标整点齐发(机器矩阵特征)。"""
-        if last_scan_at is None:
-            return True
-        jitter = max(0.0, self.cfg.engine.scan_jitter)
-        factor = 1.0 + random.uniform(-jitter, jitter) if jitter else 1.0
-        return (datetime.utcnow() - last_scan_at).total_seconds() >= interval_seconds * factor
+    def _due(self, last_scan_at, interval_seconds, *, key: str = "") -> bool:
+        deadline = periodic_deadline(last_scan_at, interval_seconds, key=key,
+                                     jitter=self.cfg.engine.scan_jitter)
+        return deadline is None or datetime.utcnow() >= deadline
+
+    def _periodic_due(self, row, kind: str) -> bool:
+        deadline = row_deadline(row, self.cfg, kind=kind)
+        return row.enabled and (deadline is None or datetime.utcnow() >= deadline)
 
     async def _scan_once(self):
         due: list[tuple[int, int | None]] = []
         with get_session() as s:
             targets = s.exec(select(MonitorTarget).where(MonitorTarget.enabled == True)).all()  # noqa: E712
             for t in targets:
-                if self._due(t.last_scan_at, t.interval_seconds):
+                if self._periodic_due(t, "monitor"):
                     due.append((t.id, t.account_id))
         if due:
             ordered = _round_robin_by_account(due)
@@ -1817,8 +1840,7 @@ class MonitorEngine:
             watches = s.exec(select(DanmakuWatch).where(
                 DanmakuWatch.enabled == True)).all()  # noqa: E712
             for watch in watches:
-                interval = watch.interval_seconds or self.cfg.engine.scan_interval_seconds
-                if self._due(watch.last_scan_at, interval):
+                if self._periodic_due(watch, "danmaku"):
                     due.append(watch.id)
         for watch_id in due:
             await self.scan_danmaku_watch(watch_id)
@@ -2124,7 +2146,7 @@ class MonitorEngine:
         with get_session() as s:
             ws = s.exec(select(CommentWatch).where(CommentWatch.enabled == True)).all()  # noqa: E712
             for w in ws:
-                if self._due(w.last_scan_at, w.interval_seconds):
+                if self._periodic_due(w, "comment_watch"):
                     due.append(w.id)
         for wid in due:
             await self.scan_comment_watch(wid)
@@ -2688,7 +2710,9 @@ class MonitorEngine:
                              title: Optional[str] = None, desc: Optional[str] = None,
                              topics: Optional[str] = None,
                              visibility: str = "public", allow_save: bool = True,
-                             media_order: Optional[list] = None
+                             media_order: Optional[list] = None,
+                             scheduled_at: Optional[datetime] = None,
+                             session=None
                              ) -> Optional[int]:
         """从已下载作品创建发往目标平台(小红书/抖音/视频号)的发布任务。返回任务 id。
 
@@ -2696,7 +2720,7 @@ class MonitorEngine:
         target_platform: xhs / douyin / shipinhao。
         title/desc/topics 为 None 时沿用作品原始内容;传了则用编辑后的值(发布前可改)。
         """
-        with get_session() as s:
+        with (nullcontext(session) if session is not None else get_session()) as s:
             rec = s.get(ContentRecord, content_id)
             if not rec:
                 return None
@@ -2720,9 +2744,12 @@ class MonitorEngine:
                 title=t_title, desc=t_desc, topics=t_topics,
                 visibility=visibility, allow_save=allow_save,
                 media_json=json.dumps(files),
+                scheduled_at=scheduled_at,
                 source_platform=rec.platform, source_content_id=rec.id,
             )
-            s.add(task); s.commit(); s.refresh(task)
+            s.add(task); s.flush()
+            if session is None:
+                s.commit(); s.refresh(task)
             return task.id
 
     async def _process_publish(self):
@@ -2732,8 +2759,14 @@ class MonitorEngine:
             tasks = s.exec(select(PublishTask)
                            .where(PublishTask.status == "pending")).all()
             for t in tasks:
-                if t.scheduled_at is None or t.scheduled_at <= now:
+                if t.scheduled_at and not t.scheduled_at_is_utc:
+                    t.status = "draft"
+                    t.error = "旧预约未记录时区，请编辑并确认发布时间后再入队"
+                    s.add(t)
+                    continue
+                if self._task_due(t, now):
                     due.append(t.id)
+            s.commit()
         for tid in due:
             await self.publish_task(tid)
 
@@ -2751,6 +2784,8 @@ class MonitorEngine:
                         account_id, OperationKind.PUBLISH,
                         fallback_key=f"pub:{task_id}"):
                     return await self._publish_task_locked(task_id)
+        except AccountUnavailableError:
+            return self._fail_missing_account_task(PublishTask, task_id)
         finally:
             self._publishing.discard(task_id)
 
@@ -2759,8 +2794,13 @@ class MonitorEngine:
             t = s.get(PublishTask, task_id)
             if not t:
                 return {"ok": False, "error": "任务不存在"}
-            if t.status in ("done", "publishing"):
+            if t.status not in ("pending", "failed"):
                 return {"ok": False, "error": f"任务状态为 {t.status}"}
+            if t.scheduled_at and not t.scheduled_at_is_utc:
+                return {"ok": False, "error": "请先编辑并确认预约时区，再执行发布"}
+            deferred = self._task_deferral(t)
+            if deferred:
+                return deferred
             acc = s.get(DouyinAccount, t.account_id) if t.account_id else None
             if not acc:
                 t.status = "failed"
@@ -3021,7 +3061,7 @@ class MonitorEngine:
         with get_session() as s:
             rules = s.exec(select(CommentRule).where(CommentRule.enabled == True)).all()  # noqa: E712
             for r in rules:
-                if self._due(r.last_run_at, r.interval_seconds):
+                if self._periodic_due(r, "comment_rule"):
                     due.append(r.id)
         for rid in due:
             try:
@@ -3165,7 +3205,7 @@ class MonitorEngine:
 
             base = datetime.utcnow()
             gap = max(1, rf["min_gap"], self.cfg.engine.comment_min_gap_seconds)
-            jitter = max(0.0, self.cfg.engine.comment_jitter)
+            jitter = bounded_ratio(self.cfg.engine.comment_jitter)
             offset = 0.0
             to_rest = random.randint(3, 6)   # 突发+休息:连发几条后插一段长歇,别匀速排队
             skip = {"dup": 0, "skip_kw": 0, "filter": 0, "empty": 0, "cap": 0}
@@ -3204,7 +3244,7 @@ class MonitorEngine:
                 if not content:
                     skip["empty"] += 1
                     continue
-                step = gap * (1.0 + random.uniform(-jitter, jitter)) if jitter else gap
+                step = gap * random.uniform(1.0, 1.0 + jitter) if jitter else gap
                 to_rest -= 1
                 if to_rest <= 0:                 # 一簇发完,插一段 3~8 倍 gap 的长歇再继续
                     step += gap * random.uniform(3, 8)
@@ -3488,7 +3528,7 @@ class MonitorEngine:
         with get_session() as s:
             tasks = s.exec(select(CommentTask).where(CommentTask.status == "pending")).all()
             for t in tasks:
-                if t.scheduled_at is None or t.scheduled_at <= now:
+                if self._task_due(t, now):
                     due.append((t.id, t.account_id))
         seen_acct = set()
         for tid, aid in due:
@@ -3562,7 +3602,7 @@ class MonitorEngine:
             tasks = s.exec(select(AccountActionTask).where(
                 AccountActionTask.status == "pending")).all()
             for t in tasks:
-                if t.scheduled_at is None or t.scheduled_at <= now:
+                if self._task_due(t, now):
                     due.append((t.id, t.account_id, t.min_gap_seconds))
         seen_acct = set()
         for tid, aid, gap in due:
@@ -3590,6 +3630,8 @@ class MonitorEngine:
             async with self._operation_guard(
                     account_id, kind, fallback_key=f"act:{task_id}"):
                 return await self._execute_action_task_locked(task_id)
+        except AccountUnavailableError:
+            return self._fail_missing_account_task(AccountActionTask, task_id)
         finally:
             self._actioning.discard(task_id)
 
@@ -3598,6 +3640,9 @@ class MonitorEngine:
             t = s.get(AccountActionTask, task_id)
             if not t or t.status != "pending":
                 return {"ok": False, "error": "任务不可执行"}
+            deferred = self._task_deferral(t)
+            if deferred:
+                return deferred
             account_id = t.account_id
             acc = s.get(DouyinAccount, t.account_id) if t.account_id else None
             if not acc:
@@ -3764,6 +3809,8 @@ class MonitorEngine:
                     account_id, OperationKind.COMMENT,
                     fallback_key=f"cmt:{task_id}"):
                 return await self._execute_comment_task_locked(task_id)
+        except AccountUnavailableError:
+            return self._fail_missing_account_task(CommentTask, task_id)
         finally:
             self._commenting.discard(task_id)
 
@@ -3774,6 +3821,9 @@ class MonitorEngine:
                 return {"ok": False, "error": "任务不存在"}
             if t.status not in ("pending",):
                 return {"ok": False, "error": f"任务状态为 {t.status}"}
+            deferred = self._task_deferral(t)
+            if deferred:
+                return deferred
             account_id = t.account_id
             # 执行前再查一次每日上限(生成到执行之间可能已超额)
             cap = self.cfg.engine.comment_daily_cap_per_account

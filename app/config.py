@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
@@ -74,12 +75,13 @@ class EngineConfig:
     xhs_dm_poll_jitter: float = 0.35
     xhs_dm_auto_reply_enabled: bool = False
     active_accounts: int = 3                # 同一时刻最多并发活跃的账号数(错峰)
-    scan_jitter: float = 0.15              # 扫描间隔随机抖动比例(±15%),消除整点齐发特征
+    scan_jitter: float = 0.15              # 周期扫描额外等待 0–15%，同一轮稳定，不缩短基础周期
+    initial_scan_spread_seconds: int = 60  # 新监控/规则首次自动执行额外等待 0–60 秒；0 关闭
     route_download_via_proxy: bool = True   # 媒体下载是否走账号代理(避免 CDN 拉流暴露真实 IP)
     # ── 自动评论风控闸(写操作最敏感,宁慢勿快)──
     comment_daily_cap_per_account: int = 30  # 每账号每日自动评论总上限(跨所有规则),0=不限
     comment_min_gap_seconds: int = 60        # 同账号两条评论的全局最小间隔(秒)
-    comment_jitter: float = 0.4              # 评论发送时间额外抖动比例(±40%),更像真人
+    comment_jitter: float = 0.4              # 评论排队间隔额外增加 0–40%，不缩短最小间隔
     comment_hourly_cap_per_account: int = 10  # 每账号每小时自动评论上限(比日上限更贴人类节律),0=不限
     comment_risk_cooldown_seconds: int = 21600  # 平台拒绝/验证后暂停该账号写操作(默认6小时)
     # 小红书评论发布通道:browser=页面操作;api=显式兼容;manual=只保留草稿。
@@ -118,7 +120,7 @@ class EngineConfig:
 
 @dataclass
 class ServerConfig:
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8000
 
 
@@ -155,6 +157,13 @@ class RiskControlConfig:
     network_group_risk_accounts: int = 2
     network_group_risk_window_seconds: int = 900
     network_group_cooldown_seconds: int = 7200
+    # Account-wide pacing supplements, never replaces, per-operation limits.
+    operation_gap_min_seconds: int = 8
+    operation_gap_max_seconds: int = 25
+    session_operation_limit: int = 12
+    session_rest_min_seconds: int = 180
+    session_rest_max_seconds: int = 480
+    network_retry_jitter_seconds: int = 30  # 网络失败在至少 5 分钟退避上额外等待 0–30 秒
 
 
 @dataclass
@@ -201,6 +210,11 @@ def load_config(path: str | None = None) -> Config:
             1, min(10, int(cfg.engine.xhs_dm_max_conversations_per_poll)))
         cfg.engine.xhs_dm_poll_jitter = min(
             1.0, max(0.0, float(cfg.engine.xhs_dm_poll_jitter)))
+        for name in ("scan_jitter", "comment_jitter"):
+            value = float(getattr(cfg.engine, name))
+            setattr(cfg.engine, name, min(1.0, max(0.0, value)) if math.isfinite(value) else 0.0)
+        cfg.engine.initial_scan_spread_seconds = max(
+            0, min(600, int(cfg.engine.initial_scan_spread_seconds)))
         cfg.engine.browser_session_idle_seconds = max(
             0, int(cfg.engine.browser_session_idle_seconds))
         if cfg.engine.xhs_cdp_idle_seconds is not None:

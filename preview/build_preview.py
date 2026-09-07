@@ -21,6 +21,8 @@ def build(destination: Path) -> None:
     destination.mkdir(parents=True)
 
     html = (SOURCE / "index.html").read_text(encoding="utf-8")
+    # The static demo does not create real tasks or durable submission receipts.
+    html = html.replace('<script src="/static/submissions.js"></script>', '')
     marker = '<script src="/static/app.js"></script>'
     replacement = '<script src="./demo-api.js"></script>\n<script src="./app.js"></script>'
     if marker not in html:

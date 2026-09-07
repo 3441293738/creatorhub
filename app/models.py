@@ -7,6 +7,18 @@ from typing import Optional
 from sqlmodel import Field, SQLModel
 
 
+class TaskSubmission(SQLModel, table=True):
+    """A request receipt committed in the same transaction as its new task."""
+    digest: str = Field(primary_key=True)
+    scope: str
+    payload_hash: str
+    response_json: str = "{}"
+    resource_table: str = ""
+    resource_id: Optional[int] = None
+    resource_created_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class DouyinAccount(SQLModel, table=True):
     """登录得到的平台账号(浏览器会话持有者)。表名沿用历史,实际承载多平台账号。"""
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -75,6 +87,16 @@ class DouyinAccount(SQLModel, table=True):
     # fingerprint_chromium 下绑定的具体内核运行时；空=跟随默认内核。
     browser_runtime_id: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AccountIdReservation(SQLModel, table=True):
+    """Permanent numeric identity watermark; contains no account credentials.
+
+    Kept independently of account deletion, including on existing databases
+    whose account table predates SQLite AUTOINCREMENT.
+    """
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Optional[int] = Field(default=None, primary_key=True)
 
 
 class MonitorTarget(SQLModel, table=True):
@@ -171,6 +193,12 @@ class AccountRiskState(SQLModel, table=True):
     last_write_at: Optional[datetime] = None
     last_heavy_read_at: Optional[datetime] = None
     last_recovery_at: Optional[datetime] = None
+    manual_review_required: bool = False
+    manual_review_reason: str = ""
+    retry_not_before: Optional[datetime] = None
+    operation_not_before: Optional[datetime] = None
+    session_operation_count: int = 0
+    session_rest_until: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -268,8 +296,9 @@ class PublishTask(SQLModel, table=True):
     media_json: str = ""                               # 本地文件路径列表(JSON)
     visibility: str = "public"                         # 抖音:public 公开 | friends 好友可见 | private 仅自己可见
     allow_save: bool = True                            # 抖音:是否允许他人保存(下载)
-    scheduled_at: Optional[datetime] = None            # 定时发布时间(空=尽快发)
-    status: str = "pending"        # pending | publishing | uncertain | done | failed | canceled
+    scheduled_at: Optional[datetime] = None            # UTC；空=尽快发
+    scheduled_at_is_utc: bool = True  # 存量无时区预约需要人工确认，不自动猜时区
+    status: str = "pending"        # draft | pending | publishing | uncertain | done | failed | canceled
     result_url: str = ""           # 发布成功后的笔记链接(能取到则填)
     error: str = ""
     blocked_reason: str = ""
