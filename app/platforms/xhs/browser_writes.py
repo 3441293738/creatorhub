@@ -10,6 +10,7 @@ from urllib.parse import urlencode, urlsplit
 
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
+from .media import validate_publish_files
 from ...browser.xhs_selectors import (
     candidate_locator,
     find_present,
@@ -425,13 +426,10 @@ async def publish_xhs_browser(
         visibility: str = "public",
         on_submit: Any = None) -> XhsWriteOutcome:
     """Submit one note once; never retry or switch transport after submission."""
-    paths = [str(Path(path)) for path in files if path and Path(path).exists()]
-    if not paths:
-        return XhsWriteOutcome("failed", error="没有可用的本地媒体文件(路径不存在)")
-    if media_type == "video":
-        paths = paths[:1]
-    else:
-        paths = paths[:18]
+    try:
+        paths = validate_publish_files(media_type, files)
+    except ValueError as exc:
+        return XhsWriteOutcome("failed", error=str(exc))
     title = (title or "").strip()[:20]
     tags = [str(topic).strip().lstrip("#") for topic in topics if str(topic).strip()]
     body = ((desc or "") + (

@@ -102,6 +102,7 @@ const api = async (path, opts) => {
         const body = await r.json().catch(() => ({}));
         const error = new Error(apiErrorMessage(body.detail, r.status));
         error.status = r.status;
+        error.detail = body.detail;
         throw error;
       }
       return await r.json();
@@ -944,6 +945,7 @@ function _moduleReportParams(module, full) {
     put("min_like_count", $("content-min-likes") && $("content-min-likes").value);
     put("min_comment_count", $("content-min-comments") && $("content-min-comments").value);
     put("sort", $("content-sort") && $("content-sort").value);
+    for (const [key, value] of Object.entries(contentCaptureBounds())) put(key, value);
   } else if (module === "comment-watches") {
     put("q", $("watch-search") && $("watch-search").value);
     put("group_name", $("watch-group") && $("watch-group").value);
@@ -956,6 +958,7 @@ function _moduleReportParams(module, full) {
     put("reply_type", $("comment-type") && $("comment-type").value);
     put("min_like_count", $("comment-min-likes") && $("comment-min-likes").value);
     put("sort", $("comment-sort") && $("comment-sort").value);
+    for (const [key, value] of Object.entries(contentCaptureBounds("comment"))) put(key, value);
   } else if (module === "danmaku-watches") {
     put("q", $("danmaku-watch-search") && $("danmaku-watch-search").value);
     put("group_name", $("danmaku-watch-group") && $("danmaku-watch-group").value);
@@ -968,6 +971,7 @@ function _moduleReportParams(module, full) {
     if (start > 0) put("min_video_time_ms", Math.round(start * 1000));
     if (end > 0) put("max_video_time_ms", Math.round(end * 1000));
     put("sort", $("danmaku-sort") && $("danmaku-sort").value);
+    for (const [key, value] of Object.entries(contentCaptureBounds("danmaku"))) put(key, value);
   }
   return params;
 }
@@ -1079,7 +1083,7 @@ const PAGE_META = {
     title: "通知渠道", desc: "配置 Bark、钉钉或 Telegram，及时接收任务提醒。"
   },
   settings: {
-    title: "设置", desc: "调整工作台外观、默认下载方式与 AI 文案服务。"
+    title: "设置", desc: "管理外观、下载、AI 文案与采集运行配置。"
   },
 };
 function updatePageContext(name = CURRENT_TAB) {
@@ -1103,6 +1107,12 @@ function switchPlatform(pf) {
   CONTENT_PAGE = COMMENT_PAGE = 1;
   selContent.clear(); selComment.clear();
   CONTENT_SRC = CONTENT_GROUP = CONTENT_TAG = "";
+  CONTENT_SOURCE_CACHE.clear();
+  ["content-captured-from", "content-captured-to"].forEach(id => { if ($(id)) $(id).value = ""; });
+  for (const kind of ["comment", "danmaku"]) {
+    WATCH_RECORD_STATE[kind].cache.clear();
+    [kind + "-captured-from", kind + "-captured-to"].forEach(id => { if ($(id)) $(id).value = ""; });
+  }
   COMMENT_SRC = COMMENT_GROUP = COMMENT_TAG = "";
   DANMAKU_SRC = "";
   DANMAKU_PAGE = 1;
@@ -1809,6 +1819,9 @@ let COLLECTION_JOBS = [], COLLECTION_JOB_ID = 0, COLLECTION_PAGE = 1;
 let DANMAKU_WATCHES = [];
 let CHANNELS = [], PUBLISH_TASKS = [];
 let CONTENT_SRC = "", CONTENT_GROUP = "", CONTENT_TAG = "";
+const CONTENT_SOURCE_CACHE = new Map();
+let CONTENT_RENDER_SCOPE = "";
+const WATCH_RECORD_STATE = { comment: { cache: new Map(), scope: "" }, danmaku: { cache: new Map(), scope: "" } };
 let COMMENT_SRC = "", COMMENT_GROUP = "", COMMENT_TAG = "";
 let DANMAKU_SRC = "";
 let CONTENT_PAGE = 1, CONTENT_PAGE_SIZE = 10, CONTENT_TOTAL = 0;
@@ -2100,21 +2113,203 @@ function populateWatchFacets() {
 }
 function populateContentSrc() {
   const sel = $("content-src"); if (!sel) return;
-  sel.innerHTML = `<option value="">全部来源</option>` +
-    MONITORS.map(t => `<option value="${t.id}">${esc(monitorName(t))}</option>`).join("");
-  if (!MONITORS.some(t => String(t.id) === CONTENT_SRC)) CONTENT_SRC = "";
+  const sources = new Map(CONTENT_SOURCE_CACHE);
+  MONITORS.filter(t => t.platform === PLATFORM).forEach(t => sources.set(String(t.id), {
+    id: t.id, name: monitorName(t), deleted: false, target_kind: t.target_kind,
+  }));
+  if (CONTENT_SRC && !sources.has(CONTENT_SRC)) sources.set(CONTENT_SRC, {
+    id: CONTENT_SRC, name: `任务 #${CONTENT_SRC}（来源待确认）`,
+  });
+  sel.innerHTML = `<option value="">全部监控任务</option>` +
+    [...sources.values()].map(t => `<option value="${esc(String(t.id))}">${esc(t.name)}${t.deleted ? "" : ` · #${esc(String(t.id))}`}</option>`).join("");
   sel.value = CONTENT_SRC;
   if (sel._csSync) sel._csSync();
+  updateContentScope();
+}
+
+function contentSource(r) {
+  if (r.source && String(r.source.id) === String(r.target_id)) return r.source;
+  const cached = CONTENT_SOURCE_CACHE.get(String(r.target_id));
+  if (cached) return cached;
+  const t = MONITORS.find(item => item.platform === PLATFORM && String(item.id) === String(r.target_id));
+  return t ? { id: t.id, name: monitorName(t), deleted: false, target_kind: t.target_kind }
+    : CONTENT_SOURCE_CACHE.get(String(r.target_id)) || { id: r.target_id, name: `任务 #${r.target_id}（来源待确认）` };
+}
+function contentSourceMarkup(r) {
+  const source = contentSource(r), id = Number(source.id);
+  const kind = source.deleted ? "原任务已删除，历史记录保留" : source.target_kind === "keyword" ? "关键词监控" : "作品监控";
+  const label = esc(source.name || `任务 #${id}`);
+  return `<div class="content-origin"><span class="content-origin-label">来源任务</span>
+    ${Number.isSafeInteger(id) && id > 0 ? `<button type="button" class="content-source-link" onclick="showMonitorRecords(${id})" title="查看此任务的记录">${label}</button>` : `<span>${label}</span>`}
+    <span class="content-origin-meta">${id > 0 ? `任务 #${esc(String(source.id))} · ${kind}` : "来源任务信息未记录"}</span></div>`;
+}
+function updateContentScope() {
+  const title = $("content-scope-name"), hint = $("content-scope-hint");
+  const source = CONTENT_SRC ? contentSource({ target_id: CONTENT_SRC }) : null;
+  if (title) title.textContent = source ? source.name : "全部监控任务";
+  if (hint) hint.textContent = source
+    ? `仅查看任务 #${CONTENT_SRC} 的记录${source.deleted ? " · 原任务已删除" : ""}；抓取时间指首次入库，重试不会改写。`
+    : "当前平台的任务汇总；点击来源任务可单独查看。抓取时间与作品发布时间分开记录。";
+  if ($("content-show-all")) $("content-show-all").hidden = !CONTENT_SRC;
+}
+function showMonitorRecords(id) {
+  const value = id == null ? "" : String(id);
+  if (value && !/^[1-9]\d*$/.test(value)) return;
+  CONTENT_SRC = value; CONTENT_GROUP = CONTENT_TAG = "";
+  ["content-group", "content-tag", "content-search", "content-type", "content-status",
+    "content-min-likes", "content-min-comments", "content-captured-from", "content-captured-to"].forEach(key => {
+    const node = $(key); if (node) { node.value = ""; if (node._csSync) node._csSync(); }
+  });
+  if ($("content-sort")) { $("content-sort").value = "captured_desc"; $("content-sort")._csSync?.(); }
+  selContent.clear(); populateContentSrc();
+  globalThis.CreatorHubBridge?.navigate?.("monitors", true);
+  globalThis.CreatorHubWorkbench?.showSection?.("monitors", "records");
+  refreshContents(true);
+  requestAnimationFrame(() => $("content-scope-name")?.focus({ preventScroll: true }));
+}
+function backToMonitorTasks() {
+  globalThis.CreatorHubWorkbench?.showSection?.("monitors", "targets");
+  requestAnimationFrame(() => document.querySelector(`[data-monitor-records="${CONTENT_SRC}"]`)?.focus({ preventScroll: true }));
+}
+function contentCaptureBounds(prefix = "content") {
+  const from = $(prefix + "-captured-from")?.value || "", to = $(prefix + "-captured-to")?.value || "";
+  if (from && to && from > to) throw new Error("抓取开始日期应早于或等于结束日期");
+  const bounds = {};
+  for (const [key, value] of [["captured_from", from], ["captured_before", to]]) {
+    if (!value) continue;
+    const date = new Date(value + "T00:00:00");
+    if (!Number.isFinite(date.getTime())) throw new Error("请填写有效的抓取日期");
+    if (key === "captured_before") date.setDate(date.getDate() + 1);
+    bounds[key] = date.toISOString();
+  }
+  return bounds;
+}
+function contentCapturedTime(raw, milliseconds = false) {
+  if (!raw) return `<span class="mut">未记录</span>`;
+  const value = String(raw), date = new Date(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : value + "Z");
+  if (!Number.isFinite(date.getTime())) return `<span class="mut">未记录</span>`;
+  return `<time class="content-captured-time" datetime="${esc(date.toISOString())}"><span>${esc(date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" }))}</span><span>${esc(date.toLocaleTimeString("zh-CN", { hour12: false }))}${milliseconds ? "." + String(date.getMilliseconds()).padStart(3, "0") : ""}</span></time>`;
 }
 function populateCommentSrc() {
-  const sel = $("comment-src"); if (!sel) return;
-  sel.innerHTML = `<option value="">全部来源</option>` +
-    WATCHES.map(w => `<option value="${w.id}">${esc(watchName(w))}</option>`).join("");
-  if (!WATCHES.some(w => String(w.id) === COMMENT_SRC)) COMMENT_SRC = "";
-  sel.value = COMMENT_SRC;
-  if (sel._csSync) sel._csSync();
+  populateWatchRecordSource("comment");
 }
-function onContentSrc() { CONTENT_SRC = $("content-src").value; selContent.clear(); refreshContents(true); }
+
+// Shared task provenance for comments and danmaku; acquisition channel remains separate.
+function watchRecordConfig(kind) {
+  if (kind !== "comment" && kind !== "danmaku") throw new Error("未知记录类型");
+  return kind === "comment"
+    ? { module: "comments", label: "评论", src: COMMENT_SRC, watches: WATCHES, refresh: refreshComments,
+        pager: renderCommentPager, pageSize: COMMENT_PAGE_SIZE, state: WATCH_RECORD_STATE.comment }
+    : { module: "danmaku", label: "弹幕", src: DANMAKU_SRC, watches: DANMAKU_WATCHES, refresh: refreshDanmaku,
+        pager: renderDanmakuPager, pageSize: DANMAKU_PAGE_SIZE, state: WATCH_RECORD_STATE.danmaku };
+}
+function watchRecordSource(kind, row) {
+  const view = watchRecordConfig(kind), id = Number(row.watch_id || 0), source = row.watch_source;
+  if (source && source.module === view.module && source.platform === PLATFORM && Number(source.id) === id) return source;
+  const watch = view.watches.find(w => w.platform === PLATFORM && Number(w.id) === id);
+  if (watch) return { id, module: view.module, platform: PLATFORM, name: watchName(watch), kind: watch.kind, deleted: false };
+  const cached = view.state.cache.get(String(id));
+  if (cached && cached.module === view.module && cached.platform === PLATFORM) return cached;
+  return { id, module: view.module, platform: PLATFORM, unassigned: id === 0,
+    name: id > 0 ? `${view.label}任务 #${id}（来源待确认）` : `未关联${view.label}监控` };
+}
+function updateWatchRecordScope(kind) {
+  const view = watchRecordConfig(kind), source = view.src !== "" ? watchRecordSource(kind, { watch_id: view.src }) : null;
+  if ($(kind + "-scope-name")) $(kind + "-scope-name").textContent = source ? source.name : `全部${view.label}监控任务`;
+  if ($(kind + "-scope-hint")) $(kind + "-scope-hint").textContent = source
+    ? `${source.unassigned ? "仅查看未关联监控的记录" : `仅查看${view.label}任务 #${view.src} 的记录`}${source.deleted ? " · 原任务已删除" : ""}；抓取时间指首次入库，不是${view.label}发送时间。`
+    : `当前平台的${view.label}记录汇总；点击来源任务可单独查看。抓取时间指首次入库。`;
+  if ($(kind + "-show-all")) $(kind + "-show-all").hidden = view.src === "";
+}
+function populateWatchRecordSource(kind) {
+  const view = watchRecordConfig(kind), sel = $(kind + "-src"); if (!sel) return;
+  const sources = new Map([...view.state.cache].filter(([, s]) => s.platform === PLATFORM && s.module === view.module));
+  view.watches.filter(w => w.platform === PLATFORM).forEach(w => sources.set(String(w.id), watchRecordSource(kind, { watch_id: w.id })));
+  sources.set("0", watchRecordSource(kind, { watch_id: 0 }));
+  if (view.src !== "" && !sources.has(view.src)) sources.set(view.src, watchRecordSource(kind, { watch_id: view.src }));
+  sel.innerHTML = `<option value="">全部${view.label}监控任务</option>` + [...sources.values()].map(s =>
+    `<option value="${esc(String(s.id))}">${esc(s.name)}${s.id > 0 && !s.deleted ? ` · #${esc(String(s.id))}` : ""}</option>`).join("");
+  sel.value = view.src; sel._csSync?.(); updateWatchRecordScope(kind);
+}
+function showWatchRecords(kind, id) {
+  if (kind !== "comment" && kind !== "danmaku") return;
+  const value = id == null ? "" : String(id);
+  if (value !== "" && (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)))) return;
+  const view = watchRecordConfig(kind);
+  if (kind === "comment") { COMMENT_SRC = value; COMMENT_GROUP = COMMENT_TAG = ""; selComment.clear(); }
+  else DANMAKU_SRC = value;
+  for (const suffix of ["query", "group", "tag", "type", "min-likes", "time-start", "time-end", "captured-from", "captured-to"]) {
+    const node = $(kind + "-" + suffix); if (node) { node.value = ""; node._csSync?.(); }
+  }
+  if ($(kind + "-sort")) { $(kind + "-sort").value = "captured_desc"; $(kind + "-sort")._csSync?.(); }
+  populateWatchRecordSource(kind);
+  globalThis.CreatorHubBridge?.navigate?.(view.module, true);
+  globalThis.CreatorHubWorkbench?.showSection?.(view.module, "records");
+  view.refresh(true);
+  requestAnimationFrame(() => $(kind + "-scope-name")?.focus({ preventScroll: true }));
+}
+function backToWatchTasks(kind) {
+  const view = watchRecordConfig(kind);
+  globalThis.CreatorHubWorkbench?.showSection?.(view.module, "targets");
+  requestAnimationFrame(() => document.querySelector(`[data-${kind}-records="${view.src}"]`)?.focus({ preventScroll: true }));
+}
+function watchRecordSourceMarkup(kind, row) {
+  const view = watchRecordConfig(kind), source = watchRecordSource(kind, row), id = Number(source.id);
+  const label = esc(source.name), linked = Number.isSafeInteger(id) && id >= 0;
+  const detail = source.unassigned ? "来源监控信息未记录" : `${view.label}任务 #${id}${source.deleted ? " · 原任务已删除，历史记录保留" : source.kind === "user" ? " · 账号监控" : " · 作品监控"}`;
+  return `<div class="content-origin"><span class="content-origin-label">来源任务</span>
+    ${linked ? `<button type="button" class="content-source-link" onclick="showWatchRecords('${kind}',${id})" title="查看此来源的记录">${label}</button>` : `<span>${label}</span>`}
+    <span class="content-origin-meta">${esc(detail)}</span>
+    ${row.aweme_id ? `<span class="watch-record-work">作品 ID：${esc(row.aweme_id)}</span>` : ""}</div>`;
+}
+function watchRecordTimeMarkup(kind, row) {
+  const captured = row.captured_at !== undefined ? row.captured_at : row.created_at;
+  return `<span class="content-origin-label">抓取入库</span>${contentCapturedTime(captured, kind === "danmaku")}
+    <div class="content-published-time">${kind === "comment" ? "评论发布" : "弹幕发送"} · ${fmtTime(row.create_time)}</div>`;
+}
+function prepareWatchRecordLoad(kind, resetPage) {
+  const view = watchRecordConfig(kind), scope = PLATFORM + ":" + view.src;
+  const clear = resetPage || view.state.scope !== scope; view.state.scope = scope;
+  updateWatchRecordScope(kind);
+  if (clear) {
+    if (kind === "comment") { COMMENT_PAGE = 1; selComment.clear(); updateCommentSelBar(); }
+    else DANMAKU_PAGE = 1;
+    $(kind + "-table").innerHTML = empty(6, "正在读取当前来源的记录…", "i-clock");
+    view.pager({ total: 0, page: 1, page_size: view.pageSize });
+    if ($(kind + "-filter-count")) $(kind + "-filter-count").textContent = "正在读取…";
+  }
+  const hint = $(kind + "-capture-help");
+  try {
+    const bounds = contentCaptureBounds(kind);
+    if (hint) { hint.textContent = "按当前设备时区筛选，包含结束当天；抓取时间为首次入库时间。"; delete hint.dataset.error; }
+    ["from", "to"].forEach(end => $(kind + "-captured-" + end)?.removeAttribute("aria-invalid"));
+    return { bounds, clear };
+  } catch (e) {
+    if (hint) { hint.textContent = e.message; hint.dataset.error = "true"; }
+    ["from", "to"].forEach(end => $(kind + "-captured-" + end)?.setAttribute("aria-invalid", "true"));
+    $(kind + "-table").innerHTML = empty(6, e.message, "i-info");
+    if ($(kind + "-filter-count")) $(kind + "-filter-count").textContent = "请检查日期范围";
+    toast(e.message, "err"); return null;
+  }
+}
+function watchRecordLoadError(kind, error, clear) {
+  if (clear) {
+    $(kind + "-table").innerHTML = empty(6, "记录加载失败，请重新加载", "i-info");
+    if ($(kind + "-filter-count")) $(kind + "-filter-count").textContent = "加载失败";
+  }
+  toast("记录加载失败：" + error.message, "err");
+}
+function cacheWatchRecordSources(kind, meta, rows) {
+  const view = watchRecordConfig(kind);
+  const sources = rows.filter(r => r.watch_source && Number(r.watch_source.id) === Number(r.watch_id || 0)).map(r => r.watch_source);
+  if (meta.watch_source && view.src !== "" && String(meta.watch_source.id) === view.src) sources.push(meta.watch_source);
+  for (const source of sources) {
+    if (source && source.platform === PLATFORM && source.module === view.module && Number.isSafeInteger(Number(source.id)) && Number(source.id) >= 0)
+      view.state.cache.set(String(source.id), source);
+  }
+  populateWatchRecordSource(kind);
+}
+function onContentSrc() { CONTENT_SRC = $("content-src").value; selContent.clear(); updateContentScope(); refreshContents(true); }
 function onCommentSrc() { COMMENT_SRC = $("comment-src").value; selComment.clear(); refreshComments(true); }
 function onContentMetaFilter() {
   CONTENT_GROUP = $("content-group").value; CONTENT_TAG = $("content-tag").value;
@@ -3919,6 +4114,7 @@ async function delAccount(id) {
 
 // ─── 下载设置 ───
 async function loadSettings() {
+  globalThis.CreatorHubEngineSettings?.load();
   try {
     const s = await api("/api/settings");
     const assign = (id, property, value) => {
@@ -5080,7 +5276,8 @@ async function addMonitor() {
           url_or_secuid, platform: PLATFORM, target_kind,
           account_id: $("t-acc").value ? +$("t-acc").value : null,
           interval_seconds: +$("t-interval").value,
-          initial_backfill_count: PLATFORM === "douyin" ? +$("t-backfill").value : 0,
+          initial_backfill_count: PLATFORM === "douyin"
+            ? ($("t-backfill").value === "" ? null : +$("t-backfill").value) : 0,
           download_dir: $("t-dir").value.trim(),
           video_quality: PLATFORM === "xhs" ? "" : $("t-quality").value,
           download_enabled: downloadMode !== "none",
@@ -5260,7 +5457,7 @@ function monRow(t) {
   return `<tr>
     <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(t.avatar))}" alt="" referrerpolicy="no-referrer">` : ""}<div><span>${label}</span>${t.alias ? `<div class="alias-line">${esc(t.alias)}</div>` : ""}${accTag}</div></div></td>
     <td>${metaChips(t)}</td>
-    <td class="num">${t.content_count}</td>
+    <td class="num"><button type="button" class="ghost sm monitor-record-link" data-monitor-records="${t.id}" onclick="showMonitorRecords(${t.id})">查看记录 <span>${t.content_count || 0}</span></button></td>
     <td class="num">${Math.round(t.interval_seconds / 60)} 分</td>
     <td class="wrap" style="max-width:230px">
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px"><span class="pill q bare">${downloadLabel}</span></div>
@@ -5306,11 +5503,14 @@ async function refreshMonitors() {
 }
 async function runNow(id) {
   const btn = evtBtn();
-  toast("抓取中…正在开浏览器拉取新作品", "info", 7000);
+  toast("抓取中…正在按配置的获取方式读取作品", "info", 7000);
   await withBusy(btn, "抓取中", async () => {
     try {
       const r = await api("/api/monitors/" + id + "/run-now", { method: "POST" });
-      if (r.error) toast("抓取未成功:" + r.error, "err", 6000);
+      if (r.skipped) toast(r.reason || "本轮已跳过，请查看监控状态", "info", 6000);
+      else if (r.partial) toast(`部分完成：已获取 ${r.captured ?? r.new} 条作品，${r.failed || 0} 条详情失败。${r.error || ""}`, "info", 10000);
+      else if (r.error) toast("抓取未成功:" + r.error, "err", 10000);
+      else if (r.refreshed) toast(`抓取完成，新增 ${r.new} 条记录；已刷新 ${r.refreshed} 条失败记录的访问参数，可在作品记录中手动重试。`, "info", 10000);
       else toast(`抓取完成,检查 ${r.scanned ?? r.new} 条，筛除 ${r.filtered || 0} 条，新增 ${r.new} 条`, "ok");
     } catch (e) { toast("抓取失败:" + e.message, "err"); }
   });
@@ -5429,8 +5629,7 @@ async function commentBatchDelete() {
 }
 
 function srcOf(r) {
-  const t = monitorById(r.target_id);
-  return t ? `<div style="margin:0 0 8px">${sourceMeta(t)}</div>` : "";
+  return contentSourceMarkup(r);
 }
 function noteCard(r) {
   const typeIc = r.media_type === "images" ? "i-image" : "i-play";
@@ -5441,12 +5640,13 @@ function noteCard(r) {
   return `<div class="ncard">
     ${cover}
     <span class="ncard-type">${ic(typeIc)}${typeLabel}</span>
-    <input type="checkbox" class="ncard-sel" data-id="${r.id}" aria-label="选择" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}>
+    <label class="ncard-selection" title="选择这条笔记"><input type="checkbox" class="ncard-sel" data-id="${r.id}" aria-label="选择这条笔记" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></label>
     <div class="ncard-body">
       <p class="ncard-title">${esc(r.desc || "(无标题)")}</p>
       ${srcOf(r)}
+      <div class="ncard-captured"><span class="content-origin-label">抓取入库</span>${contentCapturedTime(r.captured_at)}</div>
       <div class="ncard-foot">
-        <span>${fmtTime(r.create_time)}</span>
+        <span>发布 · ${fmtTime(r.create_time)}</span>
         <span class="like">${ic("i-heart")}${fmtNum(r.like_count)}</span>
       </div>
       <div class="ncard-actions">
@@ -5512,7 +5712,36 @@ function setContentPageSize() {
 }
 async function refreshContents(resetPage = false) {
   const isCurrent = beginViewRequest("contents");
-  if (resetPage) CONTENT_PAGE = 1;
+  const scope = PLATFORM + ":" + CONTENT_SRC;
+  const clearResults = resetPage || scope !== CONTENT_RENDER_SCOPE;
+  CONTENT_RENDER_SCOPE = scope;
+  if (clearResults) {
+    CONTENT_PAGE = 1;
+    CONTENTS = []; selContent.clear();
+    $("content-cards").innerHTML = `<div class="empty" role="status">正在读取当前任务的记录…</div>`;
+    $("content-table").innerHTML = empty(8, "正在读取当前任务的记录…", "i-clock");
+    renderContentPager({total:0, page:1, page_size:CONTENT_PAGE_SIZE});
+    if ($("content-filter-count")) $("content-filter-count").textContent = "正在读取…";
+    updateContentSelBar();
+  }
+  let captureBounds;
+  const dateHint = $("content-capture-help");
+  try { captureBounds = contentCaptureBounds(); }
+  catch (e) {
+    if (dateHint) { dateHint.textContent = e.message; dateHint.dataset.error = "true"; }
+    ["content-captured-from", "content-captured-to"].forEach(id => $(id)?.setAttribute("aria-invalid", "true"));
+    if (clearResults) {
+      $("content-cards").innerHTML = `<div class="empty" role="status">${esc(e.message)}</div>`;
+      $("content-table").innerHTML = empty(8, e.message, "i-info");
+      if ($("content-filter-count")) $("content-filter-count").textContent = "请检查日期范围";
+    }
+    toast(e.message, "err"); return;
+  }
+  if (dateHint) {
+    dateHint.textContent = "按当前设备时区筛选，包含结束当天；抓取时间为首次入库时间。";
+    delete dateHint.dataset.error;
+  }
+  ["content-captured-from", "content-captured-to"].forEach(id => $(id)?.removeAttribute("aria-invalid"));
   const params = new URLSearchParams({
     platform: PLATFORM, page: String(CONTENT_PAGE),
     page_size: String(CONTENT_PAGE_SIZE), paginate: "true",
@@ -5520,6 +5749,7 @@ async function refreshContents(resetPage = false) {
   if (CONTENT_SRC) params.set("target_id", CONTENT_SRC);
   if (CONTENT_GROUP) params.set("group_name", CONTENT_GROUP);
   if (CONTENT_TAG) params.set("tag", CONTENT_TAG);
+  for (const [key, value] of Object.entries(captureBounds)) params.set(key, value);
   const query = (($('content-search') && $('content-search').value) || "").trim();
   const mediaType = ($('content-type') && $('content-type').value) || "";
   const status = ($('content-status') && $('content-status').value) || "";
@@ -5530,8 +5760,20 @@ async function refreshContents(resetPage = false) {
   if (status) params.set("download_status", status);
   if (Number.isFinite(minLikes) && minLikes > 0) params.set("min_like_count", String(Math.floor(minLikes)));
   if (Number.isFinite(minComments) && minComments > 0) params.set("min_comment_count", String(Math.floor(minComments)));
-  params.set("sort", ($('content-sort') && $('content-sort').value) || "create_desc");
-  const payload = await api("/api/contents?" + params.toString());
+  params.set("sort", ($('content-sort') && $('content-sort').value) || "captured_desc");
+  let payload;
+  try { payload = await api("/api/contents?" + params.toString()); }
+  catch (e) {
+    if (isCurrent()) {
+      if (clearResults) {
+        $("content-cards").innerHTML = `<div class="empty" role="status">记录加载失败，请重新加载。</div>`;
+        $("content-table").innerHTML = empty(8, "记录加载失败，请重新加载", "i-info");
+        if ($("content-filter-count")) $("content-filter-count").textContent = "加载失败";
+      }
+      toast("记录加载失败：" + e.message, "err");
+    }
+    return;
+  }
   if (!isCurrent()) return;
   const meta = Array.isArray(payload)
     ? { items: payload, total: payload.length, page: 1, page_size: CONTENT_PAGE_SIZE,
@@ -5540,11 +5782,18 @@ async function refreshContents(resetPage = false) {
   const pages = Math.max(1, Number(meta.pages || 1));
   if (CONTENT_PAGE > pages) { CONTENT_PAGE = pages; return refreshContents(); }
   const rows = Array.isArray(meta.items) ? meta.items : [];
+  rows.forEach(row => {
+    if (row.source && row.source.platform === PLATFORM && String(row.source.id) === String(row.target_id))
+      CONTENT_SOURCE_CACHE.set(String(row.target_id), row.source);
+  });
+  if (meta.source && meta.source.platform === PLATFORM && String(meta.source.id) === CONTENT_SRC)
+    CONTENT_SOURCE_CACHE.set(CONTENT_SRC, meta.source);
+  populateContentSrc();
   CONTENTS = rows;
   if ($("content-filter-count")) $("content-filter-count").textContent =
     `显示 ${rows.length} / ${Number(meta.total || rows.length)}`;
   const xhs = PLATFORM === "xhs";
-  $("content-title").textContent = xhs ? "最新笔记 / 下载状态" : "最新作品 / 下载状态";
+  $("content-title").textContent = xhs ? "笔记记录" : "作品记录";
   $("content-table-wrap").style.display = xhs ? "none" : "";
   $("content-cards").style.display = xhs ? "" : "none";
   if (xhs) {
@@ -5554,17 +5803,16 @@ async function refreshContents(resetPage = false) {
     return;
   }
   $("content-table").innerHTML = rows.map(r => {
-    const monitor = monitorById(r.target_id);
     const description = esc(r.desc || "(无描述)");
     return `<tr>
-      <td class="content-check-cell"><input type="checkbox" data-id="${r.id}" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></td>
+      <td class="content-check-cell"><label class="content-selection" title="选择这条作品"><input type="checkbox" data-id="${r.id}" aria-label="选择这条作品" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></label></td>
       <td class="content-cover-cell">${r.cover_url ? `<img class="thumb" src="${esc(safeMediaUrl(r.cover_url))}" alt="封面" referrerpolicy="no-referrer" onclick="openPreview(${r.id})">` : `<span class="content-cover-empty">${ic(r.media_type === "images" ? "i-image" : "i-film")}</span>`}</td>
       <td class="content-desc-cell">
         <div class="content-desc-text" title="${description}">${description}</div>
-        ${monitor ? `<div class="content-desc-meta">${sourceMeta(monitor)}</div>` : ""}
+        ${contentSourceMarkup(r)}
       </td>
-      <td><span class="content-kind">${r.media_type === "images" ? "图集" : "视频"}</span>${r.quality ? `<span class="content-quality">${esc(r.quality)}</span>` : ""}</td>
-      <td class="mut num">${contentTimeCell(r.create_time)}</td>
+      <td class="content-type-cell"><span class="content-kind">${r.media_type === "images" ? "图集" : "视频"}</span>${r.quality ? `<span class="content-quality">${esc(r.quality)}</span>` : ""}</td>
+      <td class="content-record-time"><span class="content-origin-label">抓取入库</span>${contentCapturedTime(r.captured_at)}<div class="content-published-time">发布 · ${fmtTime(r.create_time)}</div></td>
       <td class="content-metrics num"><span class="metric like">${ic("i-heart")}${fmtNum(r.like_count)}</span>${r.duration ? `<span class="metric">${ic("i-clock")}${fmtDur(r.duration)}</span>` : ""}</td>
       <td class="content-action-cell">
         <div class="content-status-row"><span class="pill ${r.download_status}">${contentStatusLabel(r.download_status)}</span>${r.error ? `<span class="warn-ic" data-tip="${esc(r.error)}">${ic("i-info")}</span>` : ""}</div>
@@ -5604,13 +5852,7 @@ function danmakuWatchBaseName(w) {
 function populateDanmakuFacets() {
   setFacetOptions("danmaku-watch-group", "全部分组", DANMAKU_WATCHES.map(x => x.group_name));
   setFacetOptions("danmaku-watch-tag", "全部标签", DANMAKU_WATCHES.flatMap(itemTags));
-  const sel = $("danmaku-src"); if (!sel) return;
-  const old = DANMAKU_SRC;
-  sel.innerHTML = '<option value="">全部来源</option>' +
-    DANMAKU_WATCHES.map(x => x.id ? '<option value="' + x.id + '">' +
-      esc(danmakuWatchBaseName(x)) + '</option>' : "").join("");
-  DANMAKU_SRC = [...sel.options].some(o => o.value === old) ? old : "";
-  sel.value = DANMAKU_SRC;
+  populateWatchRecordSource("danmaku");
 }
 function danmakuWatchRow(w) {
   const base = esc(danmakuWatchBaseName(w));
@@ -5632,7 +5874,7 @@ function danmakuWatchRow(w) {
     '<td><div class="user-cell">' + avatar + '<div><span>' + base + "</span>" + alias + scope + "</div></div></td>" +
     "<td>" + (w.kind === "video" ? "单条视频" : "账号作品") + "</td>" +
     "<td>" + source + "</td>" +
-    '<td class="num">' + fmtNum(w.danmaku_count || 0) + "</td>" +
+    `<td class="num"><button type="button" class="ghost sm monitor-record-link" data-danmaku-records="${w.id}" onclick="showWatchRecords('danmaku',${w.id})">查看记录 <span>${fmtNum(w.danmaku_count || 0)}</span></button></td>` +
     '<td class="num">' + interval + "</td>" +
     '<td class="mut">' + (w.last_scan_at ? new Date(w.last_scan_at + "Z").toLocaleString() : "—") + error + autoRunHint(w.next_auto_run_at) + "</td>" +
     '<td><span class="pill ' + (w.enabled ? "active" : "paused") + '">' +
@@ -5727,8 +5969,7 @@ async function refreshDanmakuWatches() {
 }
 function onDanmakuSrc() {
   DANMAKU_SRC = $("danmaku-src").value;
-  DANMAKU_PAGE = 1;
-  refreshDanmaku();
+  refreshDanmaku(true);
 }
 async function editDanmakuWatch(id) {
   const item = DANMAKU_WATCHES.find(x => x.id === id);
@@ -5840,11 +6081,11 @@ async function toggleDanmakuWatch(id, on) {
   } catch (e) { toast("操作失败:" + e.message, "err"); }
 }
 async function delDanmakuWatch(id) {
-  if (!await uiConfirm({ title: "删除弹幕监控", message: "删除该监控及其抓到的弹幕?",
+  if (!await uiConfirm({ title: "删除弹幕监控", message: "仅删除该监控配置，已抓取的弹幕记录会保留，并标注原任务已删除。",
                          okText: "删除", danger: true })) return;
   try {
-    await api("/api/danmaku-watches/" + id, { method: "DELETE" });
-    toast("已删除", "ok"); refreshDanmakuWatches(); refreshDanmaku();
+    await api("/api/danmaku-watches/" + id + "?with_records=false", { method: "DELETE" });
+    toast("监控已删除，弹幕记录已保留", "ok"); await refreshDanmakuWatches(); await refreshDanmaku(true);
   } catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 function danmakuTime(ms) {
@@ -5886,43 +6127,46 @@ function renderDanmakuPager(meta) {
 async function refreshDanmaku(resetPage = false) {
   const isCurrent = beginViewRequest("danmaku");
   if (PLATFORM !== "douyin" || !$("danmaku-table")) return;
-  if (resetPage) DANMAKU_PAGE = 1;
+  const load = prepareWatchRecordLoad("danmaku", resetPage); if (!load) return;
   const params = new URLSearchParams({
     platform: "douyin", page: String(DANMAKU_PAGE),
     page_size: String(DANMAKU_PAGE_SIZE), paginate: "true",
   });
   if (DANMAKU_SRC) params.set("watch_id", DANMAKU_SRC);
+  for (const [key, value] of Object.entries(load.bounds)) params.set(key, value);
   const query = ($("danmaku-query") && $("danmaku-query").value || "").trim();
   const start = +(($('danmaku-time-start') && $('danmaku-time-start').value) || 0);
   const end = +(($('danmaku-time-end') && $('danmaku-time-end').value) || 0);
   if (query) params.set("q", query);
   if (start > 0) params.set("min_video_time_ms", String(Math.round(start * 1000)));
   if (end > 0) params.set("max_video_time_ms", String(Math.round(end * 1000)));
-  params.set("sort", ($("danmaku-sort") && $("danmaku-sort").value) || "video_asc");
-  const payload = await api("/api/danmaku?" + params.toString());
+  params.set("sort", ($("danmaku-sort") && $("danmaku-sort").value) || "captured_desc");
+  let payload;
+  try { payload = await api("/api/danmaku?" + params.toString()); }
+  catch (e) { if (isCurrent()) watchRecordLoadError("danmaku", e, load.clear); return; }
   if (!isCurrent()) return;
   const meta = Array.isArray(payload)
     ? { items: payload, total: payload.length, page: 1, page_size: DANMAKU_PAGE_SIZE,
         pages: Math.max(1, Math.ceil(payload.length / DANMAKU_PAGE_SIZE)) }
     : (payload || {});
   const pages = Math.max(1, Number(meta.pages || 1));
-  if (DANMAKU_PAGE > pages && Number(meta.total || 0) > 0) {
+  if (DANMAKU_PAGE > pages) {
     DANMAKU_PAGE = pages;
     return refreshDanmaku();
   }
   const rows = Array.isArray(meta.items) ? meta.items : [];
+  cacheWatchRecordSources("danmaku", meta, rows);
   if ($("danmaku-filter-count")) {
     $("danmaku-filter-count").textContent = `显示 ${rows.length} / ${Number(meta.total || rows.length)}`;
   }
   $("danmaku-table").innerHTML = rows.map(r => '<tr>' +
-    '<td class="wrap" style="max-width:360px">' + esc(r.text || "") + "</td>" +
-    '<td class="mut" title="' + esc(r.user_id || "") + '">' +
+    '<td class="watch-record-main"><div class="watch-record-text">' + esc(r.text || "") + "</div>" + watchRecordSourceMarkup("danmaku", r) + "</td>" +
+    '<td class="mut watch-record-user" data-label="用户" title="' + esc(r.user_id || "") + '">' +
       esc(r.user_nickname || (r.user_id ? "用户 ID " + r.user_id : "用户")) + "</td>" +
-    '<td class="num"><code>' + danmakuTime(r.video_time_ms) + "</code></td>" +
-    "<td>" + (r.source === "creator" ? "创作中心" : "播放页") + "</td>" +
-    '<td class="mut">' + (r.created_at ? danmakuCapturedAt(r.created_at) :
-      (r.create_time ? fmtTime(r.create_time) : "—")) + "</td>" +
-    '<td class="acttd"><button class="ghost sm danger" onclick="deleteDanmaku(' + r.id + ')">' +
+    '<td class="num watch-record-point" data-label="视频内时间"><code>' + danmakuTime(r.video_time_ms) + "</code></td>" +
+    '<td class="watch-record-channel" data-label="获取渠道">' + (r.source === "creator" ? "创作中心" : r.source === "public" ? "播放页" : "未记录") + "</td>" +
+    '<td class="watch-record-time">' + watchRecordTimeMarkup("danmaku", r) + "</td>" +
+    '<td class="acttd watch-record-actions"><button class="ghost sm danger" onclick="deleteDanmaku(' + r.id + ')" aria-label="删除这条弹幕">' +
       ic("i-trash") + "删除</button></td></tr>").join("") ||
     empty(6, "暂无弹幕", "i-msg", "添加弹幕监控后，带视频时间点的弹幕会显示在这里");
   renderDanmakuPager(meta);
@@ -6023,7 +6267,7 @@ function watchRow(w) {
     <td>${metaChips(w)}</td>
     <td>${w.kind === "video" ? (w.platform === "xhs" ? "笔记" : "视频") : (w.platform === "xhs" ? "创作者" : "账号")}</td>
     <td>${w.platform === "xhs" ? "公开" : (SRC[w.mode] || w.mode)}</td>
-    <td class="num">${w.comment_count}</td>
+    <td class="num"><button type="button" class="ghost sm monitor-record-link" data-comment-records="${w.id}" onclick="showWatchRecords('comment',${w.id})">查看记录 <span>${fmtNum(w.comment_count || 0)}</span></button></td>
     <td class="num">${Math.round(w.interval_seconds / 60)} 分
       ${w.kind === "user" && (w.recent_works || w.recent_days) ? `<div class="mut" style="font-size:11px">${w.recent_works ? `近 ${w.recent_works} 个` : "全局作品数"} · ${w.recent_days ? `${w.recent_days} 天` : "全局天数"}</div>` : ""}</td>
     <td class="mut">${w.last_scan_at ? new Date(w.last_scan_at + "Z").toLocaleString() : "—"}${w.last_error ? ` <span class="warn-ic" title="${esc(w.last_error)}">${ic("i-info")}</span>` : ""}${autoRunHint(w.next_auto_run_at)}</td>
@@ -6150,7 +6394,13 @@ async function scanWatch(id) {
   refreshWatches(); refreshComments();
 }
 async function toggleWatch(id, on) { try { await api("/api/comment-watches/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: on }) }); refreshWatches(); } catch (e) { toast("操作失败:" + e.message, "err"); } }
-async function delWatch(id) { if (await uiConfirm({ title: "删除评论监控", message: "删除该评论监控及其抓到的评论?", okText: "删除", danger: true })) { try { await api("/api/comment-watches/" + id, { method: "DELETE" }); toast("已删除", "ok"); refreshWatches(); refreshComments(); } catch (e) { toast("删除失败:" + e.message, "err"); } } }
+async function delWatch(id) {
+  if (!await uiConfirm({ title: "删除评论监控", message: "仅删除该监控配置，已抓取的评论记录会保留，并标注原任务已删除。", okText: "删除", danger: true })) return;
+  try {
+    await api("/api/comment-watches/" + id + "?with_comments=false", { method: "DELETE" });
+    toast("监控已删除，评论记录已保留", "ok"); await refreshWatches(); await refreshComments(true);
+  } catch (e) { toast("删除失败:" + e.message, "err"); }
+}
 
 function renderCommentPager(meta) {
   const pager = $("comment-pager");
@@ -6206,12 +6456,13 @@ function setCommentPageSize() {
 }
 async function refreshComments(resetPage = false) {
   const isCurrent = beginViewRequest("comments");
-  if (resetPage) COMMENT_PAGE = 1;
+  const load = prepareWatchRecordLoad("comment", resetPage); if (!load) return;
   const params = new URLSearchParams({
     platform: PLATFORM, page: String(COMMENT_PAGE),
     page_size: String(COMMENT_PAGE_SIZE), paginate: "true",
   });
   if (COMMENT_SRC) params.set("watch_id", COMMENT_SRC);
+  for (const [key, value] of Object.entries(load.bounds)) params.set(key, value);
   if (COMMENT_GROUP) params.set("group_name", COMMENT_GROUP);
   if (COMMENT_TAG) params.set("tag", COMMENT_TAG);
   const query = (($('comment-query') && $('comment-query').value) || "").trim();
@@ -6220,8 +6471,10 @@ async function refreshComments(resetPage = false) {
   if (query) params.set("q", query);
   if (replyType) params.set("reply_type", replyType);
   if (Number.isFinite(minLikes) && minLikes > 0) params.set("min_like_count", String(Math.floor(minLikes)));
-  params.set("sort", ($('comment-sort') && $('comment-sort').value) || "latest");
-  const payload = await api("/api/comments?" + params.toString());
+  params.set("sort", ($('comment-sort') && $('comment-sort').value) || "captured_desc");
+  let payload;
+  try { payload = await api("/api/comments?" + params.toString()); }
+  catch (e) { if (isCurrent()) watchRecordLoadError("comment", e, load.clear); return; }
   if (!isCurrent()) return;
   const meta = Array.isArray(payload)
     ? { items: payload, total: payload.length, page: 1, page_size: COMMENT_PAGE_SIZE,
@@ -6230,18 +6483,17 @@ async function refreshComments(resetPage = false) {
   const pages = Math.max(1, Number(meta.pages || 1));
   if (COMMENT_PAGE > pages) { COMMENT_PAGE = pages; return refreshComments(); }
   const rows = Array.isArray(meta.items) ? meta.items : [];
+  cacheWatchRecordSources("comment", meta, rows);
   if ($("comment-filter-count")) $("comment-filter-count").textContent =
     `显示 ${rows.length} / ${Number(meta.total || rows.length)}`;
   $("comment-table").innerHTML = rows.map(r => {
-    const w = watchById(r.watch_id);
-    const src = w ? sourceMeta(w) : "";
     return `<tr>
-    <td><input type="checkbox" data-id="${r.id}" onchange="commentToggleOne(${r.id}, this.checked)" ${selComment.has(r.id) ? "checked" : ""}></td>
-    <td class="wrap" style="max-width:360px">${r.is_reply ? '<span class="mut">↳</span> ' : ""}${esc(r.text || "").slice(0, 60)}${src}</td>
-    <td class="mut comment-user"><div>${esc(r.user_nickname || "")}</div>${r.user_sec_uid ? `<div class="comment-user-sec" title="${esc(r.user_sec_uid)}">sec_uid: ${esc(r.user_sec_uid)}</div>` : ""}</td>
-    <td class="mut num">${fmtNum(r.like_count)}</td>
-    <td class="mut num">${fmtTime(r.create_time)}</td>
-    <td class="acttd"><button class="ghost sm danger" onclick="delComment(${r.id})">${ic("i-trash")}删除</button></td>
+    <td class="watch-record-check"><label class="watch-record-selection" title="选择这条评论"><input type="checkbox" data-id="${r.id}" aria-label="选择这条评论" onchange="commentToggleOne(${r.id}, this.checked)" ${selComment.has(r.id) ? "checked" : ""}></label></td>
+    <td class="watch-record-main"><div class="watch-record-text">${r.is_reply ? '<span class="mut">回复 · </span>' : ""}${esc(r.text || "")}</div>${watchRecordSourceMarkup("comment", r)}</td>
+    <td class="mut comment-user watch-record-user" data-label="用户"><div>${esc(r.user_nickname || "")}</div>${r.user_sec_uid ? `<div class="comment-user-sec" title="${esc(r.user_sec_uid)}">sec_uid: ${esc(r.user_sec_uid)}</div>` : ""}</td>
+    <td class="mut num watch-record-likes" data-label="赞">${fmtNum(r.like_count)}</td>
+    <td class="watch-record-time">${watchRecordTimeMarkup("comment", r)}</td>
+    <td class="acttd watch-record-actions"><button class="ghost sm danger" onclick="delComment(${r.id})">${ic("i-trash")}删除</button></td>
   </tr>`;
   }).join("") || empty(6, "暂无评论", "i-msg", "添加评论监控后,抓到的新评论会显示在这里,并可推送通知");
   updateCommentSelBar(); renderCommentPager(meta);

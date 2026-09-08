@@ -165,7 +165,7 @@ def _label(item: Any, *, fallback: str = "") -> str:
 
 def _target_map(items: Iterable[Any]) -> dict[Any, str]:
     return {
-        _value(item, "id"): _label(item)
+        _value(item, "id"): f"{_label(item)} · 任务 #{_value(item, 'id')}"
         for item in items
         if _value(item, "id") is not None
     }
@@ -173,10 +173,17 @@ def _target_map(items: Iterable[Any]) -> dict[Any, str]:
 
 def _watch_map(items: Iterable[Any]) -> dict[Any, str]:
     return {
-        _value(item, "id"): _label(item)
+        _value(item, "id"): f"{_label(item)} · 任务 #{_value(item, 'id')}"
         for item in items
         if _value(item, "id") is not None
     }
+
+
+def _watch_record_label(row: Any, names: dict[Any, str]) -> str:
+    wid = _value(row, "watch_id", None)
+    if wid in names:
+        return names[wid]
+    return f"已删除任务 #{wid}" if wid and int(wid) > 0 else "未关联监控"
 
 
 def _safe_sheet_title(value: str) -> str:
@@ -555,7 +562,7 @@ def _content_row(row: Any, target_names: dict[Any, str]) -> tuple[Any, ...]:
 def _comment_row(row: Any, watch_names: dict[Any, str]) -> tuple[Any, ...]:
     return (
         _value(row, "id"),
-        watch_names.get(_value(row, "watch_id"), f"监控#{_value(row, 'watch_id')}"),
+        _watch_record_label(row, watch_names),
         _text(_value(row, "platform")),
         _text(_value(row, "aweme_id")),
         _text(_value(row, "comment_id")),
@@ -573,7 +580,7 @@ def _comment_row(row: Any, watch_names: dict[Any, str]) -> tuple[Any, ...]:
 def _danmaku_row(row: Any, watch_names: dict[Any, str]) -> tuple[Any, ...]:
     return (
         _value(row, "id"),
-        watch_names.get(_value(row, "watch_id"), f"监控#{_value(row, 'watch_id')}"),
+        _watch_record_label(row, watch_names),
         _text(_value(row, "platform")),
         _text(_value(row, "aweme_id")),
         _text(_value(row, "danmaku_id")),
@@ -1218,7 +1225,7 @@ def build_monitor_report(
         (
             (
                 _value(row, "id"),
-                watch_names.get(_value(row, "watch_id"), f"监控#{_value(row, 'watch_id')}"),
+                _watch_record_label(row, watch_names),
                 _text(_value(row, "platform")),
                 _text(_value(row, "aweme_id")),
                 _text(_value(row, "comment_id")),
@@ -1249,7 +1256,7 @@ def build_monitor_report(
         (
             (
                 _value(row, "id"),
-                danmaku_watch_names.get(_value(row, "watch_id"), f"监控#{_value(row, 'watch_id')}"),
+                _watch_record_label(row, danmaku_watch_names),
                 _text(_value(row, "platform")),
                 _text(_value(row, "aweme_id")),
                 _text(_value(row, "danmaku_id")),

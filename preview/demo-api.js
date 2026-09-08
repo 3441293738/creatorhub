@@ -2,6 +2,15 @@
   "use strict";
 
   const realFetch = window.fetch.bind(window);
+  const engineDefaults = {
+    xhs_read_mode: "browser", monitor_initial_backfill_count: 0, comment_recent_works: 5,
+    comment_recent_days: 7, comment_max_scrolls: 6, request_timeout_seconds: 20,
+    download_timeout_seconds: 120, xhs_item_gap_seconds: 2.5, xhs_request_jitter: .35,
+    xhs_publish_mode: "browser", xhs_comment_write_mode: "browser", xhs_comment_review_before_publish: true,
+    work_health_enabled: false, work_health_interval_seconds: 3600, work_health_zero_play_hours: 6,
+    work_health_recent_days: 7, work_health_stat_snapshots: true,
+  };
+  const engineValues = { ...engineDefaults };
   const now = Math.floor(Date.now() / 1000);
   const iso = (secondsAgo) => new Date(Date.now() - secondsAgo * 1000).toISOString().replace(/Z$/, "");
 
@@ -31,7 +40,8 @@
     return [
       { id: 101, target_id: 11, platform, aweme_id: "DEMO_WORK_001", desc: isXhs ? "周末城市漫游路线分享" : "把普通的一天剪成一段小电影", media_type: isXhs ? "images" : "video", quality: isXhs ? "" : "1080P", create_time: now - 3600, like_count: 328, duration: isXhs ? 0 : 42, download_status: "done", local_path: "data/media/demo/work-001.mp4", cover_url: "" },
       { id: 102, target_id: 11, platform, aweme_id: "DEMO_WORK_002", desc: isXhs ? "高效整理素材的五个习惯" : "镜头里的夏日城市与晚风", media_type: "video", quality: "1080P", create_time: now - 10800, like_count: 186, duration: 35, download_status: "done", local_path: "data/media/demo/work-002.mp4", cover_url: "" },
-    ];
+    ].map((row, index) => ({ ...row, captured_at: iso(900 + index * 600) + "Z",
+      source: {id:11, platform, name:`重点内容源 · ${monitoredName[platform]}`, target_kind:"creator", deleted:false} }));
   }
 
   function watches(platform) {
@@ -42,7 +52,33 @@
     return [
       { id: 301, watch_id: 21, platform, text: "这个内容很实用，已经收藏了。", user_nickname: "示例用户 1", like_count: 12, create_time: now - 1800, is_reply: false },
       { id: 302, watch_id: 21, platform, text: "期待下一期，也想看看完整流程。", user_nickname: "示例用户 2", like_count: 7, create_time: now - 3200, is_reply: false },
-    ];
+    ].map((row,index) => ({...row,aweme_id:"DEMO_WORK_001",captured_at:iso(900+index*600)+"Z",
+      watch_source:{id:21,module:"comments",platform,name:"重点评论区 · 示例账号近期作品",kind:"user",deleted:false,unassigned:false}}));
+  }
+
+  function danmakuWatches() {
+    return [{id:31,platform:"douyin",kind:"video",title:"示例短视频弹幕",alias:"内容反馈",mode:"public",enabled:true,
+      group_name:"互动观察",tags:[],interval_seconds:1800,danmaku_count:2,last_scan_at:iso(900)}];
+  }
+  function demoWatchSource(module,platform,watchId) {
+    const watch = (module === "comments" ? watches(platform) : danmakuWatches()).find(w=>String(w.id)===String(watchId));
+    return {id:Number(watchId),module,platform,deleted:!watch&&Number(watchId)>0,unassigned:Number(watchId)===0,kind:watch?.kind||"",
+      name:watch?`${watch.alias} · ${watch.title}`:Number(watchId)>0?`已删除${module==="comments"?"评论":"弹幕"}任务 #${watchId}`:`未关联${module==="comments"?"评论":"弹幕"}监控`};
+  }
+  function watchRecordsPage(url, rows, module, platform) {
+    const params=url.searchParams, watchId=params.get("watch_id");
+    if(watchId!==null) rows=rows.filter(row=>String(row.watch_id||0)===watchId);
+    const from=params.get("captured_from"),before=params.get("captured_before");
+    if(from) rows=rows.filter(row=>row.captured_at&&Date.parse(row.captured_at)>=Date.parse(from));
+    if(before) rows=rows.filter(row=>row.captured_at&&Date.parse(row.captured_at)<Date.parse(before));
+    const sort=params.get("sort")||"captured_desc";
+    rows.sort((a,b)=> sort.startsWith("captured_") ? (Date.parse(a.captured_at)-Date.parse(b.captured_at))*(sort==="captured_desc"?-1:1)
+      : sort==="likes_desc" ? b.like_count-a.like_count : sort.startsWith("video_") ? (a.video_time_ms-b.video_time_ms)*(sort==="video_desc"?-1:1)
+      : (a.create_time-b.create_time)*(sort==="oldest"?1:-1));
+    if(params.get("paginate")!=="true") return rows;
+    const total=rows.length,page=Number(params.get("page")||1),size=Number(params.get("page_size")||10);
+    return {items:rows.slice((page-1)*size,page*size),total,page,page_size:size,pages:Math.max(1,Math.ceil(total/size)),
+      watch_source:watchId!==null?demoWatchSource(module,platform,watchId):null};
   }
 
   const proxies = [{ id: 41, label: "住宅代理 · 广东", url: "http://***:***@HOST:PORT", note: "在线演示数据", status: "ok", enabled: true, used_by: 1, geo_checked: true, is_mainland: true, geo_loc: "中国 · 广东", exit_ip: "113.***.***.26", isp: "住宅网络" }];
@@ -77,9 +113,21 @@
     if (path === "/api/proxies/options") return proxies.map((item) => ({ url: item.url, label: item.label, status: item.status, used_by: item.used_by, masked: item.url, enabled: item.enabled }));
     if (path === "/api/proxies") return proxies;
     if (path === "/api/monitors") return platform === "shipinhao" ? [] : [monitor(platform)];
-    if (path === "/api/contents") return platform === "shipinhao" ? [] : contents(platform);
+    if (path === "/api/contents") {
+      let rows = platform === "shipinhao" ? [] : contents(platform);
+      if (url.searchParams.get("target_id")) rows = rows.filter(row => String(row.target_id) === url.searchParams.get("target_id"));
+      if (url.searchParams.get("captured_from")) rows = rows.filter(row => Date.parse(row.captured_at) >= Date.parse(url.searchParams.get("captured_from")));
+      if (url.searchParams.get("captured_before")) rows = rows.filter(row => Date.parse(row.captured_at) < Date.parse(url.searchParams.get("captured_before")));
+      if (url.searchParams.get("sort") === "captured_asc") rows.reverse();
+      return rows;
+    }
     if (path === "/api/comment-watches") return platform === "shipinhao" ? [] : watches(platform);
-    if (path === "/api/comments") return platform === "shipinhao" ? [] : comments(platform);
+    if (path === "/api/comments") return watchRecordsPage(url, platform === "shipinhao" ? [] : comments(platform), "comments", platform);
+    if (path === "/api/danmaku-watches") return platform === "douyin" ? danmakuWatches() : [];
+    if (path === "/api/danmaku") return watchRecordsPage(url, platform === "douyin" ? [
+      {id:401,watch_id:31,aweme_id:"DEMO_WORK_001",text:"这个镜头很精彩",user_nickname:"示例用户",video_time_ms:12300,source:"public",create_time:now-1800},
+      {id:402,watch_id:31,aweme_id:"DEMO_WORK_001",text:"学到了新的剪辑思路",user_nickname:"示例观众",video_time_ms:26100,source:"creator",create_time:now-3200},
+    ].map((row,index)=>({...row,platform,captured_at:iso(900+index*600)+"Z",watch_source:demoWatchSource("danmaku",platform,31)})) : [], "danmaku", platform);
     if (path === "/api/stats/series") return series();
     if (path === "/api/publish") return publishTasks(platform);
     if (path === "/api/publish/published") return [];
@@ -89,6 +137,7 @@
     if (/^\/api\/share-download\/history\/\d+\/preview$/.test(path)) return { media_type: "video", cover_url: "", medias: [] };
     if (path === "/api/notifications") return [{ id: 91, name: "演示通知渠道", type: "bark", enabled: true, config: {} }];
     if (path === "/api/settings") return { download_dir: "data/media", video_quality: "highest", ai_enabled: false, ai_base_url: "", ai_model: "", ai_temperature: "0.9", ai_prompt: "", ai_api_key_set: false };
+    if (path === "/api/settings/engine") return {values: {...engineValues}, defaults: engineDefaults, saved_fields: [], apply_scope: "next_operation"};
     if (path === "/api/hub/summary") return { works: 3, following: 20, fans: 168, dm: 4 };
     if (path === "/api/account-works") return contents(platform).map((item, index) => ({ ...item, id: 201 + index, item_id: item.aweme_id, play_count: 6800 - index * 1200, comment_count: 32 - index * 7, status: "正常" }));
     if (/^\/api\/account-works\/\d+\/comments$/.test(path)) return comments(platform).map((item) => ({ ...item, user_nickname: item.user_nickname }));
@@ -124,7 +173,8 @@
         },
       });
     }
-    const data = method === "GET" ? getData(url) : actionData(url.pathname);
+    if (method === "PUT" && url.pathname === "/api/settings/engine") Object.assign(engineValues, JSON.parse(init.body));
+    const data = method === "GET" || url.pathname === "/api/settings/engine" ? getData(url) : actionData(url.pathname);
     return new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json; charset=utf-8" } });
   };
 

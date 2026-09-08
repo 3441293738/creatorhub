@@ -30,7 +30,7 @@ def build(destination: Path) -> None:
     (destination / "index.html").write_text(html.replace(marker, replacement), encoding="utf-8")
     # Early theme boot, shared tokens and shell interactions also work on Pages.
     html = (destination / "index.html").read_text(encoding="utf-8")
-    for asset in ("appearance.js", "appearance.css", "workspace-ui.js", "workbench.js", "workbench.css", "workbench.js.LEGAL.txt", "workbench-licenses.txt"):
+    for asset in ("appearance.js", "appearance.css", "engine-settings.js", "workspace-ui.js", "workbench.js", "workbench.css", "workbench.js.LEGAL.txt", "workbench-licenses.txt"):
         html = html.replace(f"/static/{asset}", f"./{asset}")
         shutil.copy2(SOURCE / asset, destination / asset)
     (destination / "index.html").write_text(html, encoding="utf-8")

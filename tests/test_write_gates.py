@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -392,6 +393,146 @@ class WriteGateTests(unittest.TestCase):
             self.assertEqual(task.status, "uncertain")
             self.assertIsNone(task.done_at)
             self.assertIsNone(task.scheduled_at)
+
+    def test_xhs_api_submit_marker_prevents_replay_after_adapter_exception(self):
+        self.cfg.engine.xhs_publish_mode = "api"
+        account_id = self._account(platform="xhs")
+        task_id = self._publish_task(account_id, platform="xhs")
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        calls = []
+
+        async def interrupted(*_args, **kwargs):
+            calls.append(kwargs)
+            kwargs["on_submit"]()
+            with db.get_session() as session:
+                self.assertEqual(session.get(PublishTask, task_id).error,
+                                 "write_submitted:api")
+            raise TimeoutError("connection timeout")
+
+        with patch("app.engine.monitor.publish_xhs", interrupted):
+            result = asyncio.run(engine.publish_task(task_id))
+            replay = asyncio.run(engine.publish_task(task_id))
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["error"].startswith("write_uncertain:"))
+        self.assertFalse(replay["ok"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["mode"], "api")
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            self.assertEqual(task.status, "uncertain")
+            self.assertIsNone(task.done_at)
+            self.assertIsNone(task.scheduled_at)
+            self.assertIsNone(task.next_allowed_at)
+            self.assertEqual(session.exec(select(RiskEvent)).all(), [])
+
+    def test_xhs_api_pre_submit_network_failure_keeps_existing_backoff(self):
+        self.cfg.engine.xhs_publish_mode = "api"
+        account_id = self._account(platform="xhs")
+        task_id = self._publish_task(account_id, platform="xhs")
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        async def interrupted(*_args, **_kwargs):
+            raise TimeoutError("connection timeout")
+
+        with patch("app.engine.monitor.publish_xhs", interrupted):
+            result = asyncio.run(engine.publish_task(task_id))
+        self.assertFalse(result["ok"])
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            self.assertEqual(task.status, "pending")
+            self.assertGreater(task.next_allowed_at, datetime.utcnow())
+            self.assertEqual([e.outcome for e in session.exec(select(RiskEvent)).all()],
+                             ["network"])
+
+    def test_xhs_api_cancellation_records_uncertain_and_releases_inflight_task(self):
+        self.cfg.engine.xhs_publish_mode = "api"
+        account_id = self._account(platform="xhs")
+        task_id = self._publish_task(account_id, platform="xhs")
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        async def cancelled(*_args, **kwargs):
+            kwargs["on_submit"]()
+            raise asyncio.CancelledError()
+
+        with patch("app.engine.monitor.publish_xhs", cancelled):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(engine.publish_task(task_id))
+        self.assertNotIn(task_id, engine._publishing)
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            self.assertEqual(task.status, "uncertain")
+            self.assertIsNone(task.next_allowed_at)
+
+    def test_xhs_api_structured_failure_reaches_risk_gate_before_text_serialization(self):
+        from app.platforms.xhs.client import XhsApiError
+        self.cfg.engine.xhs_publish_mode = "api"
+        account_id = self._account(platform="xhs")
+        task_id = self._publish_task(account_id, platform="xhs")
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        async def rejected(*_args, **kwargs):
+            self.assertTrue(kwargs["preserve_error"])
+            return False, "", XhsApiError("fixture", category="network", status_code=503)
+
+        with patch("app.engine.monitor.publish_xhs", rejected):
+            result = asyncio.run(engine.publish_task(task_id))
+        self.assertEqual(result["error"], "fixture")
+        self.assertIsInstance(result["error"], str)
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            self.assertEqual(task.status, "pending")
+            self.assertEqual(task.error, "fixture")
+            self.assertGreater(task.next_allowed_at, datetime.utcnow())
+            self.assertEqual([e.outcome for e in session.exec(select(RiskEvent)).all()],
+                             ["network"])
+
+    def test_xhs_api_lost_response_end_to_end_is_submitted_only_once(self):
+        self.cfg.engine.xhs_publish_mode = "api"
+        account_id = self._account(platform="xhs")
+        task_id = self._publish_task(account_id, platform="xhs")
+        media = Path(self.tmp.name) / "fixture.jpg"
+        media.write_bytes(b"image fixture")
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.storage_state = '{"cookies":[{"name":"a1","value":"fixture"}]}'
+            task = session.get(PublishTask, task_id)
+            task.media_json = json.dumps([str(media)])
+            task.visibility = "private"
+            session.add(account)
+            session.add(task)
+            session.commit()
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        def response_lost(*_args, **kwargs):
+            with db.get_session() as session:
+                self.assertEqual(session.get(PublishTask, task_id).error,
+                                 "write_submitted:api")
+            payload = json.loads(kwargs["data"])
+            self.assertEqual(payload["common"]["privacy_info"]["type"], 1)
+            raise TimeoutError("connection timeout")
+
+        with patch("app.platforms.xhs.creator_sign.available", return_value=True), \
+                patch("app.platforms.xhs.creator_api.Session") as transport, \
+                patch("app.platforms.xhs.creator_api.XhsCreatorApi.upload_media", return_value={
+                    "fileIds": "fixture", "width": 10, "height": 20}), \
+                patch("app.platforms.xhs.creator_sign.generate_xs_xs_common",
+                      return_value=("xs", 123, "common")), \
+                patch("app.platforms.xhs.creator_sign.generate_x_rap_param", return_value="rap"):
+            transport.return_value.post.side_effect = response_lost
+            result = asyncio.run(engine.publish_task(task_id))
+            replay = asyncio.run(engine.publish_task(task_id))
+            transport.assert_called_once()
+            transport.return_value.post.assert_called_once()
+            transport.return_value.close.assert_called_once()
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["error"].startswith("write_uncertain:"))
+        self.assertFalse(replay["ok"])
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            self.assertEqual(task.status, "uncertain")
+            self.assertEqual(session.exec(select(RiskEvent)).all(), [])
 
     def test_disabled_risk_controller_does_not_defer_rejected_publish(self):
         self.cfg.risk_control.enabled = False

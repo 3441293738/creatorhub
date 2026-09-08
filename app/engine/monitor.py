@@ -70,7 +70,7 @@ from .dm_automation import XhsDmAutomation
 from .cadence import bounded_ratio, periodic_deadline, row_deadline
 
 MAX_AUTO_RETRY = 3
-_BROWSER_SUBMIT_MARKER = "write_submitted:browser"
+_WRITE_SUBMIT_PREFIX = "write_submitted:"
 
 log = logging.getLogger("creatorhub.engine")
 
@@ -349,13 +349,15 @@ class MonitorEngine:
         return recovered
 
     @staticmethod
-    def _mark_browser_submit(model, task_id: int) -> None:
-        """Durably mark the conservative no-retry boundary before one click."""
+    def _mark_write_submit(model, task_id: int, *, channel: str = "browser") -> None:
+        """Durably mark the no-retry boundary before one click or API POST."""
+        if channel not in {"browser", "api"}:
+            raise ValueError("未知的提交通道")
         with get_session() as s:
             row = s.get(model, task_id)
             if row is None:
                 raise RuntimeError("待提交任务已不存在")
-            row.error = _BROWSER_SUBMIT_MARKER
+            row.error = _WRITE_SUBMIT_PREFIX + channel
             s.add(row)
             s.commit()
 
@@ -1637,6 +1639,13 @@ class MonitorEngine:
             known = set(s.exec(
                 select(ContentRecord.aweme_id)
                 .where(ContentRecord.target_id == target_id)).all())
+            failed_access = {
+                row.aweme_id: (row.id, row.xsec_token, row.xsec_source)
+                for row in s.exec(select(ContentRecord).where(
+                    ContentRecord.target_id == target_id,
+                    ContentRecord.download_status == "failed")).all()
+                if not _loads(row.media_json)
+            }
             base_dir = target.download_dir or get_setting(
                 "download_dir", self.cfg.engine.media_dir)
             auto_download = target.download_enabled
@@ -1721,13 +1730,25 @@ class MonitorEngine:
         seen = set()
         detail_attempts = 0
         filtered_count = 0
+        detail_failures = 0
+        consecutive_detail_failures = 0
+        first_detail_error = None
+        access_updates = {}
+        default_note_source = "pc_search" if kind == "keyword" else "pc_feed" if browser_reads else "pc_user"
         next_long_pause = random.randint(3, 5)
         for raw in briefs_raw:
             if error and classify_platform_error(error)[0] in {
                     RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
                 break
             brief = parse_note_brief(raw)
-            if not brief or brief["note_id"] in seen or brief["note_id"] in known:
+            if not brief or brief["note_id"] in seen:
+                continue
+            if brief["note_id"] in known:
+                previous = failed_access.get(brief["note_id"])
+                token = brief.get("xsec_token") or ""
+                source = brief.get("xsec_source") or default_note_source
+                if previous and token and (token, source) != previous[1:]:
+                    access_updates[previous[0]] = (token, source)
                 continue
             seen.add(brief["note_id"])
             if detail_budget and detail_attempts >= detail_budget:
@@ -1740,6 +1761,7 @@ class MonitorEngine:
                 else:
                     await self._xhs_gap()
             note_tok = brief.get("xsec_token", "")
+            note_source = brief.get("xsec_source") or default_note_source
             derr = ""
             card = {}
             try:
@@ -1747,7 +1769,7 @@ class MonitorEngine:
                     card, derr = await fetch_xhs_note_detail(
                         self.browser, identity, brief["note_id"],
                         xsec_token=note_tok,
-                        xsec_source=("pc_search" if kind == "keyword" else "pc_feed"),
+                        xsec_source=note_source,
                         block_media=self.cfg.engine.block_media_resources,
                         keep_context=True)
                     card = card or {}
@@ -1759,10 +1781,16 @@ class MonitorEngine:
                 else:
                     card = await client.note_detail(
                         brief["note_id"], xsec_token=note_tok,
-                        xsec_source="pc_search" if kind == "keyword" else "pc_feed")
+                        xsec_source=note_source)
             except XhsApiError as e:
-                error = e
-                break
+                if e.category != "business" or not (
+                        e.code == -510000 or e.signal in {"note_unavailable", "api_code_-510000"}):
+                    error = e
+                    break
+                # A single inaccessible note is not an account-wide failure.
+                # Keep its row/error and continue within the existing budget.
+                derr = str(e)
+                first_detail_error = first_detail_error or e
             except Exception as e:
                 category, _signal = classify_platform_error(e)
                 if category in {
@@ -1773,29 +1801,47 @@ class MonitorEngine:
                 derr = str(e)
             aw = parse_note_detail(card or {}, brief) if card else None
             if not aw:
+                detail_failures += 1
+                consecutive_detail_failures += 1
+                first_detail_error = first_detail_error or XhsApiError(
+                    derr or "笔记详情未取到媒体直链", signal="note_detail_unavailable")
                 # 详情抓取失败也建一条 failed 记录,保留 xsec_token 便于重试
                 aw = Aweme(aweme_id=brief["note_id"], desc=brief.get("title", ""),
-                           create_time=0, author_name="", media_type="images")
+                           create_time=int(brief.get("create_time") or 0), author_name="",
+                           media_type="video" if brief.get("type") == "video" else "images")
                 aw.platform = "xhs"
                 aw.cover = brief.get("cover", "")
-            if not _monitor_content_matches(aw, strategy):
+            else:
+                consecutive_detail_failures = 0
+            if aw.medias and not _monitor_content_matches(aw, strategy):
                 filtered_count += 1
                 continue
             should_download = bool(aw.medias) and auto_download and (
                 media_filter == "all" or aw.media_type == media_filter)
             media_json = json.dumps([{"url": m.url, "kind": m.kind, "ext": m.ext,
-                                      "index": m.index} for m in aw.medias])
+                                      "index": m.index} for m in aw.medias]) if aw.medias else ""
             rec = ContentRecord(
                 platform="xhs", target_id=target_id, aweme_id=aw.aweme_id, desc=aw.desc,
                 media_type=aw.media_type, quality=aw.quality_label,
                 create_time=aw.create_time, cover_url=aw.cover or "",
                 like_count=aw.like_count, comment_count=aw.comment_count,
                 duration=aw.duration, media_json=media_json, xsec_token=note_tok,
+                xsec_source=note_source,
                 download_status=("pending" if should_download
                                  else ("skipped" if aw.medias else "failed")),
                 error="" if aw.medias else (derr or "未取到媒体直链"),
             )
             new_records.append((rec, aw, should_download))
+            if consecutive_detail_failures >= 3:
+                # Repeated unavailable results may indicate compatibility or
+                # access-context trouble. Do not walk a whole list blindly.
+                error = XhsApiError(
+                    f"连续 3 条笔记详情未返回，已停止本轮请求。{first_detail_error}",
+                    signal="note_detail_batch_unavailable")
+                break
+
+        if not error and first_detail_error:
+            error = first_detail_error
 
         print(f"[xhs_scan] kind={kind} key={keyword or user_id} briefs={len(briefs_raw)} "
               f"new_records={len(new_records)} "
@@ -1804,9 +1850,16 @@ class MonitorEngine:
               f"with_media={sum(1 for _, a, _ in new_records if a.medias)} error={error!r}")
 
         target_name = ""
+        refreshed_access = 0
         with get_session() as s:
             for rec, _, _ in new_records:
                 s.add(rec)
+            for record_id, (token, source) in access_updates.items():
+                rec = s.get(ContentRecord, record_id)
+                if rec and rec.download_status == "failed" and not _loads(rec.media_json):
+                    rec.xsec_token, rec.xsec_source = token, source
+                    s.add(rec)
+                    refreshed_access += 1
             t = s.get(MonitorTarget, target_id)
             if t:
                 t.last_scan_at = datetime.utcnow()
@@ -1824,14 +1877,17 @@ class MonitorEngine:
             for rec, _, _ in new_records:
                 s.refresh(rec)
 
-        if new_records and not first_scan:
-            await self._notify_new(target_name, [aw for _, aw, _ in new_records])
+        captured = [aw for _, aw, _ in new_records if aw.medias]
+        if captured and not first_scan:
+            await self._notify_new(target_name, captured)
 
         await asyncio.gather(*(self._download(rec.id, aw, base_dir, proxy)
                                for rec, aw, should_download in new_records
                                if should_download))
         return {"ok": not error, "new": len(new_records), "error": error,
-                "scanned": detail_attempts, "filtered": filtered_count}
+                "scanned": detail_attempts, "filtered": filtered_count,
+                "captured": len(captured), "failed": detail_failures,
+                "partial": bool(captured and error), "refreshed": refreshed_access}
 
     # ── 独立弹幕监控(DanmakuWatch)──
     async def _scan_danmaku_watches(self):
@@ -2728,12 +2784,18 @@ class MonitorEngine:
             if not files:
                 return None
             # 转发前若在弹窗里剔除/调序了图片,media_order 是保留下来的原始序号(按新顺序)。
-            # 按它过滤+重排本地文件(首个=封面);越界序号忽略,全无效则回退全部原序。
-            if media_order:
-                picked = [files[i] for i in media_order
-                          if isinstance(i, int) and 0 <= i < len(files)]
-                if picked:
-                    files = picked
+            # None 才表示全部原序；无效选择应整单报错，不能回退发布其他媒体。
+            if media_order is not None:
+                if (not isinstance(media_order, list) or not media_order
+                        or any(type(i) is not int or not 0 <= i < len(files)
+                               for i in media_order)
+                        or len(set(media_order)) != len(media_order)):
+                    raise ValueError("转发媒体选择须为非空、不重复且未越界的整数序号列表")
+                files = [files[i] for i in media_order]
+            if target_platform == "xhs":
+                from ..platforms.xhs.media import validate_publish_files
+                files = validate_publish_files(
+                    "video" if rec.media_type == "video" else "images", files)
             title_cap = {"douyin": 30, "shipinhao": 16}.get(target_platform, 20)
             t_title = (title if title is not None else (rec.desc or ""))[:title_cap]
             t_desc = desc if desc is not None else (rec.desc or "")
@@ -2906,26 +2968,40 @@ class MonitorEngine:
                                              headed=True,
                                              mode=xhs_mode,
                                              visibility=visibility,
+                                             preserve_error=True,
                                              on_submit=(
-                                                 lambda: self._mark_browser_submit(
-                                                     PublishTask, task_id)
-                                                 if xhs_mode == "browser" else None))
+                                                 lambda: self._mark_write_submit(
+                                                     PublishTask, task_id, channel=xhs_mode)))
+        except asyncio.CancelledError:
+            await self._finish_publish(
+                task_id, False, "", "write_uncertain:发布已中断，结果需到平台核对")
+            raise
         except Exception as e:
             ok, url, err = False, "", f"发布异常: {e!r}"
         return await self._finish_publish(task_id, ok, url, err)
 
     async def _finish_publish(self, task_id, ok, url, err, platform="xhs") -> dict:
+        platform_error = err
+        # Keep structured failures through risk classification, then persist
+        # and return only text (never exception objects or raw response data).
+        err = str(err or "")
         account_id = None
         failure = None
         uncertain = (not ok and isinstance(err, str)
                      and err.startswith("write_uncertain:"))
-        if not ok and not uncertain:
+        if not ok:
             with get_session() as s:
                 task = s.get(PublishTask, task_id)
                 account_id = task.account_id if task else None
-            if account_id:
+                submitted = bool(task and (task.error or "").startswith(_WRITE_SUBMIT_PREFIX))
+            # A durable submit marker wins over any later adapter exception.
+            # Losing the response is not evidence that the write was rejected.
+            uncertain = uncertain or submitted
+            if uncertain and not str(err or "").startswith("write_uncertain:"):
+                err = f"write_uncertain:发布已提交，结果需到平台核对；{err}"
+            if account_id and not uncertain:
                 failure = self.risk.record_failure(
-                    account_id, OperationKind.PUBLISH, err)
+                    account_id, OperationKind.PUBLISH, platform_error)
         with get_session() as s:
             t = s.get(PublishTask, task_id)
             if t:
@@ -2934,7 +3010,7 @@ class MonitorEngine:
                     t.status = "done"
                     t.done_at = datetime.utcnow()
                 elif uncertain:
-                    # Submission crossed the click boundary but success evidence
+                    # Submission crossed the click/POST boundary but success evidence
                     # was lost.  Never enqueue it again automatically.
                     t.status = "uncertain"
                     t.scheduled_at = None
@@ -3713,7 +3789,7 @@ class MonitorEngine:
                         ok, err = await send_dm(
                             self.browser, identity, platform,
                             target_uid, target_sec_uid, content,
-                            on_submit=lambda: self._mark_browser_submit(
+                            on_submit=lambda: self._mark_write_submit(
                                 AccountActionTask, task_id),
                         )
                     else:
@@ -3900,7 +3976,7 @@ class MonitorEngine:
                         self.browser, identity, aweme_id, xsec_token, content,
                         target_comment_id=target_cid,
                         target_text=target_text,
-                        on_submit=lambda: self._mark_browser_submit(
+                        on_submit=lambda: self._mark_write_submit(
                             CommentTask, task_id))
                     ok = outcome.status == "success"
                     uncertain = outcome.status == "uncertain"
@@ -4070,6 +4146,7 @@ class MonitorEngine:
             platform = rec.platform or "douyin"
             note_id = rec.aweme_id
             note_tok = rec.xsec_token or ""
+            note_source = rec.xsec_source or ""
             kind = (t.target_kind if t else "creator")
             account_id = t.account_id if t else None
             acc_state = ""
@@ -4111,13 +4188,13 @@ class MonitorEngine:
                             return await fetch_xhs_note_detail(
                                 self.browser, identity, note_id,
                                 xsec_token=note_tok,
-                                xsec_source=("pc_search" if kind == "keyword"
+                                xsec_source=note_source or ("pc_search" if kind == "keyword"
                                              else "pc_feed"),
                                 block_media=self.cfg.engine.block_media_resources)
                         detail = await client.note_detail(
                             note_id, xsec_token=note_tok,
-                            xsec_source=("pc_search" if kind == "keyword"
-                                         else "pc_feed"))
+                            xsec_source=note_source or ("pc_search" if kind == "keyword"
+                                         else "pc_user"))
                         return detail, ""
                     except Exception as exc:
                         return {}, str(exc)
@@ -4193,8 +4270,12 @@ class MonitorEngine:
                 record = s.get(ContentRecord, rid)
                 if record is None:
                     continue
-                if record.platform == "xhs" and not record.media_json:
-                    continue
+                if record.platform == "xhs":
+                    media = _loads(record.media_json)
+                    if not isinstance(media, list) or not any(
+                            isinstance(item, dict) and isinstance(item.get("url"), str)
+                            and item["url"].strip() for item in media):
+                        continue
                 ids.append(rid)
         for rid in ids:
             await self.retry_download(rid)

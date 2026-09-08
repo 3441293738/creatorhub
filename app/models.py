@@ -99,6 +99,12 @@ class AccountIdReservation(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
 
 
+class MonitorIdReservation(SQLModel, table=True):
+    """Keep deleted task IDs from being assigned to unrelated new monitors."""
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+
 class MonitorTarget(SQLModel, table=True):
     """被监控的对象。抖音=用户;小红书=创作者(creator)或搜索关键词(keyword)。"""
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -250,11 +256,24 @@ class ContentRecord(SQLModel, table=True):
     duration: int = 0                  # 时长(秒)
     media_json: str = ""               # 媒体直链快照(JSON),用于失败重试
     xsec_token: str = ""               # 小红书:重新拉详情(feed)所需令牌
+    xsec_source: str = ""              # 与令牌配套的来源；旧记录为空时按监控类型处理
     download_status: str = "pending"   # pending | downloading | done | failed
     retry_count: int = 0               # 已重试次数
     local_path: str = ""
     error: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class CommentWatchIdReservation(SQLModel, table=True):
+    """Do not assign a deleted comment monitor's ID to a new task."""
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+
+class DanmakuWatchIdReservation(SQLModel, table=True):
+    """Danmaku and comment monitors have independent ID namespaces."""
+    __table_args__ = {"sqlite_autoincrement": True}
+    id: Optional[int] = Field(default=None, primary_key=True)
 
 
 class CommentWatch(SQLModel, table=True):

@@ -2262,6 +2262,7 @@
               <option value="540">540P</option><option value="lowest">最低省流</option>
           </select></div>
           <div class="form-field dy-only"><label for="t-backfill">首次历史回填</label><select id="t-backfill">
+              <option value="">跟随全局设置</option>
               <option value="0">不下载历史作品</option><option value="5">最近 5 条</option>
               <option value="20">最近 20 条</option><option value="-1">尽可能全量</option>
           </select></div>
@@ -2557,6 +2558,77 @@
       </div>
     </div>
   </div>
+  <div class="card" id="engine-settings-card">
+    <div class="card-head">
+      <span class="card-ic"><svg aria-hidden="true"><use href="#i-settings"/></svg></span>
+      <h2>采集与运行 <span class="sub">常用配置，不必编辑文件</span></h2>
+    </div>
+    <p class="field-help engine-settings-intro">不确定怎么选时，先使用推荐值。保存后用于后续任务，已开始的任务不会被中断。</p>
+    <form id="engine-settings-form" class="stack" novalidate onsubmit="event.preventDefault();CreatorHubEngineSettings.save()">
+      <div id="engine-settings-errors" class="form-note engine-settings-errors" role="alert" tabindex="-1" hidden></div>
+      <fieldset class="engine-settings-group">
+        <legend>监控与评论</legend>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="engine-xhs_read_mode">小红书作品获取方式</label>
+            <select id="engine-xhs_read_mode" name="xhs_read_mode" disabled aria-describedby="engine-read-help">
+              <option value="browser">浏览器获取（推荐）</option><option value="api">API 直连（兼容模式）</option>
+            </select>
+            <p class="field-help" id="engine-read-help">两种方式都读取接口数据。浏览器模式打开账号页面并读取其接口响应。</p>
+          </div>
+          <div class="form-field">
+            <label for="engine-monitor_initial_backfill_count">抖音新监控的历史作品数量</label>
+            <input id="engine-monitor_initial_backfill_count" name="monitor_initial_backfill_count" type="number" min="-1" max="1000" step="1" required disabled aria-describedby="engine-backfill-help">
+            <p class="field-help" id="engine-backfill-help">0 = 只看新增，-1 = 尽可能读取全部历史。仅影响抖音新建时选择“跟随全局设置”的监控，已建监控不变。</p>
+          </div>
+          <div class="form-field">
+            <label for="engine-comment_recent_works">评论监控：最近作品数</label>
+            <input id="engine-comment_recent_works" name="comment_recent_works" type="number" min="1" max="100" step="1" required disabled aria-describedby="engine-comments-help">
+          </div>
+          <div class="form-field">
+            <label for="engine-comment_recent_days">评论监控：最近天数</label>
+            <input id="engine-comment_recent_days" name="comment_recent_days" type="number" min="1" max="365" step="1" required disabled aria-describedby="engine-comments-help">
+          </div>
+        </div>
+        <p class="field-help" id="engine-comments-help">以上是全局默认范围；单个监控已单独配置时，仍按该监控的设置执行。</p>
+      </fieldset>
+      <details class="collection-advanced" id="engine-settings-advanced">
+        <summary>高级选项 · 请求等待与小红书发布</summary>
+        <div class="collection-advanced-body stack">
+          <p class="field-help">通常保留默认值即可。API 兼容模式依赖签名环境和有效登录态；选择模式不会跳过现有频率限制与审核。</p>
+          <div class="form-grid">
+            <div class="form-field"><label for="engine-request_timeout_seconds">接口等待上限（秒）</label><input id="engine-request_timeout_seconds" name="request_timeout_seconds" type="number" min="5" max="300" step="1" required disabled><p class="field-help">网络较慢时可适当增加，不改变浏览器页面的等待时间。</p></div>
+            <div class="form-field"><label for="engine-download_timeout_seconds">下载等待上限（秒）</label><input id="engine-download_timeout_seconds" name="download_timeout_seconds" type="number" min="30" max="1800" step="1" required disabled><p class="field-help">用于后续下载的网络等待，不是整个文件的总下载时长。</p></div>
+            <div class="form-field"><label for="engine-xhs_item_gap_seconds">小红书详情读取间隔（秒）</label><input id="engine-xhs_item_gap_seconds" name="xhs_item_gap_seconds" type="number" min="0" max="120" step="0.1" required disabled><p class="field-help">数值越大，采集越慢；建议保留 2.5 秒。</p></div>
+            <div class="form-field"><label for="engine-xhs_request_jitter">读取间隔随机延长比例</label><input id="engine-xhs_request_jitter" name="xhs_request_jitter" type="number" min="0" max="1" step="0.01" required disabled><p class="field-help">0.35 表示最多额外等待 35%，不会缩短原有间隔。</p></div>
+            <div class="form-field"><label for="engine-comment_max_scrolls">评论区默认翻页次数</label><input id="engine-comment_max_scrolls" name="comment_max_scrolls" type="number" min="1" max="30" step="1" required disabled><p class="field-help">更多翻页会增加耗时；单个监控可单独调整。</p></div>
+            <div class="form-field"><label for="engine-xhs_publish_mode">小红书发布方式</label><select id="engine-xhs_publish_mode" name="xhs_publish_mode" disabled><option value="browser">浏览器发布（推荐）</option><option value="api">API 直连（兼容模式）</option></select><p class="field-help">仅影响发布，不改变作品监控的获取方式；原生身份账号仍使用浏览器发布。</p></div>
+            <div class="form-field"><label for="engine-xhs_comment_write_mode">小红书评论发送方式</label><select id="engine-xhs_comment_write_mode" name="xhs_comment_write_mode" disabled><option value="browser">浏览器发送（推荐）</option><option value="manual">只保存草稿</option><option value="api">API 直连（兼容模式）</option></select></div>
+            <div class="form-field"><label class="switch-row" for="engine-xhs_comment_review_before_publish"><input id="engine-xhs_comment_review_before_publish" name="xhs_comment_review_before_publish" type="checkbox" disabled><span class="switch-copy"><b>小红书评论先审核</b><span>推荐开启。关闭后，新生成的评论可能直接进入发送队列。</span></span></label></div>
+          </div>
+        </div>
+      </details>
+      <details class="collection-advanced" id="engine-settings-health">
+        <summary>作品健康提醒 · 可选的后台检查</summary>
+        <div class="collection-advanced-body stack">
+          <div class="form-field"><label class="switch-row" for="engine-work_health_enabled"><input id="engine-work_health_enabled" name="work_health_enabled" type="checkbox" disabled><span class="switch-copy"><b>定时检查本账号作品</b><span>默认关闭。开启后会定时打开账号页面读取作品状态；推送还需在通知页配置渠道。</span></span></label></div>
+          <div class="form-grid">
+            <div class="form-field"><label for="engine-work_health_interval_seconds">检查间隔（分钟）</label><input id="engine-work_health_interval_seconds" name="work_health_interval_seconds" data-scale="60" type="number" min="10" max="1440" step="1" required disabled></div>
+            <div class="form-field"><label for="engine-work_health_recent_days">检查最近几天的作品</label><input id="engine-work_health_recent_days" name="work_health_recent_days" type="number" min="1" max="90" step="1" required disabled></div>
+            <div class="form-field"><label for="engine-work_health_zero_play_hours">零播放提醒阈值（小时）</label><input id="engine-work_health_zero_play_hours" name="work_health_zero_play_hours" type="number" min="1" max="168" step="0.5" required disabled><p class="field-help">发布达到该时长且播放量仍为 0 时提醒，仅适用于提供播放量的平台。</p></div>
+            <div class="form-field"><label class="switch-row" for="engine-work_health_stat_snapshots"><input id="engine-work_health_stat_snapshots" name="work_health_stat_snapshots" type="checkbox" disabled><span class="switch-copy"><b>记录账号数据快照</b><span>在已有账号检查中保存粉丝、作品等数据，供趋势查看。</span></span></label></div>
+          </div>
+        </div>
+      </details>
+      <p class="field-help">页面保存项优先于 <code>config.yaml</code>，重启后保留；不会修改其他配置。频率与活跃时段在「风控中心」管理。</p>
+      <div class="form-actions engine-settings-actions">
+        <span class="status-text" id="engine-settings-status" role="status" aria-live="polite">正在读取配置…</span>
+        <button type="button" class="ghost" id="engine-settings-retry" onclick="CreatorHubEngineSettings.load()" hidden>重新读取</button>
+        <button type="button" class="ghost" id="engine-settings-defaults" onclick="CreatorHubEngineSettings.defaults()" disabled>使用推荐值</button>
+        <button type="submit" id="engine-settings-save" disabled><svg aria-hidden="true"><use href="#i-check"/></svg>保存采集设置</button>
+      </div>
+    </form>
+  </div>
   </section>
 
   <section data-panel="publish">
@@ -2787,15 +2859,35 @@
   <div class="card">
     <div class="card-head">
       <span class="card-ic"><svg><use href="#i-film"/></svg></span>
-      <h2 id="content-title">最新作品 / 下载状态</h2>
+      <h2 id="content-title">作品记录</h2>
+    </div>
+    <div class="content-scope">
+      <div class="content-scope-copy"><span class="content-origin-label">当前查看范围</span>
+        <h3 id="content-scope-name" tabindex="-1">全部监控任务</h3>
+        <p id="content-scope-hint">当前平台的任务汇总；点击来源任务可单独查看。抓取时间与作品发布时间分开记录。</p>
+      </div>
+      <div class="content-scope-actions">
+        <button type="button" class="ghost sm" onclick="backToMonitorTasks()">返回任务列表</button>
+        <button type="button" class="ghost sm" id="content-show-all" onclick="showMonitorRecords(null)" hidden>查看全部任务</button>
+        <button type="button" class="ghost sm" onclick="showMonitorRecords(CONTENT_SRC || null)">清除筛选</button>
+      </div>
+    </div>
+    <div class="content-attribution-filters">
+      <div class="form-field"><label for="content-src">来源监控任务</label>
+        <select id="content-src" onchange="onContentSrc()" aria-label="按来源监控任务筛选"><option value="">全部监控任务</option></select>
+      </div>
+      <div class="form-field"><label for="content-captured-from">抓取开始日期</label>
+        <input id="content-captured-from" type="date" onchange="refreshContents(true)" aria-describedby="content-capture-help">
+      </div>
+      <div class="form-field"><label for="content-captured-to">抓取结束日期</label>
+        <input id="content-captured-to" type="date" onchange="refreshContents(true)" aria-describedby="content-capture-help">
+      </div>
+      <p id="content-capture-help" role="status" aria-live="polite">按当前设备时区筛选，包含结束当天；抓取时间为首次入库时间。</p>
     </div>
     <div class="manage-toolbar">
       <input type="search" id="content-search" placeholder="搜索作品描述 / ID" aria-label="搜索作品" oninput="refreshContents(true)">
       <select id="content-group" onchange="onContentMetaFilter()" aria-label="按分组筛选作品"><option value="">全部分组</option></select>
       <select id="content-tag" onchange="onContentMetaFilter()" aria-label="按标签筛选作品"><option value="">全部标签</option></select>
-      <select id="content-src" onchange="onContentSrc()" aria-label="按来源监控筛选">
-        <option value="">全部来源</option>
-      </select>
       <select id="content-type" onchange="refreshContents(true)" aria-label="按作品类型筛选">
         <option value="">全部类型</option><option value="video">视频</option><option value="images">图集 / 图文</option>
       </select>
@@ -2806,6 +2898,7 @@
       <input id="content-min-likes" type="number" min="0" step="1" placeholder="最低点赞" aria-label="最低点赞数" onchange="refreshContents(true)">
       <input id="content-min-comments" type="number" min="0" step="1" placeholder="最低评论" aria-label="最低评论数" onchange="refreshContents(true)">
       <select id="content-sort" onchange="refreshContents(true)" aria-label="作品排序">
+        <option value="captured_desc">最近抓取</option><option value="captured_asc">最早抓取</option>
         <option value="create_desc">最新发布</option><option value="create_asc">最早发布</option>
         <option value="likes_desc">点赞最多</option><option value="comments_desc">评论最多</option>
       </select>
@@ -2820,7 +2913,7 @@
         </span>
       </div>
     </div>
-    <div class="table-wrap" id="content-table-wrap"><table class="content-record-table" aria-label="最新作品与下载状态">
+    <div class="table-wrap" id="content-table-wrap"><table class="content-record-table" aria-label="作品记录、来源任务与抓取时间">
       <colgroup>
         <col class="content-col-check"><col class="content-col-cover"><col class="content-col-desc">
         <col class="content-col-type"><col class="content-col-time"><col class="content-col-data">
@@ -2828,7 +2921,7 @@
       </colgroup>
       <thead><tr>
         <th><input type="checkbox" id="content-selall" onchange="contentToggleAll(this.checked)" aria-label="全选"></th>
-        <th>封面</th><th>作品描述</th><th>类型</th><th>发布时间</th><th>数据</th><th>状态 / 操作</th><th>本地文件</th>
+        <th>封面</th><th>作品 / 来源任务</th><th>类型</th><th>抓取 / 发布时间</th><th>数据</th><th>状态 / 操作</th><th>本地文件</th>
       </tr></thead><tbody id="content-table"></tbody>
      </table></div>
     <div id="content-cards" class="xhs-grid" style="display:none"></div>
@@ -2948,18 +3041,39 @@
       <span class="card-ic"><svg><use href="#i-msg"/></svg></span>
       <h2>抓到的评论</h2>
     </div>
+    <div class="content-scope">
+      <div class="content-scope-copy"><span class="content-origin-label">当前查看范围</span>
+        <h3 id="comment-scope-name" tabindex="-1">全部评论监控任务</h3>
+        <p id="comment-scope-hint">当前平台的评论记录汇总；点击来源任务可单独查看。抓取时间指首次入库。</p>
+      </div>
+      <div class="content-scope-actions">
+        <button type="button" class="ghost sm" onclick="backToWatchTasks('comment')">返回任务列表</button>
+        <button type="button" class="ghost sm" id="comment-show-all" onclick="showWatchRecords('comment',null)" hidden>查看全部任务</button>
+        <button type="button" class="ghost sm" onclick="showWatchRecords('comment',COMMENT_SRC || null)">清除筛选</button>
+      </div>
+    </div>
+    <div class="content-attribution-filters">
+      <div class="form-field"><label for="comment-src">来源评论监控任务</label>
+        <select id="comment-src" onchange="onCommentSrc()" aria-label="按来源评论监控筛选"><option value="">全部评论监控任务</option></select>
+      </div>
+      <div class="form-field"><label for="comment-captured-from">抓取开始日期</label>
+        <input id="comment-captured-from" type="date" onchange="refreshComments(true)" aria-describedby="comment-capture-help">
+      </div>
+      <div class="form-field"><label for="comment-captured-to">抓取结束日期</label>
+        <input id="comment-captured-to" type="date" onchange="refreshComments(true)" aria-describedby="comment-capture-help">
+      </div>
+      <p id="comment-capture-help" role="status" aria-live="polite">按当前设备时区筛选，包含结束当天；抓取时间为首次入库时间。</p>
+    </div>
     <div class="manage-toolbar">
         <input type="search" id="comment-query" placeholder="搜索评论 / 用户 / 作品 ID" aria-label="搜索评论内容" oninput="refreshComments(true)">
         <select id="comment-group" onchange="onCommentMetaFilter()" aria-label="按分组筛选评论"><option value="">全部分组</option></select>
         <select id="comment-tag" onchange="onCommentMetaFilter()" aria-label="按标签筛选评论"><option value="">全部标签</option></select>
-        <select id="comment-src" onchange="onCommentSrc()" aria-label="按来源评论监控筛选">
-          <option value="">全部来源</option>
-        </select>
         <select id="comment-type" onchange="refreshComments(true)" aria-label="按评论类型筛选">
           <option value="">全部评论</option><option value="top">仅主评论</option><option value="reply">仅回复</option>
         </select>
         <input id="comment-min-likes" type="number" min="0" step="1" placeholder="最低点赞" aria-label="评论最低点赞数" onchange="refreshComments(true)">
         <select id="comment-sort" onchange="refreshComments(true)" aria-label="评论排序">
+          <option value="captured_desc">最近抓取</option><option value="captured_asc">最早抓取</option>
           <option value="latest">最新评论</option><option value="oldest">最早评论</option><option value="likes_desc">点赞最多</option>
         </select>
         <span class="filter-count" id="comment-filter-count" role="status" aria-live="polite"></span>
@@ -2971,9 +3085,9 @@
           <button class="ghost sm danger" onclick="clearComments()"><svg><use href="#i-trash"/></svg>清空评论</button>
         </div>
     </div>
-    <div class="table-wrap"><table aria-label="已抓取评论列表"><thead><tr>
+    <div class="table-wrap" id="comment-table-wrap"><table class="watch-record-table comment-record-table" aria-label="已抓取评论、来源任务与抓取时间"><thead><tr>
       <th style="width:30px"><input type="checkbox" id="comment-selall" onchange="commentToggleAll(this.checked)" aria-label="全选"></th>
-      <th>评论</th><th>用户</th><th>赞</th><th>评论时间</th><th>操作</th>
+      <th>评论 / 来源任务</th><th>用户</th><th>赞</th><th>抓取 / 评论时间</th><th>操作</th>
     </tr></thead><tbody id="comment-table"></tbody></table></div>
     <div id="comment-pager" class="danmaku-pager" hidden>
       <div class="danmaku-pager-left">
@@ -3097,14 +3211,36 @@
         <span class="card-ic"><svg><use href="#i-msg"/></svg></span>
         <h2>抓到的弹幕</h2>
       </div>
+      <div class="content-scope">
+        <div class="content-scope-copy"><span class="content-origin-label">当前查看范围</span>
+          <h3 id="danmaku-scope-name" tabindex="-1">全部弹幕监控任务</h3>
+          <p id="danmaku-scope-hint">当前平台的弹幕记录汇总；点击来源任务可单独查看。抓取时间指首次入库。</p>
+        </div>
+        <div class="content-scope-actions">
+          <button type="button" class="ghost sm" onclick="backToWatchTasks('danmaku')">返回任务列表</button>
+          <button type="button" class="ghost sm" id="danmaku-show-all" onclick="showWatchRecords('danmaku',null)" hidden>查看全部任务</button>
+          <button type="button" class="ghost sm" onclick="showWatchRecords('danmaku',DANMAKU_SRC || null)">清除筛选</button>
+        </div>
+      </div>
+      <div class="content-attribution-filters">
+        <div class="form-field"><label for="danmaku-src">来源弹幕监控任务</label>
+          <select id="danmaku-src" aria-label="按来源弹幕监控筛选" onchange="onDanmakuSrc()"><option value="">全部弹幕监控任务</option></select>
+        </div>
+        <div class="form-field"><label for="danmaku-captured-from">抓取开始日期</label>
+          <input id="danmaku-captured-from" type="date" onchange="refreshDanmaku(true)" aria-describedby="danmaku-capture-help">
+        </div>
+        <div class="form-field"><label for="danmaku-captured-to">抓取结束日期</label>
+          <input id="danmaku-captured-to" type="date" onchange="refreshDanmaku(true)" aria-describedby="danmaku-capture-help">
+        </div>
+        <p id="danmaku-capture-help" role="status" aria-live="polite">按当前设备时区筛选，包含结束当天；抓取时间为首次入库时间。</p>
+      </div>
       <div class="manage-toolbar">
-        <select id="danmaku-src" aria-label="按来源筛选弹幕" onchange="onDanmakuSrc()"><option value="">全部来源</option></select>
         <input id="danmaku-query" type="search" placeholder="筛选文本 / 用户 ID" aria-label="筛选弹幕文本或用户" oninput="refreshDanmaku(true)">
         <input id="danmaku-time-start" type="number" min="0" step="0.1" placeholder="起点秒" aria-label="视频内起点秒" onchange="refreshDanmaku(true)">
         <input id="danmaku-time-end" type="number" min="0" step="0.1" placeholder="终点秒" aria-label="视频内终点秒" onchange="refreshDanmaku(true)">
         <select id="danmaku-sort" onchange="refreshDanmaku(true)" aria-label="弹幕排序">
+          <option value="captured_desc">最近抓取</option><option value="captured_asc">最早抓取</option>
           <option value="video_asc">视频内时间正序</option><option value="video_desc">视频内时间倒序</option>
-          <option value="captured_desc">最新采集</option><option value="captured_asc">最早采集</option>
         </select>
         <span class="filter-count" id="danmaku-filter-count" role="status" aria-live="polite"></span>
         <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
@@ -3112,9 +3248,9 @@
           <button class="ghost sm danger" onclick="clearDanmaku()"><svg><use href="#i-trash"/></svg>清空弹幕</button>
         </div>
       </div>
-      <div class="hint" style="margin:8px 0 10px">同一轮抓取的弹幕会共享采集批次时间；“视频内时间”表示弹幕在视频中的出现位置。</div>
-      <div class="table-wrap"><table aria-label="已抓取弹幕列表"><thead><tr>
-        <th>弹幕</th><th>用户</th><th>视频内时间</th><th>来源</th><th>采集批次时间</th><th>操作</th>
+      <div class="hint" style="margin:8px 0 10px">“来源任务”是抓取该记录的监控配置；“获取渠道”是播放页或创作中心；“视频内时间”表示弹幕在视频中的出现位置。</div>
+      <div class="table-wrap" id="danmaku-table-wrap"><table class="watch-record-table danmaku-record-table" aria-label="已抓取弹幕、来源任务与抓取时间"><thead><tr>
+        <th>弹幕 / 来源任务</th><th>用户</th><th>视频内时间</th><th>获取渠道</th><th>抓取 / 发送时间</th><th>操作</th>
       </tr></thead><tbody id="danmaku-table"></tbody></table></div>
       <div id="danmaku-pager" class="danmaku-pager" hidden>
         <div class="danmaku-pager-left">
@@ -3360,6 +3496,7 @@
 <button id="backtop" class="ghost" type="button" tabindex="-1" aria-hidden="true" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="返回顶部" title="返回顶部"><svg><use href="#i-next"/></svg></button>
 
 <script src="/static/submissions.js"></script>
+<script src="/static/engine-settings.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/workspace-ui.js"></script>
 <script src="/static/workbench.js"></script>

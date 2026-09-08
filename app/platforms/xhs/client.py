@@ -2,8 +2,9 @@
 用 curl_cffi 直接调 edith.xiaohongshu.com,请求头用 xhshow 纯算法签名(X-S/X-T/x-S-Common)。
 登录态(含 a1 / web_session 等 Cookie)来自浏览器扫码登录后的 storage_state。
 
-相比"浏览器拦截"方案:不依赖页面 JS 主动发请求,搜索/笔记/评论都稳定可控。
-小红书改版导致签名失效时,升级 xhshow 库即可(pip install -U xhshow)。
+这是显式启用的兼容通道，默认读取仍复用账号浏览器。
+接口适配参考 Spider_XHS；签名、请求字段与会话约定需要一起验证，
+本地签名函数可运行并不代表平台当前接受该请求。
 
 ⚠️ TLS 指纹:走 curl_cffi 的 impersonate,复刻真实 Chrome 的 JA3/HTTP2 指纹。
 纯 httpx 的 TLS 指纹与浏览器不同,容易被风控按"非浏览器客户端"识别;impersonate
@@ -11,12 +12,16 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from ...netfp import impersonate_for_ua
+from .cookies import cookie_str_from_state, has_a1, has_creator_cookies
+from .responses import XhsApiError, parse_response
 
 _HOST = "https://edith.xiaohongshu.com"
 _SEARCH_HOST = "https://so.xiaohongshu.com"
@@ -50,48 +55,6 @@ def _coherent_direct_headers(user_agent: str, impersonate: str) -> dict[str, str
     }
 
 
-def cookie_str_from_state(storage_state_json: str) -> str:
-    """从 Patchright storage_state JSON 提取小红书 Cookie 串(name=value; ...)。"""
-    try:
-        state = json.loads(storage_state_json or "{}")
-    except Exception:
-        return ""
-    parts = []
-    for c in state.get("cookies", []):
-        dom = c.get("domain", "")
-        if "xiaohongshu" in dom or "xhscdn" in dom or dom == "":
-            name, val = c.get("name"), c.get("value")
-            if name and val is not None:
-                parts.append(f"{name}={val}")
-    return "; ".join(parts)
-
-
-def has_a1(cookie_str: str) -> bool:
-    return "a1=" in (cookie_str or "")
-
-
-_CREATOR_COOKIE_NAMES = ("customerClientId", "galaxy_creator_session_id",
-                         "access-token-creator.xiaohongshu.com", "customer-sso-sid")
-
-
-def has_creator_cookies(storage_state_json: str) -> bool:
-    """登录态里是否含创作平台会话 cookie(可用于发布)。"""
-    try:
-        state = json.loads(storage_state_json or "{}")
-    except Exception:
-        return False
-    return any(c.get("name") in _CREATOR_COOKIE_NAMES for c in state.get("cookies", []))
-
-
-class XhsApiError(Exception):
-    def __init__(self, message: str, *, category: str = "business",
-                 status_code: int | None = None, signal: str = ""):
-        super().__init__(message)
-        self.category = category
-        self.status_code = status_code
-        self.signal = signal or category
-
-
 class XhsApiClient:
     def __init__(self, cookie_str: str, user_agent: str, timeout: float = 30.0,
                  proxy: str = ""):
@@ -99,6 +62,8 @@ class XhsApiClient:
         from curl_cffi.requests import AsyncSession
         from ...browser.manager import normalize_proxy
         self._session_cls = AsyncSession
+        self._session = None
+        self._session_owner = None
         self.cookie_str = cookie_str or ""
         self.timeout = timeout
         # 规范化:裸 host:port 补成 http://...(curl_cffi 必须带 scheme)
@@ -119,6 +84,45 @@ class XhsApiClient:
         }
 
     # ── 底层请求 ──
+    @asynccontextmanager
+    async def session_scope(self):
+        """Reuse one transport for a bounded operation, never across accounts.
+
+        Nested scopes share their owner's session. Requests by other tasks use
+        independent one-shot transports. Cookies remain the explicit login
+        snapshot used by the signer, rather than an independently evolving jar.
+        """
+        owner = asyncio.current_task()
+        if self._session_owner is not None:
+            if self._session_owner is not owner:
+                raise RuntimeError("API session_scope 已由另一个任务持有")
+            yield self
+            return
+        # Reserve ownership before entering a transport that may suspend.
+        self._session_owner = owner
+        try:
+            async with self._session_cls(discard_cookies=True) as session:
+                self._session = session
+                try:
+                    yield self
+                finally:
+                    self._session = None
+        finally:
+            self._session_owner = None
+
+    async def _request(self, method: str, url: str, **kwargs):
+        async def send(session):
+            request = getattr(session, method)
+            return await request(
+                url, impersonate=self.impersonate, proxy=self.proxy,
+                timeout=self.timeout, **kwargs)
+        if self._session is not None and self._session_owner is asyncio.current_task():
+            return await send(self._session)
+        # A one-shot request owns only its own transport. Concurrent unscoped
+        # requests must not borrow a session that another request will close.
+        async with self._session_cls(discard_cookies=True) as session:
+            return await send(session)
+
     def _query(self, params: Dict[str, Any]) -> str:
         # 与签名串一致:保留逗号不编码(对齐小红书前端/浏览器行为)
         return "&".join(f"{k}={quote(str(v) if v is not None else '', safe=',')}"
@@ -144,9 +148,7 @@ class XhsApiClient:
             sign = self._signer.sign_headers_get(uri, self.cookie_str, params=params or {})
             headers = {**self.base_headers, **sign, "Cookie": self.cookie_str}
             url = _HOST + (self._signer.build_url(uri, params) if params else uri)
-        async with self._session_cls() as cli:
-            r = await cli.get(url, headers=headers, impersonate=self.impersonate,
-                              proxy=self.proxy, timeout=self.timeout)
+        r = await self._request("get", url, headers=headers)
         return self._unwrap(r)
 
     async def _post(self, uri: str, data: Dict[str, Any], *,
@@ -154,57 +156,13 @@ class XhsApiClient:
         sign = self._signer.sign_headers_post(uri, self.cookie_str, payload=data or {})
         headers = {**self.base_headers, **sign, "Cookie": self.cookie_str}
         body = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
-        async with self._session_cls() as cli:
-            r = await cli.post(f"{host}{uri}", data=body.encode("utf-8"),
-                               headers=headers, impersonate=self.impersonate,
-                               proxy=self.proxy, timeout=self.timeout)
+        r = await self._request(
+            "post", f"{host}{uri}", data=body.encode("utf-8"), headers=headers)
         return self._unwrap(r)
 
     @staticmethod
     def _unwrap(r) -> dict:
-        if r.status_code in (403, 429, 461, 471):
-            raise XhsApiError(
-                f"触发验证码/风控(HTTP {r.status_code}),请稍后再试",
-                category="risk", status_code=r.status_code,
-                signal=f"http_{r.status_code}")
-        if r.status_code == 401:
-            raise XhsApiError(
-                "登录状态已失效", category="auth", status_code=401,
-                signal="http_401")
-        if r.status_code == 407:
-            raise XhsApiError(
-                "代理认证失败", category="network", status_code=407,
-                signal="proxy_auth")
-        if r.status_code >= 500:
-            raise XhsApiError(
-                f"平台服务异常(HTTP {r.status_code})", category="network",
-                status_code=r.status_code, signal=f"http_{r.status_code}")
-        try:
-            j = r.json()
-        except Exception:
-            category = "risk" if 200 <= r.status_code < 300 else "business"
-            raise XhsApiError(
-                f"非 JSON 响应(HTTP {r.status_code}): {r.text[:120]}",
-                category=category, status_code=r.status_code,
-                signal="ambiguous_response" if category == "risk" else "non_json")
-        if not j.get("success", True) and "data" not in j:
-            code = j.get("code")
-            message = str(j.get("msg") or j.get("message") or "")
-            text = message.lower()
-            if (code in {-100, -101, 401}
-                    or any(marker in text for marker in (
-                        "登录状态", "登录已失效", "未登录", "login expired"))):
-                category, signal = "auth", "auth_expired"
-            elif (code in {403, 429, 461, 471}
-                  or any(marker in text for marker in (
-                      "风控", "频繁", "验证码", "验证", "risk", "captcha"))):
-                category, signal = "risk", f"api_code_{code}"
-            else:
-                category, signal = "business", f"api_code_{code}"
-            raise XhsApiError(
-                f"接口失败 code={code} msg={message}", category=category,
-                status_code=r.status_code, signal=signal)
-        return j.get("data") or {}
+        return parse_response(r).get("data") or {}
 
     # ── 业务接口 ──
     async def search_notes(self, keyword: str, page: int = 1, page_size: int = 20,
@@ -231,13 +189,33 @@ class XhsApiClient:
         data = {
             "source_note_id": note_id,
             "image_formats": ["jpg", "webp", "avif"],
-            "extra": {"need_body_topic": 1},
+            "extra": {"need_body_topic": "1"},
             "xsec_source": xsec_source or "pc_search",
             "xsec_token": xsec_token,
         }
-        d = await self._post("/api/sns/web/v1/feed", data)
+        try:
+            d = await self._post("/api/sns/web/v1/feed", data)
+        except XhsApiError as exc:
+            if exc.code != -510000 or exc.category != "business":
+                raise
+            raise XhsApiError(
+                "笔记详情未返回（code=-510000，平台提示：笔记不存在）。"
+                "请核对同账号可打开的完整笔记链接及访问参数；此结果未确认作品已删除。",
+                category="business", status_code=exc.status_code,
+                signal="note_unavailable", payload=exc.payload, code=exc.code) from exc
         items = d.get("items") or []
-        return items[0] if items else {}
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            raise XhsApiError("笔记详情返回了异常的列表结构", category="risk", signal="ambiguous_response")
+        for item in items:
+            card = item.get("note_card") or {}
+            if not isinstance(card, dict):
+                raise XhsApiError("笔记详情卡片结构异常", category="risk", signal="ambiguous_response")
+            actual_id = str(card.get("note_id") or card.get("id") or item.get("id") or "")
+            if actual_id == note_id:
+                return item
+        if items:
+            raise XhsApiError("笔记详情与请求的笔记 ID 不一致", signal="note_id_mismatch")
+        return {}
 
     async def note_detail(self, note_id: str, xsec_token: str = "",
                           xsec_source: str = "pc_search") -> dict:
@@ -262,6 +240,30 @@ class XhsApiClient:
         if xsec_source:
             params["xsec_source"] = xsec_source
         return await self._get("/api/sns/web/v2/comment/page", params)
+
+    async def note_sub_comments(self, note_id: str, root_comment_id: str,
+                                xsec_token: str = "", cursor: str = "",
+                                page_size: int = 10) -> dict:
+        """Read one reply page; pagination and pacing live in comments.py."""
+        if not note_id or not root_comment_id:
+            raise ValueError("读取回复需要笔记 ID 和根评论 ID")
+        return await self._get("/api/sns/web/v2/comment/sub/page", {
+            "note_id": note_id, "root_comment_id": root_comment_id,
+            "num": max(1, min(30, int(page_size))), "cursor": cursor,
+            "image_formats": "jpg,webp,avif", "top_comment_id": "",
+            "xsec_token": xsec_token,
+        })
+
+    async def collect_note_comments(self, note_id: str, xsec_token: str = "", *,
+                                    xsec_source: str = "pc_feed",
+                                    max_comments: int = 200, max_requests: int = 20,
+                                    include_replies: bool = True,
+                                    request_interval: float = 0.5) -> dict:
+        from .comments import collect_note_comments
+        return await collect_note_comments(
+            self, note_id, xsec_token, xsec_source=xsec_source,
+            max_comments=max_comments, max_requests=max_requests,
+            include_replies=include_replies, request_interval=request_interval)
 
     async def post_comment(self, note_id: str, content: str, xsec_token: str = "",
                            target_comment_id: str = "") -> dict:

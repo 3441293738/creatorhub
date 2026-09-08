@@ -240,7 +240,7 @@ class KeywordCollector:
         try:
             card = await client.note_detail(
                 brief["note_id"], xsec_token=brief.get("xsec_token", ""),
-                xsec_source="pc_search")
+                xsec_source=brief.get("xsec_source") or "pc_search")
         except Exception as exc:
             error = f"详情抓取失败: {exc}"
         aweme = parse_note_detail(card, brief) if card else None
@@ -264,7 +264,7 @@ class KeywordCollector:
             identity,
             brief["note_id"],
             xsec_token=brief.get("xsec_token", ""),
-            xsec_source="pc_search",
+            xsec_source=brief.get("xsec_source") or "pc_search",
             block_media=self.cfg.engine.block_media_resources,
         )
         aweme = parse_note_detail(card or {}, brief) if card else None
@@ -391,24 +391,16 @@ class KeywordCollector:
         if limit <= 0:
             return [], ""
         parsed: list[dict] = []
-        cursor = ""
         error = ""
         try:
-            for _ in range(max(1, min(20, math.ceil(limit / 10) + 1))):
-                page = await client.note_comments(
-                    note_id, xsec_token=xsec_token, cursor=cursor,
-                    xsec_source="pc_search")
-                roots = page.get("comments") or []
-                values = flatten_xhs_comments(roots) if include_replies else roots
-                parsed.extend(item for item in
-                              (parse_xhs_comment(value) for value in values) if item)
-                if len(parsed) >= limit or not page.get("has_more"):
-                    break
-                next_cursor = str(page.get("cursor") or "")
-                if not next_cursor or next_cursor == cursor:
-                    break
-                cursor = next_cursor
-                await asyncio.sleep(0.5)
+            page = await client.collect_note_comments(
+                note_id, xsec_token=xsec_token, xsec_source="pc_search",
+                max_comments=limit,
+                max_requests=max(1, min(20, math.ceil(limit / 10) + 1)),
+                include_replies=include_replies,
+                request_interval=max(0.5, self.cfg.engine.xhs_item_gap_seconds))
+            parsed = [item for item in (
+                parse_xhs_comment(value) for value in page["comments"]) if item]
         except Exception as exc:
             error = f"评论抓取失败: {exc}"
         if not include_replies:
@@ -513,6 +505,11 @@ class KeywordCollector:
                 return await self._run_keywords(
                     job_id, job, account, keywords, proxy,
                     douyin_client=douyin_client, context=context)
+        if xhs_client is not None:
+            async with xhs_client.session_scope():
+                return await self._run_keywords(
+                    job_id, job, account, keywords, proxy,
+                    xhs_client=xhs_client, identity=identity)
         return await self._run_keywords(
             job_id, job, account, keywords, proxy,
             xhs_client=xhs_client, identity=identity)

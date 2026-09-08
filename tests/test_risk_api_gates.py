@@ -44,6 +44,8 @@ class _BrowserStub:
 
 
 class _CreatorResponse:
+    status_code = 200
+
     def __init__(self, payload):
         self.payload = payload
 
@@ -182,6 +184,9 @@ class RiskApiGateTests(unittest.TestCase):
 
     def _published_creator_profile_response(self, response, expected_outcome):
         def creator_api_init(api, *_args, **_kwargs):
+            api._cancel_event = None
+            api._deadline = None
+            api._upload_cli = None
             api.a1 = "fixture"
             api.cookies = {"a1": "fixture"}
             api.cli = _CreatorCli(response)
@@ -212,6 +217,9 @@ class RiskApiGateTests(unittest.TestCase):
             return (None, "empty") if preserve_error else None
 
         def creator_api_init(api, *_args, **_kwargs):
+            api._cancel_event = None
+            api._deadline = None
+            api._upload_cli = None
             api.a1 = "fixture"
             api.cookies = {"a1": "fixture"}
             api.cli = _CreatorCli(response)
@@ -275,7 +283,7 @@ class RiskApiGateTests(unittest.TestCase):
 
         with patch("app.platforms.xhs.XhsApiClient") as client_cls:
             client_cls.return_value.note_detail_raw = AsyncMock(return_value={})
-            client_cls.return_value.note_comments = AsyncMock(
+            client_cls.return_value.collect_note_comments = AsyncMock(
                 return_value={"comments": [], "has_more": False})
             result = asyncio.run(main.publish_note_comments(
                 self.account_id, "note-1", "token", "pc_feed"))
@@ -607,23 +615,24 @@ class RiskApiGateTests(unittest.TestCase):
             "data": {"partial": "fixture"},
         }
         api = XhsCreatorApi.__new__(XhsCreatorApi)
+        api._cancel_event = None
+        api._deadline = None
+        api._upload_cli = None
         api.a1 = "fixture"
         api.cookies = {"a1": "fixture"}
         api.cli = _CreatorCli(response)
         with patch("app.platforms.xhs.creator_api.sign.generate_xsc", return_value={}):
-            default_result = api.my_info()
-            detailed_result = api.my_info(detailed=True)
-            default_ping = api.ping()
-            detailed_ping = api.ping(detailed=True)
-
-        self.assertEqual(default_result, (False, {"partial": "fixture"}))
-        self.assertEqual(
-            detailed_result,
-            (False, {"partial": "fixture"}, response))
-        self.assertEqual(default_ping, (False, "risk captcha"))
-        self.assertEqual(detailed_ping, (False, "risk captcha", response))
+            for method in (api.my_info, api.ping):
+                for detailed in (False, True):
+                    with self.assertRaises(XhsApiError) as caught:
+                        method(detailed=detailed)
+                    self.assertEqual(caught.exception.category, "risk")
+                    self.assertIs(caught.exception.payload, response)
 
         def creator_api_init(instance, *_args, **_kwargs):
+            instance._cancel_event = None
+            instance._deadline = None
+            instance._upload_cli = None
             instance.a1 = "fixture"
             instance.cookies = {"a1": "fixture"}
             instance.cli = _CreatorCli(response)
@@ -888,7 +897,7 @@ class RiskApiGateTests(unittest.TestCase):
     def test_note_comments_preserves_success_payload_and_uses_heavy_read(self):
         with patch("app.platforms.xhs.XhsApiClient") as client_cls:
             client_cls.return_value.note_detail_raw = AsyncMock(return_value={})
-            client_cls.return_value.note_comments = AsyncMock(
+            client_cls.return_value.collect_note_comments = AsyncMock(
                 return_value={"comments": [], "has_more": False})
             result = asyncio.run(main.publish_note_comments(
                 self.account_id, "note-1", "token", "pc_feed"))
@@ -903,7 +912,7 @@ class RiskApiGateTests(unittest.TestCase):
     def test_note_comments_preserves_http_400_error_mapping(self):
         with patch("app.platforms.xhs.XhsApiClient") as client_cls:
             client_cls.return_value.note_detail_raw = AsyncMock(return_value={})
-            client_cls.return_value.note_comments = AsyncMock(
+            client_cls.return_value.collect_note_comments = AsyncMock(
                 side_effect=XhsApiError(
                     "fixture failure", category="business", status_code=400,
                     signal="business_error"))
@@ -913,6 +922,27 @@ class RiskApiGateTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.status_code, 400)
         self.assertEqual(caught.exception.detail, "取评论失败:fixture failure")
+
+    def test_note_comments_preserves_partial_flag_and_refreshed_token(self):
+        with patch("app.platforms.xhs.XhsApiClient") as client_cls:
+            client = client_cls.return_value
+            client.note_detail_raw = AsyncMock(return_value={"xsec_token": "fresh-token"})
+            client.collect_note_comments = AsyncMock(return_value={
+                "comments": [{"id": "root", "content": "fixture"}, {
+                    "id": "reply", "content": "reply", "target_comment": {"id": "root"},
+                }], "has_more": True,
+            })
+            result = asyncio.run(main.publish_note_comments(
+                self.account_id, "note-1", "old-token", "pc_creatormng"))
+        self.assertEqual(result["total"], 2)
+        self.assertTrue(result["has_more"])
+        self.assertEqual(result["comments"][1]["reply_to"], "root")
+        options = client.collect_note_comments.await_args.kwargs
+        self.assertEqual(options["xsec_token"], "fresh-token")
+        self.assertEqual(options["xsec_source"], "pc_feed")
+        self.assertLessEqual(options["max_requests"], 20)
+        self.assertGreaterEqual(options["request_interval"], 0.5)
+        client.session_scope.assert_called_once()
 
     def test_note_media_unknown_parser_exception_is_stable_5xx(self):
         with patch("app.platforms.xhs.XhsApiClient") as client_cls, \
@@ -948,14 +978,14 @@ class RiskApiGateTests(unittest.TestCase):
             client = client_cls.return_value
             client.note_detail_raw = AsyncMock(
                 side_effect=TimeoutError("connection timeout"))
-            client.note_comments = AsyncMock(
+            client.collect_note_comments = AsyncMock(
                 return_value={"comments": [], "has_more": False})
             with self.assertRaises(HTTPException) as caught:
                 asyncio.run(main.publish_note_comments(
                     self.account_id, "note-1", "token", "pc_feed"))
 
         self.assertEqual(caught.exception.status_code, 400)
-        client.note_comments.assert_not_awaited()
+        client.collect_note_comments.assert_not_awaited()
         self.assertEqual(self._event_outcomes(), ["network"])
 
     def test_asgi_success_response_is_serializable_and_has_no_internal_markers(self):

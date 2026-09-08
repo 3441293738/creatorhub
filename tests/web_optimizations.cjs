@@ -36,6 +36,7 @@ function fixture() {
     hubGridEmpty: value => value, empty: (_cols, text) => text,
     noteCard: row => row.desc, monitorById: () => null,
     contentTimeCell: () => '', contentStatusLabel: value => value, contentPathCell: () => '',
+    contentSourceMarkup: () => '', contentCapturedTime: () => '', populateContentSrc() {},
     updateContentSelBar() {}, renderContentPager() {},
     setTimeout: (callback, delay) => { timers.push({ callback, delay }); return timers.length; },
     clearTimeout() {},
@@ -46,10 +47,12 @@ function fixture() {
     const VIEW_REQUESTS = new Map(); let VIEW_SERIAL = 0;
     let CONTENT_PAGE = 1, CONTENT_PAGE_SIZE = 20;
     let CONTENT_SRC = '', CONTENT_GROUP = '', CONTENT_TAG = '', CONTENTS = [];
+    const CONTENT_SOURCE_CACHE = new Map();
+    let CONTENT_RENDER_SCOPE = '';
     const selContent = new Set();
   `, context);
   for (const name of ['beginViewRequest', 'apiErrorMessage', 'scheduleToApi', 'localDateTimeValue',
-    'safeMediaUrl', 'jsArg', 'esc', 'workCard', 'refreshMyWorks', 'refreshContents', 'openDmConv']) {
+    'safeMediaUrl', 'jsArg', 'esc', 'workCard', 'refreshMyWorks', 'contentCaptureBounds', 'refreshContents', 'openDmConv']) {
     vm.runInContext(fn(name), context, { filename: `app.js:${name}` });
   }
   return { context, $, pending, clicks, timers, run: code => vm.runInContext(code, context) };
@@ -342,6 +345,28 @@ async function run() {
   confirmFollow(true);
   await follow;
   assert.equal(writes, 0, 'switching account while confirming cancels the old action');
+
+  // Partial API reads and refreshed access hints must not appear as total
+  // failure, nor imply that API mode opened a browser.
+  const monitor = fixture(), monitorToasts = [];
+  monitor.context.toast = (message, type) => monitorToasts.push({ message, type });
+  monitor.context.evtBtn = () => null;
+  monitor.context.withBusy = async (_button, _label, action) => action();
+  monitor.context.refreshMonitors = monitor.context.refreshContents = () => {};
+  vm.runInContext(fn('runNow'), monitor.context);
+  for (const [result, tone, message] of [
+    [{ partial: true, captured: 2, new: 3, failed: 1, error: 'code=-510000' }, 'info', '部分完成'],
+    [{ partial: false, captured: 0, failed: 3, error: '连续 3 条笔记详情未返回' }, 'err', '抓取未成功'],
+    [{ ok: true, skipped: true, reason: '本轮等待' }, 'info', '本轮等待'],
+    [{ ok: true, new: 0, refreshed: 1 }, 'info', '手动重试'],
+    [{ ok: true, new: 2, scanned: 3, filtered: 1 }, 'ok', '抓取完成'],
+  ]) {
+    monitor.context.api = async () => result;
+    await monitor.run('runNow(11)');
+    assert.equal(monitorToasts.at(-1).type, tone);
+    assert.ok(monitorToasts.at(-1).message.includes(message));
+    assert.ok(!monitorToasts.at(-2).message.includes('开浏览器'));
+  }
 
   console.log(`UI regression checks passed (${process.env.TZ})`);
 }

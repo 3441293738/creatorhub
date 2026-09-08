@@ -5,7 +5,7 @@
 - traceid 等:Python 随机生成
 
 依赖:Node.js(PATH 里)+ 本项目 node_modules 里的 crypto-js(npm install crypto-js)。
-小红书改版导致签名失效时,从参考项目更新 static/*.js 即可。
+平台改版时应对照参考项目一起复核签名、会话状态与请求字段，保留版本记录。
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 _STATIC = Path(__file__).parent / "static"
-_NODE_MODULES = Path(__file__).parents[2] / "node_modules"
+_NODE_MODULES = Path(__file__).resolve().parents[3] / "node_modules"
 
 # 让 execjs 启动的 node 能 require 到 crypto-js
 _existing = os.environ.get("NODE_PATH", "")
@@ -38,7 +38,7 @@ def _ctx(filename: str):
 
 
 def available() -> bool:
-    """检测 execjs + Node + 签名 JS 是否可用(供发布前判断,不可用则回退浏览器)。"""
+    """检查本地签名运行环境；不代表线上兼容，也不触发发布通道回退。"""
     global _AVAILABLE
     if _AVAILABLE is not None:
         return _AVAILABLE

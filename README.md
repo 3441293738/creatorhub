@@ -10,6 +10,8 @@ CreatorHub 使用 Python + FastAPI 提供统一 Web 界面，用于管理账号�
 
 浏览器交互按平台使用系统 Chrome CDP 或免费开源的 [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright)，业务层统一使用兼容的 Playwright API。每个账号使用独立的浏览器 Profile，Cookie、缓存和本地存储互不共享。
 
+小红书相关实现参考 [Spider_XHS](https://github.com/cv-cat/Spider_XHS)。
+
 ## 平台能力
 
 | 功能 | 抖音 | 小红书 | 快手 | 视频号 |

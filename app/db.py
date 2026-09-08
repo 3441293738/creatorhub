@@ -4,7 +4,10 @@ from __future__ import annotations
 from sqlalchemy import event, func, inspect, select, text
 from sqlmodel import SQLModel, Session, create_engine
 
-from .models import AccountIdReservation, DouyinAccount
+from .models import (AccountIdReservation, DouyinAccount, ContentRecord,
+                     MonitorIdReservation, MonitorTarget, CommentWatch,
+                     CommentRecord, CommentWatchIdReservation, DanmakuWatch,
+                     DanmakuRecord, DanmakuWatchIdReservation)
 
 _engine = None
 
@@ -20,6 +23,55 @@ def _reserve_account_id(_mapper, connection, account):
         # Explicit IDs are used by imports/fixtures. Keep subsequent automatic
         # allocations above them as well. SQLite serializes these writes.
         connection.execute(table.insert().prefix_with("OR IGNORE").values(id=account.id))
+
+
+@event.listens_for(MonitorTarget, "before_insert")
+def _reserve_monitor_id(_mapper, connection, target):
+    table = MonitorIdReservation.__table__
+    if target.id is None:
+        # Cover legacy databases and orphaned records as well as live tasks.
+        # Reserve inside this transaction so bulk inserts get distinct IDs.
+        highest = max(int(connection.execute(select(func.max(column))).scalar() or 0)
+                      for column in (MonitorTarget.id, ContentRecord.target_id))
+        if highest:
+            connection.execute(table.insert().prefix_with("OR IGNORE").values(id=highest))
+        result = connection.execute(table.insert().values())
+        target.id = int(result.inserted_primary_key[0])
+    else:
+        connection.execute(table.insert().prefix_with("OR IGNORE").values(id=target.id))
+
+
+_WATCH_ID_TABLES = {
+    CommentWatch: (CommentRecord, CommentWatchIdReservation),
+    DanmakuWatch: (DanmakuRecord, DanmakuWatchIdReservation),
+}
+
+
+def _reserve_watch_watermark(connection, model):
+    record, reservation = _WATCH_ID_TABLES[model]
+    highest = max(int(connection.execute(select(func.max(column))).scalar() or 0)
+                  for column in (model.id, record.watch_id))
+    if highest > 0:
+        connection.execute(reservation.__table__.insert().prefix_with("OR IGNORE").values(id=highest))
+
+
+@event.listens_for(CommentWatch, "before_insert")
+@event.listens_for(DanmakuWatch, "before_insert")
+def _reserve_watch_id(mapper, connection, watch):
+    table = _WATCH_ID_TABLES[mapper.class_][1].__table__
+    if watch.id is None:
+        _reserve_watch_watermark(connection, mapper.class_)
+        result = connection.execute(table.insert().values())
+        watch.id = int(result.inserted_primary_key[0])
+    else:
+        connection.execute(table.insert().prefix_with("OR IGNORE").values(id=watch.id))
+
+
+def _seed_watch_id_watermarks(engine):
+    with engine.begin() as connection:
+        for model, (_, reservation) in _WATCH_ID_TABLES.items():
+            if connection.execute(select(reservation.id).limit(1)).first() is None:
+                _reserve_watch_watermark(connection, model)
 
 
 def _seed_account_id_watermark(engine):
@@ -38,6 +90,18 @@ def _seed_account_id_watermark(engine):
                     select(func.max(column))).scalar() or 0))
         if highest:
             connection.execute(AccountIdReservation.__table__.insert()
+                               .prefix_with("OR IGNORE").values(id=highest))
+
+
+def _seed_monitor_id_watermark(engine):
+    """Reserve legacy IDs before a user can delete an existing task."""
+    with engine.begin() as connection:
+        if connection.execute(select(MonitorIdReservation.id).limit(1)).first() is not None:
+            return
+        highest = max(int(connection.execute(select(func.max(column))).scalar() or 0)
+                      for column in (MonitorTarget.id, ContentRecord.target_id))
+        if highest:
+            connection.execute(MonitorIdReservation.__table__.insert()
                                .prefix_with("OR IGNORE").values(id=highest))
 
 
@@ -110,6 +174,8 @@ def init_db(db_path: str):
               AND scheduled_at IS NOT NULL AND status = 'pending'
         """))
     _seed_account_id_watermark(_engine)
+    _seed_monitor_id_watermark(_engine)
+    _seed_watch_id_watermarks(_engine)
     return _engine
 
 

@@ -34,20 +34,37 @@ def _num(v) -> int:
 
 # ── 列表项(user_posted / search 的精简卡片) ──
 def parse_note_brief(item: dict) -> Optional[dict]:
-    """从 user_posted.notes[] 或 search.items[] 取 {note_id, xsec_token, type, title, cover}。"""
+    """Read a note card, preserving its token/source pair across list shapes."""
     if not isinstance(item, dict):
         return None
-    note_id = str(_first(item, "note_id", "id", default="") or "")
-    xsec_token = str(item.get("xsec_token") or "")
+    # Search also returns users/topics/query suggestions with unrelated IDs.
+    model_type = item.get("model_type")
+    if model_type and (not isinstance(model_type, str) or model_type not in {"note", "normal", "video"}):
+        return None
     card = item.get("note_card") or item            # search 把卡片放在 note_card 里
-    if not note_id:
-        note_id = str(_first(card, "note_id", "id", default="") or "")
+    if not isinstance(card, dict):
+        return None
+    note_id = str(_first(card, "note_id", default="")
+                  or _first(item, "note_id", default="")
+                  or _first(card, "id", default="")
+                  or _first(item, "id", default="") or "")
     if not note_id:
         return None
+    def text(value):
+        return value.strip() if isinstance(value, str) else ""
+    outer_token, inner_token = text(item.get("xsec_token")), text(card.get("xsec_token"))
+    owner, other = (item, card) if outer_token else (card, item)
+    xsec_token = outer_token or inner_token
+    xsec_source = text(owner.get("xsec_source"))
+    if not xsec_source and text(other.get("xsec_token")) in {"", xsec_token}:
+        xsec_source = text(other.get("xsec_source"))
     cover = card.get("cover") or {}
+    if not isinstance(cover, dict):
+        cover = {}
     cov_url = _first(cover, "url_default", "url_pre", "url") or ""
-    if not cov_url and isinstance(cover.get("info_list"), list) and cover["info_list"]:
-        cov_url = cover["info_list"][0].get("url", "")
+    if not cov_url and isinstance(cover.get("info_list"), list):
+        cov_url = next((entry.get("url", "") for entry in cover["info_list"]
+                        if isinstance(entry, dict) and entry.get("url")), "")
     create_time = _num(_first(card, "time", "create_time", "createTime", "timestamp",
                               default=0))
     if create_time > 10_000_000_000:
@@ -63,6 +80,7 @@ def parse_note_brief(item: dict) -> Optional[dict]:
     return {
         "note_id": note_id,
         "xsec_token": xsec_token,
+        "xsec_source": xsec_source,
         "type": card.get("type") or "normal",       # normal | video
         "title": _first(card, "display_title", "title", "desc", default="") or "",
         "cover": cov_url,
@@ -174,12 +192,31 @@ def parse_comment(raw: dict) -> Optional[dict]:
 
 
 def flatten_comments(raw_list: list) -> list:
-    """把含 sub_comments 的评论树拍平成一维(一级 + 子评论)。"""
+    """Flatten once, preserving a reply's parent without mutating snapshots."""
     out = []
+    seen = set()
+
+    def append(raw, parent=""):
+        if not isinstance(raw, dict):
+            return
+        cid = str(raw.get("id") or raw.get("comment_id") or "")
+        if not cid or cid in seen:
+            return
+        value = dict(raw)
+        if parent:
+            target = value.get("target_comment") or {}
+            if not (target.get("id") or target.get("comment_id")):
+                value["target_comment"] = {**target, "id": parent}
+        seen.add(cid)
+        out.append(value)
+
     for c in raw_list or []:
-        out.append(c)
+        if not isinstance(c, dict):
+            continue
+        append(c)
+        parent = str(c.get("id") or c.get("comment_id") or "")
         for sub in (c.get("sub_comments") or c.get("subComments") or []):
-            out.append(sub)
+            append(sub, parent)
     return out
 
 

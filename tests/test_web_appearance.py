@@ -116,7 +116,7 @@ def test_preview_includes_all_appearance_assets(tmp_path, monkeypatch):
     html = (output / "index.html").read_text(encoding="utf-8")
     assert "/static/" not in html
     assert html.index('./appearance.js') < html.index('<style>')
-    for asset in ("appearance.js", "appearance.css", "workspace-ui.js", "workbench.js", "workbench.css", "workbench-licenses.txt", "app.js"):
+    for asset in ("appearance.js", "appearance.css", "workspace-ui.js", "workbench.js", "workbench.css", "workbench-licenses.txt", "engine-settings.js", "app.js"):
         assert (output / asset).read_bytes() == (ROOT / "app/web" / asset).read_bytes()
 
 

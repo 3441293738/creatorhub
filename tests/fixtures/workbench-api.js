@@ -3,12 +3,74 @@
   const demo = window.fetch;
   const jobs = [];
   const edits = {};
+  if (new URL(location.href).searchParams.has("engine-read-fail")) document.documentElement.dataset.fixtureEngineRead = "fail";
+  // Patchright evaluates in an isolated world; DOM events exercise page-world
+  // handlers without exposing application globals or real service connections.
+  document.addEventListener("fixture-engine-load", async () => {
+    await window.CreatorHubEngineSettings.load();
+    document.documentElement.dataset.fixtureEngineLoadDone = String(Number(document.documentElement.dataset.fixtureEngineLoadDone || 0) + 1);
+  });
+  document.addEventListener("fixture-engine-save", () => window.CreatorHubEngineSettings.save());
+  document.addEventListener("fixture-record-refresh", async () => {
+    await Promise.all([refreshMonitors(), refreshContents(true)]);
+    document.documentElement.dataset.fixtureRecordReady = "true";
+  });
+  document.addEventListener("fixture-engine-state", () => {
+    document.documentElement.dataset.fixtureEngineDirty = String(window.CreatorHubEngineSettings.isDirty());
+  });
   const json = (data, status = 200) => new Response(JSON.stringify(data), {status, headers: {"Content-Type": "application/json"}});
   const job = body => ({id: jobs.length + 1, platform: "douyin", status: "pending", created_at: "2026-09-08T01:00:00Z",
     content_count: 0, comment_count: 0, error_count: 0, planned_content_count: 20, ...body});
   window.fetch = async (input, init = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url, location.href);
     const method = (init.method || "GET").toUpperCase(), flags = document.documentElement.dataset;
+    if (flags.fixtureRecords && method === "GET" && ["/api/monitors", "/api/contents"].includes(url.pathname)) {
+      const platform = url.searchParams.get("platform") || "douyin";
+      const targets = [
+        {id:11, platform, target_kind:"keyword", keyword:"城市漫游", alias:"品牌 A 城市选题", group_name:"品牌 A", tags:["日常"],
+          enabled:true, interval_seconds:3600, content_count:2, account_id:platform === "xhs" ? 2 : 1},
+        {id:12, platform, target_kind:"keyword", keyword:"旅行摄影", alias:"品牌 B 长任务名称验证移动端自动换行并保留完整来源", group_name:"品牌 B", tags:[],
+          enabled:true, interval_seconds:3600, content_count:1, account_id:platform === "xhs" ? 2 : 1},
+      ];
+      if (url.pathname === "/api/monitors") return json(targets);
+      const taskSource = id => {
+        const t = targets.find(item => item.id === id);
+        return t ? {id,platform,name:`${t.alias} · #${t.keyword}`,target_kind:t.target_kind,deleted:false}
+          : {id,platform,name:`已删除任务 #${id}`,target_kind:"",deleted:true};
+      };
+      flags.fixtureRecordsQuery = url.search;
+      let rows = [
+        {id:101,target_id:11,desc:"任务 A 本次抓取的作品",captured_at:"2026-09-08T08:10:00Z"},
+        {id:102,target_id:12,desc:"任务 B 独立记录同一作品",captured_at:"2026-09-08T09:00:00Z"},
+        {id:103,target_id:99,desc:"已删除任务的历史记录",captured_at:null},
+        {id:104,target_id:11,desc:"任务 A 昨天抓取的作品",captured_at:"2026-09-07T08:00:00Z"},
+      ].map(row => ({...row,platform,aweme_id:"shared-note",media_type:platform === "xhs" ? "images" : "video",create_time:1756684800,
+        download_status:"skipped",cover_url:"",like_count:12,comment_count:3,source:taskSource(row.target_id)}));
+      const targetId = url.searchParams.get("target_id");
+      if (targetId) rows = rows.filter(row => String(row.target_id) === targetId);
+      const from = url.searchParams.get("captured_from"), to = url.searchParams.get("captured_before");
+      if (from) rows = rows.filter(row => row.captured_at && Date.parse(row.captured_at) >= Date.parse(from));
+      if (to) rows = rows.filter(row => row.captured_at && Date.parse(row.captured_at) < Date.parse(to));
+      const sort = url.searchParams.get("sort");
+      if (sort === "captured_desc" || sort === "captured_asc") rows.sort((a,b) =>
+        (Date.parse(a.captured_at || 0) - Date.parse(b.captured_at || 0)) * (sort === "captured_desc" ? -1 : 1));
+      const page = Number(url.searchParams.get("page") || 1), size = Number(url.searchParams.get("page_size") || 10), total = rows.length;
+      return json({items:rows.slice((page-1)*size,page*size),total,page,page_size:size,pages:Math.max(1,Math.ceil(total/size)),source:targetId ? taskSource(Number(targetId)) : null});
+    }
+    if (url.pathname === "/api/settings/engine") {
+      if (method === "GET" && flags.fixtureEngineRead === "fail") return json({detail: "测试：配置读取暂时中断"}, 503);
+      if (method === "PUT") {
+        flags.fixtureEngineCount = String(Number(flags.fixtureEngineCount || 0) + 1);
+        flags.fixtureEngineBody = init.body;
+        await new Promise(resolve => setTimeout(resolve, flags.fixtureEngineSlow ? 650 : 90));
+        if (flags.fixtureEngineWrite === "fail") return json({detail: "测试：设置尚未保存"}, 503);
+        if (flags.fixtureEngineWrite === "invalid") return json({detail: [
+          {loc: ["body", "xhs_read_mode"], type: "literal_error", msg: "Invalid mode"},
+        ]}, 422);
+      }
+      return demo(input, init);
+    }
+    if (url.pathname === "/api/monitors" && method === "POST") flags.fixtureMonitorBody = init.body;
     // Explicit opt-in for legacy editor acceptance. Never reaches a real service.
     if (flags.fixtureEditors === "true") {
       if (!jobs.length) jobs.push(job({ status: "done", account_id: 1, keywords: ["日常创作", "城市漫游"], max_contents_per_keyword: 20,

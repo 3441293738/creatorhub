@@ -23,10 +23,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from datetime import date, datetime, time, timedelta, timezone
 import uuid as _uuid
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import Body, FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field as PydanticField, ValidationError
+from pydantic import BaseModel, Field as PydanticField, StrictInt, ValidationError
 from sqlalchemy import func, or_, update
 from sqlmodel import select
 
@@ -110,6 +110,8 @@ from .risk_admin import (RiskSettingsError, apply_risk_settings,
                          export_risk_settings, load_persisted_risk_settings,
                          save_risk_settings)
 from .settings import get_setting, set_setting
+from .engine_settings import (EngineSettingsPatch, export_engine_settings,
+                              load_persisted_engine_settings, save_engine_settings)
 from .scheduling import parse_schedule, utc_iso
 from .engine.cadence import row_deadline
 from .local_access import LocalAccessMiddleware
@@ -457,6 +459,8 @@ async def lifespan(app: FastAPI):
         print(f"[startup] 小红书账号自动合并失败(不影响启动): {e!r}")
     if load_persisted_risk_settings(cfg):
         print("[startup] 已加载风控中心保存的运行时规则")
+    if load_persisted_engine_settings(cfg):
+        print("[startup] 已加载设置页保存的采集与运行配置")
     try:
         repaired = _backfill_danmaku_records()
         if repaired:
@@ -4960,6 +4964,34 @@ async def get_settings():
     return _settings_dict()
 
 
+@app.get("/api/settings/engine")
+async def get_engine_settings():
+    return export_engine_settings(cfg)
+
+
+@app.put("/api/settings/engine", openapi_extra={
+    "requestBody": {"content": {"application/json": {
+        "schema": EngineSettingsPatch.model_json_schema()}}}})
+async def put_engine_settings(body: Any = Body(...)):
+    try:
+        result = save_engine_settings(cfg, body)
+    except ValidationError as exc:
+        # Validate here so rejected NaN/Infinity and accidental secret fields
+        # never get echoed in JSON error details (or break JSON serialization).
+        details = exc.errors(include_url=False, include_context=False, include_input=False)
+        for detail in details:
+            detail["loc"] = ["body", *detail["loc"]]
+        raise HTTPException(422, details) from exc
+    except Exception:
+        raise HTTPException(503, "设置尚未保存，请稍后重试；原有配置保持不变") from None
+    # Downloader snapshots its timeout at construction. Change the shared
+    # instance for future downloads; already-created HTTP clients keep theirs.
+    downloader = getattr(engine, "downloader", None)
+    if downloader is not None and "download_timeout_seconds" in body:
+        downloader.timeout = cfg.engine.download_timeout_seconds
+    return result
+
+
 @app.put("/api/settings")
 async def put_settings(body: SettingsIn):
     if body.download_dir is not None:
@@ -6821,11 +6853,13 @@ async def list_monitors(platform: str | None = None):
         if platform:
             q = q.where(MonitorTarget.platform == platform)
         ts = s.exec(q).all()
+        counts = dict(s.exec(select(ContentRecord.target_id, func.count(ContentRecord.id))
+                             .where(ContentRecord.target_id.in_([t.id for t in ts]))
+                             .group_by(ContentRecord.target_id)).all()) if ts else {}
         out = []
         for t in ts:
             d = _target_dict(t)
-            d["content_count"] = len(s.exec(
-                select(ContentRecord).where(ContentRecord.target_id == t.id)).all())
+            d["content_count"] = counts.get(t.id, 0)
             out.append(d)
         return out
 
@@ -6863,7 +6897,30 @@ async def target_contents(tid: int):
         rows = s.exec(select(ContentRecord)
                       .where(ContentRecord.target_id == tid)
                       .order_by(ContentRecord.create_time.desc())).all()
-        return [_content_dict(r) for r in rows]
+        return _content_records(s, rows)
+
+
+def _content_capture_bounds(start: datetime | None, end: datetime | None):
+    def utc(value):
+        return value.astimezone(timezone.utc).replace(tzinfo=None) if value and value.tzinfo else value
+    start, end = utc(start), utc(end)
+    if start and end and start >= end:
+        raise HTTPException(400, "抓取时间范围需满足开始早于结束")
+    return start, end
+
+
+def _content_ordering(sort: str):
+    if sort == "captured_desc":
+        return ContentRecord.created_at.desc(), ContentRecord.id.desc()
+    if sort == "captured_asc":
+        return ContentRecord.created_at.asc(), ContentRecord.id.asc()
+    if sort == "create_asc":
+        return ContentRecord.create_time.asc(), ContentRecord.id.asc()
+    if sort == "likes_desc":
+        return ContentRecord.like_count.desc(), ContentRecord.id.desc()
+    if sort == "comments_desc":
+        return ContentRecord.comment_count.desc(), ContentRecord.id.desc()
+    return ContentRecord.create_time.desc(), ContentRecord.id.desc()
 
 
 @app.get("/api/contents")
@@ -6873,7 +6930,9 @@ async def all_contents(limit: int = 100, platform: str | None = None,
                        download_status: str = "", min_like_count: int = 0,
                        min_comment_count: int = 0, sort: str = "create_desc",
                        page: int = 1, page_size: int = 10,
-                       paginate: bool = False):
+                       paginate: bool = False,
+                       captured_from: datetime | None = None,
+                       captured_before: datetime | None = None):
     """Return monitored works, optionally as a filtered paginated result.
 
     The legacy list response remains the default for older callers.  The web
@@ -6883,12 +6942,17 @@ async def all_contents(limit: int = 100, platform: str | None = None,
     limit = max(1, min(limit, 1000))
     page = max(1, page)
     page_size = max(1, min(page_size, 200))
+    start, end = _content_capture_bounds(captured_from, captured_before)
     with get_session() as s:
+        selected_target = s.get(MonitorTarget, target_id) if target_id is not None else None
+        selected_source = (_content_source(target_id, platform or (selected_target.platform if selected_target else ""), selected_target)
+                           if target_id is not None else None)
         stmt = select(ContentRecord)
         if platform:
             stmt = stmt.where(ContentRecord.platform == platform)
         if target_id is not None:
             stmt = stmt.where(ContentRecord.target_id == target_id)
+        stmt = _report_window(stmt, ContentRecord, start, end)
         text_query = q.strip()
         if text_query:
             stmt = stmt.where(or_(ContentRecord.desc.contains(text_query),
@@ -6914,21 +6978,13 @@ async def all_contents(limit: int = 100, platform: str | None = None,
                     return []
                 return {"items": [], "total": 0, "page": page,
                         "page_size": page_size, "pages": 1,
-                        "has_prev": page > 1, "has_next": False}
+                        "has_prev": page > 1, "has_next": False, "source": selected_source}
             stmt = stmt.where(ContentRecord.target_id.in_(eligible_ids))
 
-        if sort == "create_asc":
-            ordering = (ContentRecord.create_time.asc(), ContentRecord.id.asc())
-        elif sort == "likes_desc":
-            ordering = (ContentRecord.like_count.desc(), ContentRecord.id.desc())
-        elif sort == "comments_desc":
-            ordering = (ContentRecord.comment_count.desc(), ContentRecord.id.desc())
-        else:
-            # 按作品发布时间倒序(回填时多条同批入库,用 id 排序会乱;create_time 才是真实时间序)
-            ordering = (ContentRecord.create_time.desc(), ContentRecord.id.desc())
+        ordering = _content_ordering(sort)
         if not paginate:
             rows = s.exec(stmt.order_by(*ordering).limit(limit)).all()
-            return [_content_dict(r) for r in rows]
+            return _content_records(s, rows)
 
         total = int(s.exec(select(func.count()).select_from(stmt.subquery())).one())
         pages = max(1, (total + page_size - 1) // page_size)
@@ -6936,7 +6992,8 @@ async def all_contents(limit: int = 100, platform: str | None = None,
                       .offset((page - 1) * page_size)
                       .limit(page_size)).all()
         return {
-            "items": [_content_dict(r) for r in rows],
+            "items": _content_records(s, rows),
+            "source": selected_source,
             "total": total, "page": page, "page_size": page_size,
             "pages": pages, "has_prev": page > 1, "has_next": page < pages,
         }
@@ -7339,6 +7396,8 @@ async def export_contents_report(
     start_date: date | None = None,
     end_date: date | None = None,
     full: bool = False,
+    captured_from: datetime | None = None,
+    captured_before: datetime | None = None,
 ):
     from .reporting import build_contents_report
 
@@ -7348,8 +7407,10 @@ async def export_contents_report(
         min_like_count = min_comment_count = 0
         sort = "create_desc"
         start = end = None
+        captured_from = captured_before = None
     else:
         start, end = _report_bounds(start_date, end_date)
+    captured_from, captured_before = _content_capture_bounds(captured_from, captured_before)
     platform = platform.strip() if platform else None
     group_name, tag, q = _meta_text(group_name, 40), _meta_text(tag, 24), q.strip()
     with get_session() as s:
@@ -7383,14 +7444,8 @@ async def export_contents_report(
         if min_comment_count > 0:
             stmt = stmt.where(ContentRecord.comment_count >= min_comment_count)
         stmt = _report_window(stmt, ContentRecord, start, end)
-        if sort == "create_asc":
-            ordering = (ContentRecord.create_time.asc(), ContentRecord.id.asc())
-        elif sort == "likes_desc":
-            ordering = (ContentRecord.like_count.desc(), ContentRecord.id.desc())
-        elif sort == "comments_desc":
-            ordering = (ContentRecord.comment_count.desc(), ContentRecord.id.desc())
-        else:
-            ordering = (ContentRecord.create_time.desc(), ContentRecord.id.desc())
+        stmt = _report_window(stmt, ContentRecord, captured_from, captured_before)
+        ordering = _content_ordering(sort)
         contents = s.exec(stmt.order_by(*ordering)).all()
         if eligible_ids is not None:
             targets = [t for t in targets if t.id in eligible_ids]
@@ -7406,6 +7461,8 @@ async def export_contents_report(
             ("最低评论", min_comment_count or ""), ("排序", sort),
             ("采集开始", start_date.isoformat() if start_date else ""),
             ("采集结束", end_date.isoformat() if end_date else ""),
+            ("抓取起点 UTC（含）", captured_from.isoformat() if captured_from else ""),
+            ("抓取终点 UTC（不含）", captured_before.isoformat() if captured_before else ""),
         ]),
     )
     return _report_download(payload, "contents")
@@ -7425,6 +7482,8 @@ async def export_comments_report(
     start_date: date | None = None,
     end_date: date | None = None,
     full: bool = False,
+    captured_from: datetime | None = None,
+    captured_before: datetime | None = None,
 ):
     from .reporting import build_comments_report
 
@@ -7434,8 +7493,10 @@ async def export_comments_report(
         min_like_count = 0
         sort = "latest"
         start = end = None
+        captured_from = captured_before = None
     else:
         start, end = _report_bounds(start_date, end_date)
+    captured_from, captured_before = _content_capture_bounds(captured_from, captured_before)
     platform = platform.strip() if platform else None
     group_name, tag, q = _meta_text(group_name, 40), _meta_text(tag, 24), q.strip()
     with get_session() as s:
@@ -7450,11 +7511,9 @@ async def export_comments_report(
             eligible_ids = [w.id for w in watches if w.id is not None
                             and _meta_matches(w, group_name, tag)]
 
-        stmt = select(CommentRecord)
+        stmt = _watch_record_filter(select(CommentRecord), CommentRecord, watch_id)
         if platform:
             stmt = stmt.where(CommentRecord.platform == platform)
-        if watch_id is not None:
-            stmt = stmt.where(CommentRecord.watch_id == watch_id)
         if aweme_id:
             stmt = stmt.where(CommentRecord.aweme_id == aweme_id)
         if eligible_ids is not None:
@@ -7471,12 +7530,8 @@ async def export_comments_report(
         if min_like_count > 0:
             stmt = stmt.where(CommentRecord.like_count >= min_like_count)
         stmt = _report_window(stmt, CommentRecord, start, end)
-        if sort == "oldest":
-            ordering = (CommentRecord.create_time.asc(), CommentRecord.id.asc())
-        elif sort == "likes_desc":
-            ordering = (CommentRecord.like_count.desc(), CommentRecord.id.desc())
-        else:
-            ordering = (CommentRecord.create_time.desc(), CommentRecord.id.desc())
+        stmt = _report_window(stmt, CommentRecord, captured_from, captured_before)
+        ordering = _watch_record_ordering(CommentRecord, sort)
         comments = s.exec(stmt.order_by(*ordering)).all()
         if eligible_ids is not None:
             watches = [w for w in watches if w.id in eligible_ids]
@@ -7491,6 +7546,8 @@ async def export_comments_report(
             ("评论类型", reply_type), ("最低点赞", min_like_count or ""),
             ("排序", sort), ("采集开始", start_date.isoformat() if start_date else ""),
             ("采集结束", end_date.isoformat() if end_date else ""),
+            ("抓取起点 UTC（含）", captured_from.isoformat() if captured_from else ""),
+            ("抓取终点 UTC（不含）", captured_before.isoformat() if captured_before else ""),
         ]),
     )
     return _report_download(payload, "comments")
@@ -7511,6 +7568,8 @@ async def export_danmaku_report(
     start_date: date | None = None,
     end_date: date | None = None,
     full: bool = False,
+    captured_from: datetime | None = None,
+    captured_before: datetime | None = None,
 ):
     from .reporting import build_danmaku_report
 
@@ -7520,8 +7579,10 @@ async def export_danmaku_report(
         min_video_time_ms = max_video_time_ms = min_like_count = 0
         sort = "video_asc"
         start = end = None
+        captured_from = captured_before = None
     else:
         start, end = _report_bounds(start_date, end_date)
+    captured_from, captured_before = _content_capture_bounds(captured_from, captured_before)
     platform = platform.strip() if platform else None
     group_name, tag, q = _meta_text(group_name, 40), _meta_text(tag, 24), q.strip()
     with get_session() as s:
@@ -7536,11 +7597,9 @@ async def export_danmaku_report(
             eligible_ids = [w.id for w in watches if w.id is not None
                             and _meta_matches(w, group_name, tag)]
 
-        stmt = select(DanmakuRecord)
+        stmt = _watch_record_filter(select(DanmakuRecord), DanmakuRecord, watch_id)
         if platform:
             stmt = stmt.where(DanmakuRecord.platform == platform)
-        if watch_id is not None:
-            stmt = stmt.where(DanmakuRecord.watch_id == watch_id)
         if aweme_id:
             stmt = stmt.where(DanmakuRecord.aweme_id == aweme_id)
         if eligible_ids is not None:
@@ -7556,14 +7615,8 @@ async def export_danmaku_report(
         if min_like_count > 0:
             stmt = stmt.where(DanmakuRecord.like_count >= min_like_count)
         stmt = _report_window(stmt, DanmakuRecord, start, end)
-        if sort == "video_desc":
-            ordering = (DanmakuRecord.video_time_ms.desc(), DanmakuRecord.id.desc())
-        elif sort == "captured_asc":
-            ordering = (DanmakuRecord.created_at.asc(), DanmakuRecord.id.asc())
-        elif sort == "captured_desc":
-            ordering = (DanmakuRecord.created_at.desc(), DanmakuRecord.id.desc())
-        else:
-            ordering = (DanmakuRecord.video_time_ms.asc(), DanmakuRecord.id.asc())
+        stmt = _report_window(stmt, DanmakuRecord, captured_from, captured_before)
+        ordering = _watch_record_ordering(DanmakuRecord, sort)
         danmaku = s.exec(stmt.order_by(*ordering)).all()
         if eligible_ids is not None:
             watches = [w for w in watches if w.id in eligible_ids]
@@ -7580,6 +7633,8 @@ async def export_danmaku_report(
             ("最低点赞", min_like_count or ""), ("排序", sort),
             ("采集开始", start_date.isoformat() if start_date else ""),
             ("采集结束", end_date.isoformat() if end_date else ""),
+            ("抓取起点 UTC（含）", captured_from.isoformat() if captured_from else ""),
+            ("抓取终点 UTC（不含）", captured_before.isoformat() if captured_before else ""),
         ]),
     )
     return _report_download(payload, "danmaku")
@@ -7611,7 +7666,33 @@ def _target_dict(t: MonitorTarget) -> dict:
     }
 
 
-def _content_dict(r: ContentRecord) -> dict:
+def _content_source(target_id: int, platform: str, target: MonitorTarget | None = None) -> dict:
+    """Public attribution only; never serialize a task's account/token/config."""
+    if target is None or target.platform != platform:
+        return {"id": target_id, "name": f"已删除任务 #{target_id}" if target_id > 0 else "未关联任务",
+                "platform": platform, "deleted": target_id > 0, "target_kind": "",
+                "group_name": "", "tags": []}
+    base = ("#" + target.keyword if target.target_kind == "keyword"
+            else target.nickname or target.sec_uid[:12] or f"任务 #{target.id}")
+    name = f"{target.alias} · {base}" if target.alias and target.alias != base else base
+    return {"id": target.id, "name": name, "platform": target.platform,
+            "deleted": False, "target_kind": target.target_kind,
+            "group_name": target.group_name, "tags": _load_meta_tags(target.tags)}
+
+
+def _content_records(session, rows) -> list[dict]:
+    ids = {row.target_id for row in rows}
+    targets = {t.id: t for t in session.exec(select(MonitorTarget).where(
+        MonitorTarget.id.in_(ids))).all()} if ids else {}
+    return [_content_dict(row, _content_source(row.target_id, row.platform, targets.get(row.target_id)))
+            for row in rows]
+
+
+def _content_dict(r: ContentRecord, source: dict | None = None) -> dict:
+    captured = r.created_at
+    if captured:
+        captured = (captured.astimezone(timezone.utc) if captured.tzinfo
+                    else captured.replace(tzinfo=timezone.utc))
     return {
         "id": r.id, "platform": r.platform, "target_id": r.target_id,
         "aweme_id": r.aweme_id, "desc": r.desc, "media_type": r.media_type,
@@ -7619,6 +7700,8 @@ def _content_dict(r: ContentRecord) -> dict:
         "like_count": r.like_count, "comment_count": r.comment_count,
         "duration": r.duration, "retry_count": r.retry_count,
         "download_status": r.download_status, "local_path": r.local_path, "error": r.error,
+        "captured_at": captured.isoformat() if captured else None,
+        "source": source or _content_source(r.target_id, r.platform),
     }
 
 
@@ -7839,7 +7922,11 @@ async def list_watches(platform: str | None = None):
         q = select(CommentWatch)
         if platform:
             q = q.where(CommentWatch.platform == platform)
-        return [_watch_dict(w) for w in s.exec(q).all()]
+        watches = s.exec(q).all()
+        counts = dict(s.exec(select(CommentRecord.watch_id, func.count(CommentRecord.id))
+                             .where(CommentRecord.watch_id.in_([w.id for w in watches]))
+                             .group_by(CommentRecord.watch_id)).all()) if watches else {}
+        return [dict(_watch_dict(w), comment_count=counts.get(w.id, 0)) for w in watches]
 
 
 @app.post("/api/comment-watches")
@@ -7998,7 +8085,7 @@ async def update_watch(wid: int, body: WatchUpdate):
 
 
 @app.delete("/api/comment-watches/{wid}")
-async def del_watch(wid: int, with_comments: bool = True):
+async def del_watch(wid: int, with_comments: bool = False):
     with get_session() as s:
         w = s.get(CommentWatch, wid)
         if not w:
@@ -8017,14 +8104,80 @@ async def scan_watch_now(wid: int):
     return await engine.scan_comment_watch(wid)
 
 
+# ─────────── 评论 / 弹幕记录来源 ───────────
+def _watch_source(watch_id: int | None, platform: str, model, watch=None) -> dict:
+    label = "评论" if model is CommentWatch else "弹幕"
+    module = "comments" if model is CommentWatch else "danmaku"
+    wid = watch_id or 0
+    missing = watch is None or watch.platform != platform
+    base = "" if missing else (watch.title or watch.aweme_id or watch.sec_uid[:12] or f"任务 #{wid}")
+    name = (f"已删除{label}任务 #{wid}" if wid > 0 else f"未关联{label}监控") if missing else (
+        f"{watch.alias} · {base}" if watch.alias and watch.alias != base else base)
+    return {"id": wid, "module": module, "platform": platform, "name": name,
+            "deleted": missing and wid > 0, "unassigned": wid <= 0,
+            "kind": "" if missing else watch.kind,
+            "group_name": "" if missing else watch.group_name,
+            "tags": [] if missing else _load_meta_tags(watch.tags)}
+
+
+def _selected_watch_source(session, model, watch_id, platform):
+    if watch_id is None:
+        return None
+    watch = session.get(model, watch_id) if watch_id > 0 else None
+    return _watch_source(watch_id, platform or (watch.platform if watch else ""), model, watch)
+
+
+def _watch_record_filter(stmt, model, watch_id):
+    if watch_id is None:
+        return stmt
+    if watch_id < 0:
+        raise HTTPException(400, "来源监控编号应为非负整数")
+    if watch_id == 0:
+        return stmt.where(or_(model.watch_id == 0, model.watch_id.is_(None)))
+    return stmt.where(model.watch_id == watch_id)
+
+
+def _watch_record_ordering(model, sort):
+    if sort == "captured_asc":
+        return model.created_at.asc(), model.id.asc()
+    if sort == "captured_desc":
+        return model.created_at.desc(), model.id.desc()
+    if model is CommentRecord:
+        if sort == "oldest":
+            return model.create_time.asc(), model.id.asc()
+        if sort == "likes_desc":
+            return model.like_count.desc(), model.id.desc()
+        return model.create_time.desc(), model.id.desc()
+    if sort == "video_desc":
+        return model.video_time_ms.desc(), model.id.desc()
+    return model.video_time_ms.asc(), model.id.asc()
+
+
+def _watch_captured_at(value):
+    if value is None:
+        return None
+    return (value.astimezone(timezone.utc) if value.tzinfo
+            else value.replace(tzinfo=timezone.utc)).isoformat()
+
+
+def _watch_records(session, rows, model):
+    ids = {row.watch_id for row in rows if row.watch_id and row.watch_id > 0}
+    watches = {w.id: w for w in session.exec(select(model).where(model.id.in_(ids))).all()} if ids else {}
+    serialize = _comment_dict if model is CommentWatch else _danmaku_dict
+    return [serialize(row, _watch_source(row.watch_id, row.platform, model, watches.get(row.watch_id)))
+            for row in rows]
+
+
 # ─────────── 评论数据 ───────────
-def _comment_dict(c: CommentRecord) -> dict:
+def _comment_dict(c: CommentRecord, watch_source: dict | None = None) -> dict:
     return {
         "id": c.id, "watch_id": c.watch_id, "aweme_id": c.aweme_id,
         "comment_id": c.comment_id, "text": c.text, "user_nickname": c.user_nickname,
         "user_sec_uid": c.user_sec_uid,
         "like_count": c.like_count, "create_time": c.create_time,
         "is_reply": bool(c.reply_to),
+        "platform": c.platform, "captured_at": _watch_captured_at(c.created_at),
+        "watch_source": watch_source or _watch_source(c.watch_id, c.platform, CommentWatch),
     }
 
 
@@ -8034,17 +8187,20 @@ async def list_comments(limit: int = 100, watch_id: int | None = None,
                         group_name: str = "", tag: str = "", q: str = "",
                         reply_type: str = "", min_like_count: int = 0,
                         sort: str = "latest", page: int = 1,
-                        page_size: int = 10, paginate: bool = False):
+                        page_size: int = 10, paginate: bool = False,
+                        captured_from: datetime | None = None,
+                        captured_before: datetime | None = None):
     """Return captured comments with optional SQL filters and pagination."""
     limit = max(1, min(limit, 1000))
     page = max(1, page)
     page_size = max(1, min(page_size, 200))
+    start, end = _content_capture_bounds(captured_from, captured_before)
     with get_session() as s:
-        stmt = select(CommentRecord)
+        selected_source = _selected_watch_source(s, CommentWatch, watch_id, platform)
+        stmt = _watch_record_filter(select(CommentRecord), CommentRecord, watch_id)
+        stmt = _report_window(stmt, CommentRecord, start, end)
         if platform is not None:
             stmt = stmt.where(CommentRecord.platform == platform)
-        if watch_id is not None:
-            stmt = stmt.where(CommentRecord.watch_id == watch_id)
         if aweme_id is not None:
             stmt = stmt.where(CommentRecord.aweme_id == aweme_id)
         text_query = q.strip()
@@ -8072,17 +8228,12 @@ async def list_comments(limit: int = 100, watch_id: int | None = None,
                     return []
                 return {"items": [], "total": 0, "page": page,
                         "page_size": page_size, "pages": 1,
-                        "has_prev": page > 1, "has_next": False}
+                        "has_prev": page > 1, "has_next": False, "watch_source": selected_source}
             stmt = stmt.where(CommentRecord.watch_id.in_(eligible_ids))
-        if sort == "oldest":
-            ordering = (CommentRecord.create_time.asc(), CommentRecord.id.asc())
-        elif sort == "likes_desc":
-            ordering = (CommentRecord.like_count.desc(), CommentRecord.id.desc())
-        else:
-            ordering = (CommentRecord.create_time.desc(), CommentRecord.id.desc())
+        ordering = _watch_record_ordering(CommentRecord, sort)
         if not paginate:
             rows = s.exec(stmt.order_by(*ordering).limit(limit)).all()
-            return [_comment_dict(c) for c in rows]
+            return _watch_records(s, rows, CommentWatch)
 
         total = int(s.exec(select(func.count()).select_from(stmt.subquery())).one())
         pages = max(1, (total + page_size - 1) // page_size)
@@ -8090,7 +8241,7 @@ async def list_comments(limit: int = 100, watch_id: int | None = None,
                       .offset((page - 1) * page_size)
                       .limit(page_size)).all()
         return {
-            "items": [_comment_dict(c) for c in rows],
+            "items": _watch_records(s, rows, CommentWatch), "watch_source": selected_source,
             "total": total, "page": page, "page_size": page_size,
             "pages": pages, "has_prev": page > 1, "has_next": page < pages,
         }
@@ -8247,7 +8398,7 @@ def _backfill_danmaku_records() -> int:
     return repaired
 
 
-def _danmaku_dict(row: DanmakuRecord) -> dict:
+def _danmaku_dict(row: DanmakuRecord, watch_source: dict | None = None) -> dict:
     parsed = _parse_stored_danmaku(row)
     user_id = row.user_id or (parsed or {}).get("user_id", "")
     user_nickname = row.user_nickname or (parsed or {}).get("user_nickname", "")
@@ -8260,6 +8411,8 @@ def _danmaku_dict(row: DanmakuRecord) -> dict:
         "create_time": row.create_time, "like_count": row.like_count,
         "is_blocked": row.is_blocked, "source": row.source,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+        "platform": row.platform, "captured_at": _watch_captured_at(row.created_at),
+        "watch_source": watch_source or _watch_source(row.watch_id, row.platform, DanmakuWatch),
     }
 
 
@@ -8269,7 +8422,11 @@ async def list_danmaku_watches(platform: str | None = None):
         q = select(DanmakuWatch).order_by(DanmakuWatch.id.desc())
         if platform:
             q = q.where(DanmakuWatch.platform == platform)
-        return [_danmaku_watch_dict(w) for w in s.exec(q).all()]
+        watches = s.exec(q).all()
+        counts = dict(s.exec(select(DanmakuRecord.watch_id, func.count(DanmakuRecord.id))
+                             .where(DanmakuRecord.watch_id.in_([w.id for w in watches]))
+                             .group_by(DanmakuRecord.watch_id)).all()) if watches else {}
+        return [dict(_danmaku_watch_dict(w), danmaku_count=counts.get(w.id, 0)) for w in watches]
 
 
 @app.post("/api/danmaku-watches")
@@ -8460,7 +8617,7 @@ async def update_danmaku_watch(wid: int, body: DanmakuWatchUpdate):
 
 
 @app.delete("/api/danmaku-watches/{wid}")
-async def delete_danmaku_watch(wid: int, with_records: bool = True):
+async def delete_danmaku_watch(wid: int, with_records: bool = False):
     with get_session() as s:
         watch = s.get(DanmakuWatch, wid)
         if not watch:
@@ -8494,16 +8651,19 @@ async def list_danmaku(limit: int = 100, watch_id: int | None = None,
                        min_video_time_ms: int = 0, max_video_time_ms: int = 0,
                        min_like_count: int = 0, sort: str = "video_asc",
                        page: int = 1, page_size: int = 10,
-                       paginate: bool = False):
+                       paginate: bool = False,
+                       captured_from: datetime | None = None,
+                       captured_before: datetime | None = None):
     limit = max(1, min(limit, 1000))
     page = max(1, page)
     page_size = max(1, min(page_size, 200))
+    start, end = _content_capture_bounds(captured_from, captured_before)
     with get_session() as s:
-        stmt = select(DanmakuRecord)
+        selected_source = _selected_watch_source(s, DanmakuWatch, watch_id, platform)
+        stmt = _watch_record_filter(select(DanmakuRecord), DanmakuRecord, watch_id)
+        stmt = _report_window(stmt, DanmakuRecord, start, end)
         if platform:
             stmt = stmt.where(DanmakuRecord.platform == platform)
-        if watch_id is not None:
-            stmt = stmt.where(DanmakuRecord.watch_id == watch_id)
         if aweme_id:
             stmt = stmt.where(DanmakuRecord.aweme_id == aweme_id)
         text_query = q.strip()
@@ -8519,7 +8679,10 @@ async def list_danmaku(limit: int = 100, watch_id: int | None = None,
             stmt = stmt.where(DanmakuRecord.like_count >= min_like_count)
         group_name, tag = _meta_text(group_name, 40), _meta_text(tag, 24)
         if group_name or tag:
-            watches = s.exec(select(DanmakuWatch)).all()
+            watch_query = select(DanmakuWatch)
+            if platform:
+                watch_query = watch_query.where(DanmakuWatch.platform == platform)
+            watches = s.exec(watch_query).all()
             ids = [w.id for w in watches if w.id is not None
                    and _meta_matches(w, group_name, tag)]
             if not ids:
@@ -8528,20 +8691,13 @@ async def list_danmaku(limit: int = 100, watch_id: int | None = None,
                 return {
                     "items": [], "total": 0, "page": page,
                     "page_size": page_size, "pages": 1,
-                    "has_prev": page > 1, "has_next": False,
+                    "has_prev": page > 1, "has_next": False, "watch_source": selected_source,
                 }
             stmt = stmt.where(DanmakuRecord.watch_id.in_(ids))
-        if sort == "video_desc":
-            ordering = (DanmakuRecord.video_time_ms.desc(), DanmakuRecord.id.desc())
-        elif sort == "captured_asc":
-            ordering = (DanmakuRecord.created_at.asc(), DanmakuRecord.id.asc())
-        elif sort == "captured_desc":
-            ordering = (DanmakuRecord.created_at.desc(), DanmakuRecord.id.desc())
-        else:
-            ordering = (DanmakuRecord.video_time_ms.asc(), DanmakuRecord.id.asc())
+        ordering = _watch_record_ordering(DanmakuRecord, sort)
         if not paginate:
             rows = s.exec(stmt.order_by(*ordering).limit(limit)).all()
-            return [_danmaku_dict(row) for row in rows]
+            return _watch_records(s, rows, DanmakuWatch)
 
         total = int(s.exec(select(func.count()).select_from(stmt.subquery())).one())
         pages = max(1, (total + page_size - 1) // page_size)
@@ -8551,7 +8707,7 @@ async def list_danmaku(limit: int = 100, watch_id: int | None = None,
             .limit(page_size)
         ).all()
         return {
-            "items": [_danmaku_dict(row) for row in rows],
+            "items": _watch_records(s, rows, DanmakuWatch), "watch_source": selected_source,
             "total": total,
             "page": page,
             "page_size": page_size,
@@ -8692,12 +8848,19 @@ async def add_publish(body: PublishIn, request: Request = None):
         def create():
             if body.media_type not in ("images", "video"):
                 raise HTTPException(400, "media_type 须为 images 或 video")
-            paths = [p for p in body.media_paths if Path(p).is_file()]
-            if not paths:
-                raise HTTPException(400, "没有可用的媒体文件,请先上传")
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform not in ("xhs", "kuaishou", "douyin", "shipinhao"):
                 raise HTTPException(400, "请选择一个已登录的抖音 / 小红书 / 快手 / 视频号账号")
+            if acc.platform == "xhs":
+                from .platforms.xhs.media import validate_publish_files
+                try:
+                    paths = validate_publish_files(body.media_type, body.media_paths)
+                except ValueError as exc:
+                    raise HTTPException(422, str(exc)) from exc
+            else:
+                paths = [p for p in body.media_paths if Path(p).is_file()]
+                if not paths:
+                    raise HTTPException(400, "没有可用的媒体文件,请先上传")
             pname = {"kuaishou": "快手", "douyin": "抖音",
                      "shipinhao": "视频号"}.get(acc.platform, "小红书")
             if acc.platform in ("kuaishou", "douyin", "shipinhao"):
@@ -9092,30 +9255,35 @@ async def publish_note_comments(account_id: int, note_id: str,
              if browser is not None and identity is not None
              else cfg.engine.user_agent),
             timeout=cfg.engine.request_timeout_seconds, proxy=proxy)
-        # 评论接口要 pc_feed 令牌;先调 feed 拿一个新鲜令牌(feed 接受 pc_creatormng 令牌)
-        tok, src = xsec_token, xsec_source
-        try:
-            item = await client.note_detail_raw(
-                note_id, xsec_token=xsec_token, xsec_source=xsec_source)
-            fresh_token = (item.get("xsec_token") or
-                           ((item.get("note_card") or {}).get("xsec_token")))
-            if fresh_token:
-                tok, src = fresh_token, "pc_feed"
-        except XhsApiError as exc:
-            if exc.category in {"risk", "auth", "network"}:
+        async with client.session_scope():
+            # Token refresh and both comment levels share this bounded session.
+            tok, src = xsec_token, xsec_source
+            try:
+                item = await client.note_detail_raw(
+                    note_id, xsec_token=xsec_token, xsec_source=xsec_source)
+                fresh_token = (item.get("xsec_token") or
+                               ((item.get("note_card") or {}).get("xsec_token")))
+                if fresh_token:
+                    tok, src = fresh_token, "pc_feed"
+            except XhsApiError as exc:
+                if exc.category in {"risk", "auth", "network"}:
+                    return None, exc
+            except Exception as exc:
+                category, _signal = classify_platform_error(exc)
+                if category in {
+                        RiskCategory.RISK, RiskCategory.AUTH,
+                        RiskCategory.NETWORK}:
+                    return None, exc
+                raise
+            try:
+                data = await client.collect_note_comments(
+                    note_id, xsec_token=tok, xsec_source=src,
+                    max_comments=200,
+                    max_requests=max(1, min(20, cfg.engine.comment_max_scrolls)),
+                    include_replies=True,
+                    request_interval=max(0.5, cfg.engine.xhs_item_gap_seconds))
+            except XhsApiError as exc:
                 return None, exc
-        except Exception as exc:
-            category, _signal = classify_platform_error(exc)
-            if category in {
-                    RiskCategory.RISK, RiskCategory.AUTH,
-                    RiskCategory.NETWORK}:
-                return None, exc
-            raise
-        try:
-            data = await client.note_comments(
-                note_id, xsec_token=tok, xsec_source=src)
-        except XhsApiError as exc:
-            return None, exc
         raw = data.get("comments") or []
         comments = [
             comment for comment in (
@@ -9151,7 +9319,7 @@ class RepostIn(BaseModel):
     topics: str | None = None
     visibility: str = "public"           # 抖音:public | friends | private
     allow_save: bool = True              # 抖音:是否允许他人保存
-    media_order: list[int] | None = None  # 剔除/调序后保留的图片原始序号(按新顺序);None=全部原序
+    media_order: list[StrictInt] | None = None  # 剔除/调序后保留的图片原始序号(按新顺序);None=全部原序
 
 
 async def _repost_content(cid: int, body: RepostIn, target_platform: str, request: Request = None):
@@ -9173,12 +9341,15 @@ async def _repost_content(cid: int, body: RepostIn, target_platform: str, reques
                     raise HTTPException(400, "请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
                 raise HTTPException(400, "请先完成小红书扫码登录或创作者登录")
-            tid = engine.create_relay_publish(
-                cid, body.account_id, target_platform=target_platform,
-                title=body.title, desc=body.desc, topics=body.topics,
-                visibility=body.visibility if body.visibility in ("public", "friends", "private") else "public",
-                allow_save=bool(body.allow_save), media_order=body.media_order,
-                scheduled_at=_parse_when(body.scheduled_at, acc.timezone_id), session=s)
+            try:
+                tid = engine.create_relay_publish(
+                    cid, body.account_id, target_platform=target_platform,
+                    title=body.title, desc=body.desc, topics=body.topics,
+                    visibility=body.visibility if body.visibility in ("public", "friends", "private") else "public",
+                    allow_save=bool(body.allow_save), media_order=body.media_order,
+                    scheduled_at=_parse_when(body.scheduled_at, acc.timezone_id), session=s)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
             if not tid:
                 raise HTTPException(400, "未找到该作品的本地文件,无法转发")
             return {"ok": True, "task_id": tid}

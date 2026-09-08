@@ -61,7 +61,7 @@ for (const key of ["monitors", "comments", "danmaku"]) {
 // Configuration is progressively disclosed; the search/record tools stay first.
 const groupSpecs = {
   accounts: [["accounts", "账号列表"], ["runtime", "浏览器内核"], ["proxies", "代理池"]],
-  settings: [["appearance", "外观与体验"], ["downloads", "下载设置"], ["ai", "AI 文案"]],
+  settings: [["appearance", "外观与体验"], ["downloads", "下载设置"], ["ai", "AI 文案"], ["engine", "采集与运行"]],
   monitors: [["targets", "监控目标"], ["records", "作品记录"]],
   comments: [["targets", "监控目标"], ["records", "评论记录"]],
   danmaku: [["targets", "监控目标"], ["records", "弹幕记录"]],
