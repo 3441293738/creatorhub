@@ -75,10 +75,14 @@ function apiFetch(path, options) {
 }
 
 const api = async (path, opts) => {
+  const workbenchRequest = globalThis.CreatorHubWorkbench?.requestStarted?.({ path, method: (opts?.method || "GET").toUpperCase() });
   _apiActive++; _barSync();
   let timeout = null, timedOut = false;
   try {
     opts = { ...(opts || {}) };
+    if (typeof navigator !== "undefined" && !navigator.onLine && opts.method && opts.method.toUpperCase() !== "GET") {
+      throw new Error("当前离线，内容已保留；连接恢复后请手动提交");
+    }
     // Bound read-only refreshes; never abort a write and imply it was not sent.
     if ((!opts.method || opts.method.toUpperCase() === "GET") && !opts.signal) {
       const controller = new AbortController();
@@ -102,9 +106,12 @@ const api = async (path, opts) => {
       }
       return await r.json();
     };
-    return window.CreatorHubSubmissions ? await window.CreatorHubSubmissions.run(path, opts, send) : await send(opts);
+    const result = window.CreatorHubSubmissions ? await window.CreatorHubSubmissions.run(path, opts, send) : await send(opts);
+    globalThis.CreatorHubWorkbench?.requestResult?.({ path, request: workbenchRequest, ok: true, method: (opts.method || "GET").toUpperCase() });
+    return result;
   } catch (e) {
     _apiFailures++;
+    globalThis.CreatorHubWorkbench?.requestResult?.({ path, request: workbenchRequest, ok: false, method: (opts?.method || "GET").toUpperCase() });
     if (timedOut) throw new Error("读取超时，请稍后重试");
     throw e;
   } finally { clearTimeout(timeout); _apiActive--; _barSync(); }
@@ -116,9 +123,18 @@ const ic = (id) => `<svg aria-hidden="true"><use href="#${id}"/></svg>`;
 function btnLoading(btn, label) {
   if (!btn) return () => {};
   const html = btn.innerHTML, dis = btn.disabled;
+  // Preserve occupied width through nested busy states, without freezing mobile layout.
+  const minWidth = btn.style.minWidth, width = btn.style.width;
+  const measured = typeof btn.getBoundingClientRect === "function" ? Math.ceil(btn.getBoundingClientRect().width) : 0;
+  if (measured) btn.style.width = btn.style.minWidth = `min(${measured}px, 100%)`;
+  const busy = btn.getAttribute("aria-busy");
+  btn.setAttribute("aria-busy", "true");
   btn.disabled = true; btn.classList.add("busy");
   btn.innerHTML = `<span class="spin"></span>${label ? `<span>${esc(label)}</span>` : ""}`;
-  return () => { try { btn.innerHTML = html; btn.disabled = dis; btn.classList.remove("busy"); } catch (e) {} };
+  return () => { try {
+    btn.innerHTML = html; btn.disabled = dis; btn.style.minWidth = minWidth; btn.style.width = width; btn.classList.remove("busy");
+    if (busy === null) btn.removeAttribute("aria-busy"); else btn.setAttribute("aria-busy", busy);
+  } catch (e) {} };
 }
 // 包裹一个用户发起的慢操作:按钮转圈 + 暂停轮询(避免 8 秒重渲染冲掉加载态)。
 // btn 可为 null(无按钮场景);fn 为实际 async 逻辑。
@@ -131,6 +147,8 @@ async function withBusy(btn, label, fn) {
 // 从内联 onclick 处理器里拿到被点的按钮(event 在同步阶段有效)
 function evtBtn() { try { return event.target.closest("button"); } catch (e) { return null; } }
 function toast(msg, type = "info", ms = 3600) {
+  // Composer errors belong beside its return action, not over the retry button.
+  if (globalThis.CreatorHubWorkbench?.feedback?.({ message: msg, type })) return;
   const box = $("toasts");
   const el = document.createElement("div");
   el.className = `toast ${type}`;
@@ -145,12 +163,22 @@ function toast(msg, type = "info", ms = 3600) {
     clearTimeout(timer); el.classList.add("hide"); setTimeout(() => el.remove(), 250);
   };
   el.querySelector(".toast-close").addEventListener("click", dismiss);
-  timer = setTimeout(dismiss, ms);
+  // Long errors remain readable; pointer/keyboard interaction pauses dismissal.
+  const duration = type === "err" ? Math.max(ms, 8000) : ms;
+  const resume = () => {
+    clearTimeout(timer);
+    if (!el.matches(":hover") && !el.contains(document.activeElement)) timer = setTimeout(dismiss, duration);
+  };
+  el.addEventListener("mouseenter", () => clearTimeout(timer));
+  el.addEventListener("mouseleave", resume);
+  el.addEventListener("focusin", () => clearTimeout(timer));
+  el.addEventListener("focusout", resume);
+  timer = setTimeout(dismiss, duration);
 }
-const empty = (cols, text, icon = "i-inbox", sub = "") =>
+const empty = (cols, text, icon = "i-inbox", sub = "", composer = "") =>
   `<tr><td colspan="${cols}"><div class="empty">` +
   `<div class="empty-ic">${ic(icon)}</div><div class="empty-t">${esc(text)}</div>` +
-  `${sub ? `<div class="empty-sub">${esc(sub)}</div>` : ""}</div></td></tr>`;
+  `${sub ? `<div class="empty-sub">${esc(sub)}</div>` : ""}${composer ? `<button type="button" class="ghost sm" data-open-composer="${esc(composer)}">${ic("i-plus")}新建</button>` : ""}</div></td></tr>`;
 const skeleton = (cols, rows = 3) => {
   let out = "";
   for (let i = 0; i < rows; i++) {
@@ -165,19 +193,32 @@ const skeleton = (cols, rows = 3) => {
 function setFieldError(el, message = "") {
   if (!el) return false;
   const field = el.closest(".form-field") || el.parentElement;
-  let error = field && field.querySelector(".field-error");
+  const errorId = el.id ? el.id + "-error" : "";
+  let error = errorId ? $(errorId) : field && field.querySelector(".field-error");
   if (message) {
     el.setAttribute("aria-invalid", "true");
     if (!error && field) {
       error = document.createElement("p");
       error.className = "field-error";
+      if (errorId) error.id = errorId;
       error.setAttribute("role", "alert");
       field.appendChild(error);
     }
-    if (error) error.textContent = message;
+    if (error) {
+      error.textContent = message;
+      if (errorId) {
+        const ids = new Set((el.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
+        ids.add(errorId); el.setAttribute("aria-describedby", [...ids].join(" "));
+      }
+    }
     return false;
   }
   el.removeAttribute("aria-invalid");
+  if (errorId) {
+    const ids = (el.getAttribute("aria-describedby") || "").split(/\s+/).filter(id => id && id !== errorId);
+    if (ids.length) el.setAttribute("aria-describedby", ids.join(" "));
+    else el.removeAttribute("aria-describedby");
+  }
   if (error) error.remove();
   return true;
 }
@@ -189,6 +230,7 @@ function toggleSecretInput(id, btn) {
   if (btn) {
     btn.setAttribute("aria-pressed", show ? "true" : "false");
     btn.setAttribute("aria-label", show ? "隐藏 API Key" : "显示 API Key");
+    btn.innerHTML = ic(show ? "i-eye-off" : "i-eye");
   }
   input.focus({ preventScroll: true });
 }
@@ -234,21 +276,23 @@ function validateNotificationConfig() {
 const _modalTriggers = new WeakMap();
 function _visibleModal() {
   return [...document.querySelectorAll(".pv-overlay[role='dialog']")].reverse()
-    .find(el => getComputedStyle(el).display !== "none");
+    .find(el => !el.hasAttribute("data-ui-closing") && getComputedStyle(el).display !== "none");
 }
 function modalOpened(el) {
   if (!el) return;
   const active = document.activeElement;
   if (active && active !== document.body) _modalTriggers.set(el, active);
   document.body.classList.add("modal-open");
+  globalThis.CreatorHubMotion?.modalOpened?.(el);
 }
 function modalClosed(el) {
   if (!el) return;
+  globalThis.CreatorHubMotion?.modalClosed?.(el);
   if (!_visibleModal()) document.body.classList.remove("modal-open");
   const trigger = _modalTriggers.get(el);
   _modalTriggers.delete(el);
   if (trigger && trigger.isConnected && typeof trigger.focus === "function") {
-    setTimeout(() => trigger.focus({ preventScroll: true }), 0);
+    setTimeout(() => { if (!_visibleModal()) trigger.focus({ preventScroll: true }); }, 0);
   }
 }
 function _modalFocusables(el) {
@@ -258,41 +302,109 @@ function _modalFocusables(el) {
 }
 
 // ─── 通用模态(替代原生 prompt / confirm:下拉 / 文本输入 / 确认)───
-let _uiResolve = null, _uiGetVal = null, _uiCancelVal = null;
+let _uiResolve = null, _uiGetVal = null, _uiCancelVal = null, _uiSubmit = null, _uiBusy = false;
 function _uiClose(val) {
+  if (_uiBusy) return;
+  if (typeof _openSelectClose === "function") _openSelectClose();
+  if (typeof _openDateClose === "function") _openDateClose();
   if (typeof OPEN_META_COMBO !== "undefined" && OPEN_META_COMBO) OPEN_META_COMBO.close();
   const modal = $("uimodal");
   modal.style.display = "none";
   modalClosed(modal);
   document.removeEventListener("keydown", _uiKey);
-  const r = _uiResolve; _uiResolve = null; _uiGetVal = null;
+  const r = _uiResolve; _uiResolve = null; _uiGetVal = null; _uiSubmit = null;
   if (r) r(val);
 }
 function _uiKey(e) {
+  if (e.isComposing || e.defaultPrevented) return;
   if (e.key === "Escape") uiModalCancel();
   else if (e.key === "Enter" && document.activeElement
       && !["TEXTAREA", "BUTTON"].includes(document.activeElement.tagName)) uiModalOk();
 }
 function uiModalCancel() { _uiClose(_uiCancelVal); }
-function uiModalOk() { _uiClose(_uiGetVal ? _uiGetVal() : ""); }
-function _uiOpen(title, hint, { okText = "确定", danger = false, wide = false } = {}) {
+function uiEditorError(message, fieldId = "") {
+  const error = new Error(message); error.fieldId = fieldId; throw error;
+}
+function uiEditorNotice(message, error = false) {
+  const feedback = $("ui-feedback");
+  feedback.hidden = !message;
+  feedback.dataset.tone = error ? "error" : "neutral";
+  feedback.setAttribute("role", error ? "alert" : "status");
+  feedback.textContent = message;
+}
+async function uiModalOk() {
+  if (_uiBusy) return;
+  if (!_uiSubmit) { _uiClose(_uiGetVal ? _uiGetVal() : ""); return; }
+  const body = $("ui-body"), modal = $("uimodal");
+  let value, success = false;
+  try {
+    const invalid = [...body.querySelectorAll("input,textarea,select")].find(el => el.willValidate && !el.validity.valid);
+    if (invalid) uiEditorError(invalid.validationMessage, invalid.id);
+    value = _uiGetVal ? _uiGetVal() : "";
+    _uiBusy = true; body.inert = true; modal.setAttribute("aria-busy", "true");
+    modal.querySelectorAll(".pv-close,#ui-actions .ghost").forEach(button => { button.disabled = true; });
+    uiEditorNotice("正在保存，请稍候…");
+    $("ui-feedback").focus({ preventScroll: true });
+    success = await withBusy($("ui-ok"), "保存中", () => _uiSubmit(value)) !== false;
+  } catch (error) {
+    uiEditorNotice(error.fieldId ? error.message : "保存未完成：" + error.message, true);
+    body.inert = false;
+    const field = error.fieldId && $(error.fieldId);
+    if (field) {
+      setFieldError(field, error.message);
+      const details = field.closest("details"); if (details) details.open = true;
+      const target = field.closest(".cs,.dt")?.querySelector(".cs-trg,.dt-trg") || field;
+      if (target !== field) {
+        target.setAttribute("aria-invalid", "true");
+        target.setAttribute("aria-describedby", field.getAttribute("aria-describedby") || "");
+      }
+      target.focus();
+    } else $("ui-feedback").focus({ preventScroll: true });
+  } finally {
+    _uiBusy = false; body.inert = false; modal.removeAttribute("aria-busy");
+    modal.querySelectorAll(".pv-close,#ui-actions .ghost").forEach(button => { button.disabled = false; });
+  }
+  if (success) _uiClose(value);
+}
+function _uiOpen(title, hint, { okText = "确定", danger = false, wide = false, submit = null, icon = "i-edit" } = {}) {
   const previousExtraAction = $("ui-extra-action");
   if (previousExtraAction) previousExtraAction.remove();
   $("ui-title").textContent = title || "";
   $("ui-hint").textContent = hint || "";
+  $("ui-hint").hidden = !hint;
+  $("ui-icon").setAttribute("href", "#" + (danger ? "i-trash" : icon));
+  _uiSubmit = submit; _uiBusy = false;
+  uiEditorNotice(submit ? "更改仅在保存后生效" : "");
   const ok = $("ui-ok");
   ok.innerHTML = `<svg aria-hidden="true"><use href="#${danger ? "i-trash" : "i-check"}"/></svg>` + esc(okText);
   ok.classList.toggle("danger", !!danger);
   ok.style.cssText = "flex:0 0 auto";
   const modal = $("uimodal");
-  modal.querySelector(".rp-box").style.width = wide ? "min(94vw,680px)" : "min(94vw,480px)";
+  modal.dataset.editor = String(wide);
+  modal.dataset.danger = String(!!danger);
+  modal.querySelector(".rp-box").style.width = wide ? "min(94vw,720px)" : "min(94vw,480px)";
+  const body = $("ui-body"); body.inert = false; body.scrollTop = 0;
+  body.oninput = body.onchange = event => {
+    const field = event.target;
+    if (field.getAttribute("aria-invalid") !== "true") return;
+    setFieldError(field, "");
+    const target = field.closest(".cs,.dt")?.querySelector(".cs-trg,.dt-trg");
+    if (target) {
+      target.removeAttribute("aria-invalid");
+      if (field.getAttribute("aria-describedby")) target.setAttribute("aria-describedby", field.getAttribute("aria-describedby"));
+      else target.removeAttribute("aria-describedby");
+    }
+  };
   modal.style.display = "flex";
   modalOpened(modal);
   document.addEventListener("keydown", _uiKey);
   setTimeout(() => {
-    const el = [...$("ui-body").querySelectorAll("input,textarea,.cs-trg,.dt-trg,select,button")]
+    if (modal.style.display === "none" || modal.dataset.uiClosing || _uiBusy) return;
+    const el = [...body.querySelectorAll("input,textarea,.cs-trg,.dt-trg,select,button")]
       .find(node => node.offsetParent !== null && !node.classList.contains("cs-native") && !node.classList.contains("dt-native"));
-    if (el) el.focus();
+    if (wide) { $("ui-title").tabIndex = -1; $("ui-title").focus({ preventScroll: true }); }
+    else if (el) el.focus({ preventScroll: true });
+    else (danger ? modal.querySelector("#ui-actions .ghost") : ok).focus();
   }, 30);
 }
 // 确认框。返回 true / false。danger=true 时确定按钮红色(危险操作)
@@ -300,7 +412,7 @@ function uiConfirm({ title = "确认", message = "", okText = "确定", danger =
   return new Promise(res => {
     _uiResolve = res; _uiGetVal = () => true; _uiCancelVal = false;
     $("ui-body").innerHTML = "";
-    _uiOpen(title, message, { okText, danger });
+    _uiOpen(title, message, { okText, danger, icon: "i-info" });
   });
 }
 // 下拉选择。options:[{value,label,disabled}]。返回选中 value 或 null(取消)
@@ -309,28 +421,37 @@ function uiSelect({ title, hint, options, value }) {
     _uiResolve = res; _uiCancelVal = null;
     _uiGetVal = () => { const el = $("ui-body").querySelector("select,input,textarea"); return el ? el.value : ""; };
     $("ui-body").innerHTML =
-      `<select id="ui-sel" style="width:100%">` +
+      `<select id="ui-sel" style="width:100%" aria-labelledby="ui-title">` +
       options.map(o => `<option value="${esc(o.value)}"${o.value === value ? " selected" : ""}${o.disabled ? " disabled" : ""}>${esc(o.label)}</option>`).join("") +
       `</select>`;
     enhanceSelect($("ui-sel"));
-    _uiOpen(title, hint);
+    _uiOpen(title, hint, { icon: "i-list" });
   });
 }
 // 文本输入(单行或多行)。返回字符串或 null(取消)
-function uiPrompt({ title, hint, value, placeholder, multiline, rows, secret = false }) {
+function uiPrompt({ title, hint, value, placeholder, multiline, rows, secret = false, submit = null }) {
   return new Promise(res => {
     _uiResolve = res; _uiCancelVal = null;
     _uiGetVal = () => { const el = $("ui-body").querySelector("select,input,textarea"); return el ? el.value : ""; };
     $("ui-body").innerHTML = multiline
-      ? `<textarea id="ui-inp" rows="${rows || 6}" placeholder="${esc(placeholder || "")}">${esc(value || "")}</textarea>`
-      : `<input id="ui-inp" type="${secret ? "password" : "text"}" value="${esc(value || "")}" placeholder="${esc(placeholder || "")}" autocomplete="${secret ? "current-password" : "off"}">`;
-    _uiOpen(title, hint);
+      ? `<textarea id="ui-inp" aria-labelledby="ui-title" rows="${rows || 6}" placeholder="${esc(placeholder || "")}">${esc(value || "")}</textarea>`
+      : `<input id="ui-inp" aria-labelledby="ui-title" type="${secret ? "password" : "text"}" value="${esc(value || "")}" placeholder="${esc(placeholder || "")}" autocomplete="${secret ? "current-password" : "off"}">`;
+    _uiOpen(title, hint, { submit, wide: !!multiline, okText: submit ? "保存修改" : "确定" });
   });
 }
 
 // ─── 自定义下拉:渐进增强原生 <select>(美化展开列表)───
 // 弹层挂到 body 以避开卡片 overflow；Tab 时显式回到文档顺序，避免焦点落到 body 末尾。
 let _openSelectClose = null;
+function focusPopupItem(item, panel) {
+  if (!item || !panel) return;
+  item.focus({ preventScroll: true });
+  // scrollIntoView can also scroll the document while the popup is entering.
+  // Scroll only the popup; its anchor and the user's page position stay stable.
+  const target = item.getBoundingClientRect(), bounds = panel.getBoundingClientRect();
+  if (target.top < bounds.top + 6) panel.scrollTop -= bounds.top + 6 - target.top;
+  else if (target.bottom > bounds.bottom - 6) panel.scrollTop += target.bottom - bounds.bottom + 6;
+}
 function focusAdjacentControl(origin, backwards = false) {
   const nodes = [...document.querySelectorAll(
     'button:not([disabled]),a[href],input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])'
@@ -357,7 +478,7 @@ function enhanceSelect(sel) {
   trg.type = "button";
   trg.className = "cs-trg";
   trg.innerHTML = `<span class="cs-lbl"></span>` +
-    `<svg class="cs-arr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`;
+    `<svg class="cs-arr" aria-hidden="true"><use href="#i-chevron"/></svg>`;
   trg.setAttribute("aria-haspopup", "listbox");
   trg.setAttribute("aria-expanded", "false");
   const labelEl = sel.id ? document.querySelector(`label[for="${sel.id}"]`) : null;
@@ -368,7 +489,7 @@ function enhanceSelect(sel) {
     labelEl.addEventListener("click", e => { e.preventDefault(); trg.focus(); });
   } else trg.setAttribute("aria-label", selectLabel.trim());
   wrap.appendChild(trg);
-  let panel = null, typeBuffer = "", typeTimer = null;
+  let panel = null, typeBuffer = "", typeTimer = null, anchor = null;
 
   function sync() {
     const o = sel.options[sel.selectedIndex];
@@ -383,11 +504,30 @@ function enhanceSelect(sel) {
     wrap.classList.remove("open");
     trg.setAttribute("aria-expanded", "false");
     trg.removeAttribute("aria-controls");
-    window.removeEventListener("scroll", close, true);
+    window.removeEventListener("scroll", onScroll, true);
     window.removeEventListener("resize", close);
     document.removeEventListener("mousedown", onDoc, true);
   }
   function onDoc(e) { if (!wrap.contains(e.target) && (!panel || !panel.contains(e.target))) close(); }
+  function onScroll(e) {
+    if (!panel || panel.contains(e.target)) return;
+    const now = trg.getBoundingClientRect();
+    if (anchor && (Math.abs(now.top - anchor.top) > 1 || Math.abs(now.left - anchor.left) > 1)) position();
+  }
+  function position() {
+    if (!panel) return;
+    const r = trg.getBoundingClientRect(); anchor = r;
+    if (r.bottom < 0 || r.top > window.innerHeight) { close(); return; }
+    const viewportWidth = document.documentElement.clientWidth;
+    panel.style.left = Math.max(6, Math.min(r.left, viewportWidth - r.width - 6)) + "px";
+    panel.style.width = Math.min(r.width, viewportWidth - 12) + "px";
+    const below = window.innerHeight - r.bottom - 6, above = r.top - 6;
+    const placeAbove = below < 280 && above > below;
+    panel.style.top = placeAbove ? "auto" : (r.bottom + 5) + "px";
+    panel.style.bottom = placeAbove ? (window.innerHeight - r.top + 5) + "px" : "auto";
+    panel.style.maxHeight = Math.max(80, Math.min(280, placeAbove ? above : below)) + "px";
+    panel.style.maxWidth = Math.max(180, viewportWidth - 12) + "px";
+  }
   function choose(i) {
     if (sel.selectedIndex !== i) {
       sel.selectedIndex = i;
@@ -407,7 +547,7 @@ function enhanceSelect(sel) {
       const from = Math.max(0, options.indexOf(document.activeElement) + 1);
       const ordered = options.slice(from).concat(options.slice(0, from));
       const target = ordered.find(option => option.textContent.trim().toLocaleLowerCase().startsWith(typeBuffer));
-      if (target) { target.focus(); target.scrollIntoView({ block: "nearest" }); }
+      if (target) focusPopupItem(target, panel);
     });
   }
   function open(focusSelected = false) {
@@ -435,13 +575,13 @@ function enhanceSelect(sel) {
         const index = options.indexOf(it);
         if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
           ev.preventDefault();
-          options[(index + (ev.key === "ArrowDown" ? 1 : -1) + options.length) % options.length].focus();
+          focusPopupItem(options[(index + (ev.key === "ArrowDown" ? 1 : -1) + options.length) % options.length], panel);
         } else if (ev.key === "Home" || ev.key === "End") {
-          ev.preventDefault(); options[ev.key === "Home" ? 0 : options.length - 1].focus();
+          ev.preventDefault(); focusPopupItem(options[ev.key === "Home" ? 0 : options.length - 1], panel);
         } else if (ev.key === "Enter" || ev.key === " ") {
           ev.preventDefault(); choose(i);
         } else if (ev.key === "Escape") {
-          ev.preventDefault(); close(); trg.focus({ preventScroll: true });
+          ev.preventDefault(); ev.stopPropagation(); close(); trg.focus({ preventScroll: true });
         } else if (ev.key === "Tab") {
           ev.preventDefault(); close(); focusAdjacentControl(trg, ev.shiftKey);
         } else if (ev.key.length === 1 && !ev.altKey && !ev.ctrlKey && !ev.metaKey) {
@@ -450,24 +590,18 @@ function enhanceSelect(sel) {
       });
       panel.appendChild(it);
     });
-    document.body.appendChild(panel);
-    const r = trg.getBoundingClientRect();
-    panel.style.left = Math.max(6, Math.min(r.left, window.innerWidth - r.width - 6)) + "px";
-    panel.style.width = Math.min(r.width, window.innerWidth - 12) + "px";
-    const below = window.innerHeight - r.bottom;
-    if (below < 280 && r.top > below) panel.style.bottom = (window.innerHeight - r.top + 5) + "px";
-    else panel.style.top = (r.bottom + 5) + "px";
-    panel.style.maxWidth = Math.max(180, window.innerWidth - 12) + "px";
+    (trg.closest('.wb-sheet,[role="dialog"]') || document.body).appendChild(panel);
+    position();
     wrap.classList.add("open");
     _openSelectClose = close;
     trg.setAttribute("aria-expanded", "true");
     trg.setAttribute("aria-controls", panel.id);
-    window.addEventListener("scroll", close, true);
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", close);
     setTimeout(() => document.addEventListener("mousedown", onDoc, true), 0);
     if (focusSelected) setTimeout(() => {
       const target = panel && (panel.querySelector(".cs-opt.sel:not(.dis)") || panel.querySelector(".cs-opt:not(.dis)"));
-      if (target) { target.focus(); target.scrollIntoView({ block: "nearest" }); }
+      if (target) focusPopupItem(target, panel);
     }, 0);
   }
   trg.addEventListener("click", e => { e.preventDefault(); panel ? close() : open(false); });
@@ -559,7 +693,7 @@ function enhanceDateTime(inp) {
   const trg = document.createElement("button");
   trg.type = "button"; trg.className = "dt-trg";
   trg.innerHTML = `<span class="dt-lbl"></span>` +
-    `<svg class="dt-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>`;
+    `<svg class="dt-ic" aria-hidden="true"><use href="#i-calendar"/></svg>`;
   trg.setAttribute("aria-haspopup", "dialog"); trg.setAttribute("aria-expanded", "false");
   if (labelEl) {
     if (!labelEl.id) labelEl.id = `label-${inp.id}`;
@@ -567,10 +701,30 @@ function enhanceDateTime(inp) {
     labelEl.addEventListener("click", e => { e.preventDefault(); trg.focus(); });
   } else trg.setAttribute("aria-label", ph.trim());
   wrap.appendChild(trg);
-  let panel = null;
+  let panel = null, anchor = null;
   function sync() { const d = _dtParse(inp.value); trg.querySelector(".dt-lbl").textContent = d ? _dtDisp(d) : ph; trg.classList.toggle("ph", !d); trg.disabled = !!inp.disabled; }
-  function close() { if (panel) { panel.remove(); panel = null; } if (_openDateClose === close) _openDateClose = null; wrap.classList.remove("open"); trg.setAttribute("aria-expanded", "false"); trg.removeAttribute("aria-controls"); window.removeEventListener("scroll", close, true); window.removeEventListener("resize", close); document.removeEventListener("mousedown", onDoc, true); }
+  function close() { if (panel) { panel.remove(); panel = null; } if (_openDateClose === close) _openDateClose = null; wrap.classList.remove("open"); trg.setAttribute("aria-expanded", "false"); trg.removeAttribute("aria-controls"); window.removeEventListener("scroll", onScroll, true); window.removeEventListener("resize", close); document.removeEventListener("mousedown", onDoc, true); }
   function onDoc(e) { if (!wrap.contains(e.target) && (!panel || !panel.contains(e.target))) close(); }
+  function onScroll(e) {
+    if (!panel || panel.contains(e.target)) return;
+    const now = trg.getBoundingClientRect();
+    if (anchor && (Math.abs(now.top - anchor.top) > 1 || Math.abs(now.left - anchor.left) > 1)) position();
+  }
+  function position() {
+    if (!panel) return;
+    const r = trg.getBoundingClientRect(); anchor = r;
+    if (r.bottom < 0 || r.top > window.innerHeight) { close(); return; }
+    panel.style.maxHeight = "";
+    const viewportWidth = document.documentElement.clientWidth;
+    panel.style.maxWidth = (viewportWidth - 12) + "px";
+    const popupWidth = Math.min(panel.getBoundingClientRect().width || 280, viewportWidth - 12);
+    panel.style.left = Math.max(6, Math.min(r.left, viewportWidth - popupWidth - 6)) + "px";
+    const below = window.innerHeight - r.bottom - 6, above = r.top - 6;
+    const placeAbove = panel.getBoundingClientRect().height > below && above > below;
+    panel.style.top = placeAbove ? "auto" : (r.bottom + 5) + "px";
+    panel.style.bottom = placeAbove ? (window.innerHeight - r.top + 5) + "px" : "auto";
+    panel.style.maxHeight = Math.max(120, placeAbove ? above : below) + "px";
+  }
   function open() {
     if (inp.disabled) return;
     if (_openSelectClose) _openSelectClose();
@@ -609,10 +763,10 @@ function enhanceDateTime(inp) {
       panel.querySelectorAll(".dt-day[data-d]").forEach(c => c.onclick = () => { h = getH(); mi = getM(); chosen = new Date(view.getFullYear(), view.getMonth(), +c.dataset.d, h, mi); render(); });
       if (panel.isConnected) requestAnimationFrame(() => {
         const day = panel && (panel.querySelector(".dt-day.sel") || panel.querySelector(".dt-day[data-d]"));
-        if (day) day.focus();
+        if (day) focusPopupItem(day, panel);
       });
     }
-    function commit(d) { inp.value = d ? _dtFmt(d) : ""; inp.dispatchEvent(new Event("change", { bubbles: true })); sync(); close(); }
+    function commit(d) { inp.value = d ? _dtFmt(d) : ""; inp.dispatchEvent(new Event("change", { bubbles: true })); sync(); close(); trg.focus({ preventScroll: true }); }
     render();
     panel.addEventListener("click", e => {
       const a = e.target.closest("[data-act]"); if (!a) return;
@@ -620,24 +774,20 @@ function enhanceDateTime(inp) {
       else if (a.dataset.act === "now") commit(new Date());
       else { const base = chosen || new Date(); base.setHours(getH(), getM(), 0, 0); commit(base); }
     });
-    document.body.appendChild(panel);
-    const r = trg.getBoundingClientRect();
-    panel.style.left = Math.max(6, Math.min(r.left, window.innerWidth - 280)) + "px";
-    const below = window.innerHeight - r.bottom;
-    if (below < 360 && r.top > below) panel.style.bottom = (window.innerHeight - r.top + 5) + "px";
-    else panel.style.top = (r.bottom + 5) + "px";
+    (trg.closest('.wb-sheet,[role="dialog"]') || document.body).appendChild(panel);
+    position();
     wrap.classList.add("open");
     _openDateClose = close;
     trg.setAttribute("aria-expanded", "true"); trg.setAttribute("aria-controls", panel.id);
     panel.addEventListener("keydown", e => {
-      if (e.key === "Escape") { e.preventDefault(); close(); trg.focus({ preventScroll: true }); return; }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); trg.focus({ preventScroll: true }); return; }
       if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key) && e.target.classList.contains("dt-day")) {
         e.preventDefault();
         const days = [...panel.querySelectorAll(".dt-day[data-d]")];
         const index = days.indexOf(e.target);
         const delta = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : e.key === "ArrowUp" ? -7 : e.key === "ArrowDown" ? 7 : 0;
         const target = e.key === "Home" ? days[0] : e.key === "End" ? days[days.length - 1] : days[Math.max(0, Math.min(days.length - 1, index + delta))];
-        if (target) target.focus();
+        if (target) focusPopupItem(target, panel);
         return;
       }
       if (e.key === "Tab") {
@@ -648,9 +798,9 @@ function enhanceDateTime(inp) {
         }
       }
     });
-    window.addEventListener("scroll", close, true); window.addEventListener("resize", close);
+    window.addEventListener("scroll", onScroll, true); window.addEventListener("resize", close);
     setTimeout(() => document.addEventListener("mousedown", onDoc, true), 0);
-    setTimeout(() => { const day = panel && (panel.querySelector(".dt-day.sel") || panel.querySelector(".dt-day[data-d]")); if (day) day.focus(); }, 0);
+    setTimeout(() => { const day = panel && (panel.querySelector(".dt-day.sel") || panel.querySelector(".dt-day[data-d]")); if (day) focusPopupItem(day, panel); }, 0);
   }
   trg.addEventListener("click", e => { e.preventDefault(); panel ? close() : open(); });
   inp.addEventListener("change", sync);
@@ -672,16 +822,16 @@ async function refreshOverviewChart() {
   if (!box) return;
   let d;
   try { d = await api("/api/stats/series?days=7&platform=" + PLATFORM); }
-  catch (e) { if (isCurrent()) box.innerHTML = `<div class="chart-empty">图表加载失败</div>`; return; }
+  catch (e) { if (isCurrent()) box.innerHTML = `<div class="chart-empty"><b>趋势暂未加载</b><button class="ghost sm" onclick="refreshOverviewChart()">重新加载</button></div>`; return; }
   if (!isCurrent()) return;
   const days = d.days || [], A = d.contents || [], B = d.comments || [];
   const total = A.reduce((s, n) => s + n, 0) + B.reduce((s, n) => s + n, 0);
   if (!days.length || total === 0) {
-    box.innerHTML = `<div class="chart-empty">近 7 天暂无采集数据 — 添加监控并「立即抓取」后这里会出现趋势</div>`;
+    box.innerHTML = `<div class="chart-empty">${ic("i-film")}<b>近 7 天还没有新增采集</b><span>开始采集后，这里会记录作品与评论的变化。</span></div>`;
     return;
   }
   // viewBox 坐标系,响应式缩放
-  const W = 720, H = 180, padL = 28, padR = 12, padT = 14, padB = 26;
+  const W = Math.max(320, Math.round(box.clientWidth) || 720), H = 180, padL = 36, padR = 12, padT = 14, padB = 30;
   const iw = W - padL - padR, ih = H - padT - padB;
   const n = days.length, slot = iw / n;
   const maxV = Math.max(1, ...A, ...B);
@@ -702,10 +852,10 @@ async function refreshOverviewChart() {
     const xa = cx - bw - 1, xb = cx + 1;
     const ha = (A[i] / maxV) * ih, hb = (B[i] / maxV) * ih;
     bars += `<rect class="bar" x="${xa.toFixed(1)}" y="${y(A[i]).toFixed(1)}" width="${bw}" height="${ha.toFixed(1)}" rx="2" fill="var(--acc)"><title>${md(days[i])} · 作品 ${A[i]}</title></rect>`;
-    bars += `<rect class="bar" x="${xb.toFixed(1)}" y="${y(B[i]).toFixed(1)}" width="${bw}" height="${hb.toFixed(1)}" rx="2" fill="var(--info)"><title>${md(days[i])} · 评论 ${B[i]}</title></rect>`;
+    bars += `<rect class="bar" x="${xb.toFixed(1)}" y="${y(B[i]).toFixed(1)}" width="${bw}" height="${hb.toFixed(1)}" rx="2" fill="var(--chart-secondary)"><title>${md(days[i])} · 评论 ${B[i]}</title></rect>`;
     labels += `<text class="axt" x="${cx.toFixed(1)}" y="${H - 8}" text-anchor="middle">${md(days[i])}</text>`;
   }
-  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="近 7 天每日新增作品与评论柱状图">${gl}${axt}${bars}${labels}</svg>`;
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="近 7 天每日新增作品与评论柱状图">${gl}${axt}${bars}${labels}</svg><details class="wb-chart-data"><summary>查看每日数据</summary><table><caption class="sr-only">每日新增作品与评论</caption><thead><tr><th>日期</th><th>作品</th><th>评论</th></tr></thead><tbody>${days.map((day, i) => `<tr><th>${esc(day)}</th><td>${Number(A[i]) || 0}</td><td>${Number(B[i]) || 0}</td></tr>`).join("")}</tbody></table></details>`;
 }
 
 // ─── 平台切换(抖音 / 小红书) ───
@@ -890,16 +1040,16 @@ const PF_NAME = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipin
 let CURRENT_TAB = "overview";
 const PAGE_META = {
   overview: {
-    title: "总览", desc: "集中查看账号状态、采集规模与近 7 天数据变化。"
+    title: "工作概览", desc: "查看待处理任务，接着推进今天的内容工作。"
   },
   accounts: {
-    title: "账号与网络", desc: "管理登录状态、账号资料与独立代理绑定。"
+    title: "平台账号", desc: "查看登录状态；网络与环境配置按需展开。"
   },
   "risk-control": {
     title: "风控中心", desc: "统一管理风控规则，查看账号状态、触发原因、恢复进度与事件记录。"
   },
   monitors: {
-    title: "作品监控", desc: "添加采集目标，管理下载策略并追踪作品状态。"
+    title: "作品监控", desc: "追踪关注的创作者，检查采集进度与新作品。"
   },
   collections: {
     title: "关键词批量采集", desc: "批量搜索抖音视频，并按上限采集评论与媒体。"
@@ -911,7 +1061,7 @@ const PAGE_META = {
     title: "弹幕监控", desc: "监控短视频播放器内的弹幕，保留每条弹幕在视频中的时间点。"
   },
   hub: {
-    title: "本账号管理", desc: "同步自己的作品、关系、私信与账号数据。"
+    title: "我的内容", desc: "切换账号，查看作品、关注、粉丝与私信。"
   },
   publish: {
     title: "内容发布", desc: "准备素材与文案，创建立即或定时发布任务。"
@@ -929,7 +1079,7 @@ const PAGE_META = {
     title: "通知渠道", desc: "配置 Bark、钉钉或 Telegram，及时接收任务提醒。"
   },
   settings: {
-    title: "系统设置", desc: "调整下载偏好与 AI 文案服务配置。"
+    title: "设置", desc: "调整工作台外观、默认下载方式与 AI 文案服务。"
   },
 };
 function updatePageContext(name = CURRENT_TAB) {
@@ -939,6 +1089,7 @@ function updatePageContext(name = CURRENT_TAB) {
   if ($("page-platform")) $("page-platform").textContent = PF_NAME[PLATFORM] || "当前平台";
   if ($("page-kicker")) $("page-kicker").textContent = pfIsChannels(PLATFORM) ? "本账号工作台" : "多平台工作台";
   document.title = `${meta.title} · ${PF_NAME[PLATFORM] || ""} | CreatorHub`;
+  globalThis.CreatorHubWorkbench?.navigate?.();
 }
 // 是否支持「发布」面板(四平台均有)
 function pfHasPublish(pf) { return pf === "xhs" || pf === "kuaishou" || pf === "douyin" || pf === "shipinhao"; }
@@ -946,6 +1097,7 @@ function pfHasPublish(pf) { return pf === "xhs" || pf === "kuaishou" || pf === "
 function pfIsChannels(pf) { return pf === "shipinhao"; }
 function switchPlatform(pf) {
   if (!["douyin", "xhs", "kuaishou", "shipinhao"].includes(pf)) pf = "douyin";
+  globalThis.CreatorHubWorkbench?.platformChanging?.(pf);
   PLATFORM = pf;
   VIEW_REQUESTS.clear();
   CONTENT_PAGE = COMMENT_PAGE = 1;
@@ -969,7 +1121,7 @@ function switchPlatform(pf) {
   refreshAccounts(); refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshCollections();
   updateTaskQueuePlatformLabel();
   if (CURRENT_TAB === "queue") refreshTaskQueue(true); else refreshTaskQueueBadge();
-  if (CURRENT_TAB === "risk-control") refreshRiskCenter(true);
+  if (CURRENT_TAB === "risk-control") refreshRiskCenter(true, false);
   populateAcAccount(); onAcMode(); refreshCommentRules(); refreshCommentTasks();
   if (pfHasPublish(PLATFORM)) refreshPublish();
   if (CURRENT_TAB === "overview") loop();
@@ -1258,6 +1410,7 @@ function applyMonitorForm() {
 // ─── 标签页切换 ───
 function switchTab(name, pushHistory = false) {
   if (!PAGE_META[name]) name = "overview";
+  globalThis.CreatorHubWorkbench?.beforeNavigate?.();
   const changed = CURRENT_TAB !== name;
   CURRENT_TAB = name;
   if (_openSelectClose) _openSelectClose();
@@ -1976,9 +2129,36 @@ function matchesMeta(item, groupName, tag) {
 }
 function onMonitorFilter() { renderMonitorRows(); }
 function onWatchFilter() { renderWatchRows(); }
+// A late refresh must not replace the row underneath an open menu or its dialog.
+// Resume on real DOM/focus changes instead of polling or delaying the user's action.
+function waitForAccountPaint(isCurrent) {
+  const interacting = () => globalThis.CreatorHubWorkbench?.isInteracting?.()
+    || !!_visibleModal() || !!document.querySelector("[data-ui-closing]")
+    || !!document.activeElement?.closest("[data-account-menu]");
+  if (!interacting() || !isCurrent()) return Promise.resolve();
+  return new Promise(resolve => {
+    const finish = () => {
+      if (isCurrent() && interacting()) return;
+      observer.disconnect(); document.removeEventListener("focusin", finish);
+      document.removeEventListener("focusout", focusChanged); window.removeEventListener("hashchange", finish); resolve();
+    };
+    const focusChanged = () => queueMicrotask(finish);
+    const observer = new MutationObserver(finish);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["style", "class", "data-state", "data-ui-closing"] });
+    document.addEventListener("focusin", finish); document.addEventListener("focusout", focusChanged);
+    window.addEventListener("hashchange", finish); finish();
+  });
+}
 async function refreshAccounts() {
   const isCurrent = beginViewRequest("accounts");
-  const accs = await api("/api/accounts?platform=" + PLATFORM);
+  let accs;
+  try { accs = await api("/api/accounts?platform=" + PLATFORM); }
+  catch (e) {
+    if (isCurrent() && !$("acc-table").querySelector("[data-account-id]")) $("acc-table").querySelector("tbody").innerHTML = empty(3, "账号暂未加载", "i-info", "检查连接后，点击页面右上角刷新。");
+    return;
+  }
+  if (!isCurrent()) return;
+  await waitForAccountPaint(isCurrent);
   if (!isCurrent()) return;
   ACCOUNTS = accs;
   $("stat-acc").textContent = accs.length;
@@ -2041,32 +2221,33 @@ async function refreshAccounts() {
       ? `<div class="mut" style="font-size:11px;margin-top:2px">环境体检 <span class="pill ${environmentCheck.required ? "pending" : "active"}">${environmentCheck.required ? "待打开" : "已提示"}</span>${environmentCheck.last_opened_at ? ` · ${new Date(environmentCheck.last_opened_at).toLocaleString()}` : " · 新环境首次启动自动打开"}</div>`
       : "";
     const reloginButton = isXhs && !a.has_read_login
-      ? `<button class="sm" style="background:var(--warn);border-color:transparent;color:#1a1a1a" onclick="relogin(${a.id},'read')">补读取登录</button>`
+      ? `<button class="sm warning-action" onclick="relogin(${a.id},'read')">补读取登录</button>`
       : (a.status === "invalid"
-          ? `<button class="sm" style="background:var(--warn);border-color:transparent;color:#1a1a1a" onclick="relogin(${a.id})">重新登录</button>`
+          ? `<button class="sm warning-action" onclick="relogin(${a.id})">重新登录</button>`
           : `<button class="ghost sm" onclick="relogin(${a.id})" title="${isXhs ? "重新扫码登录当前授权" : "重新扫码登录"}">重新登录</button>`);
     const creatorLoginButton = isXhs && !a.has_creator
       ? `<button class="ghost sm" onclick="relogin(${a.id},'creator')">补创作登录</button>` : "";
     const accountStatusLabel = a.status === "invalid"
       ? "登录失效" : (isXhs && !a.has_read_login && a.has_creator ? "创作登录正常" : "正常");
-    return `<tr>
+    return `<tr data-account-id="${a.id}">
       <td>
         <div class="user-cell">
-          ${a.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(a.avatar))}" alt="" referrerpolicy="no-referrer">` : ""}
+          ${a.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(a.avatar))}" alt="" referrerpolicy="no-referrer">` : `<span class="wb-avatar-fallback" aria-hidden="true">${esc((a.nickname || "账").slice(0, 1))}</span>`}
           <div>
-            <div><b>${esc(a.nickname)}</b> ${pill}</div>
-            ${idline ? `<div class="mut" style="font-size:11px;margin-top:2px">${idline}</div>` : ""}
-            <div class="mut" style="font-size:11px;margin-top:2px">${esc(detail)}</div>
-            ${proxyLine}
-            ${browserLine}
-            ${fingerprintLine}
-            ${isolationLine}
-            ${checkLine}
+            <button type="button" class="wb-account-name" data-account-detail="${a.id}" aria-haspopup="dialog">${esc(a.nickname || "未命名账号")}${ic("i-next")}</button>
+            <div class="wb-account-meta">${idline || `账号 #${a.id}`} · ${a.monitor_count || 0} 个监控</div>
+            <div class="wb-account-pills">${pill}${!a.has_proxy ? '<span class="mut">本机网络</span>' : `<span class="pill ${pxCls}">${pxText[a.proxy_status] || "代理未测"}</span>`}</div>
           </div>
         </div>
+        <div data-account-info hidden><div class="wb-inspector-block"><h3>账号资料</h3><p>${idline}</p><p>${esc(detail)}</p></div>
+          <div class="wb-inspector-block"><h3>网络与环境</h3>${proxyLine}${browserLine}${fingerprintLine}${isolationLine}${checkLine}</div></div>
       </td>
       <td><span class="pill ${a.status}">${accountStatusLabel}</span></td>
-      <td class="acttd">
+      <td class="acttd wb-account-actions">
+        <button class="ghost sm" onclick="openAccountHub(${a.id})" title="查看该账号的作品 / 关注 / 粉丝 / 私信">我的内容</button>
+        ${a.status === "invalid" ? reloginButton : `<button class="ghost sm" onclick="openAccountBrowser(${a.id})">打开浏览器</button>`}
+        <span data-account-menu></span>
+        <div data-account-actions>
         ${reloginButton}
         ${creatorLoginButton}
         <button class="ghost sm" onclick="refreshProfile(${a.id})">刷新资料</button>
@@ -2078,9 +2259,11 @@ async function refreshAccounts() {
         <button class="ghost sm" onclick="setProxy(${a.id})" title="设置/分配该账号专属代理(防多账号关联)">代理</button>
         ${a.has_proxy ? `<button class="ghost sm" onclick="testProxy(${a.id})" title="经该代理实连一次,验证可用">测代理</button>` : ""}
         <button class="ghost sm danger" onclick="delAccount(${a.id})" aria-label="删除账号">${ic("i-trash")}删除</button>
+        </div>
       </td>
     </tr>`;
   }).join("") || empty(3, "还没有账号", "i-user", "用上方按钮扫码登录,或粘贴 Cookie 添加一个账号");
+  globalThis.CreatorHubWorkbench?.accountsUpdated?.();
   if ($("tb-acc")) $("tb-acc").textContent = accs.length;
   populateAccountSelect();
   populateWatchAccount();
@@ -2136,7 +2319,7 @@ const RISK_OUTCOME_LABELS = {
   business: "业务异常", manual: "人工操作",
 };
 
-async function refreshRiskCenter(force = false) {
+async function refreshRiskCenter(force = false, announce = force) {
   const isCurrent = beginViewRequest("risk-center");
   try {
     const shouldFillConfig = !RISK_CONFIG || force;
@@ -2153,7 +2336,7 @@ async function refreshRiskCenter(force = false) {
     renderRiskSummary(summary);
     renderRiskAccounts();
     if (shouldFillConfig) fillRiskConfig(config);
-    if (force) toast("风控状态已刷新", "ok");
+    if (announce) toast("风控状态已刷新", "ok");
   } catch (e) {
     if (isCurrent() && (force || CURRENT_TAB === "risk-control")) toast("风控中心加载失败：" + e.message, "err");
   }
@@ -2935,12 +3118,14 @@ async function cancelDmDraft(id) {
 }
 async function editDmDraft(id) {
   const current = (DM_AUTO_TASKS.find(t => +t.id === +id) || {}).content || "";
-  const content = prompt("编辑回复内容", current);
-  if (content === null || !content.trim()) return;
-  try {
-    await api(`/api/account-actions/${id}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({content:content.trim()})});
-    toast("草稿已更新", "ok"); refreshDmAutomation();
-  } catch (e) { toast("更新失败：" + e.message, "err"); }
+  const content = await uiPrompt({ title: "编辑回复内容", hint: "保存只更新草稿，不会发送消息。", value: current, multiline: true, rows: 4,
+    submit: value => {
+      if (!value.trim()) uiEditorError("回复内容不能为空", "ui-inp");
+      return api(`/api/account-actions/${id}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({content:value.trim()})});
+    },
+  });
+  if (content === null) return;
+  toast("草稿已更新", "ok"); refreshDmAutomation();
 }
 // 标记已读:清红点,刷新左侧列表
 function markDmRead(convId) {
@@ -3330,10 +3515,10 @@ function uiFingerprintEditor(account, fp, options = {}) {
         ? "自动项会在启动前根据所选代理或本机出口 IP 生成；切换为自定义后可在第一次登录前逐项覆盖。登录成功后，此配置会随账号和独立 Profile 一起保存。"
         : "自动项会跟随来源 IP 生成；切换为自定义后可逐项编辑。保存后关闭该账号当前浏览器，下次启动应用新配置。"}</div>
       <div class="fp-edit-tabs" role="tablist" aria-label="浏览器指纹设置">
-        <button type="button" class="ghost sm active" role="tab" aria-selected="true" data-fp-tab="basic">基础设置</button>
-        <button type="button" class="ghost sm" role="tab" aria-selected="false" data-fp-tab="advanced">高级设置</button>
+        <button type="button" class="ghost sm active" role="tab" id="fp-tab-basic" aria-controls="fp-panel-basic" tabindex="0" aria-selected="true" data-fp-tab="basic">基础设置</button>
+        <button type="button" class="ghost sm" role="tab" id="fp-tab-advanced" aria-controls="fp-panel-advanced" tabindex="-1" aria-selected="false" data-fp-tab="advanced">高级设置</button>
       </div>
-      <div class="fp-edit-panel active" data-fp-panel="basic">
+      <div class="fp-edit-panel active" id="fp-panel-basic" role="tabpanel" aria-labelledby="fp-tab-basic" data-fp-panel="basic">
         <div class="fp-runtime-summary">
           <div><span>浏览器内核</span><b>${esc(runtimeVersion || "跟随所选运行时")}</b></div>
           <div><span>设备类型</span><b>桌面设备</b></div>
@@ -3376,7 +3561,7 @@ function uiFingerprintEditor(account, fp, options = {}) {
           </div>
         </div>
       </div>
-      <div class="fp-edit-panel" data-fp-panel="advanced">
+      <div class="fp-edit-panel" id="fp-panel-advanced" role="tabpanel" aria-labelledby="fp-tab-advanced" data-fp-panel="advanced">
         <div class="fp-settings">
           <div class="fp-config-row"><div><b>指纹种子</b><span>Canvas、Audio 等随机值由种子稳定派生</span></div><div class="fp-seed-badge">${preLogin ? "内核启动时生成" : `uint32 ${esc(String(fp.engine_seed ?? ""))}`}</div></div>
           <div class="form-field"><label for="fp-edit-seed">种子值</label><input id="fp-edit-seed" value="${esc(fp.seed || "")}" maxlength="128"></div>
@@ -3419,19 +3604,33 @@ function uiFingerprintEditor(account, fp, options = {}) {
           item.setAttribute("aria-pressed", active ? "true" : "false");
         });
         syncCustomFields(segment.dataset.fpMode);
+        globalThis.CreatorHubMotion?.reveal?.(body.querySelector(`[data-fp-custom="${segment.dataset.fpMode}"].enabled`));
       });
     });
     ["platform", "brand", "language", "timezone", "location", "viewport", "gpu", "cpu"].forEach(syncCustomFields);
+    body.querySelectorAll("[data-fp-mode]").forEach(segment => {
+      const label = segment.closest(".fp-config-row")?.querySelector("b");
+      if (label) { label.id = "fp-label-" + segment.dataset.fpMode; segment.setAttribute("aria-labelledby", label.id); }
+    });
     body.querySelectorAll("[data-fp-tab]").forEach(tab => {
+      tab.addEventListener("keydown", event => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const tabs = [...body.querySelectorAll("[data-fp-tab]")], index = tabs.indexOf(tab);
+        const next = event.key === "Home" ? tabs[0] : event.key === "End" ? tabs[tabs.length - 1] : tabs[(index + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+        next.click(); next.focus({ preventScroll: true });
+      });
       tab.addEventListener("click", () => {
         const selected = tab.dataset.fpTab;
         body.querySelectorAll("[data-fp-tab]").forEach(item => {
           const active = item.dataset.fpTab === selected;
           item.classList.toggle("active", active);
           item.setAttribute("aria-selected", active ? "true" : "false");
+          item.tabIndex = active ? 0 : -1;
         });
         body.querySelectorAll("[data-fp-panel]").forEach(panel => panel.classList.toggle("active", panel.dataset.fpPanel === selected));
-        body.scrollTo({ top: 0, behavior: "smooth" });
+        body.scrollTo({ top: 0, behavior: "instant" });
+        globalThis.CreatorHubMotion?.reveal?.(body.querySelector(`[data-fp-panel="${selected}"]`), "x", selected === "basic" ? -1 : 1);
       });
     });
     const value = id => ($(id) || {}).value || "";
@@ -3467,7 +3666,7 @@ function uiFingerprintEditor(account, fp, options = {}) {
     _uiOpen(
       `${account.nickname} · ${preLogin ? "登录前指纹配置" : "浏览器指纹"}`,
       preLogin ? "确认后使用这套指纹创建独立登录环境" : `指纹 ${fp.fingerprint_id || "-"}`,
-      { okText: preLogin ? "使用此指纹登录" : "保存配置", wide: true },
+      { okText: preLogin ? "使用此指纹登录" : "保存配置", wide: true, icon: "i-fingerprint", submit: options.submit || null },
     );
     const autoButton = document.createElement("button");
     autoButton.id = "ui-extra-action";
@@ -3485,7 +3684,14 @@ async function manageFingerprint(id) {
   let current;
   try { current = await api(`/api/accounts/${id}/fingerprint`); }
   catch (e) { toast("读取指纹失败:" + e.message, "err"); return; }
-  const action = await uiFingerprintEditor(account, current);
+  let savedFingerprint;
+  const action = await uiFingerprintEditor(account, current, {
+    submit: async action => {
+      savedFingerprint = await api(`/api/accounts/${id}/fingerprint`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(action.data),
+      });
+    },
+  });
   if (!action) return;
   if (action.action === "auto") {
     const confirmed = await uiConfirm({
@@ -3501,14 +3707,8 @@ async function manageFingerprint(id) {
     } catch (e) { toast("自动生成失败:" + e.message, "err", 8000); }
     return;
   }
-  try {
-    const result = await api(`/api/accounts/${id}/fingerprint`, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(action.data),
-    });
-    toast(`指纹已保存：${result.fingerprint.fingerprint_id || "-"}`, "ok", 7000);
-    await refreshAccounts();
-  } catch (e) { toast("保存指纹失败:" + e.message, "err", 8000); }
+  toast(`指纹已保存：${savedFingerprint?.fingerprint?.fingerprint_id || "-"}`, "ok", 7000);
+  await refreshAccounts();
 }
 
 // ─── 代理池 ───
@@ -3593,14 +3793,13 @@ async function editPoolProxy(id) {
   const label = await uiPrompt({
     title: "编辑代理备注",
     hint: p.url + (p.geo_loc ? "  ·  " + p.geo_loc : ""),
-    value: p.label || "", placeholder: "如 住宅-广东-01" });
+    value: p.label || "", placeholder: "如 住宅-广东-01",
+    submit: label => api("/api/proxies/" + id, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: label.trim() }),
+    }),
+  });
   if (label === null) return;
-  try {
-    await api("/api/proxies/" + id, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: label.trim() }) });
-    toast("备注已更新", "ok"); refreshProxies();
-  } catch (e) { toast("更新失败:" + e.message, "err"); }
+  toast("备注已更新", "ok"); refreshProxies();
 }
 async function togglePoolProxy(id, enabled) {
   try {
@@ -3722,14 +3921,17 @@ async function delAccount(id) {
 async function loadSettings() {
   try {
     const s = await api("/api/settings");
-    $("dl-dir").value = s.download_dir || "";
-    $("dl-quality").value = s.video_quality || "highest";
+    const assign = (id, property, value) => {
+      if (!globalThis.CreatorHubWorkbench?.isDirty?.(id)) $(id)[property] = value;
+    };
+    assign("dl-dir", "value", s.download_dir || "");
+    assign("dl-quality", "value", s.video_quality || "highest");
     if ($("ai-enabled")) {
-      $("ai-enabled").checked = !!s.ai_enabled;
-      $("ai-base").value = s.ai_base_url || "";
-      $("ai-model").value = s.ai_model || "";
-      $("ai-temp").value = s.ai_temperature || "0.9";
-      $("ai-prompt").value = s.ai_prompt || "";
+      assign("ai-enabled", "checked", !!s.ai_enabled);
+      assign("ai-base", "value", s.ai_base_url || "");
+      assign("ai-model", "value", s.ai_model || "");
+      assign("ai-temp", "value", s.ai_temperature || "0.9");
+      assign("ai-prompt", "value", s.ai_prompt || "");
       $("ai-key").placeholder = s.ai_api_key_set ? "已保存(留空=不修改)" : "API Key";
     }
     csSyncAll();
@@ -3745,12 +3947,14 @@ async function saveAiSettings() {
   };
   const key = $("ai-key").value.trim();
   if (key) body.ai_api_key = key;
+  await withBusy(evtBtn(), "保存中", async () => {
   try {
     const s = await api("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     $("ai-key").value = ""; $("ai-key").placeholder = s.ai_api_key_set ? "已保存(留空=不修改)" : "API Key";
     $("ai-msg").textContent = "已保存 ✓ " + (s.ai_enabled ? "(规则勾选「用 AI」即生效)" : "(当前未启用)");
     toast("AI 设置已保存", "ok");
   } catch (e) { $("ai-msg").textContent = "失败: " + e.message; toast("保存失败:" + e.message, "err"); }
+  });
 }
 async function testAi() {
   const btn = evtBtn();
@@ -3773,6 +3977,7 @@ async function testAi() {
 }
 async function saveSettings() {
   $("dl-msg").textContent = "保存中…";
+  await withBusy(evtBtn(), "保存中", async () => {
   try {
     const s = await api("/api/settings", {
       method: "PUT", headers: { "Content-Type": "application/json" },
@@ -3784,6 +3989,7 @@ async function saveSettings() {
     $("dl-msg").textContent = "已保存 ✓ 新作品将按此设置下载";
     toast("下载设置已保存", "ok");
   } catch (e) { $("dl-msg").textContent = "失败: " + e.message; toast("保存失败:" + e.message, "err"); }
+  });
 }
 const QMAP = { "": "默认", highest: "原画", "1080": "1080P", "720": "720P", "540": "540P", lowest: "省流" };
 
@@ -4335,14 +4541,17 @@ async function addChannel() {
   try { config = JSON.parse($("n-config").value || "{}"); }
   catch (e) { $("n-msg").textContent = "配置不是合法 JSON"; toast("配置不是合法 JSON", "err"); return; }
   $("n-msg").textContent = "添加中…";
+  await withBusy(evtBtn(), "添加中", async () => {
   try {
     await api("/api/notifications", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: $("n-name").value.trim(), type: $("n-type").value, config }),
     });
     $("n-name").value = ""; $("n-msg").textContent = "已添加 ✓"; toast("通知渠道已添加", "ok");
+    globalThis.CreatorHubWorkbench?.completed?.("notifications");
     refreshChannels();
   } catch (e) { $("n-msg").textContent = "失败: " + e.message; toast("添加失败:" + e.message, "err"); }
+  });
 }
 async function refreshChannels() {
   const cs = await api("/api/notifications");
@@ -4355,7 +4564,7 @@ async function refreshChannels() {
       <button class="ghost sm" onclick="testChannel(${c.id})">测试</button>
       <button class="ghost sm" onclick="toggleChannel(${c.id}, ${!c.enabled})">${c.enabled ? "停用" : "启用"}</button>
       <button class="ghost sm danger" onclick="delChannel(${c.id})">${ic("i-trash")}删除</button>
-    </td></tr>`).join("") || empty(3, "还没有通知渠道", "i-bell", "添加 Bark / 钉钉 / Telegram 渠道，有新作品或新评论时推送给你");
+    </td></tr>`).join("") || empty(3, "还没有通知渠道", "i-bell", "配置 Bark、钉钉或 Telegram，接收新作品与评论提醒。", "notifications");
 }
 async function editChannel(id, draft = null) {
   const c = CHANNELS.find(x => x.id === id); if (!c) return;
@@ -4372,22 +4581,22 @@ async function editChannel(id, draft = null) {
       <div><label class="field" for="ec-config">配置 JSON</label>
         <textarea id="ec-config" rows="9" spellcheck="false" aria-describedby="ec-config-hint">${esc(initial.raw)}</textarea>
         <p id="ec-config-hint" class="mut">密钥以 ******** 显示。保留占位或省略字段即保留原值；填写新值则替换，填写空字符串或 null 才会清空。</p></div>`;
-    _uiOpen("编辑通知渠道", `类型：${c.type} · 密钥不回传到页面。修改后可发送测试通知。`, { okText: "保存修改", wide: true });
+    _uiOpen("编辑通知渠道", `类型：${c.type} · 密钥不回传到页面。修改后可发送测试通知。`, {
+      okText: "保存修改", wide: true, icon: "i-bell",
+      submit: value => {
+        let config;
+        try { config = JSON.parse(value.raw || "{}"); }
+        catch (_) { uiEditorError("配置不是合法 JSON，请修正后再保存", "ec-config"); }
+        if (!config || Array.isArray(config) || typeof config !== "object") uiEditorError("请使用 JSON 对象填写配置", "ec-config");
+        return api("/api/notifications/" + id, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: value.name || c.type, config }),
+        });
+      },
+    });
   });
   if (value === null) return;
-  let config;
-  try { config = JSON.parse(value.raw || "{}"); }
-  catch (e) {
-    toast("配置不是合法 JSON，请修正后再保存", "err");
-    return editChannel(id, value);
-  }
-  try {
-    await api("/api/notifications/" + id, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: value.name || c.type, config }),
-    });
-    toast("通知渠道已更新", "ok"); refreshChannels();
-  } catch (e) { toast("更新失败:" + e.message, "err"); }
+  toast("通知渠道已更新", "ok"); refreshChannels();
 }
 async function testChannel(id) {
   const btn = event.target.closest("button"); btn.disabled = true; btn.textContent = "发送中…";
@@ -4449,7 +4658,8 @@ async function createCollection() {
   valid = setFieldError($("col-min-likes"), minLikes < 0 ? "请输入非负整数" : "") && valid;
   valid = setFieldError($("col-min-comments"), minComments < 0 ? "请输入非负整数" : "") && valid;
   if (!valid) {
-    const first = document.querySelector('[data-panel="collections"] [aria-invalid="true"]');
+    const form = $("col-keywords").closest(".card");
+    const first = form?.querySelector('[aria-invalid="true"]');
     if (first) first.focus();
     return;
   }
@@ -4478,6 +4688,7 @@ async function createCollection() {
       $("col-create-msg").textContent = `任务 #${job.id} 已进入队列`;
       $("col-keywords").value = "";
       toast("关键词采集任务已创建", "ok");
+      globalThis.CreatorHubWorkbench?.completed?.("collections");
       await refreshCollections();
     } catch (e) {
       $("col-create-msg").textContent = "创建失败：" + e.message;
@@ -4493,7 +4704,7 @@ function collectionTaskSkeleton(count = 3) {
 }
 function collectionTaskEmpty() {
   return `<div class="empty collection-task-empty"><div class="empty-ic">${ic("i-hash")}</div>
-    <div class="empty-t">还没有关键词采集任务</div><div class="empty-sub">在上方批量输入关键词并开始采集</div></div>`;
+    <div class="empty-t">还没有关键词采集任务</div><div class="empty-sub">创建任务后，这里会显示进度与采集结果。</div><button class="ghost sm" data-open-composer="collections">新建关键词采集</button></div>`;
 }
 function renderCollectionJobs() {
   const body = $("collection-job-table"); if (!body) return;
@@ -4574,6 +4785,7 @@ async function editCollection(jobId, draft = null) {
   const value = await new Promise(resolve => {
     _uiResolve = resolve; _uiCancelVal = null;
     $("ui-body").innerHTML = `
+      <fieldset class="ui-form-group"><legend>采集范围</legend>
       <div class="form-field"><label for="ecol-keywords">关键词 <span class="field-scope">最多 20 个</span></label>
         <textarea id="ecol-keywords" rows="5" placeholder="每行一个关键词">${esc(initial.keywords)}</textarea></div>
       <div class="form-grid">
@@ -4582,6 +4794,8 @@ async function editCollection(jobId, draft = null) {
         <div class="form-field"><label for="ecol-content-limit">每词作品上限</label><input id="ecol-content-limit" type="number" min="1" max="100" value="${Number(initial.max_contents_per_keyword) || 20}"></div>
         <div class="form-field"><label for="ecol-comment-limit">每作品评论上限</label><input id="ecol-comment-limit" type="number" min="0" max="200" value="${Number(initial.max_comments_per_content) || 0}"></div>
       </div>
+      </fieldset>
+      <fieldset class="ui-form-group"><legend>搜索与停止条件</legend>
       <div class="form-grid collection-filter-grid">
         <div class="form-field"><label for="ecol-page-limit">每词采集深度</label><input id="ecol-page-limit" type="number" min="1" max="40" value="${Number(initial.max_pages_per_keyword) || 12}"></div>
         <div class="form-field"><label for="ecol-sort">搜索排序</label><select id="ecol-sort"><option value="general">综合排序</option><option value="latest">最新发布</option><option value="most_liked">最多点赞</option></select></div>
@@ -4591,11 +4805,14 @@ async function editCollection(jobId, draft = null) {
         <div class="form-field"><label for="ecol-min-comments">最低评论数</label><input id="ecol-min-comments" type="number" min="0" value="${Number(initial.min_comments) || 0}"></div>
         <div class="form-field"><label for="ecol-stagnant-pages">连续无新增停止</label><input id="ecol-stagnant-pages" type="number" min="1" max="8" value="${Number(initial.stagnant_pages) || 3}"></div>
       </div>
+      </fieldset>
+      <fieldset class="ui-form-group"><legend>评论与下载</legend>
       <div class="option-grid" aria-label="采集选项">
         <label class="switch-row"><input type="checkbox" id="ecol-download"${initial.download_media ? " checked" : ""} onchange="$('ecol-dir-wrap').style.display=this.checked?'':'none'"><span class="switch-copy"><b>下载媒体</b><span>保存视频和封面来源</span></span></label>
         <label class="switch-row"><input type="checkbox" id="ecol-replies"${initial.include_replies ? " checked" : ""}><span class="switch-copy"><b>包含二级评论</b><span>采集抖音当前可返回的回复</span></span></label>
       </div>
-      <div class="form-field" id="ecol-dir-wrap" style="display:${initial.download_media ? "" : "none"}"><label for="ecol-download-dir">下载目录（可选）</label><input id="ecol-download-dir" value="${esc(initial.download_dir)}" placeholder="留空使用默认目录"></div>`;
+      <div class="form-field" id="ecol-dir-wrap" style="display:${initial.download_media ? "" : "none"}"><label for="ecol-download-dir">下载目录（可选）</label><input id="ecol-download-dir" value="${esc(initial.download_dir)}" placeholder="留空使用默认目录"></div>
+      </fieldset>`;
     $("ecol-account").value = String(initial.account_id || "");
     $("ecol-quality").value = initial.video_quality || "highest";
     $("ecol-sort").value = initial.search_sort || "general";
@@ -4619,28 +4836,26 @@ async function editCollection(jobId, draft = null) {
       video_quality: $("ecol-quality").value || "highest",
       download_dir: $("ecol-download-dir").value.trim(),
     });
-    _uiOpen(`编辑采集任务 #${job.id}`, "保存配置不会删除已有作品和评论；修改后点击“续跑”应用新配置，系统会自动去重。", { okText: "保存配置", wide: true });
+    _uiOpen(`编辑采集任务 #${job.id}`, "已有作品和评论会保留。保存后点击「续跑」应用新配置，系统会自动去重。", {
+      okText: "保存配置", wide: true, icon: "i-library",
+      submit: value => {
+        const keywords = parseCollectionKeywords(value.keywords);
+        if (!keywords.length) uiEditorError("请至少填写一个关键词", "ecol-keywords");
+        if (keywords.length > 20) uiEditorError("单个任务最多 20 个关键词", "ecol-keywords");
+        if (!value.account_id) uiEditorError("请选择一个可用抖音账号", "ecol-account");
+        if (value.max_contents_per_keyword < 1 || value.max_contents_per_keyword > 100) uiEditorError("每词作品上限须为 1–100", "ecol-content-limit");
+        if (value.max_pages_per_keyword < 1 || value.max_pages_per_keyword > 40) uiEditorError("每词采集深度须为 1–40 页", "ecol-page-limit");
+        if (value.stagnant_pages < 1 || value.stagnant_pages > 8) uiEditorError("连续无新增停止阈值须为 1–8 页", "ecol-stagnant-pages");
+        if (value.min_likes < 0 || value.min_comments < 0) uiEditorError("点赞和评论门槛须为非负整数", "ecol-min-likes");
+        if (value.max_comments_per_content < 0 || value.max_comments_per_content > 200) uiEditorError("每作品评论上限须为 0–200", "ecol-comment-limit");
+        return api(`/api/collections/${job.id}`, {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...value, platform: "douyin", keywords }),
+        });
+      },
+    });
   });
   if (value === null) return;
-  const keywords = parseCollectionKeywords(value.keywords);
-  let error = "";
-  if (!keywords.length) error = "请至少填写一个关键词";
-  else if (keywords.length > 20) error = "单个任务最多 20 个关键词";
-  else if (!value.account_id) error = "请选择一个可用抖音账号";
-  else if (value.max_contents_per_keyword < 1 || value.max_contents_per_keyword > 100) error = "每词作品上限须为 1–100";
-  else if (value.max_pages_per_keyword < 1 || value.max_pages_per_keyword > 40) error = "每词采集深度须为 1–40 页";
-  else if (value.stagnant_pages < 1 || value.stagnant_pages > 8) error = "连续无新增停止阈值须为 1–8 页";
-  else if (value.min_likes < 0 || value.min_comments < 0) error = "点赞和评论门槛须为非负整数";
-  else if (value.max_comments_per_content < 0 || value.max_comments_per_content > 200) error = "每作品评论上限须为 0–200";
-  if (error) { toast(error, "err"); return editCollection(jobId, value); }
-  try {
-    await api(`/api/collections/${job.id}`, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...value, platform: "douyin", keywords }),
-    });
-    toast("任务配置已保存，点击“续跑”后生效", "ok");
-    await refreshCollections();
-  } catch (e) { toast("编辑失败：" + e.message, "err"); }
+  toast("任务配置已保存，点击“续跑”后生效", "ok"); refreshCollections();
 }
 function updateCollectionResultStats(job) {
   if (!job) return;
@@ -4660,6 +4875,7 @@ async function openCollectionResults(jobId) {
   const job = COLLECTION_JOBS.find(j => j.id === COLLECTION_JOB_ID);
   if (job) updateCollectionResultStats(job);
   $("collection-results-card").style.display = "";
+  globalThis.CreatorHubWorkbench?.collectionDetail?.(true);
   await withBusy(btn, "加载中", async () => {
     await loadCollectionContents(1);
     const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -4669,6 +4885,7 @@ async function openCollectionResults(jobId) {
 function closeCollectionResults() {
   COLLECTION_JOB_ID = 0; COLLECTION_PAGE = 1;
   if ($("collection-results-card")) $("collection-results-card").style.display = "none";
+  globalThis.CreatorHubWorkbench?.collectionDetail?.(false);
 }
 function collectionResultSkeleton(count = 4) {
   return Array.from({ length: count }, () => `<div class="collection-result-skeleton" aria-hidden="true">
@@ -4838,6 +5055,9 @@ function exportCollection(jobId) {
 }
 
 async function addMonitor() {
+  const btn = evtBtn() || document.querySelector('button[onclick="addMonitor()"]');
+  if (btn?.disabled) return;
+  await withBusy(btn, "识别中", async () => {
   const target_kind = (PLATFORM === "xhs" && $("t-kind")) ? $("t-kind").value : "creator";
   const normalizedTarget = target_kind === "keyword"
     ? $("t-url").value.trim()
@@ -4850,7 +5070,6 @@ async function addMonitor() {
     if (!ACCOUNTS.length) { toast(`请先在「账号」里完成${platformName}扫码登录`, "err"); switchTab("accounts"); return; }
     toast(`${platformName}监控必须选择一个已登录账号`, "err"); return;
   }
-  const btn = evtBtn();
   const downloadMode = $("t-download").value;
   $("add-msg").textContent = "解析中…";
   await withBusy(btn, "解析中", async () => {
@@ -4882,9 +5101,11 @@ async function addMonitor() {
       setMetaValue("t-group", ""); setMetaValue("t-tags", "");
       $("add-msg").textContent = "已添加 ✓";
       toast("已开始监控", "ok");
+      globalThis.CreatorHubWorkbench?.completed?.("monitors");
     } catch (e) { $("add-msg").textContent = "失败: " + e.message; toast("添加失败:" + e.message, "err"); }
   });
   refreshMonitors();
+  });
 }
 function numericSelectOptions(current, choices, unit = "") {
   const values = choices.map(([value]) => String(value));
@@ -5003,16 +5224,15 @@ async function editMonitor(id) {
     ["em-interval", "em-account", "em-backfill", "em-quality", "em-download",
       "em-max-scrolls", "em-max-items", "em-record-media"]
       .forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
-    _uiOpen("编辑作品监控", "监控对象不可修改；需要更换主页、创作者或关键词时，请新建监控。", { okText: "保存修改", wide: true });
+    _uiOpen("编辑作品监控", "监控对象保持不变。更换创作者或关键词，请新建监控。", {
+      okText: "保存修改", wide: true, icon: "i-eye",
+      submit: value => api("/api/monitors/" + id, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
+      }),
+    });
   });
   if (value === null) return;
-  try {
-    await api("/api/monitors/" + id, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(value),
-    });
-    toast("作品监控配置已更新", "ok"); refreshMonitors(); refreshContents();
-  } catch (e) { toast("更新失败:" + e.message, "err"); }
+  toast("作品监控配置已更新", "ok"); refreshMonitors(); refreshContents();
 }
 function monitorStrategySummary(t) {
   const depth = t.max_scrolls || (t.platform === "xhs" ? 6 : 12);
@@ -5048,7 +5268,7 @@ function monRow(t) {
       ${t.platform === "xhs" ? "" : `<span class="pill q bare">${QMAP[t.video_quality] || "默认画质"}</span> `}
       <span class="mut" title="${esc(t.download_dir || "默认目录")}" style="display:inline-block;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${esc(t.download_dir || "默认")}</span></td>
     <td class="mut">${t.last_scan_at ? new Date(t.last_scan_at + "Z").toLocaleString() : "—"}${t.last_error ? ` <span class="warn-ic" title="${esc(t.last_error)}">${ic("i-info")}</span>` : ""}${autoRunHint(t.next_auto_run_at)}</td>
-    <td><span class="pill ${t.enabled ? "active" : "invalid"}">${t.enabled ? "监控中" : "已暂停"}</span></td>
+    <td><span class="pill ${t.enabled ? "active" : "paused"}">${t.enabled ? "监控中" : "已暂停"}</span></td>
     <td class="acttd">
       <button class="ghost sm" onclick="runNow(${t.id})">立即抓取</button>
       <button class="ghost sm" onclick="editMonitor(${t.id})">编辑</button>
@@ -5068,11 +5288,16 @@ function renderMonitorRows() {
   });
   if ($("mon-filter-count")) $("mon-filter-count").textContent = `显示 ${rows.length} / ${MONITORS.length}`;
   $("mon-table").innerHTML = rows.map(monRow).join("")
-    || empty(8, "没有匹配的监控", "i-target", MONITORS.length ? "调整分组、标签或搜索条件" : "在上方添加一个作品监控");
+    || empty(8, "没有匹配的监控", "i-target", MONITORS.length ? "调整分组、标签或搜索条件" : "添加目标后，在这里查看采集进度。", MONITORS.length ? "" : "monitors");
 }
 async function refreshMonitors() {
   const isCurrent = beginViewRequest("monitors");
-  const ts = await api("/api/monitors?platform=" + PLATFORM);
+  let ts;
+  try { ts = await api("/api/monitors?platform=" + PLATFORM); }
+  catch (e) {
+    if (isCurrent() && !MONITORS.length) $("mon-table").innerHTML = empty(8, "监控暂未加载", "i-info", "请检查连接并重新加载。");
+    return;
+  }
   if (!isCurrent()) return;
   MONITORS = ts; populateMonitorFacets(); populateContentSrc();
   $("stat-mon").textContent = ts.filter(t => t.enabled).length;
@@ -5410,7 +5635,7 @@ function danmakuWatchRow(w) {
     '<td class="num">' + fmtNum(w.danmaku_count || 0) + "</td>" +
     '<td class="num">' + interval + "</td>" +
     '<td class="mut">' + (w.last_scan_at ? new Date(w.last_scan_at + "Z").toLocaleString() : "—") + error + autoRunHint(w.next_auto_run_at) + "</td>" +
-    '<td><span class="pill ' + (w.enabled ? "active" : "invalid") + '">' +
+    '<td><span class="pill ' + (w.enabled ? "active" : "paused") + '">' +
       (w.enabled ? "监控中" : "已暂停") + "</span></td>" +
     '<td class="acttd">' +
       '<button class="ghost sm" onclick="editDanmakuWatch(' + w.id + ')">编辑</button>' +
@@ -5436,9 +5661,12 @@ function renderDanmakuWatchRows() {
   }
   $("danmaku-watch-table").innerHTML = rows.map(danmakuWatchRow).join("") ||
     empty(8, "没有匹配的弹幕监控", "i-msg",
-          DANMAKU_WATCHES.length ? "调整筛选条件" : "在上方添加一个弹幕监控");
+          DANMAKU_WATCHES.length ? "调整筛选条件" : "添加目标后，在这里查看弹幕监控状态。", DANMAKU_WATCHES.length ? "" : "danmaku");
 }
 async function addDanmakuWatch() {
+  const btn = evtBtn() || document.querySelector('button[onclick="addDanmakuWatch()"]');
+  if (btn?.disabled) return;
+  await withBusy(btn, "识别中", async () => {
   const normalizedTarget = await normalizeDanmakuTarget(null, { quiet: true });
   if (normalizedTarget === null) return;
   const url = $("d-w-url").value.trim();
@@ -5447,7 +5675,6 @@ async function addDanmakuWatch() {
   if (mode === "creator" && !$("d-w-acc").value) {
     toast("创作中心模式需要选择创作者账号", "err"); return;
   }
-  const btn = evtBtn();
   $("d-w-msg").textContent = "解析中…";
   await withBusy(btn, "解析中", async () => {
     try {
@@ -5479,12 +5706,14 @@ async function addDanmakuWatch() {
       resetDanmakuTargetState();
       $("d-w-msg").textContent = "已添加 ✓";
       toast("已开始监控弹幕", "ok");
+      globalThis.CreatorHubWorkbench?.completed?.("danmaku");
     } catch (e) {
       $("d-w-msg").textContent = "失败: " + e.message;
       toast("添加失败:" + e.message, "err");
     }
   });
   refreshDanmakuWatches();
+  });
 }
 async function refreshDanmakuWatches() {
   const isCurrent = beginViewRequest("danmaku-watches");
@@ -5580,15 +5809,15 @@ async function editDanmakuWatch(id) {
     ["edw-interval", "edw-recent", "edw-days", "edw-depth", "edw-probe"].forEach(key => {
       const el = $(key); if (el && el._csSync) el._csSync();
     });
-    _uiOpen("编辑弹幕监控", "监控对象保持不变；可调整视频内时间范围、过滤条件和容量上限。", { okText: "保存修改", wide: true });
+    _uiOpen("编辑弹幕监控", "监控对象保持不变。调整抓取范围、过滤条件和容量上限。", {
+      okText: "保存修改", wide: true, icon: "i-captions",
+      submit: value => api("/api/danmaku-watches/" + id, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
+      }),
+    });
   });
   if (value === null) return;
-  try {
-    await api("/api/danmaku-watches/" + id, {
-      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
-    });
-    toast("弹幕监控配置已更新", "ok"); refreshDanmakuWatches(); refreshDanmaku();
-  } catch (e) { toast("更新失败:" + e.message, "err"); }
+  toast("弹幕监控配置已更新", "ok"); refreshDanmakuWatches(); refreshDanmaku();
 }
 async function scanDanmakuWatch(id) {
   const btn = evtBtn();
@@ -5749,6 +5978,9 @@ async function clearDanmaku() {
 // ─── 评论监控(独立) ───
 const SRC = { public: "公开", creator: "创作中心" };
 async function addWatch() {
+  const btn = evtBtn() || document.querySelector('button[onclick="addWatch()"]');
+  if (btn?.disabled) return;
+  await withBusy(btn, "识别中", async () => {
   const normalizedTarget = await normalizeWatchTarget(null, { quiet: true });
   if (normalizedTarget === null) return;
   const url_or_id = $("w-url").value.trim();
@@ -5757,7 +5989,6 @@ async function addWatch() {
     if (!ACCOUNTS.length) { toast("请先在「账号」里完成小红书扫码登录", "err"); switchTab("accounts"); return; }
     toast("小红书评论监控必须选择一个已登录账号", "err"); return;
   }
-  const btn = evtBtn();
   $("w-msg").textContent = "解析中…";
   await withBusy(btn, "解析中", async () => {
     try {
@@ -5779,9 +6010,11 @@ async function addWatch() {
       setMetaValue("w-group", ""); setMetaValue("w-tags", "");
       resetWatchTargetState();
       $("w-msg").textContent = "已添加 ✓"; toast("已开始监控评论", "ok");
+      globalThis.CreatorHubWorkbench?.completed?.("comments");
     } catch (e) { $("w-msg").textContent = "失败: " + e.message; toast("添加失败:" + e.message, "err"); }
   });
   refreshWatches();
+  });
 }
 function watchRow(w) {
   const base = esc(watchBaseName(w));
@@ -5794,7 +6027,7 @@ function watchRow(w) {
     <td class="num">${Math.round(w.interval_seconds / 60)} 分
       ${w.kind === "user" && (w.recent_works || w.recent_days) ? `<div class="mut" style="font-size:11px">${w.recent_works ? `近 ${w.recent_works} 个` : "全局作品数"} · ${w.recent_days ? `${w.recent_days} 天` : "全局天数"}</div>` : ""}</td>
     <td class="mut">${w.last_scan_at ? new Date(w.last_scan_at + "Z").toLocaleString() : "—"}${w.last_error ? ` <span class="warn-ic" title="${esc(w.last_error)}">${ic("i-info")}</span>` : ""}${autoRunHint(w.next_auto_run_at)}</td>
-    <td><span class="pill ${w.enabled ? "active" : "invalid"}">${w.enabled ? "监控中" : "已暂停"}</span></td>
+    <td><span class="pill ${w.enabled ? "active" : "paused"}">${w.enabled ? "监控中" : "已暂停"}</span></td>
     <td class="acttd">
       <button class="ghost sm" onclick="scanWatch(${w.id})">立即抓取</button>
       <button class="ghost sm" onclick="editWatchMeta(${w.id})">编辑</button>
@@ -5814,7 +6047,7 @@ function renderWatchRows() {
   });
   if ($("watch-filter-count")) $("watch-filter-count").textContent = `显示 ${rows.length} / ${WATCHES.length}`;
   $("watch-table").innerHTML = rows.map(watchRow).join("")
-    || empty(9, "没有匹配的评论监控", "i-msg", WATCHES.length ? "调整分组、标签或搜索条件" : "在上方添加一个评论监控");
+    || empty(9, "没有匹配的评论监控", "i-msg", WATCHES.length ? "调整分组、标签或搜索条件" : "添加作品或账号，开始收集新评论。", WATCHES.length ? "" : "comments");
 }
 async function refreshWatches() {
   const isCurrent = beginViewRequest("watches");
@@ -5897,16 +6130,15 @@ async function editWatchMeta(id) {
     if ($("ew-depth")) $("ew-depth").value = String(item.max_scrolls || 0);
     ["ew-interval", "ew-account", "ew-mode", "ew-recent", "ew-days", "ew-depth"]
       .forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
-    _uiOpen("编辑评论监控", "监控目标保持不变；需要更换作品或被监控的创作者时，请新建评论监控。", { okText: "保存修改", wide: true });
+    _uiOpen("编辑评论监控", "监控对象保持不变。更换作品或创作者，请新建评论监控。", {
+      okText: "保存修改", wide: true, icon: "i-msg",
+      submit: value => api("/api/comment-watches/" + id, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
+      }),
+    });
   });
   if (value === null) return;
-  try {
-    await api("/api/comment-watches/" + id, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(value),
-    });
-    toast("评论监控配置已更新", "ok"); refreshWatches(); refreshComments();
-  } catch (e) { toast("更新失败:" + e.message, "err"); }
+  toast("评论监控配置已更新", "ok"); refreshWatches(); refreshComments();
 }
 async function scanWatch(id) {
   const btn = evtBtn();
@@ -6159,6 +6391,7 @@ document.addEventListener("keydown", e => {
     if (modal === $("repost")) hideRepost();
     else if (modal === $("wcmodal")) hideWorkComments();
     else if (modal === $("collection-comments-modal")) hideCollectionComments();
+    else if (modal === $("risk-event-modal")) hideRiskEvents();
     else if (modal === $("preview")) hidePreview();
     return;
   }
@@ -6202,14 +6435,19 @@ function pubRemoveFile(i) {
   [...pubFilesDT.files].forEach((f, idx) => { if (idx !== i) dt.items.add(f); });
   pubFilesDT = dt; _pubSync();
 }
+let PUB_THUMB_URLS = [];
 function renderPubFiles() {
   const box = $("pub-filelist"); if (!box) return;
+  PUB_THUMB_URLS.forEach(url => URL.revokeObjectURL(url)); PUB_THUMB_URLS = [];
   box.innerHTML = [...pubFilesDT.files].map((f, i) => {
+    const url = f.type.startsWith("image/") ? URL.createObjectURL(f) : "";
+    if (url) PUB_THUMB_URLS.push(url);
     const thumb = f.type.startsWith("image/")
-      ? `<img src="${URL.createObjectURL(f)}" alt="">`
+      ? `<img src="${url}" alt="">`
       : `<span class="fp-ph">${ic("i-play")}</span>`;
     return `<span class="fp-chip">${thumb}<span title="${esc(f.name)}">${esc(f.name)}</span><button type="button" onclick="pubRemoveFile(${i})" aria-label="移除">${ic("i-x")}</button></span>`;
   }).join("");
+  globalThis.CreatorHubWorkbench?.previewUpdated?.();
 }
 function bindPubFilePicker() {
   const inp = $("pub-files"), zone = $("pub-drop");
@@ -6314,18 +6552,19 @@ async function editPublish(id) {
     if ($("ep-allowsave")) $("ep-allowsave").value = task.allow_save === false ? "0" : "1";
     ["ep-account", "ep-visibility", "ep-allowsave"].forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
     enhanceDateTime($("ep-when"));
-    _uiOpen("编辑发布任务", `可修改文案、账号、时间和权限；${task.media_count} 个附件如需更换，请删除任务后重建。`, { okText: "保存修改", wide: true });
+    _uiOpen("编辑发布任务", `${task.media_count} 个附件保持不变。调整文案、账号、预约时间与权限。`, {
+      okText: "保存修改", wide: true, icon: "i-send",
+      submit: value => {
+        if (!value.account_id) uiEditorError("请选择发布账号", "ep-account");
+        const scheduled_at = scheduleToApi(value.scheduled_at);
+        return api("/api/publish/" + id, {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...value, scheduled_at }),
+        });
+      },
+    });
   });
   if (value === null) return;
-  if (!value.account_id) { toast("请选择发布账号", "err"); return; }
-  try {
-    value.scheduled_at = scheduleToApi(value.scheduled_at);
-    await api("/api/publish/" + id, {
-      method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(value),
-    });
-    toast("发布任务已更新", "ok"); refreshPublish();
-  } catch (e) { toast("更新失败:" + e.message, "err"); }
+  toast("发布任务已更新", "ok"); refreshPublish();
 }
 async function refreshPublish() {
   const isCurrent = beginViewRequest("publish");
@@ -6463,7 +6702,9 @@ async function openRepost(id, target) {
   $("rp-desc").value = desc;
   $("rp-topics").value = "";
   $("rp-when").value = ""; dtSyncAll();
-  $("rp-msg").textContent = "";
+  $("rp-msg").textContent = "确认后加入发布队列";
+  $("rp-msg").dataset.tone = "neutral";
+  $("rp-msg").setAttribute("role", "status");
   $("rp-src").textContent = rec ? `来源:${rec.media_type === "images" ? "图集" : "视频"} · ${esc((rec.desc || "(无描述)").slice(0, 30))}` : "";
   // 抖音发布设置(可见性 / 保存权限)仅目标为抖音时显示
   if ($("rp-dy-opts")) $("rp-dy-opts").style.display = isDy ? "flex" : "none";
@@ -6471,8 +6712,9 @@ async function openRepost(id, target) {
   renderRepostThumbs(id);   // 异步拉媒体缩略图,不阻塞弹窗
   $("rp-submit").disabled = false;
   $("repost").style.display = "flex";
+  $("rp-body").scrollTop = 0;
   modalOpened($("repost"));
-  $("rp-title").focus();
+  $("rp-head").focus({ preventScroll: true });
 }
 let RP_MEDIA = [];         // 可编辑图集:[{url, idx}](idx=原始序号,提交时回传)
 let RP_MEDIA_LEN = 0;      // 原始图片总数(判断是否被编辑过)
@@ -6557,15 +6799,21 @@ function rpMediaOrder() {
   return unchanged ? null : order;
 }
 function hideRepost() {
+  if ($("rp-submit").disabled) return;
   $("repost").style.display = "none"; REPOST_ID = null;
   modalClosed($("repost"));
 }
 async function submitRepost() {
-  if (REPOST_ID === null) return;
+  if (REPOST_ID === null || $("rp-submit").disabled) return;
   const accId = +$("rp-acc").value;
   if (!accId) { toast("请选择发布账号", "err"); return; }
-  const btn = $("rp-submit"); btn.disabled = true;
+  const btn = $("rp-submit"), modal = $("repost");
+  let success = false;
+  $("rp-body").inert = true; modal.setAttribute("aria-busy", "true");
+  modal.querySelectorAll(".pv-close,#rp-actions .ghost").forEach(button => { button.disabled = true; });
+  $("rp-msg").dataset.tone = "neutral"; $("rp-msg").setAttribute("role", "status");
   $("rp-msg").textContent = "提交中…";
+  $("rp-msg").focus({ preventScroll: true });
   const body = {
     account_id: accId,
     title: $("rp-title").value.trim(),
@@ -6580,13 +6828,20 @@ async function submitRepost() {
     : REPOST_TARGET === "shipinhao" ? "视频号" : "小红书";
   try {
     body.scheduled_at = scheduleToApi(body.scheduled_at);
-    const r = await api("/api/contents/" + REPOST_ID + "/repost-" + REPOST_TARGET, {
+    const r = await withBusy(btn, "提交中", () => api("/api/contents/" + REPOST_ID + "/repost-" + REPOST_TARGET, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
+    }));
     toast((body.scheduled_at ? "已加入定时发布队列" : `已加入${pname}发布队列`) + "(任务 #" + r.task_id + ")", "ok");
-    hideRepost();
-    if (typeof refreshPublish === "function") refreshPublish();
-  } catch (e) { $("rp-msg").textContent = "失败:" + e.message; toast("转发失败:" + e.message, "err"); btn.disabled = false; }
+    success = true;
+  } catch (e) {
+    $("rp-msg").textContent = "提交未完成：" + e.message;
+    $("rp-msg").dataset.tone = "error"; $("rp-msg").setAttribute("role", "alert");
+    $("rp-msg").focus({ preventScroll: true });
+  } finally {
+    $("rp-body").inert = false; modal.removeAttribute("aria-busy");
+    modal.querySelectorAll(".pv-close,#rp-actions .ghost").forEach(button => { button.disabled = false; });
+  }
+  if (success) { hideRepost(); if (typeof refreshPublish === "function") refreshPublish(); }
 }
 // ─── 自动评论 ───
 let AC_RULES = [];
@@ -6646,12 +6901,15 @@ async function addCommentRule() {
     daily_cap: +$("ac-cap").value || 0, min_gap_seconds: +$("ac-gap").value || 60,
     max_per_run: +$("ac-max").value || 5, interval_seconds: +$("ac-interval").value || 1800, enabled: false,
   };
+  await withBusy(evtBtn(), "创建中", async () => {
   try {
     await api("/api/comment-rules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     $("ac-templates").value = ""; $("ac-target").value = "";
     $("ac-msg").textContent = "规则已创建(默认关闭),可在下方「试跑」预览文案 ✓";
     toast("规则已创建", "ok"); refreshCommentRules();
+    globalThis.CreatorHubWorkbench?.completed?.("autocomment");
   } catch (e) { $("ac-msg").textContent = "失败: " + e.message; toast("创建失败:" + e.message, "err"); }
+  });
 }
 
 // ─── 编辑规则:独立弹窗(复用 uimodal 壳)───
@@ -6690,7 +6948,7 @@ function emOnKind() {
 function editRule(id) {
   const r = AC_RULES.find(x => x.id === id); if (!r) return;
   EM_PF = r.platform;
-  const accOpts = accOptions(ACCOUNTS, EM_PF === "xhs" ? "请选择小红书账号" : "请选择抖音账号");
+  const accOpts = accOptions(ACCOUNTS.filter(a => a.platform === EM_PF), EM_PF === "xhs" ? "请选择小红书账号" : "请选择抖音账号");
   new Promise(res => {
     _uiResolve = res; _uiCancelVal = null;
     _uiGetVal = () => ({
@@ -6704,23 +6962,33 @@ function editRule(id) {
       max_per_run: +$("em-max").value || 5, interval_seconds: +$("em-interval").value || 1800,
     });
     $("ui-body").innerHTML = `
-      <input id="em-name" placeholder="规则名称">
-      <div class="row">
-        <select id="em-mode" onchange="emOnMode()"><option value="auto_reply">自动回复(回自己作品)</option><option value="auto_comment">自动评论(去别人帖子)</option></select>
-        <select id="em-kind" onchange="emOnKind()"></select>
-      </div>
-      <select id="em-acc">${accOpts}</select>
-      <div id="em-target-wrap"><label class="field" id="em-target-label">目标</label><input id="em-target"></div>
-      <div><label class="field">文案模板(每行一条;{nick} {kw} {好|不错|赞})</label><textarea id="em-templates" rows="4"></textarea></div>
-      <label class="mut" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="em-use-ai" style="width:auto"> 用大模型生成文案(失败回退模板)</label>
-      <label class="mut" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="em-review" style="width:auto"> 草稿审核(只生成不自动发)</label>
-      <div class="row" id="em-filter-wrap"><input id="em-reply-filter" placeholder="仅回复含此关键词的评论"><input id="em-skip" placeholder="跳过含这些词(逗号分隔)"></div>
-      <div class="row" style="flex-wrap:wrap;gap:10px">
-        <label class="mut" style="display:flex;align-items:center;gap:6px">每日上限 <input type="number" id="em-cap" min="0" style="width:70px"></label>
-        <label class="mut" style="display:flex;align-items:center;gap:6px">最小间隔秒 <input type="number" id="em-gap" min="1" style="width:82px"></label>
-        <label class="mut" style="display:flex;align-items:center;gap:6px">每轮最多 <input type="number" id="em-max" min="1" style="width:70px"></label>
-        <select id="em-interval"><option value="900">每 15 分钟</option><option value="1800">每 30 分钟</option><option value="3600">每小时</option></select>
-      </div>`;
+      <fieldset class="ui-form-group"><legend>规则与对象</legend>
+        <div><label class="field" for="em-name">规则名称</label><input id="em-name" maxlength="100" placeholder="便于识别这条规则"></div>
+        <div class="form-grid">
+          <div><label class="field" for="em-mode">互动方式</label><select id="em-mode" onchange="emOnMode()"><option value="auto_reply">回复自己作品的评论</option><option value="auto_comment">评论其他人的作品</option></select></div>
+          <div><label class="field" for="em-kind">目标范围</label><select id="em-kind" onchange="emOnKind()"></select></div>
+        </div>
+        <div><label class="field" for="em-acc">使用账号</label><select id="em-acc">${accOpts}</select></div>
+        <div id="em-target-wrap"><label class="field" id="em-target-label" for="em-target">目标</label><input id="em-target"></div>
+      </fieldset>
+      <fieldset class="ui-form-group"><legend>文案与审核</legend>
+        <div><label class="field" for="em-templates">文案模板</label><textarea id="em-templates" rows="4" aria-describedby="em-templates-hint"></textarea>
+          <p class="field-help" id="em-templates-hint">每行一条，支持 {nick}、{kw} 和随机词组 {好|不错|赞}。</p></div>
+        <label class="ui-toggle"><span><b>AI 生成文案</b><small>生成失败时使用上面的模板</small></span><input type="checkbox" role="switch" id="em-use-ai"></label>
+        <label class="ui-toggle"><span><b>发布前审核</b><small>只生成草稿，由你确认后再发送</small></span><input type="checkbox" role="switch" id="em-review"></label>
+        <div class="form-grid" id="em-filter-wrap">
+          <div><label class="field" for="em-reply-filter">只回复包含关键词的评论</label><input id="em-reply-filter" placeholder="留空不限制"></div>
+          <div><label class="field" for="em-skip">跳过关键词</label><input id="em-skip" placeholder="多个词用逗号分隔"></div>
+        </div>
+      </fieldset>
+      <fieldset class="ui-form-group"><legend>执行频率</legend>
+        <div class="form-grid">
+          <div><label class="field" for="em-cap">每日上限（条）</label><input type="number" id="em-cap" min="0" inputmode="numeric"></div>
+          <div><label class="field" for="em-gap">最小间隔（秒）</label><input type="number" id="em-gap" min="1" inputmode="numeric"></div>
+          <div><label class="field" for="em-max">每轮上限（条）</label><input type="number" id="em-max" min="1" inputmode="numeric"></div>
+          <div><label class="field" for="em-interval">检查频率</label><select id="em-interval">${numericSelectOptions(r.interval_seconds || 1800, [[900, "每 15 分钟"], [1800, "每 30 分钟"], [3600, "每小时"]], " 秒")}</select></div>
+        </div>
+      </fieldset>`;
     // 回填值
     $("em-name").value = r.name || "";
     $("em-mode").value = r.mode; emOnMode();
@@ -6737,15 +7005,18 @@ function editRule(id) {
     $("em-cap").value = r.daily_cap; $("em-gap").value = r.min_gap_seconds;
     $("em-max").value = r.max_per_run;
     if ([...$("em-interval").options].some(o => o.value === String(r.interval_seconds))) $("em-interval").value = String(r.interval_seconds);
-    _uiOpen("编辑规则 #" + id, "改了「目标/关键词」会重新解析;账号需与规则平台一致", { okText: "保存修改", wide: true });
+    _uiOpen("编辑规则 #" + id, "调整互动对象、文案和执行频率。修改目标或关键词后会重新解析。", {
+      okText: "保存修改", wide: true, icon: "i-automation",
+      submit: val => {
+        if (!val.templates.length) uiEditorError("请至少写一条文案模板", "em-templates");
+        if (!val.account_id) uiEditorError("请选择与规则平台一致的账号", "em-acc");
+        return api("/api/comment-rules/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(val) });
+      },
+    });
     ["em-mode", "em-kind", "em-acc", "em-interval"].forEach(idd => { const el = $(idd); if (el) enhanceSelect(el); });
   }).then(async val => {
     if (!val) return;   // 取消
-    if (!val.templates.length) { toast("请至少写一条文案模板", "err"); return; }
-    try {
-      await api("/api/comment-rules/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(val) });
-      toast("规则已更新 ✓", "ok"); refreshCommentRules();
-    } catch (e) { toast("更新失败:" + e.message, "err"); }
+    toast("规则已更新", "ok"); refreshCommentRules();
   });
 }
 async function refreshCommentRules() {
@@ -6769,14 +7040,14 @@ async function refreshCommentRules() {
       <td>${esc(acc)}</td>
       <td class="mut num">${r.daily_cap}/日 · ${Math.round(r.interval_seconds / 60)}分</td>
       <td class="mut num">${r.last_run_at ? new Date(r.last_run_at + "Z").toLocaleString() : "—"}${r.last_error ? ` <span class="warn-ic" title="${esc(r.last_error)}">${ic("i-info")}</span>` : ""}${autoRunHint(r.next_auto_run_at)}</td>
-      <td><span class="pill ${r.enabled ? "done" : "invalid"}">${r.enabled ? "运行中" : "已停用"}</span></td>
+      <td><span class="pill ${r.enabled ? "done" : "paused"}">${r.enabled ? "运行中" : "已停用"}</span></td>
       <td class="acttd">
         <button class="ghost sm" onclick="toggleRule(${r.id}, ${r.enabled ? "false" : "true"})">${r.enabled ? "停用" : "启用"}</button>
         <button class="ghost sm" onclick="editRule(${r.id})">编辑</button>
         <button class="ghost sm" onclick="runRule(${r.id})">试跑</button>
         <button class="ghost sm danger" onclick="delRule(${r.id})">${ic("i-trash")}删除</button>
       </td></tr>`;
-  }).join("") || empty(8, "暂无评论规则", "i-msg", "在上方创建一条自动回复或自动评论规则");
+  }).join("") || empty(8, "暂无评论规则", "i-msg", "创建规则后可先试跑，确认内容再启用。", "autocomment");
 }
 async function toggleRule(id, en) {
   try { await api("/api/comment-rules/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: en }) }); toast(en ? "已启用" : "已停用", "ok"); refreshCommentRules(); }
@@ -6844,12 +7115,14 @@ async function approveAllDrafts() {
 }
 async function editTaskContent(id) {
   const t = AC_TASKS.find(x => x.id === id); if (!t) return;
-  const v = await uiPrompt({ title: "编辑评论文案", hint: "发出前可微调这条评论的内容", value: t.content || "", multiline: true, rows: 3 });
+  const v = await uiPrompt({ title: "编辑评论文案", hint: "保存只更新文案，不会发送评论。", value: t.content || "", multiline: true, rows: 3,
+    submit: value => {
+      if (!value.trim()) uiEditorError("文案不能为空", "ui-inp");
+      return api("/api/comment-tasks/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: value.trim() }) });
+    },
+  });
   if (v === null) return;
-  const content = v.trim();
-  if (!content) { toast("文案不能为空", "err"); return; }
-  try { await api("/api/comment-tasks/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) }); toast("文案已更新", "ok"); refreshCommentTasks(); }
-  catch (e) { toast("更新失败:" + e.message, "err"); }
+  toast("文案已更新", "ok"); refreshCommentTasks();
 }
 async function runTask(id) {
   const btn = evtBtn();
@@ -6980,6 +7253,7 @@ function renderTaskQueuePager(data) {
 }
 
 function renderTaskQueueSummary(summary = {}) {
+  if (taskQueuePlatform() === PLATFORM) globalThis.CreatorHubWorkbench?.queueSummary?.(summary);
   ["active", "pending", "running", "blocked", "failed"].forEach(name => {
     const el = $(`queue-stat-${name}`);
     if (el) el.textContent = fmtNum(Number(summary[name] || 0));
@@ -7037,6 +7311,7 @@ async function refreshTaskQueueBadge() {
     const params = new URLSearchParams({ platform: PLATFORM, state: "active", page_size: "1" });
     const data = await api("/api/task-queue?" + params.toString());
     if (!isCurrent() || CURRENT_TAB === "queue") return;
+    globalThis.CreatorHubWorkbench?.queueSummary?.(data.summary || {});
     const badge = $("tb-queue");
     if (badge) badge.textContent = fmtNum(Number(data.summary?.active || 0));
   } catch (e) {
@@ -7083,7 +7358,7 @@ let POLL_RUNNING = false, POLL_TIMER = null, POLL_DELAY = 8000;
 async function loop() {
   if (POLL_RUNNING) return;
   clearTimeout(POLL_TIMER);
-  if (INFLIGHT > 0 || document.hidden) {
+  if (INFLIGHT > 0 || document.hidden || globalThis.CreatorHubWorkbench?.isInteracting?.()) {
     POLL_TIMER = setTimeout(loop, POLL_DELAY);
     return;
   }
@@ -7171,7 +7446,10 @@ controlEnhancer.observe(document.body, { childList: true, subtree: true });
 // shell 交互：浏览器前进/后退、平台键盘切换、长页面返回顶部。
 window.addEventListener("hashchange", () => {
   const tab = decodeURIComponent(location.hash.replace(/^#/, ""));
-  if (VALID_TABS.includes(tab) && tab !== CURRENT_TAB) switchTab(tab);
+  if (VALID_TABS.includes(tab) && tab !== CURRENT_TAB) {
+    switchTab(tab);
+    globalThis.CreatorHubWorkbench?.restoreScroll?.();
+  }
 });
 document.querySelector(".pswitch").addEventListener("keydown", e => {
   if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
@@ -7189,8 +7467,40 @@ window.addEventListener("scroll", () => {
   if (_backTopTick) return;
   _backTopTick = true;
   requestAnimationFrame(() => {
-    $("backtop").classList.toggle("show", window.scrollY > 520);
+    const visible = window.scrollY > 520, button = $("backtop");
+    button.classList.toggle("show", visible);
+    button.tabIndex = visible ? 0 : -1;
+    button.setAttribute("aria-hidden", String(!visible));
     _backTopTick = false;
   });
 }, { passive: true });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loop(); });
+
+// Narrow bridge for React islands; business mutations remain in their original handlers.
+window.CreatorHubBridge = {
+  getContext: () => ({ tab: CURRENT_TAB, platform: PLATFORM }),
+  navigate: switchTab,
+  openAccount: openAccountHub,
+  openQueue(state) {
+    // The overview summary describes this platform, not the user's previous scope.
+    if ($("queue-platform")) { $("queue-platform").value = "current"; $("queue-platform")._csSync?.(); }
+    $("queue-state").value = state; $("queue-state")._csSync?.();
+    $("queue-query").value = ""; $("queue-type").value = ""; $("queue-type")._csSync?.();
+    TASK_QUEUE_PAGE = 1;
+    switchTab("queue", true);
+  },
+  async retry() {
+    const refreshers = {
+      overview: [refreshOverviewSummary, refreshOverviewChart, refreshTaskQueueBadge],
+      accounts: [refreshAccounts, refreshBrowserRuntimes, refreshProxies],
+      monitors: [refreshMonitors, refreshContents], comments: [refreshWatches, refreshComments],
+      danmaku: [refreshDanmakuWatches, refreshDanmaku], collections: [refreshCollections],
+      queue: [refreshTaskQueue], publish: [refreshPublish],
+      autocomment: [refreshCommentRules, refreshCommentTasks],
+      notifications: [refreshChannels], settings: [loadSettings],
+      "risk-control": [refreshRiskCenter], hub: [refreshHubSummary, refreshHubPanel],
+      "share-download": [refreshShareHistory],
+    };
+    await Promise.allSettled((refreshers[CURRENT_TAB] || []).map(fn => Promise.resolve().then(() => fn())));
+  },
+};

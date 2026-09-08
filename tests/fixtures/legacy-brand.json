@@ -1,0 +1,55 @@
+{
+  "source": "https://3441293738.github.io/creatorhub/",
+  "captured": "2026-09-08",
+  "symbol": "<symbol id=\"i-logo\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"11\" cy=\"11\" r=\"7\"></circle><path d=\"m21 21-4.3-4.3\"></path><circle cx=\"11\" cy=\"11\" r=\"2.5\"></circle></symbol>",
+  "platforms": {
+    "douyin": {
+      "accent": "#fe2c55",
+      "background": "#090b10",
+      "logo": {
+        "background": "linear-gradient(135deg, rgb(37, 244, 238) 0px, rgb(37, 244, 238) 46%, rgb(254, 44, 85) 54%, rgb(254, 44, 85) 100%)",
+        "width": "34px",
+        "height": "34px",
+        "radius": "10px",
+        "shadow": "rgba(254, 44, 85, 0.35) 0px 4px 14px -4px",
+        "iconWidth": "19px"
+      }
+    },
+    "xhs": {
+      "accent": "#ff2442",
+      "background": "#fbf3f1",
+      "logo": {
+        "background": "linear-gradient(135deg, rgb(255, 36, 66), rgb(255, 106, 133))",
+        "width": "34px",
+        "height": "34px",
+        "radius": "10px",
+        "shadow": "rgba(255, 36, 66, 0.3) 0px 6px 16px -6px",
+        "iconWidth": "19px"
+      }
+    },
+    "kuaishou": {
+      "accent": "#ff7902",
+      "background": "#090b10",
+      "logo": {
+        "background": "linear-gradient(135deg, rgb(255, 121, 2), rgb(255, 176, 77))",
+        "width": "34px",
+        "height": "34px",
+        "radius": "10px",
+        "shadow": "rgba(255, 121, 2, 0.38) 0px 4px 14px -4px",
+        "iconWidth": "19px"
+      }
+    },
+    "shipinhao": {
+      "accent": "#07c160",
+      "background": "#090b10",
+      "logo": {
+        "background": "linear-gradient(135deg, rgb(7, 193, 96), rgb(79, 214, 143))",
+        "width": "34px",
+        "height": "34px",
+        "radius": "10px",
+        "shadow": "rgba(7, 193, 96, 0.38) 0px 4px 14px -4px",
+        "iconWidth": "19px"
+      }
+    }
+  }
+}

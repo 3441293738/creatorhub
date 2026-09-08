@@ -28,6 +28,12 @@ def build(destination: Path) -> None:
     if marker not in html:
         raise RuntimeError("app script marker not found in app/web/index.html")
     (destination / "index.html").write_text(html.replace(marker, replacement), encoding="utf-8")
+    # Early theme boot, shared tokens and shell interactions also work on Pages.
+    html = (destination / "index.html").read_text(encoding="utf-8")
+    for asset in ("appearance.js", "appearance.css", "workspace-ui.js", "workbench.js", "workbench.css", "workbench.js.LEGAL.txt", "workbench-licenses.txt"):
+        html = html.replace(f"/static/{asset}", f"./{asset}")
+        shutil.copy2(SOURCE / asset, destination / asset)
+    (destination / "index.html").write_text(html, encoding="utf-8")
     shutil.copy2(SOURCE / "app.js", destination / "app.js")
     shutil.copy2(PREVIEW / "demo-api.js", destination / "demo-api.js")
     shutil.copytree(COMMUNITY, destination / "community")

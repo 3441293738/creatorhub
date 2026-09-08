@@ -1,31 +1,18 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CreatorHub</title>
-<!-- 数据看板字体:Fira Sans(正文拉丁)+ Fira Code(数字/等宽);离线时自动回退系统字体 -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f5f5f7">
+<script src="/static/appearance.js"></script>
+<!-- System fonts render immediately, including when the workbench is offline. -->
 <style>
   :root {
     /* shell sizing */
     --header-h:68px; --sidebar-w:232px; --content-max:1260px;
-    --control-h:40px; --control-bg:#0b0f16; --control-bg-hover:#0f141d;
-    /* surfaces */
-    --bg:#090b10; --bg-grad:#0d1018;
-    --surface:#12161e; --surface-2:#181d27; --surface-3:#202632;
-    --line:#2a3341; --line-soft:#1d2530;
-    /* text */
-    --fg:#e7eaf0; --fg-strong:#f6f8fb; --mut:#8b94a3; --mut-2:#778094;
-    /* brand + semantic */
-    --acc:#fe2c55; --acc-hover:#ff4b6e; --acc-soft:rgba(254,44,85,.14); --acc-ring:rgba(254,44,85,.35);
-    --xhs:#ff2442; --xhs-hover:#ff4359; --xhs-soft:rgba(255,36,66,.14); --xhs-ring:rgba(255,36,66,.35);
-    --info:#38bdf8; --info-soft:rgba(56,189,248,.14);
-    --success:#34d399; --success-soft:rgba(52,211,153,.14);
-    --warn:#fbbf24; --warn-soft:rgba(251,191,36,.14);
-    --danger:#f87171; --danger-soft:rgba(248,113,113,.14);
+    /* Semantic color and density tokens live in appearance.css. */
     /* shape */
     --r-xs:7px; --r-sm:10px; --r:14px; --r-lg:18px;
     --sh-sm:0 1px 2px rgba(0,0,0,.32), inset 0 1px 0 rgba(255,255,255,.025);
@@ -54,16 +41,13 @@
   /* ── scrollbar ── */
   *::-webkit-scrollbar { height:10px; width:10px; }
   *::-webkit-scrollbar-thumb { background:var(--surface-3); border-radius:8px; border:2px solid transparent; background-clip:padding-box; }
-  *::-webkit-scrollbar-thumb:hover { background:#2c3340; background-clip:padding-box; }
+  *::-webkit-scrollbar-thumb:hover { background:var(--mut-2); background-clip:padding-box; }
   html { scrollbar-color:var(--surface-3) transparent; scrollbar-width:thin; }
 
   /* 原生日期选择器使用品牌色；复选框 / 单选框在表单区域统一重绘 */
   input[type=date], input[type=datetime-local], input[type=time] { accent-color:var(--acc); }
   input[type=date]::-webkit-calendar-picker-indicator,
-  input[type=datetime-local]::-webkit-calendar-picker-indicator { filter:invert(.7); cursor:pointer; }
-  body.pf-xhs input[type=date]::-webkit-calendar-picker-indicator,
-  body.pf-xhs input[type=datetime-local]::-webkit-calendar-picker-indicator { filter:none; }
-
+  input[type=datetime-local]::-webkit-calendar-picker-indicator { cursor:pointer; }
   /* ── header ── */
   header {
     position:sticky; top:0; z-index:30;
@@ -106,83 +90,7 @@
   .pswitch button.active[data-pf="shipinhao"] { background:rgba(7,193,96,.16); color:#07c160; border-color:rgba(7,193,96,.4); }
   .hidden { display:none !important; }
 
-  /* ════ 小红书:浅色暖调主题(整页随平台切换;抖音保持深色) ════ */
-  body.pf-xhs {
-    /* surfaces — 干净白卡 + 暖米底 */
-    --bg:#fbf3f1; --bg-grad:#fff;
-    --surface:#ffffff; --surface-2:#fdf4f2; --surface-3:#f8e7e2;
-    --control-bg:#fffaf9; --control-bg-hover:#fff6f4;
-    --line:#f2ddd7; --line-soft:#f8e9e4;
-    /* text — 暖近黑,保证对比度 */
-    --fg:#2b2226; --fg-strong:#181113; --mut:#6e5e62; --mut-2:#806f73;
-    /* brand — 小红书招牌红 */
-    --acc:#ff2442; --acc-hover:#ff3d57; --acc-soft:rgba(255,36,66,.10); --acc-ring:rgba(255,36,66,.30);
-    /* 语义色在浅底上压暗一档,确保可读 */
-    --info:#0ea5e9; --info-soft:rgba(14,165,233,.12);
-    --success:#16a34a; --success-soft:rgba(22,163,74,.12);
-    --warn:#d97706; --warn-soft:rgba(217,119,6,.14);
-    --danger:#e11d48; --danger-soft:rgba(225,29,72,.12);
-    /* 更圆润柔和的小红书形状 + 轻盈投影 */
-    --r-xs:8px; --r-sm:10px; --r:14px; --r-lg:20px;
-    --sh-sm:0 1px 2px rgba(190,90,100,.08);
-    --sh:0 1px 2px rgba(190,90,100,.07), 0 14px 30px -18px rgba(210,90,110,.30);
-    color:var(--fg);
-    background:
-      radial-gradient(1100px 520px at 88% -12%, rgba(255,36,66,.10), transparent 60%),
-      radial-gradient(820px 460px at -5% 0%, rgba(255,140,90,.07), transparent 55%),
-      var(--bg);
-  }
-  body.pf-xhs header,
-  body.pf-xhs .sidebar,
-  body.pf-xhs .tabbar { background:rgba(255,255,255,.78); border-color:var(--line-soft); }
-  body.pf-xhs .brand-mark { box-shadow:0 6px 16px -6px var(--acc-ring); }
-  body.pf-xhs .card { box-shadow:var(--sh-sm); }
-  body.pf-xhs .card:hover { border-color:var(--acc-ring); }
-  body.pf-xhs button:not(.ghost):not(.pswitch button) { box-shadow:0 6px 16px -10px var(--acc-ring); }
-  body.pf-xhs .thumb, body.pf-xhs .avatar { background:var(--surface-3); }
-  /* 浅底下拉箭头换成暖灰 */
-  body.pf-xhs select { background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%236e5e62' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); }
-  body.pf-xhs ::selection { background:var(--acc-soft); }
-
-  /* ════ 抖音:深色 + 招牌青红双色(主色红 #FE2C55,点缀抖音青 #25F4EE,呼应官方 logo)════ */
-  body.pf-douyin {
-    /* 次色换成抖音招牌青(图表「评论」柱、info 点缀都会跟着变青)*/
-    --info:#25f4ee; --info-soft:rgba(37,244,238,.15);
-    background:
-      radial-gradient(1200px 600px at 80% -10%, rgba(254,44,85,.08), transparent 60%),
-      radial-gradient(900px 500px at 0% 0%, rgba(37,244,238,.06), transparent 55%),
-      var(--bg);
-  }
-  /* 青红错位双色品牌标,呼应抖音 logo */
-  body.pf-douyin .brand-mark { background:linear-gradient(135deg,#25f4ee 0 46%,#fe2c55 54% 100%); }
-
-  /* ════ 快手:深色 + 招牌橙主题(沿用深色底,品牌色换成快手橙,区别于抖音红)════ */
-  body.pf-kuaishou {
-    /* brand — 快手招牌橙 #FF7902 */
-    --acc:#ff7902; --acc-hover:#ff9326; --acc-soft:rgba(255,121,2,.15); --acc-ring:rgba(255,121,2,.38);
-    background:
-      radial-gradient(1200px 600px at 80% -10%, rgba(255,121,2,.10), transparent 60%),
-      radial-gradient(900px 500px at 0% 0%, rgba(255,170,60,.05), transparent 55%),
-      var(--bg);
-  }
-  body.pf-kuaishou .brand-mark { background:linear-gradient(135deg,#ff7902,#ffb04d); box-shadow:0 4px 14px -4px var(--acc-ring); }
-  body.pf-kuaishou .badge-lite { color:var(--acc); background:var(--acc-soft); }
-  /* 深色橙主题下日期选择器图标维持反白 */
-  body.pf-kuaishou input[type=date]::-webkit-calendar-picker-indicator,
-  body.pf-kuaishou input[type=datetime-local]::-webkit-calendar-picker-indicator { filter:invert(.7); }
-
-  /* ════ 视频号:深色 + 微信招牌绿主题 #07C160 ════ */
-  body.pf-shipinhao {
-    --acc:#07c160; --acc-hover:#1ecb73; --acc-soft:rgba(7,193,96,.15); --acc-ring:rgba(7,193,96,.38);
-    background:
-      radial-gradient(1200px 600px at 80% -10%, rgba(7,193,96,.10), transparent 60%),
-      radial-gradient(900px 500px at 0% 0%, rgba(60,200,130,.05), transparent 55%),
-      var(--bg);
-  }
-  body.pf-shipinhao .brand-mark { background:linear-gradient(135deg,#07c160,#4fd68f); box-shadow:0 4px 14px -4px var(--acc-ring); }
-  body.pf-shipinhao .badge-lite { color:var(--acc); background:var(--acc-soft); }
-  body.pf-shipinhao input[type=date]::-webkit-calendar-picker-indicator,
-  body.pf-shipinhao input[type=datetime-local]::-webkit-calendar-picker-indicator { filter:invert(.7); }
+  /* Platform accents and light/dark themes are independent: appearance.css. */
 
   /* ── 小红书笔记瀑布流卡片 ── */
   .xhs-grid { columns:240px; column-gap:14px; }
@@ -235,8 +143,6 @@
   .src-chip svg { width:11px; height:11px; flex:0 0 auto; opacity:.7; }
 
   /* ── 原生控件跟随主题(下拉弹层 / 日期日历 / 时间滚轮 / 滚动条)── */
-  html { color-scheme: dark; }
-  body.pf-xhs { color-scheme: light; }
   input[type="datetime-local"]::-webkit-calendar-picker-indicator,
   input[type="date"]::-webkit-calendar-picker-indicator { cursor:pointer; opacity:.6; transition:opacity .15s var(--ease); }
   input[type="datetime-local"]:hover::-webkit-calendar-picker-indicator,
@@ -248,7 +154,6 @@
   /* ── 文件选择(拖拽 + 缩略图)── */
   .filepick { position:relative; border:1.5px dashed var(--line); border-radius:var(--r-sm); background:var(--bg); transition:border-color .18s var(--ease), background .18s var(--ease); }
   .filepick:hover { border-color:#3a414f; }
-  body.pf-xhs .filepick:hover { border-color:var(--acc-ring); }
   .filepick.drag { border-color:var(--acc); background:var(--acc-soft); }
   .filepick-input { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; }
   .filepick-cta { display:flex; align-items:center; justify-content:center; gap:8px; padding:18px 14px; color:var(--mut); font-size:13px; pointer-events:none; }
@@ -1206,13 +1111,13 @@
   }
   .pill::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; flex:0 0 auto; }
   .pill.bare::before { display:none; }
-  .pending  { background:var(--warn-soft);    color:var(--warn);    border-color:rgba(251,191,36,.25); }
-  .downloading { background:var(--info-soft); color:var(--info);    border-color:rgba(56,189,248,.25); }
-  .done     { background:var(--success-soft); color:var(--success); border-color:rgba(52,211,153,.25); }
-  .failed   { background:var(--danger-soft);  color:var(--danger);  border-color:rgba(248,113,113,.25); }
-  .skipped  { background:var(--panel2); color:var(--mut); border-color:var(--line); }
-  .active   { background:var(--success-soft); color:var(--success); border-color:rgba(52,211,153,.25); }
-  .invalid  { background:var(--danger-soft);  color:var(--danger);  border-color:rgba(248,113,113,.25); }
+  .pill.pending  { background:var(--warn-soft);    color:var(--warn);    border-color:rgba(251,191,36,.25); }
+  .pill.downloading { background:var(--info-soft); color:var(--info);    border-color:rgba(56,189,248,.25); }
+  .pill.done     { background:var(--success-soft); color:var(--success); border-color:rgba(52,211,153,.25); }
+  .pill.failed   { background:var(--danger-soft);  color:var(--danger);  border-color:rgba(248,113,113,.25); }
+  .pill.skipped  { background:var(--surface-2); color:var(--mut); border-color:var(--line); }
+  .pill.active   { background:var(--success-soft); color:var(--success); border-color:rgba(52,211,153,.25); }
+  .pill.invalid  { background:var(--danger-soft);  color:var(--danger);  border-color:rgba(248,113,113,.25); }
   .pill.q { background:var(--info-soft); color:var(--info); border-color:rgba(56,189,248,.22); cursor:default; }
   .pill.toggle { cursor:pointer; transition:filter .15s var(--ease); }
   .pill.toggle:hover { filter:brightness(1.18); }
@@ -1271,7 +1176,7 @@
   .chart-legend { display:flex; gap:16px; margin-left:auto; }
   .chart-legend span { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--mut); }
   .chart-legend i { width:9px; height:9px; border-radius:3px; flex:0 0 auto; }
-  .lg-a { background:var(--acc); } .lg-b { background:var(--info); }
+  .lg-a { background:var(--acc); } .lg-b { background:var(--chart-secondary); }
   .chart-wrap { width:100%; min-height:220px; overflow:hidden; display:grid; align-items:end; }
   .chart-wrap svg { width:100%; height:auto; display:block; }
   .chart-wrap .bar { transition:opacity .15s var(--ease); }
@@ -1787,53 +1692,84 @@
     .risk-event-detail { grid-column:1/-1; }
   }
 </style>
+<link rel="stylesheet" href="/static/appearance.css">
+<link rel="stylesheet" href="/static/workbench.css">
 </head>
 <body>
 <a class="skip-link" href="#main-content">跳到主要内容</a>
 <div id="busy-spinner" role="status" aria-live="polite" aria-hidden="true"><span class="bs-ring"></span><span class="bs-label" id="bs-label">处理中</span></div>
 
 <!-- icon sprite -->
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <symbol id="i-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/><circle cx="11" cy="11" r="2.5"/></symbol>
-  <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
-  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5v14"/></symbol>
-  <symbol id="i-target" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol>
-  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></symbol>
-  <symbol id="i-filter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M7 12h10M10 19h4"/></symbol>
-  <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
-  <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
-  <symbol id="i-film" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 7.5h4M3 12h18M3 16.5h4M17 7.5h4M17 16.5h4"/></symbol>
-  <symbol id="i-msg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.5 8.5 0 1 1 16.1-3.8z"/></symbol>
-  <symbol id="i-bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
-  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
-  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
-  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></symbol>
-  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v6c0 4.4 3 7.6 7 9 4-1.4 7-4.6 7-9V6l-7-3z"/></symbol>
-  <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5.5 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.5A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.5z"/></symbol>
-  <symbol id="i-heart" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 21s-7.5-4.6-10-9.3C.4 8.3 1.9 4.5 5.4 4.5c2 0 3.4 1.1 4.6 2.6 1.2-1.5 2.6-2.6 4.6-2.6 3.5 0 5 3.8 3.4 7.2C19.5 16.4 12 21 12 21z"/></symbol>
-  <symbol id="i-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="m21 15-5-5L5 21"/></symbol>
-  <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M6 4.5v15l13-7.5z"/></symbol>
-  <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></symbol>
-  <symbol id="i-prev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></symbol>
-  <symbol id="i-next" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></symbol>
-  <symbol id="i-first" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m11 18-6-6 6-6M19 18l-6-6 6-6"/></symbol>
-  <symbol id="i-last" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 18 6-6-6-6M13 18l6-6-6-6"/></symbol>
-  <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
-  <symbol id="i-hash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></symbol>
-  <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></symbol>
-  <symbol id="i-card" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M2 10h20M6 15h4"/></symbol>
-  <symbol id="i-heart-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v11M2 13l2-3h11l-1.4 7a2 2 0 0 1-2 1.7H7"/><path d="M7 10 11 2a2 2 0 0 1 2.7 2.3L13 10"/></symbol>
-  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
-  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
-  <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
-  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 10v7M14 10v7"/></symbol>
-  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.97 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.52-1H3v-4h.08A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.97 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08A1.7 1.7 0 0 0 15.03 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.12.38.46.76 1.52 1H21v4h-.08c-1.06.24-1.4.62-1.52 1Z"/></symbol>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false" data-icon-set="lucide">
+  <symbol id="i-brand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/><circle cx="11" cy="11" r="2.5"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1" /> <circle cx="19" cy="12" r="1" /> <circle cx="5" cy="12" r="1" /></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /> <path d="M21 3v5h-5" /> <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /> <path d="M8 16H3v5" /></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /> <path d="M12 2v2" /> <path d="M12 20v2" /> <path d="m4.93 4.93 1.41 1.41" /> <path d="m17.66 17.66 1.41 1.41" /> <path d="M2 12h2" /> <path d="M20 12h2" /> <path d="m6.34 17.66-1.41 1.41" /> <path d="m19.07 4.93-1.41 1.41" /></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401" /></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2" /> <line x1="8" x2="16" y1="21" y2="21" /> <line x1="12" x2="12" y1="17" y2="21" /></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16" /> <path d="M4 12h16" /> <path d="M4 19h16" /></symbol>
+  <symbol id="i-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-4.34-4.34" /> <circle cx="11" cy="11" r="8" /></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5" /> <path d="M20 21a8 8 0 0 0-16 0" /></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14" /> <path d="M12 5v14" /></symbol>
+  <symbol id="i-target" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19.07 4.93A10 10 0 0 0 6.99 3.34" /> <path d="M4 6h.01" /> <path d="M2.29 9.62A10 10 0 1 0 21.31 8.35" /> <path d="M16.24 7.76A6 6 0 1 0 8.23 16.67" /> <path d="M12 18h.01" /> <path d="M17.99 11.66A6 6 0 0 1 15.77 16.67" /> <circle cx="12" cy="12" r="2" /> <path d="m13.41 10.59 5.66-5.66" /></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3" /> <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /> <path d="m7 10 5 5 5-5" /></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 5H3" /> <path d="M12 19H3" /> <path d="M14 3v4" /> <path d="M16 17v4" /> <path d="M21 12h-9" /> <path d="M21 19h-5" /> <path d="M21 5h-7" /> <path d="M8 10v4" /> <path d="M8 12H3" /></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.268 21a2 2 0 0 0 3.464 0" /> <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" /></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5h10" /> <path d="M11 12h10" /> <path d="M11 19h10" /> <path d="M4 4h1v5" /> <path d="M4 9h2" /> <path d="M6.5 20H3.4c0-1 2.6-1.925 2.6-3.5a1.5 1.5 0 0 0-2.6-1.02" /></symbol>
+  <symbol id="i-film" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12.296 3.464 3.02 3.956" /> <path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3z" /> <path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /> <path d="m6.18 5.276 3.1 3.899" /></symbol>
+  <symbol id="i-msg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719" /></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z" /></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /> <path d="M12 16v-4" /> <path d="M12 8h.01" /></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /> <path d="m9 12 2 2 4-4" /></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12" /> <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5" /></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2" /> <circle cx="9" cy="9" r="2" /> <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" /></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" /></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" /> <path d="m21.854 2.147-10.94 10.939" /></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6" /></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></symbol>
+  <symbol id="i-first" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m11 17-5-5 5-5" /> <path d="m18 17-5-5 5-5" /></symbol>
+  <symbol id="i-last" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 17 5-5-5-5" /> <path d="m13 17 5-5-5-5" /></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /> <path d="M12 6v6h4" /></symbol>
+  <symbol id="i-hash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="20" y1="9" y2="9" /> <line x1="4" x2="20" y1="15" y2="15" /> <line x1="10" x2="8" y1="3" y2="21" /> <line x1="16" x2="14" y1="3" y2="21" /></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" /> <circle cx="12" cy="12" r="3" /></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49" /> <path d="M14.084 14.158a3 3 0 0 1-4.242-4.242" /> <path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143" /> <path d="m2 2 20 20" /></symbol>
+  <symbol id="i-card" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 2v2" /> <path d="M17.915 21a6 6 0 10-12 0" /> <path d="M8 2v2" /> <circle cx="12" cy="11" r="4" /> <rect x="3" y="3" width="18" height="18" rx="2" /></symbol>
+  <symbol id="i-heart-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z" /> <path d="M7 10v12" /></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /> <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6" /> <path d="M10 14 21 3" /> <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6" /> <path d="M14 11v6" /> <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /> <path d="M3 6h18" /> <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 17H5" /> <path d="M19 7h-9" /> <circle cx="17" cy="17" r="3" /> <circle cx="7" cy="7" r="3" /></symbol>
+  <symbol id="i-overview" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" /> <path d="M3 9h18" /> <path d="M9 21V9" /></symbol>
+  <symbol id="i-captions" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="14" x="3" y="5" rx="2" ry="2" /> <path d="M7 15h4M15 15h2M7 11h2M13 11h4" /></symbol>
+  <symbol id="i-automation" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6V2H8" /> <path d="M15 11v2" /> <path d="M2 12h2" /> <path d="M20 12h2" /> <path d="M20 16a2 2 0 0 1-2 2H8.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 4 20.286V8a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z" /> <path d="M9 11v2" /></symbol>
+  <symbol id="i-library" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6 4 14" /> <path d="M12 6v14" /> <path d="M8 8v12" /> <path d="M4 4v16" /></symbol>
+  <symbol id="i-login" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m10 17 5-5-5-5" /> <path d="M15 12H3" /> <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /></symbol>
+  <symbol id="i-qr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="5" height="5" x="3" y="3" rx="1" /> <rect width="5" height="5" x="16" y="3" rx="1" /> <rect width="5" height="5" x="3" y="16" rx="1" /> <path d="M21 16h-3a2 2 0 0 0-2 2v3" /> <path d="M21 21v.01" /> <path d="M12 7v3a2 2 0 0 1-2 2H7" /> <path d="M3 12h.01" /> <path d="M12 3h.01" /> <path d="M12 16v.01" /> <path d="M16 12h1" /> <path d="M21 12v.01" /> <path d="M12 21v-1" /></symbol>
+  <symbol id="i-cookie" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z" /> <circle cx="16.5" cy="7.5" r=".5" fill="currentColor" /></symbol>
+  <symbol id="i-fingerprint" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4" /> <path d="M14 13.12c0 2.38 0 6.38-1 8.88" /> <path d="M17.29 21.02c.12-.6.43-2.3.5-3.02" /> <path d="M2 12a10 10 0 0 1 18-6" /> <path d="M2 16h.01" /> <path d="M21.8 16c.2-2 .131-5.354 0-6" /> <path d="M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2" /> <path d="M8.65 22c.21-.66.45-1.32.57-2" /> <path d="M9 6.8a6 6 0 0 1 9 5.2v2" /></symbol>
+  <symbol id="i-network" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="16" y="16" width="6" height="6" rx="1" /> <rect x="2" y="16" width="6" height="6" rx="1" /> <rect x="9" y="2" width="6" height="6" rx="1" /> <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" /> <path d="M12 12V8" /></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /> <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /> <path d="M2 12h20" /></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10" /> <line x1="12" x2="12" y1="8" y2="12" /> <line x1="12" x2="12.01" y1="16" y2="16" /></symbol>
+  <symbol id="i-offline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h.01" /> <path d="M8.5 16.429a5 5 0 0 1 7 0" /> <path d="M5 12.859a10 10 0 0 1 5.17-2.69" /> <path d="M19 12.859a10 10 0 0 0-2.007-1.523" /> <path d="M2 8.82a15 15 0 0 1 4.177-2.643" /> <path d="M22 8.82a15 15 0 0 0-11.288-3.764" /> <path d="m2 2 20 20" /></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /> <path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" /></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" /> <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" /> <path d="M7 3v4a1 1 0 0 0 1 1h7" /></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z" /> <path d="M20 2v4" /> <path d="M22 4h-4" /> <circle cx="4" cy="20" r="2" /></symbol>
+  <symbol id="i-palette" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z" /> <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" /> <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" /> <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" /> <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" /></symbol>
+  <symbol id="i-scan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2" /> <path d="M17 3h2a2 2 0 0 1 2 2v2" /> <path d="M21 17v2a2 2 0 0 1-2 2h-2" /> <path d="M7 21H5a2 2 0 0 1-2-2v-2" /> <path d="M7 12h10" /></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v3" /> <path d="M16 2v3" /> <rect x="3" y="3" width="18" height="18" rx="2" /> <path d="M3 9h18" /> <path d="M8 13h.01" /> <path d="M12 13h.01" /> <path d="M16 13h.01" /> <path d="M8 17h.01" /> <path d="M12 17h.01" /> <path d="M16 17h.01" /></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /> <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></symbol>
 </svg>
 
 <header>
   <div class="header-inner">
+  <button class="ghost mobile-nav-toggle" id="nav-toggle" type="button" aria-label="打开导航" aria-controls="main-sidebar" aria-expanded="false"><svg aria-hidden="true"><use href="#i-menu"/></svg></button>
   <div class="brand">
-    <span class="brand-mark" aria-hidden="true"><svg><use href="#i-logo"/></svg></span>
+    <span class="brand-mark" aria-hidden="true"><svg><use href="#i-brand"/></svg></span>
     <div class="brand-copy">
       <h1>CreatorHub<span class="badge-lite">LITE</span></h1>
       <span class="brand-sub">多平台内容工作台</span>
@@ -1845,26 +1781,35 @@
     <button role="tab" data-pf="kuaishou" onclick="switchPlatform('kuaishou')">快手</button>
     <button role="tab" data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
   </div>
-  <span class="spacer"></span>
+  <div class="header-actions">
+    <button class="ghost command-trigger" id="command-trigger" type="button" aria-label="搜索功能" aria-haspopup="dialog" aria-controls="command-dialog" aria-keyshortcuts="Control+k Meta+k" title="搜索功能（Ctrl / ⌘ K）"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>搜索功能</span><kbd>Ctrl K</kbd></button>
+    <div class="theme-switch" role="group" aria-label="画面主题">
+      <button type="button" data-theme-choice="light" aria-label="日间主题" aria-pressed="false" title="日间主题"><svg aria-hidden="true"><use href="#i-sun"/></svg></button>
+      <button type="button" data-theme-choice="dark" aria-label="夜间主题" aria-pressed="false" title="夜间主题"><svg aria-hidden="true"><use href="#i-moon"/></svg></button>
+      <button type="button" data-theme-choice="system" aria-label="跟随系统主题" aria-pressed="true" title="跟随系统"><svg aria-hidden="true"><use href="#i-monitor"/></svg></button>
+    </div>
+  </div>
   <span class="engine" id="engine-status" role="status" aria-live="polite" title="后台任务引擎正在运行"><span class="dot live"></span><span class="engine-label">引擎运行中</span></span>
   </div>
 </header>
 
 <div class="shell">
-<aside class="sidebar">
+<button class="nav-backdrop" id="nav-backdrop" type="button" tabindex="-1" aria-label="关闭导航"></button>
+<aside class="sidebar" id="main-sidebar" aria-label="功能导航">
+  <div class="sidebar-mobile-head"><b>工作台导航</b><button class="ghost" id="nav-close" type="button" aria-label="关闭导航"><svg aria-hidden="true"><use href="#i-x"/></svg></button></div>
   <nav class="nav" aria-label="主导航">
-    <button class="navitem" data-tab="overview" onclick="switchTab('overview', true)"><svg><use href="#i-bolt"/></svg><span class="nav-label">总览</span></button>
-    <button class="navitem" data-tab="accounts" onclick="switchTab('accounts', true)"><svg><use href="#i-card"/></svg><span class="nav-label">账号</span><span class="nav-badge" id="tb-acc">0</span></button>
+    <button class="navitem" data-tab="overview" onclick="switchTab('overview', true)"><svg><use href="#i-overview"/></svg><span class="nav-label">工作概览</span></button>
+    <button class="navitem" data-tab="accounts" onclick="switchTab('accounts', true)"><svg><use href="#i-card"/></svg><span class="nav-label">平台账号</span><span class="nav-badge" id="tb-acc">0</span></button>
     <button class="navitem notsh-only" data-tab="monitors" onclick="switchTab('monitors', true)"><svg><use href="#i-target"/></svg><span class="nav-label">作品监控</span><span class="nav-badge" id="tb-mon">0</span></button>
     <button class="navitem collect-only" data-tab="collections" onclick="switchTab('collections', true)"><svg><use href="#i-hash"/></svg><span class="nav-label">关键词采集</span><span class="nav-badge" id="tb-col">0</span></button>
     <button class="navitem notsh-only" data-tab="comments" onclick="switchTab('comments', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">评论监控</span><span class="nav-badge" id="tb-watch">0</span></button>
-    <button class="navitem dy-only" data-tab="danmaku" onclick="switchTab('danmaku', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">弹幕监控</span><span class="nav-badge" id="tb-danmaku">0</span></button>
+    <button class="navitem dy-only" data-tab="danmaku" onclick="switchTab('danmaku', true)"><svg><use href="#i-captions"/></svg><span class="nav-label">弹幕监控</span><span class="nav-badge" id="tb-danmaku">0</span></button>
     <div class="nav-sep">本账号</div>
-    <button class="navitem" data-tab="hub" onclick="switchTab('hub', true)"><svg><use href="#i-user"/></svg><span class="nav-label">账号管理</span></button>
+    <button class="navitem" data-tab="hub" onclick="switchTab('hub', true)"><svg><use href="#i-library"/></svg><span class="nav-label">我的内容</span></button>
     <div class="nav-sep">工具</div>
     <button class="navitem" data-tab="queue" onclick="switchTab('queue', true)"><svg><use href="#i-list"/></svg><span class="nav-label">任务队列</span><span class="nav-badge" id="tb-queue">0</span></button>
     <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish', true)"><svg><use href="#i-send"/></svg><span class="nav-label">发布</span><span class="nav-badge" id="tb-pub">0</span></button>
-    <button class="navitem notsh-only" data-tab="autocomment" onclick="switchTab('autocomment', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
+    <button class="navitem notsh-only" data-tab="autocomment" onclick="switchTab('autocomment', true)"><svg><use href="#i-automation"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
     <button class="navitem" data-tab="share-download" onclick="switchTab('share-download', true)"><svg><use href="#i-download"/></svg><span class="nav-label">链接下载</span></button>
     <button class="navitem" data-tab="notifications" onclick="switchTab('notifications', true)"><svg><use href="#i-bell"/></svg><span class="nav-label">通知</span></button>
     <button class="navitem" data-tab="settings" onclick="switchTab('settings', true)"><svg><use href="#i-settings"/></svg><span class="nav-label">设置</span></button>
@@ -1897,7 +1842,7 @@
           <span><i class="lg-b"></i>评论</span>
         </div>
       </div>
-      <div class="chart-wrap" id="overview-chart" role="img" aria-label="近七天每日新增作品与评论数量柱状图"><div class="chart-empty">加载中…</div></div>
+      <div class="chart-wrap" id="overview-chart" role="group" aria-label="近七天每日新增作品与评论数量"><div class="chart-empty">加载中…</div></div>
     </div>
     <aside class="card quick-card" aria-labelledby="quick-title">
       <div class="card-head">
@@ -1942,16 +1887,16 @@
         <h2>账号 <span class="sub">登录 / 管理</span></h2>
       </div>
       <div class="row" style="margin-bottom:14px;flex-wrap:wrap">
-        <button class="dy-only" onclick="startLogin()"><svg><use href="#i-logo"/></svg>扫码登录</button>
-        <button class="ghost dy-only" onclick="startCreatorLogin()"><svg><use href="#i-logo"/></svg>创作者登录</button>
+        <button class="dy-only" onclick="startLogin()"><svg><use href="#i-qr"/></svg>扫码登录</button>
+        <button class="ghost dy-only" onclick="startCreatorLogin()"><svg><use href="#i-login"/></svg>创作者登录</button>
         <button class="ghost dy-only" onclick="toggleCookie()">Cookie 粘贴</button>
-        <button class="xhs-only" onclick="startXhsLogin()"><svg><use href="#i-logo"/></svg>小红书扫码登录</button>
+        <button class="xhs-only" onclick="startXhsLogin()"><svg><use href="#i-qr"/></svg>小红书扫码登录</button>
         <button class="ghost xhs-only" onclick="startXhsCreatorLogin()"><svg><use href="#i-send"/></svg>小红书创作者登录</button>
         <button class="ghost xhs-only" onclick="toggleCookie()">Cookie 粘贴</button>
-        <button class="ks-only" onclick="startKsLogin()"><svg><use href="#i-logo"/></svg>快手扫码登录</button>
+        <button class="ks-only" onclick="startKsLogin()"><svg><use href="#i-qr"/></svg>快手扫码登录</button>
         <button class="ghost ks-only" onclick="startKsCreatorLogin()" title="普通快手扫码登录已可用于发布；仅在创作平台仍提示登录时使用"><svg><use href="#i-send"/></svg>创作平台登录（备用）</button>
         <button class="ghost ks-only" onclick="toggleCookie()">Cookie 粘贴</button>
-        <button class="sh-only" onclick="startChannelsLogin()"><svg><use href="#i-logo"/></svg>视频号登录</button>
+        <button class="sh-only" onclick="startChannelsLogin()"><svg><use href="#i-login"/></svg>视频号登录</button>
       </div>
       <div id="qrbox" style="display:none;margin-bottom:14px">
         <div class="mut" id="qrstatus">准备中…</div>
@@ -2239,7 +2184,7 @@
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-film"/></svg></span>
         <h2 id="collection-results-title">采集结果 <span class="sub" id="collection-results-sub"></span></h2>
-        <div class="right"><button class="ghost sm" type="button" onclick="closeCollectionResults()"><svg><use href="#i-x"/></svg>关闭</button></div>
+        <div class="right"><button class="ghost sm" type="button" onclick="closeCollectionResults()"><svg><use href="#i-prev"/></svg>返回任务列表</button></div>
       </div>
       <div class="collection-kpis" aria-label="当前任务统计">
         <div class="collection-kpi"><b id="col-stat-content">0</b><span>已采作品</span></div>
@@ -2494,6 +2439,44 @@
   </section>
 
   <section data-panel="settings">
+  <div class="card appearance-card">
+    <div class="card-head">
+      <span class="card-ic"><svg aria-hidden="true"><use href="#i-sun"/></svg></span>
+      <h2>外观与体验 <span class="sub">所有平台共用 · 即选即生效</span></h2>
+    </div>
+    <fieldset class="appearance-fieldset">
+      <legend>画面主题</legend>
+      <div class="appearance-options">
+        <label class="appearance-choice">
+          <span class="theme-preview light" aria-hidden="true"><span class="theme-preview-side"></span><span class="theme-preview-main"></span></span>
+          <span><span class="appearance-choice-line"><input type="radio" name="appearance-theme" value="light"><b>日间</b></span><small>清晰明亮，专注工作</small></span>
+        </label>
+        <label class="appearance-choice">
+          <span class="theme-preview dark" aria-hidden="true"><span class="theme-preview-side"></span><span class="theme-preview-main"></span></span>
+          <span><span class="appearance-choice-line"><input type="radio" name="appearance-theme" value="dark"><b>夜间</b></span><small>柔和暗色，减少眩光</small></span>
+        </label>
+        <label class="appearance-choice">
+          <span class="theme-preview system" aria-hidden="true"><span class="theme-preview-side"></span><span class="theme-preview-main"></span></span>
+          <span><span class="appearance-choice-line"><input type="radio" name="appearance-theme" value="system" checked><b>跟随系统</b></span><small>随设备外观自动切换</small></span>
+        </label>
+      </div>
+    </fieldset>
+    <div class="appearance-bottom">
+      <fieldset class="appearance-fieldset">
+        <legend>界面密度</legend>
+        <div class="density-options">
+          <label><input type="radio" name="appearance-density" value="comfortable" checked>舒适</label>
+          <label><input type="radio" name="appearance-density" value="compact">紧凑</label>
+        </div>
+        <p class="field-help">调整卡片间距与表格行高，手机端保留舒适的点击空间。</p>
+      </fieldset>
+      <div>
+        <label class="check appearance-motion"><input type="checkbox" id="appearance-motion">减少界面动效</label>
+        <p class="field-help">简化切换与加载动画；系统的减少动态效果设置始终生效。</p>
+      </div>
+    </div>
+    <div class="appearance-status"><svg aria-hidden="true"><use href="#i-check"/></svg><span id="appearance-status" role="status" aria-live="polite">偏好自动保存在此浏览器</span></div>
+  </div>
   <!-- 下载设置 -->
   <div class="card">
     <div class="card-head">
@@ -2768,7 +2751,7 @@
     </div>
     <div class="form-field notification-config">
       <label for="n-config">渠道配置 JSON</label>
-      <textarea id="n-config" class="code-input" rows="4" spellcheck="false" aria-describedby="n-config-help" onblur="validateNotificationConfig()"></textarea>
+      <textarea id="n-config" class="code-input" rows="4" spellcheck="false" aria-describedby="n-config-help" onblur="validateNotificationConfig()" oninput="if(this.getAttribute('aria-invalid')==='true') validateNotificationConfig()"></textarea>
       <div class="field-help" id="n-config-help">切换渠道类型时会自动填入所需字段模板</div>
     </div>
     <div class="form-actions">
@@ -3262,9 +3245,11 @@
 <!-- 跨平台转发 · 编辑后推送 -->
 <div id="repost" class="pv-overlay" style="display:none" onclick="if(event.target.id==='repost')hideRepost()" role="dialog" aria-modal="true" aria-labelledby="rp-head">
   <div class="rp-box">
-    <button class="pv-close" onclick="hideRepost()" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
-    <h2 id="rp-head">发小红书 · 编辑后推送</h2>
-    <div class="stack">
+    <div class="ui-modal-head">
+      <div class="ui-modal-heading"><span class="ui-modal-icon" aria-hidden="true"><svg><use href="#i-send"/></svg></span><h2 id="rp-head" tabindex="-1">发小红书 · 编辑后推送</h2></div>
+      <button class="pv-close" onclick="hideRepost()" aria-label="关闭"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+    </div>
+    <div class="stack" id="rp-body">
       <div id="rp-thumbs" class="rp-thumbs" style="display:none"></div>
       <div>
         <label class="field" for="rp-acc">发布账号</label>
@@ -3296,15 +3281,17 @@
         <div class="rp-src" id="rp-src"></div>
         <textarea id="rp-desc" rows="4" placeholder="正文内容…"></textarea>
       </div>
-      <div class="row">
-        <input id="rp-topics" placeholder="话题(逗号分隔,不用带 #)" aria-label="话题">
-        <input type="datetime-local" id="rp-when" aria-label="定时发布(留空=尽快发)" style="flex:0 0 210px">
+      <div class="form-grid">
+        <div><label class="field" for="rp-topics">话题</label><input id="rp-topics" placeholder="逗号分隔，不用带 #"></div>
+        <div><label class="field" for="rp-when">定时发布</label><input type="datetime-local" id="rp-when" aria-label="定时发布（留空尽快发布）"></div>
       </div>
-      <div class="row" style="justify-content:flex-end">
-        <button class="ghost" onclick="hideRepost()" style="flex:0 0 auto">取消</button>
-        <button id="rp-submit" onclick="submitRepost()" style="flex:0 0 auto"><svg><use href="#i-send"/></svg>确认推送</button>
+    </div>
+    <div class="ui-modal-footer">
+      <span class="mut" id="rp-msg" role="status" tabindex="-1"></span>
+      <div class="row" id="rp-actions">
+        <button class="ghost" onclick="hideRepost()">取消</button>
+        <button id="rp-submit" onclick="submitRepost()"><svg aria-hidden="true"><use href="#i-send"/></svg>确认推送</button>
       </div>
-      <span class="mut" id="rp-msg"></span>
     </div>
   </div>
 </div>
@@ -3337,13 +3324,18 @@
 <div id="uimodal" class="pv-overlay" style="display:none" role="dialog" aria-modal="true"
      aria-labelledby="ui-title" aria-describedby="ui-hint" onclick="if(event.target.id==='uimodal')uiModalCancel()">
   <div class="rp-box" style="width:min(94vw,480px)">
-    <button class="pv-close" onclick="uiModalCancel()" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
-    <h2 id="ui-title">选择</h2>
-    <div class="mut" id="ui-hint" style="font-size:12px;margin:-8px 0 14px;white-space:pre-line"></div>
-    <div id="ui-body" class="stack"></div>
-    <div class="row" id="ui-actions" style="justify-content:flex-end">
-      <button class="ghost" onclick="uiModalCancel()" style="flex:0 0 auto">取消</button>
-      <button id="ui-ok" onclick="uiModalOk()" style="flex:0 0 auto"><svg><use href="#i-check"/></svg>确定</button>
+    <div class="ui-modal-head">
+      <div class="ui-modal-heading"><span class="ui-modal-icon" aria-hidden="true"><svg><use id="ui-icon" href="#i-edit"/></svg></span><h2 id="ui-title">选择</h2></div>
+      <button class="pv-close" onclick="uiModalCancel()" aria-label="关闭"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+      <p class="mut" id="ui-hint"></p>
+    </div>
+    <div id="ui-body" class="stack" tabindex="-1"></div>
+    <div class="ui-modal-footer">
+      <div id="ui-feedback" class="ui-feedback" role="alert" tabindex="-1" hidden></div>
+      <div class="row" id="ui-actions">
+        <button class="ghost" onclick="uiModalCancel()">取消</button>
+        <button id="ui-ok" onclick="uiModalOk()"><svg aria-hidden="true"><use href="#i-check"/></svg>确定</button>
+      </div>
     </div>
   </div>
 </div>
@@ -3358,10 +3350,18 @@
   </div>
 </div>
 
+<dialog class="command-dialog" id="command-dialog" aria-labelledby="command-title" aria-describedby="command-hint">
+  <div class="command-header"><h2 id="command-title">搜索功能</h2><button class="ghost" id="command-close" type="button" aria-label="关闭功能搜索"><svg aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="command-search"><input id="command-search" type="search" placeholder="搜索页面、功能或设置…" aria-label="搜索页面或功能" aria-controls="command-results" autocomplete="off"></div>
+  <div class="command-results" id="command-results"></div>
+  <p class="command-hint" id="command-hint">↑ ↓ 选择 · Enter 打开 · Esc 关闭 · 仅显示当前平台可用功能</p>
+</dialog>
 <div id="toasts" aria-live="polite" aria-atomic="false"></div>
-<button id="backtop" class="ghost" type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="返回顶部" title="返回顶部"><svg><use href="#i-next"/></svg></button>
+<button id="backtop" class="ghost" type="button" tabindex="-1" aria-hidden="true" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="返回顶部" title="返回顶部"><svg><use href="#i-next"/></svg></button>
 
 <script src="/static/submissions.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/workspace-ui.js"></script>
+<script src="/static/workbench.js"></script>
 </body>
 </html>

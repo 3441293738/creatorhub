@@ -9677,9 +9677,9 @@ async def test_channel(cid: int):
 @app.get("/", response_class=HTMLResponse)
 async def index():
     html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
-    # 给 app.js 带上基于 mtime 的版本号,前端改动后自动击穿浏览器缓存(免手动强刷)
+    # Version all local UI assets, including pre-paint appearance boot and CSS.
     try:
-        for asset in ("app.js", "submissions.js"):
+        for asset in ("app.js", "submissions.js", "appearance.js", "appearance.css", "workspace-ui.js", "workbench.js", "workbench.css"):
             ver = int((WEB_DIR / asset).stat().st_mtime)
             html = html.replace(f"/static/{asset}", f"/static/{asset}?v={ver}")
     except Exception:
