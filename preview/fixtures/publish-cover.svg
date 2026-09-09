@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="720" viewBox="0 0 960 720">
+  <title>城市漫游 · 本地示例素材</title>
+  <rect width="960" height="720" fill="#f3eee7"/>
+  <circle cx="714" cy="235" r="104" fill="#e67e73"/>
+  <path d="M0 540H130V375H250V465H340V315H470V470H568V402H660V525H770V354H874V478H960V720H0Z" fill="#416c72"/>
+  <path d="M0 622H200V538H326V587H450V510H562V612H698V551H810V600H960V720H0Z" fill="#2c4b53"/>
+  <g fill="#f3eee7" opacity=".7">
+    <path d="M150 405h20v24h-20zm40 0h20v24h-20zm-40 50h20v24h-20zm40 0h20v24h-20z"/>
+    <path d="M366 350h24v30h-24zm50 0h24v30h-24zm-50 60h24v30h-24zm50 0h24v30h-24z"/>
+    <path d="M794 388h22v28h-22zm38 0h22v28h-22zm-38 55h22v28h-22zm38 0h22v28h-22z"/>
+  </g>
+  <g fill="#2c4b53" font-family="Arial, sans-serif">
+    <text x="64" y="93" font-size="20" letter-spacing="6">CREATORHUB / DEMO</text>
+    <text x="60" y="197" font-size="78" font-weight="700" letter-spacing="-3">CITY NOTES</text>
+    <text x="64" y="246" font-size="22" letter-spacing="5">EVERYDAY INSPIRATION</text>
+  </g>
+  <text x="64" y="673" fill="#f3eee7" font-family="Arial, sans-serif" font-size="20" letter-spacing="4">LOCAL PREVIEW — 01</text>
+</svg>

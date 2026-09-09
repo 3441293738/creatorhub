@@ -10,7 +10,7 @@ CreatorHub 使用 Python + FastAPI 提供统一 Web 界面，用于管理账号�
 
 浏览器交互按平台使用系统 Chrome CDP 或免费开源的 [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright)，业务层统一使用兼容的 Playwright API。每个账号使用独立的浏览器 Profile，Cookie、缓存和本地存储互不共享。
 
-小红书相关实现参考 [Spider_XHS](https://github.com/cv-cat/Spider_XHS)。
+小红书API能力相关实现参考 [Spider_XHS](https://github.com/cv-cat/Spider_XHS)。
 
 ## 平台能力
 
@@ -111,30 +111,34 @@ npm install
 
 ## 界面预览
 
-> 截图使用脱敏示例数据；界面配色会跟随当前平台切换。
+> 截图使用本地示例数据，展示新版工作台的分栏列表、配置抽屉与发布预览。浅色 / 深色主题独立切换，品牌配色随平台变化。
 
-![总览面板](assets/screenshots/overview-douyin.png)
+![工作概览 · 抖音深色主题](assets/screenshots/overview-douyin.png)
 
 ### 更多界面
 
-> 截图统一为 1600 × 1000，点击可查看高清原图。
+> 截图宽度统一为 1600 像素，长页面保留完整内容；点击可查看高清原图。
 
 <table>
   <tr>
-    <td width="50%" align="center" valign="top"><strong>小红书浅色主题</strong><br><a href="assets/screenshots/overview-xiaohongshu.png"><img src="assets/screenshots/overview-xiaohongshu.png" alt="小红书总览面板" width="100%"></a></td>
-    <td width="50%" align="center" valign="top"><strong>账号与代理</strong><br><a href="assets/screenshots/accounts-proxy.png"><img src="assets/screenshots/accounts-proxy.png" alt="账号登录与代理池" width="100%"></a></td>
+    <td width="50%" align="center" valign="top"><strong>小红书浅色主题</strong><br><a href="assets/screenshots/overview-xiaohongshu.png"><img src="assets/screenshots/overview-xiaohongshu.png" alt="小红书工作概览与任务状态" width="100%"></a></td>
+    <td width="50%" align="center" valign="top"><strong>平台账号</strong><br><a href="assets/screenshots/accounts-list.png"><img src="assets/screenshots/accounts-list.png" alt="账号列表、搜索与操作入口" width="100%"></a></td>
   </tr>
   <tr>
-    <td width="50%" align="center" valign="top"><strong>作品监控</strong><br><a href="assets/screenshots/monitor-posts.png"><img src="assets/screenshots/monitor-posts.png" alt="作品监控与下载" width="100%"></a></td>
-    <td width="50%" align="center" valign="top"><strong>评论监控</strong><br><a href="assets/screenshots/monitor-comments.png"><img src="assets/screenshots/monitor-comments.png" alt="评论监控" width="100%"></a></td>
+    <td width="50%" align="center" valign="top"><strong>代理池</strong><br><a href="assets/screenshots/accounts-proxy.png"><img src="assets/screenshots/accounts-proxy.png" alt="独立代理池标签与账号关联" width="100%"></a></td>
+    <td width="50%" align="center" valign="top"><strong>新建监控抽屉</strong><br><a href="assets/screenshots/monitor-create.png"><img src="assets/screenshots/monitor-create.png" alt="侧边抽屉配置作品监控与采集策略" width="100%"></a></td>
   </tr>
   <tr>
-    <td width="50%" align="center" valign="top"><strong>内容发布</strong><br><a href="assets/screenshots/publish-workflow.png"><img src="assets/screenshots/publish-workflow.png" alt="内容发布与任务队列" width="100%"></a></td>
+    <td width="50%" align="center" valign="top"><strong>作品记录</strong><br><a href="assets/screenshots/monitor-posts.png"><img src="assets/screenshots/monitor-posts.png" alt="作品记录、来源任务与抓取时间筛选" width="100%"></a></td>
+    <td width="50%" align="center" valign="top"><strong>评论记录</strong><br><a href="assets/screenshots/monitor-comments.png"><img src="assets/screenshots/monitor-comments.png" alt="评论记录与来源任务溯源" width="100%"></a></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top"><strong>内容发布与预览</strong><br><a href="assets/screenshots/publish-workflow.png"><img src="assets/screenshots/publish-workflow.png" alt="发布编辑器与素材、文案实时预览" width="100%"></a></td>
     <td width="50%" align="center" valign="top"><strong>链接下载</strong><br><a href="assets/screenshots/share-download.png"><img src="assets/screenshots/share-download.png" alt="分享链接解析与下载历史" width="100%"></a></td>
   </tr>
   <tr>
-    <td width="50%" align="center" valign="top"><strong>自动评论</strong><br><a href="assets/screenshots/autocomment-rules.png"><img src="assets/screenshots/autocomment-rules.png" alt="自动评论规则与任务记录" width="100%"></a></td>
-    <td width="50%" align="center" valign="top"><strong>本账号管理与私信</strong><br><a href="assets/screenshots/account-hub-dm.png"><img src="assets/screenshots/account-hub-dm.png" alt="本账号数据与私信管理" width="100%"></a></td>
+    <td width="50%" align="center" valign="top"><strong>自动评论</strong><br><a href="assets/screenshots/autocomment-rules.png"><img src="assets/screenshots/autocomment-rules.png" alt="评论规则列表与独立审核标签" width="100%"></a></td>
+    <td width="50%" align="center" valign="top"><strong>我的内容与私信</strong><br><a href="assets/screenshots/account-hub-dm.png"><img src="assets/screenshots/account-hub-dm.png" alt="我的内容工作区与私信会话" width="100%"></a></td>
   </tr>
 </table>
 

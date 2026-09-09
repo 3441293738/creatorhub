@@ -87,6 +87,25 @@
     return [{ id: 51, platform, account_id: platformAccount(platform).id, title: "夏日城市漫游", media_type: "images", media_count: 6, source_platform: "", scheduled_at: null, status: "pending", error: "", result_url: "" }];
   }
 
+  function taskQueue(url) {
+    const params = url.searchParams;
+    const platform = params.get("platform") || "all";
+    const platforms = platform === "all" ? Object.keys(platformName) : [platform];
+    const tasks = platforms.flatMap(pf => publishTasks(pf).map(task => ({
+      ...task, queue_type: "publish", queue_label: "发布", state: "pending",
+      account_name: platformAccount(pf).nickname, source_tab: "publish", created_at: iso(1800),
+    })));
+    const state = params.get("state") || "active", type = params.get("queue_type"), query = (params.get("q") || "").toLowerCase();
+    const matching = tasks.filter(task => (!type || task.queue_type === type)
+      && `${task.queue_label} ${task.title} ${task.account_name} ${task.platform} ${task.status}`.toLowerCase().includes(query));
+    const summary = { total: matching.length, active: matching.length, pending: matching.length, running: 0, blocked: 0, failed: 0, completed: 0 };
+    const rows = matching.filter(task => ["all", "active"].includes(state) || task.state === state);
+    const size = Math.max(1, Number(params.get("page_size")) || 20);
+    const pages = Math.max(1, Math.ceil(rows.length / size));
+    const page = Math.max(1, Math.min(pages, Number(params.get("page")) || 1));
+    return { items: rows.slice((page - 1) * size, page * size), summary, total: rows.length, page, pages, page_size: size };
+  }
+
   function commentRules(platform) {
     return [{ id: 61, platform, name: "示例自动回复规则", mode: "auto_reply", target_kind: "self", account_id: platformAccount(platform).id, templates: ["谢谢支持，欢迎常来。"], use_ai: false, require_review: true, reply_filter: "", skip_keywords: "", daily_cap: 20, min_gap_seconds: 90, max_per_run: 5, interval_seconds: 1800, enabled: false, last_run_at: iso(86400), last_error: "" }];
   }
@@ -109,6 +128,13 @@
   function getData(url) {
     const path = url.pathname;
     const platform = url.searchParams.get("platform") || "douyin";
+    if (path === "/api/overview/summary") return {
+      platform, accounts: accounts.filter(item => item.platform === platform).length,
+      monitors: platform === "shipinhao" ? 0 : Number(monitor(platform).enabled),
+      downloaded: platform === "shipinhao" ? 0 : contents(platform).filter(item => item.download_status === "done").length,
+      comments: platform === "shipinhao" ? 0 : comments(platform).length,
+    };
+    if (path === "/api/task-queue") return taskQueue(url);
     if (path === "/api/accounts") return url.searchParams.has("platform") ? accounts.filter((item) => item.platform === platform) : accounts;
     if (path === "/api/proxies/options") return proxies.map((item) => ({ url: item.url, label: item.label, status: item.status, used_by: item.used_by, masked: item.url, enabled: item.enabled }));
     if (path === "/api/proxies") return proxies;
