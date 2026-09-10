@@ -6,6 +6,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+import os
+from unittest.mock import patch
 from urllib.parse import unquote, urlsplit
 
 from preview.build_preview import ROOT, GUIDE, GUIDE_IMAGES, build, build_guide
@@ -93,7 +95,9 @@ class GuideSiteTests(unittest.TestCase):
 
     def test_all_platform_page_links_and_anchors_resolve(self):
         with TemporaryDirectory() as tmp:
-            target = Path(tmp)
+            # Windows runners may return RUNNER~1 in TEMP. resolve() expands
+            # that alias; normalize both sides before checking containment.
+            target = Path(tmp).resolve()
             build_guide(target)
             for slug in ("douyin", "xhs", "kuaishou", "shipinhao"):
                 page = target / slug / "index.html"
@@ -110,6 +114,20 @@ class GuideSiteTests(unittest.TestCase):
                     self.assertTrue(resolved.is_file(), link)
                     if parsed.fragment:
                         self.assertIn(unquote(parsed.fragment), self.parse(resolved).ids)
+
+    @unittest.skipUnless(os.name == "nt", "Windows short-path regression")
+    def test_platform_links_with_short_temp_path(self):
+        import ctypes
+        with TemporaryDirectory(prefix="creatorhub-long-temp-path-") as tmp:
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = ctypes.windll.kernel32.GetShortPathNameW(str(Path(tmp).resolve()), buffer, len(buffer))
+            if not length or length >= len(buffer):
+                self.skipTest("Short paths are unavailable on this volume")
+            short = buffer.value
+            if short.casefold() == str(Path(tmp).resolve()).casefold():
+                self.skipTest("8.3 filename generation is disabled")
+            with patch("tempfile.tempdir", short):
+                self.test_all_platform_page_links_and_anchors_resolve()
 
 
 if __name__ == "__main__":
