@@ -376,13 +376,13 @@ data/
 
 <table>
   <tr>
-    <th align="center">扫码加群（固定入口）</th>
+    <th align="center">扫码加群</th>
     <th align="center">添加作者微信</th>
   </tr>
   <tr>
     <td align="center">
-      <a href="https://3441293738.github.io/creatorhub/community/">
-        <img src="assets/community/live-entry.png" alt="CreatorHub 交流群固定入口二维码" width="240">
+      <a href="assets/community/wechat-group.jpg">
+        <img src="assets/community/wechat-group.jpg" alt="CreatorHub 交流群二维码" width="240">
       </a>
     </td>
     <td align="center">
@@ -394,7 +394,7 @@ data/
 </table>
 
 <p align="center">
-  扫码或点击二维码打开<a href="https://3441293738.github.io/creatorhub/community/">交流群固定入口</a>；微信群二维码到期后会在入口页更新。
+  使用微信扫描群二维码加入交流群，点击图片可查看原图。
   入群遇到问题，也可以添加作者微信联系。
 </p>
 

@@ -69,6 +69,17 @@ class GuideSiteTests(unittest.TestCase):
             expected |= {f"{platform}/index.html" for platform in ("douyin", "xhs", "kuaishou", "shipinhao")}
             self.assertEqual(actual, expected)
 
+    def test_readme_community_uses_direct_qr_images(self):
+        readme = self.parse(ROOT / "README.md")
+        images = [img for img in readme.images if img.get("src", "").startswith("assets/community/")]
+        self.assertEqual([img["src"] for img in images], [
+            "assets/community/wechat-group.jpg", "assets/community/wechat-personal.jpg",
+        ])
+        for img in images:
+            self.assertTrue((ROOT / img["src"]).is_file())
+            self.assertTrue(img.get("alt", "").strip())
+            self.assertIn(img["src"], readme.links)
+
     def test_full_preview_preserves_demo_and_resolves_document_links(self):
         # build() requires a destination inside ROOT. Use a fresh child of an
         # ignored generated directory, never an existing source directory.
@@ -78,16 +89,7 @@ class GuideSiteTests(unittest.TestCase):
             target = Path(tmp) / "site"
             build(target)
             self.assertTrue((target / "demo-api.js").is_file())
-            self.assertTrue((target / "community" / "index.html").is_file())
-            community = self.parse(target / "community" / "index.html")
-            self.assertIn("personal-wechat", community.ids)
-            for name in ("wechat-group.jpg", "wechat-personal.jpg"):
-                self.assertEqual((target / "community" / name).read_bytes(),
-                                 (ROOT / "assets" / "community" / name).read_bytes())
-            for img in community.images:
-                self.assertTrue(img.get("alt", "").strip())
-                if img.get("src"):
-                    self.assertTrue((target / "community" / urlsplit(img["src"]).path).is_file())
+            self.assertFalse((target / "community").exists())
             self.assertTrue((target / ".nojekyll").is_file())
             page = self.parse(target / "guide" / "index.html")
             for link in page.links:

@@ -28,9 +28,6 @@ def main():
     from desktop.ui import brand_image
     brand_image(256).save(staging / "CreatorHub.ico", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (256, 256)])
     build_guide(staging / "desktop-guide")
-    index = staging / "desktop-guide" / "index.html"
-    index.write_text(index.read_text(encoding="utf-8").replace('href="../community/"',
-        'href="https://3441293738.github.io/creatorhub/community/"'), encoding="utf-8")
     (staging / "desktop-version.txt").write_text(args.version, encoding="utf-8")
     command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir", "--windowed",
                "--name", "CreatorHub", "--icon", str(staging / "CreatorHub.ico"),

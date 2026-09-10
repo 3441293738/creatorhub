@@ -16,7 +16,7 @@ python preview/build_preview.py _site
 python -m http.server 8081 --bind 127.0.0.1 --directory _site
 ```
 
-打开 `http://127.0.0.1:8081/guide/`。根目录仍是在线演示，`/community/` 仍是交流群入口。
+打开 `http://127.0.0.1:8081/guide/`。根目录仍是在线演示；群二维码和作者微信统一在[项目 README](../README.md#交流群)展示。
 
 ## 发布
 
