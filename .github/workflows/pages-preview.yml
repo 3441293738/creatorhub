@@ -1,4 +1,4 @@
-name: Deploy online preview
+name: Deploy online preview and guide
 
 on:
   push:
@@ -6,7 +6,10 @@ on:
     paths:
       - "app/web/**"
       - "assets/community/**"
+      - "assets/screenshots/**"
+      - "guide/**"
       - "preview/**"
+      - "tests/test_guide_site.py"
       - ".github/workflows/pages-preview.yml"
   workflow_dispatch:
 
@@ -27,7 +30,9 @@ jobs:
         uses: actions/checkout@v6
       - name: Configure Pages
         uses: actions/configure-pages@v5
-      - name: Build static demo
+      - name: Validate public guide
+        run: python -m unittest discover -s tests -p test_guide_site.py
+      - name: Build static demo and guide
         run: python preview/build_preview.py _site
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4

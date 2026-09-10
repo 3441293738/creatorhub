@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="CreatorHub 新手使用指南：从下载安装到账号登录、作品监控、关键词采集、发布与常见问题，按步骤完成第一个任务。">
+  <title>使用指南 · CreatorHub</title>
+  <link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="#welcome">CreatorHub <span>使用指南</span></a>
+  <nav aria-label="站点导航"><a href="../">在线体验</a><a href="https://github.com/3441293738/creatorhub">GitHub 项目</a></nav>
+</header>
+<div class="layout">
+  <aside>
+    <nav class="toc" aria-label="文档目录">
+      <p>从这里开始</p>
+      <a href="#platforms">选择你的平台</a>
+      <a href="#welcome">认识 CreatorHub</a>
+      <a href="#install">01 · 安装与启动</a>
+      <a href="#accounts">02 · 登录第一个账号</a>
+      <a href="#first-task">03 · 完成第一个任务</a>
+      <p>按功能查阅</p>
+      <a href="#monitor">作品监控</a><a href="#collection">关键词采集</a>
+      <a href="#comments">评论与弹幕监控</a><a href="#download">链接下载</a>
+      <a href="#publish">发布与转发</a><a href="#my-content">我的内容与私信</a>
+      <a href="#autocomment">自动评论与审核</a><a href="#notifications">通知</a>
+      <a href="#queue">任务队列与风控</a><a href="#settings">设置与账号环境</a>
+      <p>日常维护</p>
+      <a href="#backup">更新、备份与恢复</a><a href="#faq">常见问题</a><a href="#help">反馈问题</a>
+    </nav>
+  </aside>
+  <main id="main">
+    <section id="welcome">
+      <div class="eyebrow">CREATORHUB / GET STARTED</div>
+      <h1>从第一次启动，<br>到完成第一个任务。</h1>
+      <p class="lead">不用先读懂代码。先选一个平台、登录一个账号，再跟着步骤完成一件小事；需要更多能力时，按目录查阅。</p>
+      <div id="platforms" class="platform-grid" aria-label="按平台开始">
+        <a href="douyin/"><strong>抖音</strong><span>作品下载、监控与关键词采集 →</span></a>
+        <a href="xhs/"><strong>小红书</strong><span>双登录、笔记发布与私信 →</span></a>
+        <a href="kuaishou/"><strong>快手</strong><span>作品、评论监控与发布 →</span></a>
+        <a href="shipinhao/"><strong>视频号</strong><span>本账号作品、数据与发布 →</span></a>
+      </div>
+      <div class="actions"><a class="button" href="#install">开始安装</a><a class="button secondary" href="#first-task">已经装好？开始第一个任务</a></div>
+      <div class="note"><strong>在线文档 ≠ 在线运行。</strong>本指南和<a href="../">在线体验</a>可以直接打开；体验页使用示例数据。真实登录、采集、下载和发布需要在自己的电脑启动 CreatorHub。关闭服务或电脑休眠后，本地任务不会持续执行。</div>
+      <h2>先弄清楚三个词</h2>
+      <dl><dt>平台账号</dt><dd>你登录 CreatorHub 的抖音、小红书、快手或视频号账号，用来执行任务。</dd><dt>监控目标</dt><dd>你想持续查看的创作者或作品，不等于登录账号。</dd><dt>任务与记录</dt><dd>任务是“准备做什么、正在做什么”；记录是“已经发现或处理的内容”。任务保存成功，不代表已经产生结果。</dd></dl>
+      <h2>平台能力速查</h2>
+      <div class="table-scroll"><table><caption>按当前项目实现整理；平台切换后以可见入口为准</caption><thead><tr><th scope="col">功能</th><th scope="col">抖音</th><th scope="col">小红书</th><th scope="col">快手</th><th scope="col">视频号</th></tr></thead><tbody>
+      <tr><th scope="row">作品 / 评论监控</th><td>支持</td><td>支持</td><td>支持</td><td>仅本账号数据</td></tr>
+      <tr><th scope="row">关键词批量采集</th><td>支持</td><td>规划中</td><td>—</td><td>—</td></tr>
+      <tr><th scope="row">短视频弹幕</th><td>支持</td><td>—</td><td>—</td><td>—</td></tr>
+      <tr><th scope="row">内容下载</th><td>支持</td><td>图集 / 视频</td><td>支持</td><td>—</td></tr>
+      <tr><th scope="row">发布</th><td>支持</td><td>图集 / 视频 / 定时</td><td>支持</td><td>支持</td></tr>
+      <tr><th scope="row">自动评论 / 回复</th><td>支持</td><td>支持</td><td>支持</td><td>—</td></tr>
+      <tr><th scope="row">我的内容</th><td>作品 / 关注 / 粉丝 / 私信</td><td>作品 / 关注 / 粉丝 / 私信</td><td>作品 / 关注 / 粉丝</td><td>作品 / 数据 / 评论</td></tr>
+      </tbody></table></div>
+      <p>小红书的<strong>关键词作品监控</strong>与<strong>关键词批量采集</strong>是不同功能：前者持续检查一个搜索词，后者是一次性批处理，目前仅抖音支持。</p>
+      <figure><a href="images/overview-douyin.png"><img src="images/overview-douyin.png" alt="CreatorHub 工作概览，左侧为功能导航，顶部可切换平台" width="1600" loading="lazy"></a><figcaption>界面截图使用示例数据。点击图片可查看原图；实际入口会随平台变化。</figcaption></figure>
+    </section>
+
+    <section id="install">
+      <div class="eyebrow">01 / SETUP</div><h2>安装与启动</h2>
+      <div class="note"><strong>Windows 安装版：</strong>如果你拿到维护者发布的 <code>CreatorHub-Setup-版本-windows-x64.exe</code>，安装后使用桌面快捷方式，无需手动安装 Python。首次启动仍需联网下载浏览器组件。没有安装包时，继续使用下面的源码安装流程。源码 ZIP 不是安装程序。</div>
+      <h3>准备什么？</h3>
+      <ul><li>一台带桌面环境的 Windows、macOS 或 Linux 电脑，以及能正常访问对应平台的网络。</li><li>Python 3.10 或以上。Windows 安装 Python 时勾选 <code>Add Python to PATH</code>，安装后重新打开终端。</li><li>小红书用户建议准备本机稳定版 Google Chrome。首次安装会下载 Python 依赖和浏览器，请预留时间和磁盘空间。</li></ul>
+      <p>正常启动不需要先安装 Node.js，也不需要自行配置数据库。Node.js 仅用于前端开发构建或显式开启小红书 API 发布兼容模式等场景。</p>
+      <h3>第一步：下载项目</h3>
+      <ol><li>打开 <a href="https://github.com/3441293738/creatorhub">GitHub 项目主页</a>。</li><li>点击 <strong>Code → Download ZIP</strong>，把压缩包完整解压到一个固定文件夹。不要在压缩包里直接启动。</li><li>打开解压后的文件夹，确认能看到 <code>start.cmd</code>、<code>start.sh</code> 和 <code>creatorhub.py</code>。</li></ol>
+      <details><summary>已经会用 Git？使用克隆方式</summary><pre><code>git clone https://github.com/3441293738/creatorhub.git
+cd creatorhub</code></pre><p>克隆方式便于以后更新；ZIP 方式不要求安装 Git。</p></details>
+      <h3>第二步：运行启动脚本</h3>
+      <h4>Windows</h4>
+      <p>在项目文件夹的地址栏输入 <code>powershell</code> 并回车，打开终端后运行下面这一行。使用终端启动，报错时窗口不会一闪而过。</p>
+      <pre><code>.\start.cmd</code></pre>
+      <h4>macOS / Linux</h4>
+      <p>在终端输入 <code>cd </code>（末尾保留空格），再把项目文件夹拖入终端，回车后运行：</p>
+      <pre><code>chmod +x start.sh
+./start.sh</code></pre>
+      <p>首次运行会创建 <code>.venv</code>、安装依赖和 Chromium，并从示例生成 <code>config.yaml</code>。看到持续下载日志时请等待，不要反复启动。</p>
+      <h3>第三步：打开本地面板</h3>
+      <p>等待服务启动后，在浏览器打开 <a href="http://127.0.0.1:8000">http://127.0.0.1:8000</a>。这个地址指的是你自己的电脑，不是公共网站。</p>
+      <div class="success"><strong>完成标志：</strong>能看到工作概览，切换平台、打开“平台账号”页面。第一次列表为空是正常的。</div>
+      <h3>以后怎么启动、怎么停止？</h3>
+      <p>下次仍在同一文件夹运行启动脚本。服务运行期间保持终端开启；停止时回到终端按 <kbd>Ctrl</kbd> + <kbd>C</kbd>。仅关闭网页并不会停止后台服务。</p>
+      <details><summary>常用排查命令</summary><pre><code>.\start.cmd check
+.\start.cmd install
+.\start.cmd --port 8080
+.\start.cmd --no-open</code></pre><p>依次对应环境自检、安装或更新依赖、换端口、不自动打开网页。换端口后访问 <code>http://127.0.0.1:8080</code>。macOS / Linux 把 <code>.\start.cmd</code> 换成 <code>./start.sh</code>。</p></details>
+    </section>
+
+    <section id="accounts">
+      <div class="eyebrow">02 / ACCOUNT</div><h2>登录第一个账号</h2>
+      <p class="path">入口：顶部选择平台 → 平台账号 → 添加账号</p>
+      <ol><li>先选择要使用的平台。不同平台的账号和监控数据分开显示。</li><li>打开“平台账号”，选择当前平台提供的扫码或创作者登录入口。新手先用扫码方式，抖音也支持 Cookie 登录。</li><li>在弹出的浏览器窗口按平台提示扫码、确认或完成验证。不要提前关闭登录窗口。</li><li>回到账号列表，检查昵称和状态；必要时刷新资料或检测状态。</li></ol>
+      <div class="success"><strong>完成标志：</strong>账号出现在当前平台列表，状态检测正常，并能在创建任务时被选中。</div>
+      <div class="note"><strong>小红书有两种登录用途：</strong>扫码获得主站读取态，用来读取内容；需要发布时还要完成独立的“创作者登录”。“能查看笔记”不代表“已经能发布”。</div>
+      <p>若暂时看不到账号，先检查顶部平台是否选对。登录失效时从账号列表重新登录，不要为了修复登录删除整个数据目录。</p>
+      <figure><a href="images/accounts-list.png"><img src="images/accounts-list.png" alt="平台账号列表，展示账号搜索、登录状态和操作入口" width="1600" loading="lazy"></a><figcaption>先确认账号可用，再创建任务；代理池和浏览器内核属于进阶选项。</figcaption></figure>
+    </section>
+
+    <section id="first-task">
+      <div class="eyebrow">03 / FIRST RESULT</div><h2>完成第一个任务：下载一条内容</h2>
+      <p>先用自己拥有或获准保存的一条抖音、小红书或快手内容验证完整流程；视频号不支持这条下载路线，请改从<a href="#my-content">我的内容</a>同步自己的作品。</p>
+      <ol><li>完成对应平台账号登录，复制一条作品的完整分享文案或链接。</li><li>打开“链接下载”，粘贴分享内容；如表单提供账号、画质或保存选项，选择刚登录的账号，其余先保留默认值。</li><li>提交下载，等待页面返回结果，不要连续点击。</li><li>查看下载历史和保存路径，到电脑上的对应目录确认文件。</li></ol>
+      <div class="success"><strong>完成标志：</strong>下载历史显示完成，实际文件可以打开。你已经验证了“本地服务 → 账号 → 任务 → 文件”这条流程。</div>
+      <p>默认下载内容位于 <code>data/media/</code> 下；若修改过下载目录，请以界面或配置中的实际路径为准。失败时先看<a href="#faq">故障排查</a>，不需要重新安装整个项目。</p>
+      <p>下一步：想自动发现更新，阅读<a href="#monitor">作品监控</a>；想一次性按词收集，阅读<a href="#collection">关键词采集</a>。</p>
+    </section>
+
+    <section id="monitor">
+      <h2>作品监控：持续发现更新</h2><p class="path">入口：作品监控 → 新建作品监控</p>
+      <p><strong>适用：</strong>抖音、小红书、快手。视频号请使用“我的内容”查看本账号作品。</p>
+      <ol><li>复制创作者主页的完整分享文案或链接。小红书选择“创作者笔记”或“关键词”监控类型，并填写对应目标；链接尽量保留有效的 <code>xsec_token</code>。</li><li>粘贴目标，按需要使用“识别”，检查识别结果，再选择使用账号。</li><li>设置检查频率。第一次可先用“每 30 分钟”或“每小时”，而不是同时添加大量高频目标。</li><li>选择“自动下载范围”：只想观察结果时选“仅记录，不下载”；确实需要媒体时选择对应类型。</li><li>如当前平台提供“首次历史回填”，先选最近 5 条或不下载历史。分组、标签、下载目录和高级筛选可以稍后配置。</li><li>保存后在“监控目标”查看状态，在“作品记录”查看发现的内容。</li></ol>
+      <div class="note"><strong>为什么新建后没有旧作品？</strong>默认主要监控订阅后的新内容。历史回填与持续监控是两件事；没有新内容、尚未到检查时间、筛选过严，都可能导致暂时没有记录。</div>
+      <p><strong>完成标志：</strong>目标出现在列表；执行后有检查状态，有符合条件的内容时出现在作品记录中。无需继续监控时，暂停目标，不要只关网页。</p>
+      <figure><a href="images/monitor-create.png"><img src="images/monitor-create.png" alt="新建作品监控抽屉，包含目标、账号、检查频率与采集选项" width="1600" loading="lazy"></a><figcaption>先填目标和账号，再决定检查频率与是否下载，最后考虑高级选项。</figcaption></figure>
+    </section>
+
+    <section id="collection">
+      <h2>关键词采集：一次性收集一批结果</h2><p class="path">入口：切换到抖音 → 关键词采集 → 新建关键词采集</p>
+      <ol><li>输入关键词，一次最多 20 个。第一次先填 1 个容易理解的词，例如“摄影教程”。</li><li>选择可用账号，将每词作品数设为较小值，例如 5；不需要评论或媒体时关闭对应选项。</li><li>如需要评论，设置每作品评论数，并明确是否包含二级评论。数量代表上限，不保证达到该数量。</li><li>提交后查看任务进度和错误信息。等待本次采集结束，再检查结果和 Excel 导出。</li><li>需要继续采集时，可对已结束任务编辑配置并保留结果去重续跑，避免重复新建相同任务。</li></ol>
+      <p><strong>完成标志：</strong>任务结束，有结果可查看或导出；数量少于上限不一定是故障，结果受平台排序、登录状态和当前可见内容影响。</p>
+      <div class="note">这不是定时监控。小红书关键词批量采集仍在规划中，勿把小红书关键词监控理解为同一功能。</div>
+    </section>
+
+    <section id="comments">
+      <h2>评论与弹幕监控</h2>
+      <h3>评论监控</h3><p class="path">入口：评论监控 → 新建评论监控</p>
+      <ol><li>选择单条作品或账号近期作品的监控方式，填写相应链接或目标。</li><li>选择已登录账号，按需设置检查周期与采集选项；第一次减少目标数量，其他参数先保留默认。</li><li>保存后查看“监控目标”的状态，执行后到“评论记录”查看结果。</li><li>看不到数据时检查目标是否有可见评论、登录是否有效，以及筛选条件是否排除了结果。</li></ol>
+      <p>评论监控是读取和保存评论，<strong>不会因为你创建了监控就自动发出回复</strong>。回复规则见<a href="#autocomment">自动评论与审核</a>。</p>
+      <h3>弹幕监控（仅抖音短视频）</h3><p class="path">入口：切换到抖音 → 弹幕监控 → 新建弹幕监控</p>
+      <ol><li>填写视频目标并选择账号；自己的视频使用创作中心来源，公开视频使用播放器来源。</li><li>设置视频内时间范围，按需添加关键词、文本长度、点赞数和容量上限。</li><li>保存并等待执行，到“弹幕记录”查看按视频时间点排列的结果。</li></ol>
+      <p>弹幕时间是视频播放时间轴上的位置，不是评论发布时间，也不是直播弹幕。评论区有内容不代表视频中一定有弹幕。</p>
+      <figure><a href="images/monitor-comments.png"><img src="images/monitor-comments.png" alt="评论记录列表，包含来源任务与筛选条件" width="1600" loading="lazy"></a><figcaption>记录页用于看结果，监控目标页用于管理执行配置。</figcaption></figure>
+    </section>
+
+    <section id="download">
+      <h2>链接下载：保存已知内容</h2><p class="path">入口：链接下载</p>
+      <ol><li>从对应平台复制完整分享文案，不必手动删掉文案中的文字。</li><li>粘贴到输入框；按需选择账号、画质和下载选项，再提交。</li><li>查看下载历史或错误提示，成功后检查实际保存路径。</li></ol>
+      <p>抖音支持画质选择，小红书支持图集与视频，快手支持内容下载；视频号暂不支持。下载有断点续传和失败重试机制，但链接失效或登录失效仍需要先修复原因。</p>
+      <p>高画质取决于平台实际提供的资源；“仅音频”、格式处理或音画合并出现问题时，先更新依赖，必要时检查 ffmpeg。命令行用户可参考 <a href="https://github.com/3441293738/creatorhub#分享链接命令行下载">README 命令行说明</a>。</p>
+      <figure><a href="images/share-download.png"><img src="images/share-download.png" alt="链接下载页面，包含分享内容输入和下载历史" width="1600" loading="lazy"></a><figcaption>只下载一次用链接下载，持续发现新作品用作品监控。</figcaption></figure>
+    </section>
+
+    <section id="publish">
+      <h2>发布与转发</h2><p class="path">入口：发布 → 撰写内容；结果在“发布记录”查看</p>
+      <ol><li>切换到目标平台并选择发布账号。先确认创作者登录有效，特别是小红书。</li><li>添加自己拥有发布权的素材，填写标题、正文与话题；按表单要求检查素材类型。</li><li>在预览区域核对素材、账号和文案。小红书可按界面支持配置图集、视频或定时发布。</li><li>确认无误后提交一次，在“发布记录”和“任务队列”观察进度。</li><li>到平台侧核对作品。任务提交成功不代表已经通过平台审核或公开可见。</li></ol>
+      <div class="note"><strong>遇到“结果待确认”：</strong>先去平台检查是否已经发出。不要直接重复提交，以免重复发布。连接中断或缺少成功证据时，本地状态可能无法立即确认平台结果。</div>
+      <h3>转发已下载内容</h3><p>项目支持已下载抖音作品转发到小红书或视频号、小红书作品转发到抖音。先完成下载，再在对应作品操作中进入转发，核对目标平台、账号和素材，修改文案后提交。不是所有平台都支持互相转发。</p>
+      <p>定时及排队任务请保持本地服务运行，执行情况以记录和平台结果为准，不要把定时按钮当成云端托管承诺。</p>
+      <figure><a href="images/publish-workflow.png"><img src="images/publish-workflow.png" alt="内容发布编辑器与素材、文案预览" width="1600" loading="lazy"></a><figcaption>提交前确认三件事：发到哪里、用哪个账号、发什么内容。</figcaption></figure>
+    </section>
+
+    <section id="my-content">
+      <h2>我的内容与私信</h2><p class="path">入口：我的内容 → 选择账号 → 选择当前平台提供的标签</p>
+      <ol><li>选择自己的账号，再同步对应的作品、关注或粉丝数据。</li><li>等待同步结果，按页面筛选查看。抖音和小红书有私信能力，快手与视频号不要按相同能力预期使用。</li><li>需要处理私信时，先同步并查看会话，确认对象与上下文，再撰写或审核回复。</li></ol>
+      <h3>小红书私信自动回复</h3><p>在私信区域按需配置关键词、排除词、回复模板、冷却时间和消息最大年龄。默认生成待审核草稿，先检查命中对象和文案，再决定是否发送。首次启用只建立消息游标，不会处理全部历史积压。</p>
+      <p>后台会低频检查新消息。发送使用账号自己的可见 Chrome 会话与页面输入框；浏览器默认可能最小化，需要查看时点击“打开浏览器收发”。提交结果不确定时，先核对会话再操作。</p>
+      <h3>作品健康监控</h3><p>如当前账号页面提供健康监控，可按需开启零播放、违规或下架等提醒，并配置<a href="#notifications">通知渠道</a>。视频号在此管理自己的作品、数据与评论，不用于监控他人账号。</p>
+      <figure><a href="images/account-hub-dm.png"><img src="images/account-hub-dm.png" alt="我的内容页面中的私信会话工作区" width="1600" loading="lazy"></a><figcaption>发送和账号动作会对平台产生实际影响，先看清账号与会话对象。</figcaption></figure>
+    </section>
+
+    <section id="autocomment">
+      <h2>自动评论与审核</h2><p class="path">入口：自动评论 → 新建评论规则；审核在“任务与审核”</p>
+      <ol><li>选择执行账号与规则目标，按表单填写触发条件和评论模板。</li><li>新建规则默认关闭。先小范围试跑，检查模板、命中目标及生成的任务。</li><li>使用审核流程时，到“任务与审核”逐条检查内容；不合适的内容不要发送。</li><li>确认行为符合预期后再手动启用规则，并保持低频。</li><li>不需要时关闭规则，查看队列里是否还有待处理任务。</li></ol>
+      <p>小红书默认页面发布并先人工审核；<code>manual</code> 模式只保存草稿。自动评论、私信和账号动作还受活跃时段、共享写入间隔、小时/每日上限及风险冷却约束。</p>
+      <div class="note">“已启用”不等于“立刻发送”。规则、审核、队列和平台提交是不同阶段，排队原因请看<a href="#queue">任务队列与风控中心</a>。平台验证码或拒绝提示出现时，先处理提示，不要不断重试。</div>
+      <figure><a href="images/autocomment-rules.png"><img src="images/autocomment-rules.png" alt="自动评论规则列表，顶部可切换规则与任务审核" width="1600" loading="lazy"></a><figcaption>先检查规则与生成内容，再启用实际执行。</figcaption></figure>
+    </section>
+
+    <section id="notifications">
+      <h2>通知：不用一直盯着面板</h2><p class="path">入口：通知 → 添加通知渠道</p>
+      <ol><li>准备自己的 Bark、钉钉机器人或 Telegram 通知渠道信息。</li><li>选择渠道类型，填写名称和页面要求的地址、密钥或接收目标。</li><li>保存后发送测试通知，在接收端确认收到。</li><li>在提供通知选项的任务中按需启用提醒，检查实际任务产生事件后的通知结果。</li></ol>
+      <p><strong>完成标志：</strong>测试通知抵达正确的设备或群。通知配置全局共用，切换平台不需要重复创建。测试失败时先检查接收目标、网络和密钥，不要把含密钥的 URL 贴到公开 Issue。</p>
+    </section>
+
+    <section id="queue">
+      <h2>任务队列与风控：理解“为什么还没执行”</h2><p class="path">入口：任务队列 / 风控中心 → 账号状态、风控规则</p>
+      <ol><li>在任务队列中按类型筛选，找到对应任务，查看状态、错误和等待原因。</li><li>如果任务需要审核，先回到功能页审核；如果账号失效，先恢复登录。</li><li>如果处于冷却、活跃时段外或达到上限，等待条件满足，不要重复创建任务。</li><li>出现平台安全验证时，在当前可见浏览器窗口按提示处理，再检查账号和任务状态。</li></ol>
+      <div class="table-scroll"><table><thead><tr><th scope="col">看到的情况</th><th scope="col">下一步</th></tr></thead><tbody><tr><td>等待 / 排队</td><td>检查调度时间、账号占用、间隔与限额。</td></tr><tr><td>待审核</td><td>到对应功能的审核页核对内容。</td></tr><tr><td>失败</td><td>先看具体原因，修复登录、网络或目标后再决定重试。</td></tr><tr><td>结果待确认</td><td>到平台核对实际结果，避免重复提交。</td></tr><tr><td>冷却 / 验证</td><td>查看风控中心；按平台提示处理并等待恢复条件。</td></tr></tbody></table></div>
+      <p>重启服务不会自动消除所有冷却状态。保留默认保护设置，优先减少任务规模和频率，而不是把限制全部调为零。</p>
+    </section>
+
+    <section id="settings">
+      <h2>设置与账号环境</h2><p class="path">入口：设置；账号环境在“平台账号 → 浏览器内核 / 代理池”</p>
+      <dl><dt>外观与体验</dt><dd>切换浅色、深色等显示选项；平台配色与主题分别控制。</dd><dt>下载设置</dt><dd>调整保存目录与默认下载选项。改动后用一条内容确认实际落盘位置。</dd><dt>AI 文案</dt><dd>按页面字段配置自己的服务地址、模型和密钥，在实际生成文案时核对效果。服务可能产生第三方费用，发送前检查生成内容；不用 AI 时可跳过。</dd><dt>采集与运行</dt><dd>调整浏览器、调度等运行参数。新手先保留默认，修改前记录原值，一次只调整一项。</dd></dl>
+      <h3>账号隔离与代理</h3><p>每个账号有独立浏览器 Profile，和日常个人 Chrome 配置分开。不要让其他 Chrome 进程同时打开项目账号的 Profile，也不要随意删除它。</p>
+      <p>代理是可选项，不是安装前置条件。确有需要时，在“代理池”填写自己的代理并测试，再为账号关联；保持稳定出口。已配置的代理连接失败时会报错，不会静默改用直连。</p>
+      <h3>浏览器内核</h3><p>小红书优先系统 Chrome/CDP；自动模式在未安装 Chrome 时可回退到可见 Patchright Chromium，实际后端可在账号列表确认。Fingerprint Chromium 是其他平台的进阶可选项，小红书不使用该组合。普通上手无需安装额外指纹浏览器。</p>
+      <p>完整配置字段见 <a href="https://github.com/3441293738/creatorhub/blob/main/config.example.yaml">config.example.yaml</a>。需要手动改配置时先停止服务并备份 <code>config.yaml</code>，注意 YAML 缩进，用空格而不是 Tab，保存后重启验证。</p>
+    </section>
+
+    <section id="backup">
+      <h2>更新、备份与恢复</h2>
+      <h3>先备份，再更新</h3><ol><li>暂停重要任务并停止本地服务，避免复制正在写入的数据库。</li><li>将 <code>config.yaml</code> 和整个 <code>data/</code> 复制到项目之外的私人备份目录。若自定义了数据库、媒体或 Profile 路径，也要备份这些实际目录。</li><li>记录当前版本或提交号。Git 安装用户在工作区无待处理修改时执行 <code>git pull --ff-only</code>；有冲突先处理，不要强行覆盖。</li><li>ZIP 安装用户将新版本解压到新目录，再把备份的配置与数据复制进去；不复用旧的 <code>.venv</code>。</li><li>运行安装命令更新依赖，然后正常启动，检查账号、配置和历史记录。</li></ol>
+      <pre><code># Windows
+.\start.cmd install
+.\start.cmd
+
+# macOS / Linux
+./start.sh install
+./start.sh</code></pre>
+      <p>数据库字段通常在启动时自动迁移，不需要为升级清空数据库。若需要回滚，停止服务，使用更新前的代码<strong>和配套的更新前数据备份</strong>，不要直接让旧代码读取已经迁移的数据。</p>
+      <div class="note"><strong>备份包含敏感信息。</strong>Profile、Cookie、数据库、私信和通知密钥只保存在可信位置。换电脑恢复后可能仍需重新登录；不要把备份上传到公开仓库。</div>
+    </section>
+
+    <section id="faq">
+      <h2>常见问题：先按现象排查</h2>
+      <p>浏览器查找快捷键：Windows / Linux 按 <kbd>Ctrl</kbd> + <kbd>F</kbd>，macOS 按 <kbd>⌘</kbd> + <kbd>F</kbd>，搜索错误关键词。</p>
+      <details open><summary>打开 127.0.0.1:8000 提示连接失败</summary><p>确认启动终端仍在运行且没有报错，首次依赖安装已完成，地址与启动端口一致。若端口被占用，运行 <code>.\start.cmd --port 8080</code> 后打开 <code>http://127.0.0.1:8080</code>。不要在另一台电脑上用 127.0.0.1 访问这台电脑。</p></details>
+      <details><summary>双击启动一闪而过 / 找不到 Python</summary><p>按安装章节在终端中启动以保留错误信息。确认安装了 Python 3.10+ 并加入 PATH，重新打开终端；Windows 可用 <code>py -3 --version</code> 查看版本，macOS / Linux 使用 <code>python3 --version</code>。</p></details>
+      <details><summary>依赖下载失败 / 找不到 Chromium</summary><p>先检查网络和磁盘，再在项目目录运行 <code>.\start.cmd install</code>（macOS / Linux：<code>./start.sh install</code>）。若仍提示浏览器缺失，使用项目虚拟环境修复，避免把浏览器装到另一个 Python 环境：</p><pre><code># Windows
+.\.venv\Scripts\python.exe -m patchright install chromium
+# macOS / Linux
+./.venv/bin/python -m patchright install chromium</code></pre></details>
+      <details><summary>扫码没有弹窗 / 服务器没有桌面</summary><p>扫码需要桌面环境，检查窗口是否最小化、后台打开或被其他窗口遮住。无桌面的服务器不是本指南的入门运行方式；先在自己的桌面电脑完成安装与登录。</p></details>
+      <details><summary>小红书出现设备安全验证</summary><p>使用本机稳定版 Chrome，保持原账号 Profile 和网络稳定，在当前浏览器窗口完成平台验证。自动任务会暂停，不要反复刷新、重新建号或删除登录目录。</p></details>
+      <details><summary>小红书可以看内容，但发布失败</summary><p>主站扫码登录与创作者登录相互独立。先完成创作者登录，再检查素材要求和发布记录。若提示“结果待确认”，先在平台核对，不要立即重发。</p></details>
+      <details><summary>链接解析失败 / 作品或评论为空</summary><p>确认平台选对、账号有效、作品在浏览器里可见，重新复制完整分享文案。小红书保留有效的 <code>xsec_token</code>。检查任务执行时间、历史回填、筛选条件及平台本身是否有可见结果。</p></details>
+      <details><summary>下载成功但找不到文件 / 没声音 / 画质不够</summary><p>查看下载记录与当前保存目录，默认文件在 <code>data/media/</code> 下。媒体处理异常先更新依赖；项目可使用 Python 依赖附带的 ffmpeg，也可使用加入 PATH 的系统 ffmpeg。画质还受源资源限制。</p></details>
+      <details><summary>任务一直等待，重启后也没有立即执行</summary><p>查看“任务队列”和“风控中心”的账号状态，确认审核、活跃时段、限额、共享间隔、代理和风险冷却。等待不是卡死的充分证据，重复提交可能制造重复任务。</p></details>
+      <details><summary>Windows 提示浏览器子进程错误</summary><p>先使用项目启动脚本和单 worker，不要额外添加 <code>--workers</code>。更新依赖并运行 <code>.\start.cmd check</code>，仍失败时保留完整错误日志。</p></details>
+      <details><summary>macOS 安装提示 clang++ failed</summary><p>先备份数据并更新项目，停止服务，把项目内的旧 <code>.venv</code> 重命名留作排查，再执行 <code>./start.sh install</code> 重建环境。不要改动系统 Python 或误删 <code>data/</code>。</p></details>
+      <details><summary>能把本地面板直接暴露到公网吗？</summary><p>入门时保持默认回环地址，仅在本机使用。面板管理登录态及真实发布操作，公开访问需要另行评估身份认证、访问控制和网络保护，不要直接做公网端口映射。</p></details>
+    </section>
+
+    <section id="help">
+      <h2>仍有问题？让反馈更容易复现</h2>
+      <p>到 <a href="https://github.com/3441293738/creatorhub/issues">GitHub Issues</a> 提交问题，或者访问<a href="../community/">交流群入口</a>。提交前搜索是否已有相同问题。</p>
+      <pre><code>操作系统及版本：
+Python 版本：
+CreatorHub 版本 / 提交号 / ZIP 下载日期：
+平台及功能：
+复现步骤：1. … 2. … 3. …
+预期结果：
+实际结果：
+脱敏后的完整错误日志或截图：</code></pre>
+      <p>请隐藏 Cookie、Token、手机号、代理密码、私信内容、通知密钥及带签名参数的链接；不要上传 <code>config.yaml</code>、数据库或 Profile。</p>
+    </section>
+    <footer>本指南随仓库维护，以当前代码与界面为准。平台规则和页面变化可能影响功能。使用时尊重内容版权、个人隐私及平台规则。<a href="#welcome">返回顶部 ↑</a></footer>
+  </main>
+</div>
+</body>
+</html>
