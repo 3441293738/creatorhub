@@ -28,7 +28,8 @@ class Links(HTMLParser):
             self.links.append(attrs["href"])
         if tag == "img":
             self.images.append(attrs)
-            self.links.append(attrs["src"])
+            if "src" in attrs:
+                self.links.append(attrs["src"])
 
 
 class GuideSiteTests(unittest.TestCase):
@@ -78,6 +79,15 @@ class GuideSiteTests(unittest.TestCase):
             build(target)
             self.assertTrue((target / "demo-api.js").is_file())
             self.assertTrue((target / "community" / "index.html").is_file())
+            community = self.parse(target / "community" / "index.html")
+            self.assertIn("personal-wechat", community.ids)
+            for name in ("wechat-group.jpg", "wechat-personal.jpg"):
+                self.assertEqual((target / "community" / name).read_bytes(),
+                                 (ROOT / "assets" / "community" / name).read_bytes())
+            for img in community.images:
+                self.assertTrue(img.get("alt", "").strip())
+                if img.get("src"):
+                    self.assertTrue((target / "community" / urlsplit(img["src"]).path).is_file())
             self.assertTrue((target / ".nojekyll").is_file())
             page = self.parse(target / "guide" / "index.html")
             for link in page.links:

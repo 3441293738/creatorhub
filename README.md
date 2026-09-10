@@ -374,14 +374,28 @@ data/
 
 欢迎加入 **CreatorHub 交流群**，交流使用经验、问题反馈和功能建议。
 
-<p align="center">
-  <a href="https://3441293738.github.io/creatorhub/community/">
-    <img src="assets/community/live-entry.png" alt="CreatorHub 交流群固定入口二维码" width="280">
-  </a>
-</p>
+<table>
+  <tr>
+    <th align="center">扫码加群（固定入口）</th>
+    <th align="center">添加作者微信</th>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://3441293738.github.io/creatorhub/community/">
+        <img src="assets/community/live-entry.png" alt="CreatorHub 交流群固定入口二维码" width="240">
+      </a>
+    </td>
+    <td align="center">
+      <a href="assets/community/wechat-personal.jpg">
+        <img src="assets/community/wechat-personal.jpg" alt="作者个人微信二维码，扫码添加好友" width="240">
+      </a>
+    </td>
+  </tr>
+</table>
 
 <p align="center">
   扫码或点击二维码打开<a href="https://3441293738.github.io/creatorhub/community/">交流群固定入口</a>；微信群二维码到期后会在入口页更新。
+  入群遇到问题，也可以添加作者微信联系。
 </p>
 
 ## 赞助商

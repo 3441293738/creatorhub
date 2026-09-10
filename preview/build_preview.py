@@ -12,6 +12,7 @@ SOURCE = ROOT / "app" / "web"
 PREVIEW = ROOT / "preview"
 COMMUNITY = PREVIEW / "community"
 COMMUNITY_QR = ROOT / "assets" / "community" / "wechat-group.jpg"
+PERSONAL_QR = ROOT / "assets" / "community" / "wechat-personal.jpg"
 GUIDE = ROOT / "guide"
 GUIDE_IMAGES = (
     "overview-douyin.png", "accounts-list.png", "monitor-create.png",
@@ -84,6 +85,7 @@ def build(destination: Path) -> None:
     shutil.copy2(PREVIEW / "demo-api.js", destination / "demo-api.js")
     shutil.copytree(COMMUNITY, destination / "community")
     shutil.copy2(COMMUNITY_QR, destination / "community" / COMMUNITY_QR.name)
+    shutil.copy2(PERSONAL_QR, destination / "community" / PERSONAL_QR.name)
     build_guide(destination / "guide")
     (destination / ".nojekyll").write_text("", encoding="utf-8")
 
