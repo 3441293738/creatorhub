@@ -5,12 +5,12 @@
 ## 普通用户
 
 1. 安装维护者发布的 `CreatorHub-Setup-版本-windows-x64.exe`，通过桌面快捷方式启动。
-2. 需要 Microsoft Edge WebView2 Runtime；缺少时从微软官网下载并安装。无需自行安装 Python。首次启动仍需联网下载 Patchright Chromium；小红书建议安装系统 Chrome。
+2. 无需自行安装 Python。安装器检测 Microsoft Edge WebView2 Runtime，缺少时自动通过随包附带的微软引导程序联网安装；失败会提示重试，不继续启动应用。首次点击“启动本地服务”会自动下载 Patchright Chromium；小红书建议安装系统 Chrome。
 3. 打开桌面版只显示启动中心，不启动后台服务、不下载浏览器、不执行任务。点击“启动本地服务”后再等待就绪；是否自动打开工作台由偏好设置控制。端口 8000 被占用时自动换用空闲端口。
 4. 使用“新手向导”选择平台，按登录 → 第一个任务完成操作。
 5. 可最小化到托盘；关闭网页不停止任务。“停止并退出”或关闭管理窗口会确认并停止服务。
 
-目前没有发布到 GitHub Releases；测试包需先构建，不能把仓库 ZIP 当作安装包。
+从 [最新正式版](https://github.com/3441293738/creatorhub/releases/latest) 的 Assets 下载安装包。若尚无正式版，维护者需先按下文推送版本标签并等待构建成功。仓库 ZIP 是源码，不是安装包。
 
 数据位于 `%LOCALAPPDATA%\CreatorHub\user-data`，与安装目录分开：
 
@@ -31,34 +31,58 @@
 python -m pip install -r requirements.txt -r desktop/requirements-build.txt
 npm ci
 npm run build:desktop
-python desktop/build_windows.py --version 0.2.2
+python desktop/build_windows.py --version 0.1.0
 python desktop/smoke_windows.py dist/windows/CreatorHub/CreatorHub.exe
 ```
 
 生成 `dist/windows/CreatorHub/CreatorHub.exe`。这是 **onedir 便携运行目录**，分享时必须包含整个 CreatorHub 文件夹，不能只复制 EXE。
 
-旧版正在运行时，先退出再覆盖构建；如要保留旧版，可加 `--dist-dir dist/windows-0.2.2` 输出到仓库内的独立目录。该选项只改变便携目录；Inno Setup 默认仍从 `dist/windows/CreatorHub` 取文件，编译安装包前应使用默认目录构建。
+旧版正在运行时，先退出再覆盖构建；如要保留旧版，可加 `--dist-dir dist/windows-0.1.0` 输出到仓库内的独立目录。该选项只改变便携目录；Inno Setup 默认仍从 `dist/windows/CreatorHub` 取文件，编译安装包前应使用默认目录构建。
 
 安装 [Inno Setup 6](https://jrsoftware.org/isdl.php) 后编译安装包：
 
 ```powershell
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.2.2 desktop/installer.iss
+& ./desktop/prepare_webview2.ps1
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.0 desktop/installer.iss
 ```
 
-输出：`dist/installer/CreatorHub-Setup-0.2.2-windows-x64.exe`。
+第一条命令下载并验证微软签名的 WebView2 引导程序；此文件为安装器的必需构建输入。其检测和安装方式遵循 [微软分发文档](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)。
+
+输出：`dist/installer/CreatorHub-Setup-0.1.0-windows-x64.exe`。
 Inno Setup 许可条件以其官方页面为准。项目使用按用户安装，无需管理员权限，依据 [PrivilegesRequired 文档](https://jrsoftware.org/ishelp/topic_setup_privilegesrequired.htm)。
 
 构建器按 [PyInstaller 运行时路径约定](https://pyinstaller.org/en/stable/runtime-information.html)区分资源位置和可写用户目录。冻结后的 `sys.executable` 是启动器而非 Python，因此后台进程通过同一个 EXE 的 `--serve` 模式启动。
 
 ## GitHub Actions
 
-在 Actions 中手动运行 **Build Windows installer**，填入数字版本（如 `0.2.2`）。流程运行测试、打包、冻结环境冒烟检查，再用 Inno Setup 编译并上传安装包和 SHA256 摘要。它不会自动发布 Release，也不会上传本地配置或账号数据。
+### 正式发布：维护者构建，用户直接下载
+
+先提交并推送要发布的代码（包含本工作流），完成下方发布前验收，再创建一个未使用过的版本标签：
+
+```powershell
+git tag -a v0.1.0 -m "CreatorHub 0.1.0"
+git push origin v0.1.0
+```
+
+版本号替换为本次实际版本，支持 `v1.2.3` / `v1.2.3.4`，不支持预发布后缀。推送标签即表示发布该版本：
+
+1. Actions 的 **Build Windows installer** 对标签对应代码运行测试、打包及冻结冒烟检查。
+2. 下载并校验微软 WebView2 引导程序，编译 Setup，生成标准 `SHA256.txt`，保留 Actions artifact。
+3. 仅在构建成功后，以独立的 `contents: write` 发布任务创建 Release 草稿、上传安装包与摘要，再公开发布。发布调用采用 [GitHub CLI](https://cli.github.com/manual/gh_release_create)。
+4. 用户从 README 的最新正式版入口下载；客户端“检查更新”也使用同一 Releases 通道。GitHub 自动判断 latest，补发旧版本不强制顶替新版。
+
+在仓库 Actions 查看运行结果。构建失败不发布；草稿上传失败可重跑失败任务。已公开的同标签版本不会被覆盖，需要修复时发布新版本号。若发布权限被组织策略限制，请允许该发布任务使用 `contents: write`。
+
+### 仅构建测试包
+
+在 Actions 中手动运行 **Build Windows installer**，选择分支并填入数字版本（如 `0.1.0`）。手动运行只上传安装包与 SHA256 artifact，不公开发布。适合先下载测试包进行干净机器验收，再对同一提交打正式标签。构建不上传本地配置或账号数据。
 
 构建机需要 Inno Setup 6；工作流缺少编译器时明确失败，不静默跳过安装包生成。
 
 ## 发布前验收
 
 - 在没有 Python 的干净 Windows 10/11 x64 测试机上安装、首次下载浏览器、打开 GUI 与托盘菜单。
+- 分别验证已安装 WebView2 时跳过引导安装、缺少时自动安装，以及断网失败后恢复网络重试；本机签名下载验证和静态测试不替代干净机器安装验收。
 - 测试断网、下载中断重试、8000 端口占用、重复启动以及正常退出。
 - 用测试账号人工验证各平台登录与最小任务；自动冒烟测试不登录、不采集、不发布。
 - 测试覆盖升级时数据保留、升级前数据库备份、卸载后数据仍存在。
@@ -77,7 +101,7 @@ Inno Setup 许可条件以其官方页面为准。项目使用按用户安装，
 
 入口：**偏好设置 → 版本与更新 → 检查更新 → 查看更新说明 → 下载新版**。只在主动检查时访问公开的 GitHub Releases API，不携带账号、配置、路径或访问令牌。请求超时、限流、未发布正式版和缺少安装包会分别提示；检查在后台执行，不阻塞服务启停。下载前有确认提醒，默认浏览器负责下载，不自动安装、重启或停止任务。更新说明以纯文本显示，不执行发布内容中的 HTML。
 
-维护者发布约定：在 `3441293738/creatorhub` 的 GitHub Releases 发布正式版，tag 为 `v0.3.0` 或 `0.3.0` 等三/四段数字版本，在说明中填写变更，并上传 `CreatorHub-Setup-0.3.0-windows-x64.exe`。将其设为最新正式版；draft/prerelease 不进入此更新通道。只有 Git tag、Actions artifact 或源码 ZIP 不等于桌面安装包。当前工作流仍只构建 artifact，不会自动公开发布 Release。
+维护者发布约定：推送 `v0.1.0` 等三/四段数字标签，工作流自动发布正式版及 `CreatorHub-Setup-0.1.0-windows-x64.exe`，生成更新说明。draft/prerelease 不进入客户端更新通道。只有 Git tag、Actions artifact 或源码 ZIP 不等于桌面安装包，必须等待发布任务成功。
 
 版本号按数字比较，不把 `0.10.0` 当作早于 `0.9.0`；源码开发版会明确提示不参与已安装版本比较。只接受项目自身 release 路径下名称匹配的 Windows x64 安装包，不支持用户传入下载地址。下载交给浏览器不代表下载成功，安装前需先“停止并退出”旧版。
 

@@ -31,15 +31,23 @@ CreatorHub 使用 Python + FastAPI 提供统一 Web 界面，用于管理账号�
 
 ## 快速开始
 
-### Windows 安装版（新增）
+### Windows 安装版（推荐）
 
-项目新增启动管理器和安装包构建流程：无需用户手动安装 Python，支持自动打开面板、端口冲突处理、托盘退出、独立用户数据目录和离线指南。安装包尚需通过构建与发布流程分发，仓库 ZIP 仍是源码版。
+1. 打开 **[Windows 安装包下载页](https://github.com/3441293738/creatorhub/releases/latest)**，在 Assets 中下载 `CreatorHub-Setup-版本-windows-x64.exe`。
+2. 双击安装，使用桌面快捷方式启动。无需自行安装 Python、运行构建命令或下载源码；缺少 WebView2 时安装器会自动联网安装。
+3. 点击“启动本地服务”。首次会自动下载浏览器组件，就绪后打开工作台并登录账号。
 
-维护者可在 GitHub Actions 手动运行 **Build Windows installer** 获取安装包。构建、数据位置、迁移及发布前验收见 [`desktop/README.md`](desktop/README.md)。源码启动方式继续可用。
+适用于 Windows 10/11 x64。安装与首次启动请保持联网。升级前先“停止并退出”，再运行新版安装包，用户数据保留。`Source code (zip)` 是源码，不是安装包；若尚无正式版本，请等待维护者完成首次发布。
+
+维护者只需推送数字版本标签（例如 `v0.1.0`），Actions 会测试、构建并发布安装包到 GitHub Releases。详细流程见 [`desktop/README.md`](desktop/README.md)。
 
 第一次使用？先看 **[图文上手指南](https://3441293738.github.io/creatorhub/guide/)**：从 ZIP 下载、安装启动、账号登录到完成第一个任务，再按需查看各功能操作与常见问题。文档源码和维护方式见 [`guide/`](guide/README.md)，随现有 GitHub Pages 工作流发布。
 
-### 环境要求
+### 源码运行（开发者 / macOS / Linux）
+
+Windows 安装版用户跳过以下环境安装与命令。
+
+#### 环境要求
 
 - Python 3.10+
 - 桌面环境（扫码登录时需要弹出浏览器）

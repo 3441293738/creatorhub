@@ -1,7 +1,7 @@
 ; Compile after desktop/build_windows.py. The data directory is NEVER installed
 ; into, overwritten, or deleted by the installer/uninstaller.
 #ifndef AppVersion
-  #define AppVersion "0.2.2"
+  #define AppVersion "0.1.0"
 #endif
 [Setup]
 AppId={{93FD4B37-6436-4CE0-8249-BC487CC5A062}
@@ -26,6 +26,7 @@ RestartApplications=no
 SetupLogging=yes
 
 [Files]
+Source: "..\build\windows\MicrosoftEdgeWebview2Setup.exe"; Flags: dontcopy
 Source: "..\dist\windows\CreatorHub\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Tasks]
@@ -39,6 +40,43 @@ Name: "{autodesktop}\CreatorHub"; Filename: "{app}\CreatorHub.exe"; Tasks: deskt
 Filename: "{app}\CreatorHub.exe"; Description: "Launch CreatorHub"; Flags: nowait postinstall skipifsilent
 
 [Code]
+function HasWebView2(): Boolean;
+var
+  Version: String;
+  Key: String;
+begin
+  Key := 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  Result := RegQueryStringValue(HKLM32, Key, 'pv', Version) and
+    (Version <> '') and (Version <> '0.0.0.0');
+  if not Result then
+    Result := RegQueryStringValue(HKCU, Key, 'pv', Version) and
+      (Version <> '') and (Version <> '0.0.0.0');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+  Attempt: Integer;
+begin
+  Result := '';
+  if HasWebView2() then Exit;
+  WizardForm.StatusLabel.Caption := 'Installing Microsoft WebView2 Runtime (internet required)...';
+  ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
+  if not Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'),
+    '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Result := 'WebView2 setup could not start. Retry the installation.';
+    Exit;
+  end;
+  Log(Format('WebView2 bootstrapper exit code: %d', [ResultCode]));
+  for Attempt := 1 to 60 do
+  begin
+    if HasWebView2() then Exit;
+    Sleep(1000);
+  end;
+  Result := 'Microsoft WebView2 Runtime is required. Check your internet connection and retry installation. Your CreatorHub data is unchanged.';
+end;
+
 function InitializeUninstall(): Boolean;
 begin
   Result := True;

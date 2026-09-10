@@ -63,7 +63,8 @@
 
     <section id="install">
       <div class="eyebrow">01 / SETUP</div><h2>安装与启动</h2>
-      <div class="note"><strong>Windows 安装版：</strong>如果你拿到维护者发布的 <code>CreatorHub-Setup-版本-windows-x64.exe</code>，安装后使用桌面快捷方式，无需手动安装 Python。首次启动仍需联网下载浏览器组件。没有安装包时，继续使用下面的源码安装流程。源码 ZIP 不是安装程序。</div>
+      <div class="note"><strong>Windows 用户推荐安装版：</strong>到 <a href="https://github.com/3441293738/creatorhub/releases/latest">最新正式版下载页</a>，在 Assets 下载 <code>CreatorHub-Setup-版本-windows-x64.exe</code>，双击安装后使用桌面快捷方式启动。无需手动安装 Python 或构建源码；缺少 WebView2 时安装器自动联网安装。点击“启动本地服务”后自动下载所需浏览器，等待就绪再打开工作台。升级前先“停止并退出”，再安装新版，数据保留。若尚无正式版本，请等待维护者发布；源码 ZIP 不是安装程序。</div>
+      <details><summary>源码安装：开发者 / macOS / Linux（Windows 安装版用户跳过）</summary>
       <h3>准备什么？</h3>
       <ul><li>一台带桌面环境的 Windows、macOS 或 Linux 电脑，以及能正常访问对应平台的网络。</li><li>Python 3.10 或以上。Windows 安装 Python 时勾选 <code>Add Python to PATH</code>，安装后重新打开终端。</li><li>小红书用户建议准备本机稳定版 Google Chrome。首次安装会下载 Python 依赖和浏览器，请预留时间和磁盘空间。</li></ul>
       <p>正常启动不需要先安装 Node.js，也不需要自行配置数据库。Node.js 仅用于前端开发构建或显式开启小红书 API 发布兼容模式等场景。</p>
@@ -89,6 +90,7 @@ cd creatorhub</code></pre><p>克隆方式便于以后更新；ZIP 方式不要�
 .\start.cmd install
 .\start.cmd --port 8080
 .\start.cmd --no-open</code></pre><p>依次对应环境自检、安装或更新依赖、换端口、不自动打开网页。换端口后访问 <code>http://127.0.0.1:8080</code>。macOS / Linux 把 <code>.\start.cmd</code> 换成 <code>./start.sh</code>。</p></details>
+      </details>
     </section>
 
     <section id="accounts">
