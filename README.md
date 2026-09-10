@@ -31,6 +31,12 @@ CreatorHub 使用 Python + FastAPI 提供统一 Web 界面，用于管理账号�
 
 ## 快速开始
 
+### Windows 安装版（新增）
+
+项目新增启动管理器和安装包构建流程：无需用户手动安装 Python，支持自动打开面板、端口冲突处理、托盘退出、独立用户数据目录和离线指南。安装包尚需通过构建与发布流程分发，仓库 ZIP 仍是源码版。
+
+维护者可在 GitHub Actions 手动运行 **Build Windows installer** 获取安装包。构建、数据位置、迁移及发布前验收见 [`desktop/README.md`](desktop/README.md)。源码启动方式继续可用。
+
 第一次使用？先看 **[图文上手指南](https://3441293738.github.io/creatorhub/guide/)**：从 ZIP 下载、安装启动、账号登录到完成第一个任务，再按需查看各功能操作与常见问题。文档源码和维护方式见 [`guide/`](guide/README.md)，随现有 GitHub Pages 工作流发布。
 
 ### 环境要求

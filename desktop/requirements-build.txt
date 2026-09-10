@@ -1,0 +1,4 @@
+# Build in a clean Windows Python 3.11 x64 environment.
+pyinstaller==6.22.2
+pystray==0.19.5
+pywebview==6.2.1

@@ -9848,6 +9848,9 @@ async def test_channel(cid: int):
 @app.get("/", response_class=HTMLResponse)
 async def index():
     html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    if os.environ.get("CREATORHUB_DESKTOP") == "1":
+        html = html.replace('data-guide-base="https://3441293738.github.io/creatorhub/guide/"',
+                            'data-guide-base="/guide/"')
     # Version all local UI assets, including pre-paint appearance boot and CSS.
     try:
         for asset in ("app.js", "submissions.js", "appearance.js", "appearance.css", "workspace-ui.js", "workbench.js", "workbench.css"):

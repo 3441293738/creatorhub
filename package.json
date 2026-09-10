@@ -12,6 +12,7 @@
     "lucide-static": "1.42.0"
   },
   "scripts": {
-    "build:ui": "node frontend/build.mjs"
+    "build:ui": "node frontend/build.mjs",
+    "build:desktop": "node frontend/desktop/build.mjs"
   }
 }

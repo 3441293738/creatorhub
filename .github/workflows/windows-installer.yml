@@ -1,0 +1,66 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Numeric version, for example 0.2.2
+        required: true
+        default: "0.2.2"
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Build desktop renderer
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:desktop
+      - name: Install build dependencies
+        run: python -m pip install -r requirements.txt -r desktop/requirements-build.txt
+      - name: Validate documentation
+        run: python -m unittest discover -s tests -p test_guide_site.py
+      - name: Test desktop entry point
+        run: python -m unittest discover -s tests -p test_desktop_launcher.py
+      - name: Test legacy desktop widgets
+        run: python -m unittest discover -s tests -p test_desktop_ui.py
+      - name: Test desktop control server
+        run: python -m unittest discover -s tests -p test_desktop_shell.py
+      - name: Test desktop updates
+        run: python -m unittest discover -s tests -p test_desktop_updates.py
+      - name: Test crash recovery and manual startup
+        run: python -m unittest discover -s tests -p test_desktop_lifecycle.py
+      - name: Package Python, application and offline guide
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: python desktop/build_windows.py --version $env:APP_VERSION
+      - name: Smoke-test frozen resources and service lifecycle
+        run: python desktop/smoke_windows.py dist/windows/CreatorHub/CreatorHub.exe
+      - name: Compile installer
+        env:
+          APP_VERSION: ${{ inputs.version }}
+        run: |
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $compiler)) { throw "Inno Setup 6 compiler is required on the build runner" }
+          & $compiler "/DAppVersion=$env:APP_VERSION" desktop/installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash dist/installer/*.exe -Algorithm SHA256 | Format-List | Out-File dist/installer/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CreatorHub-Windows-Installer
+          path: dist/installer/*
+          if-no-files-found: error
