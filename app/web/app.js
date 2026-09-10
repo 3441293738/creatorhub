@@ -7730,6 +7730,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) loop
 
 // Narrow bridge for React islands; business mutations remain in their original handlers.
 window.CreatorHubBridge = {
+  selectPlatform: switchPlatform,
   getContext: () => ({ tab: CURRENT_TAB, platform: PLATFORM }),
   navigate: switchTab,
   openAccount: openAccountHub,
