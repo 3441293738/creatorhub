@@ -59,7 +59,8 @@ class HelperTests(unittest.TestCase):
         self.assertIn("/NOCLOSEAPPLICATIONS", command)
         self.assertIn("/NORESTARTAPPLICATIONS", command)
         self.assertNotIn("/CLOSEAPPLICATIONS", command)
-        self.assertEqual(command[0], self.artifact["installer"])
+        # Windows 构建机可能使用 RUNNER~1 短路径，安装请求会解析为完整路径。
+        self.assertEqual(command[0], str(Path(self.artifact["installer"]).resolve()))
         with patch.dict(os.environ, {"_PYI_APPLICATION_HOME_DIR": "old", "PYINSTALLER_RESET_ENVIRONMENT": "0"}):
             env = helper.clean_environment()
             self.assertEqual(env["PYINSTALLER_RESET_ENVIRONMENT"], "1")
