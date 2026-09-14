@@ -1,4 +1,4 @@
-# 复制为 config.yaml 后修改。常用采集参数也可在「设置 → 采集与运行」调整；页面保存项优先且重启后保留。
+# 复制为 config.yaml 后修改。采集、弹幕、私信、写操作限制及代理门禁等常用参数也可在「设置 → 采集与运行」调整；页面保存项优先且重启后保留。
 server:
   host: 127.0.0.1
   # 本地个人工作台默认免登录，仅接受本机回环地址访问。
@@ -13,6 +13,8 @@ engine:
   resident_browser_sessions: true # reuse one account browser process/Profile/task page
   browser_session_idle_seconds: 1800 # idle recycle; 0=LRU/explicit close/shutdown only
   xhs_read_mode: browser          # browser=读取也复用账号浏览器;api=显式签名 API 兼容模式
+  douyin_read_mode: hybrid         # hybrid=API优先/浏览器回退;api=仅API;browser=仅浏览器
+  douyin_write_mode: browser       # browser=页面写入;api=仅网页HTTP/imapi;hybrid=API优先、明确拒绝时回退页面
   xhs_keyword_gap_seconds: 10     # 同一任务相邻关键词的最小停顿
   xhs_item_gap_seconds: 2.5       # 相邻详情/评论读取的最小停顿
   xhs_request_jitter: 0.35        # 小红书读取停顿的正向随机抖动比例

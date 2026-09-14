@@ -140,6 +140,7 @@
       baseline = { ...data.values }; recommended = { ...data.defaults }; dirty = false;
       render(baseline); retryButton.hidden = true;
       message("已保存 · 后续任务生效，重启后保留", "success");
+      globalThis.CreatorHubTransportMatrix?.load?.();
     } catch (error) {
       dirty = true;
       const invalid = [];

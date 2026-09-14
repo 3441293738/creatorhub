@@ -22,7 +22,8 @@ def gen_false_ms_token(length: int = 126) -> str:
     return "".join(random.choice(_CHARSET) for _ in range(length))
 
 
-async def gen_real_ms_token(user_agent: str, timeout: float = 10.0) -> str:
+async def gen_real_ms_token(user_agent: str, timeout: float = 10.0,
+                            cookie: str = "", proxy: str = "") -> str:
     """对应 genRealMsToken:失败时回退到伪造 token。"""
     payload = {
         "magic": 538969122,
@@ -38,8 +39,11 @@ async def gen_real_ms_token(user_agent: str, timeout: float = 10.0) -> str:
                 _REAL_URL,
                 params={"msToken": gen_false_ms_token()},
                 json=payload,
-                headers={"User-Agent": user_agent, "Content-Type": "application/json"},
+                headers={"User-Agent": user_agent, "Content-Type": "application/json",
+                         "Cookie": cookie} if cookie else
+                        {"User-Agent": user_agent, "Content-Type": "application/json"},
                 timeout=timeout,
+                proxy=proxy or None,
             )
             for c in cli.cookies.jar:
                 if c.name == "msToken":

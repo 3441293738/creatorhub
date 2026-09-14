@@ -40,7 +40,7 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       fetch_ks_self_profile,
                       fetch_channels_self_profile,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
-                      fetch_dm_history)
+                      fetch_dm_history, fetch_douyin_account_works_api)
 from .browser.backends import (
     ACCOUNT_BROWSER_BACKENDS, LOCAL_BACKEND, fingerprint_seed_u32,
     parse_extra_launch_args,
@@ -112,6 +112,11 @@ from .risk_admin import (RiskSettingsError, apply_risk_settings,
 from .settings import get_setting, set_setting
 from .engine_settings import (EngineSettingsPatch, export_engine_settings,
                               load_persisted_engine_settings, save_engine_settings)
+from .transport_matrix import (
+    build_transport_matrix,
+    douyin_client_environment,
+    resolve_transport,
+)
 from .scheduling import parse_schedule, utc_iso
 from .engine.cadence import row_deadline
 from .local_access import LocalAccessMiddleware
@@ -3241,8 +3246,6 @@ async def list_account_works(account_id: int, limit: int = 200):
 @app.post("/api/accounts/{account_id}/works/sync")
 async def sync_account_works(account_id: int):
     """打开账号自己的主页,拦截抓取本账号已发布作品,落库(upsert)。"""
-    if browser is None:
-        raise HTTPException(503, "浏览器未就绪")
     if engine is None:
         raise HTTPException(503, "引擎未就绪")
     with get_session() as s:
@@ -3255,8 +3258,33 @@ async def sync_account_works(account_id: int):
             raise HTTPException(400, "账号代理不可用")
         platform = acc.platform
         uid = acc.sec_uid or ""
-        identity = browser.identity_for(acc)
+        transport = (resolve_transport(cfg, "douyin", "account_works", acc)
+                     if platform == "douyin" else None)
+        effective_mode = transport["effective_mode"] if transport else "browser"
+        if browser is None and effective_mode in {"browser", "hybrid"}:
+            raise HTTPException(503, "浏览器未就绪")
+        identity = (None if platform == "douyin" and effective_mode == "api"
+                    else browser.identity_for(acc))
+        direct_ua = (identity.ua if identity is not None
+                     else (acc.ua or cfg.engine.user_agent))
+        direct_environment = douyin_client_environment(
+            identity if identity is not None else acc)
+        source = "api" if effective_mode == "api" else "browser"
     async def _fetch():
+        nonlocal source
+        if platform == "douyin" and effective_mode in {"api", "hybrid"}:
+            cookie = douyin_cookie_from_state(acc.storage_state or acc.creator_storage_state or "")
+            api_items, api_err = await fetch_douyin_account_works_api(
+                cookie, direct_ua, uid,
+                timeout=cfg.engine.request_timeout_seconds, proxy=acc.proxy or "",
+                environment=direct_environment)
+            if api_items or effective_mode == "api" or api_err == "empty":
+                source = "api"
+                return api_items, api_err
+            print(f"[dy-account-works] API 空响应({api_err}),回退浏览器")
+            source = "browser_fallback"
+        else:
+            source = "browser"
         return await fetch_account_works(browser, identity, platform, uid)
 
     items, err = await engine.guarded_read_pair(
@@ -3264,7 +3292,9 @@ async def sync_account_works(account_id: int):
         _fetch, empty_result=[])
     if err.startswith("risk_deferred:"):
         return {"ok": True, "fetched": 0, "added": 0, "skipped": True,
-                "reason": err.split(":", 1)[-1]}
+                "reason": err.split(":", 1)[-1], "source": "deferred",
+                "configured_mode": (transport["configured_mode"]
+                                    if transport else "browser")}
     if not items:
         if err and err.startswith("missing_uid"):
             raise HTTPException(400, err.split(":", 1)[-1])
@@ -3287,7 +3317,10 @@ async def sync_account_works(account_id: int):
                                   fetched_at=now, **w))
                 added += 1
         s.commit()
-    return {"ok": True, "fetched": len(items), "added": added}
+    return {"ok": True, "fetched": len(items), "added": added,
+            "source": source,
+            "configured_mode": (transport["configured_mode"]
+                                if transport else "browser")}
 
 
 # ─────────── 本账号数据分析(B4:粉丝/作品/互动趋势 + 单篇作品表)───────────
@@ -3407,8 +3440,6 @@ async def list_follows(account_id: int, direction: str = "following", limit: int
 
 @app.post("/api/accounts/{account_id}/follows/sync")
 async def sync_follows(account_id: int, direction: str = "following"):
-    if browser is None:
-        raise HTTPException(503, "浏览器未就绪")
     if direction not in ("following", "fan"):
         raise HTTPException(400, "direction 仅支持 following | fan")
     with get_session() as s:
@@ -3417,45 +3448,80 @@ async def sync_follows(account_id: int, direction: str = "following"):
             raise HTTPException(404, "账号不存在")
         platform = acc.platform
         uid = acc.sec_uid or ""
-        identity = browser.identity_for(acc)
+        operation = "following_list" if direction == "following" else "followers_list"
+        transport = (resolve_transport(cfg, "douyin", operation, acc)
+                     if platform == "douyin" else None)
+        effective_mode = (transport["effective_mode"] if transport else "browser")
+        if effective_mode == "unavailable":
+            raise HTTPException(
+                409,
+                f"当前读取方式与{('关注' if direction == 'following' else '粉丝')}列表不兼容："
+                f"{transport.get('reason') or transport.get('note') or '该通道不可用'}")
+        if browser is None and effective_mode in {"browser", "hybrid"}:
+            raise HTTPException(503, "浏览器未就绪")
+        if platform == "douyin" and effective_mode in {"api", "hybrid"} \
+                and engine is None:
+            raise HTTPException(503, "抖音 API 读取引擎未就绪")
+        identity = (None if platform == "douyin" and effective_mode == "api"
+                    else browser.identity_for(acc))
         known = {f.uid for f in s.exec(select(FollowEdge).where(
             FollowEdge.account_id == account_id,
             FollowEdge.direction == direction)).all()}
-    # 抖音优先直连(following/follower list 分页,比弹窗滚动抓得全);失败再回退浏览器拦截
+    # API-only/browser-only are hard routing decisions. Hybrid's API attempt and
+    # page fallback share one READ_HEAVY guard so the fallback is not blocked by
+    # the API attempt's own minimum interval.
     users, err = [], ""
-    attempted_direct = platform == "douyin" and engine is not None
-    if attempted_direct:
-        try:
-            users, derr = await engine.fetch_douyin_follows_direct(account_id, direction)
-        except Exception as e:
-            users, derr = [], repr(e)
-        if derr.startswith("risk_deferred:"):
-            return {"ok": True, "fetched": 0, "added": 0, "skipped": True,
-                    "reason": derr.split(":", 1)[-1]}
-        if not users and derr not in ("", "empty"):
-            print(f"[follow] douyin direct 空({derr}),回退浏览器拦截")
-    allow_browser_fallback = (not attempted_direct or derr == "no_cookie")
-    if not users and allow_browser_fallback:
-        if engine is not None:
-            async def _fetch_browser_follows():
-                return await fetch_follows(
-                    browser, identity, platform, uid, direction, known)
+    source = "api" if effective_mode == "api" else "browser"
 
-            users, err = await engine.guarded_read_pair(
-                account_id, OperationKind.READ_HEAVY,
-                f"follows-browser:{account_id}:{direction}",
-                _fetch_browser_follows, empty_result=[])
-            if err.startswith("risk_deferred:"):
-                return {"ok": True, "fetched": 0, "added": 0,
-                        "skipped": True, "reason": err.split(":", 1)[-1]}
-        else:
-            users, err = await fetch_follows(
-                browser, identity, platform, uid, direction, known)
-    # 仅在登录态/缺 id 这类硬错误时报错;抓到 0 条不报错(可能确实没有,或接口待标定)
+    async def _fetch_follow_snapshot():
+        nonlocal source
+        direct_err = ""
+        if platform == "douyin" and effective_mode in {"api", "hybrid"}:
+            try:
+                direct_users, direct_err = (
+                    await engine._fetch_douyin_follows_direct_locked(
+                        account_id, direction))
+            except Exception as e:
+                direct_users, direct_err = [], repr(e)
+            # “empty”表示结构有效的空列表；empty_body/网络/解析错误不是有效快照。
+            if direct_users or direct_err == "empty":
+                source = "api"
+                return direct_users, direct_err
+            if effective_mode == "api":
+                source = "api"
+                return [], direct_err or "empty_response"
+            print(f"[follow] douyin direct 空({direct_err}),回退浏览器拦截")
+
+        source = "browser_fallback" if effective_mode == "hybrid" else "browser"
+        browser_users, browser_err = await fetch_follows(
+            browser, identity, platform, uid, direction, known)
+        if browser_users:
+            return browser_users, ""
+        return browser_users, (browser_err or direct_err)
+
+    if engine is not None:
+        users, err = await engine.guarded_read_pair(
+            account_id, OperationKind.READ_HEAVY,
+            f"follows-sync:{account_id}:{direction}",
+            _fetch_follow_snapshot, empty_result=[])
+    else:
+        users, err = await _fetch_follow_snapshot()
+
+    if err.startswith("risk_deferred:"):
+        return {"ok": True, "fetched": 0, "added": 0,
+                "skipped": True, "reason": err.split(":", 1)[-1],
+                "source": "deferred",
+                "configured_mode": (transport["configured_mode"]
+                                    if transport else "browser")}
     if err and err.startswith("missing_uid"):
         raise HTTPException(400, err.split(":", 1)[-1])
     if err and err.startswith("logged_out"):
         raise HTTPException(400, "登录态已失效,请点「重新登录」")
+    # 只有明确解析到平台的有效空列表("empty")才允许清空旧快照。超时、空 body、
+    # 未命中接口等不确定结果必须保留旧数据，并把真实失败显示给前端。
+    if err and err != "empty":
+        label = "关注" if direction == "following" else "粉丝"
+        raise HTTPException(502, f"{label}同步未取得有效列表，已保留原数据：{err}")
     now = datetime.utcnow()
     with get_session() as s:
         # 快照式替换:先清掉该账号该方向旧数据(含历史误抓的 JS 模块垃圾),再写入本次精确快照
@@ -3467,7 +3533,11 @@ async def sync_follows(account_id: int, direction: str = "following"):
             s.add(FollowEdge(platform=platform, account_id=account_id,
                              direction=direction, fetched_at=now, **u))
         s.commit()
-    return {"ok": True, "fetched": len(users), "added": len(users)}
+    added = sum(1 for u in users if u.get("uid") not in known)
+    return {"ok": True, "fetched": len(users), "added": added,
+            "source": source,
+            "configured_mode": (transport["configured_mode"]
+                                if transport else "browser")}
 
 
 # ─────────── 本账号管理:私信 ───────────
@@ -3950,6 +4020,7 @@ def _action_dict(t: AccountActionTask) -> dict:
         "action": t.action, "target_uid": t.target_uid, "target_nick": t.target_nick,
         "conv_id": t.conv_id,
         "content": t.content, "status": t.status, "result": t.result,
+        "method": t.method,
         "source_msg_id": t.source_msg_id, "source_rule_id": t.source_rule_id,
         "scheduled_at": t.scheduled_at.isoformat() if t.scheduled_at else None,
         "error": t.error, "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -4009,6 +4080,7 @@ async def create_account_action(body: ActionIn, request: Request = None):
         task = s.get(AccountActionTask, payload["id"])
         payload.update(status=task.status if task else "deleted",
                        ran=bool(task and task.status == "done"),
+                       method=(task.method if task else ""),
                        execution_error=detail or (task.error if task else ""))
     return payload
 
@@ -4018,7 +4090,9 @@ async def run_account_action(task_id: int):
     ok, detail = await _exec_action(task_id)
     if not ok:
         raise HTTPException(400, f"执行失败:{detail}")
-    return {"ok": True}
+    with get_session() as session:
+        task = session.get(AccountActionTask, task_id)
+        return {"ok": True, "method": task.method if task else ""}
 
 
 @app.put("/api/account-actions/{task_id}")
@@ -4969,6 +5043,15 @@ async def get_engine_settings():
     return export_engine_settings(cfg)
 
 
+@app.get("/api/settings/transport-matrix")
+async def get_transport_matrix():
+    """Expose actual route support plus account-level isolation diagnostics."""
+    with get_session() as session:
+        accounts = session.exec(
+            select(DouyinAccount).order_by(DouyinAccount.id)).all()
+        return build_transport_matrix(cfg, accounts)
+
+
 @app.put("/api/settings/engine", openapi_extra={
     "requestBody": {"content": {"application/json": {
         "schema": EngineSettingsPatch.model_json_schema()}}}})
@@ -4989,6 +5072,17 @@ async def put_engine_settings(body: Any = Body(...)):
     downloader = getattr(engine, "downloader", None)
     if downloader is not None and "download_timeout_seconds" in body:
         downloader.timeout = cfg.engine.download_timeout_seconds
+    # BrowserManager snapshots native write-gate values at construction. Keep
+    # those hot-reloadable switches in sync when they are edited from the UI;
+    # other browser executable/profile settings intentionally remain restart-only.
+    if browser is not None:
+        for key in (
+                "native_write_gate_enabled",
+                "native_write_require_system_chrome",
+                "native_write_require_verified_proxy",
+                "native_write_proxy_max_age_seconds"):
+            if key in body and hasattr(browser, key):
+                setattr(browser, key, getattr(cfg.engine, key))
     return result
 
 
@@ -5416,7 +5510,8 @@ async def _douyin_native_share(
     cookie = douyin_cookie_from_state(state) or raw_cookie
     client = DouyinClient(cookie, user_agent,
                           timeout=cfg.engine.request_timeout_seconds,
-                          proxy=proxy)
+                          proxy=proxy,
+                          **douyin_client_environment(account))
     raw = await client.fetch_video_detail(aweme_id)
     if not raw:
         raise ShareDownloadError(

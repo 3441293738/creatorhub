@@ -71,21 +71,26 @@ function fixture(initial = {}) {
 
 (async () => {
   const f = fixture();
-  assert.equal(f.fields.length, 17);
+  assert.equal(f.fields.length, 51);
   assert(f.fields.every(el => el.disabled));
   await f.api.save(); assert.equal(f.calls.length, 0);
   await f.api.load();
   assert(f.fields.every(el => !el.disabled));
+  assert.deepEqual(f.byName.douyin_read_mode.options.map(option => option.value), ['hybrid', 'api', 'browser']);
   assert.equal(f.byName.work_health_interval_seconds.value, '60');
   assert.equal(f.protectedUnload(), false);
   await f.api.save(); assert.equal(f.writes().length, 0);
-  f.edit('xhs_read_mode', 'api'); f.edit('work_health_interval_seconds', '90');
+  f.edit('xhs_read_mode', 'api'); f.edit('douyin_read_mode', 'api');
+  f.edit('douyin_keyword_gap_seconds', '12.5'); f.edit('danmaku_recent_works', '6');
+  f.edit('route_download_via_proxy', false); f.edit('work_health_interval_seconds', '90');
   f.edit('xhs_comment_review_before_publish', false);
   assert(f.api.isDirty() && f.protectedUnload());
   await f.api.load(); assert.equal(f.byName.xhs_read_mode.value, 'api', 'background refresh must preserve draft');
   await f.api.save();
   assert.deepEqual(JSON.parse(f.writes()[0].init.body), {
-    xhs_read_mode: 'api', work_health_interval_seconds: 5400, xhs_comment_review_before_publish: false,
+    xhs_read_mode: 'api', douyin_read_mode: 'api', douyin_keyword_gap_seconds: 12.5,
+    danmaku_recent_works: 6, route_download_via_proxy: false,
+    work_health_interval_seconds: 5400, xhs_comment_review_before_publish: false,
   });
   assert(!f.api.isDirty() && !f.protectedUnload());
   f.api.defaults();

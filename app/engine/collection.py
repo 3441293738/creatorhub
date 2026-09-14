@@ -41,6 +41,7 @@ from ..platforms.xhs import (
     parse_note_detail,
 )
 from ..risk import classify_platform_error, RiskCategory
+from ..transport_matrix import douyin_client_environment
 
 
 def _loads_keywords(raw: str) -> list[str]:
@@ -179,8 +180,30 @@ class KeywordCollector:
 
     async def _discover_douyin(self, account, keyword: str,
                                job: KeywordCollectionJob,
+                               client: DouyinClient | None = None,
                                context=None) -> tuple[list[dict], str]:
         identity = self.browser.identity_for(account)
+        mode = str(getattr(self.cfg.engine, "douyin_read_mode", "hybrid") or "hybrid")
+        if mode in {"api", "hybrid"} and client is not None:
+            try:
+                items, error = await client.search_awemes(
+                    keyword,
+                    max_results=job.max_contents_per_keyword,
+                    max_pages=job.max_pages_per_keyword,
+                    search_sort=job.search_sort,
+                    publish_time=job.publish_time,
+                    content_type=job.content_type,
+                    min_likes=job.min_likes,
+                    min_comments=job.min_comments,
+                )
+                if items or mode == "api":
+                    return items, ("抖音搜索接口失败: " + error if error else "")
+                if error:
+                    print(f"[dy-search] API 空响应({error}),回退浏览器")
+            except Exception as exc:
+                if mode == "api":
+                    return [], f"抖音搜索接口异常: {exc!r}"
+                print(f"[dy-search] API 异常({type(exc).__name__}),回退浏览器")
         return await fetch_douyin_search(
             self.browser, identity, keyword,
             max_results=job.max_contents_per_keyword,
@@ -356,22 +379,36 @@ class KeywordCollector:
                                 context=None) -> tuple[list[dict], str]:
         if limit <= 0:
             return [], ""
+        mode = str(getattr(
+            self.cfg.engine, "douyin_read_mode", "hybrid") or "hybrid").lower()
+        if mode not in {"api", "hybrid", "browser"}:
+            mode = "hybrid"
         error = ""
         raw: list[dict] = []
-        try:
-            raw = await client.fetch_all_comments(
-                aweme.aweme_id, max_pages=max(1, min(20, math.ceil(limit / 20))),
-                with_replies=include_replies,
-                max_reply_pages=max(1, min(8, math.ceil(limit / 20))),
-            )
-        except Exception as exc:
-            error = f"评论接口失败: {exc}"
+        if mode in {"api", "hybrid"}:
+            try:
+                raw = await client.fetch_all_comments(
+                    aweme.aweme_id,
+                    max_pages=max(1, min(20, math.ceil(limit / 20))),
+                    with_replies=include_replies,
+                    max_reply_pages=max(1, min(8, math.ceil(limit / 20))),
+                )
+            except Exception as exc:
+                error = f"评论接口失败: {exc}"
         parsed = [item for item in (parse_comment(value) for value in raw) if item]
         if not include_replies:
             parsed = [item for item in parsed if not item.get("reply_to")]
 
-        # 直连接口被静默降级时，用当前账号的浏览器评论区作一次兜底。
-        if not parsed and aweme.comment_count > 0:
+        if mode == "api":
+            # API-only 必须保持通道纯净：空 body、验证码、网络和解析失败都直接
+            # 返回给任务，绝不偷偷打开页面。作品明确有评论时才把空结果记为异常。
+            if not parsed and aweme.comment_count > 0 and not error:
+                error = ("评论接口失败: "
+                         f"{getattr(client, 'last_error', '') or 'empty_response'}")
+            return self._dedupe_comments(parsed, limit), error
+
+        # browser 模式从第一步就走页面；hybrid 仅在直连接口被静默降级时回退。
+        if mode == "browser" or (not parsed and aweme.comment_count > 0):
             identity = self.browser.identity_for(account)
             fallback, browser_error = await fetch_comments(
                 self.browser, identity, aweme.aweme_id, set(),
@@ -487,7 +524,8 @@ class KeywordCollector:
         if job.platform == "douyin":
             douyin_client = DouyinClient(
                 douyin_cookie_from_state(account.storage_state), identity.ua,
-                timeout=self.cfg.engine.request_timeout_seconds, proxy=proxy)
+                timeout=self.cfg.engine.request_timeout_seconds, proxy=proxy,
+                **douyin_client_environment(identity))
         elif not self._xhs_browser_reads_enabled():
             cookie = cookie_str_from_state(account.storage_state)
             if not has_a1(cookie):
@@ -497,14 +535,29 @@ class KeywordCollector:
                 timeout=self.cfg.engine.request_timeout_seconds, proxy=proxy)
 
         if job.platform == "douyin":
-            # 抖音会针对无头搜索单独返回验证码中间页，即使同一登录态在用户打开的
-            # 有头浏览器中完全正常。关键词任务因此复用一次临时可见 context，整个
-            # 任务结束后自动关窗并保存 profile。
+            mode = str(getattr(
+                self.cfg.engine, "douyin_read_mode", "hybrid") or "hybrid").lower()
+            if mode == "api":
+                # 纯 API：只创建 HTTP session，不启动 Chromium，也不给后续评论
+                # 路径传 page context。失败由任务记录，不做隐式浏览器回退。
+                self._progress(job_id, step="启动抖音 API 采集")
+                async with douyin_client.session_scope():
+                    return await self._run_keywords(
+                        job_id, job, account, keywords, proxy,
+                        douyin_client=douyin_client, context=None)
+
+            # browser/hybrid：抖音可能针对无头搜索返回验证码中间页，因此复用一次
+            # 临时可见 context；hybrid 同时保留 HTTP session 供 API 优先路径使用。
             self._progress(job_id, step="启动抖音可见采集窗口")
             async with self.browser.temporary_headed_context(identity) as context:
-                return await self._run_keywords(
-                    job_id, job, account, keywords, proxy,
-                    douyin_client=douyin_client, context=context)
+                if mode == "browser":
+                    return await self._run_keywords(
+                        job_id, job, account, keywords, proxy,
+                        douyin_client=douyin_client, context=context)
+                async with douyin_client.session_scope():
+                    return await self._run_keywords(
+                        job_id, job, account, keywords, proxy,
+                        douyin_client=douyin_client, context=context)
         if xhs_client is not None:
             async with xhs_client.session_scope():
                 return await self._run_keywords(
@@ -534,7 +587,7 @@ class KeywordCollector:
             self._progress(job_id, keyword=keyword, step="搜索作品")
             if job.platform == "douyin":
                 raw_items, search_error = await self._discover_douyin(
-                    account, keyword, job,
+                    account, keyword, job, client=douyin_client,
                     context=context)
             elif browser_reads:
                 raw_items, search_error = await self._discover_xhs_browser(

@@ -18,10 +18,20 @@ class EngineSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 
     xhs_read_mode: Literal["browser", "api"] | None = None
+    douyin_read_mode: Literal["hybrid", "api", "browser"] | None = None
+    douyin_write_mode: Literal["hybrid", "api", "browser"] | None = None
+    douyin_keyword_gap_seconds: float | None = Field(None, ge=0, le=300)
+    xhs_keyword_gap_seconds: float | None = Field(None, ge=0, le=300)
+    block_media_resources: bool | None = None
+    route_download_via_proxy: bool | None = None
+    comment_browser_headed: bool | None = None
     monitor_initial_backfill_count: int | None = Field(None, ge=-1, le=1000)
     comment_recent_works: int | None = Field(None, ge=1, le=100)
     comment_recent_days: int | None = Field(None, ge=1, le=365)
     comment_max_scrolls: int | None = Field(None, ge=1, le=30)
+    danmaku_recent_works: int | None = Field(None, ge=1, le=100)
+    danmaku_recent_days: int | None = Field(None, ge=1, le=365)
+    danmaku_max_scrolls: int | None = Field(None, ge=1, le=30)
     request_timeout_seconds: int | None = Field(None, ge=5, le=300)
     download_timeout_seconds: int | None = Field(None, ge=30, le=1800)
     xhs_item_gap_seconds: float | None = Field(None, ge=0, le=120)
@@ -34,6 +44,34 @@ class EngineSettingsPatch(BaseModel):
     work_health_zero_play_hours: float | None = Field(None, ge=1, le=168)
     work_health_recent_days: int | None = Field(None, ge=1, le=90)
     work_health_stat_snapshots: bool | None = None
+
+    # Additional hot-reloadable values from config.yaml.  Paths, credentials,
+    # browser executable selection and other restart-only fields intentionally
+    # remain outside this allowlist.
+    scan_interval_seconds: int | None = Field(None, ge=30, le=86400)
+    idle_keepalive_hours: float | None = Field(None, ge=0, le=168)
+    danmaku_probe_step_seconds: float | None = Field(None, ge=0.1, le=60)
+    danmaku_max_probe_points: int | None = Field(None, ge=1, le=1000)
+    danmaku_max_records_per_scan: int | None = Field(None, ge=0, le=100000)
+    danmaku_max_records_total: int | None = Field(None, ge=0, le=1000000)
+    xhs_dm_monitor_enabled: bool | None = None
+    xhs_dm_poll_interval_seconds: int | None = Field(None, ge=30, le=86400)
+    xhs_dm_realtime_enabled: bool | None = None
+    xhs_dm_realtime_debounce_seconds: float | None = Field(None, ge=0.3, le=10)
+    xhs_dm_fallback_interval_seconds: int | None = Field(None, ge=120, le=86400)
+    xhs_dm_max_conversations_per_poll: int | None = Field(None, ge=1, le=10)
+    xhs_dm_auto_reply_enabled: bool | None = None
+    comment_daily_cap_per_account: int | None = Field(None, ge=0, le=100000)
+    comment_min_gap_seconds: int | None = Field(None, ge=0, le=86400)
+    comment_hourly_cap_per_account: int | None = Field(None, ge=0, le=10000)
+    action_daily_cap_per_account: int | None = Field(None, ge=0, le=100000)
+    action_hourly_cap_per_account: int | None = Field(None, ge=0, le=10000)
+    action_min_gap_seconds: int | None = Field(None, ge=0, le=86400)
+    verify_proxy_region: bool | None = None
+    native_write_gate_enabled: bool | None = None
+    native_write_require_system_chrome: bool | None = None
+    native_write_require_verified_proxy: bool | None = None
+    native_write_proxy_max_age_seconds: int | None = Field(None, ge=0, le=604800)
 
     @field_validator("*", mode="before")
     @classmethod

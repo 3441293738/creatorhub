@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from openpyxl import load_workbook
 from fastapi import HTTPException
@@ -24,6 +24,7 @@ from app.browser.fetcher import (
 )
 from app.config import Config
 from app.engine.collection import KeywordCollector
+from app.platforms.douyin import Aweme
 from app.main import (
     KeywordCollectionIn,
     _collection_content_dict,
@@ -312,6 +313,95 @@ class KeywordCollectionPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.content_count, 1)
         self.assertEqual(job.comment_count, 2)
         self.assertEqual(len(headed_calls), 2)
+
+    async def test_api_mode_does_not_create_a_headed_browser_context(self):
+        raw_aweme = {
+            "aweme_id": "api-aweme-1",
+            "desc": "纯 API 搜索结果",
+            "create_time": 1_700_000_000,
+            "author": {"nickname": "示例作者", "sec_uid": "author-1"},
+            "statistics": {"digg_count": 8, "comment_count": 0},
+            "video": {"play_addr": {"url_list": ["https://media.test/api.mp4"]}},
+        }
+        headed_calls = []
+
+        @asynccontextmanager
+        async def temporary_headed_context(_identity):
+            headed_calls.append(True)
+            raise AssertionError("api mode must not create a browser context")
+            yield  # pragma: no cover
+
+        browser = SimpleNamespace(
+            identity_for=lambda _account: SimpleNamespace(ua="fixture-agent"),
+            temporary_headed_context=temporary_headed_context,
+        )
+        cfg = Config()
+        cfg.engine.douyin_read_mode = "api"
+        collector = KeywordCollector(cfg, browser, SimpleNamespace())
+        collector._discover_douyin = AsyncMock(return_value=([raw_aweme], ""))
+        collector._douyin_comments = AsyncMock(return_value=([], ""))
+
+        result = await collector.run(self.job_id, self.account)
+
+        self.assertEqual(result["contents"], 1)
+        self.assertEqual(headed_calls, [])
+        self.assertIsNone(
+            collector._discover_douyin.await_args.kwargs["context"])
+
+    async def test_api_mode_comment_failure_never_falls_back_to_browser(self):
+        cfg = Config()
+        cfg.engine.douyin_read_mode = "api"
+        browser = SimpleNamespace(
+            identity_for=lambda _account: SimpleNamespace(ua="fixture-agent"))
+        collector = KeywordCollector(cfg, browser, SimpleNamespace())
+        client = SimpleNamespace(
+            fetch_all_comments=AsyncMock(return_value=[]),
+            last_error="empty_body",
+        )
+        aweme = Aweme(
+            aweme_id="api-aweme-1", desc="", create_time=0,
+            author_name="", media_type="video", comment_count=5)
+        browser_fetch = AsyncMock(
+            side_effect=AssertionError("api mode must not use browser comments"))
+
+        with patch("app.engine.collection.fetch_comments", browser_fetch):
+            comments, error = await collector._douyin_comments(
+                self.account, client, aweme, 20, False)
+
+        self.assertEqual(comments, [])
+        self.assertIn("empty_body", error)
+        client.fetch_all_comments.assert_awaited_once()
+        browser_fetch.assert_not_awaited()
+
+    async def test_browser_mode_comments_never_call_direct_api(self):
+        cfg = Config()
+        cfg.engine.douyin_read_mode = "browser"
+        browser = SimpleNamespace(
+            identity_for=lambda _account: SimpleNamespace(ua="fixture-agent"))
+        collector = KeywordCollector(cfg, browser, SimpleNamespace())
+        client = SimpleNamespace(
+            fetch_all_comments=AsyncMock(side_effect=AssertionError(
+                "browser mode must not use direct comments API")),
+            last_error="",
+        )
+        aweme = Aweme(
+            aweme_id="browser-aweme-1", desc="", create_time=0,
+            author_name="", media_type="video", comment_count=1)
+        browser_fetch = AsyncMock(return_value=([{
+            "cid": "comment-1",
+            "text": "浏览器评论",
+            "user": {"nickname": "用户甲", "uid": "user-1"},
+            "create_time": 1_700_000_001,
+        }], ""))
+
+        with patch("app.engine.collection.fetch_comments", browser_fetch):
+            comments, error = await collector._douyin_comments(
+                self.account, client, aweme, 20, False)
+
+        self.assertEqual(error, "")
+        self.assertEqual(len(comments), 1)
+        client.fetch_all_comments.assert_not_awaited()
+        browser_fetch.assert_awaited_once()
 
     async def test_captcha_stops_remaining_keywords_in_same_job(self):
         with db.get_session() as session:

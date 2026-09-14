@@ -3,12 +3,30 @@
 
   const realFetch = window.fetch.bind(window);
   const engineDefaults = {
-    xhs_read_mode: "browser", monitor_initial_backfill_count: 0, comment_recent_works: 5,
-    comment_recent_days: 7, comment_max_scrolls: 6, request_timeout_seconds: 20,
+    xhs_read_mode: "browser", douyin_read_mode: "hybrid", douyin_write_mode: "browser",
+    douyin_keyword_gap_seconds: 8, xhs_keyword_gap_seconds: 10,
+    block_media_resources: false, route_download_via_proxy: true, comment_browser_headed: true,
+    monitor_initial_backfill_count: 0, comment_recent_works: 5,
+    comment_recent_days: 7, comment_max_scrolls: 6,
+    danmaku_recent_works: 5, danmaku_recent_days: 7, danmaku_max_scrolls: 6,
+    request_timeout_seconds: 20,
     download_timeout_seconds: 120, xhs_item_gap_seconds: 2.5, xhs_request_jitter: .35,
     xhs_publish_mode: "browser", xhs_comment_write_mode: "browser", xhs_comment_review_before_publish: true,
     work_health_enabled: false, work_health_interval_seconds: 3600, work_health_zero_play_hours: 6,
     work_health_recent_days: 7, work_health_stat_snapshots: true,
+    scan_interval_seconds: 300, idle_keepalive_hours: 6,
+    danmaku_probe_step_seconds: 1, danmaku_max_probe_points: 120,
+    danmaku_max_records_per_scan: 1000, danmaku_max_records_total: 0,
+    xhs_dm_monitor_enabled: false, xhs_dm_poll_interval_seconds: 120,
+    xhs_dm_realtime_enabled: true, xhs_dm_realtime_debounce_seconds: 1.5,
+    xhs_dm_fallback_interval_seconds: 600, xhs_dm_max_conversations_per_poll: 2,
+    xhs_dm_auto_reply_enabled: false,
+    comment_daily_cap_per_account: 30, comment_min_gap_seconds: 60,
+    comment_hourly_cap_per_account: 10,
+    action_daily_cap_per_account: 20, action_hourly_cap_per_account: 6,
+    action_min_gap_seconds: 90, verify_proxy_region: true,
+    native_write_gate_enabled: true, native_write_require_system_chrome: true,
+    native_write_require_verified_proxy: true, native_write_proxy_max_age_seconds: 86400,
   };
   const engineValues = { ...engineDefaults };
   const now = Math.floor(Date.now() / 1000);
@@ -125,6 +143,43 @@
     return { days, contents: [3, 5, 4, 8, 6, 10, 7], comments: [5, 8, 6, 12, 9, 15, 11] };
   }
 
+  function transportMatrix() {
+    const row = (platform, operation, label, setting, api, browser, note = "") => {
+      const configured = setting ? engineValues[setting] : (api ? "api" : browser ? "browser" : "unavailable");
+      let effective = configured;
+      if (configured === "hybrid" && !(api && browser)) effective = api ? "api" : browser ? "browser" : "unavailable";
+      if (configured === "api" && !api) effective = "unavailable";
+      return { platform, operation, label, setting, api, browser, note,
+        configured_mode: configured, effective_mode: effective,
+        fallback: effective === "hybrid" ? "browser_on_confirmed_failure" : "none",
+        opens_browser: ["browser", "hybrid"].includes(effective),
+        reason: effective === "unavailable" ? note : "" };
+    };
+    return { settings: { ...engineValues }, rows: [
+      row("douyin", "keyword_collection", "关键词采集", "douyin_read_mode", true, true),
+      row("douyin", "public_monitor", "公开作品/评论/弹幕监控", "douyin_read_mode", true, true),
+      row("douyin", "account_works", "本账号作品同步", "douyin_read_mode", true, true),
+      row("douyin", "own_work_comments", "本账号作品评论抓取", "douyin_read_mode", true, true),
+      row("douyin", "following_list", "关注列表同步", "douyin_read_mode", true, true),
+      row("douyin", "followers_list", "粉丝列表同步", "douyin_read_mode", false, true, "当前网页 API 不稳定，使用账号浏览器拦截"),
+      row("douyin", "comment_write", "评论/回复发送", "douyin_write_mode", true, true),
+      row("douyin", "follow_write", "关注/取关", "douyin_write_mode", true, true),
+      row("douyin", "dm_send", "已有会话私信发送", "douyin_write_mode", true, true),
+      row("douyin", "publish", "发布作品", "", false, true, "创作中心页面流程"),
+      row("xhs", "public_monitor", "作品/关键词/公开评论读取", "xhs_read_mode", true, true),
+      row("xhs", "comment_write", "评论/回复发送", "xhs_comment_write_mode", true, true),
+      row("xhs", "publish", "发布作品", "xhs_publish_mode", true, true),
+      row("kuaishou", "account_management", "作品/评论/关注/写入", "", false, true),
+      row("shipinhao", "account_management", "作品/评论/发布", "", false, true),
+    ], accounts: accounts.map(account => ({
+      account_id: account.id, platform: account.platform, nickname: account.nickname,
+      profile_isolated: true, credential_isolated: true, api_session_isolated: true,
+      network_isolated: !!account.has_proxy, network_scope: account.has_proxy ? "专属代理" : "共享出口",
+      api_environment_aligned: true, environment_id: `DEMO-${account.id}`,
+      warnings: account.has_proxy ? [] : ["API 与浏览器仍共享本机/重复代理出口"],
+    })) };
+  }
+
   function getData(url) {
     const path = url.pathname;
     const platform = url.searchParams.get("platform") || "douyin";
@@ -164,6 +219,7 @@
     if (path === "/api/notifications") return [{ id: 91, name: "演示通知渠道", type: "bark", enabled: true, config: {} }];
     if (path === "/api/settings") return { download_dir: "data/media", video_quality: "highest", ai_enabled: false, ai_base_url: "", ai_model: "", ai_temperature: "0.9", ai_prompt: "", ai_api_key_set: false };
     if (path === "/api/settings/engine") return {values: {...engineValues}, defaults: engineDefaults, saved_fields: [], apply_scope: "next_operation"};
+    if (path === "/api/settings/transport-matrix") return transportMatrix();
     if (path === "/api/hub/summary") return { works: 3, following: 20, fans: 168, dm: 4 };
     if (path === "/api/account-works") return contents(platform).map((item, index) => ({ ...item, id: 201 + index, item_id: item.aweme_id, play_count: 6800 - index * 1200, comment_count: 32 - index * 7, status: "正常" }));
     if (/^\/api\/account-works\/\d+\/comments$/.test(path)) return comments(platform).map((item) => ({ ...item, user_nickname: item.user_nickname }));
@@ -179,7 +235,7 @@
     if (path === "/api/share-download/links") return { count: 1, links: [{ platform: "douyin", host: "v.douyin.com", url: "https://v.douyin.com/DEMO/" }] };
     if (path === "/api/share-download") return { ok: true, results: [{ ok: true, platform: "douyin", title: "示例作品", author: "示例创作者", media_type: "video", media_count: 1, output_dir: "data/media/demo", files: [] }] };
     if (/\/run-now$/.test(path)) return { ok: true, created: 1, candidates: 1, review: true, new: 1, new_comments: 1 };
-    if (/\/sync$/.test(path)) return { ok: true, fetched: 3, added: 1 };
+    if (/\/sync$/.test(path)) return { ok: true, fetched: 3, added: 1, source: "api" };
     if (/\/test$/.test(path)) return { ok: true, detail: "在线演示" };
     return { ok: true, deleted: 1, files_removed: 0, approved: 1, fetched: 1, added: 1, new: 1 };
   }

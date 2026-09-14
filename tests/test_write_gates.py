@@ -2,9 +2,10 @@ import asyncio
 import json
 import tempfile
 import unittest
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import app.db as db
 from app.config import Config, EngineConfig
@@ -75,6 +76,18 @@ class WriteGateTests(unittest.TestCase):
             session.commit()
             session.refresh(account)
             return account.id
+
+    def _cookie_account(self):
+        account_id = self._account()
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.storage_state = json.dumps({
+                "cookies": [{"domain": ".douyin.com", "name": "sid_tt",
+                             "value": "fixture-cookie"}],
+            })
+            session.add(account)
+            session.commit()
+        return account_id
 
     def _comment_task(self, account_id):
         with db.get_session() as session:
@@ -302,6 +315,182 @@ class WriteGateTests(unittest.TestCase):
         self.assertEqual(browser_calls, 0)
         with db.get_session() as session:
             self.assertEqual(session.get(AccountActionTask, task_id).status, "pending")
+
+    def test_douyin_api_comment_success_skips_browser(self):
+        account_id = self._cookie_account()
+        task_id = self._comment_task(account_id)
+        self.cfg.engine.douyin_write_mode = "api"
+        browser = _BrowserStub()
+        def native_gate(*_args, **_kwargs):
+            raise AssertionError("API mode must not require browser gate")
+        browser.native_write_gate_error = native_gate
+        engine = MonitorEngine(self.cfg, browser)
+        browser_calls = []
+
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @asynccontextmanager
+            async def session_scope(self):
+                yield self
+
+            async def post_comment(self, *_args, **_kwargs):
+                return True, "comment-api", ""
+
+        async def unexpected_browser(*_args, **_kwargs):
+            browser_calls.append(True)
+            return True, ""
+
+        with patch("app.engine.monitor.DouyinClient", FakeClient), \
+                patch("app.engine.monitor.post_comment_browser", unexpected_browser):
+            result = asyncio.run(engine.execute_comment_task(task_id))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(browser_calls, [])
+        self.assertEqual(engine.browser.identity_calls, 0)
+        with db.get_session() as session:
+            task = session.get(CommentTask, task_id)
+            self.assertEqual(task.status, "done")
+            self.assertEqual(task.method, "api")
+            self.assertEqual(task.result, "comment-api")
+
+    def test_douyin_api_uncertain_comment_does_not_fallback(self):
+        account_id = self._cookie_account()
+        task_id = self._comment_task(account_id)
+        self.cfg.engine.douyin_write_mode = "api"
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        browser_calls = []
+
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @asynccontextmanager
+            async def session_scope(self):
+                yield self
+
+            async def post_comment(self, *_args, **_kwargs):
+                return False, "", "write_uncertain:network:TimeoutError"
+
+        async def unexpected_browser(*_args, **_kwargs):
+            browser_calls.append(True)
+            return True, ""
+
+        with patch("app.engine.monitor.DouyinClient", FakeClient), \
+                patch("app.engine.monitor.post_comment_browser", unexpected_browser):
+            result = asyncio.run(engine.execute_comment_task(task_id))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(browser_calls, [])
+        with db.get_session() as session:
+            task = session.get(CommentTask, task_id)
+            self.assertEqual(task.status, "uncertain")
+            self.assertEqual(task.method, "api")
+            self.assertTrue(task.error.startswith("write_uncertain:"))
+
+    def test_douyin_hybrid_comment_rejection_uses_browser_fallback(self):
+        account_id = self._cookie_account()
+        task_id = self._comment_task(account_id)
+        self.cfg.engine.douyin_write_mode = "hybrid"
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        browser_calls = []
+
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @asynccontextmanager
+            async def session_scope(self):
+                yield self
+
+            async def post_comment(self, *_args, **_kwargs):
+                return False, "", "api_rejected:status_code=8 频繁操作"
+
+        async def browser_fallback(*_args, **_kwargs):
+            browser_calls.append(True)
+            return True, ""
+
+        with patch("app.engine.monitor.DouyinClient", FakeClient), \
+                patch("app.engine.monitor.post_comment_browser", browser_fallback):
+            result = asyncio.run(engine.execute_comment_task(task_id))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(browser_calls), 1)
+        with db.get_session() as session:
+            task = session.get(CommentTask, task_id)
+            self.assertEqual(task.status, "done")
+            self.assertEqual(task.method, "browser_fallback")
+
+    def test_douyin_api_follow_success_updates_task_without_browser(self):
+        account_id = self._cookie_account()
+        task_id = self._action_task(account_id)
+        self.cfg.engine.douyin_write_mode = "api"
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @asynccontextmanager
+            async def session_scope(self):
+                yield self
+
+            async def set_follow_state(self, *_args, **_kwargs):
+                return True, ""
+
+        with patch("app.engine.monitor.DouyinClient", FakeClient), \
+                patch("app.engine.monitor.do_follow", AsyncMock(side_effect=AssertionError("browser"))):
+            result = asyncio.run(engine.execute_action_task(task_id))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(engine.browser.identity_calls, 0)
+        with db.get_session() as session:
+            task = session.get(AccountActionTask, task_id)
+            self.assertEqual(task.status, "done")
+            self.assertEqual(task.method, "api")
+
+    def test_douyin_api_dm_success_skips_browser(self):
+        account_id = self._cookie_account()
+        with db.get_session() as session:
+            session.add(DmConversation(
+                account_id=account_id, conv_id="conv-api",
+                conv_short_id="42", ticket="ticket-api",
+            ))
+            task = AccountActionTask(
+                platform="douyin", account_id=account_id, action="send_dm",
+                conv_id="conv-api", target_uid="target", content="hello",
+                status="pending",
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            task_id = task.id
+        self.cfg.engine.douyin_write_mode = "api"
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @asynccontextmanager
+            async def session_scope(self):
+                yield self
+
+            async def send_dm(self, *args, **kwargs):
+                self.args, self.kwargs = args, kwargs
+                return True, ""
+
+        with patch("app.engine.monitor.DouyinClient", FakeClient), \
+                patch("app.engine.monitor.send_dm", AsyncMock(side_effect=AssertionError("browser"))):
+            result = asyncio.run(engine.execute_action_task(task_id))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(engine.browser.identity_calls, 0)
+        with db.get_session() as session:
+            task = session.get(AccountActionTask, task_id)
+            self.assertEqual(task.status, "done")
+            self.assertEqual(task.method, "api")
 
     def test_xhs_dm_uncertain_is_not_retried_or_recorded_as_risk_failure(self):
         account_id = self._account(platform="xhs")

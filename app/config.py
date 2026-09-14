@@ -61,6 +61,10 @@ class EngineConfig:
     # 小红书读取默认也走账号浏览器页面，避免扫码 Cookie 在浏览器与签名直连
     # 客户端之间切换 UA/TLS/Client-Hints。api 只保留为显式兼容模式。
     xhs_read_mode: str = "browser"           # browser | api
+    douyin_read_mode: str = "hybrid"         # hybrid | api | browser
+    # browser=页面写入；api=仅网页 HTTP/imapi；hybrid=API 优先、明确拒绝时页面回退。
+    # 不确定的网络结果一律不回退，避免重复提交非幂等写请求。
+    douyin_write_mode: str = "browser"       # browser | api | hybrid
     xhs_keyword_gap_seconds: float = 10.0    # 同一任务相邻关键词的最小停顿
     xhs_item_gap_seconds: float = 2.5         # 相邻详情/评论读取的最小停顿
     xhs_request_jitter: float = 0.35          # 上述停顿的正向随机抖动比例
@@ -193,6 +197,18 @@ def load_config(path: str | None = None) -> Config:
             cfg.engine.xhs_read_mode or "browser").strip().lower()
         cfg.engine.xhs_read_mode = (
             xhs_read_mode if xhs_read_mode in {"browser", "api"}
+            else "browser")
+        douyin_read_mode = str(
+            cfg.engine.douyin_read_mode or "hybrid").strip().lower()
+        cfg.engine.douyin_read_mode = (
+            douyin_read_mode
+            if douyin_read_mode in {"hybrid", "api", "browser"}
+            else "hybrid")
+        douyin_write_mode = str(
+            cfg.engine.douyin_write_mode or "browser").strip().lower()
+        cfg.engine.douyin_write_mode = (
+            douyin_write_mode
+            if douyin_write_mode in {"hybrid", "api", "browser"}
             else "browser")
         cfg.engine.xhs_keyword_gap_seconds = max(
             0.0, float(cfg.engine.xhs_keyword_gap_seconds))

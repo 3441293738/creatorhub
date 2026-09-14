@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -311,6 +312,30 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
     return out, ("" if out else err)
 
 
+async def fetch_douyin_account_works_api(cookie: str, user_agent: str, uid: str,
+                                         timeout: float = 20.0,
+                                         proxy: str = "", *,
+                                         environment: dict | None = None
+                                         ) -> Tuple[List[dict], str]:
+    """读取抖音本账号作品 Web API，并归一化为 AccountWork 字段。"""
+    from ..platforms.douyin import DouyinClient
+    uid = (uid or "").strip()
+    if not uid:
+        return [], "missing_uid:账号缺自身 uid"
+    if not cookie:
+        return [], "no_cookie"
+    client = DouyinClient(
+        cookie, user_agent, timeout=timeout, proxy=proxy,
+        **(environment or {}))
+    try:
+        async with client.session_scope():
+            raw = await client.fetch_all_video_list(uid)
+    except Exception as exc:
+        return [], f"api:{type(exc).__name__}"
+    out = [w for w in (_norm_douyin_work(it) for it in raw) if w]
+    return out, ("" if out else (client.last_error or "empty"))
+
+
 # ═══════════ 关注 / 粉丝(无公开接口:拦截该账号登录态打开的关注/粉丝页 XHR) ═══════════
 _NAME_KEYS = ("nickname", "nick_name", "user_name", "userName", "name", "nick", "nickName")
 _ID_KEYS = ("user_id", "userId", "uid", "id", "red_id", "kwaiId")
@@ -557,9 +582,9 @@ _DOUYIN_STAT_PROBE_JS = """() => {
 }"""
 
 _FOLLOW_PRECISE = {
-    # follower/list 接口是活的(浏览器拦截能拿到数据),但直连拿不到:所有参数组合都是
-    # HTTP 200 + 空 body,而同一套签名下 following/list 正常。推测是假 msToken 被风控拒
-    # (未验证)。所以 fan 方向实际靠浏览器兜底,别再去调直连的参数。
+    # follower/list 接口是活的(浏览器拦截能拿到数据),但直连拿不到:已用登录 Cookie、
+    # 真实 msToken、解析后的 uid 和多组 source_type 验证，仍是 HTTP 200 + 空 body；
+    # 同一套会话下 following/list 正常。所以 fan 方向直接走浏览器拦截。
     "douyin":   {"following": ("following/list",), "fan": ("follower/list",)},
     "xhs":      {"following": ("followings", "/follows"), "fan": ("fans", "/followers")},
     "kuaishou": {"following": (), "fan": ()},   # 快手走 graphql visionProfileUserList(见下)
@@ -609,6 +634,9 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
     hit_urls: list = []                  # 真正吐出用户列表的接口(标定关键)
     api_seen: list = []
     error = ""
+    precise_response_seen = False
+    precise_empty_confirmed = False
+    precise_response_event = asyncio.Event()
     page = await mgr.new_page(identity, block_media=platform != "xhs")
     if platform == "xhs":
         try:
@@ -639,6 +667,7 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         return False
 
     async def on_response(resp):
+        nonlocal precise_response_seen, precise_empty_confirmed
         u = resp.url
         if host not in u or resp.request.resource_type not in ("xhr", "fetch"):
             return
@@ -656,11 +685,19 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
             if any(k in body for k in ("user_name", "userName", "nickname", "headurl",
                                        "fols", "userList", "\"fan\"", "following")):
                 ks_samples.append(f"{path} => {body[:700]}")
+        precise = _is_follow_api(path.lower(), data)
+        if precise and isinstance(data, dict) and data.get("status_code") in (None, 0, "0"):
+            precise_response_seen = True
+            precise_response_event.set()
+            # 抖音列表位于顶层 followers/followings；只有看到了明确的空数组，
+            # 才能确认账号确实为 0，而不是解析器没对上新结构。
+            expected_key = "followers" if direction == "fan" else "followings"
+            if platform == "douyin" and isinstance(data.get(expected_key), list):
+                precise_empty_confirmed = len(data[expected_key]) == 0
         found: List[dict] = []
         _harvest_user_lists(data, found)
         if not found:
             return
-        precise = _is_follow_api(path.lower(), data)
         sink = collected if precise else broad
         added = 0
         for d in found:
@@ -725,11 +762,9 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                 await mgr.xhs_interaction.pause(0.25, 0.55)
                 opened = True
                 break
-            if precise_hints:   # 等该方向接口(following/list 或 follower/list)回包来确认
+            if precise_hints:   # 等监听器确认该方向接口；不会漏掉点击后瞬间返回的响应
                 try:
-                    await page.wait_for_response(
-                        lambda r: any(h in r.url for h in precise_hints) and r.status == 200,
-                        timeout=7000)
+                    await asyncio.wait_for(precise_response_event.wait(), timeout=7)
                     opened = True
                     break
                 except Exception:
@@ -831,7 +866,9 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         for i, smp in enumerate(ks_samples):
             print(f"[follow-ks {direction} {i}] {smp}")
     if not result:
-        if platform == "xhs":
+        if precise_empty_confirmed:
+            error = "empty"
+        elif platform == "xhs":
             # 实测三轮:点开后从不发关注/粉丝接口,页内也无该方向用户链接 ——
             # 小红书网页端不提供关注/粉丝列表(App 专属),非本项目可解。
             error = error or ("小红书网页端不提供关注/粉丝列表(该列表为 App 专属,"

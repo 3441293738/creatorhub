@@ -1,6 +1,7 @@
 """Offline configuration management: atomic patches, persistence and allowlisting."""
 import asyncio
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,6 +59,13 @@ def test_settings_export_only_the_supported_fields(local_project):
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_every_supported_setting_has_a_visual_form_control():
+    html = (Path(__file__).parents[1] / "app" / "web" / "index.html").read_text(encoding="utf-8")
+    form = html.split('id="engine-settings-form"', 1)[1].split("</form>", 1)[0]
+    controls = set(re.findall(r'\bname="([a-z0-9_]+)"', form))
+    assert controls == set(EngineSettingsPatch.model_fields)
+
+
 def test_partial_save_persists_without_changing_the_base_file(local_project):
     cfg = local_project.cfg
     config_file = local_project.root / "base.yaml"
@@ -89,13 +97,32 @@ def test_all_supported_values_and_live_downloader(local_project, monkeypatch):
     monkeypatch.setattr(main, "engine", engine)
     payload = {
         "xhs_read_mode": "api", "monitor_initial_backfill_count": -1,
+        "douyin_read_mode": "hybrid",
+        "douyin_write_mode": "hybrid",
+        "douyin_keyword_gap_seconds": 12.5, "xhs_keyword_gap_seconds": 14.5,
+        "block_media_resources": True, "route_download_via_proxy": False,
+        "comment_browser_headed": False,
         "comment_recent_works": 8, "comment_recent_days": 10, "comment_max_scrolls": 9,
+        "danmaku_recent_works": 6, "danmaku_recent_days": 8, "danmaku_max_scrolls": 7,
         "request_timeout_seconds": 30, "download_timeout_seconds": 240,
         "xhs_item_gap_seconds": 4.5, "xhs_request_jitter": .5,
         "xhs_publish_mode": "api", "xhs_comment_write_mode": "manual",
         "xhs_comment_review_before_publish": False, "work_health_enabled": True,
         "work_health_interval_seconds": 7200, "work_health_zero_play_hours": 12.5,
         "work_health_recent_days": 14, "work_health_stat_snapshots": False,
+        "scan_interval_seconds": 600, "idle_keepalive_hours": 12.5,
+        "danmaku_probe_step_seconds": 2.5, "danmaku_max_probe_points": 240,
+        "danmaku_max_records_per_scan": 2000, "danmaku_max_records_total": 10000,
+        "xhs_dm_monitor_enabled": True, "xhs_dm_poll_interval_seconds": 300,
+        "xhs_dm_realtime_enabled": False, "xhs_dm_realtime_debounce_seconds": 2.5,
+        "xhs_dm_fallback_interval_seconds": 900, "xhs_dm_max_conversations_per_poll": 4,
+        "xhs_dm_auto_reply_enabled": True,
+        "comment_daily_cap_per_account": 40, "comment_min_gap_seconds": 120,
+        "comment_hourly_cap_per_account": 12,
+        "action_daily_cap_per_account": 30, "action_hourly_cap_per_account": 8,
+        "action_min_gap_seconds": 120, "verify_proxy_region": False,
+        "native_write_gate_enabled": False, "native_write_require_system_chrome": False,
+        "native_write_require_verified_proxy": False, "native_write_proxy_max_age_seconds": 172800,
     }
     assert set(payload) == set(EngineSettingsPatch.model_fields)
     response = request("PUT", payload)
@@ -111,11 +138,17 @@ def test_all_supported_values_and_live_downloader(local_project, monkeypatch):
 
 INVALID = [
     {"host": "0.0.0.0"}, {"profiles_dir": "arbitrary-directory"}, {"ai_api_key": "do-not-echo-fixture"},
-    {"xhs_read_mode": "unknown"}, {"xhs_publish_mode": "API"}, {"xhs_comment_write_mode": "auto"},
+    {"xhs_read_mode": "unknown"}, {"douyin_read_mode": "invalid"}, {"douyin_write_mode": "invalid"},
+    {"xhs_publish_mode": "API"}, {"xhs_comment_write_mode": "auto"},
+    {"douyin_keyword_gap_seconds": -0.1}, {"douyin_keyword_gap_seconds": 301},
+    {"xhs_keyword_gap_seconds": -0.1}, {"xhs_keyword_gap_seconds": 301},
+    {"block_media_resources": 1}, {"route_download_via_proxy": "true"},
+    {"comment_browser_headed": None},
     {"monitor_initial_backfill_count": -2}, {"monitor_initial_backfill_count": 1001},
     {"comment_recent_works": 0}, {"comment_recent_works": True}, {"comment_recent_works": "5"},
     {"comment_recent_works": 1.5}, {"comment_recent_works": 101},
     {"comment_recent_days": 366}, {"comment_max_scrolls": 31}, {"request_timeout_seconds": 4},
+    {"danmaku_recent_works": 0}, {"danmaku_recent_days": 366}, {"danmaku_max_scrolls": 31},
     {"download_timeout_seconds": 1801}, {"xhs_request_jitter": 1.01}, {"xhs_item_gap_seconds": -1},
     {"xhs_request_jitter": float("nan")}, {"xhs_item_gap_seconds": float("inf")},
     {"xhs_item_gap_seconds": float("-inf")}, {"xhs_item_gap_seconds": True},

@@ -3024,7 +3024,11 @@ function monitorOwnWorkDanmaku(itemId, accountId) {
 async function syncMyWorks() {
   if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
   await withBusy(evtBtn(), "同步中", async () => {
-    try { const r = await api("/api/accounts/" + HUB_ACC + "/works/sync", { method: "POST" }); toast(`同步完成:抓到 ${r.fetched} 条,新增 ${r.added}`, "ok"); }
+    try {
+      const r = await api("/api/accounts/" + HUB_ACC + "/works/sync", { method: "POST" });
+      if (r.skipped) { toast(`同步暂缓:${r.reason || "操作间隔尚未结束"}`, "info", 5000); return; }
+      toast(`同步完成:抓到 ${Number(r.fetched) || 0} 条,新增 ${Number(r.added) || 0}${transportSourceSuffix(r.source)}`, "ok");
+    }
     catch (e) { toast("同步失败:" + e.message, "err"); }
   });
   refreshMyWorks();
@@ -3069,7 +3073,11 @@ function cmtRow(c) {
 async function syncWorkComments() {
   if (!WC_WORK) return;
   await withBusy(evtBtn(), "抓取中", async () => {
-    try { const r = await api("/api/account-works/" + WC_WORK.id + "/comments/sync", { method: "POST" }); toast(`抓到 ${r.fetched} 条,新增 ${r.added}`, "ok"); }
+    try {
+      const r = await api("/api/account-works/" + WC_WORK.id + "/comments/sync", { method: "POST" });
+      if (r.skipped) { toast(`抓取暂缓:${r.reason || "操作间隔尚未结束"}`, "info", 5000); return; }
+      toast(`抓到 ${Number(r.fetched) || 0} 条,新增 ${Number(r.added) || 0}${transportSourceSuffix(r.source)}`, "ok");
+    }
     catch (e) { toast("抓取失败:" + e.message, "err"); }
   });
   await loadWorkComments();
@@ -3118,7 +3126,11 @@ async function syncFollows(direction) {
   if (PLATFORM === "xhs") { toast(XHS_FOLLOW_NA, "info", 6000); return; }
   if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
   await withBusy(evtBtn(), "同步中", async () => {
-    try { const r = await api(`/api/accounts/${HUB_ACC}/follows/sync?direction=${direction}`, { method: "POST" }); toast(`同步完成:抓到 ${r.fetched} 条,新增 ${r.added}`, "ok"); }
+    try {
+      const r = await api(`/api/accounts/${HUB_ACC}/follows/sync?direction=${direction}`, { method: "POST" });
+      if (r.skipped) { toast(`同步暂缓:${r.reason || "操作间隔尚未结束"}`, "info", 5000); return; }
+      toast(`同步完成:抓到 ${Number(r.fetched) || 0} 条,新增 ${Number(r.added) || 0}${transportSourceSuffix(r.source)}`, "ok");
+    }
     catch (e) { toast("同步失败:" + e.message, "err"); }
   });
   refreshFollows(direction);
@@ -3132,7 +3144,16 @@ async function actFollow(action, edgeId) {
   if (HUB_ACC !== accountId) return;
   if (!edge) { toast("找不到该用户,请重新同步", "err"); return; }
   const label = action === "unfollow" ? "取关" : "回关";
-  if (!await uiConfirm({ title: label + "确认", message: `确认对「${edge.nickname}」${label}?将打开浏览器窗口执行(有头窗口,可手动过验证码)。`, danger: action === "unfollow" })) return;
+  // Keep the confirmation flow usable in lightweight/offline embeds where
+  // the optional transport-matrix module has not been loaded yet.
+  const route = typeof transportRoute === "function"
+    ? transportRoute("douyin", "follow_write") : null;
+  const routeHint = route?.effective_mode === "api"
+    ? "将通过该账号的独立 API 会话执行，不会打开浏览器。"
+    : route?.effective_mode === "hybrid"
+      ? "将优先通过该账号的独立 API 会话执行；仅明确拒绝时回退账号浏览器。"
+      : "将打开该账号自己的浏览器 Profile 执行。";
+  if (!await uiConfirm({ title: label + "确认", message: `确认对「${edge.nickname}」${label}?${routeHint}`, danger: action === "unfollow" })) return;
   if (HUB_ACC !== accountId) { toast("账号已切换，本次操作已取消", "info"); return; }
   await withBusy(evtBtn(), label + "中", async () => {
     try {
@@ -3140,7 +3161,7 @@ async function actFollow(action, edgeId) {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ account_id: +accountId, action, target_uid: edge.uid, target_sec_uid: edge.sec_uid || "", target_nick: edge.nickname, run_now: true })
       });
-      toast(result.ran ? label + "成功" : `任务 #${result.id} 已保留：${result.execution_error || "等待队列执行"}`, result.ran ? "ok" : "info", 6000);
+      toast(result.ran ? `${label}成功${transportSourceSuffix(result.method)}` : `任务 #${result.id} 已保留：${result.execution_error || "等待队列执行"}`, result.ran ? "ok" : "info", 6000);
     } catch (e) { toast(label + "失败:" + e.message, "err"); }
   });
   if (HUB_ACC === accountId) refreshFollows(dir);
@@ -4112,9 +4133,73 @@ async function delAccount(id) {
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 
+// ─── API 兼容矩阵 / 多账号环境隔离 ───
+let TRANSPORT_MATRIX = null;
+function transportModeLabel(mode) {
+  return ({ api: "API 直连", browser: "浏览器", hybrid: "API → 浏览器回退",
+    manual: "人工草稿", unavailable: "当前不可用", deferred: "已暂缓" })[mode] || mode || "未知";
+}
+function transportModeTag(mode) {
+  const safe = ["api", "browser", "hybrid", "manual", "unavailable", "deferred"].includes(mode) ? mode : "manual";
+  return `<span class="transport-mode ${safe}">${esc(transportModeLabel(mode))}</span>`;
+}
+function transportSupportTag(enabled, label) {
+  return enabled
+    ? `<span class="pill done bare">${esc(label)}可用</span>`
+    : `<span class="pill skipped bare">${esc(label)}—</span>`;
+}
+function transportRoute(platform, operation) {
+  return TRANSPORT_MATRIX?.rows?.find(row => row.platform === platform && row.operation === operation) || null;
+}
+function transportSourceSuffix(source) {
+  const labels = { api: "API 直连", web_api: "API 直连", browser: "浏览器",
+    browser_fallback: "浏览器回退", api_browser_context: "浏览器上下文 API" };
+  return labels[source] ? ` · ${labels[source]}` : "";
+}
+function renderTransportMatrix(data) {
+  const body = $("transport-matrix-body"), isolation = $("transport-isolation-body");
+  if (!body || !isolation) return;
+  const platformNames = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号" };
+  const rows = Array.isArray(data?.rows) ? data.rows : [];
+  body.innerHTML = rows.length ? rows.map(row => `<tr>
+    <td><b>${esc(platformNames[row.platform] || row.platform)}</b></td>
+    <td>${esc(row.label || row.operation)}</td>
+    <td>${transportSupportTag(!!row.api, "API")}</td>
+    <td>${transportSupportTag(!!row.browser, "浏览器")}</td>
+    <td>${transportModeTag(row.effective_mode)}${row.configured_mode !== row.effective_mode ? `<div class="isolation-note">配置：${esc(transportModeLabel(row.configured_mode))}</div>` : ""}</td>
+    <td>${esc(row.reason || row.note || (row.fallback === "browser_on_confirmed_failure" ? "明确失败时回退；不确定写结果不重试" : "—"))}</td>
+  </tr>`).join("") : empty(6, "尚无兼容矩阵", "i-info");
+  const accounts = Array.isArray(data?.accounts) ? data.accounts : [];
+  isolation.innerHTML = accounts.length ? accounts.map(account => {
+    const badge = (ok, yes, no) => `<span class="pill ${ok ? "done" : "pending"} bare">${esc(ok ? yes : no)}</span>`;
+    return `<tr>
+      <td><b>${esc(account.nickname || `账号 #${account.account_id}`)}</b><div class="isolation-note">${esc(platformNames[account.platform] || account.platform)} · #${Number(account.account_id) || "-"}</div></td>
+      <td>${badge(account.profile_isolated, "独立", "缺失/重复")}</td>
+      <td><div class="isolation-stack">${badge(account.credential_isolated, "登录态独立", "登录态待检查")}${badge(account.api_session_isolated, "会话独立", "会话共享")}${badge(account.api_environment_aligned, "参数对齐", "参数未对齐")}</div></td>
+      <td>${badge(account.network_isolated, "专属代理", account.network_scope || "共享出口")}</td>
+      <td><code>${esc(account.environment_id || "-")}</code>${account.warnings?.length ? `<div class="isolation-note">${account.warnings.map(esc).join("；")}</div>` : ""}</td>
+    </tr>`;
+  }).join("") : empty(5, "尚未添加账号", "i-user");
+}
+async function refreshTransportMatrix() {
+  const status = $("transport-matrix-status");
+  try {
+    const data = await api("/api/settings/transport-matrix");
+    TRANSPORT_MATRIX = data;
+    renderTransportMatrix(data);
+    if (status) status.textContent = `已核对 ${data.rows?.length || 0} 项能力、${data.accounts?.length || 0} 个账号环境`;
+    return data;
+  } catch (error) {
+    if (status) status.textContent = "兼容矩阵读取失败：" + error.message;
+    return null;
+  }
+}
+globalThis.CreatorHubTransportMatrix = { load: refreshTransportMatrix, route: transportRoute };
+
 // ─── 下载设置 ───
 async function loadSettings() {
   globalThis.CreatorHubEngineSettings?.load();
+  refreshTransportMatrix();
   try {
     const s = await api("/api/settings");
     const assign = (id, property, value) => {
