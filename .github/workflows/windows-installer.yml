@@ -22,6 +22,10 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      # 确保英文 Windows 构建机也能输出中文说明，并保持子进程编码一致。
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     outputs:
       version: ${{ steps.version.outputs.value }}
     steps:

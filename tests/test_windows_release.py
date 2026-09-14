@@ -1,6 +1,9 @@
 """Release wiring checks; no network, credentials, or real publication."""
 from pathlib import Path
+import os
 import re
+import subprocess
+import sys
 import unittest
 import configparser
 
@@ -59,6 +62,17 @@ class WindowsReleaseTests(unittest.TestCase):
         installer = (ROOT / 'desktop/installer.iss').read_text(encoding='utf-8')
         self.assertIn(f'parser.add_argument("--version", default="{version}")', builder)
         self.assertIn(f'#define AppVersion "{version}"', installer)
+
+    def test_windows_build_preserves_chinese_output_in_redirected_subprocesses(self):
+        environment = {**os.environ, 'PYTHONIOENCODING': 'cp1252', 'PYTHONUTF8': '0'}
+        environment.update(self.jobs['windows'].get('env', {}))
+        self.assertEqual(environment['PYTHONUTF8'], '1')
+        self.assertEqual(environment['PYTHONIOENCODING'], 'utf-8')
+        # 模拟英文构建机的管道输出，验证中文日志和子进程 UTF-8 模式。
+        result = subprocess.run([sys.executable, '-c',
+                                 'import sys; print("中文发布说明"); print(sys.flags.utf8_mode)'],
+                                env=environment, capture_output=True, check=True, timeout=15)
+        self.assertEqual(result.stdout.decode('utf-8').splitlines(), ['中文发布说明', '1'])
 
     def test_build_order_and_checksums(self):
         steps = self.jobs['windows']['steps']
