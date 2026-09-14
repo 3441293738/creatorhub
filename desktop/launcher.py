@@ -199,6 +199,12 @@ def smoke_test() -> int:
             assert app and (WEB_DIR / "workbench.js").is_file()
             assert (resources() / "config.example.yaml").is_file()
             assert (resources() / "desktop-guide" / "xhs" / "index.html").is_file()
+            if getattr(sys, "frozen", False):
+                updater = resources() / "desktop" / "CreatorHubUpdater.exe"
+                assert updater.is_file()
+                from desktop.update_helper import clean_environment
+                subprocess.run([str(updater), "--self-test"], env=clean_environment(),
+                               check=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
             assert all(Path(path).is_file() for path in compute_driver_executable())
             assert Path(get_ffmpeg_exe()).is_file()
             with sync_playwright() as playwright:
@@ -217,6 +223,55 @@ def smoke_test() -> int:
         finally:
             os.chdir(previous)
     return 0
+
+
+def update_health_check() -> int:
+    """Import/resource readiness only; never start services or migrate user data."""
+    import tempfile
+    previous = Path.cwd()
+    with tempfile.TemporaryDirectory(prefix="creatorhub-health-") as temp:
+        try:
+            os.chdir(temp)
+            os.environ["CREATORHUB_CONFIG_PATH"] = str(Path(temp) / "absent.yaml")
+            from app.main import app, WEB_DIR
+            from desktop.controller import Controller
+            from desktop.web_shell import ShellServer
+            from patchright._impl._driver import compute_driver_executable
+            from imageio_ffmpeg import get_ffmpeg_exe
+            import webview
+            assert app and Controller and ShellServer and webview
+            assert (WEB_DIR / "workbench.js").is_file()
+            for name in ("desktop/web/app.js", "desktop/web/index.html", "config.example.yaml"):
+                assert (resources() / name).is_file(), name
+            assert all(Path(path).is_file() for path in compute_driver_executable())
+            assert Path(get_ffmpeg_exe()).is_file()
+            return 0
+        finally:
+            os.chdir(previous)
+
+
+def recover_interrupted_update(home):
+    from desktop.update_delta import read_journal
+    journal = read_journal(home)
+    if not journal or journal.get("phase") in {"committed", "rolled_back"}:
+        return False
+    from desktop.update_helper import clean_environment
+    helper = home / "runtime/updates" / journal["attempt"] / "CreatorHubUpdater.exe"
+    ready = home / "runtime/update-recovery-ready.json"
+    ready.unlink(missing_ok=True)
+    (home / "runtime/update-recovery-cancel").unlink(missing_ok=True)
+    child = subprocess.Popen([str(helper), "--recover-home", str(home), "--parent-pid", str(os.getpid())],
+                             cwd=home, env=clean_environment(), creationflags=subprocess.CREATE_NO_WINDOW)
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            break
+        if ready.is_file() and ready.stat().st_size < 1024:
+            if json.loads(ready.read_text(encoding="utf-8")).get("pid") == os.getpid():
+                return True
+        time.sleep(.1)
+    (home / "runtime/update-recovery-cancel").touch()
+    raise RuntimeError("上次更新中断，请使用完整安装包修复。用户数据与更新备份保留。")
 
 
 class Launcher:
@@ -422,11 +477,14 @@ def main() -> int:
     parser.add_argument("--session", default="")
     parser.add_argument("--parent-pid", type=int, default=0)
     parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument("--update-health-check", action="store_true")
     parser.add_argument("--shell-smoke-test", action="store_true")
     parser.add_argument("--skip-browser-install", action="store_true")
     parser.add_argument("--legacy-ui", action="store_true", help="Use the legacy emergency window")
     parser.add_argument("--no-autostart", action="store_true")
     args = parser.parse_args()
+    if args.update_health_check:
+        return update_health_check()
     if args.shell_smoke_test:
         from desktop.webview_smoke import smoke
         return smoke()
@@ -434,6 +492,8 @@ def main() -> int:
         return smoke_test()
     home = user_directory()
     prepare_home(home)
+    if os.name == "nt" and getattr(sys, "frozen", False) and recover_interrupted_update(home):
+        return 0
     if args.serve:
         if not args.session or any(c not in "0123456789abcdef" for c in args.session):
             raise ValueError("Invalid desktop session")

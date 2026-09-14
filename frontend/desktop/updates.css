@@ -1,0 +1,30 @@
+.desktop-updates .button { min-height:44px; }
+.desktop-updates .setting-row { flex-wrap:wrap; }
+.update-banner { display:flex; align-items:flex-start; gap:14px; padding:20px; margin:0 0 24px; border:1px solid var(--line); border-radius:12px; background:var(--subtle-bg); }
+.update-banner > svg { flex:none; margin-top:2px; color:var(--accent); }
+.update-banner-copy { flex:1; min-width:0; }
+.update-banner-copy > b { font-size:14px; line-height:1.6; overflow-wrap:anywhere; }
+.update-banner-copy > p { margin:6px 0 12px; font-size:13px; color:var(--muted); line-height:1.8; overflow-wrap:anywhere; }
+.update-banner .button { min-height:44px; }
+.update-banner progress { width:100%; height:8px; margin:0 0 12px; accent-color:var(--accent); }
+.update-progress { display:grid; gap:12px; margin:0 0 20px; padding:16px; border:1px solid var(--line); border-radius:10px; background:var(--subtle-bg); }
+.update-progress-caption { display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px 20px; font-size:12px; }
+.update-progress-caption span { color:var(--muted); font-variant-numeric:tabular-nums; }
+.update-progress progress { appearance:none; display:block; width:100%; height:8px; border:0; border-radius:8px; overflow:hidden; background:var(--line); accent-color:var(--accent); }
+.update-progress progress::-webkit-progress-bar { background:var(--line); border-radius:8px; }
+.update-progress progress::-webkit-progress-value { background:var(--accent); border-radius:8px; }
+.update-progress .update-actions { justify-content:space-between; }
+.update-progress p { margin:0; line-height:1.8; }
+.update-warning { display:flex; align-items:flex-start; gap:10px; padding:14px; border-radius:8px; background:var(--warning-bg); color:var(--warning); }
+.update-warning svg { flex:none; margin-top:3px; }
+.update-warning p { margin:0; font-size:12px; line-height:1.8; }
+.update-steps { margin:0; padding-left:22px; font-size:12px; line-height:2; }
+.update-help { font-size:12px; line-height:1.8; color:var(--muted); margin:14px 0 0; }
+.update-plan { margin:0 0 16px; }
+@media(max-width:480px) {
+  .update-banner { padding:16px; gap:10px; }
+  .update-banner .update-actions > .button { flex:1 1 auto; }
+  .desktop-updates .update-actions > .button { flex:1 1 auto; }
+  .update-detail .update-actions > .button { min-height:44px; }
+  .update-progress { padding:12px; }
+}

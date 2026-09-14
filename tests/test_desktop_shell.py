@@ -70,10 +70,33 @@ class DesktopShellTests(unittest.TestCase):
         self.assertEqual(self.request("/api/action", {"name": "stop"})[0], 400)
         self.assertEqual(self.request("/api/action", {"name": "run_command", "data": {"command": "anything"}})[0], 400)
 
+    def test_updates_keep_token_origin_confirmation_and_fixed_targets(self):
+        for name in ("prepare_update", "install_update"):
+            self.assertEqual(self.request("/api/action", {"name": name, "data": {"tag": "v0.3.0"}})[0], 400)
+            payload = {"name": name, "data": {"tag": "v0.3.0", "confirmed": True}}
+            self.assertEqual(self.request("/api/action", payload, Origin="https://example.org")[0], 403)
+        with patch.object(self.controller.updates, "download") as download:
+            payload = {"name": "prepare_update", "data": {"tag": "v0.3.0", "confirmed": True,
+                       "url": "https://example.org/file.exe", "path": "outside", "command": "ignored"}}
+            self.assertEqual(self.request("/api/action", payload)[0], 200)
+            download.assert_called_once_with("v0.3.0")
+        self.assertIsNone(self.controller.process)
+
     def test_diagnostics_exclude_private_details(self):
         data = self.controller.action("export", {})["download"]
         self.assertEqual(set(data), {"app_version", "os", "os_release", "python", "service_state", "exit_code"})
         self.assertNotIn(str(self.home), json.dumps(data))
+
+    def test_update_reminders_and_preferences_require_same_origin_and_valid_state(self):
+        for name, data in (("update_preferences", {"auto_check": False}), ("skip_update", {"tag": "v0.3.0"}),
+                           ("defer_update", {"tag": "v0.3.0"})):
+            payload = {"name": name, "data": data}
+            self.assertEqual(self.request("/api/action", payload, Origin="https://example.org")[0], 403)
+            self.assertEqual(self.request("/api/action", payload, **{"X-Desktop-Token": "bad"})[0], 403)
+        self.assertEqual(self.request("/api/action", {"name": "skip_update", "data": {"tag": "v0.3.0"}})[0], 400)
+        self.assertEqual(self.request("/api/action", {"name": "update_preferences", "data": {"auto_check": "false"}})[0], 400)
+        self.assertEqual(self.request("/api/action", {"name": "update_preferences", "data": {"auto_check": False}})[0], 200)
+        self.assertFalse(self.controller.updates.state()["auto_check"])
 
     def test_guide_destinations_are_allowlisted(self):
         with patch("desktop.controller.webbrowser.open") as opened:

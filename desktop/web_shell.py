@@ -108,6 +108,8 @@ def run_desktop(home, *, autostart=False, install_browser=True):
     def closing():
         if allow_close.is_set():
             return True
+        if controller.installing_update:
+            return False
         controller.close_requested = True
         window.show()
         return False
@@ -132,9 +134,14 @@ def run_desktop(home, *, autostart=False, install_browser=True):
     controller.hide_window, controller.exit_window, controller.export_file = hide, finish, export
     window.events.closing += closing
     window.events.loaded += lambda: controller.start() if autostart else None
+    window.events.loaded += controller.updates.start_monitor
     try:
         webview.start(gui="edgechromium", private_mode=False, storage_path=str(home / "runtime" / "shell-browser"))
     finally:
+        controller.updates.stop_monitor()
+        controller.updates.cancel_download()
+        if controller.updates.worker:
+            controller.updates.worker.join(timeout=20)
         controller.stop()
         if controller.worker:
             controller.worker.join(timeout=50)
