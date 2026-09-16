@@ -2611,6 +2611,18 @@
         </div>
         <p class="field-help" id="engine-comments-help">以上是全局默认范围；单个监控已单独配置时，仍按该监控的设置执行。</p>
       </fieldset>
+      <details class="collection-advanced" id="engine-settings-douyin-account">
+        <summary>抖音本账号功能通道</summary>
+        <div class="collection-advanced-body stack">
+          <div class="form-grid">
+            <div class="form-field"><label for="engine-douyin_profile_mode">手动刷新账号资料</label><select id="engine-douyin_profile_mode" name="douyin_profile_mode" disabled><option value="hybrid">API 优先，浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">API 模式使用当前账号 Cookie 和独立网络环境直接读取本人资料。</p></div>
+            <div class="form-field"><label for="engine-douyin_followers_mode">粉丝列表同步</label><select id="engine-douyin_followers_mode" name="douyin_followers_mode" disabled><option value="hybrid">API 优先，浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">直连接口被平台拒绝时，混合模式才会改用浏览器；失败不会清空旧列表。</p></div>
+            <div class="form-field"><label for="engine-douyin_dm_sync_mode">私信会话发现与同步</label><select id="engine-douyin_dm_sync_mode" name="douyin_dm_sync_mode" disabled><option value="hybrid">API 优先，浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">API 模式通过 imapi protobuf 初始化会话，并继续使用协议读取历史。</p></div>
+            <div class="form-field"><label for="engine-douyin_creator_danmaku_mode">本账号创作中心弹幕</label><select id="engine-douyin_creator_danmaku_mode" name="douyin_creator_danmaku_mode" disabled><option value="hybrid">API 优先，浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">API 模式按本账号作品 ID 读取弹幕；浏览器模式继续使用创作中心页面。</p></div>
+            <div class="form-field"><label for="engine-douyin_publish_mode">发布视频、图文</label><select id="engine-douyin_publish_mode" name="douyin_publish_mode" disabled><option value="browser">浏览器（当前可用）</option><option value="hybrid" disabled>混合模式（协议待稳定）</option><option value="api" disabled>仅 API（协议待稳定）</option></select><p class="field-help">上传鉴权、安全签名和提交仍由创作中心页面完成。</p></div>
+          </div>
+        </div>
+      </details>
       <details class="collection-advanced" id="engine-settings-scheduling">
         <summary>调度与账号保活</summary>
         <div class="collection-advanced-body stack">

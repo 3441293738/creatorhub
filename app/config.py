@@ -62,6 +62,13 @@ class EngineConfig:
     # 客户端之间切换 UA/TLS/Client-Hints。api 只保留为显式兼容模式。
     xhs_read_mode: str = "browser"           # browser | api
     douyin_read_mode: str = "hybrid"         # hybrid | api | browser
+    # 本账号管理中的独立读取通道。资料与粉丝已支持直连；其余三项保留
+    # 独立开关，待协议完整可验证后无需再迁移配置。
+    douyin_profile_mode: str = "hybrid"      # hybrid | api | browser
+    douyin_followers_mode: str = "hybrid"    # hybrid | api | browser
+    douyin_dm_sync_mode: str = "hybrid"      # hybrid | api | browser
+    douyin_creator_danmaku_mode: str = "hybrid"  # hybrid | api | browser
+    douyin_publish_mode: str = "browser"     # browser (api reserved)
     # browser=页面写入；api=仅网页 HTTP/imapi；hybrid=API 优先、明确拒绝时页面回退。
     # 不确定的网络结果一律不回退，避免重复提交非幂等写请求。
     douyin_write_mode: str = "browser"       # browser | api | hybrid
@@ -198,18 +205,17 @@ def load_config(path: str | None = None) -> Config:
         cfg.engine.xhs_read_mode = (
             xhs_read_mode if xhs_read_mode in {"browser", "api"}
             else "browser")
-        douyin_read_mode = str(
-            cfg.engine.douyin_read_mode or "hybrid").strip().lower()
-        cfg.engine.douyin_read_mode = (
-            douyin_read_mode
-            if douyin_read_mode in {"hybrid", "api", "browser"}
-            else "hybrid")
-        douyin_write_mode = str(
-            cfg.engine.douyin_write_mode or "browser").strip().lower()
-        cfg.engine.douyin_write_mode = (
-            douyin_write_mode
-            if douyin_write_mode in {"hybrid", "api", "browser"}
-            else "browser")
+        for name, default in (
+                ("douyin_read_mode", "hybrid"),
+                ("douyin_profile_mode", "hybrid"),
+                ("douyin_followers_mode", "hybrid"),
+                ("douyin_dm_sync_mode", "hybrid"),
+                ("douyin_creator_danmaku_mode", "hybrid"),
+                ("douyin_publish_mode", "browser"),
+                ("douyin_write_mode", "browser")):
+            mode = str(getattr(cfg.engine, name, default) or default).strip().lower()
+            setattr(cfg.engine, name, mode if mode in {"hybrid", "api", "browser"}
+                    else default)
         cfg.engine.xhs_keyword_gap_seconds = max(
             0.0, float(cfg.engine.xhs_keyword_gap_seconds))
         cfg.engine.xhs_item_gap_seconds = max(

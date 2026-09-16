@@ -538,7 +538,8 @@ class RiskApiGateTests(unittest.TestCase):
             session.commit()
         fetch_profile = AsyncMock(side_effect=TimeoutError("connection timeout"))
 
-        with patch("app.main.fetch_self_profile", fetch_profile):
+        with patch.object(main.cfg.engine, "douyin_profile_mode", "browser"), \
+                patch("app.main.fetch_self_profile", fetch_profile):
             with self.assertRaises(HTTPException) as caught:
                 asyncio.run(main.refresh_account_profile(self.account_id))
 

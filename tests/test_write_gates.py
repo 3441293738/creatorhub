@@ -5,6 +5,7 @@ import unittest
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import app.db as db
@@ -237,6 +238,23 @@ class WriteGateTests(unittest.TestCase):
         self.assertEqual(browser.anon_calls, 0)
         with db.get_session() as session:
             self.assertEqual(session.get(PublishTask, task_id).status, "failed")
+
+    def test_douyin_api_publish_mode_fails_without_opening_browser(self):
+        self.cfg.engine.douyin_publish_mode = "api"
+        browser = _BrowserStub()
+        account_id = self._account()
+        task_id = self._publish_task(account_id)
+        engine = MonitorEngine(self.cfg, browser)
+        publish = AsyncMock(side_effect=AssertionError(
+            "unsupported API mode must not submit through browser"))
+
+        with patch("app.engine.monitor.publish_douyin", publish):
+            result = asyncio.run(engine.publish_task(task_id))
+
+        self.assertFalse(result["ok"])
+        self.assertIn("上传鉴权", result["error"])
+        self.assertEqual(browser.identity_calls, 0)
+        publish.assert_not_awaited()
 
     def test_publish_with_bad_proxy_is_deferred_for_recovery(self):
         account_id = self._account()
@@ -491,6 +509,43 @@ class WriteGateTests(unittest.TestCase):
             task = session.get(AccountActionTask, task_id)
             self.assertEqual(task.status, "done")
             self.assertEqual(task.method, "api")
+
+    def test_douyin_api_dm_json_receipt_marks_task_done_without_browser(self):
+        account_id = self._cookie_account()
+        with db.get_session() as session:
+            session.add(DmConversation(
+                account_id=account_id, conv_id="conv-json",
+                conv_short_id="42", ticket="ticket-json",
+            ))
+            task = AccountActionTask(
+                platform="douyin", account_id=account_id, action="send_dm",
+                conv_id="conv-json", target_uid="target", content="hello",
+                status="pending",
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            task_id = task.id
+        self.cfg.engine.douyin_write_mode = "api"
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        session = AsyncMock()
+        session.post.return_value = SimpleNamespace(
+            status_code=200,
+            content=b'{"cmd":100,"status_code":0,"error_desc":""}',
+        )
+        with patch("app.platforms.douyin.client.AsyncSession", return_value=session), \
+                patch("app.engine.monitor.send_dm", AsyncMock(
+                    side_effect=AssertionError("browser must not open"))):
+            result = asyncio.run(engine.execute_action_task(task_id))
+        self.assertTrue(result["ok"])
+        self.assertEqual(session.post.await_count, 1)
+        self.assertEqual(engine.browser.identity_calls, 0)
+        with db.get_session() as session:
+            task = session.get(AccountActionTask, task_id)
+            self.assertEqual(task.status, "done")
+            self.assertEqual(task.method, "api")
+            self.assertEqual(task.error, "")
+            self.assertIsNotNone(task.done_at)
 
     def test_xhs_dm_uncertain_is_not_retried_or_recorded_as_risk_failure(self):
         account_id = self._account(platform="xhs")

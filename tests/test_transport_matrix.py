@@ -23,26 +23,41 @@ def account(account_id, *, profile, proxy="", state="fixture", identity_mode="le
 def test_api_only_is_hard_for_supported_and_unsupported_operations():
     cfg = Config()
     cfg.engine.douyin_read_mode = "api"
+    cfg.engine.douyin_followers_mode = "api"
+    cfg.engine.douyin_dm_sync_mode = "api"
+    cfg.engine.douyin_creator_danmaku_mode = "api"
+    cfg.engine.douyin_publish_mode = "api"
 
     comments = resolve_transport(cfg, "douyin", "own_work_comments")
     followers = resolve_transport(cfg, "douyin", "followers_list")
+    dm_sync = resolve_transport(cfg, "douyin", "dm_sync")
+    creator_danmaku = resolve_transport(cfg, "douyin", "creator_danmaku")
+    publish = resolve_transport(cfg, "douyin", "publish")
 
     assert comments["effective_mode"] == "api"
     assert not comments["opens_browser"]
-    assert followers["effective_mode"] == "unavailable"
+    assert followers["effective_mode"] == "api"
     assert not followers["opens_browser"]
+    assert dm_sync["effective_mode"] == "api"
+    assert not dm_sync["opens_browser"]
+    assert creator_danmaku["effective_mode"] == "api"
+    assert not creator_danmaku["opens_browser"]
+    assert publish["effective_mode"] == "unavailable"
+    assert not publish["opens_browser"]
 
 
 def test_hybrid_resolves_browser_only_capability_without_false_api_claim():
     cfg = Config()
     cfg.engine.douyin_read_mode = "hybrid"
+    cfg.engine.douyin_followers_mode = "hybrid"
 
     following = resolve_transport(cfg, "douyin", "following_list")
     followers = resolve_transport(cfg, "douyin", "followers_list")
 
     assert following["effective_mode"] == "hybrid"
     assert following["fallback"] == "browser_on_confirmed_failure"
-    assert followers["effective_mode"] == "browser"
+    assert followers["effective_mode"] == "hybrid"
+    assert followers["fallback"] == "browser_on_confirmed_failure"
 
 
 def test_matrix_detects_profile_cookie_and_network_collisions_without_secrets():

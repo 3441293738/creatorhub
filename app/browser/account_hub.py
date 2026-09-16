@@ -1164,6 +1164,7 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
     ws_frames: list = []         # 抓少量 WS 帧(仅 frontier-im),看会话/消息是不是走 WS 推
     im_hit = [False]             # IM 是否真的 bootstrap(点入口后据此确认,而非只看「点了」)
     dm_init_raw = [b""]          # 抖音:get_message_by_init 的 protobuf 大包(会话全在这)
+    dm_init_request_raw = [b""]  # 对应请求体,用于离线标定/验证纯协议初始化
     im_profiles: Dict[str, dict] = {}  # uid -> {nickname, avatar, sec_uid},来自 im/user/info JSON
     error = ""
     page = await mgr.new_page(identity, block_media=platform != "xhs")
@@ -1210,6 +1211,9 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
             im_hit[0] = True
         # 抖音会话大包:get_message_by_init(protobuf)。留最大的一份(全量那次)。
         if platform == "douyin" and "get_message_by_init" in low:
+            request_body = resp.request.post_data_buffer or b""
+            if len(request_body) > len(dm_init_request_raw[0]):
+                dm_init_request_raw[0] = request_body
             try:
                 b = await resp.body()      # body() 内部已等 body 下完,无需 finished()
             except Exception as e:
@@ -1325,9 +1329,9 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                     ".filter(o => /私信|消息|message|\\/im|im-|conversation/i.test("
                     "  [o.txt,o.href,o.aria,o.cls,o.de].join(' ')))"
                     ".slice(0,25)")
-                print(f"[dm-probe] douyin entry candidates({len(probe)}): {probe}")
+                print(f"[dm-probe] douyin entry candidates({len(probe)}): {ascii(probe)}")
             except Exception as e:
-                print(f"[dm-probe] douyin probe failed: {e!r}")
+                print(f"[dm-probe] douyin probe failed: {ascii(repr(e))}")
         # 抖音:「消息」是 <div>(无 href),React onClick 绑在祖先上,合成 element.click()
         # 不触发。改用真人式坐标点击:定位可点祖先→hover→page.mouse.click,外层容器优先,
         # 每次确认 IM 是否真的 bootstrap(im_hit);再加 JS 点祖先链兜底。
@@ -1352,7 +1356,7 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 boxes = await page.evaluate(_DOUYIN_IM_BOXES_JS)
             except Exception:
                 boxes = []
-            print(f"[dm-probe] douyin 消息 boxes({len(boxes or [])}): {boxes}")
+            print(f"[dm-probe] douyin message boxes({len(boxes or [])}): {ascii(boxes)}")
             # 嵌套的「消息」DIV 常落在同一坐标,点 3 次和点 1 次等价 —— 去重,省 10s
             seen_pt: Set[tuple] = set()
             ordered = []
@@ -1501,6 +1505,15 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 print(f"[dm-init] 已落盘 {_dump} ({len(dm_init_raw[0])} bytes)")
             except Exception as e:
                 print(f"[dm-init] 落盘失败: {e!r}")
+        _request_dump = os.environ.get("CREATORHUB_DM_REQUEST_DUMP")
+        if _request_dump and dm_init_request_raw[0]:
+            try:
+                with open(_request_dump, "wb") as f:
+                    f.write(dm_init_request_raw[0])
+                print(f"[dm-init] request saved {_request_dump} "
+                      f"({len(dm_init_request_raw[0])} bytes)")
+            except Exception as e:
+                print(f"[dm-init] request dump failed: {e!r}")
         # 抖音:会话在 get_message_by_init 的 protobuf 大包里。解会话 → 页面内批量
         # POST im/user/info(按 sec_uid,抖音自己签名)补昵称/头像 → 水合。
         if platform == "douyin" and dm_init_raw[0]:
@@ -1872,7 +1885,8 @@ async def send_dm_api(mgr: BrowserManager, identity, conv_id: str,
                                  ticket, text, cmid, stime)
         resp = await ctx.request.post(
             _SEND_URL, data=req,
-            headers={"content-type": "application/x-protobuf",
+            headers={"accept": "application/x-protobuf",
+                     "content-type": "application/x-protobuf",
                      "referer": "https://www.douyin.com/"})
         body = await resp.body()
         r = parse_send_response(body)

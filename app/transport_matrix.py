@@ -26,14 +26,17 @@ TRANSPORT_SPECS: tuple[dict[str, Any], ...] = (
      "setting": "douyin_read_mode", "api": True, "browser": True},
     {"platform": "douyin", "operation": "following_list", "label": "关注列表同步",
      "setting": "douyin_read_mode", "api": True, "browser": True},
-    # The current Web follower endpoint returns an unclassifiable empty body for
-    # authenticated accounts, so browser interception is the only supported path.
+    {"platform": "douyin", "operation": "account_profile", "label": "手动刷新账号资料",
+     "setting": "douyin_profile_mode", "api": True, "browser": True},
     {"platform": "douyin", "operation": "followers_list", "label": "粉丝列表同步",
-     "setting": "douyin_read_mode", "api": False, "browser": True,
-     "note": "当前网页 API 不稳定，使用账号浏览器拦截"},
+     "setting": "douyin_followers_mode", "api": True, "browser": True,
+     "note": "直连接口受账号风控影响时，混合模式会回退浏览器"},
     {"platform": "douyin", "operation": "dm_sync", "label": "私信会话/历史同步",
-     "setting": "", "fixed": "browser", "api": False, "browser": True,
-     "note": "会话发现和历史读取依赖账号浏览器上下文"},
+     "setting": "douyin_dm_sync_mode", "api": True, "browser": True,
+     "note": "API 使用 imapi protobuf 初始化会话并按需读取历史"},
+    {"platform": "douyin", "operation": "creator_danmaku", "label": "本账号创作中心弹幕",
+     "setting": "douyin_creator_danmaku_mode", "api": True, "browser": True,
+     "note": "API 按本账号作品 ID 读取弹幕；浏览器模式保留创作中心流程"},
     # Douyin writes controlled by douyin_write_mode.
     {"platform": "douyin", "operation": "comment_write", "label": "评论/回复发送",
      "setting": "douyin_write_mode", "api": True, "browser": True},
@@ -42,8 +45,8 @@ TRANSPORT_SPECS: tuple[dict[str, Any], ...] = (
     {"platform": "douyin", "operation": "dm_send", "label": "已有会话私信发送",
      "setting": "douyin_write_mode", "api": True, "browser": True},
     {"platform": "douyin", "operation": "publish", "label": "发布作品",
-     "setting": "", "fixed": "browser", "api": False, "browser": True,
-     "note": "创作中心页面流程"},
+     "setting": "douyin_publish_mode", "api": False, "browser": True,
+     "note": "上传鉴权和提交签名仍依赖创作中心页面"},
 
     # XHS modes that are actually configurable today.
     {"platform": "xhs", "operation": "public_monitor", "label": "作品/关键词/公开评论读取",
@@ -214,6 +217,12 @@ def build_transport_matrix(cfg: Any, accounts: Iterable[Any]) -> dict[str, Any]:
     return {
         "settings": {
             "douyin_read_mode": _setting_value(cfg, "douyin_read_mode", "hybrid"),
+            "douyin_profile_mode": _setting_value(cfg, "douyin_profile_mode", "hybrid"),
+            "douyin_followers_mode": _setting_value(cfg, "douyin_followers_mode", "hybrid"),
+            "douyin_dm_sync_mode": _setting_value(cfg, "douyin_dm_sync_mode", "hybrid"),
+            "douyin_creator_danmaku_mode": _setting_value(
+                cfg, "douyin_creator_danmaku_mode", "hybrid"),
+            "douyin_publish_mode": _setting_value(cfg, "douyin_publish_mode", "browser"),
             "douyin_write_mode": _setting_value(cfg, "douyin_write_mode", "browser"),
             "xhs_read_mode": _setting_value(cfg, "xhs_read_mode", "browser"),
             "xhs_publish_mode": _setting_value(cfg, "xhs_publish_mode", "browser"),

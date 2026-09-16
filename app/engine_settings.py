@@ -19,6 +19,11 @@ class EngineSettingsPatch(BaseModel):
 
     xhs_read_mode: Literal["browser", "api"] | None = None
     douyin_read_mode: Literal["hybrid", "api", "browser"] | None = None
+    douyin_profile_mode: Literal["hybrid", "api", "browser"] | None = None
+    douyin_followers_mode: Literal["hybrid", "api", "browser"] | None = None
+    douyin_dm_sync_mode: Literal["hybrid", "api", "browser"] | None = None
+    douyin_creator_danmaku_mode: Literal["hybrid", "api", "browser"] | None = None
+    douyin_publish_mode: Literal["hybrid", "api", "browser"] | None = None
     douyin_write_mode: Literal["hybrid", "api", "browser"] | None = None
     douyin_keyword_gap_seconds: float | None = Field(None, ge=0, le=300)
     xhs_keyword_gap_seconds: float | None = Field(None, ge=0, le=300)

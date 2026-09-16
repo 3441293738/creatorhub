@@ -314,6 +314,7 @@ class DouyinClient:
             response = await cli.post(
                 IMAPI_SEND_URL, data=body,
                 headers={**self._headers(),
+                         "Accept": "application/x-protobuf",
                          "Content-Type": "application/x-protobuf",
                          "Origin": BASE},
                 impersonate=self.impersonate, timeout=self.timeout,
@@ -339,6 +340,117 @@ class DouyinClient:
             self.last_error = f"network:{type(exc).__name__}"
             self.last_write_uncertain = True
             return False, self._write_error("imapi_network")
+        finally:
+            if owned:
+                await cli.close()
+                self._ms_token = None
+
+    @staticmethod
+    def _profile_avatar(profile: dict) -> str:
+        for key in ("avatar_thumb", "avatar_small", "avatar_larger", "avatar"):
+            value = profile.get(key)
+            if isinstance(value, str) and value.startswith("http"):
+                return value
+            if isinstance(value, dict):
+                urls = value.get("url_list") or value.get("urlList") or []
+                if isinstance(urls, list) and urls:
+                    return str(urls[0])
+                for nested in ("url", "url_default"):
+                    if isinstance(value.get(nested), str):
+                        return value[nested]
+        return ""
+
+    async def fetch_im_user_profiles(self, sec_uids: List[str]) -> Dict[str, dict]:
+        """用签名网页接口批量补齐 IM protobuf 中缺失的昵称和头像。"""
+        unique = list(dict.fromkeys(str(value) for value in sec_uids if value))
+        profiles: Dict[str, dict] = {}
+        for offset in range(0, len(unique), 20):
+            chunk = unique[offset:offset + 20]
+            data = await self._post_json(
+                "/aweme/v1/web/im/user/info/", {},
+                {"sec_user_ids": json.dumps(chunk, separators=(",", ":"))},
+                referer=f"{BASE}/follow")
+            if not data or str(data.get("status_code", 0)) != "0":
+                if not self.last_error:
+                    self.last_error = "im_user_info_rejected"
+                continue
+            for row in data.get("data") or []:
+                if not isinstance(row, dict):
+                    continue
+                sec_uid = str(row.get("sec_uid") or row.get("secUid") or "")
+                if not sec_uid:
+                    continue
+                profiles[sec_uid] = {
+                    "sec_uid": sec_uid,
+                    "nickname": str(row.get("nickname")
+                                    or row.get("alias_nickname") or ""),
+                    "avatar": self._profile_avatar(row),
+                }
+        return profiles
+
+    async def fetch_dm_conversations(self) -> List[dict]:
+        """纯协议读取当前账号会话快照并补齐对端资料。"""
+        from ...browser.douyin_im_pb import (
+            GET_MESSAGE_BY_INIT_URL,
+            build_init_request,
+            parse_conversations,
+            parse_send_response,
+        )
+
+        self.last_error = ""
+        owned = self._session is None
+        cli = self._session or AsyncSession(impersonate=self.impersonate)
+        try:
+            body = build_init_request(int(time.time() * 1_000_000))
+            response = await cli.post(
+                GET_MESSAGE_BY_INIT_URL, data=body,
+                headers={**self._headers(),
+                         "Accept": "application/x-protobuf",
+                         "Content-Type": "application/x-protobuf",
+                         "Origin": BASE},
+                impersonate=self.impersonate, timeout=self.timeout,
+                proxy=self.proxy or None)
+            raw = response.content
+            if response.status_code != 200 or not raw:
+                self.last_error = (f"http_{response.status_code}"
+                                   if response.status_code != 200 else "empty_body")
+                return []
+            status = parse_send_response(raw)
+            if not status.get("ok"):
+                self.last_error = (f"imapi_rejected:{status.get('error_code') or 0}:"
+                                   f"{status.get('msg') or 'invalid_response'}")
+                return []
+            conversations = parse_conversations(raw)
+            profiles = await self.fetch_im_user_profiles(
+                [row.get("peer_sec_uid", "") for row in conversations])
+            # 资料水合失败不应丢掉已经成功解析的会话快照。
+            if conversations:
+                self.last_error = ""
+            out: List[dict] = []
+            for row in conversations:
+                profile = profiles.get(row.get("peer_sec_uid", ""), {})
+                out.append({
+                    "conv_id": row["conv_id"],
+                    "peer_uid": row["peer_uid"],
+                    "peer_sec_uid": row.get("peer_sec_uid")
+                    or profile.get("sec_uid", ""),
+                    "peer_nickname": profile.get("nickname", ""),
+                    "peer_avatar": profile.get("avatar", ""),
+                    "last_text": row.get("last_text", ""),
+                    "last_time": row.get("last_time", 0),
+                    "unread_count": 0,
+                    "conv_short_id": row.get("conv_short_id", ""),
+                    "ticket": row.get("ticket", ""),
+                    "raw_json": json.dumps({
+                        "last_sender_uid": row.get("last_sender_uid", ""),
+                        "self_uid": row.get("self_uid", ""),
+                        "last_msg_type": row.get("last_msg_type", 0),
+                    }, ensure_ascii=False),
+                })
+            return out
+        except Exception as exc:
+            self.last_error = f"network:{type(exc).__name__}"
+            return []
         finally:
             if owned:
                 await cli.close()
@@ -453,6 +565,18 @@ class DouyinClient:
         return out
 
     # ── 用户资料(对应 NativeClient.FetchProfile)──
+    async def fetch_self_profile(self) -> Optional[dict]:
+        """读取当前 Cookie 对应账号，不依赖已知 sec_uid。"""
+        data = await self._get_json(
+            "/aweme/v1/web/user/profile/self/", {}, referer=f"{BASE}/user/self")
+        if data and data.get("user"):
+            return data["user"]
+        if data and data.get("status_code") not in (None, 0):
+            self.last_error = f"status_{data.get('status_code')}"
+        elif data is not None and not self.last_error:
+            self.last_error = "missing_user"
+        return None
+
     async def fetch_profile(self, sec_uid: str) -> Optional[dict]:
         data = await self._get_json(
             "/aweme/v1/web/user/profile/other/",
@@ -646,6 +770,10 @@ class DouyinClient:
     async def fetch_all_follows(self, user_id: str, sec_uid: str, direction: str,
                                 max_pages: int = 25, count: int = 20) -> List[dict]:
         """direction=following(我关注的) / fan(关注我的)。返回原始 user 对象列表。"""
+        if not user_id and sec_uid:
+            profile = await self.fetch_profile(sec_uid)
+            user_id = str((profile or {}).get("uid")
+                          or (profile or {}).get("user_id") or "")
         following = direction == "following"
         path = ("/aweme/v1/web/user/following/list/" if following
                 else "/aweme/v1/web/user/follower/list/")

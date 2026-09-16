@@ -60,7 +60,9 @@ class FollowSyncTests(unittest.TestCase):
         self.previous_main_engine = main.engine
         self.previous_browser = main.browser
         self.previous_read_mode = main.cfg.engine.douyin_read_mode
+        self.previous_followers_mode = main.cfg.engine.douyin_followers_mode
         main.cfg.engine.douyin_read_mode = "hybrid"
+        main.cfg.engine.douyin_followers_mode = "hybrid"
         self.tmp = tempfile.TemporaryDirectory()
         db.init_db(str(Path(self.tmp.name) / "follow-sync.db"))
         main.browser = _Browser()
@@ -82,6 +84,7 @@ class FollowSyncTests(unittest.TestCase):
         main.engine = self.previous_main_engine
         main.browser = self.previous_browser
         main.cfg.engine.douyin_read_mode = self.previous_read_mode
+        main.cfg.engine.douyin_followers_mode = self.previous_followers_mode
         if db._engine is not None:
             db._engine.dispose()
         db._engine = self.previous_db_engine
@@ -96,12 +99,10 @@ class FollowSyncTests(unittest.TestCase):
             result = asyncio.run(main.sync_follows(self.account_id, "fan"))
 
         self.assertEqual(result["fetched"], 1)
-        # 粉丝 API 当前在兼容矩阵中标记为不可用；hybrid 直接选择浏览器，
-        # 并不是一次 API 失败后的降级。
-        self.assertEqual(result["source"], "browser")
+        self.assertEqual(result["source"], "browser_fallback")
         self.assertEqual(engine.guard_calls, 1)
         engine.public_direct.assert_not_awaited()
-        engine.locked_direct.assert_not_awaited()
+        engine.locked_direct.assert_awaited_once_with(self.account_id, "fan")
         browser_fetch.assert_awaited_once()
 
     def test_browser_mode_following_never_attempts_direct_api(self):
@@ -134,7 +135,7 @@ class FollowSyncTests(unittest.TestCase):
         self.assertEqual(main.browser.identity_calls, 0)
 
     def test_api_mode_fan_reports_matrix_incompatibility_without_browser(self):
-        main.cfg.engine.douyin_read_mode = "api"
+        main.cfg.engine.douyin_followers_mode = "api"
         engine = _Engine()
         main.engine = engine
         browser_fetch = AsyncMock(side_effect=AssertionError(
@@ -144,10 +145,10 @@ class FollowSyncTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as caught:
                 asyncio.run(main.sync_follows(self.account_id, "fan"))
 
-        self.assertEqual(caught.exception.status_code, 409)
-        self.assertIn("不兼容", str(caught.exception.detail))
+        self.assertEqual(caught.exception.status_code, 502)
+        self.assertIn("已保留原数据", str(caught.exception.detail))
         browser_fetch.assert_not_awaited()
-        engine.locked_direct.assert_not_awaited()
+        engine.locked_direct.assert_awaited_once_with(self.account_id, "fan")
 
     def test_following_direct_and_browser_fallback_share_one_guard(self):
         engine = _Engine()

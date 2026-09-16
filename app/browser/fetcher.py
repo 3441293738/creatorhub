@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit
@@ -769,11 +770,22 @@ async def fetch_creator_danmaku(mgr: BrowserManager, identity: Identity,
     """
     collected: Dict[str, dict] = {}
     error = ""
+    capture_path = os.environ.get("CREATORHUB_DANMAKU_CAPTURE", "").strip()
+    captured_requests: list[dict] = []
     page = await mgr.new_page(identity, block_media)
 
     async def on_response(resp):
         if not _is_danmaku_url(resp.url, creator=True):
             return
+        if capture_path:
+            request = resp.request
+            captured_requests.append({
+                "url": request.url,
+                "method": request.method,
+                "post_data": request.post_data or "",
+                "status": resp.status,
+                "content_type": resp.headers.get("content-type", ""),
+            })
         try:
             data = await resp.json()
         except Exception:
@@ -815,6 +827,12 @@ async def fetch_creator_danmaku(mgr: BrowserManager, identity: Identity,
     except Exception as e:
         error = f"打开创作中心弹幕页失败: {e!r}"
     finally:
+        if capture_path and captured_requests:
+            try:
+                with open(capture_path, "w", encoding="utf-8") as f:
+                    json.dump(captured_requests, f, ensure_ascii=False, indent=2)
+            except Exception as exc:
+                print(f"[creator-danmaku] capture dump failed: {exc!r}")
         try:
             await page.close()
         except Exception:

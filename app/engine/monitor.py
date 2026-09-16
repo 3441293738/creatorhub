@@ -1983,19 +1983,56 @@ class MonitorEngine:
                         return {"ok": False, "error": "账号不存在"}
                     if platform != "douyin":
                         return {"ok": False, "error": "当前仅支持抖音短视频弹幕"}
-                    if not acc.creator_storage_state:
+                    transport = resolve_transport(
+                        self.cfg, "douyin", "creator_danmaku", acc)
+                    if transport["effective_mode"] == "unavailable":
+                        return {"ok": False, "error": transport["reason"],
+                                "configured_mode": transport["configured_mode"]}
+                    mode = transport["effective_mode"]
+                    if mode == "browser" and not acc.creator_storage_state:
                         return {"ok": False, "error": "需要先完成抖音创作者登录"}
-                    identity = self.browser.identity_for(acc)
+                    state = acc.storage_state or acc.creator_storage_state or ""
+                    identity = (None if mode == "api"
+                                else self.browser.identity_for(acc))
+                    ua = acc.ua or self.cfg.engine.user_agent
+                    proxy = acc.proxy or ""
+                    direct_environment = douyin_client_environment(acc)
                     known = set(s.exec(select(DanmakuRecord.danmaku_id).where(
                         DanmakuRecord.watch_id == 0,
                         DanmakuRecord.aweme_id == item_id)).all())
-                raw, err = await fetch_creator_danmaku(
-                    self.browser, identity, known,
-                    page_url=self.cfg.engine.creator_danmaku_url,
-                    aweme_id=item_id,
-                    max_scrolls=self.cfg.engine.danmaku_max_scrolls,
-                    block_media=self.cfg.engine.block_media_resources,
-                )
+                raw, err = [], ""
+                source = "api" if mode == "api" else "browser"
+                if mode in {"api", "hybrid"}:
+                    cookie = dy_cookie_from_state(state)
+                    if not cookie:
+                        err = "api_missing_cookie"
+                    else:
+                        client = DouyinClient(
+                            cookie, ua,
+                            timeout=self.cfg.engine.request_timeout_seconds,
+                            proxy=proxy, **direct_environment)
+                        try:
+                            async with client.session_scope():
+                                raw = await client.fetch_all_danmaku(item_id)
+                            err = client.last_error or ""
+                        except Exception as exc:
+                            err = f"douyin_api_danmaku:{type(exc).__name__}"
+                    if raw or not err:
+                        source = "api"
+                if mode == "browser" or (mode == "hybrid" and err):
+                    if not acc.creator_storage_state:
+                        return {"ok": False,
+                                "error": "API 读取失败且未完成抖音创作者登录，无法回退浏览器",
+                                "source": "api", "configured_mode": mode}
+                    raw, browser_error = await fetch_creator_danmaku(
+                        self.browser, identity, known,
+                        page_url=self.cfg.engine.creator_danmaku_url,
+                        aweme_id=item_id,
+                        max_scrolls=self.cfg.engine.danmaku_max_scrolls,
+                        block_media=self.cfg.engine.block_media_resources,
+                    )
+                    source = "browser_fallback" if mode == "hybrid" else "browser"
+                    err = browser_error or err
                 fresh = [p for p in (parse_danmaku(row, item_id) for row in raw) if p]
                 added = 0
                 with get_session() as s:
@@ -2016,7 +2053,8 @@ class MonitorEngine:
                         added += 1
                     s.commit()
                 result = {"ok": bool(added or not err), "fetched": len(fresh),
-                          "added": added, "error": err}
+                          "added": added, "error": err, "source": source,
+                          "configured_mode": transport["configured_mode"]}
                 if result["ok"]:
                     self.risk.record_success(account_id, OperationKind.READ_HEAVY)
                 elif err:
@@ -2054,8 +2092,10 @@ class MonitorEngine:
             kind, mode = watch.kind, watch.mode
             aweme_id, sec_uid = watch.aweme_id, watch.sec_uid
             name = watch.title or aweme_id or (sec_uid[:12] if sec_uid else "watch")
-            identity = self.browser.anon_identity()
+            identity = None
+            direct_environment_source = None
             has_creator = False
+            creator_transport = None
             state = ""
             ua = self.cfg.engine.user_agent
             proxy = ""
@@ -2073,9 +2113,33 @@ class MonitorEngine:
                     state = acc.storage_state or acc.creator_storage_state or ""
                     ua = acc.ua or self.cfg.engine.user_agent
                     proxy = acc.proxy or ""
-                    identity = self.browser.identity_for(acc)
+                    direct_environment_source = acc
+                    account_mode = (resolve_transport(
+                        self.cfg, "douyin", "creator_danmaku", acc)["effective_mode"]
+                        if mode == "creator" else self.cfg.engine.douyin_read_mode)
+                    if account_mode != "api":
+                        identity = self.browser.identity_for(acc)
+            if identity is None and not watch.account_id:
+                identity = self.browser.anon_identity()
 
-        if mode == "creator" and not has_creator:
+        if mode == "creator" and watch.account_id:
+            creator_transport = resolve_transport(
+                self.cfg, "douyin", "creator_danmaku", acc)
+            if creator_transport["effective_mode"] == "unavailable":
+                msg = creator_transport["reason"] or "当前创作中心弹幕通道不可用"
+                with get_session() as s:
+                    watch = s.get(DanmakuWatch, watch_id)
+                    if watch:
+                        watch.last_scan_at = datetime.utcnow()
+                        watch.last_error = msg
+                        s.add(watch)
+                        s.commit()
+                return {"ok": False, "new_danmaku": 0, "error": msg,
+                        "configured_mode": creator_transport["configured_mode"]}
+
+        if (mode == "creator" and creator_transport
+                and creator_transport["effective_mode"] == "browser"
+                and not has_creator):
             msg = "创作中心弹幕监控需要绑定已完成创作者登录的抖音账号"
             with get_session() as s:
                 watch = s.get(DanmakuWatch, watch_id)
@@ -2089,14 +2153,17 @@ class MonitorEngine:
         error = ""
         total_new = 0
         api_client = None
-        if (mode == "public" and self.cfg.engine.douyin_read_mode in {"api", "hybrid"}):
+        direct_mode = (creator_transport["effective_mode"]
+                       if mode == "creator" and creator_transport
+                       else self.cfg.engine.douyin_read_mode)
+        if direct_mode in {"api", "hybrid"}:
             cookie = dy_cookie_from_state(state)
             if cookie:
                 api_client = DouyinClient(
                     cookie, ua,
                     timeout=self.cfg.engine.request_timeout_seconds,
                     proxy=proxy,
-                    **douyin_client_environment(identity))
+                    **douyin_client_environment(direct_environment_source or identity))
         try:
             settings = {
                 "recent_works": watch.recent_works or self.cfg.engine.danmaku_recent_works,
@@ -2136,14 +2203,35 @@ class MonitorEngine:
                         DanmakuRecord.watch_id == watch_id,
                         DanmakuRecord.aweme_id == aweme_id)).all())
                 if mode == "creator":
-                    raw, error = await fetch_creator_danmaku(
-                        self.browser, identity, known,
-                        page_url=self.cfg.engine.creator_danmaku_url,
-                        aweme_id=aweme_id,
-                        max_scrolls=settings["max_scrolls"],
-                        max_items=raw_cap,
-                        block_media=self.cfg.engine.block_media_resources,
-                    )
+                    raw, error = [], ""
+                    if api_client is not None:
+                        try:
+                            async with api_client.session_scope():
+                                raw = await api_client.fetch_all_danmaku(
+                                    aweme_id,
+                                    start_time=settings["time_start_ms"],
+                                    end_time=settings["time_end_ms"],
+                                    max_pages=max(1, min(settings["max_scrolls"], 10)))
+                            error = api_client.last_error or ""
+                        except Exception as exc:
+                            error = f"douyin_api_danmaku:{type(exc).__name__}"
+                    if direct_mode == "browser" or (direct_mode == "hybrid" and (
+                            error or api_client is None)):
+                        if not has_creator:
+                            error = (error + "; " if error else "") \
+                                + "未完成创作者登录，无法回退浏览器"
+                        else:
+                            raw, browser_error = await fetch_creator_danmaku(
+                                self.browser, identity, known,
+                                page_url=self.cfg.engine.creator_danmaku_url,
+                                aweme_id=aweme_id,
+                                max_scrolls=settings["max_scrolls"],
+                                max_items=raw_cap,
+                                block_media=self.cfg.engine.block_media_resources,
+                            )
+                            error = browser_error or error
+                    elif api_client is None and direct_mode == "api":
+                        error = "douyin_api_danmaku:no_cookie"
                 elif api_client is not None:
                     try:
                         async with api_client.session_scope():
@@ -2204,13 +2292,39 @@ class MonitorEngine:
                 with get_session() as s:
                     known = set(s.exec(select(DanmakuRecord.danmaku_id).where(
                         DanmakuRecord.watch_id == watch_id)).all())
-                raw, error = await fetch_creator_danmaku(
-                    self.browser, identity, known,
-                    page_url=self.cfg.engine.creator_danmaku_url,
-                    max_scrolls=settings["max_scrolls"],
-                    max_items=raw_cap,
-                    block_media=self.cfg.engine.block_media_resources,
-                )
+                raw, error = [], ""
+                if api_client is not None:
+                    try:
+                        async with api_client.session_scope():
+                            works = await api_client.fetch_all_video_list(sec_uid)
+                            for item in works[:settings["recent_works"]]:
+                                aid = str(item.get("aweme_id") or "")
+                                if not aid:
+                                    continue
+                                raw.extend(await api_client.fetch_all_danmaku(
+                                    aid,
+                                    start_time=settings["time_start_ms"],
+                                    end_time=settings["time_end_ms"],
+                                    max_pages=max(1, min(settings["max_scrolls"], 10))))
+                        error = api_client.last_error or ""
+                    except Exception as exc:
+                        error = f"douyin_api_danmaku:{type(exc).__name__}"
+                if direct_mode == "browser" or (direct_mode == "hybrid" and (
+                        error or api_client is None)):
+                    if not has_creator:
+                        error = (error + "; " if error else "") \
+                            + "未完成创作者登录，无法回退浏览器"
+                    else:
+                        raw, browser_error = await fetch_creator_danmaku(
+                            self.browser, identity, known,
+                            page_url=self.cfg.engine.creator_danmaku_url,
+                            max_scrolls=settings["max_scrolls"],
+                            max_items=raw_cap,
+                            block_media=self.cfg.engine.block_media_resources,
+                        )
+                        error = browser_error or error
+                elif api_client is None and direct_mode == "api":
+                    error = "douyin_api_danmaku:no_cookie"
                 grouped = {}
                 for parsed in normalize_rows(raw):
                     if parsed and parsed.get("aweme_id"):
@@ -3160,11 +3274,11 @@ class MonitorEngine:
                 s.add(t); s.commit()
                 return {"ok": False, "error": "proxy unavailable"}
             platform = t.platform
-            dy_write_mode = (self._douyin_write_mode()
-                             if platform == "douyin" else "browser")
-            # Douyin publishing remains the creator-center browser flow even
-            # when interaction writes are configured for API mode.
-            api_only = False
+            dy_publish_transport = (resolve_transport(
+                self.cfg, "douyin", "publish", acc)
+                if platform == "douyin" else None)
+            api_only = bool(dy_publish_transport and
+                            dy_publish_transport["configured_mode"] == "api")
             environment_error = self._native_write_environment_error(
                 acc, headed=not api_only, browser_mode=not api_only)
             if environment_error:
@@ -3191,7 +3305,9 @@ class MonitorEngine:
             # 发布用创作平台态;一次扫码已把创作 cookie 并入 storage_state,故回退它
             state = acc.creator_storage_state or acc.storage_state or ""
             native_mode = acc.identity_mode == "native"
-            identity = self.browser.identity_for(acc)
+            identity = (None if dy_publish_transport and
+                        dy_publish_transport["effective_mode"] == "unavailable"
+                        else self.browser.identity_for(acc))
             media_type, title, desc, topics = t.media_type, t.title, t.desc, t.topics
             visibility, allow_save = t.visibility, t.allow_save
             location = getattr(t, "location", "") or ""
@@ -3200,6 +3316,12 @@ class MonitorEngine:
             t.status = "publishing"; t.error = ""
             self._clear_row_block(t)
             s.add(t); s.commit()
+
+        if (dy_publish_transport is not None
+                and dy_publish_transport["effective_mode"] == "unavailable"):
+            return await self._finish_publish(
+                task_id, False, "", dy_publish_transport["reason"],
+                platform="douyin")
 
         if platform == "kuaishou":
             # 快手发布:登录态在该账号持久 profile 里(creator/storage 任一即可),走浏览器自动化

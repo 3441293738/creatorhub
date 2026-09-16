@@ -5,6 +5,73 @@ from app.platforms.douyin.client import DouyinClient
 
 
 class DouyinClientSearchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fetch_dm_conversations_posts_init_protocol_and_hydrates(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+
+        class Response:
+            status_code = 200
+            content = b"protobuf-response"
+
+        fake_session = AsyncMock()
+        fake_session.post = AsyncMock(return_value=Response())
+        fake_session.close = AsyncMock()
+        client.fetch_im_user_profiles = AsyncMock(return_value={
+            "sec-peer": {"sec_uid": "sec-peer", "nickname": "对端", "avatar": "avatar"},
+        })
+        parsed = [{
+            "conv_id": "0:1:self:peer", "conv_short_id": "42",
+            "peer_uid": "peer", "peer_sec_uid": "sec-peer", "ticket": "ticket",
+            "last_text": "hello", "last_time": 123, "last_msg_type": 7,
+            "last_sender_uid": "peer", "self_uid": "self",
+        }]
+
+        with patch("app.platforms.douyin.client.AsyncSession", return_value=fake_session), \
+                patch("app.browser.douyin_im_pb.build_init_request",
+                      return_value=b"protobuf-request") as build, \
+                patch("app.browser.douyin_im_pb.parse_send_response",
+                      return_value={"ok": True}), \
+                patch("app.browser.douyin_im_pb.parse_conversations",
+                      return_value=parsed):
+            async with client.session_scope():
+                rows = await client.fetch_dm_conversations()
+
+        self.assertEqual(rows[0]["peer_nickname"], "对端")
+        self.assertEqual(rows[0]["conv_short_id"], "42")
+        self.assertGreater(build.call_args.args[0], 1_000_000_000_000_000)
+        request = fake_session.post.await_args
+        self.assertIn("get_message_by_init", request.args[0])
+        self.assertEqual(request.kwargs["data"], b"protobuf-request")
+        client.fetch_im_user_profiles.assert_awaited_once_with(["sec-peer"])
+
+    async def test_fetch_self_profile_uses_current_cookie_endpoint(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client._get_json = AsyncMock(return_value={
+            "status_code": 0,
+            "user": {"sec_uid": "sec-self", "nickname": "本人"},
+        })
+
+        profile = await client.fetch_self_profile()
+
+        self.assertEqual(profile["sec_uid"], "sec-self")
+        client._get_json.assert_awaited_once_with(
+            "/aweme/v1/web/user/profile/self/", {},
+            referer="https://www.douyin.com/user/self")
+
+    async def test_follower_list_resolves_internal_uid_before_paging(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client.fetch_profile = AsyncMock(return_value={"uid": "uid-self"})
+        client._follow_page = AsyncMock(return_value={
+            "followers": [{"uid": "fan-1"}], "has_more": 0,
+        })
+
+        rows = await client.fetch_all_follows("", "sec-self", "fan")
+
+        self.assertEqual([row["uid"] for row in rows], ["fan-1"])
+        client.fetch_profile.assert_awaited_once_with("sec-self")
+        client._follow_page.assert_awaited_once_with(
+            "/aweme/v1/web/user/follower/list/", "uid-self", "sec-self",
+            0, 0, 20, source_type=1)
+
     async def test_direct_request_parameters_follow_account_environment(self):
         client = DouyinClient(
             "sid_tt=x", "Mozilla/5.0 Chrome/152.0.0.0",
@@ -185,6 +252,8 @@ class DouyinClientSearchTests(unittest.IsolatedAsyncioTestCase):
         parse.assert_called_once_with(b"protobuf-response")
         request = fake_session.post.await_args
         self.assertEqual(request.kwargs["data"], b"protobuf-request")
+        self.assertEqual(request.kwargs["headers"]["Accept"],
+                         "application/x-protobuf")
         self.assertEqual(request.kwargs["headers"]["Content-Type"],
                          "application/x-protobuf")
 

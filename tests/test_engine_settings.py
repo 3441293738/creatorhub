@@ -98,6 +98,9 @@ def test_all_supported_values_and_live_downloader(local_project, monkeypatch):
     payload = {
         "xhs_read_mode": "api", "monitor_initial_backfill_count": -1,
         "douyin_read_mode": "hybrid",
+        "douyin_profile_mode": "api", "douyin_followers_mode": "hybrid",
+        "douyin_dm_sync_mode": "browser", "douyin_creator_danmaku_mode": "browser",
+        "douyin_publish_mode": "browser",
         "douyin_write_mode": "hybrid",
         "douyin_keyword_gap_seconds": 12.5, "xhs_keyword_gap_seconds": 14.5,
         "block_media_resources": True, "route_download_via_proxy": False,
@@ -139,6 +142,9 @@ def test_all_supported_values_and_live_downloader(local_project, monkeypatch):
 INVALID = [
     {"host": "0.0.0.0"}, {"profiles_dir": "arbitrary-directory"}, {"ai_api_key": "do-not-echo-fixture"},
     {"xhs_read_mode": "unknown"}, {"douyin_read_mode": "invalid"}, {"douyin_write_mode": "invalid"},
+    {"douyin_profile_mode": "invalid"}, {"douyin_followers_mode": "invalid"},
+    {"douyin_dm_sync_mode": "invalid"}, {"douyin_creator_danmaku_mode": "invalid"},
+    {"douyin_publish_mode": "invalid"},
     {"xhs_publish_mode": "API"}, {"xhs_comment_write_mode": "auto"},
     {"douyin_keyword_gap_seconds": -0.1}, {"douyin_keyword_gap_seconds": 301},
     {"xhs_keyword_gap_seconds": -0.1}, {"xhs_keyword_gap_seconds": 301},

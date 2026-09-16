@@ -669,14 +669,23 @@ async def _enrich_account_profile(account_id: int, state: str, *,
     def _done(status: str, error=""):
         return (status, error) if detailed else status
 
-    if browser is None or not state:
+    if not state:
         return _done("error", "error")
     with get_session() as s:
         a0 = s.get(DouyinAccount, account_id)
-        platform = a0.platform if a0 else "douyin"
+        if not a0:
+            return _done("error", "error")
+        platform = a0.platform
         creator_state = a0.creator_storage_state if a0 else ""
         proxy = (a0.proxy or "") if a0 else ""
-        identity = browser.identity_for(a0) if a0 else browser.anon_identity()
+        dy_transport = (resolve_transport(cfg, "douyin", "account_profile", a0)
+                        if platform == "douyin" else None)
+        identity = (None if dy_transport and
+                    dy_transport["effective_mode"] == "api"
+                    else browser.identity_for(a0) if browser is not None else None)
+
+    if platform != "douyin" and browser is None:
+        return _done("error", "browser_unavailable")
 
     # XHS 创作者号:用创作平台「我的信息」拿资料 + 判活(www 接口对创作态拿不到)
     if platform == "xhs" and creator_state:
@@ -754,7 +763,34 @@ async def _enrich_account_profile(account_id: int, state: str, *,
             # 单次打开被重定向到登录页不能立即把刚添加的账号判为失效。
             u, err = await _fetch_channels_profile_with_retry(identity)
         else:
-            u, err = await fetch_self_profile(browser, identity)
+            mode = dy_transport["effective_mode"]
+            u, err = None, ""
+            if mode in {"api", "hybrid"}:
+                cookie = douyin_cookie_from_state(state)
+                if not cookie:
+                    err = "api_missing_cookie"
+                else:
+                    try:
+                        client = DouyinClient(
+                            cookie, a0.ua or cfg.engine.user_agent,
+                            timeout=cfg.engine.request_timeout_seconds,
+                            proxy=proxy, **douyin_client_environment(a0))
+                        async with client.session_scope():
+                            u = await client.fetch_self_profile()
+                            if not u and a0.sec_uid:
+                                u = await client.fetch_profile(a0.sec_uid)
+                        err = client.last_error or ("" if u else "empty_response")
+                    except Exception as exc:
+                        err = exc
+            if not u and mode == "hybrid":
+                if browser is None:
+                    return _done("error", err or "browser_unavailable")
+                u, browser_err = await fetch_self_profile(browser, identity)
+                err = browser_err or err
+            elif not u and mode == "browser":
+                if browser is None:
+                    return _done("error", "browser_unavailable")
+                u, err = await fetch_self_profile(browser, identity)
     except Exception as exc:
         category, _signal = classify_platform_error(exc)
         status = "invalid" if detailed and category == RiskCategory.AUTH else "error"
@@ -3113,15 +3149,6 @@ async def del_account(account_id: int):
 
 @app.post("/api/accounts/{account_id}/refresh-profile")
 async def refresh_account_profile(account_id: int):
-    manual_browser = open_browsers.get(account_id)
-    if manual_browser is not None and bool(
-            getattr(manual_browser, "active", True)):
-        return {
-            "ok": True,
-            "skipped": True,
-            "reason": "该账号浏览器窗口仍开着，请先关闭窗口再刷新资料",
-            "blocked_by": "open_browser",
-        }
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if not acc:
@@ -3129,6 +3156,19 @@ async def refresh_account_profile(account_id: int):
         state = acc.storage_state or acc.creator_storage_state
         platform = acc.platform
         creator_state = acc.creator_storage_state or ""
+        profile_transport = (resolve_transport(
+            cfg, "douyin", "account_profile", acc)
+            if platform == "douyin" else None)
+    manual_browser = open_browsers.get(account_id)
+    if (manual_browser is not None
+            and bool(getattr(manual_browser, "active", True))
+            and (profile_transport is None or profile_transport["opens_browser"])):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "该账号浏览器窗口仍开着，请先关闭窗口再刷新资料",
+            "blocked_by": "open_browser",
+        }
     if not state:
         raise HTTPException(400, "该账号无浏览器登录态(Cookie 粘贴账号可能不含完整态),无法拉取资料")
 
@@ -3583,14 +3623,25 @@ async def list_dm_messages(account_id: int, conv_id: str, limit: int = 200):
 
 @app.post("/api/accounts/{account_id}/dm/sync")
 async def sync_dm(account_id: int):
-    if browser is None:
-        raise HTTPException(503, "浏览器未就绪")
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if not acc:
             raise HTTPException(404, "账号不存在")
         platform = acc.platform
-        identity = browser.identity_for(acc)
+        dm_transport = (resolve_transport(cfg, "douyin", "dm_sync", acc)
+                        if platform == "douyin" else None)
+        if dm_transport and dm_transport["effective_mode"] == "unavailable":
+            raise HTTPException(409, dm_transport["reason"] or "当前私信同步通道不可用")
+        effective_mode = (dm_transport["effective_mode"]
+                          if dm_transport else "browser")
+        if browser is None and effective_mode == "browser":
+            raise HTTPException(503, "浏览器未就绪")
+        identity = (browser.identity_for(acc)
+                    if browser is not None and effective_mode != "api" else None)
+        state = acc.storage_state or acc.creator_storage_state or ""
+        ua = acc.ua or cfg.engine.user_agent
+        proxy = acc.proxy or ""
+        direct_environment = douyin_client_environment(acc)
     if engine is None:
         raise HTTPException(503, "引擎未就绪")
     if platform == "xhs":
@@ -3613,8 +3664,34 @@ async def sync_dm(account_id: int):
             "cached": bool(result.get("skipped") and cached_conversations),
             "reason": result.get("reason") or "",
         }
+    source = "api" if effective_mode == "api" else "browser"
+
     async def _fetch_conversations():
-        return await fetch_dm_conversations(browser, identity, platform)
+        nonlocal source
+        api_error = ""
+        if platform == "douyin" and effective_mode in {"api", "hybrid"}:
+            cookie = douyin_cookie_from_state(state)
+            if not cookie:
+                api_error = "api_missing_cookie"
+            else:
+                client = DouyinClient(
+                    cookie, ua, timeout=cfg.engine.request_timeout_seconds,
+                    proxy=proxy, **direct_environment)
+                async with client.session_scope():
+                    direct = await client.fetch_dm_conversations()
+                api_error = client.last_error or ""
+                if direct or not api_error:
+                    source = "api"
+                    return direct, ""
+            if effective_mode == "api":
+                source = "api"
+                return [], api_error or "empty_response"
+        if browser is None or identity is None:
+            return [], api_error or "browser_unavailable"
+        source = "browser_fallback" if effective_mode == "hybrid" else "browser"
+        conversations, browser_error = await fetch_dm_conversations(
+            browser, identity, platform)
+        return conversations, browser_error or api_error
 
     convs, err = await engine.guarded_read_pair(
         account_id, OperationKind.READ_HEAVY, f"dm:{account_id}",
@@ -3674,7 +3751,10 @@ async def sync_dm(account_id: int):
                 acc2.uid = self_uid
                 s.add(acc2)
         s.commit()
-    return {"ok": True, "fetched": len(convs), "added": len(convs), "messages": msgs}
+    return {"ok": True, "fetched": len(convs), "added": len(convs),
+            "messages": msgs, "source": source,
+            "configured_mode": (dm_transport["configured_mode"]
+                                if dm_transport else "browser")}
 
 
 @app.get("/api/dm/stream")

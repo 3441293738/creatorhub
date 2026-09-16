@@ -241,6 +241,7 @@ def parse_conversations(raw: bytes) -> List[dict]:
 # 请求里也无 ts_sign/sdk_cert/req_sign —— 读历史不需要任何签名,可无头直接 POST。
 # 请求信封绝大多数字段静态(且无用户密钥),故用抓到的真实请求做模板,只替换 body(field 8)。
 GET_BY_CONV_URL = "https://imapi.douyin.com/v1/message/get_by_conversation"
+GET_MESSAGE_BY_INIT_URL = "https://imapi.douyin.com/v1/message/get_message_by_init"
 
 # 761 字节真实请求模板(field 8=RequestBody 在 [40,108],其余静态可复用)
 _HIST_TEMPLATE_B64 = (
@@ -327,6 +328,17 @@ def build_history_request(conv_id: str, conv_type: int, conv_short_id: int,
     return _rebuild_envelope(301, _enc_ld(301, body301))
 
 
+def build_init_request(cursor_us: int) -> bytes:
+    """构造会话初始化请求(cmd 2043)。
+
+    真实网页请求的 2043 body 为 ``{1:当前微秒时间, 2:1}``。field 1
+    不是普通分页游标：传 0 会得到空增量包，传当前微秒时间才会返回当前账号
+    的会话快照。信封字段与已经标定的历史消息请求相同。
+    """
+    body2043 = _enc_v(1, max(1, int(cursor_us))) + _enc_v(2, 1)
+    return _rebuild_envelope(2043, _enc_ld(2043, body2043))
+
+
 def build_send_request(conv_id: str, conv_type: int, conv_short_id: int,
                        ticket: str, text: str, client_msg_id: str,
                        stime_ms: int) -> bytes:
@@ -357,15 +369,40 @@ def build_send_request(conv_id: str, conv_type: int, conv_short_id: int,
 
 
 def parse_send_response(resp: bytes) -> dict:
-    """解 send 响应信封 {1:cmd,3:error_code?,4:msg('OK'/错误),6:body}。
-    成功 msg=='OK';失败带错误码/文案。"""
+    """解析 IM protobuf 信封或内容协商返回的 JSON 信封。"""
     if not resp:
-        return {"ok": False, "msg": "空响应", "cmd": 0}
+        return {"ok": False, "msg": "空响应", "cmd": 0, "error_code": 0}
+    if resp.lstrip().startswith((b"{", b"[")):
+        invalid = {"ok": False, "msg": "", "cmd": 0, "error_code": 0}
+        try:
+            env = json.loads(resp)
+            if not isinstance(env, dict):
+                return invalid
+            # HTTP 200 alone is not a send receipt; require an IM command and
+            # an explicit business status before classifying a JSON response.
+            cmd, code = env.get("cmd"), env.get("status_code")
+            if (isinstance(cmd, bool) or isinstance(code, bool)
+                    or not isinstance(cmd, (int, str))
+                    or not isinstance(code, (int, str))):
+                return invalid
+            cmd, code = int(cmd), int(code)
+            if cmd <= 0:
+                return invalid
+            msg = _s(env.get("error_desc") or env.get("status_msg")
+                     or env.get("msg") or "")
+            ok = code == 0 and msg in {"", "OK"}
+            return {"ok": ok, "msg": "OK" if ok else msg,
+                    "cmd": cmd, "error_code": code}
+        except (ValueError, TypeError):
+            return invalid
     env = _get_fields(resp)
     msg = _s(_first(env, 4, b""))
     cmd = _first(env, 1) or 0
     err = _first(env, 3) or 0
-    return {"ok": (msg == "OK"), "msg": msg, "cmd": cmd, "error_code": err}
+    if not isinstance(cmd, int) or not isinstance(err, int):
+        return {"ok": False, "msg": "", "cmd": 0, "error_code": 0}
+    return {"ok": (cmd > 0 and msg == "OK" and err == 0),
+            "msg": msg, "cmd": cmd, "error_code": err}
 
 
 def _ext_map(m: Dict[int, list]) -> Dict[str, str]:

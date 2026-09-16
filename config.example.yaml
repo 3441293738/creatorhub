@@ -14,6 +14,11 @@ engine:
   browser_session_idle_seconds: 1800 # idle recycle; 0=LRU/explicit close/shutdown only
   xhs_read_mode: browser          # browser=读取也复用账号浏览器;api=显式签名 API 兼容模式
   douyin_read_mode: hybrid         # hybrid=API优先/浏览器回退;api=仅API;browser=仅浏览器
+  douyin_profile_mode: hybrid      # 手动刷新资料:hybrid/API/browser
+  douyin_followers_mode: hybrid    # 粉丝同步:hybrid/API/browser
+  douyin_dm_sync_mode: hybrid      # 私信会话同步:hybrid/API/browser
+  douyin_creator_danmaku_mode: hybrid # 本账号作品弹幕:hybrid/API/browser
+  douyin_publish_mode: browser     # 发布当前仅 browser
   douyin_write_mode: browser       # browser=页面写入;api=仅网页HTTP/imapi;hybrid=API优先、明确拒绝时回退页面
   xhs_keyword_gap_seconds: 10     # 同一任务相邻关键词的最小停顿
   xhs_item_gap_seconds: 2.5       # 相邻详情/评论读取的最小停顿
