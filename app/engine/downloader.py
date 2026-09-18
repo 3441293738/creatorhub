@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import List, Optional, Tuple
+from weakref import WeakValueDictionary
 
 import httpx
 
@@ -19,6 +20,8 @@ class Downloader:
         self.ua = user_agent
         self.timeout = timeout
         self._media_sem = asyncio.Semaphore(per_post_concurrency)
+        # 没有写入者或等待者后自动回收，避免长期监控积累文件锁。
+        self._file_locks: WeakValueDictionary[Path, asyncio.Lock] = WeakValueDictionary()
 
     def _target_dir(self, author: str, base_dir: str = "") -> Path:
         root = Path(base_dir).expanduser() if base_dir else self.media_dir
@@ -50,11 +53,15 @@ class Downloader:
                                          headers=headers, proxy=proxy or None) as cli:
                 async def fetch(m):
                     fpath = out_dir / self._filename(aweme, m, title)
-                    if fpath.exists() and fpath.stat().st_size > 0:
-                        return str(fpath), ""        # 已存在,跳过
-                    async with self._media_sem:
-                        err = await self._download_one(cli, m.url, fpath)
-                    return (str(fpath), "") if not err else ("", err)
+                    # 多账号监控可能下载同一作品；同一路径只留一个写入者，
+                    # 等待者拿锁后复查成品，避免共享 .part 文件互相覆盖。
+                    lock = self._file_locks.setdefault(fpath.resolve(), asyncio.Lock())
+                    async with lock:
+                        if fpath.exists() and fpath.stat().st_size > 0:
+                            return str(fpath), ""        # 已存在,跳过
+                        async with self._media_sem:
+                            err = await self._download_one(cli, m.url, fpath)
+                        return (str(fpath), "") if not err else ("", err)
 
                 results = await asyncio.gather(*(fetch(m) for m in aweme.medias))
         except Exception as e:

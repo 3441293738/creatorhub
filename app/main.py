@@ -6849,6 +6849,26 @@ def _clean_platform_target_input(value: str, platform: str) -> str:
         )
     return target_input
 
+
+def _ensure_creator_monitor_available(session, *, platform: str, sec_uid: str,
+                                     account_id: int | None,
+                                     exclude_id: int | None = None) -> None:
+    """主页监控按执行账号去重；暂停的任务仍占用该账号的目标。"""
+    query = select(MonitorTarget).where(
+        MonitorTarget.platform == platform, MonitorTarget.sec_uid == sec_uid)
+    if account_id:
+        query = query.where(MonitorTarget.account_id == account_id)
+    else:
+        # 兼容历史数据中的 0：与 None 都表示匿名执行。
+        query = query.where(or_(MonitorTarget.account_id.is_(None),
+                                MonitorTarget.account_id == 0))
+    if exclude_id is not None:
+        query = query.where(MonitorTarget.id != exclude_id)
+    if session.exec(query).first():
+        detail = "该账号已存在此主页的监控" if account_id else "该主页的匿名监控已存在"
+        raise HTTPException(409, detail)
+
+
 @app.post("/api/monitors")
 async def add_monitor(body: TargetIn):
     platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou") else "douyin"
@@ -6910,11 +6930,11 @@ async def add_monitor(body: TargetIn):
         if kind == "keyword":
             dup = s.exec(select(MonitorTarget).where(MonitorTarget.platform == platform)
                          .where(MonitorTarget.keyword == keyword)).first()
+            if dup:
+                raise HTTPException(409, "该监控目标已存在")
         else:
-            dup = s.exec(select(MonitorTarget).where(MonitorTarget.platform == platform)
-                         .where(MonitorTarget.sec_uid == sec_uid)).first()
-        if dup:
-            raise HTTPException(409, "该监控目标已存在")
+            _ensure_creator_monitor_available(
+                s, platform=platform, sec_uid=sec_uid, account_id=body.account_id)
         q = body.video_quality.strip()
         if q and q not in QUALITY_CHOICES:
             raise HTTPException(400, f"画质取值无效: {q}")
@@ -6929,7 +6949,7 @@ async def add_monitor(body: TargetIn):
                           alias=_meta_text(body.alias, 60),
                           group_name=_meta_text(body.group_name, 40),
                           tags=_dump_meta_tags(_meta_tags(body.tags)),
-                          account_id=body.account_id,
+                          account_id=body.account_id or None,
                           interval_seconds=body.interval_seconds, download_dir=dl,
                           initial_backfill_count=backfill_count, video_quality=q,
                           download_enabled=body.download_enabled,
@@ -7010,6 +7030,10 @@ async def update_monitor(tid: int, body: TargetUpdate):
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != t.platform or acc.status != "active":
                 raise HTTPException(400, "账号不存在、登录态失效或与监控平台不匹配")
+            if t.target_kind != "keyword":
+                _ensure_creator_monitor_available(
+                    s, platform=t.platform, sec_uid=t.sec_uid,
+                    account_id=body.account_id, exclude_id=t.id)
             t.account_id = body.account_id
         if body.alias is not None:
             t.alias = _meta_text(body.alias, 60)
