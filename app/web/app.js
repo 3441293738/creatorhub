@@ -1127,6 +1127,7 @@ function switchPlatform(pf) {
   });
   try { localStorage.setItem("dym-pf", pf); } catch (e) {}
   applyPlatformUI();
+  ["t-interval", "w-interval", "d-w-interval"].forEach(id => $(id)?._monitorIntervalSync?.());
   // 切换后立刻刷新该平台数据
   refreshAccounts(); refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshCollections();
   updateTaskQueuePlatformLabel();
@@ -5360,7 +5361,7 @@ async function addMonitor() {
         body: JSON.stringify({
           url_or_secuid, platform: PLATFORM, target_kind,
           account_id: $("t-acc").value ? +$("t-acc").value : null,
-          interval_seconds: +$("t-interval").value,
+          interval_seconds: monitorIntervalSeconds("t-interval"),
           initial_backfill_count: PLATFORM === "douyin"
             ? ($("t-backfill").value === "" ? null : +$("t-backfill").value) : 0,
           download_dir: $("t-dir").value.trim(),
@@ -5396,6 +5397,78 @@ function numericSelectOptions(current, choices, unit = "") {
   return rows.map(([value, label]) =>
     `<option value="${value}">${esc(label)}</option>`).join("");
 }
+function monitorIntervalText(seconds) {
+  let left = Number(seconds);
+  if (!Number.isFinite(left) || left <= 0) return "—";
+  const parts = [];
+  for (const [size, unit] of [[86400, "天"], [3600, "小时"], [60, "分钟"]]) {
+    const count = Math.floor(left / size);
+    if (count) parts.push(`${count} ${unit}`);
+    left %= size;
+  }
+  if (left) parts.push(`${left} 秒`);
+  return parts.join(" ");
+}
+function monitorIntervalOptions(current, allowGlobal = false) {
+  const choices = [1, 5, 10, 15, 30, 60, 300, 600, 1800, 3600, 21600, 86400]
+    .map(seconds => [seconds, `每 ${monitorIntervalText(seconds)}`]);
+  if (allowGlobal) choices.unshift([0, "跟随全局设置"]);
+  const selected = choices.some(([seconds]) => seconds === Number(current)) ? String(current) : "custom";
+  choices.push(["custom", "自定义…"]);
+  return choices.map(([value, label]) =>
+    `<option value="${value}"${String(value) === selected ? " selected" : ""}>${esc(label)}</option>`).join("");
+}
+function setupMonitorInterval(id, seconds, allowGlobal = false) {
+  const select = $(id);
+  select.innerHTML = monitorIntervalOptions(seconds, allowGlobal);
+  select.dataset.allowGlobalInterval = String(allowGlobal);
+  select.insertAdjacentHTML("afterend", `<div id="${id}-custom" class="monitor-interval-custom" hidden>
+    <div class="form-field"><label for="${id}-amount">间隔数值</label>
+      <input id="${id}-amount" type="number" inputmode="decimal" required aria-describedby="${id}-custom-help"></div>
+    <div class="form-field"><label for="${id}-unit">时间单位</label>
+      <select id="${id}-unit"><option value="1">秒</option><option value="60">分钟</option></select></div>
+    <p id="${id}-custom-help" class="field-help">范围 1–86400 秒；分钟支持小数，换算后须为整秒。</p>
+  </div>`);
+  const amount = $(id + "-amount"), unit = $(id + "-unit"), custom = $(id + "-custom");
+  const initial = seconds > 0 ? seconds : 300;
+  let previousScale = initial % 60 === 0 ? 60 : 1;
+  unit.value = String(previousScale); amount.value = String(initial / previousScale);
+  const sync = () => {
+    const active = select.value === "custom", scale = Number(unit.value);
+    custom.hidden = !active; amount.disabled = unit.disabled = !active;
+    amount.min = String(1 / scale); amount.max = String(86400 / scale);
+    amount.step = scale === 1 ? "1" : "any";
+    previousScale = scale;
+    setFieldError(amount, "");
+    unit._csSync?.(); select._csSync?.();
+  };
+  select._monitorIntervalSync = sync;
+  select.addEventListener("change", sync);
+  unit.addEventListener("change", () => {
+    if (amount.value.trim() && Number.isFinite(Number(amount.value))) {
+      amount.value = String(Number(amount.value) * previousScale / Number(unit.value));
+    }
+    sync();
+  });
+  amount.addEventListener("input", () => setFieldError(amount, ""));
+  sync();
+}
+function monitorIntervalSeconds(id) {
+  const select = $(id), custom = select.value === "custom";
+  const input = custom ? $(id + "-amount") : select;
+  const raw = input.value.trim();
+  const scale = custom ? Number($(id + "-unit").value) : 1;
+  const seconds = Number(raw) * scale, rounded = Math.round(seconds);
+  if (!custom && raw === "0" && select.dataset.allowGlobalInterval === "true") return 0;
+  if (!raw || ![1, 60].includes(scale) || !Number.isFinite(seconds)
+      || rounded < 1 || rounded > 86400 || Math.abs(seconds - rounded) > 1e-6) {
+    const message = "请输入 1–86400 秒的间隔，换算后须为整秒";
+    setFieldError(input, message); input.focus();
+    uiEditorError(message, input.id);
+  }
+  setFieldError(input, "");
+  return rounded;
+}
 async function editMonitor(id) {
   const item = monitorById(id); if (!item) return;
   const accounts = ACCOUNTS.filter(a => a.platform === item.platform && a.status !== "invalid");
@@ -5403,10 +5476,7 @@ async function editMonitor(id) {
     `<option value="">${item.account_id ? "保持当前绑定" : "不指定账号"}</option>`,
     ...accounts.map(a => `<option value="${a.id}">${esc(a.nickname)}${a.has_creator ? " · 创作号" : ""}</option>`),
   ].join("");
-  const intervalOptions = numericSelectOptions(item.interval_seconds || 300, [
-    [60, "每 1 分钟"], [300, "每 5 分钟"], [600, "每 10 分钟"],
-    [1800, "每 30 分钟"], [3600, "每小时"], [21600, "每 6 小时"], [86400, "每天"],
-  ], " 秒");
+  const intervalOptions = monitorIntervalOptions(item.interval_seconds || 300);
   const backfillOptions = numericSelectOptions(item.initial_backfill_count ?? 0, [
     [0, "不回填历史"], [5, "最近 5 条"], [20, "最近 20 条"], [-1, "尽可能全量"],
   ], " 条");
@@ -5426,7 +5496,7 @@ async function editMonitor(id) {
         alias: $("em-alias").value.trim(),
         group_name: getMetaValue("em-group").trim(),
         tags: parseTags(getMetaValue("em-tags")),
-        interval_seconds: +$("em-interval").value,
+        interval_seconds: monitorIntervalSeconds("em-interval"),
         account_id: $("em-account").value ? +$("em-account").value : null,
         download_dir: $("em-dir").value.trim(),
         video_quality: $("em-quality") ? $("em-quality").value : "",
@@ -5490,7 +5560,7 @@ async function editMonitor(id) {
       </fieldset>`;
     enhanceMetaControl($("em-group"), "group"); enhanceMetaControl($("em-tags"), "tags");
     setMetaValue("em-group", item.group_name || ""); setMetaValue("em-tags", itemTags(item).join(","));
-    $("em-interval").value = String(item.interval_seconds || 300);
+    setupMonitorInterval("em-interval", item.interval_seconds || 300);
     $("em-account").value = item.account_id ? String(item.account_id) : "";
     if ($("em-backfill")) $("em-backfill").value = String(item.initial_backfill_count ?? 0);
     if ($("em-quality")) $("em-quality").value = item.video_quality || "";
@@ -5543,7 +5613,7 @@ function monRow(t) {
     <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(t.avatar))}" alt="" referrerpolicy="no-referrer">` : ""}<div><span>${label}</span>${t.alias ? `<div class="alias-line">${esc(t.alias)}</div>` : ""}${accTag}</div></div></td>
     <td>${metaChips(t)}</td>
     <td class="num"><button type="button" class="ghost sm monitor-record-link" data-monitor-records="${t.id}" onclick="showMonitorRecords(${t.id})">查看记录 <span>${t.content_count || 0}</span></button></td>
-    <td class="num">${Math.round(t.interval_seconds / 60)} 分</td>
+    <td class="num">${monitorIntervalText(t.interval_seconds)}</td>
     <td class="wrap" style="max-width:230px">
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px"><span class="pill q bare">${downloadLabel}</span></div>
       ${monitorStrategySummary(t)}
@@ -5948,8 +6018,8 @@ function danmakuWatchRow(w) {
     ? '<img class="avatar" src="' + esc(w.avatar) + '" referrerpolicy="no-referrer">' : "";
   const alias = w.alias ? '<div class="alias-line">' + esc(w.alias) + "</div>" : "";
   const interval = w.interval_seconds
-    ? Math.round(w.interval_seconds / 60) + " 分"
-    : "跟随全局" + (w.effective_interval_seconds ? "（" + Math.round(w.effective_interval_seconds / 60) + " 分）" : "");
+    ? monitorIntervalText(w.interval_seconds)
+    : "跟随全局" + (w.effective_interval_seconds ? "（" + monitorIntervalText(w.effective_interval_seconds) + "）" : "");
   const scope = w.kind === "user"
     ? '<div class="mut" style="font-size:11px;margin-top:2px">' +
       (w.recent_works ? "近 " + w.recent_works + " 个" : "全局 " + (w.effective_recent_works || "") + " 个") +
@@ -6010,7 +6080,7 @@ async function addDanmakuWatch() {
         body: JSON.stringify({
           url_or_id: url, platform: "douyin", kind: $("d-w-kind").value, mode: mode,
           account_id: $("d-w-acc").value ? +$("d-w-acc").value : null,
-          interval_seconds: +$("d-w-interval").value,
+          interval_seconds: monitorIntervalSeconds("d-w-interval"),
           recent_works: +$("d-w-recent").value, recent_days: +$("d-w-days").value,
           max_scrolls: +$("d-w-depth").value, alias: $("d-w-alias").value.trim(),
           time_start_ms: Math.round(Math.max(0, +$("d-w-time-start").value || 0) * 1000),
@@ -6059,10 +6129,7 @@ function onDanmakuSrc() {
 async function editDanmakuWatch(id) {
   const item = DANMAKU_WATCHES.find(x => x.id === id);
   if (!item) return;
-  const intervalOptions = numericSelectOptions(item.interval_seconds || 0, [
-    [0, "跟随全局设置"], [60, "每 1 分钟"], [300, "每 5 分钟"],
-    [600, "每 10 分钟"], [1800, "每 30 分钟"], [3600, "每小时"], [86400, "每天"],
-  ]);
+  const intervalOptions = monitorIntervalOptions(item.interval_seconds || 0, true);
   const recentOptions = numericSelectOptions(item.recent_works || 0, [
     [0, "跟随全局设置"], [3, "最近 3 个作品"], [5, "最近 5 个作品"],
     [10, "最近 10 个作品"], [20, "最近 20 个作品"], [50, "最近 50 个作品"],
@@ -6080,7 +6147,7 @@ async function editDanmakuWatch(id) {
   const value = await new Promise(res => {
     _uiResolve = res; _uiCancelVal = null;
     _uiGetVal = () => ({
-      interval_seconds: +$("edw-interval").value,
+      interval_seconds: monitorIntervalSeconds("edw-interval"),
       recent_works: +$("edw-recent").value,
       recent_days: +$("edw-days").value,
       max_scrolls: +$("edw-depth").value,
@@ -6124,10 +6191,10 @@ async function editDanmakuWatch(id) {
         <div><label class="field" for="edw-include">包含关键词</label><input id="edw-include" value="${esc((item.include_keywords || []).join(","))}" placeholder="逗号分隔，命中任一项才保留"></div>
         <div><label class="field" for="edw-exclude">排除关键词</label><input id="edw-exclude" value="${esc((item.exclude_keywords || []).join(","))}" placeholder="逗号分隔，命中任一项则丢弃"></div>
       </fieldset>`;
+    setupMonitorInterval("edw-interval", item.interval_seconds || 0, true);
     ["edw-interval", "edw-recent", "edw-days", "edw-depth", "edw-probe"].forEach(key => {
       const el = $(key); if (el) enhanceSelect(el);
     });
-    $("edw-interval").value = String(item.interval_seconds || 0);
     $("edw-recent").value = String(item.recent_works || 0);
     $("edw-days").value = String(item.recent_days || 0);
     $("edw-depth").value = String(item.max_scrolls || 0);
@@ -6327,7 +6394,7 @@ async function addWatch() {
           url_or_id, platform: PLATFORM, kind: $("w-kind").value,
           mode: PLATFORM === "xhs" ? "public" : $("w-mode").value,
           account_id: $("w-acc").value ? +$("w-acc").value : null,
-          interval_seconds: +$("w-interval").value,
+          interval_seconds: monitorIntervalSeconds("w-interval"),
           recent_works: +$("w-recent").value,
           recent_days: +$("w-days").value,
           max_scrolls: +$("w-depth").value,
@@ -6353,7 +6420,7 @@ function watchRow(w) {
     <td>${w.kind === "video" ? (w.platform === "xhs" ? "笔记" : "视频") : (w.platform === "xhs" ? "创作者" : "账号")}</td>
     <td>${w.platform === "xhs" ? "公开" : (SRC[w.mode] || w.mode)}</td>
     <td class="num"><button type="button" class="ghost sm monitor-record-link" data-comment-records="${w.id}" onclick="showWatchRecords('comment',${w.id})">查看记录 <span>${fmtNum(w.comment_count || 0)}</span></button></td>
-    <td class="num">${Math.round(w.interval_seconds / 60)} 分
+    <td class="num">${monitorIntervalText(w.interval_seconds)}
       ${w.kind === "user" && (w.recent_works || w.recent_days) ? `<div class="mut" style="font-size:11px">${w.recent_works ? `近 ${w.recent_works} 个` : "全局作品数"} · ${w.recent_days ? `${w.recent_days} 天` : "全局天数"}</div>` : ""}</td>
     <td class="mut">${w.last_scan_at ? new Date(w.last_scan_at + "Z").toLocaleString() : "—"}${w.last_error ? ` <span class="warn-ic" title="${esc(w.last_error)}">${ic("i-info")}</span>` : ""}${autoRunHint(w.next_auto_run_at)}</td>
     <td><span class="pill ${w.enabled ? "active" : "paused"}">${w.enabled ? "监控中" : "已暂停"}</span></td>
@@ -6394,10 +6461,7 @@ async function editWatchMeta(id) {
     `<option value="">${item.account_id ? "保持当前绑定" : "不指定账号"}</option>`,
     ...accounts.map(a => `<option value="${a.id}">${esc(a.nickname)}${a.has_creator ? " · 创作号" : ""}</option>`),
   ].join("");
-  const intervalOptions = numericSelectOptions(item.interval_seconds || 600, [
-    [60, "每 1 分钟"], [300, "每 5 分钟"], [600, "每 10 分钟"],
-    [1800, "每 30 分钟"], [3600, "每小时"], [21600, "每 6 小时"], [86400, "每天"],
-  ], " 秒");
+  const intervalOptions = monitorIntervalOptions(item.interval_seconds || 600);
   const recentOptions = numericSelectOptions(item.recent_works || 0, [
     [0, "跟随全局设置"], [3, "最近 3 个作品"], [5, "最近 5 个作品"],
     [10, "最近 10 个作品"], [20, "最近 20 个作品"], [50, "最近 50 个作品"],
@@ -6416,7 +6480,7 @@ async function editWatchMeta(id) {
       alias: $("ew-alias").value.trim(),
       group_name: getMetaValue("ew-group").trim(),
       tags: parseTags(getMetaValue("ew-tags")),
-      interval_seconds: +$("ew-interval").value,
+      interval_seconds: monitorIntervalSeconds("ew-interval"),
       account_id: $("ew-account").value ? +$("ew-account").value : null,
       mode: $("ew-mode").value,
       recent_works: $("ew-recent") ? +$("ew-recent").value : item.recent_works || 0,
@@ -6451,7 +6515,7 @@ async function editWatchMeta(id) {
       </fieldset>`;
     enhanceMetaControl($("ew-group"), "group"); enhanceMetaControl($("ew-tags"), "tags");
     setMetaValue("ew-group", item.group_name || ""); setMetaValue("ew-tags", itemTags(item).join(","));
-    $("ew-interval").value = String(item.interval_seconds || 600);
+    setupMonitorInterval("ew-interval", item.interval_seconds || 600);
     $("ew-account").value = item.account_id ? String(item.account_id) : "";
     $("ew-mode").value = canCreator ? (item.mode || "public") : "public";
     if ($("ew-recent")) $("ew-recent").value = String(item.recent_works || 0);
@@ -7766,6 +7830,9 @@ PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs
 applyPlatformUI();
 updateTaskQueuePlatformLabel();
 
+setupMonitorInterval("t-interval", 300);
+setupMonitorInterval("w-interval", 600);
+setupMonitorInterval("d-w-interval", 0, true);
 onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshBrowserRuntimes(); refreshProxies(); refreshChannels(); loop();
 enhanceAllSelects();   // 把所有原生 <select> 升级为美化下拉
 enhanceAllMetaControls(); // 分组/标签：当前平台词库下拉，可搜索并新增

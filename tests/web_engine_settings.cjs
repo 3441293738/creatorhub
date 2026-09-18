@@ -82,13 +82,14 @@ function fixture(initial = {}) {
   assert.deepEqual(f.byName.douyin_dm_sync_mode.options.map(option => option.value), ['hybrid', 'api', 'browser']);
   assert.deepEqual(f.byName.douyin_creator_danmaku_mode.options.map(option => option.value), ['hybrid', 'api', 'browser']);
   assert.deepEqual(f.byName.douyin_publish_mode.options.map(option => option.value), ['browser', 'hybrid', 'api']);
-  assert.equal(f.byName.work_health_interval_seconds.value, '60');
+  assert.equal(f.byName.work_health_interval_seconds.value, '3600');
+  assert.equal(f.byName.scan_interval_seconds.value, '300');
   assert.equal(f.protectedUnload(), false);
   await f.api.save(); assert.equal(f.writes().length, 0);
   f.edit('xhs_read_mode', 'api'); f.edit('douyin_read_mode', 'api');
   f.edit('douyin_profile_mode', 'api'); f.edit('douyin_followers_mode', 'browser');
   f.edit('douyin_keyword_gap_seconds', '12.5'); f.edit('danmaku_recent_works', '6');
-  f.edit('route_download_via_proxy', false); f.edit('work_health_interval_seconds', '90');
+  f.edit('route_download_via_proxy', false); f.edit('work_health_interval_seconds', '5400');
   f.edit('xhs_comment_review_before_publish', false);
   assert(f.api.isDirty() && f.protectedUnload());
   await f.api.load(); assert.equal(f.byName.xhs_read_mode.value, 'api', 'background refresh must preserve draft');
@@ -107,7 +108,8 @@ function fixture(initial = {}) {
 
   for (const [key, value] of [['comment_recent_days', ''], ['comment_recent_days', '0'],
     ['comment_recent_days', '1.5'], ['xhs_request_jitter', '1.1'], ['request_timeout_seconds', 'NaN'],
-    ['xhs_read_mode', 'invalid']]) {
+    ['xhs_read_mode', 'invalid'], ['scan_interval_seconds', '0'], ['scan_interval_seconds', '1.5'],
+    ['scan_interval_seconds', '86401'], ['work_health_interval_seconds', '599']]) {
     const invalid = fixture(); await invalid.api.load(); invalid.edit(key, value); await invalid.api.save();
     assert.equal(invalid.writes().length, 0, key);
     assert(invalid.byName[key].error && !invalid.summary.hidden && invalid.api.isDirty(), key);
@@ -152,7 +154,16 @@ function fixture(initial = {}) {
   stale.resolve(clone(raced.state)); await staleRead;
   assert.equal(raced.byName.comment_recent_works.value, '11', 'pre-save read cannot undo a successful save');
 
-  const manual = fixture({ comment_recent_works: 1000, work_health_interval_seconds: 962 }); await manual.api.load();
+  for (const seconds of [1, 5, 30, 75]) {
+    const fine = fixture(); await fine.api.load(); fine.edit('scan_interval_seconds', String(seconds));
+    await fine.api.save();
+    assert.deepEqual(JSON.parse(fine.writes()[0].init.body), { scan_interval_seconds: seconds });
+    await fine.api.load(); assert.equal(fine.byName.scan_interval_seconds.value, String(seconds));
+    assert(!fine.api.isDirty());
+  }
+  const manual = fixture({ comment_recent_works: 1000, work_health_interval_seconds: 962,
+    native_write_proxy_max_age_seconds: 7201 }); await manual.api.load();
+  assert.equal(manual.byName.work_health_interval_seconds.value, '962');
   manual.edit('xhs_read_mode', 'api'); await manual.api.save();
   assert.deepEqual(JSON.parse(manual.writes()[0].init.body), { xhs_read_mode: 'api' }, 'untouched file settings stay untouched');
   console.log('Engine settings: load, partial save, defaults draft, validation, failure retention, races, busy lock and unload protection passed.');

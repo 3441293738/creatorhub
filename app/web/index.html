@@ -2264,10 +2264,13 @@
         </div>
         <div class="form-grid cols-auto">
           <div class="form-field"><label for="t-acc">使用账号</label><select id="t-acc"></select></div>
-          <div class="form-field"><label for="t-interval">检查频率</label><select id="t-interval">
-              <option value="300">每 5 分钟</option><option value="600">每 10 分钟</option>
+          <div class="form-field"><label for="t-interval">检查频率</label><select id="t-interval" aria-describedby="t-interval-help">
+              <option value="1">每 1 秒</option><option value="5">每 5 秒</option><option value="10">每 10 秒</option>
+              <option value="15">每 15 秒</option><option value="30">每 30 秒</option><option value="60">每 1 分钟</option>
+              <option value="300" selected>每 5 分钟</option><option value="600">每 10 分钟</option>
               <option value="1800">每 30 分钟</option><option value="3600">每小时</option>
-          </select></div>
+              <option value="custom">自定义…</option>
+          </select><p id="t-interval-help" class="field-help">支持秒、分钟和自定义间隔；实际执行仍受任务耗时、错峰和账号限制影响。</p></div>
           <div class="form-field dy-only"><label for="t-quality">视频画质</label><select id="t-quality">
               <option value="">跟随全局设置</option><option value="highest">原画 / 最高</option>
               <option value="1080">1080P</option><option value="720">720P</option>
@@ -2628,7 +2631,7 @@
         <div class="collection-advanced-body stack">
           <p class="field-help">控制全局任务轮询和账号闲置保活；单个监控填写了自己的间隔时，以单个监控设置为准。</p>
           <div class="form-grid">
-            <div class="form-field"><label for="engine-scan_interval_seconds">全局扫描间隔（分钟）</label><input id="engine-scan_interval_seconds" name="scan_interval_seconds" data-scale="60" type="number" min="1" max="1440" step="1" required disabled><p class="field-help">仅影响跟随全局间隔的任务，推荐 5 分钟。</p></div>
+            <div class="form-field"><label for="engine-scan_interval_seconds">全局扫描间隔（秒）</label><input id="engine-scan_interval_seconds" name="scan_interval_seconds" type="number" min="1" max="86400" step="1" required disabled><p class="field-help">仅影响跟随全局间隔的任务，推荐 300 秒（5 分钟）；实际执行仍受任务耗时、错峰和账号限制影响。</p></div>
             <div class="form-field"><label for="engine-idle_keepalive_hours">账号闲置保活阈值（小时）</label><input id="engine-idle_keepalive_hours" name="idle_keepalive_hours" type="number" min="0" max="168" step="0.5" required disabled><p class="field-help">账号超过该时长未活跃才执行一次保活；0 表示每轮都检查。</p></div>
           </div>
         </div>
@@ -2725,7 +2728,7 @@
         <div class="collection-advanced-body stack">
           <div class="form-field"><label class="switch-row" for="engine-work_health_enabled"><input id="engine-work_health_enabled" name="work_health_enabled" type="checkbox" disabled><span class="switch-copy"><b>定时检查本账号作品</b><span>默认关闭。开启后会定时打开账号页面读取作品状态；推送还需在通知页配置渠道。</span></span></label></div>
           <div class="form-grid">
-            <div class="form-field"><label for="engine-work_health_interval_seconds">检查间隔（分钟）</label><input id="engine-work_health_interval_seconds" name="work_health_interval_seconds" data-scale="60" type="number" min="10" max="1440" step="1" required disabled></div>
+            <div class="form-field"><label for="engine-work_health_interval_seconds">检查间隔（秒）</label><input id="engine-work_health_interval_seconds" name="work_health_interval_seconds" type="number" min="600" max="86400" step="1" required disabled><p class="field-help">作品健康检查保留最低 600 秒（10 分钟），推荐 3600 秒。</p></div>
             <div class="form-field"><label for="engine-work_health_recent_days">检查最近几天的作品</label><input id="engine-work_health_recent_days" name="work_health_recent_days" type="number" min="1" max="90" step="1" required disabled></div>
             <div class="form-field"><label for="engine-work_health_zero_play_hours">零播放提醒阈值（小时）</label><input id="engine-work_health_zero_play_hours" name="work_health_zero_play_hours" type="number" min="1" max="168" step="0.5" required disabled><p class="field-help">发布达到该时长且播放量仍为 0 时提醒，仅适用于提供播放量的平台。</p></div>
             <div class="form-field"><label class="switch-row" for="engine-work_health_stat_snapshots"><input id="engine-work_health_stat_snapshots" name="work_health_stat_snapshots" type="checkbox" disabled><span class="switch-copy"><b>记录账号数据快照</b><span>在已有账号检查中保存粉丝、作品等数据，供趋势查看。</span></span></label></div>
@@ -3109,9 +3112,12 @@
               <option value="public">公开评论区</option><option value="creator">创作中心（仅自有账号）</option>
           </select></div>
           <div class="form-field"><label for="w-acc">使用账号</label><select id="w-acc"></select></div>
-          <div class="form-field"><label for="w-interval">检查频率</label><select id="w-interval">
-              <option value="600">每 10 分钟</option><option value="1800">每 30 分钟</option><option value="3600">每小时</option>
-          </select></div>
+          <div class="form-field"><label for="w-interval">检查频率</label><select id="w-interval" aria-describedby="w-interval-help">
+              <option value="1">每 1 秒</option><option value="5">每 5 秒</option><option value="10">每 10 秒</option>
+              <option value="15">每 15 秒</option><option value="30">每 30 秒</option><option value="60">每 1 分钟</option>
+              <option value="300">每 5 分钟</option><option value="600" selected>每 10 分钟</option><option value="1800">每 30 分钟</option><option value="3600">每小时</option>
+              <option value="custom">自定义…</option>
+          </select><p id="w-interval-help" class="field-help">支持秒、分钟和自定义间隔；实际执行仍受任务耗时、错峰和账号限制影响。</p></div>
         </div>
         <div class="meta-fields">
           <div>
@@ -3275,9 +3281,13 @@
             <option value="public">公开视频播放页</option><option value="creator">创作中心（自己的视频）</option>
           </select></div>
           <div class="form-field"><label for="d-w-acc" id="d-w-acc-label">播放页账号（可选）</label><select id="d-w-acc"></select></div>
-          <div class="form-field"><label for="d-w-interval">检查频率</label><select id="d-w-interval">
-            <option value="0" selected>跟随全局设置</option><option value="300">每 5 分钟</option><option value="600">每 10 分钟</option><option value="1800">每 30 分钟</option><option value="3600">每小时</option>
-          </select></div>
+          <div class="form-field"><label for="d-w-interval">检查频率</label><select id="d-w-interval" aria-describedby="d-w-interval-help">
+            <option value="0" selected>跟随全局设置</option>
+            <option value="1">每 1 秒</option><option value="5">每 5 秒</option><option value="10">每 10 秒</option>
+            <option value="15">每 15 秒</option><option value="30">每 30 秒</option><option value="60">每 1 分钟</option>
+            <option value="300">每 5 分钟</option><option value="600">每 10 分钟</option><option value="1800">每 30 分钟</option><option value="3600">每小时</option>
+            <option value="custom">自定义…</option>
+          </select><p id="d-w-interval-help" class="field-help">支持秒、分钟和自定义间隔；实际执行仍受任务耗时、错峰和账号限制影响。</p></div>
         </div>
         <div class="meta-fields">
           <div><label class="field" for="d-w-alias">管理别名(可选)</label><input id="d-w-alias" maxlength="60" placeholder="如：新品视频弹幕"></div>

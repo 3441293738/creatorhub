@@ -87,6 +87,25 @@ class WindowsReleaseTests(unittest.TestCase):
         download = self.jobs['release']['steps'][0]
         self.assertEqual(upload['with']['name'], download['with']['name'])
 
+    def test_monitor_changes_reach_the_frozen_client(self):
+        steps = self.jobs['windows']['steps']
+        names = [s.get('name', s.get('uses')) for s in steps]
+        render = next(s for s in steps if s.get('name') == 'Build desktop renderer')['run']
+        self.assertLess(render.index('npm ci'), render.index('npm run build:ui'))
+        self.assertLess(render.index('npm run build:ui'), render.index('npm run build:desktop'))
+        self.assertIn('if ($LASTEXITCODE -ne 0)', render.split('npm run build:ui')[1])
+        self.assertLess(names.index('Build desktop renderer'), names.index('Package Python, application and offline guide'))
+        self.assertLess(names.index('Test monitor API and frontend contracts'), names.index('Package Python, application and offline guide'))
+        dependencies = next(s for s in steps if s.get('name') == 'Install build dependencies')['run']
+        self.assertIn(' pytest ', dependencies)
+        checks = next(s for s in steps if s.get('name') == 'Test monitor API and frontend contracts')['run']
+        for test in ('test_monitor_accounts.py', 'test_monitor_intervals.py', 'test_engine_settings.py', 'test_web_optimizations.py'):
+            self.assertIn(test, checks)
+        smoke = (ROOT / 'desktop/smoke_windows.py').read_text(encoding='utf-8')
+        for asset in ('app.js', 'engine-settings.js', 'workbench.js', 'workbench.css'):
+            self.assertIn(f'"{asset}"', smoke)
+        self.assertIn('response.read() ==', smoke)
+
     def test_draft_upload_publish_and_rerun_guard(self):
         script = self.jobs['release']['steps'][-1]['run']
         self.assertLess(script.index('sha256sum --check'), script.index('gh release create'))

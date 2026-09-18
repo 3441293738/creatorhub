@@ -6898,8 +6898,8 @@ async def add_monitor(body: TargetIn):
             raise HTTPException(400, "无法解析 sec_uid,请粘贴完整分享文案、主页链接 / v.douyin.com 短链 / sec_uid")
 
     dl = body.download_dir.strip()
-    if not 60 <= body.interval_seconds <= 86400:
-        raise HTTPException(400, "监控间隔须为 60~86400 秒")
+    if not 1 <= body.interval_seconds <= 86400:
+        raise HTTPException(400, "监控间隔须为 1~86400 秒")
     if body.media_filter not in ("all", "video", "images"):
         raise HTTPException(400, "媒体筛选须为 all、video 或 images")
     _validate_monitor_strategy(
@@ -6983,8 +6983,8 @@ async def update_monitor(tid: int, body: TargetUpdate):
                     raise HTTPException(400, f"下载目录不可用: {e}")
             t.download_dir = dl
         if body.interval_seconds is not None:
-            if not 60 <= body.interval_seconds <= 86400:
-                raise HTTPException(400, "监控间隔须为 60~86400 秒")
+            if not 1 <= body.interval_seconds <= 86400:
+                raise HTTPException(400, "监控间隔须为 1~86400 秒")
             t.interval_seconds = body.interval_seconds
         if body.initial_backfill_count is not None:
             if t.last_scan_at is not None:
@@ -8135,8 +8135,8 @@ async def add_watch(body: WatchIn):
     title = ""
     target_input = _clean_platform_target_input(body.url_or_id, platform)
 
-    if not 60 <= body.interval_seconds <= 86400:
-        raise HTTPException(400, "监控间隔须为 60~86400 秒")
+    if not 1 <= body.interval_seconds <= 86400:
+        raise HTTPException(400, "监控间隔须为 1~86400 秒")
     if not 0 <= body.recent_works <= 50:
         raise HTTPException(400, "近期作品数须为 0~50，0 表示跟随全局设置")
     if not 0 <= body.recent_days <= 365:
@@ -8238,8 +8238,8 @@ async def update_watch(wid: int, body: WatchUpdate):
         w = s.get(CommentWatch, wid)
         if not w:
             raise HTTPException(404)
-        if body.interval_seconds is not None and not 60 <= body.interval_seconds <= 86400:
-            raise HTTPException(400, "监控间隔须为 60~86400 秒")
+        if body.interval_seconds is not None and not 1 <= body.interval_seconds <= 86400:
+            raise HTTPException(400, "监控间隔须为 1~86400 秒")
         if body.enabled is not None:
             w.enabled = body.enabled
         if body.interval_seconds is not None:
@@ -8633,8 +8633,8 @@ async def add_danmaku_watch(body: DanmakuWatchIn):
     if body.platform != "douyin":
         raise HTTPException(400, "短视频弹幕监控当前仅支持抖音")
     target_input = _clean_platform_target_input(body.url_or_id, "douyin")
-    if body.interval_seconds != 0 and not 60 <= body.interval_seconds <= 86400:
-        raise HTTPException(400, "监控间隔须为 60~86400 秒,或填 0 跟随全局")
+    if body.interval_seconds != 0 and not 1 <= body.interval_seconds <= 86400:
+        raise HTTPException(400, "监控间隔须为 1~86400 秒,或填 0 跟随全局")
     if not 0 <= body.recent_works <= 50:
         raise HTTPException(400, "近期作品数须为 0~50")
     if not 0 <= body.recent_days <= 365:
@@ -8728,8 +8728,8 @@ async def update_danmaku_watch(wid: int, body: DanmakuWatchUpdate):
         if not watch:
             raise HTTPException(404, "弹幕监控不存在")
         if body.interval_seconds is not None and body.interval_seconds != 0 \
-                and not 60 <= body.interval_seconds <= 86400:
-            raise HTTPException(400, "监控间隔须为 60~86400 秒,或填 0 跟随全局")
+                and not 1 <= body.interval_seconds <= 86400:
+            raise HTTPException(400, "监控间隔须为 1~86400 秒,或填 0 跟随全局")
         if body.recent_works is not None and not 0 <= body.recent_works <= 50:
             raise HTTPException(400, "近期作品数须为 0~50")
         if body.recent_days is not None and not 0 <= body.recent_days <= 365:

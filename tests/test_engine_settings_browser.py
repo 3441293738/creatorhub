@@ -43,8 +43,8 @@ def test_workbench_engine_settings_save_draft_and_recommended_values(ui):
     expect(page.locator("#engine-comment_recent_works")).to_have_value("9")
     expect(page.locator("#engine-xhs_read_mode")).to_have_value("api")
     page.locator("#engine-settings-health > summary").click()
-    expect(page.locator("#engine-work_health_interval_seconds")).to_have_value("60")
-    page.locator("#engine-work_health_interval_seconds").fill("90")
+    expect(page.locator("#engine-work_health_interval_seconds")).to_have_value("3600")
+    page.locator("#engine-work_health_interval_seconds").fill("5400")
     page.locator("#engine-settings-save").click()
     expect(page.locator("#engine-settings-status")).to_contain_text("已保存")
     assert json.loads(page.locator("html").get_attribute("data-fixture-engine-body")) == {

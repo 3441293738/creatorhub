@@ -1,6 +1,10 @@
 /* Workbench surfaces: continuous sections, quiet chrome, purposeful emphasis. */
 :root { --sidebar-w:216px; --content-max:1400px; --r:10px; --r-lg:14px; --sans:-apple-system,BlinkMacSystemFont,"Segoe UI Variable","Segoe UI","Microsoft YaHei",system-ui,sans-serif; --mono:ui-monospace,"Cascadia Code",Consolas,monospace; }
 [hidden] { display:none !important; }
+.monitor-interval-custom { display:grid; grid-template-columns:minmax(0,1fr) minmax(80px,.7fr); gap:8px; margin-top:8px; min-width:0; }
+.monitor-interval-custom > .form-field { min-width:0; }
+.monitor-interval-custom > .field-help { grid-column:1/-1; margin:0; }
+.monitor-interval-custom input { width:100%; min-width:0; }
 body { font-size:14px; }
 button, input, textarea, select, .cs-trg, .dt-trg { border-radius:8px; }
 button { font-weight:600; transition:background-color .16s,color .16s,box-shadow .16s; }

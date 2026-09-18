@@ -699,29 +699,54 @@ class MonitorEngine:
             log.exception("idle browser session collection failed")
             return 0
 
+    def _monitor_poll_seconds(self) -> int:
+        """有启用的秒级监控时细化调度，不改变任务周期和账号限速。"""
+        with get_session() as session:
+            for model in (MonitorTarget, CommentWatch, DanmakuWatch):
+                query = select(model.id).where(
+                    model.enabled == True,  # noqa: E712
+                    model.interval_seconds > 0,
+                    model.interval_seconds % 60 != 0).limit(1)
+                if session.exec(query).first() is not None:
+                    return 1
+            if self.cfg.engine.scan_interval_seconds > 0 and self.cfg.engine.scan_interval_seconds % 60:
+                inherited = select(DanmakuWatch.id).where(
+                    DanmakuWatch.enabled == True,  # noqa: E712
+                    DanmakuWatch.interval_seconds == 0).limit(1)
+                if session.exec(inherited).first() is not None:
+                    return 1
+        return 15
+
     async def _loop(self):
+        next_maintenance_at = 0.0
         while self._running:
+            poll_seconds = 15
             try:
-                sampled_at = datetime.utcnow()
-                sampled_epoch = time.time()
-                self._prune_risk_events_if_due(sampled_at)
-                await self._collect_idle_browser_sessions(sampled_epoch)
+                maintenance_due = time.monotonic() >= next_maintenance_at
+                if maintenance_due:
+                    # 秒级读取不连带加速重试、保活或写操作队列；异常也保留等待。
+                    next_maintenance_at = time.monotonic() + 15
+                    self._prune_risk_events_if_due(datetime.utcnow())
+                    await self._collect_idle_browser_sessions(time.time())
                 await self._scan_once()
                 await self._scan_comment_watches()
                 await self._scan_danmaku_watches()
-                await self._retry_failed()
-                await self._process_risk_recovery()
-                await self._check_accounts()
-                await self._check_work_health()
-                await self._process_xhs_dm_automation()
-                await self._process_publish()
-                await self._process_comment_rules()
-                await self._process_comment_tasks()
-                await self._process_action_tasks()
-                await self._process_collection_jobs()
+                if maintenance_due:
+                    await self._retry_failed()
+                    await self._process_risk_recovery()
+                    await self._check_accounts()
+                    await self._check_work_health()
+                    await self._process_xhs_dm_automation()
+                    await self._process_publish()
+                    await self._process_comment_rules()
+                    await self._process_comment_tasks()
+                    await self._process_action_tasks()
+                    await self._process_collection_jobs()
+                    next_maintenance_at = time.monotonic() + 15
+                poll_seconds = self._monitor_poll_seconds()
             except Exception as e:
                 log.exception("scan loop error: %s", e)
-            await asyncio.sleep(15)
+            await asyncio.sleep(poll_seconds)
 
     async def poll_xhs_dm_now(self, account_id: int, *, trigger: str = "manual") -> dict:
         with get_session() as session:

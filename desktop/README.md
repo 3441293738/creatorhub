@@ -32,12 +32,15 @@
 ```powershell
 python -m pip install -r requirements.txt -r desktop/requirements-build.txt -c desktop/constraints-windows.txt
 npm ci
+npm run build:ui
 npm run build:desktop
 python desktop/build_windows.py --version 0.2.0
 python desktop/smoke_windows.py dist/windows/CreatorHub/CreatorHub.exe
 ```
 
 生成 `dist/windows/CreatorHub/CreatorHub.exe`。这是 **onedir 便携运行目录**，分享时必须包含整个 CreatorHub 文件夹，不能只复制 EXE。
+
+监控功能由随包的 `app/web` 与后端共同提供。工作台和启动中心均需构建；CI 会运行监控接口、秒级/自定义间隔与前端回归，并对冻结程序实际提供的 JS/CSS 与本次构建做字节比对。监控间隔始终按整秒保存，已有分钟配置不重置。只推送源码不会更新已安装客户端，需发布新版本安装包后通过“检查更新”升级。
 
 旧版正在运行时，先退出再覆盖构建；如要保留旧版，可加 `--dist-dir dist/windows-0.2.0` 输出到仓库内的独立目录。Inno Setup 默认从 `dist/windows/CreatorHub` 取文件；使用独立构建目录时，通过 `/DAppSourceDir=绝对路径` 指定其中的 `CreatorHub` 文件夹，并保持 `/DAppVersion` 与构建版本一致。编译器的 `/O输出目录` 可将体验版安装包与旧版分开保存。
 

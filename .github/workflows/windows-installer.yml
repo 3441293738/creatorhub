@@ -55,9 +55,13 @@ jobs:
         run: |
           npm ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:ui
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build:desktop
       - name: Install build dependencies
-        run: python -m pip install -r requirements.txt -r desktop/requirements-build.txt -c desktop/constraints-windows.txt
+        run: python -m pip install -r requirements.txt -r desktop/requirements-build.txt pytest -c desktop/constraints-windows.txt
+      - name: Test monitor API and frontend contracts
+        run: python -m pytest tests/test_monitor_accounts.py tests/test_monitor_intervals.py tests/test_automatic_cadence.py tests/test_engine_settings.py tests/test_web_optimizations.py -q
       - name: Test release contract
         run: python -m unittest discover -s tests -p test_windows_release.py
       - name: Test release helper

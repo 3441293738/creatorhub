@@ -5,6 +5,7 @@ Optional CREATORHUB_UI_ARTIFACTS saves screenshots to a chosen directory.
 """
 import os
 import json
+import shutil
 import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +23,7 @@ LEGACY_BRAND = json.loads((Path(__file__).parent / "fixtures/legacy-brand.json")
 @pytest.fixture
 def ui(tmp_path, monkeypatch, request):
     from preview import build_preview
+    shutil.copytree(build_preview.ROOT / "assets" / "screenshots", tmp_path / "assets" / "screenshots")
     monkeypatch.setattr(build_preview, "ROOT", tmp_path)
     site = tmp_path / "site"
     build_preview.build(site)
@@ -50,6 +52,7 @@ def ui(tmp_path, monkeypatch, request):
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(origin, wait_until="networkidle")
+            page.get_by_role("button", name="关闭新手向导", exact=True).click()
             yield page, errors
             context.close()
             browser.close()

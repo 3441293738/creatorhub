@@ -71,6 +71,9 @@
       return demo(input, init);
     }
     if (url.pathname === "/api/monitors" && method === "POST") flags.fixtureMonitorBody = init.body;
+    if (method === "POST" && ["/api/monitors", "/api/comment-watches", "/api/danmaku-watches"].includes(url.pathname)) {
+      flags.fixtureIntervalBody = init.body; flags.fixtureIntervalPath = url.pathname;
+    }
     // Explicit opt-in for legacy editor acceptance. Never reaches a real service.
     if (flags.fixtureEditors === "true") {
       if (!jobs.length) jobs.push(job({ status: "done", account_id: 1, keywords: ["日常创作", "城市漫游"], max_contents_per_keyword: 20,

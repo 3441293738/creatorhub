@@ -5,7 +5,7 @@ server:
   port: 8000
 
 engine:
-  scan_interval_seconds: 300      # 每个监控目标的轮询间隔
+  scan_interval_seconds: 300      # 全局扫描间隔（1–86400 秒）；弹幕可跟随此值，其他监控单独设置
   worker_pool_size: 2             # 并发下载数(跨作品)
   scan_concurrency: 2             # 同时抓取的目标数(并发浏览器上下文)
   block_media_resources: false    # 屏蔽图片/视频/字体加载(省带宽但会打断抖音 SPA 致拿不到数据,建议保持 false)

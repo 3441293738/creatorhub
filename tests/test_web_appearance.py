@@ -2,6 +2,7 @@
 import colorsys
 import json
 import re
+import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -110,6 +111,7 @@ def test_appearance_boots_before_styles_and_platforms_do_not_own_theme():
 
 def test_preview_includes_all_appearance_assets(tmp_path, monkeypatch):
     from preview import build_preview
+    shutil.copytree(build_preview.ROOT / "assets" / "screenshots", tmp_path / "assets" / "screenshots")
     monkeypatch.setattr(build_preview, "ROOT", tmp_path)
     output = tmp_path / "site"
     build_preview.build(output)

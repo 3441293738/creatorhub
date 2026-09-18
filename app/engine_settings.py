@@ -53,7 +53,7 @@ class EngineSettingsPatch(BaseModel):
     # Additional hot-reloadable values from config.yaml.  Paths, credentials,
     # browser executable selection and other restart-only fields intentionally
     # remain outside this allowlist.
-    scan_interval_seconds: int | None = Field(None, ge=30, le=86400)
+    scan_interval_seconds: int | None = Field(None, ge=1, le=86400)
     idle_keepalive_hours: float | None = Field(None, ge=0, le=168)
     danmaku_probe_step_seconds: float | None = Field(None, ge=0.1, le=60)
     danmaku_max_probe_points: int | None = Field(None, ge=1, le=1000)

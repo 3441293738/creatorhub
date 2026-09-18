@@ -57,11 +57,17 @@ def main():
             duplicate = subprocess.run([str(executable), "--serve", "--session", uuid.uuid4().hex,
                                         "--skip-browser-install"], env=env, timeout=15)
             assert duplicate.returncode != 0, "A duplicate frozen service used the same data directory"
-            for path in ("/", "/health", "/guide/", "/guide/xhs/", "/guide/douyin/", "/static/workbench.js"):
+            web = Path(__file__).resolve().parents[1] / "app" / "web"
+            assets = ("app.js", "engine-settings.js", "workbench.js", "workbench.css")
+            for path in ("/", "/health", "/guide/", "/guide/xhs/", "/guide/douyin/",
+                         *(f"/static/{name}" for name in assets)):
                 with opener.open(url + path, timeout=5) as response:
                     assert response.status == 200, path
                     if path == "/":
                         assert b'data-guide-base="/guide/"' in response.read()
+                    elif path.startswith("/static/"):
+                        assert response.read() == (web / path.rsplit("/", 1)[1]).read_bytes(), \
+                            f"Frozen workbench asset differs from the current build: {path}"
             (home / "runtime" / f"{session}.stop").touch()
             assert child.wait(timeout=35) == 0, "Service shutdown failed"
             assert (home / "data" / "creatorhub.db").is_file()
