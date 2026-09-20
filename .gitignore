@@ -3,6 +3,16 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.coverage
+coverage/
+htmlcov/
+test-results/
+playwright-report/
+
+# Local verification, rollback, and temporary agent outputs
+artifacts/
+.codex-*/
+*.tmp
 
 # Virtualenv
 .venv/
