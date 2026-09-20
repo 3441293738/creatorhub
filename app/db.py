@@ -106,7 +106,7 @@ def _seed_monitor_id_watermark(engine):
 
 
 def _auto_migrate(engine):
-    """为已存在的表补上模型里新增的列(SQLite 友好,仅 ADD COLUMN)。"""
+    """为已存在的表补上模型里新增的列和索引(SQLite 友好)。"""
     insp = inspect(engine)
     for table in SQLModel.metadata.tables.values():
         if not insp.has_table(table.name):
@@ -136,6 +136,17 @@ def _auto_migrate(engine):
                 ddl += " DEFAULT ''"
             with engine.begin() as conn:
                 conn.execute(text(ddl))
+        # create_all() skips an existing table together with indexes added in a
+        # later release. Create named model indexes explicitly so upgraded
+        # installations receive the same query plan as fresh installations.
+        existing_indexes = {
+            item["name"] for item in inspect(engine).get_indexes(table.name)
+            if item.get("name")
+        }
+        for index in table.indexes:
+            if index.name and index.name not in existing_indexes:
+                index.create(bind=engine, checkfirst=True)
+                existing_indexes.add(index.name)
 
 
 def init_db(db_path: str):

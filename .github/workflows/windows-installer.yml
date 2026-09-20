@@ -78,6 +78,8 @@ jobs:
         run: python -m unittest discover -s tests -p test_desktop_shell.py
       - name: Test desktop updates
         run: python -m unittest discover -s tests -p "test_desktop_update*.py"
+      - name: Test database upgrades and large follow lists
+        run: python -m pytest tests/test_douyin_client.py tests/test_follow_sync.py -q
       - name: Test crash recovery and manual startup
         run: python -m unittest discover -s tests -p test_desktop_lifecycle.py
       - name: Package Python, application and offline guide

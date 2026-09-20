@@ -77,6 +77,8 @@ class WindowsReleaseTests(unittest.TestCase):
     def test_build_order_and_checksums(self):
         steps = self.jobs['windows']['steps']
         names = [s.get('name', s.get('uses')) for s in steps]
+        self.assertLess(names.index('Test database upgrades and large follow lists'),
+                        names.index('Package Python, application and offline guide'))
         self.assertLess(names.index('Smoke-test frozen resources and service lifecycle'), names.index('Compile installer'))
         self.assertLess(names.index('Download verified WebView2 bootstrapper'), names.index('Compile installer'))
         compile_step = next(s for s in steps if s.get('name') == 'Compile installer')

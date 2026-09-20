@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
+from sqlalchemy import inspect as sa_inspect
 from sqlmodel import select
 
 import app.db as db
@@ -66,7 +67,8 @@ class FollowSyncTests(unittest.TestCase):
         main._follow_sync_jobs.clear()
         main._follow_sync_tasks.clear()
         self.tmp = tempfile.TemporaryDirectory()
-        db.init_db(str(Path(self.tmp.name) / "follow-sync.db"))
+        self.db_path = Path(self.tmp.name) / "follow-sync.db"
+        db.init_db(str(self.db_path))
         main.browser = _Browser()
         with db.get_session() as session:
             account = DouyinAccount(
@@ -216,6 +218,36 @@ class FollowSyncTests(unittest.TestCase):
         self.assertEqual(result["page"], 2)
         self.assertEqual(result["pages"], 3)
         self.assertEqual(len(result["items"]), 50)
+
+    def test_existing_database_upgrade_adds_large_follow_indexes(self):
+        with db.get_session() as session:
+            session.add(FollowEdge(
+                platform="douyin", account_id=self.account_id,
+                direction="fan", uid="legacy-fan", nickname="旧库粉丝"))
+            session.commit()
+        with db._engine.begin() as connection:
+            connection.exec_driver_sql(
+                "DROP INDEX ix_followedge_account_direction_id")
+            connection.exec_driver_sql(
+                "DROP INDEX ix_followedge_account_direction_uid")
+
+        db._engine.dispose()
+        db.init_db(str(self.db_path))
+
+        indexes = {
+            item["name"]: item["column_names"]
+            for item in sa_inspect(db._engine).get_indexes("followedge")
+        }
+        self.assertEqual(
+            indexes["ix_followedge_account_direction_id"],
+            ["account_id", "direction", "id"])
+        self.assertEqual(
+            indexes["ix_followedge_account_direction_uid"],
+            ["account_id", "direction", "uid"])
+        with db.get_session() as session:
+            row = session.exec(select(FollowEdge).where(
+                FollowEdge.uid == "legacy-fan")).one()
+        self.assertEqual(row.nickname, "旧库粉丝")
 
     def test_large_snapshot_is_replaced_in_bulk_for_following(self):
         users = [_user(f"follow-{index}", f"关注 {index}")
