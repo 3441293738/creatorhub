@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """抖音私信实时接收:frontier-im WebSocket 长连接 + 推送帧解码。
 
-参考 DouYin_Spider/dy_apis/douyin_recv_msg.py。链路:
+链路由抖音网页端 WebSocket 帧与本仓库抓包标定:
   wss://frontier-im.douyin.com/ws/v2?...&device_id=&access_key=  (cookie 鉴权)
   收到二进制帧 = PushFrame(field 8=payload=Response);
   Response.body(6).500 = NewMessageNotify; .5 = MessageBody(同历史消息结构)。

@@ -15,7 +15,6 @@ base64 串/conversation_id 偶发误判成子消息,必须锁定 schema 才稳�
     .2 = 最后一条消息(MessageBody): {6:msg_type, 7:sender_uid, 8:content_json, 14:sender_sec_uid}
   content_json 里文本在 .text;非文本消息(卡片/表情/转账)按 aweType 给占位。
 """
-import base64
 import json
 from typing import Dict, List, Optional
 
@@ -79,7 +78,7 @@ def _s(v) -> str:
 _AWE_LABEL = {507: "[表情]", 5: "[表情]", 11048: "[小程序卡片]",
               100157: "[系统通知]", 2702: "[小程序]"}
 
-# 消息类型(MessageBody.field6)→ 占位。实测标定见 DouYin_Spider/douyin_recv_msg.py:
+# 消息类型(MessageBody.field6)→ 占位。字段号由抖音网页端响应实测标定:
 #   7=文本 5=表情 17=语音 27=图片 8=分享视频。媒体类消息 content 里没有 .text,
 #   只认 .text 会让分享视频/图片/语音等显示成空气泡,故按 msg_type 兜底给占位。
 _MSG_TYPE_LABEL = {5: "[表情]", 8: "[视频]", 17: "[语音]", 27: "[图片]"}
@@ -239,27 +238,15 @@ def parse_conversations(raw: bytes) -> List[dict]:
 # ═══════════ 会话历史消息:imapi/v1/message/get_by_conversation (cmd 301) ═══════════
 # 实测(HAR 标定):该接口 URL 无 a_bogus/msToken,纯 cookie 鉴权 + protobuf body,
 # 请求里也无 ts_sign/sdk_cert/req_sign —— 读历史不需要任何签名,可无头直接 POST。
-# 请求信封绝大多数字段静态(且无用户密钥),故用抓到的真实请求做模板,只替换 body(field 8)。
+# 请求信封字段来自当前抖音网页端 SDK 0.1.8 抓包，按账号浏览器参数动态构造。
 GET_BY_CONV_URL = "https://imapi.douyin.com/v1/message/get_by_conversation"
 GET_MESSAGE_BY_INIT_URL = "https://imapi.douyin.com/v1/message/get_message_by_init"
+CREATE_CONVERSATION_URL = "https://imapi.douyin.com/v2/conversation/create"
 
-# 761 字节真实请求模板(field 8=RequestBody 在 [40,108],其余静态可复用)
-_HIST_TEMPLATE_B64 = (
-    "CK0CEKZOGgUwLjEuNiIAKAMwADoTZmVmMWE4MDpwL2x6Zy9zdG9yZUJC6hI/CiQwOjE6NTEwNjAx"
-    "Mjg5Nzk1NjYyOjE4OTI3MTc3ODU3NzgwMzIQARi/hInwjMXSg2ogASiQjsH7nKT8AjAySgEwWglk"
-    "b3V5aW5fcGNyBjM2MDAwMHoTCgtzZXNzaW9uX2FpZBIENjM4M3oQCgtzZXNzaW9uX2RpZBIBMHoV"
-    "CghhcHBfbmFtZRIJZG91eWluX3BjehUKD3ByaW9yaXR5X3JlZ2lvbhICY256fQoKdXNlcl9hZ2Vu"
-    "dBJvTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQv"
-    "NTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzEzMC4wLjAuMCBTYWZhcmkvNTM3LjM2"
-    "ehYKDmNvb2tpZV9lbmFibGVkEgR0cnVlehkKEGJyb3dzZXJfbGFuZ3VhZ2USBXpoLUNOehkKEGJy"
-    "b3dzZXJfcGxhdGZvcm0SBVdpbjMyehcKDGJyb3dzZXJfbmFtZRIHTW96aWxsYXp6Cg9icm93c2Vy"
-    "X3ZlcnNpb24SZzUuMCAoV2luZG93cyBOVCAxMC4wOyBXaW42NDsgeDY0KSBBcHBsZVdlYktpdC81"
-    "MzcuMzYgKEtIVE1MLCBsaWtlIEdlY2tvKSBDaHJvbWUvMTMwLjAuMC4wIFNhZmFyaS81MzcuMzZ6"
-    "FgoOYnJvd3Nlcl9vbmxpbmUSBHRydWV6FAoMc2NyZWVuX3dpZHRoEgQxNTM2ehQKDXNjcmVlbl9o"
-    "ZWlnaHQSAzg2NHoiCgdyZWZlcmVyEhdodHRwczovL3d3dy5kb3V5aW4uY29tL3oeCg10aW1lem9u"
-    "ZV9uYW1lEg1Bc2lhL1NoYW5naGFpeg0KCGRldmljZUlkEgEweg0KCGlzLXJldHJ5EgEwkAEBqgEK"
-    "ZG91eWluX3dlYrIBB3dlYl9zZGs=")
-_HIST_BODY_SPAN = (40, 108)   # field 8 在模板里的字节区间
+_DEFAULT_IM_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+)
 
 
 def _enc_varint(n: int) -> bytes:
@@ -284,36 +271,70 @@ def _enc_ld(fn: int, data: bytes) -> bytes:  # 长度分隔字段(string/message
     return _enc_tag(fn, 2) + _enc_varint(len(data)) + data
 
 
-def _rebuild_envelope(cmd: int, request_body: bytes) -> bytes:
-    """用真实请求模板重建信封,只改 cmd(field 1)+ body(field 8),其余字段原样保留。
-    (mark_read/get_by_conversation/send 的信封字段集一致,仅 cmd+body 不同。)"""
-    tmpl = base64.b64decode(_HIST_TEMPLATE_B64)
-    out = bytearray()
-    i, n = 0, len(tmpl)
-    while i < n:
-        tag, j = _read_varint(tmpl, i)
-        fn, wt = tag >> 3, tag & 7
-        start = i
-        if wt == 0:
-            _, j = _read_varint(tmpl, j)
-        elif wt == 2:
-            ln, j = _read_varint(tmpl, j); j += ln
-        elif wt == 1:
-            j += 8
-        elif wt == 5:
-            j += 4
-        if fn == 1:
-            out += _enc_v(1, cmd)
-        elif fn == 8:
-            out += _enc_ld(8, request_body)
-        else:
-            out += tmpl[start:j]
-        i = j
-    return bytes(out)
+def _build_envelope(cmd: int, request_body: bytes, *, sequence_id: int = 10000,
+                    user_agent: str = _DEFAULT_IM_UA, locale: str = "zh-CN",
+                    screen_width: int = 1536, screen_height: int = 864,
+                    referer: str = "https://www.douyin.com/",
+                    timezone_name: str = "Asia/Shanghai",
+                    inbox_type: int = 1) -> bytes:
+    """按当前网页端 SDK 0.1.8 字段集构造 Request 信封。
+
+    当前建会抓包的信封字段为 1,2,3,4,5,6,7,8,9,11,14,15,18,21,22；
+    field 25(request_sign)及额外安全 HTTP 头均未出现。field 15 是网页环境 map，
+    由调用账号的 UA、语言、视口和来源页生成，避免复用其他账号的静态模板。
+    """
+    ua = str(user_agent or _DEFAULT_IM_UA)
+    browser_version = ua[len("Mozilla/"):] if ua.startswith("Mozilla/") else ua
+    headers = {
+        "session_aid": "6383",
+        "session_did": "0",
+        "app_name": "douyin_pc",
+        "priority_region": "cn",
+        "user_agent": ua,
+        "cookie_enabled": "true",
+        "browser_language": str(locale or "zh-CN"),
+        "browser_platform": "Win32",
+        "browser_name": "Mozilla",
+        "browser_version": browser_version,
+        "browser_online": "true",
+        "screen_width": str(max(320, int(screen_width or 1536))),
+        "screen_height": str(max(240, int(screen_height or 864))),
+        "referer": str(referer or ""),
+        "timezone_name": str(timezone_name or "Asia/Shanghai"),
+        "deviceId": "0",
+        "is-retry": "0",
+    }
+    encoded_headers = b"".join(
+        _enc_ld(15, _enc_ld(1, key.encode("utf-8"))
+                + _enc_ld(2, value.encode("utf-8")))
+        for key, value in headers.items()
+    )
+    return (
+        _enc_v(1, int(cmd))
+        + _enc_v(2, max(1, int(sequence_id)))
+        + _enc_ld(3, b"0.1.8")
+        + _enc_ld(4, b"")
+        + _enc_v(5, 3)
+        + _enc_v(6, int(inbox_type))
+        + _enc_ld(7, b"0d50935:feat/pc-im-group")
+        + _enc_ld(8, request_body)
+        + _enc_ld(9, b"0")
+        + _enc_ld(11, b"douyin_pc")
+        + _enc_ld(14, b"360000")
+        + encoded_headers
+        + _enc_v(18, 1)
+        + _enc_ld(21, b"douyin_web")
+        + _enc_ld(22, b"web_sdk")
+    )
+
+
+def _rebuild_envelope(cmd: int, request_body: bytes, **options) -> bytes:
+    """兼容旧调用名；实际按当前网页端字段动态构造。"""
+    return _build_envelope(cmd, request_body, **options)
 
 
 def build_history_request(conv_id: str, conv_type: int, conv_short_id: int,
-                          cursor: int, count: int = 50) -> bytes:
+                          cursor: int, count: int = 50, **envelope) -> bytes:
     """构造 get_by_conversation 请求(cmd 301)。body(field 8→301)字段:
     {1:conv_id, 2:type, 3:short_id, 4:1(方向), 5:cursor, 6:count}。
     cursor 传上一页返回的 next_cursor;首拉传 0(服务端给最新)或会话当前 index。"""
@@ -325,10 +346,10 @@ def build_history_request(conv_id: str, conv_type: int, conv_short_id: int,
         + _enc_v(5, int(cursor))
         + _enc_v(6, int(count))
     )
-    return _rebuild_envelope(301, _enc_ld(301, body301))
+    return _build_envelope(301, _enc_ld(301, body301), **envelope)
 
 
-def build_init_request(cursor_us: int) -> bytes:
+def build_init_request(cursor_us: int, **envelope) -> bytes:
     """构造会话初始化请求(cmd 2043)。
 
     真实网页请求的 2043 body 为 ``{1:当前微秒时间, 2:1}``。field 1
@@ -336,12 +357,32 @@ def build_init_request(cursor_us: int) -> bytes:
     的会话快照。信封字段与已经标定的历史消息请求相同。
     """
     body2043 = _enc_v(1, max(1, int(cursor_us))) + _enc_v(2, 1)
-    return _rebuild_envelope(2043, _enc_ld(2043, body2043))
+    return _build_envelope(2043, _enc_ld(2043, body2043), **envelope)
+
+
+def build_create_conversation_request(target_uid: str, self_uid: str,
+                                      **envelope) -> bytes:
+    """构造单聊建会请求(cmd 609)。
+
+    当前网页端实际只发送 ``{1:conversation_type=1, 2:[target,self]}``；
+    participant 顺序保持目标用户在前、当前账号在后。
+    """
+    participants = [str(target_uid or "").strip(), str(self_uid or "").strip()]
+    if any(not uid.isdigit() or int(uid) <= 0 for uid in participants):
+        raise ValueError("建会参与者必须是正整数 uid")
+    if participants[0] == participants[1]:
+        raise ValueError("建会目标不能是当前账号")
+    body609 = _enc_v(1, 1) + b"".join(
+        _enc_v(2, int(uid)) for uid in participants)
+    # 当前网页端 cmd=609 的 Request.inbox_type(field 6) 为 0；读取和发送
+    # 请求使用 1。复用后者会得到业务错误 code=4 INVALID_REQUEST。
+    envelope.setdefault("inbox_type", 0)
+    return _build_envelope(609, _enc_ld(609, body609), **envelope)
 
 
 def build_send_request(conv_id: str, conv_type: int, conv_short_id: int,
                        ticket: str, text: str, client_msg_id: str,
-                       stime_ms: int) -> bytes:
+                       stime_ms: int, **envelope) -> bytes:
     """构造 send 请求(cmd 100)。body(field 8→100)= SendMessageRequestBody:
     {1:conv_id, 2:type, 3:short_id, 4:content_json, 5:[ext...], 6:msg_type=7, 7:ticket, 8:client_msg_id}。
     content = {"text":..,"aweType":700,"mention_users":[],"richTextInfos":[]}。
@@ -365,7 +406,7 @@ def build_send_request(conv_id: str, conv_type: int, conv_short_id: int,
         + _enc_ld(7, ticket.encode("utf-8"))
         + _enc_ld(8, client_msg_id.encode("utf-8"))
     )
-    return _rebuild_envelope(100, _enc_ld(100, body100))
+    return _build_envelope(100, _enc_ld(100, body100), **envelope)
 
 
 def parse_send_response(resp: bytes) -> dict:
@@ -403,6 +444,98 @@ def parse_send_response(resp: bytes) -> dict:
         return {"ok": False, "msg": "", "cmd": 0, "error_code": 0}
     return {"ok": (cmd > 0 and msg == "OK" and err == 0),
             "msg": msg, "cmd": cmd, "error_code": err}
+
+
+def _create_result(status: dict, conversation=None, *, check_code=0,
+                   check_message="", body_status=0, extra_info="") -> dict:
+    conversation = conversation if isinstance(conversation, dict) else {}
+    conv_id = str(conversation.get("conv_id")
+                  or conversation.get("conversation_id") or "")
+    short_id = str(conversation.get("conv_short_id")
+                   or conversation.get("conversation_short_id") or "")
+    conv_type = conversation.get("conv_type",
+                                 conversation.get("conversation_type", 0))
+    ticket = str(conversation.get("ticket") or "")
+    try:
+        conv_type = int(conv_type or 0)
+        check_code = int(check_code or 0)
+        body_status = int(body_status or 0)
+    except (TypeError, ValueError):
+        conv_type, check_code, body_status = 0, 0, 0
+    normalized = {
+        "conv_id": conv_id,
+        "conv_short_id": short_id,
+        "conv_type": conv_type,
+        "ticket": ticket,
+    }
+    complete = bool(conv_id and short_id and conv_type == 1 and ticket)
+    envelope_ok = bool(status.get("ok") and status.get("cmd") == 609)
+    ok = envelope_ok and check_code == 0 and body_status == 0 and complete
+    error_code = int(status.get("error_code") or check_code or body_status or 0)
+    message = str(check_message or status.get("msg") or extra_info or "")
+    return {
+        "ok": ok,
+        "msg": "OK" if ok else message,
+        "cmd": int(status.get("cmd") or 0),
+        "error_code": error_code,
+        "check_code": check_code,
+        "status": body_status,
+        "extra_info": str(extra_info or ""),
+        "conversation": normalized if complete else {},
+    }
+
+
+def parse_create_conversation_response(resp: bytes) -> dict:
+    """解析 cmd=609 响应并返回可直接用于 cmd=100 的会话标识。
+
+    Response.body.field609 是 CreateConversationV2ResponseBody：field 1 为
+    ConversationInfoV2，后者 field 1..4 分别为 id、short_id、type、ticket。
+    """
+    status = parse_send_response(resp)
+    if not resp:
+        return _create_result(status)
+    if resp.lstrip().startswith((b"{", b"[")):
+        try:
+            payload = json.loads(resp)
+        except (TypeError, ValueError):
+            return _create_result(status)
+        if not isinstance(payload, dict):
+            return _create_result(status)
+        inner = payload.get("body") or {}
+        if isinstance(inner, dict):
+            inner = (inner.get("create_conversation_v2_body")
+                     or inner.get("609") or inner)
+        if not isinstance(inner, dict):
+            return _create_result(status)
+        return _create_result(
+            status, inner.get("conversation"),
+            check_code=inner.get("check_code", 0),
+            check_message=inner.get("check_message", ""),
+            body_status=inner.get("status", 0),
+            extra_info=inner.get("extra_info", ""))
+
+    env = _get_fields(resp)
+    body_raw = _first(env, 6)
+    if not isinstance(body_raw, bytes):
+        return _create_result(status)
+    body609_raw = _first(_get_fields(body_raw), 609)
+    if not isinstance(body609_raw, bytes):
+        return _create_result(status)
+    body609 = _get_fields(body609_raw)
+    core_raw = _first(body609, 1)
+    core = _get_fields(core_raw) if isinstance(core_raw, bytes) else {}
+    conversation = {
+        "conv_id": _s(_first(core, 1, b"")),
+        "conv_short_id": _s(_first(core, 2, "")),
+        "conv_type": _first(core, 3) or 0,
+        "ticket": _s(_first(core, 4, b"")),
+    }
+    return _create_result(
+        status, conversation,
+        check_code=_first(body609, 2) or 0,
+        check_message=_s(_first(body609, 3, b"")),
+        extra_info=_s(_first(body609, 4, b"")),
+        body_status=_first(body609, 5) or 0)
 
 
 def _ext_map(m: Dict[int, list]) -> Dict[str, str]:

@@ -42,7 +42,7 @@ function fixture() {
     clearTimeout() {},
   });
   vm.runInContext(`
-    let PLATFORM = 'douyin', HUB_ACC = '1', DM_CONV = null;
+    let PLATFORM = 'douyin', HUB_ACC = '1', DM_CONV = null, DM_NEW_TARGET = '';
     let CURRENT_TAB = 'overview', INFLIGHT = 0, _apiFailures = 0;
     const VIEW_REQUESTS = new Map(); let VIEW_SERIAL = 0;
     let CONTENT_PAGE = 1, CONTENT_PAGE_SIZE = 20;

@@ -2803,6 +2803,7 @@ let HUB_ACC = "";
 let HUB_TAB = (() => { try { return localStorage.getItem("dym-hubtab") || "myworks"; } catch (e) { return "myworks"; } })();
 let DM_CONV = null;     // 当前打开的会话 id
 let DM_CONVS = [];      // 会话缓存(供发送时取 peer 信息)
+let DM_NEW_TARGET = ""; // 尚未建会的抖音号或 sec_uid
 function hubAccKey() { return "dym-hubacc:" + PLATFORM; }
 function loadHubAcc() { try { HUB_ACC = localStorage.getItem(hubAccKey()) || ""; } catch (e) { HUB_ACC = ""; } }
 function setHubAcc(id) { HUB_ACC = String(id || ""); try { localStorage.setItem(hubAccKey(), HUB_ACC); } catch (e) {} if (HUB_TAB === "dm") startDmStream(); }
@@ -2848,7 +2849,7 @@ async function checkBrowserEnvironment(id) {
   });
 }
 
-// 私信页:用当前选中账号打开真实浏览器手动收发(抖音私信走 WS,只能这样)
+// 私信页:用当前选中账号打开真实浏览器手动收发。
 function openHubAccountBrowser() {
   if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
   openAccountBrowser(+HUB_ACC);
@@ -2859,6 +2860,7 @@ function openAccountHub(id) {
   setHubAcc(id);
   const s = $("hub-acc"); if (s) { s.value = HUB_ACC; if (s._csSync) s._csSync(); }
   DM_CONV = null;
+  DM_NEW_TARGET = "";
   refreshHubSummary();
   switchTab("hub");
   switchHubTab("myworks");   // 默认落到「我的作品」,可再切关注/粉丝/私信
@@ -2880,6 +2882,7 @@ function onHubAcc() {
   const sel = $("hub-acc"); if (!sel) return;
   setHubAcc(sel.value);
   DM_CONV = null;
+  DM_NEW_TARGET = "";
   refreshHubSummary();
   refreshHubPanel();
 }
@@ -3236,6 +3239,7 @@ async function syncDm() {
 }
 async function openDmConv(convId) {
   DM_CONV = convId;
+  DM_NEW_TARGET = "";
   const isCurrent = beginViewRequest("open-dm-conv", () => `${HUB_ACC}:${DM_CONV}`);
   const accountId = HUB_ACC;
   document.querySelectorAll("#dm-convs .dm-conv").forEach(e => e.classList.toggle("active", e.dataset.conv === convId));
@@ -3249,6 +3253,39 @@ async function openDmConv(convId) {
   if (!isCurrent()) return;
   markDmRead(convId);
   await refreshDmMessages();
+}
+
+function normalizeDmTarget(value) {
+  let target = String(value || "").trim();
+  if (!target) return "";
+  try {
+    const url = new URL(target);
+    if (url.protocol !== "https:" || !/(^|\.)douyin\.com$/i.test(url.hostname)) return "";
+    const match = url.pathname.match(/\/user\/([^/?#]+)/);
+    if (!match) return "";
+    target = decodeURIComponent(match[1]);
+  } catch (_) {}
+  return target.replace(/^@/, "").trim();
+}
+
+async function startNewDm() {
+  if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
+  if (PLATFORM !== "douyin") return;
+  const raw = await uiPrompt({
+    title: "发起新私信",
+    hint: "填写对方抖音号、主页链接或 sec_uid。抖音号会先精确解析为内部 UID。",
+    placeholder: "抖音号 / https://www.douyin.com/user/...",
+  });
+  if (raw === null) return;
+  const target = normalizeDmTarget(raw);
+  if (!target) { toast("目标用户不能为空", "err"); return; }
+  DM_CONV = null;
+  DM_NEW_TARGET = target;
+  document.querySelectorAll("#dm-convs .dm-conv").forEach(e => e.classList.remove("active"));
+  const thread = $("dm-thread");
+  if (thread) thread.innerHTML = `<div class="empty"><div class="empty-ic">${ic("i-send")}</div><div class="empty-t">新私信</div><div class="empty-sub">目标 ${esc(target)}</div></div>`;
+  const input = $("dm-input");
+  if (input) { input.placeholder = "输入第一条私信…"; input.focus(); }
 }
 
 function dmRuleSummary(rule) {
@@ -3386,21 +3423,39 @@ async function refreshDmMessages() {
 async function sendDm() {
   const inp = $("dm-input"); const text = (inp.value || "").trim();
   if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
-  if (!DM_CONV) { toast("请先选择左侧会话", "err"); return; }
+  if (!DM_CONV && !DM_NEW_TARGET) { toast("请选择会话或点“新私信”", "err"); return; }
   if (!text) return;
   const c = DM_CONVS.find(x => x.conv_id === DM_CONV) || {};
-  const accountId = HUB_ACC, conversationId = DM_CONV;
+  const accountId = HUB_ACC, conversationId = DM_CONV, newTarget = DM_NEW_TARGET;
+  const numericTarget = /^\d+$/.test(newTarget);
   await withBusy(evtBtn(), "发送中", async () => {
     try {
       const result = await api("/api/account-actions", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ account_id: +accountId, action: "send_dm", target_uid: c.peer_uid || "", target_sec_uid: c.peer_sec_uid || "", target_nick: c.peer_nickname || "", conv_id: conversationId, content: text, run_now: true })
+        body: JSON.stringify({
+          account_id: +accountId, action: "send_dm",
+          target_uid: c.peer_uid || (numericTarget ? newTarget : ""),
+          target_sec_uid: c.peer_sec_uid || (!numericTarget ? newTarget : ""),
+          target_nick: c.peer_nickname || "", conv_id: conversationId || "",
+          content: text, run_now: true,
+        })
       });
       if (HUB_ACC === accountId && DM_CONV === conversationId && inp.value.trim() === text) inp.value = "";
       toast(result.ran ? "已发送" : `任务 #${result.id} 已保留：${result.execution_error || "等待队列发送"}`, result.ran ? "ok" : "info", 6000);
       // 发完重拉历史,展示刚发出的消息(imapi 有短暂延迟,稍等再拉)
       await new Promise(r => setTimeout(r, 700));
-      if (HUB_ACC === accountId && DM_CONV === conversationId) await openDmConv(conversationId);
+      if (HUB_ACC !== accountId || DM_CONV !== conversationId) return;
+      if (conversationId) await openDmConv(conversationId);
+      else {
+        await refreshDmConvs();
+        const created = DM_CONVS.find(row =>
+          String(row.peer_uid || "") === newTarget || String(row.peer_sec_uid || "") === newTarget);
+        if (created) {
+          DM_NEW_TARGET = "";
+          inp.placeholder = "输入私信内容…";
+          await openDmConv(created.conv_id);
+        }
+      }
     } catch (e) { toast("发送失败:" + e.message, "err"); }
   });
 }

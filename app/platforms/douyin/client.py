@@ -19,6 +19,7 @@ from ...netfp import impersonate_for_ua
 
 BASE = "https://www.douyin.com"
 IMAPI_SEND_URL = "https://imapi.douyin.com/v1/message/send"
+IMAPI_CREATE_URL = "https://imapi.douyin.com/v2/conversation/create"
 
 
 def cookie_from_state(storage_state_json: str) -> str:
@@ -81,6 +82,7 @@ class DouyinClient:
         self.impersonate = impersonate_for_ua(user_agent)  # TLS 指纹复刻,绕 JA3 风控
         self._session: AsyncSession | None = None
         self._ms_token: str | None = None
+        self._im_sequence_id = 10000
         self.last_error: str = ""
         # 只有没有拿到可判定的响应时才置 True；上层据此把任务标记为
         # uncertain，绝不以浏览器重试同一条写请求造成重复评论/私信/关注。
@@ -108,6 +110,17 @@ class DouyinClient:
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": self.accept_language,
             "Cookie": self.cookie,
+        }
+
+    def _im_request_options(self, referer: str = BASE + "/") -> Dict[str, Any]:
+        self._im_sequence_id += 1
+        return {
+            "sequence_id": self._im_sequence_id,
+            "user_agent": self.ua,
+            "locale": self.locale,
+            "screen_width": self.screen_width,
+            "screen_height": self.screen_height,
+            "referer": referer,
         }
 
     def _build_url(self, path: str, params: Dict[str, Any]) -> str:
@@ -239,6 +252,16 @@ class DouyinClient:
         error = self.last_error or fallback
         return f"write_uncertain:{error}" if self.last_write_uncertain else error
 
+    @staticmethod
+    def _im_rejection(parsed: dict) -> str:
+        """Normalize an IM business envelope without hiding auth expiry."""
+        message = str(parsed.get("msg") or "")
+        error_code = int(parsed.get("error_code") or 0)
+        if error_code == 1 and "session length" in message.casefold():
+            return f"logged_out:imapi {message}"
+        return (f"api_rejected:code={error_code}"
+                f"{(' ' + message) if message else ''}")
+
     # ── 写操作(网页接口,需显式 douyin_write_mode=api|hybrid) ──
     async def post_comment(self, aweme_id: str, text: str, *,
                            reply_comment_id: str = "") -> tuple[bool, str, str]:
@@ -293,6 +316,64 @@ class DouyinClient:
         return self._write_result(
             data, self._write_error("follow_no_response"))
 
+    async def create_dm_conversation(
+            self, target_uid: str, self_uid: str, *, target_sec_uid: str = ""
+    ) -> tuple[Optional[dict], str]:
+        """通过网页端 cmd=609 创建单聊，返回 cmd=100 所需会话标识。"""
+        from ...browser.douyin_im_pb import (
+            build_create_conversation_request,
+            parse_create_conversation_response,
+        )
+
+        target_uid = str(target_uid or "").strip()
+        self_uid = str(self_uid or "").strip()
+        if not target_uid.isdigit() or not self_uid.isdigit():
+            return None, "建会需要目标和当前账号的数字 uid"
+        if target_uid == self_uid:
+            return None, "不能给当前账号创建单聊"
+        self.last_error = ""
+        self.last_write_uncertain = False
+        owned = self._session is None
+        cli = self._session or AsyncSession(impersonate=self.impersonate)
+        referer = f"{BASE}/user/{target_sec_uid or target_uid}"
+        try:
+            body = build_create_conversation_request(
+                target_uid, self_uid,
+                **self._im_request_options(referer))
+            response = await cli.post(
+                IMAPI_CREATE_URL, data=body,
+                headers={**self._headers(referer),
+                         "Accept": "application/x-protobuf",
+                         "Content-Type": "application/x-protobuf",
+                         "Origin": BASE},
+                impersonate=self.impersonate, timeout=self.timeout,
+                proxy=self.proxy or None)
+            raw = response.content
+            if response.status_code != 200 or not raw:
+                self.last_error = (f"http_{response.status_code}"
+                                   if response.status_code != 200 else "empty_body")
+                self.last_write_uncertain = (
+                    response.status_code >= 500 or response.status_code == 200)
+                return None, self._write_error("imapi_create_no_response")
+            parsed = parse_create_conversation_response(raw)
+            if parsed.get("ok"):
+                return dict(parsed["conversation"]), ""
+            message = str(parsed.get("msg") or "")
+            error_code = int(parsed.get("error_code") or 0)
+            if not error_code and message in {"", "OK"}:
+                self.last_error = "invalid_response"
+                self.last_write_uncertain = True
+                return None, self._write_error("imapi_create_invalid_response")
+            return None, self._im_rejection(parsed)
+        except Exception as exc:
+            self.last_error = f"network:{type(exc).__name__}"
+            self.last_write_uncertain = True
+            return None, self._write_error("imapi_create_network")
+        finally:
+            if owned:
+                await cli.close()
+                self._ms_token = None
+
     async def send_dm(self, conv_id: str, conv_short_id: str, ticket: str,
                       text: str, *, conv_type: int = 1) -> tuple[bool, str]:
         """直连 imapi protobuf 发送已有会话私信，不创建或猜测会话。"""
@@ -310,7 +391,8 @@ class DouyinClient:
         try:
             body = build_send_request(
                 str(conv_id), int(conv_type or 1), int(conv_short_id), str(ticket),
-                text, str(uuid.uuid4()), int(time.time() * 1000))
+                text, str(uuid.uuid4()), int(time.time() * 1000),
+                **self._im_request_options())
             response = await cli.post(
                 IMAPI_SEND_URL, data=body,
                 headers={**self._headers(),
@@ -327,15 +409,14 @@ class DouyinClient:
                     response.status_code >= 500 or response.status_code == 200)
                 return False, self._write_error("imapi_no_response")
             parsed = parse_send_response(raw)
-            if parsed.get("ok"):
+            if parsed.get("ok") and parsed.get("cmd") == 100:
                 return True, ""
-            if not parsed.get("msg") and not parsed.get("error_code"):
+            if (parsed.get("ok") or
+                    (not parsed.get("msg") and not parsed.get("error_code"))):
                 self.last_error = "invalid_response"
                 self.last_write_uncertain = True
                 return False, self._write_error("imapi_invalid_response")
-            message = str(parsed.get("msg") or "")
-            return False, (f"api_rejected:code={parsed.get('error_code')}"
-                           f"{(' ' + message) if message else ''}")
+            return False, self._im_rejection(parsed)
         except Exception as exc:
             self.last_error = f"network:{type(exc).__name__}"
             self.last_write_uncertain = True
@@ -401,7 +482,8 @@ class DouyinClient:
         owned = self._session is None
         cli = self._session or AsyncSession(impersonate=self.impersonate)
         try:
-            body = build_init_request(int(time.time() * 1_000_000))
+            body = build_init_request(
+                int(time.time() * 1_000_000), **self._im_request_options())
             response = await cli.post(
                 GET_MESSAGE_BY_INIT_URL, data=body,
                 headers={**self._headers(),
@@ -416,9 +498,10 @@ class DouyinClient:
                                    if response.status_code != 200 else "empty_body")
                 return []
             status = parse_send_response(raw)
-            if not status.get("ok"):
-                self.last_error = (f"imapi_rejected:{status.get('error_code') or 0}:"
-                                   f"{status.get('msg') or 'invalid_response'}")
+            if not status.get("ok") or status.get("cmd") != 2043:
+                self.last_error = (self._im_rejection(status)
+                                   if status.get("msg") or status.get("error_code")
+                                   else "imapi_invalid_response")
                 return []
             conversations = parse_conversations(raw)
             profiles = await self.fetch_im_user_profiles(
@@ -586,6 +669,93 @@ class DouyinClient:
         if data and data.get("user"):
             return data["user"]
         return None
+
+    async def resolve_user_identifier(
+            self, identifier: str) -> tuple[Optional[dict], str]:
+        """Resolve a visible Douyin ID to the numeric UID used by IM.
+
+        A bare numeric value is not assumed to be an IM UID. Douyin exposes a
+        separate visible ``unique_id``/``short_id`` namespace, so new-message
+        flows must exact-match the first-party user-search response before
+        building cmd=609.
+        """
+        raw = str(identifier or "").strip().lstrip("@")
+        if not raw:
+            return None, "缺少抖音号"
+        try:
+            parsed_url = urllib.parse.urlsplit(raw)
+            if parsed_url.scheme in {"http", "https"}:
+                if not ((parsed_url.hostname or "").casefold() == "douyin.com"
+                        or (parsed_url.hostname or "").casefold().endswith(
+                            ".douyin.com")):
+                    return None, "目标主页不是 douyin.com"
+                match = re.search(r"/user/([^/?#]+)", parsed_url.path)
+                raw = urllib.parse.unquote(match.group(1)) if match else ""
+        except ValueError:
+            return None, "目标主页格式无效"
+        if not raw:
+            return None, "目标主页缺少用户标识"
+
+        if raw.startswith("MS4wLjAB"):
+            profile = await self.fetch_profile(raw)
+            if not profile:
+                return None, self.last_error or "sec_uid 查询无结果"
+            return self._resolved_user(profile), ""
+
+        payload = await self._get_json(
+            "/aweme/v1/web/discover/search/",
+            {
+                "keyword": raw,
+                "search_channel": "aweme_user_web",
+                "search_source": "normal_search",
+                "query_correct_type": "1",
+                "is_filter_search": "0",
+                "offset": 0,
+                "count": 20,
+            },
+            referer=f"{BASE}/search/{urllib.parse.quote(raw, safe='')}?type=user",
+        )
+        if not payload:
+            return None, self.last_error or "用户搜索无响应"
+        containers = [payload]
+        for key in ("data", "result"):
+            if isinstance(payload.get(key), dict):
+                containers.append(payload[key])
+        rows: list = []
+        for container in containers:
+            for key in ("user_list", "users", "data"):
+                value = container.get(key)
+                if isinstance(value, list):
+                    rows.extend(value)
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            user = (row.get("user_info") or row.get("user")
+                    or row.get("aweme_user") or row)
+            if not isinstance(user, dict):
+                continue
+            visible_ids = {
+                str(user.get("unique_id") or "").strip(),
+                str(user.get("short_id") or "").strip(),
+            }
+            if raw not in visible_ids:
+                continue
+            resolved = self._resolved_user(user)
+            if resolved.get("uid") and resolved.get("sec_uid"):
+                return resolved, ""
+            return None, "搜索结果缺少 uid/sec_uid"
+        return None, "未找到完全匹配的抖音号"
+
+    @staticmethod
+    def _resolved_user(user: dict) -> dict:
+        return {
+            "uid": str(user.get("uid") or user.get("user_id") or ""),
+            "sec_uid": str(user.get("sec_uid") or user.get("sec_user_id") or ""),
+            "unique_id": str(user.get("unique_id") or ""),
+            "short_id": str(user.get("short_id") or ""),
+            "nickname": str(user.get("nickname") or ""),
+        }
 
     # ── 作品列表(对应 NativeClient.FetchVideoList)──
     async def fetch_video_list(self, sec_uid: str, max_cursor: int = 0,

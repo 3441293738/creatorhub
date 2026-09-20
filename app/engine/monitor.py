@@ -4195,14 +4195,28 @@ class MonitorEngine:
             ua = acc.ua or self.cfg.engine.user_agent
             proxy = acc.proxy or ""
             direct_environment = douyin_client_environment(acc)
-            # 抖音发私信优先走无头 API(imapi/send):取会话的 short_id+ticket
+            # 先复用本地会话；没有会话时，API 分支会解析双方数字 uid 后建会。
             dm_conv_id, dm_short_id, dm_ticket = t.conv_id, "", ""
-            if action == "send_dm" and platform == "douyin" and t.conv_id:
-                _conv = s.exec(select(DmConversation).where(
+            dm_self_uid, dm_self_sec_uid = acc.uid or "", acc.sec_uid or ""
+            dm_target_nick = t.target_nick or ""
+            if action == "send_dm" and platform == "douyin":
+                _convs = s.exec(select(DmConversation).where(
                     DmConversation.account_id == t.account_id,
-                    DmConversation.conv_id == t.conv_id)).first()
+                    DmConversation.platform == "douyin")).all()
+                _conv = next((c for c in _convs if t.conv_id
+                              and c.conv_id == t.conv_id), None)
+                if _conv is None and target_uid:
+                    _conv = next((c for c in _convs
+                                  if c.peer_uid == target_uid), None)
+                if _conv is None and target_sec_uid:
+                    _conv = next((c for c in _convs
+                                  if c.peer_sec_uid == target_sec_uid), None)
                 if _conv:
+                    dm_conv_id = _conv.conv_id
                     dm_short_id, dm_ticket = _conv.conv_short_id, _conv.ticket
+                    target_uid = target_uid or _conv.peer_uid
+                    target_sec_uid = target_sec_uid or _conv.peer_sec_uid
+                    dm_target_nick = dm_target_nick or _conv.peer_nickname
             # commit 会 expire 本 session 内的实例,先把所需原语取出来再 commit
             native_mode = acc.identity_mode == "native"
             # 纯 API 模式不需要构造浏览器身份；hybrid/browser 只有在
@@ -4249,6 +4263,161 @@ class MonitorEngine:
                 return ok, err, "browser"
             return False, f"未知动作 {action}", "browser"
 
+        def _store_dm_conversation(row: dict, peer_uid: str,
+                                   peer_sec_uid: str, peer_nickname: str,
+                                   self_uid: str) -> None:
+            """建会成功后先落库；后续发送结果不影响会话标识的保存。"""
+            conv_id = str(row.get("conv_id") or "")
+            if not conv_id:
+                return
+            now = datetime.utcnow()
+            with get_session() as session:
+                conv = session.exec(select(DmConversation).where(
+                    DmConversation.account_id == account_id,
+                    DmConversation.conv_id == conv_id)).first()
+                if conv is None:
+                    conv = DmConversation(
+                        platform="douyin", account_id=account_id,
+                        conv_id=conv_id)
+                conv.peer_uid = str(peer_uid or conv.peer_uid or "")
+                conv.peer_sec_uid = str(peer_sec_uid or conv.peer_sec_uid or "")
+                conv.peer_nickname = str(
+                    peer_nickname or conv.peer_nickname or "")
+                conv.conv_short_id = str(row.get("conv_short_id") or "")
+                conv.ticket = str(row.get("ticket") or "")
+                if row.get("last_text") is not None:
+                    conv.last_text = str(row.get("last_text") or "")
+                if row.get("last_time"):
+                    conv.last_time = int(row["last_time"])
+                raw = _loads(conv.raw_json)
+                raw["self_uid"] = str(self_uid or raw.get("self_uid") or "")
+                raw["conversation_type"] = int(row.get("conv_type") or 1)
+                conv.raw_json = json.dumps(raw, ensure_ascii=False)
+                conv.fetched_at = now
+                session.add(conv)
+                task = session.get(AccountActionTask, task_id)
+                if task:
+                    task.conv_id = conv_id
+                    task.target_uid = str(peer_uid or task.target_uid or "")
+                    task.target_sec_uid = str(
+                        peer_sec_uid or task.target_sec_uid or "")
+                    task.target_nick = str(
+                        peer_nickname or task.target_nick or "")
+                    session.add(task)
+                account = session.get(DouyinAccount, account_id)
+                if account and self_uid and not account.uid:
+                    account.uid = str(self_uid)
+                    session.add(account)
+                session.commit()
+
+        def _conversation_match(rows: list[dict], *, conv_id: str,
+                                peer_uid: str, peer_sec_uid: str):
+            if conv_id:
+                found = next((row for row in rows
+                              if str(row.get("conv_id") or "") == conv_id), None)
+                if found:
+                    return found
+            if peer_uid:
+                found = next((row for row in rows
+                              if str(row.get("peer_uid") or "") == peer_uid), None)
+                if found:
+                    return found
+            if peer_sec_uid:
+                return next((row for row in rows
+                             if str(row.get("peer_sec_uid") or "") == peer_sec_uid), None)
+            return None
+
+        async def _send_new_or_existing_dm(client) -> tuple[bool, str]:
+            nonlocal target_uid, target_sec_uid, dm_self_uid, dm_self_sec_uid
+            nonlocal dm_conv_id, dm_short_id, dm_ticket, dm_target_nick
+
+            if dm_conv_id and dm_short_id and dm_ticket:
+                _store_dm_conversation({
+                    "conv_id": dm_conv_id,
+                    "conv_short_id": dm_short_id,
+                    "ticket": dm_ticket,
+                    "conv_type": 1,
+                }, target_uid, target_sec_uid, dm_target_nick, dm_self_uid)
+                return await client.send_dm(
+                    dm_conv_id, dm_short_id, dm_ticket, content)
+
+            if dm_conv_id:
+                # An existing conversation does not need either participant UID.
+                # Recover missing send credentials from the current snapshot first.
+                rows = await client.fetch_dm_conversations()
+                conversation = _conversation_match(
+                    rows, conv_id=dm_conv_id, peer_uid=target_uid,
+                    peer_sec_uid=target_sec_uid)
+                if conversation is None:
+                    return False, (client.last_error
+                                   or "已有会话缺 short_id/ticket，同步后仍未找到")
+                dm_conv_id = str(conversation.get("conv_id") or "")
+                dm_short_id = str(conversation.get("conv_short_id") or "")
+                dm_ticket = str(conversation.get("ticket") or "")
+                target_uid = str(conversation.get("peer_uid") or target_uid)
+                target_sec_uid = str(
+                    conversation.get("peer_sec_uid") or target_sec_uid)
+                _store_dm_conversation(
+                    conversation, target_uid, target_sec_uid,
+                    str(conversation.get("peer_nickname") or dm_target_nick),
+                    dm_self_uid)
+                return await client.send_dm(
+                    dm_conv_id, dm_short_id, dm_ticket, content)
+
+            if target_uid and not target_sec_uid:
+                profile, resolve_error = await client.resolve_user_identifier(
+                    target_uid)
+                if profile is None:
+                    return False, f"target_resolution_failed:{resolve_error}"
+                target_uid = str(profile.get("uid") or "")
+                target_sec_uid = str(profile.get("sec_uid") or "")
+                dm_target_nick = str(profile.get("nickname")
+                                     or dm_target_nick)
+            if not target_uid.isdigit() and target_sec_uid:
+                profile = await client.fetch_profile(target_sec_uid)
+                target_uid = str((profile or {}).get("uid")
+                                 or (profile or {}).get("user_id") or "")
+                dm_target_nick = str((profile or {}).get("nickname")
+                                     or dm_target_nick)
+            if not target_uid.isdigit():
+                return False, "缺少目标数字 uid，且无法由 sec_uid 解析"
+
+            if not dm_self_uid.isdigit():
+                profile = (await client.fetch_profile(dm_self_sec_uid)
+                           if dm_self_sec_uid else await client.fetch_self_profile())
+                dm_self_uid = str((profile or {}).get("uid")
+                                  or (profile or {}).get("user_id") or "")
+                dm_self_sec_uid = str((profile or {}).get("sec_uid")
+                                      or dm_self_sec_uid)
+            if not dm_self_uid.isdigit():
+                return False, "缺少当前账号数字 uid，且无法从账号资料解析"
+
+            conversation, create_error = await client.create_dm_conversation(
+                target_uid, dm_self_uid, target_sec_uid=target_sec_uid)
+            if conversation is None and str(create_error).startswith(
+                    "write_uncertain:"):
+                # 建会请求可能已落库：先同步确认，绝不直接重放 cmd=609。
+                rows = await client.fetch_dm_conversations()
+                conversation = _conversation_match(
+                    rows, conv_id="", peer_uid=target_uid,
+                    peer_sec_uid=target_sec_uid)
+                if conversation is None:
+                    return False, create_error
+            elif conversation is None:
+                return False, create_error
+
+            if conversation is not None:
+                dm_conv_id = str(conversation.get("conv_id") or "")
+                dm_short_id = str(conversation.get("conv_short_id") or "")
+                dm_ticket = str(conversation.get("ticket") or "")
+                _store_dm_conversation(
+                    conversation, target_uid, target_sec_uid,
+                    str(conversation.get("peer_nickname") or dm_target_nick),
+                    dm_self_uid)
+
+            return await client.send_dm(
+                dm_conv_id, dm_short_id, dm_ticket, content)
+
         method = "browser"
         try:
             if platform == "douyin" and dy_write_mode in {"api", "hybrid"}:
@@ -4270,16 +4439,19 @@ class MonitorEngine:
                             ok, err = await client.set_follow_state(
                                 target_uid, target_sec_uid, unfollow=True)
                         elif action == "send_dm":
-                            ok, err = await client.send_dm(
-                                dm_conv_id, dm_short_id, dm_ticket, content)
+                            ok, err = await _send_new_or_existing_dm(client)
                         else:
                             ok, err = False, f"未知动作 {action}"
                 # A known rejection has a response and can fall back; an
                 # ambiguous request is deliberately not submitted twice.
                 if (not ok and dy_write_mode == "hybrid"
-                        and not str(err or "").startswith("write_uncertain:")):
-                    ok, err, method = await _browser_action()
-                    method = "browser_fallback" if method == "browser" else method
+                        and not str(err or "").startswith((
+                            "write_uncertain:", "target_resolution_failed:"))):
+                    category, _signal = classify_platform_error(err)
+                    if category == RiskCategory.BUSINESS:
+                        ok, err, method = await _browser_action()
+                        method = ("browser_fallback"
+                                  if method == "browser" else method)
             else:
                 ok, err, method = await _browser_action()
         except Exception as e:

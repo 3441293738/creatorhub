@@ -5,6 +5,52 @@ from app.platforms.douyin.client import DouyinClient
 
 
 class DouyinClientSearchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resolve_visible_numeric_douyin_id_to_im_uid(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client._get_json = AsyncMock(return_value={
+            "user_list": [{
+                "user_info": {
+                    "uid": "3928976331901290",
+                    "sec_uid": "MS4wLjABtarget",
+                    "unique_id": "66790575681",
+                    "short_id": "",
+                    "nickname": "HP惠普暗影精灵(直播版)",
+                },
+            }],
+        })
+
+        user, error = await client.resolve_user_identifier("66790575681")
+
+        self.assertEqual(error, "")
+        self.assertEqual(user, {
+            "uid": "3928976331901290",
+            "sec_uid": "MS4wLjABtarget",
+            "unique_id": "66790575681",
+            "short_id": "",
+            "nickname": "HP惠普暗影精灵(直播版)",
+        })
+        params = client._get_json.await_args.args[1]
+        self.assertEqual(params["search_channel"], "aweme_user_web")
+        self.assertEqual(params["keyword"], "66790575681")
+
+    async def test_resolve_douyin_id_requires_exact_visible_id_match(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client._get_json = AsyncMock(return_value={
+            "user_list": [{
+                "user_info": {
+                    "uid": "66790575681",
+                    "sec_uid": "MS4wLjABwrong",
+                    "unique_id": "different-id",
+                    "short_id": "12345",
+                },
+            }],
+        })
+
+        user, error = await client.resolve_user_identifier("66790575681")
+
+        self.assertIsNone(user)
+        self.assertEqual(error, "未找到完全匹配的抖音号")
+
     async def test_fetch_dm_conversations_posts_init_protocol_and_hydrates(self):
         client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
 
@@ -29,7 +75,7 @@ class DouyinClientSearchTests(unittest.IsolatedAsyncioTestCase):
                 patch("app.browser.douyin_im_pb.build_init_request",
                       return_value=b"protobuf-request") as build, \
                 patch("app.browser.douyin_im_pb.parse_send_response",
-                      return_value={"ok": True}), \
+                      return_value={"ok": True, "cmd": 2043}), \
                 patch("app.browser.douyin_im_pb.parse_conversations",
                       return_value=parsed):
             async with client.session_scope():
@@ -228,6 +274,53 @@ class DouyinClientSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ok)
         self.assertIn("conv_id/short_id/ticket", error)
 
+    async def test_create_dm_conversation_posts_current_protocol(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+
+        class Response:
+            status_code = 200
+            content = b"protobuf-create-response"
+
+        expected = {
+            "conv_id": "conv-new", "conv_short_id": "42",
+            "conv_type": 1, "ticket": "ticket-new",
+        }
+        fake_session = AsyncMock()
+        fake_session.post = AsyncMock(return_value=Response())
+        fake_session.close = AsyncMock()
+        with patch("app.platforms.douyin.client.AsyncSession", return_value=fake_session), \
+                patch("app.browser.douyin_im_pb.build_create_conversation_request",
+                      return_value=b"protobuf-create-request") as build, \
+                patch("app.browser.douyin_im_pb.parse_create_conversation_response",
+                      return_value={"ok": True, "conversation": expected}) as parse:
+            async with client.session_scope():
+                conversation, error = await client.create_dm_conversation(
+                    "123456", "987654", target_sec_uid="MS4wLjABAAAA")
+
+        self.assertEqual((conversation, error), (expected, ""))
+        build.assert_called_once()
+        parse.assert_called_once_with(b"protobuf-create-response")
+        request = fake_session.post.await_args
+        self.assertEqual(request.args[0],
+                         "https://imapi.douyin.com/v2/conversation/create")
+        self.assertEqual(request.kwargs["data"], b"protobuf-create-request")
+        self.assertEqual(request.kwargs["headers"]["Content-Type"],
+                         "application/x-protobuf")
+        self.assertEqual(request.kwargs["headers"]["Referer"],
+                         "https://www.douyin.com/user/MS4wLjABAAAA")
+
+    async def test_create_dm_timeout_is_write_uncertain(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        fake_session = AsyncMock()
+        fake_session.post = AsyncMock(side_effect=TimeoutError())
+        fake_session.close = AsyncMock()
+        with patch("app.platforms.douyin.client.AsyncSession", return_value=fake_session):
+            conversation, error = await client.create_dm_conversation(
+                "123456", "987654")
+        self.assertIsNone(conversation)
+        self.assertEqual(error, "write_uncertain:network:TimeoutError")
+        self.assertTrue(client.last_write_uncertain)
+
     async def test_send_dm_posts_existing_conversation_protocol(self):
         client = DouyinClient("sid_tt=x", "Mozilla/5.0.0 Chrome/130.0.0.0")
 
@@ -242,7 +335,7 @@ class DouyinClientSearchTests(unittest.IsolatedAsyncioTestCase):
                 patch("app.browser.douyin_im_pb.build_send_request",
                       return_value=b"protobuf-request") as build, \
                 patch("app.browser.douyin_im_pb.parse_send_response",
-                      return_value={"ok": True}) as parse:
+                      return_value={"ok": True, "cmd": 100}) as parse:
             async with client.session_scope():
                 ok, error = await client.send_dm(
                     "conv-1", "42", "ticket-1", "hello")

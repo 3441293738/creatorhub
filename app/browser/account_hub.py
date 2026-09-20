@@ -1892,8 +1892,10 @@ async def send_dm_api(mgr: BrowserManager, identity, conv_id: str,
         r = parse_send_response(body)
         print(f"[dm-send] conv={conv_id} status={resp.status} "
               f"ok={r['ok']} msg={r['msg']!r} code={r['error_code']} resp_len={len(body)}")
-        if resp.status == 200 and r["ok"]:
+        if resp.status == 200 and r["ok"] and r["cmd"] == 100:
             return True, ""
+        if resp.status == 200 and r["ok"]:
+            return False, "write_uncertain:发送回包命令不匹配"
         return False, f"发送被拒 status={resp.status} msg={r['msg']} code={r['error_code']}"
     except Exception as e:
         return False, f"发送失败: {e!r}"

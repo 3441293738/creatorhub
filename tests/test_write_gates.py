@@ -510,6 +510,349 @@ class WriteGateTests(unittest.TestCase):
             self.assertEqual(task.status, "done")
             self.assertEqual(task.method, "api")
 
+    def test_douyin_api_dm_creates_and_persists_missing_conversation(self):
+        account_id = self._cookie_account()
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.uid = "987654"
+            account.sec_uid = "self-sec"
+            session.add(account)
+            task = AccountActionTask(
+                platform="douyin", account_id=account_id, action="send_dm",
+                target_uid="123456", target_sec_uid="target-sec",
+                target_nick="visitor", content="hello", status="pending",
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            task_id = task.id
+        self.cfg.engine.douyin_write_mode = "api"
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        calls = []
+
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @asynccontextmanager
+            async def session_scope(self):
+                yield self
+
+            async def create_dm_conversation(self, *args, **kwargs):
+                calls.append(("create", args, kwargs))
+                return ({
+                    "conv_id": "conv-created", "conv_short_id": "42",
+                    "conv_type": 1, "ticket": "ticket-created",
+                }, "")
+
+            async def send_dm(self, *args, **kwargs):
+                calls.append(("send", args, kwargs))
+                return True, ""
+
+        with patch("app.engine.monitor.DouyinClient", FakeClient), \
+                patch("app.engine.monitor.send_dm", AsyncMock(
+                    side_effect=AssertionError("browser must not open"))):
+            result = asyncio.run(engine.execute_action_task(task_id))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([call[0] for call in calls], ["create", "send"])
+        self.assertEqual(calls[0][1], ("123456", "987654"))
+        self.assertEqual(calls[1][1],
+                         ("conv-created", "42", "ticket-created", "hello"))
+        with db.get_session() as session:
+            task = session.get(AccountActionTask, task_id)
+            conv = session.exec(select(DmConversation).where(
+                DmConversation.account_id == account_id,
+                DmConversation.conv_id == "conv-created")).one()
+            self.assertEqual(task.status, "done")
+            self.assertEqual(task.conv_id, "conv-created")
+            self.assertEqual(conv.peer_uid, "123456")
+            self.assertEqual(conv.peer_sec_uid, "target-sec")
+            self.assertEqual(conv.conv_short_id, "42")
+            self.assertEqual(conv.ticket, "ticket-created")
+            self.assertEqual(json.loads(conv.raw_json)["self_uid"], "987654")
+
+    def test_douyin_api_dm_resolves_visible_id_before_create(self):
+        account_id = self._cookie_account()
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.uid = "510601289795662"
+            session.add(account)
+            task = AccountActionTask(
+                platform="douyin", account_id=account_id, action="send_dm",
+                target_uid="66790575681", content="你好", status="pending",
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            task_id = task.id
+        self.cfg.engine.douyin_write_mode = "api"
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        calls = []
+
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @asynccontextmanager
+            async def session_scope(self):
+                yield self
+
+            async def resolve_user_identifier(self, value):
+                calls.append(("resolve", value))
+                return ({
+                    "uid": "3928976331901290",
+                    "sec_uid": "MS4wLjABtarget",
+                    "nickname": "HP惠普暗影精灵(直播版)",
+                }, "")
+
+            async def create_dm_conversation(self, *args, **kwargs):
+                calls.append(("create", args, kwargs))
+                return ({
+                    "conv_id": "0:1:510601289795662:3928976331901290",
+                    "conv_short_id": "7687444007923778105",
+                    "conv_type": 1,
+                    "ticket": "ticket-created",
+                }, "")
+
+            async def send_dm(self, *args, **kwargs):
+                calls.append(("send", args, kwargs))
+                return True, ""
+
+        with patch("app.engine.monitor.DouyinClient", FakeClient), \
+                patch("app.engine.monitor.send_dm", AsyncMock(
+                    side_effect=AssertionError("browser must not open"))):
+            result = asyncio.run(engine.execute_action_task(task_id))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls[0], ("resolve", "66790575681"))
+        self.assertEqual(calls[1][1],
+                         ("3928976331901290", "510601289795662"))
+        self.assertEqual(calls[2][1][0],
+                         "0:1:510601289795662:3928976331901290")
+        with db.get_session() as session:
+            task = session.get(AccountActionTask, task_id)
+            self.assertEqual(task.target_uid, "3928976331901290")
+            self.assertEqual(task.target_sec_uid, "MS4wLjABtarget")
+            self.assertEqual(task.target_nick, "HP惠普暗影精灵(直播版)")
+
+    def test_douyin_hybrid_dm_resolution_failure_never_falls_back_or_sends(self):
+        account_id = self._cookie_account()
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.uid = "510601289795662"
+            session.add(account)
+            task = AccountActionTask(
+                platform="douyin", account_id=account_id, action="send_dm",
+                target_uid="66790575681", content="你好", status="pending",
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            task_id = task.id
+        self.cfg.engine.douyin_write_mode = "hybrid"
+        browser = _BrowserStub()
+        engine = MonitorEngine(self.cfg, browser)
+
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @asynccontextmanager
+            async def session_scope(self):
+                yield self
+
+            async def resolve_user_identifier(self, value):
+                self.value = value
+                return None, "未找到完全匹配的抖音号"
+
+            async def create_dm_conversation(self, *_args, **_kwargs):
+                raise AssertionError("unresolved visible ID must not create")
+
+            async def send_dm(self, *_args, **_kwargs):
+                raise AssertionError("unresolved visible ID must not send")
+
+        with patch("app.engine.monitor.DouyinClient", FakeClient), \
+                patch("app.engine.monitor.send_dm", AsyncMock(
+                    side_effect=AssertionError("must not browser-fallback"))):
+            result = asyncio.run(engine.execute_action_task(task_id))
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(browser.identity_calls, 1)
+        with db.get_session() as session:
+            task = session.get(AccountActionTask, task_id)
+            self.assertEqual(task.status, "failed")
+            self.assertEqual(
+                task.error,
+                "target_resolution_failed:未找到完全匹配的抖音号")
+
+    def test_douyin_api_dm_create_timeout_syncs_before_send(self):
+        account_id = self._cookie_account()
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.uid = "987654"
+            session.add(account)
+            task = AccountActionTask(
+                platform="douyin", account_id=account_id, action="send_dm",
+                target_uid="123456", target_sec_uid="target-sec",
+                content="hello", status="pending",
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            task_id = task.id
+        self.cfg.engine.douyin_write_mode = "api"
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        calls = []
+
+        class FakeClient:
+            last_error = ""
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @asynccontextmanager
+            async def session_scope(self):
+                yield self
+
+            async def create_dm_conversation(self, *args, **kwargs):
+                calls.append("create")
+                return None, "write_uncertain:network:TimeoutError"
+
+            async def fetch_dm_conversations(self):
+                calls.append("sync")
+                return [{
+                    "conv_id": "conv-confirmed", "conv_short_id": "84",
+                    "ticket": "ticket-confirmed", "peer_uid": "123456",
+                    "peer_sec_uid": "target-sec", "peer_nickname": "visitor",
+                }]
+
+            async def send_dm(self, *args, **kwargs):
+                calls.append("send")
+                return True, ""
+
+        with patch("app.engine.monitor.DouyinClient", FakeClient):
+            result = asyncio.run(engine.execute_action_task(task_id))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls, ["create", "sync", "send"])
+        with db.get_session() as session:
+            task = session.get(AccountActionTask, task_id)
+            self.assertEqual(task.status, "done")
+            self.assertEqual(task.conv_id, "conv-confirmed")
+
+    def test_douyin_api_dm_repairs_existing_conversation_without_self_uid(self):
+        account_id = self._cookie_account()
+        with db.get_session() as session:
+            session.add(DmConversation(
+                account_id=account_id, platform="douyin",
+                conv_id="conv-partial", peer_sec_uid="target-sec",
+            ))
+            task = AccountActionTask(
+                platform="douyin", account_id=account_id, action="send_dm",
+                conv_id="conv-partial", target_sec_uid="target-sec",
+                content="hello", status="pending",
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            task_id = task.id
+        self.cfg.engine.douyin_write_mode = "api"
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        calls = []
+
+        class FakeClient:
+            last_error = ""
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @asynccontextmanager
+            async def session_scope(self):
+                yield self
+
+            async def fetch_dm_conversations(self):
+                calls.append("sync")
+                return [{
+                    "conv_id": "conv-partial", "conv_short_id": "84",
+                    "ticket": "ticket-repaired", "peer_uid": "123456",
+                    "peer_sec_uid": "target-sec", "peer_nickname": "visitor",
+                }]
+
+            async def fetch_self_profile(self):
+                raise AssertionError("existing conversations do not need self uid")
+
+            async def create_dm_conversation(self, *_args, **_kwargs):
+                raise AssertionError("existing conversations must not be recreated")
+
+            async def send_dm(self, *args, **kwargs):
+                calls.append(("send", args, kwargs))
+                return True, ""
+
+        with patch("app.engine.monitor.DouyinClient", FakeClient):
+            result = asyncio.run(engine.execute_action_task(task_id))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls[0], "sync")
+        self.assertEqual(calls[1][0], "send")
+        self.assertEqual(calls[1][1],
+                         ("conv-partial", "84", "ticket-repaired", "hello"))
+        with db.get_session() as session:
+            conversation = session.exec(select(DmConversation).where(
+                DmConversation.account_id == account_id,
+                DmConversation.conv_id == "conv-partial")).one()
+            self.assertEqual(conversation.peer_uid, "123456")
+            self.assertEqual(conversation.conv_short_id, "84")
+            self.assertEqual(conversation.ticket, "ticket-repaired")
+
+    def test_douyin_api_dm_unconfirmed_create_timeout_stays_uncertain(self):
+        account_id = self._cookie_account()
+        with db.get_session() as session:
+            account = session.get(DouyinAccount, account_id)
+            account.uid = "987654"
+            session.add(account)
+            task = AccountActionTask(
+                platform="douyin", account_id=account_id, action="send_dm",
+                target_uid="123456", target_sec_uid="target-sec",
+                content="hello", status="pending",
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            task_id = task.id
+        self.cfg.engine.douyin_write_mode = "api"
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+
+        class FakeClient:
+            last_error = ""
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @asynccontextmanager
+            async def session_scope(self):
+                yield self
+
+            async def create_dm_conversation(self, *args, **kwargs):
+                return None, "write_uncertain:network:TimeoutError"
+
+            async def fetch_dm_conversations(self):
+                return []
+
+            async def send_dm(self, *args, **kwargs):
+                raise AssertionError("unconfirmed create must not send")
+
+        with patch("app.engine.monitor.DouyinClient", FakeClient):
+            result = asyncio.run(engine.execute_action_task(task_id))
+
+        self.assertFalse(result["ok"])
+        with db.get_session() as session:
+            task = session.get(AccountActionTask, task_id)
+            self.assertEqual(task.status, "uncertain")
+            self.assertEqual(task.error,
+                             "write_uncertain:network:TimeoutError")
+            self.assertIsNone(task.scheduled_at)
+
     def test_douyin_api_dm_json_receipt_marks_task_done_without_browser(self):
         account_id = self._cookie_account()
         with db.get_session() as session:
