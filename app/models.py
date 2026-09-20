@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy import Index
 from sqlmodel import Field, SQLModel
 
 
@@ -581,6 +582,13 @@ class AccountStatSnapshot(SQLModel, table=True):
 
 class FollowEdge(SQLModel, table=True):
     """关注关系一行一人。direction=following(我关注的) / fan(关注我的)。"""
+    __table_args__ = (
+        Index("ix_followedge_account_direction_id",
+              "account_id", "direction", "id"),
+        Index("ix_followedge_account_direction_uid",
+              "account_id", "direction", "uid"),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
     platform: str = Field(default="douyin", index=True)  # douyin | xhs | kuaishou
     account_id: int = Field(index=True)

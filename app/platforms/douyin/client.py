@@ -3,12 +3,14 @@
 """
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import time
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from curl_cffi.requests import AsyncSession
 
@@ -20,6 +22,8 @@ from ...netfp import impersonate_for_ua
 BASE = "https://www.douyin.com"
 IMAPI_SEND_URL = "https://imapi.douyin.com/v1/message/send"
 IMAPI_CREATE_URL = "https://imapi.douyin.com/v2/conversation/create"
+FOLLOW_MAX_PAGES = 10_000
+FOLLOW_PAGE_DELAY_SECONDS = 0.15
 
 
 def cookie_from_state(storage_state_json: str) -> str:
@@ -143,8 +147,18 @@ class DouyinClient:
         q.update({k: v for k, v in params.items() if v is not None})
         q["msToken"] = self._ms_token or gen_false_ms_token()
         qs = urllib.parse.urlencode(q)
-        signed = sign_url(qs, self.ua)
+        signed = sign_url(qs, self.ua, fp=self._abogus_fingerprint())
         return f"{BASE}{path}?{signed}"
+
+    def _abogus_fingerprint(self) -> str:
+        """Build the signer fingerprint from the account's stable viewport."""
+        width, height = self.screen_width, self.screen_height
+        platform = "MacIntel" if "Macintosh" in self.ua else "Win32"
+        return (
+            f"{width}|{height}|{width + 24}|{height + 80}|0|0|0|0|"
+            f"{width}|{height}|{width}|{height}|{width}|{height}|24|24|"
+            f"{platform}"
+        )
 
     async def _get_json(self, path: str, params: Dict[str, Any],
                         referer: str = BASE + "/") -> Optional[dict]:
@@ -937,8 +951,12 @@ class DouyinClient:
         )
         return data or {}
 
-    async def fetch_all_follows(self, user_id: str, sec_uid: str, direction: str,
-                                max_pages: int = 25, count: int = 20) -> List[dict]:
+    async def fetch_all_follows(
+            self, user_id: str, sec_uid: str, direction: str,
+            max_pages: int = FOLLOW_MAX_PAGES, count: int = 20,
+            *, page_delay: float = FOLLOW_PAGE_DELAY_SECONDS,
+            on_page: Optional[Callable[[List[dict], dict], Any]] = None,
+            collect: bool = True) -> List[dict]:
         """direction=following(我关注的) / fan(关注我的)。返回原始 user 对象列表。"""
         if not user_id and sec_uid:
             profile = await self.fetch_profile(sec_uid)
@@ -951,22 +969,56 @@ class DouyinClient:
         out: List[dict] = []
         seen: Set[str] = set()
         offset = 0
-        max_time = 0
-        for _ in range(max_pages):
+        page_limit = max(1, min(int(max_pages or 1), FOLLOW_MAX_PAGES))
+        count = max(1, min(int(count or 20), 20))
+        self.last_follow_meta = {
+            "pages": 0, "fetched": 0, "has_more": False,
+            "complete": False, "stop_reason": "starting",
+        }
+        # The fan endpoint expects the first page's upper time cursor. The web
+        # client uses the current Unix timestamp; zero yields HTTP 200 + empty
+        # body even with a valid current signature.
+        max_time = int(time.time()) if not following else 0
+        for page_index in range(page_limit):
             page = await self._follow_page(path, user_id, sec_uid, offset, max_time,
                                            count, source_type=1)
             users = page.get(list_key) or []
-            if not users:
-                break
             new = 0
+            fresh: List[dict] = []
             for u in users:
                 uid = str(u.get("uid") or u.get("sec_uid") or "")
                 if uid and uid not in seen:
                     seen.add(uid)
-                    out.append(u)
+                    fresh.append(u)
+                    if collect:
+                        out.append(u)
                     new += 1
-            if not page.get("has_more") or new == 0:
+            has_more = bool(page.get("has_more"))
+            meta = {
+                "pages": page_index + 1,
+                "fetched": len(seen),
+                "has_more": has_more,
+                "complete": not has_more,
+                "stop_reason": "complete" if not has_more else "paging",
+            }
+            self.last_follow_meta = meta
+            if on_page is not None:
+                callback_result = on_page(fresh, dict(meta))
+                if inspect.isawaitable(callback_result):
+                    await callback_result
+            if not has_more:
+                break
+            if not users or new == 0:
+                self.last_error = "pagination_stalled"
+                self.last_follow_meta.update(
+                    complete=False, stop_reason="pagination_stalled")
                 break
             offset = page.get("offset") or (offset + count)
             max_time = page.get("max_time") or max_time
+            if page_delay > 0:
+                await asyncio.sleep(page_delay)
+        else:
+            self.last_error = f"page_limit:{page_limit}"
+            self.last_follow_meta.update(
+                has_more=True, complete=False, stop_reason="page_limit")
         return out

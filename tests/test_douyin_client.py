@@ -1,7 +1,9 @@
 import unittest
 from unittest.mock import AsyncMock, patch
+from urllib.parse import parse_qs, urlsplit
 
 from app.platforms.douyin.client import DouyinClient
+from app.platforms.douyin.signing import ABogus
 
 
 class DouyinClientSearchTests(unittest.IsolatedAsyncioTestCase):
@@ -110,13 +112,77 @@ class DouyinClientSearchTests(unittest.IsolatedAsyncioTestCase):
             "followers": [{"uid": "fan-1"}], "has_more": 0,
         })
 
-        rows = await client.fetch_all_follows("", "sec-self", "fan")
+        with patch("app.platforms.douyin.client.time.time",
+                   return_value=1_700_000_000):
+            rows = await client.fetch_all_follows("", "sec-self", "fan")
 
         self.assertEqual([row["uid"] for row in rows], ["fan-1"])
         client.fetch_profile.assert_awaited_once_with("sec-self")
         client._follow_page.assert_awaited_once_with(
             "/aweme/v1/web/user/follower/list/", "uid-self", "sec-self",
-            0, 0, 20, source_type=1)
+            0, 1_700_000_000, 20, source_type=1)
+
+    async def test_large_follow_list_streams_beyond_old_page_limit(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client.fetch_profile = AsyncMock(return_value={"uid": "uid-self"})
+        client._follow_page = AsyncMock(side_effect=[
+            {
+                "followers": [{"uid": f"fan-{page}"}],
+                "has_more": int(page < 29),
+                "offset": page + 1,
+                "max_time": 1_700_000_000 - page,
+            }
+            for page in range(30)
+        ])
+        received = []
+
+        def on_page(rows, meta):
+            received.extend(row["uid"] for row in rows)
+
+        rows = await client.fetch_all_follows(
+            "", "sec-self", "fan", max_pages=40, page_delay=0,
+            on_page=on_page, collect=False)
+
+        self.assertEqual(rows, [])
+        self.assertEqual(len(received), 30)
+        self.assertEqual(client._follow_page.await_count, 30)
+        self.assertTrue(client.last_follow_meta["complete"])
+        self.assertEqual(client.last_follow_meta["fetched"], 30)
+
+    async def test_follow_page_limit_is_an_explicit_partial_failure(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client.fetch_profile = AsyncMock(return_value={"uid": "uid-self"})
+        client._follow_page = AsyncMock(side_effect=[
+            {"followers": [{"uid": f"fan-{page}"}], "has_more": 1,
+             "offset": page + 1, "max_time": 1_700_000_000 - page}
+            for page in range(3)
+        ])
+
+        rows = await client.fetch_all_follows(
+            "", "sec-self", "fan", max_pages=3, page_delay=0)
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(client.last_error, "page_limit:3")
+        self.assertFalse(client.last_follow_meta["complete"])
+        self.assertEqual(client.last_follow_meta["stop_reason"], "page_limit")
+
+    async def test_current_abogus_wire_format_is_used(self):
+        signature = ABogus(
+            user_agent="Mozilla/5.0 Chrome/152.0.0.0",
+            fp="1366|768|1390|848|0|0|0|0|1366|768|1366|768|1366|768|24|24|Win32",
+        ).get_value("aid=6383&count=20")
+
+        self.assertEqual(len(signature), 164)
+
+    async def test_client_signer_uses_account_viewport_fingerprint(self):
+        client = DouyinClient(
+            "sid_tt=x", "Mozilla/5.0 Chrome/152.0.0.0",
+            screen_width=1366, screen_height=768)
+
+        query = parse_qs(urlsplit(client._build_url("/fixture", {})).query)
+
+        self.assertEqual(len(query["a_bogus"][0]), 164)
+        self.assertIn("1366|768|1390|848", client._abogus_fingerprint())
 
     async def test_direct_request_parameters_follow_account_environment(self):
         client = DouyinClient(

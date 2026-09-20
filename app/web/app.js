@@ -2881,6 +2881,13 @@ function populateHubAccounts() {
 function onHubAcc() {
   const sel = $("hub-acc"); if (!sel) return;
   setHubAcc(sel.value);
+  for (const direction of ["following", "fan"]) {
+    if (typeof FOLLOW_STATE !== "undefined") {
+      FOLLOW_STATE[direction] = { page: 1, pages: 1, total: 0, query: "" };
+      FOLLOW_JOB_IDS[direction] = "";
+    }
+    const search = $(`${direction}-search`); if (search) search.value = "";
+  }
   DM_CONV = null;
   DM_NEW_TARGET = "";
   refreshHubSummary();
@@ -3090,24 +3097,129 @@ async function syncWorkComments() {
 // ── 关注 / 粉丝 ──
 // 小红书网页端不提供关注/粉丝列表(App 专属:实测无接口、无弹层),不做无用的同步
 const XHS_FOLLOW_NA = "小红书网页端不提供关注 / 粉丝列表(仅 App 可见),无法同步。抖音 / 快手可正常同步。";
-async function refreshFollows(direction) {
+const FOLLOW_PAGE_SIZE = 50;
+const FOLLOW_STATE = {
+  following: { page: 1, pages: 1, total: 0, query: "" },
+  fan: { page: 1, pages: 1, total: 0, query: "" },
+};
+const FOLLOW_JOB_IDS = { following: "", fan: "" };
+const FOLLOW_JOB_POLLING = { following: "", fan: "" };
+const FOLLOW_SEARCH_TIMERS = { following: null, fan: null };
+
+function followElementPrefix(direction) { return direction === "fan" ? "fan" : "following"; }
+function queueFollowSearch(direction) {
+  clearTimeout(FOLLOW_SEARCH_TIMERS[direction]);
+  FOLLOW_SEARCH_TIMERS[direction] = setTimeout(() => {
+    const input = $(`${followElementPrefix(direction)}-search`);
+    FOLLOW_STATE[direction].query = String(input?.value || "").trim();
+    refreshFollows(direction, 1);
+  }, 250);
+}
+function renderFollowPager(direction, payload) {
+  const prefix = followElementPrefix(direction), state = FOLLOW_STATE[direction];
+  state.page = Math.max(1, Number(payload.page || 1));
+  state.pages = Math.max(1, Number(payload.pages || 1));
+  state.total = Math.max(0, Number(payload.total || 0));
+  const pager = $(`${prefix}-pager`), info = $(`${prefix}-page-info`);
+  if (!pager || !info) return;
+  info.textContent = `第 ${state.page} / ${state.pages} 页 · 共 ${fmtNum(state.total)} 条`;
+  const buttons = pager.querySelectorAll("button");
+  if (buttons[0]) buttons[0].disabled = state.page <= 1;
+  if (buttons[1]) buttons[1].disabled = state.page >= state.pages;
+  const synced = $(`${prefix}-synced-at`);
+  if (synced) synced.textContent = payload.synced_at ? `同步于 ${fmtTime(payload.synced_at)}` : "";
+  pager.hidden = state.total <= FOLLOW_PAGE_SIZE;
+}
+function changeFollowPage(direction, delta) {
+  const state = FOLLOW_STATE[direction];
+  refreshFollows(direction, Math.max(1, Math.min(state.pages, state.page + Number(delta || 0))));
+}
+function renderFollowSyncStatus(direction, job) {
+  const box = $(`${followElementPrefix(direction)}-sync-status`); if (!box) return;
+  if (!job || job.status === "idle") {
+    FOLLOW_JOB_IDS[direction] = "";
+    box.hidden = true; box.innerHTML = ""; return;
+  }
+  FOLLOW_JOB_IDS[direction] = job.id || FOLLOW_JOB_IDS[direction];
+  const phase = {
+    queued: "等待同步", fetching: "正在获取", saving: "正在写入",
+    completed: "同步完成", failed: "同步失败", canceled: "已取消",
+    canceling: "正在取消", deferred: "同步暂缓",
+  }[job.phase || job.status] || "同步中";
+  const fetched = Math.max(0, Number(job.fetched || 0));
+  const expected = Math.max(0, Number(job.expected_total || 0));
+  const saved = Math.max(0, Number(job.saved || 0));
+  const detail = job.phase === "saving"
+    ? `已写入 ${fmtNum(saved)} / ${fmtNum(fetched)} 条`
+    : expected ? `已获取 ${fmtNum(fetched)} / 约 ${fmtNum(expected)} 条 · ${fmtNum(job.pages || 0)} 页`
+      : `已获取 ${fmtNum(fetched)} 条 · ${fmtNum(job.pages || 0)} 页`;
+  const percent = job.percent == null ? 0 : Math.max(0, Math.min(100, Number(job.percent)));
+  const error = job.error ? `<div class="mut" style="margin-top:6px;color:var(--danger)">${esc(job.error)}</div>` : "";
+  box.innerHTML = `<div><div class="follow-sync-copy"><b>${esc(phase)}</b><span>${esc(detail)}</span></div>`
+    + `<div class="progress-track" role="progressbar" aria-label="${esc(phase)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="progress-fill" style="width:${percent}%"></div></div>${error}</div>`
+    + (job.cancelable ? `<button class="ghost sm danger" onclick="cancelFollowSync(${jsArg(direction)})">${ic("i-x")}取消</button>` : "");
+  box.hidden = false;
+}
+async function pollFollowSync(direction, jobId) {
+  if (!jobId || FOLLOW_JOB_POLLING[direction] === jobId) return;
+  FOLLOW_JOB_POLLING[direction] = jobId;
+  const accountId = HUB_ACC;
+  try {
+    while (FOLLOW_JOB_IDS[direction] === jobId && HUB_ACC === accountId) {
+      const job = await api(`/api/follow-sync-jobs/${encodeURIComponent(jobId)}`);
+      renderFollowSyncStatus(direction, job);
+      if (["completed", "failed", "canceled", "deferred"].includes(job.status)) {
+        if (job.status === "completed") {
+          toast(`同步完成:共 ${fmtNum(job.saved || job.fetched || 0)} 条,新增 ${fmtNum(job.added || 0)}${transportSourceSuffix(job.source)}`, "ok", 5000);
+          await refreshFollows(direction, 1);
+          refreshHubSummary();
+        } else if (job.status === "failed") toast("同步失败:" + (job.error || "未知错误"), "err");
+        else if (job.status === "deferred") toast("同步暂缓:" + (job.error || "操作间隔尚未结束"), "info", 5000);
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1200));
+    }
+  } catch (e) {
+    if (HUB_ACC === accountId) toast("读取同步进度失败:" + e.message, "err");
+  } finally {
+    if (FOLLOW_JOB_POLLING[direction] === jobId) FOLLOW_JOB_POLLING[direction] = "";
+  }
+}
+async function refreshFollowSyncJob(direction) {
+  if (!HUB_ACC) return;
+  try {
+    const job = await api(`/api/accounts/${HUB_ACC}/follows/sync-job?direction=${direction}`);
+    renderFollowSyncStatus(direction, job);
+    if (["queued", "running", "canceling"].includes(job.status)) pollFollowSync(direction, job.id);
+  } catch (e) {}
+}
+async function refreshFollows(direction, page = null) {
   const isCurrent = beginViewRequest(`follows:${direction}`, () => String(HUB_ACC));
   const tbody = $(direction === "fan" ? "fans-table" : "following-table"); if (!tbody) return;
   if (PLATFORM === "xhs") {
     const badge = $(direction === "fan" ? "hb-fans" : "hb-following");
     if (badge) badge.textContent = "—";
+    const pager = $(`${followElementPrefix(direction)}-pager`); if (pager) pager.hidden = true;
     tbody.innerHTML = empty(3, direction === "fan" ? "粉丝列表网页端不可用" : "关注列表网页端不可用",
       "i-info", XHS_FOLLOW_NA);
     return;
   }
   if (!HUB_ACC) { tbody.innerHTML = empty(3, "请先选择已登录账号", "i-user"); return; }
+  const state = FOLLOW_STATE[direction];
+  if (page != null) state.page = Math.max(1, Number(page || 1));
   try {
-    const list = await api(`/api/follows?account_id=${HUB_ACC}&direction=${direction}`);
+    const params = new URLSearchParams({ account_id: HUB_ACC, direction,
+      page: String(state.page), page_size: String(FOLLOW_PAGE_SIZE) });
+    if (state.query) params.set("query", state.query);
+    const payload = await api(`/api/follows?${params}`);
     if (!isCurrent()) return;
+    const list = payload.items || [];
     const badge = $(direction === "fan" ? "hb-fans" : "hb-following");
-    if (badge) badge.textContent = list.length;
+    if (badge && !state.query) badge.textContent = payload.total || 0;
     tbody.innerHTML = list.length ? list.map(f => followRow(f, direction)).join("")
-      : empty(3, direction === "fan" ? "暂无粉丝数据" : "暂无关注数据", "i-user", "点右上「同步」抓取");
+      : empty(3, state.query ? "没有匹配用户" : (direction === "fan" ? "暂无粉丝数据" : "暂无关注数据"), "i-user");
+    renderFollowPager(direction, payload);
+    refreshFollowSyncJob(direction);
   } catch (e) { if (!isCurrent()) return; tbody.innerHTML = empty(3, "加载失败:" + e.message, "i-info"); }
 }
 function followRow(f, direction) {
@@ -3129,22 +3241,29 @@ function followRow(f, direction) {
 async function syncFollows(direction) {
   if (PLATFORM === "xhs") { toast(XHS_FOLLOW_NA, "info", 6000); return; }
   if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
-  await withBusy(evtBtn(), "同步中", async () => {
-    try {
-      const r = await api(`/api/accounts/${HUB_ACC}/follows/sync?direction=${direction}`, { method: "POST" });
-      if (r.skipped) { toast(`同步暂缓:${r.reason || "操作间隔尚未结束"}`, "info", 5000); return; }
-      toast(`同步完成:抓到 ${Number(r.fetched) || 0} 条,新增 ${Number(r.added) || 0}${transportSourceSuffix(r.source)}`, "ok");
-    }
-    catch (e) { toast("同步失败:" + e.message, "err"); }
-  });
-  refreshFollows(direction);
+  let job = null;
+  try {
+    await withBusy(evtBtn(), "启动中", async () => {
+      job = await api(`/api/accounts/${HUB_ACC}/follows/sync-jobs?direction=${direction}`, { method: "POST" });
+    });
+  } catch (e) { toast("同步失败:" + e.message, "err"); return; }
+  renderFollowSyncStatus(direction, job);
+  toast(job.status === "queued" ? "同步任务已创建" : "同步任务正在运行", "info");
+  pollFollowSync(direction, job.id);
+}
+async function cancelFollowSync(direction) {
+  const jobId = FOLLOW_JOB_IDS[direction]; if (!jobId) return;
+  try {
+    const job = await api(`/api/follow-sync-jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+    renderFollowSyncStatus(direction, job);
+  } catch (e) { toast("取消失败:" + e.message, "err"); }
 }
 async function actFollow(action, edgeId) {
   // 取该行 follow 边的目标信息(从已渲染列表里拿)
   const accountId = HUB_ACC;
   const dir = HUB_TAB === "fans" ? "fan" : "following";
   let edge = null;
-  try { const list = await api(`/api/follows?account_id=${accountId}&direction=${dir}`); edge = list.find(x => x.id === edgeId); } catch (e) {}
+  try { edge = await api(`/api/follows/${edgeId}?account_id=${accountId}`); } catch (e) {}
   if (HUB_ACC !== accountId) return;
   if (!edge) { toast("找不到该用户,请重新同步", "err"); return; }
   const label = action === "unfollow" ? "取关" : "回关";

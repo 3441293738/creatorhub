@@ -582,9 +582,8 @@ _DOUYIN_STAT_PROBE_JS = """() => {
 }"""
 
 _FOLLOW_PRECISE = {
-    # follower/list 接口是活的(浏览器拦截能拿到数据),但直连拿不到:已用登录 Cookie、
-    # 真实 msToken、解析后的 uid 和多组 source_type 验证，仍是 HTTP 200 + 空 body；
-    # 同一套会话下 following/list 正常。所以 fan 方向直接走浏览器拦截。
+    # 浏览器回退仍按方向精确匹配接口。直连 follower/list 使用当前 a_bogus
+    # 和首屏时间游标；平台签名升级导致直连失效时，hybrid 仍可回退到这里。
     "douyin":   {"following": ("following/list",), "fan": ("follower/list",)},
     "xhs":      {"following": ("followings", "/follows"), "fan": ("fans", "/followers")},
     "kuaishou": {"following": (), "fan": ()},   # 快手走 graphql visionProfileUserList(见下)
@@ -706,7 +705,7 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                 sink[n["uid"]] = n
                 added += 1
         if added and path not in hit_urls:
-            hit_urls.append(("✓" if precise else "?") + path)
+            hit_urls.append(("exact:" if precise else "candidate:") + path)
 
     page.on("response", on_response)
     try:

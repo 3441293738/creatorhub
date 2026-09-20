@@ -27,7 +27,7 @@ from fastapi import Body, FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field as PydanticField, StrictInt, ValidationError
-from sqlalchemy import func, or_, update
+from sqlalchemy import delete, func, or_, update
 from sqlmodel import select
 
 from .browser import (BrowserManager, cookie_string_to_state,
@@ -137,6 +137,8 @@ login_tasks: Dict[str, dict] = {}
 open_browsers: Dict[int, Any] = {}
 _file_manager_lock = threading.Lock()
 _share_download_sem = asyncio.Semaphore(2)
+_follow_sync_jobs: Dict[str, dict] = {}
+_follow_sync_tasks: Dict[str, asyncio.Task] = {}
 
 
 _ACTIVE_LOGIN_STATUSES = {"opening", "waiting", "verification", "persisted"}
@@ -537,6 +539,12 @@ async def lifespan(app: FastAPI):
     if callable(publisher):
         engine.set_dm_event_sink(publisher)
     yield
+    follow_tasks = [task for task in _follow_sync_tasks.values()
+                    if not task.done()]
+    for task in follow_tasks:
+        task.cancel()
+    if follow_tasks:
+        await asyncio.gather(*follow_tasks, return_exceptions=True)
     if im_receiver:
         await im_receiver.stop_all()
     if engine:
@@ -3470,18 +3478,102 @@ def _follow_dict(f: FollowEdge) -> dict:
 
 
 @app.get("/api/follows")
-async def list_follows(account_id: int, direction: str = "following", limit: int = 500):
-    with get_session() as s:
-        q = (select(FollowEdge).where(FollowEdge.account_id == account_id,
-                                      FollowEdge.direction == direction)
-             .order_by(FollowEdge.id.desc()).limit(limit))
-        return [_follow_dict(f) for f in s.exec(q).all()]
-
-
-@app.post("/api/accounts/{account_id}/follows/sync")
-async def sync_follows(account_id: int, direction: str = "following"):
+async def list_follows(account_id: int, direction: str = "following",
+                       page: int = 1, page_size: int = 50,
+                       query: str = ""):
     if direction not in ("following", "fan"):
         raise HTTPException(400, "direction 仅支持 following | fan")
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 50), 200))
+    query = " ".join(str(query or "").strip().split())[:100]
+    filters = [FollowEdge.account_id == account_id,
+               FollowEdge.direction == direction]
+    if query:
+        match = f"%{query}%"
+        filters.append(or_(FollowEdge.nickname.like(match),
+                           FollowEdge.uid.like(match),
+                           FollowEdge.sec_uid.like(match),
+                           FollowEdge.signature.like(match)))
+    with get_session() as s:
+        total = int(s.exec(select(func.count(FollowEdge.id)).where(
+            *filters)).one() or 0)
+        pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, pages)
+        rows = s.exec(
+            select(FollowEdge).where(*filters)
+            .order_by(FollowEdge.id.desc())
+            .offset((page - 1) * page_size).limit(page_size)).all()
+        synced_at = s.exec(select(func.max(FollowEdge.fetched_at)).where(
+            FollowEdge.account_id == account_id,
+            FollowEdge.direction == direction)).one()
+    return {
+        "items": [_follow_dict(row) for row in rows],
+        "total": total, "page": page, "page_size": page_size,
+        "pages": pages,
+        "synced_at": synced_at.isoformat() if synced_at else None,
+    }
+
+
+@app.get("/api/follows/{edge_id}")
+async def get_follow(edge_id: int, account_id: int):
+    with get_session() as s:
+        row = s.get(FollowEdge, edge_id)
+        if not row or row.account_id != account_id:
+            raise HTTPException(404, "关注关系不存在")
+        return _follow_dict(row)
+
+
+def _replace_follow_snapshot(account_id: int, platform: str, direction: str,
+                             users: list[dict], now: datetime,
+                             progress=None) -> tuple[int, int]:
+    incoming: dict[str, dict] = {}
+    for user in users:
+        uid = str(user.get("uid") or "")
+        if uid:
+            incoming[uid] = user
+    with get_session() as s:
+        known = set(s.exec(select(FollowEdge.uid).where(
+            FollowEdge.account_id == account_id,
+            FollowEdge.direction == direction)).all())
+        # Delete + insert stays in one transaction: readers keep seeing the old
+        # snapshot until the complete replacement commits, and failures roll back.
+        s.execute(delete(FollowEdge).where(
+            FollowEdge.account_id == account_id,
+            FollowEdge.direction == direction))
+        mappings = []
+        total = len(incoming)
+        for index, (uid, user) in enumerate(incoming.items(), 1):
+            mappings.append({
+                "platform": platform, "account_id": account_id,
+                "direction": direction, "uid": uid,
+                "sec_uid": str(user.get("sec_uid") or ""),
+                "nickname": str(user.get("nickname") or ""),
+                "avatar": str(user.get("avatar") or ""),
+                "signature": str(user.get("signature") or ""),
+                "is_mutual": bool(user.get("is_mutual")),
+                "is_following": bool(user.get("is_following")),
+                "raw_json": str(user.get("raw_json") or ""),
+                "fetched_at": now, "created_at": now,
+            })
+            if len(mappings) >= 1000 or index == total:
+                s.bulk_insert_mappings(FollowEdge, mappings)
+                mappings.clear()
+                if progress is not None:
+                    progress({"phase": "saving", "saved": index,
+                              "fetched": total})
+        s.commit()
+    return sum(1 for uid in incoming if uid not in known), total
+
+
+async def _sync_follows_impl(account_id: int, direction: str = "following",
+                             progress=None):
+    if direction not in ("following", "fan"):
+        raise HTTPException(400, "direction 仅支持 following | fan")
+
+    def report(**changes):
+        if progress is not None:
+            progress(changes)
+
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if not acc:
@@ -3504,9 +3596,7 @@ async def sync_follows(account_id: int, direction: str = "following"):
             raise HTTPException(503, "抖音 API 读取引擎未就绪")
         identity = (None if platform == "douyin" and effective_mode == "api"
                     else browser.identity_for(acc))
-        known = {f.uid for f in s.exec(select(FollowEdge).where(
-            FollowEdge.account_id == account_id,
-            FollowEdge.direction == direction)).all()}
+        known: set[str] = set()
     # API-only/browser-only are hard routing decisions. Hybrid's API attempt and
     # page fallback share one READ_HEAVY guard so the fallback is not blocked by
     # the API attempt's own minimum interval.
@@ -3517,10 +3607,19 @@ async def sync_follows(account_id: int, direction: str = "following"):
         nonlocal source
         direct_err = ""
         if platform == "douyin" and effective_mode in {"api", "hybrid"}:
+            report(phase="fetching", source="api")
             try:
-                direct_users, direct_err = (
-                    await engine._fetch_douyin_follows_direct_locked(
-                        account_id, direction))
+                if progress is None:
+                    direct_users, direct_err = (
+                        await engine._fetch_douyin_follows_direct_locked(
+                            account_id, direction))
+                else:
+                    def direct_progress(update):
+                        report(phase="fetching", source="api", **update)
+
+                    direct_users, direct_err = (
+                        await engine._fetch_douyin_follows_direct_locked(
+                            account_id, direction, progress=direct_progress))
             except Exception as e:
                 direct_users, direct_err = [], repr(e)
             # “empty”表示结构有效的空列表；empty_body/网络/解析错误不是有效快照。
@@ -3533,6 +3632,7 @@ async def sync_follows(account_id: int, direction: str = "following"):
             print(f"[follow] douyin direct 空({direct_err}),回退浏览器拦截")
 
         source = "browser_fallback" if effective_mode == "hybrid" else "browser"
+        report(phase="fetching", source=source)
         browser_users, browser_err = await fetch_follows(
             browser, identity, platform, uid, direction, known)
         if browser_users:
@@ -3563,21 +3663,147 @@ async def sync_follows(account_id: int, direction: str = "following"):
         label = "关注" if direction == "following" else "粉丝"
         raise HTTPException(502, f"{label}同步未取得有效列表，已保留原数据：{err}")
     now = datetime.utcnow()
-    with get_session() as s:
-        # 快照式替换:先清掉该账号该方向旧数据(含历史误抓的 JS 模块垃圾),再写入本次精确快照
-        for old in s.exec(select(FollowEdge).where(
-                FollowEdge.account_id == account_id,
-                FollowEdge.direction == direction)).all():
-            s.delete(old)
-        for u in users:
-            s.add(FollowEdge(platform=platform, account_id=account_id,
-                             direction=direction, fetched_at=now, **u))
-        s.commit()
-    added = sum(1 for u in users if u.get("uid") not in known)
-    return {"ok": True, "fetched": len(users), "added": added,
+    report(phase="saving", fetched=len(users), saved=0)
+    added, stored = await asyncio.to_thread(
+        _replace_follow_snapshot, account_id, platform, direction,
+        users, now, progress)
+    return {"ok": True, "fetched": len(users), "stored": stored,
+            "added": added, "complete": True,
             "source": source,
             "configured_mode": (transport["configured_mode"]
-                                if transport else "browser")}
+                                 if transport else "browser")}
+
+
+@app.post("/api/accounts/{account_id}/follows/sync")
+async def sync_follows(account_id: int, direction: str = "following"):
+    return await _sync_follows_impl(account_id, direction)
+
+
+def _follow_sync_job_view(job: dict) -> dict:
+    view = dict(job)
+    expected = max(0, int(view.get("expected_total") or 0))
+    fetched = max(0, int(view.get("fetched") or 0))
+    if view.get("status") == "completed":
+        percent = 100
+    elif expected:
+        percent = min(99, int(fetched * 100 / expected))
+    else:
+        percent = None
+    view["percent"] = percent
+    view["cancelable"] = (view.get("status") in {"queued", "running"}
+                          and view.get("phase") != "saving")
+    return view
+
+
+async def _run_follow_sync_job(job_id: str):
+    job = _follow_sync_jobs[job_id]
+
+    def update(changes: dict):
+        job.update(changes)
+        job["updated_at"] = datetime.utcnow().isoformat()
+
+    update({"status": "running", "phase": "fetching"})
+    try:
+        result = await _sync_follows_impl(
+            int(job["account_id"]), str(job["direction"]), progress=update)
+        if result.get("skipped"):
+            update({"status": "deferred", "phase": "deferred",
+                    "error": str(result.get("reason") or "同步暂缓"),
+                    "result": result,
+                    "completed_at": datetime.utcnow().isoformat()})
+            return
+        update({"status": "completed", "phase": "completed",
+                "fetched": int(result.get("fetched") or 0),
+                "saved": int(result.get("stored") or 0),
+                "added": int(result.get("added") or 0),
+                "source": result.get("source") or "",
+                "result": result, "completed_at": datetime.utcnow().isoformat()})
+    except asyncio.CancelledError:
+        update({"status": "canceled", "phase": "canceled",
+                "completed_at": datetime.utcnow().isoformat()})
+    except HTTPException as exc:
+        update({"status": "failed", "phase": "failed",
+                "error": str(exc.detail),
+                "completed_at": datetime.utcnow().isoformat()})
+    except Exception as exc:
+        update({"status": "failed", "phase": "failed",
+                "error": repr(exc),
+                "completed_at": datetime.utcnow().isoformat()})
+
+
+@app.post("/api/accounts/{account_id}/follows/sync-jobs", status_code=202)
+async def start_follow_sync_job(account_id: int,
+                                direction: str = "following"):
+    if direction not in ("following", "fan"):
+        raise HTTPException(400, "direction 仅支持 following | fan")
+    with get_session() as s:
+        account = s.get(DouyinAccount, account_id)
+        if not account:
+            raise HTTPException(404, "账号不存在")
+        expected_total = (account.following_count if direction == "following"
+                          else account.follower_count)
+    for existing in reversed(list(_follow_sync_jobs.values())):
+        if (existing.get("account_id") == account_id
+                and existing.get("direction") == direction
+                and existing.get("status") in {"queued", "running"}):
+            return _follow_sync_job_view(existing)
+    completed = [key for key, value in _follow_sync_jobs.items()
+                 if value.get("status") in {"completed", "failed", "canceled"}]
+    for key in completed[:-100]:
+        _follow_sync_jobs.pop(key, None)
+        _follow_sync_tasks.pop(key, None)
+    now = datetime.utcnow().isoformat()
+    job_id = uuid.uuid4().hex
+    job = {
+        "id": job_id, "account_id": account_id, "direction": direction,
+        "status": "queued", "phase": "queued", "pages": 0,
+        "fetched": 0, "saved": 0, "added": 0,
+        "expected_total": max(0, int(expected_total or 0)),
+        "source": "", "error": "", "created_at": now,
+        "updated_at": now, "completed_at": None,
+    }
+    _follow_sync_jobs[job_id] = job
+    task = asyncio.create_task(_run_follow_sync_job(job_id))
+    _follow_sync_tasks[job_id] = task
+    task.add_done_callback(lambda _task, key=job_id:
+                           _follow_sync_tasks.pop(key, None))
+    return _follow_sync_job_view(job)
+
+
+@app.get("/api/follow-sync-jobs/{job_id}")
+async def get_follow_sync_job(job_id: str):
+    job = _follow_sync_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "同步任务不存在")
+    return _follow_sync_job_view(job)
+
+
+@app.get("/api/accounts/{account_id}/follows/sync-job")
+async def get_latest_follow_sync_job(account_id: int,
+                                     direction: str = "following"):
+    for job in reversed(list(_follow_sync_jobs.values())):
+        if (job.get("account_id") == account_id
+                and job.get("direction") == direction):
+            return _follow_sync_job_view(job)
+    return {"status": "idle", "account_id": account_id,
+            "direction": direction}
+
+
+@app.post("/api/follow-sync-jobs/{job_id}/cancel")
+async def cancel_follow_sync_job(job_id: str):
+    job = _follow_sync_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "同步任务不存在")
+    if job.get("status") not in {"queued", "running"}:
+        return _follow_sync_job_view(job)
+    if job.get("phase") == "saving":
+        raise HTTPException(409, "数据正在提交，不能中途取消")
+    job["status"] = "canceling"
+    job["updated_at"] = datetime.utcnow().isoformat()
+    task = _follow_sync_tasks.get(job_id)
+    if task:
+        task.cancel()
+    return _follow_sync_job_view(job)
 
 
 # ─────────── 本账号管理:私信 ───────────

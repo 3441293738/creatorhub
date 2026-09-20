@@ -63,6 +63,8 @@ class FollowSyncTests(unittest.TestCase):
         self.previous_followers_mode = main.cfg.engine.douyin_followers_mode
         main.cfg.engine.douyin_read_mode = "hybrid"
         main.cfg.engine.douyin_followers_mode = "hybrid"
+        main._follow_sync_jobs.clear()
+        main._follow_sync_tasks.clear()
         self.tmp = tempfile.TemporaryDirectory()
         db.init_db(str(Path(self.tmp.name) / "follow-sync.db"))
         main.browser = _Browser()
@@ -198,6 +200,107 @@ class FollowSyncTests(unittest.TestCase):
         self.assertEqual(result["reason"], "尚未达到该操作最小间隔")
         engine.public_direct.assert_not_awaited()
 
+    def test_follow_list_uses_server_pagination_and_total(self):
+        with db.get_session() as session:
+            for index in range(125):
+                session.add(FollowEdge(
+                    platform="douyin", account_id=self.account_id,
+                    direction="fan", uid=f"fan-{index}",
+                    nickname=f"粉丝 {index}"))
+            session.commit()
+
+        result = asyncio.run(main.list_follows(
+            self.account_id, "fan", page=2, page_size=50))
+
+        self.assertEqual(result["total"], 125)
+        self.assertEqual(result["page"], 2)
+        self.assertEqual(result["pages"], 3)
+        self.assertEqual(len(result["items"]), 50)
+
+    def test_large_snapshot_is_replaced_in_bulk_for_following(self):
+        users = [_user(f"follow-{index}", f"关注 {index}")
+                 for index in range(2500)]
+        engine = _Engine()
+        engine.locked_direct = AsyncMock(return_value=(users, ""))
+        engine._fetch_douyin_follows_direct_locked = engine.locked_direct
+        main.engine = engine
+
+        result = asyncio.run(main.sync_follows(self.account_id, "following"))
+
+        self.assertEqual(result["fetched"], 2500)
+        self.assertEqual(result["stored"], 2500)
+        self.assertTrue(result["complete"])
+        with db.get_session() as session:
+            count = session.exec(select(main.func.count(FollowEdge.id)).where(
+                FollowEdge.account_id == self.account_id,
+                FollowEdge.direction == "following")).one()
+        self.assertEqual(count, 2500)
+
+    def test_partial_large_snapshot_never_replaces_existing_rows(self):
+        with db.get_session() as session:
+            session.add(FollowEdge(
+                platform="douyin", account_id=self.account_id,
+                direction="fan", uid="old-fan", nickname="旧粉丝"))
+            session.commit()
+        engine = _Engine()
+        engine.locked_direct = AsyncMock(return_value=(
+            [_user(f"fan-{index}") for index in range(600)],
+            "page_limit:10000"))
+        engine._fetch_douyin_follows_direct_locked = engine.locked_direct
+        main.engine = engine
+
+        with self.assertRaises(HTTPException):
+            asyncio.run(main.sync_follows(self.account_id, "fan"))
+
+        with db.get_session() as session:
+            rows = session.exec(select(FollowEdge).where(
+                FollowEdge.account_id == self.account_id,
+                FollowEdge.direction == "fan")).all()
+        self.assertEqual([row.uid for row in rows], ["old-fan"])
+
+    def test_background_follow_job_reports_completion(self):
+        users = [_user(f"fan-{index}", f"粉丝 {index}")
+                 for index in range(120)]
+        engine = _Engine()
+        engine.locked_direct = AsyncMock(return_value=(users, ""))
+        engine._fetch_douyin_follows_direct_locked = engine.locked_direct
+        main.engine = engine
+
+        async def scenario():
+            started = await main.start_follow_sync_job(self.account_id, "fan")
+            task = main._follow_sync_tasks[started["id"]]
+            await task
+            return await main.get_follow_sync_job(started["id"])
+
+        result = asyncio.run(scenario())
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["saved"], 120)
+        self.assertEqual(result["percent"], 100)
+
+    def test_background_follow_job_can_be_canceled_while_fetching(self):
+        engine = _Engine()
+
+        async def wait_forever(*_args, **_kwargs):
+            await asyncio.Event().wait()
+
+        engine.locked_direct = AsyncMock(side_effect=wait_forever)
+        engine._fetch_douyin_follows_direct_locked = engine.locked_direct
+        main.engine = engine
+
+        async def scenario():
+            started = await main.start_follow_sync_job(self.account_id, "fan")
+            task = main._follow_sync_tasks[started["id"]]
+            await asyncio.sleep(0)
+            await main.cancel_follow_sync_job(started["id"])
+            await task
+            return await main.get_follow_sync_job(started["id"])
+
+        result = asyncio.run(scenario())
+
+        self.assertEqual(result["status"], "canceled")
+        self.assertFalse(result["cancelable"])
+
 
 class FollowDirectErrorTests(unittest.TestCase):
     def setUp(self):
@@ -239,13 +342,29 @@ class FollowDirectErrorTests(unittest.TestCase):
 
 
 class FollowSyncUiTests(unittest.TestCase):
-    def test_skipped_sync_uses_deferred_message_instead_of_success(self):
+    def test_follow_diagnostic_markers_are_gbk_encodable(self):
+        source = (Path(__file__).parents[1] / "app" / "browser" /
+                  "account_hub.py").read_text(encoding="utf-8")
+        self.assertIn('("exact:" if precise else "candidate:") + path', source)
+        for marker in ("exact:", "candidate:"):
+            self.assertEqual(marker.encode("gbk").decode("gbk"), marker)
+
+    def test_background_sync_uses_deferred_status_instead_of_success(self):
         source = (Path(__file__).parents[1] / "app" / "web" / "app.js").read_text(
             encoding="utf-8")
         start = source.index("async function syncFollows(direction)")
         body = source[start:source.index("async function actFollow", start)]
-        self.assertIn("if (r.skipped)", body)
-        self.assertIn("同步暂缓", body)
+        self.assertIn("/follows/sync-jobs?direction=", body)
+        self.assertIn('job.status === "deferred"', source)
+        self.assertIn("同步暂缓", source)
+
+    def test_follow_ui_uses_paginated_payload_and_progress(self):
+        source = (Path(__file__).parents[1] / "app" / "web" / "app.js").read_text(
+            encoding="utf-8")
+        self.assertIn("page_size: String(FOLLOW_PAGE_SIZE)", source)
+        self.assertIn("const list = payload.items || []", source)
+        self.assertIn("renderFollowSyncStatus", source)
+        self.assertIn("cancelFollowSync", source)
 
 
 if __name__ == "__main__":

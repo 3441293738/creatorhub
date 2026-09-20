@@ -265,6 +265,17 @@
   .fu-cell { display:flex; align-items:center; gap:10px; }
   .fu-cell .avatar { width:36px; height:36px; }
   .fu-cell b { color:var(--fg-strong); }
+  .follow-toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
+  .follow-toolbar input[type="search"] { width:min(360px,100%); }
+  .follow-sync-status { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; margin:0 0 12px; }
+  .follow-sync-copy { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px; color:var(--mut); font-size:12px; }
+  .follow-sync-copy b { color:var(--fg-strong); font-weight:620; }
+  .follow-pager-time { color:var(--mut); font-size:11px; white-space:nowrap; }
+  @media(max-width:640px) {
+    .follow-toolbar { align-items:stretch; }
+    .follow-toolbar input[type="search"] { min-width:0; }
+    .follow-sync-status { grid-template-columns:1fr; }
+  }
   .fu-sign { color:var(--mut); font-size:11.5px; max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
   /* ── 私信两栏 ── */
@@ -3442,19 +3453,37 @@
       </div>
 
       <div data-hubpanel="following" style="display:none">
-        <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:12px">
-          <div class="hint" style="margin:0;flex:1">关注/粉丝无公开接口,通过该账号登录态打开关注页拦截抓取。首次抓不到时请把服务端控制台的 <code>[follow]</code> 日志发我以标定接口。</div>
-          <button class="ghost sm" style="flex:0 0 auto" onclick="syncFollows('following')"><svg><use href="#i-download"/></svg>同步关注</button>
+        <div class="follow-toolbar">
+          <input id="following-search" type="search" placeholder="搜索关注用户" aria-label="搜索关注用户" oninput="queueFollowSearch('following')">
+          <button class="ghost sm" onclick="syncFollows('following')"><svg><use href="#i-download"/></svg>同步关注</button>
         </div>
+        <div id="following-sync-status" class="follow-sync-status" hidden></div>
         <div class="table-wrap"><table aria-label="关注列表"><thead><tr><th>用户</th><th>关系</th><th>操作</th></tr></thead><tbody id="following-table"></tbody></table></div>
+        <div id="following-pager" class="danmaku-pager" hidden>
+          <div class="danmaku-pager-left"><span id="following-page-info" class="danmaku-page-info"></span></div>
+          <div class="danmaku-pager-center">
+            <button class="ghost sm danmaku-page-icon" data-tip="上一页" aria-label="关注列表上一页" onclick="changeFollowPage('following',-1)"><svg><use href="#i-prev"/></svg></button>
+            <button class="ghost sm danmaku-page-icon" data-tip="下一页" aria-label="关注列表下一页" onclick="changeFollowPage('following',1)"><svg><use href="#i-next"/></svg></button>
+          </div>
+          <div class="danmaku-pager-right"><span id="following-synced-at" class="follow-pager-time"></span></div>
+        </div>
       </div>
 
       <div data-hubpanel="fans" style="display:none">
-        <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:12px">
-          <div class="hint" style="margin:0;flex:1">粉丝列表通过该账号登录态打开粉丝页拦截抓取。可对未回关的粉丝发起「回关」。</div>
-          <button class="ghost sm" style="flex:0 0 auto" onclick="syncFollows('fan')"><svg><use href="#i-download"/></svg>同步粉丝</button>
+        <div class="follow-toolbar">
+          <input id="fan-search" type="search" placeholder="搜索粉丝" aria-label="搜索粉丝" oninput="queueFollowSearch('fan')">
+          <button class="ghost sm" onclick="syncFollows('fan')"><svg><use href="#i-download"/></svg>同步粉丝</button>
         </div>
+        <div id="fan-sync-status" class="follow-sync-status" hidden></div>
         <div class="table-wrap"><table aria-label="粉丝列表"><thead><tr><th>用户</th><th>关系</th><th>操作</th></tr></thead><tbody id="fans-table"></tbody></table></div>
+        <div id="fan-pager" class="danmaku-pager" hidden>
+          <div class="danmaku-pager-left"><span id="fan-page-info" class="danmaku-page-info"></span></div>
+          <div class="danmaku-pager-center">
+            <button class="ghost sm danmaku-page-icon" data-tip="上一页" aria-label="粉丝列表上一页" onclick="changeFollowPage('fan',-1)"><svg><use href="#i-prev"/></svg></button>
+            <button class="ghost sm danmaku-page-icon" data-tip="下一页" aria-label="粉丝列表下一页" onclick="changeFollowPage('fan',1)"><svg><use href="#i-next"/></svg></button>
+          </div>
+          <div class="danmaku-pager-right"><span id="fan-synced-at" class="follow-pager-time"></span></div>
+        </div>
       </div>
 
       <div data-hubpanel="dm" style="display:none">

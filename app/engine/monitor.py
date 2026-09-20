@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import random
@@ -2668,7 +2669,8 @@ class MonitorEngine:
                 account_id, direction),
             empty_result=[])
 
-    async def _fetch_douyin_follows_direct_locked(self, account_id: int, direction: str):
+    async def _fetch_douyin_follows_direct_locked(
+            self, account_id: int, direction: str, progress=None):
         """抖音关注/粉丝直连(following/follower list 分页,比弹窗滚动抓得全)。
         返回 (归一用户列表, error);拿不到时上层回退浏览器拦截,故失败无副作用。"""
         from ..browser.account_hub import _norm_follow_user
@@ -2691,21 +2693,34 @@ class MonitorEngine:
         client = DouyinClient(cookie, ua,
                               timeout=self.cfg.engine.request_timeout_seconds,
                               proxy=proxy, **direct_environment)
+        out = []
+
+        async def receive_page(rows: list[dict], meta: dict):
+            for row in rows:
+                normalized = _norm_follow_user(row, direction)
+                if normalized:
+                    out.append(normalized)
+            if progress is not None:
+                update = dict(meta)
+                update["fetched"] = len(out)
+                result = progress(update)
+                if inspect.isawaitable(result):
+                    await result
+
         try:
             async with client.session_scope():
-                raw = await client.fetch_all_follows("", sec_uid, direction)
+                await client.fetch_all_follows(
+                    "", sec_uid, direction, on_page=receive_page,
+                    collect=False)
         except Exception as e:
             return [], repr(e)
-        out = []
-        for u in raw:
-            n = _norm_follow_user(u, direction)
-            if n:
-                out.append(n)
-        print(f"[follow-direct] dir={direction} sec_uid={sec_uid} raw={len(raw)} "
-              f"norm={len(out)}")
+        meta = getattr(client, "last_follow_meta", {})
+        print(f"[follow-direct] dir={direction} sec_uid={sec_uid} "
+              f"pages={meta.get('pages', 0)} norm={len(out)} "
+              f"complete={meta.get('complete', False)}")
         # HTTP 200 + 空 body、非法 JSON 等是传输/风控失败，不是“有效空列表”。
         # 保留 DouyinClient 的分类，让上层决定是否回退浏览器且不清空旧快照。
-        return out, ("" if out else (client.last_error or "empty"))
+        return out, (client.last_error or ("" if out else "empty"))
 
     async def scan_comment_watch(self, watch_id: int) -> dict:
         key = f"cw:{watch_id}"

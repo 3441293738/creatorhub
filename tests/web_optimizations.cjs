@@ -334,7 +334,7 @@ async function run() {
   let confirmFollow, writes = 0;
   g.run('HUB_ACC = "1";');
   g.context.api = async (path) => {
-    if (path.startsWith('/api/follows?')) return [{ id: 8, uid: 'peer', nickname: 'fixture' }];
+    if (path.startsWith('/api/follows/8?')) return { id: 8, uid: 'peer', nickname: 'fixture' };
     writes++; return {};
   };
   g.context.uiConfirm = () => new Promise(resolve => { confirmFollow = resolve; });
