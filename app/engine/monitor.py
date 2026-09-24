@@ -1767,6 +1767,7 @@ class MonitorEngine:
                 briefs_raw, browser_error = await fetch_xhs_search(
                     self.browser, identity, keyword, known,
                     max_scrolls=strategy["max_scrolls"],
+                    search_sort="latest",
                     block_media=self.cfg.engine.block_media_resources,
                     keep_context=True)
                 if browser_error:
@@ -1781,7 +1782,8 @@ class MonitorEngine:
                 if browser_error:
                     error = browser_error
             elif kind == "keyword":
-                briefs_raw = await client.search_notes(keyword)
+                briefs_raw = await client.search_notes(
+                    keyword, sort="time_descending")
             else:
                 d = await client.notes_by_creator(user_id, xsec_token=xsec_token)
                 briefs_raw = d.get("notes") or []

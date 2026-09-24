@@ -14,7 +14,8 @@ import urllib.request
 import uuid
 import webbrowser
 
-from desktop.launcher import InstanceLock, child_command, resources, snapshot, version
+from desktop.launcher import (InstanceLock, child_command, resources, snapshot,
+                              utf8_child_environment, version)
 from desktop.updates import UpdateChecker, RELEASES_URL
 from desktop.update_helper import atomic_json, clean_environment, read_request, verify_installer
 
@@ -144,7 +145,7 @@ class Controller:
                 args.append("--skip-browser-install")
             with (self.home / "logs" / f"desktop-{session[:8]}.log").open("w", encoding="utf-8") as log:
                 process = subprocess.Popen(child_command(*args), cwd=self.home,
-                    env={**os.environ, "CREATORHUB_DESKTOP_HOME": str(self.home), "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"},
+                    env=utf8_child_environment(CREATORHUB_DESKTOP_HOME=str(self.home)),
                     stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
             with self.lock:
                 self.process = process

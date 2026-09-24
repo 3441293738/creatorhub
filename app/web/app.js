@@ -1056,7 +1056,7 @@ const PAGE_META = {
     title: "作品监控", desc: "追踪关注的创作者，检查采集进度与新作品。"
   },
   collections: {
-    title: "关键词批量采集", desc: "批量搜索抖音视频，并按上限采集评论与媒体。"
+    title: "关键词批量采集", desc: "批量搜索平台作品，并按上限采集评论与媒体。"
   },
   comments: {
     title: "评论监控", desc: "订阅作品或账号评论，按来源、分组和标签筛选。"
@@ -1156,7 +1156,8 @@ function applyPlatformUI() {
   document.querySelectorAll(".ks-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "kuaishou"));
   document.querySelectorAll(".sh-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "shipinhao"));
   document.querySelectorAll(".notsh-only").forEach(e => e.classList.toggle("hidden", pfIsChannels(PLATFORM)));
-  document.querySelectorAll(".collect-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "douyin"));
+  document.querySelectorAll(".collect-only").forEach(e => e.classList.toggle(
+    "hidden", !["douyin", "xhs"].includes(PLATFORM)));
   document.querySelectorAll(".meta-scope").forEach(e => {
     e.textContent = (PF_NAME[PLATFORM] || "当前平台") + "内独立";
   });
@@ -1221,7 +1222,7 @@ function applyPlatformUI() {
     // 视频号本账号只有「我的作品 / 数据」;若停在关注/粉丝/私信子页,切回我的作品
     if (["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
   }
-  if (PLATFORM !== "douyin" && CURRENT_TAB === "collections") switchTab("overview");
+  if (!["douyin", "xhs"].includes(PLATFORM) && CURRENT_TAB === "collections") switchTab("overview");
   // 不支持发布的平台:若正停在该面板则回到总览(当前四平台均支持,兜底保留)
   if (!pfHasPublish(PLATFORM)) {
     const pub = document.querySelector('[data-panel="publish"]');
@@ -3593,8 +3594,9 @@ function populateAccountSelect() {
 function populateCollectionAccount() {
   const sel = $("col-account"); if (!sel) return;
   const current = sel.value;
-  const list = ACCOUNTS.filter(a => a.platform === "douyin" && a.status !== "invalid" && a.has_storage);
-  sel.innerHTML = accOptions(list, list.length ? "请选择抖音账号" : "暂无可用抖音账号");
+  const platformName = PF_NAME[PLATFORM] || "平台";
+  const list = ACCOUNTS.filter(a => a.platform === PLATFORM && a.status !== "invalid" && a.has_storage);
+  sel.innerHTML = accOptions(list, list.length ? `请选择${platformName}账号` : `暂无可用${platformName}账号`);
   if (list.some(a => String(a.id) === current)) sel.value = current;
   else if (list.length) sel.value = String(list[0].id);
   if (sel._csSync) sel._csSync();
@@ -5064,7 +5066,7 @@ async function toggleChannel(id, enabled) { try { await api("/api/notifications/
 async function delChannel(id) { if (await uiConfirm({ title: "删除渠道", message: "删除该通知渠道?", okText: "删除", danger: true })) { try { await api("/api/notifications/" + id, { method: "DELETE" }); toast("渠道已删除", "ok"); refreshChannels(); } catch (e) { toast("删除失败:" + e.message, "err"); } } }
 
 // ─── 监控 ───
-// ═══════════ 关键词批量采集（当前版本：抖音）═══════════
+// ═══════════ 抖音 / 小红书关键词批量采集 ═══════════
 function parseCollectionKeywords(raw) {
   const seen = new Set();
   return String(raw || "")
@@ -5080,6 +5082,15 @@ function collectionKeywords() {
 function applyCollectionForm() {
   const enabled = !!($("col-download") && $("col-download").checked);
   if ($("col-dir-wrap")) $("col-dir-wrap").style.display = enabled ? "" : "none";
+  const xhs = PLATFORM === "xhs";
+  if ($("collection-create-title")) $("collection-create-title").textContent = `新建${xhs ? "小红书" : "抖音"}关键词采集`;
+  if ($("collection-create-sub")) $("collection-create-sub").textContent = xhs ? "批量搜索笔记并抓取评论" : "批量搜索视频并抓取评论";
+  if ($("col-page-help")) $("col-page-help").textContent = xhs ? "一页对应一次搜索结果下滑或接口翻页。" : "一页对应一次搜索结果下滑。";
+  if ($("col-replies-help")) $("col-replies-help").textContent = `采集${xhs ? "小红书" : "抖音"}当前可返回的回复`;
+  if ($("collection-callout-title")) $("collection-callout-title").textContent = "作品上限、采集深度和停止条件任一满足即结束";
+  if ($("collection-callout-copy")) $("collection-callout-copy").textContent = xhs
+    ? "小红书采集复用所选账号的可见浏览器或显式 API 读取模式；最新、类型、时间和数据门槛会在入库前复核；任务串行执行，可随时取消，已入库结果会保留。"
+    : "抖音采集会临时打开可见浏览器窗口；平台筛选后还会在本地复核类型、时间和数据门槛；任务串行执行，可随时取消，已入库结果会保留。";
 }
 function collectionStatus(status) {
   const labels = { pending: "等待中", running: "采集中", done: "已完成", partial: "部分完成", failed: "失败", canceled: "已取消" };
@@ -5125,7 +5136,7 @@ async function createCollection() {
       const job = await api("/api/collections", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          platform: "douyin", account_id: accountId, keywords,
+          platform: PLATFORM, account_id: accountId, keywords,
           max_contents_per_keyword: contentLimit,
           max_pages_per_keyword: pageLimit,
           stagnant_pages: stagnantPages,
@@ -5172,7 +5183,7 @@ function renderCollectionJobs() {
       ((job.keywords || []).length > 5 ? `<span class="meta-chip more">+${job.keywords.length - 5}</span>` : "");
     const canCancel = ["pending", "running"].includes(job.status);
     const canRetry = ["done", "partial", "failed", "canceled"].includes(job.status);
-    const canEdit = canRetry && job.platform === "douyin";
+    const canEdit = canRetry && ["douyin", "xhs"].includes(job.platform);
     const errorText = collectionLastError(job);
     const sortLabel = { general: "综合", latest: "最新", most_liked: "最多点赞" }[job.search_sort] || "综合";
     const timeLabel = { all: "不限时间", day: "一天内", week: "一周内", half_year: "半年内" }[job.publish_time] || "不限时间";
@@ -5197,9 +5208,9 @@ function renderCollectionJobs() {
 }
 async function refreshCollections() {
   const isCurrent = beginViewRequest("collections");
-  if (!$("collection-job-table") || PLATFORM !== "douyin") return;
+  if (!$("collection-job-table") || !["douyin", "xhs"].includes(PLATFORM)) return;
   try {
-    const jobs = await api("/api/collections?platform=douyin");
+    const jobs = await api("/api/collections?platform=" + encodeURIComponent(PLATFORM));
     if (!isCurrent()) return;
     COLLECTION_JOBS = jobs;
     const active = COLLECTION_JOBS.filter(j => ["pending", "running"].includes(j.status)).length;
@@ -5220,7 +5231,8 @@ async function refreshCollections() {
 async function editCollection(jobId, draft = null) {
   const job = COLLECTION_JOBS.find(item => item.id === Number(jobId));
   if (!job) return;
-  const accounts = ACCOUNTS.filter(a => a.platform === "douyin" && a.status !== "invalid" && a.has_storage);
+  const platformName = PF_NAME[job.platform] || "平台";
+  const accounts = ACCOUNTS.filter(a => a.platform === job.platform && a.status !== "invalid" && a.has_storage);
   const initial = draft || {
     account_id: job.account_id,
     keywords: (job.keywords || []).join("\n"),
@@ -5245,8 +5257,8 @@ async function editCollection(jobId, draft = null) {
       <div class="form-field"><label for="ecol-keywords">关键词 <span class="field-scope">最多 20 个</span></label>
         <textarea id="ecol-keywords" rows="5" placeholder="每行一个关键词">${esc(initial.keywords)}</textarea></div>
       <div class="form-grid">
-        <div class="form-field"><label for="ecol-account">使用账号</label><select id="ecol-account">${accOptions(accounts, accounts.length ? "请选择抖音账号" : "暂无可用抖音账号")}</select></div>
-        <div class="form-field"><label for="ecol-quality">视频画质</label><select id="ecol-quality"><option value="highest">原画 / 最高</option><option value="1080">1080P</option><option value="720">720P</option><option value="540">540P</option><option value="lowest">最低省流</option></select></div>
+        <div class="form-field"><label for="ecol-account">使用账号</label><select id="ecol-account">${accOptions(accounts, accounts.length ? `请选择${platformName}账号` : `暂无可用${platformName}账号`)}</select></div>
+        ${job.platform === "douyin" ? '<div class="form-field"><label for="ecol-quality">视频画质</label><select id="ecol-quality"><option value="highest">原画 / 最高</option><option value="1080">1080P</option><option value="720">720P</option><option value="540">540P</option><option value="lowest">最低省流</option></select></div>' : ""}
         <div class="form-field"><label for="ecol-content-limit">每词作品上限</label><input id="ecol-content-limit" type="number" min="1" max="100" value="${Number(initial.max_contents_per_keyword) || 20}"></div>
         <div class="form-field"><label for="ecol-comment-limit">每作品评论上限</label><input id="ecol-comment-limit" type="number" min="0" max="200" value="${Number(initial.max_comments_per_content) || 0}"></div>
       </div>
@@ -5265,12 +5277,12 @@ async function editCollection(jobId, draft = null) {
       <fieldset class="ui-form-group"><legend>评论与下载</legend>
       <div class="option-grid" aria-label="采集选项">
         <label class="switch-row"><input type="checkbox" id="ecol-download"${initial.download_media ? " checked" : ""} onchange="$('ecol-dir-wrap').style.display=this.checked?'':'none'"><span class="switch-copy"><b>下载媒体</b><span>保存视频和封面来源</span></span></label>
-        <label class="switch-row"><input type="checkbox" id="ecol-replies"${initial.include_replies ? " checked" : ""}><span class="switch-copy"><b>包含二级评论</b><span>采集抖音当前可返回的回复</span></span></label>
+        <label class="switch-row"><input type="checkbox" id="ecol-replies"${initial.include_replies ? " checked" : ""}><span class="switch-copy"><b>包含二级评论</b><span>采集${platformName}当前可返回的回复</span></span></label>
       </div>
       <div class="form-field" id="ecol-dir-wrap" style="display:${initial.download_media ? "" : "none"}"><label for="ecol-download-dir">下载目录（可选）</label><input id="ecol-download-dir" value="${esc(initial.download_dir)}" placeholder="留空使用默认目录"></div>
       </fieldset>`;
     $("ecol-account").value = String(initial.account_id || "");
-    $("ecol-quality").value = initial.video_quality || "highest";
+    if ($("ecol-quality")) $("ecol-quality").value = initial.video_quality || "highest";
     $("ecol-sort").value = initial.search_sort || "general";
     $("ecol-publish-time").value = initial.publish_time || "all";
     $("ecol-content-type").value = initial.content_type || "all";
@@ -5289,7 +5301,7 @@ async function editCollection(jobId, draft = null) {
       max_comments_per_content: Number($("ecol-comment-limit").value || 0),
       include_replies: $("ecol-replies").checked,
       download_media: $("ecol-download").checked,
-      video_quality: $("ecol-quality").value || "highest",
+      video_quality: $("ecol-quality") ? ($("ecol-quality").value || "highest") : "highest",
       download_dir: $("ecol-download-dir").value.trim(),
     });
     _uiOpen(`编辑采集任务 #${job.id}`, "已有作品和评论会保留。保存后点击「续跑」应用新配置，系统会自动去重。", {
@@ -5298,14 +5310,14 @@ async function editCollection(jobId, draft = null) {
         const keywords = parseCollectionKeywords(value.keywords);
         if (!keywords.length) uiEditorError("请至少填写一个关键词", "ecol-keywords");
         if (keywords.length > 20) uiEditorError("单个任务最多 20 个关键词", "ecol-keywords");
-        if (!value.account_id) uiEditorError("请选择一个可用抖音账号", "ecol-account");
+        if (!value.account_id) uiEditorError(`请选择一个可用${platformName}账号`, "ecol-account");
         if (value.max_contents_per_keyword < 1 || value.max_contents_per_keyword > 100) uiEditorError("每词作品上限须为 1–100", "ecol-content-limit");
         if (value.max_pages_per_keyword < 1 || value.max_pages_per_keyword > 40) uiEditorError("每词采集深度须为 1–40 页", "ecol-page-limit");
         if (value.stagnant_pages < 1 || value.stagnant_pages > 8) uiEditorError("连续无新增停止阈值须为 1–8 页", "ecol-stagnant-pages");
         if (value.min_likes < 0 || value.min_comments < 0) uiEditorError("点赞和评论门槛须为非负整数", "ecol-min-likes");
         if (value.max_comments_per_content < 0 || value.max_comments_per_content > 200) uiEditorError("每作品评论上限须为 0–200", "ecol-comment-limit");
         return api(`/api/collections/${job.id}`, {
-          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...value, platform: "douyin", keywords }),
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...value, platform: job.platform, keywords }),
         });
       },
     });

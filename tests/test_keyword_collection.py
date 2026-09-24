@@ -23,8 +23,12 @@ from app.browser.fetcher import (
     fetch_douyin_search,
 )
 from app.config import Config
-from app.engine.collection import KeywordCollector
-from app.platforms.douyin import Aweme
+from app.engine.collection import (
+    KeywordCollector,
+    _sort_xhs_search_items,
+    _xhs_content_matches,
+)
+from app.platforms.douyin import Aweme, MediaItem
 from app.main import (
     KeywordCollectionIn,
     _collection_content_dict,
@@ -524,11 +528,176 @@ class KeywordCollectionEditTests(unittest.TestCase):
                 asyncio.run(update_keyword_collection(self.job_id, self._body(**values)))
             self.assertEqual(caught.exception.status_code, 400)
 
-    def test_xhs_collection_creation_is_deferred(self):
+    def test_xhs_collection_creation_uses_matching_logged_in_account(self):
+        with db.get_session() as session:
+            account = DouyinAccount(
+                platform="xhs", nickname="小红书采集账号", status="active",
+                storage_state='{"cookies":[{"name":"a1","value":"fixture"}]}',
+            )
+            session.add(account); session.commit(); session.refresh(account)
+            xhs_account_id = account.id
+
+        result = asyncio.run(create_keyword_collection(self._body(
+            platform="xhs", account_id=xhs_account_id,
+            search_sort="latest", content_type="images")))
+
+        self.assertEqual(result["platform"], "xhs")
+        self.assertEqual(result["account_id"], xhs_account_id)
+        self.assertEqual(result["search_sort"], "latest")
+        self.assertEqual(result["content_type"], "images")
+
+    def test_finished_xhs_task_can_be_edited_but_not_moved_between_platforms(self):
+        with db.get_session() as session:
+            account = DouyinAccount(
+                platform="xhs", nickname="小红书采集账号", status="active",
+                storage_state='{"cookies":[{"name":"a1","value":"fixture"}]}',
+            )
+            session.add(account); session.commit(); session.refresh(account)
+            job = KeywordCollectionJob(
+                platform="xhs", account_id=account.id,
+                keywords='["旧词"]', status="done")
+            session.add(job); session.commit(); session.refresh(job)
+            account_id, job_id = account.id, job.id
+
+        updated = asyncio.run(update_keyword_collection(job_id, self._body(
+            platform="xhs", account_id=account_id, search_sort="latest")))
+        self.assertEqual(updated["platform"], "xhs")
+        self.assertEqual(updated["search_sort"], "latest")
+
         with self.assertRaises(HTTPException) as caught:
-            asyncio.run(create_keyword_collection(self._body(platform="xhs")))
+            asyncio.run(update_keyword_collection(job_id, self._body()))
         self.assertEqual(caught.exception.status_code, 400)
-        self.assertIn("仅支持抖音", caught.exception.detail)
+        self.assertIn("不能变更平台", caught.exception.detail)
+
+
+class XhsKeywordCollectionPipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.previous_engine = db._engine
+        self.temp_dir = tempfile.TemporaryDirectory()
+        db.init_db(str(Path(self.temp_dir.name) / "xhs-collection.db"))
+        with db.get_session() as session:
+            account = DouyinAccount(
+                platform="xhs", nickname="collector", status="active",
+                storage_state='{"cookies":[{"name":"a1","value":"fixture"}]}',
+            )
+            session.add(account); session.commit(); session.refresh(account)
+            job = KeywordCollectionJob(
+                platform="xhs", account_id=account.id,
+                keywords='["露营"]', max_contents_per_keyword=2,
+                max_pages_per_keyword=6, search_sort="latest",
+                publish_time="week", content_type="images",
+                min_likes=100, min_comments=2,
+                max_comments_per_content=1,
+            )
+            session.add(job); session.commit(); session.refresh(job)
+            self.account = SimpleNamespace(
+                id=account.id, platform="xhs",
+                storage_state=account.storage_state, proxy="")
+            self.job_id = job.id
+
+    async def asyncTearDown(self):
+        if db._engine is not None:
+            db._engine.dispose()
+        db._engine = self.previous_engine
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _note(note_id: str, created: int, likes: int, comments: int) -> tuple[Aweme, dict, str]:
+        aweme = Aweme(
+            aweme_id=note_id, desc=note_id, create_time=created,
+            author_name="作者", media_type="images",
+            like_count=likes, comment_count=comments,
+        )
+        aweme.platform = "xhs"
+        aweme.medias.append(MediaItem(
+            url=f"https://media.test/{note_id}.jpg", kind="image",
+            ext="jpg", index=0))
+        return aweme, {
+            "brief": {"note_id": note_id, "xsec_token": f"token-{note_id}",
+                      "xsec_source": "web_search_result_note"},
+            "card": {"note_id": note_id,
+                     "user": {"user_id": f"author-{note_id}"}},
+        }, ""
+
+    async def test_filters_candidates_before_limit_and_preserves_access_context(self):
+        now = int(__import__("time").time())
+        raw = [{"id": value} for value in ("old", "low", "keep-1", "keep-2")]
+        details = {
+            "old": self._note("old", now - 30 * 86400, 900, 20),
+            "low": self._note("low", now - 3600, 5, 20),
+            "keep-1": self._note("keep-1", now - 1800, 500, 8),
+            "keep-2": self._note("keep-2", now - 900, 300, 4),
+        }
+        browser = SimpleNamespace(
+            identity_for=lambda _account: SimpleNamespace(ua="fixture-agent"),
+            visible_page=lambda *_args, **_kwargs: None,
+        )
+        cfg = Config()
+        cfg.engine.xhs_read_mode = "browser"
+        cfg.engine.xhs_item_gap_seconds = 0
+        collector = KeywordCollector(cfg, browser, SimpleNamespace())
+        collector._discover_xhs_browser = AsyncMock(return_value=(raw, ""))
+        collector._materialize_xhs_browser = AsyncMock(
+            side_effect=lambda _identity, item: details[item["id"]])
+        collector._xhs_comments_browser = AsyncMock(return_value=([{
+            "comment_id": "comment-1", "text": "已收藏",
+            "user_nickname": "用户", "like_count": 1,
+            "create_time": now, "reply_to": "",
+        }], ""))
+        collector._xhs_gap = AsyncMock()
+
+        result = await collector.run(self.job_id, self.account)
+
+        self.assertEqual(result["contents"], 2)
+        self.assertEqual(result["comments"], 2)
+        self.assertEqual(collector._materialize_xhs_browser.await_count, 4)
+        with db.get_session() as session:
+            rows = session.exec(select(KeywordCollectionContent).order_by(
+                KeywordCollectionContent.id)).all()
+        self.assertEqual([row.aweme_id for row in rows], ["keep-1", "keep-2"])
+        self.assertTrue(all(row.xsec_source == "web_search_result_note" for row in rows))
+
+    async def test_api_search_forwards_xhs_sort_type_depth_and_stagnation(self):
+        with db.get_session() as session:
+            job = session.get(KeywordCollectionJob, self.job_id)
+            job.publish_time = "all"
+            job.max_contents_per_keyword = 2
+            job.content_type = "video"
+            session.add(job); session.commit(); session.refresh(job)
+        calls = []
+
+        async def search_notes(keyword, **kwargs):
+            calls.append((keyword, kwargs))
+            return ([{"id": "b"}, {"id": "a"}] if kwargs["page"] == 1 else [])
+
+        collector = KeywordCollector(Config(), SimpleNamespace(), SimpleNamespace())
+        values, error = await collector._discover_xhs(
+            SimpleNamespace(search_notes=search_notes), "露营", job)
+
+        self.assertEqual(error, "")
+        self.assertEqual(len(values), 2)
+        self.assertEqual(calls[0][1]["sort"], "time_descending")
+        self.assertEqual(calls[0][1]["note_type"], 1)
+
+    def test_xhs_sort_and_filter_helpers_match_douyin_style_controls(self):
+        rows = [
+            {"id": "older", "note_card": {"time": 100,
+             "interact_info": {"liked_count": "1.2万"}}},
+            {"id": "newer", "note_card": {"time": 200,
+             "interact_info": {"liked_count": "50"}}},
+        ]
+        self.assertEqual(
+            [row["id"] for row in _sort_xhs_search_items(rows, "latest")],
+            ["newer", "older"])
+        self.assertEqual(
+            [row["id"] for row in _sort_xhs_search_items(rows, "most_liked")],
+            ["older", "newer"])
+        with db.get_session() as session:
+            job = session.get(KeywordCollectionJob, self.job_id)
+        accepted = self._note("accepted", int(__import__("time").time()), 100, 2)[0]
+        rejected = self._note("rejected", int(__import__("time").time()), 99, 2)[0]
+        self.assertTrue(_xhs_content_matches(accepted, job))
+        self.assertFalse(_xhs_content_matches(rejected, job))
 
 
 class KeywordCollectionMediaPreviewTests(unittest.TestCase):

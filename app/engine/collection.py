@@ -5,6 +5,7 @@ import asyncio
 import json
 import math
 import random
+import time
 from pathlib import Path
 
 from sqlalchemy import func
@@ -67,6 +68,63 @@ def _author_id(raw: dict, platform: str) -> str:
     card = raw.get("note_card") or raw
     user = card.get("user") or {}
     return str(user.get("user_id") or user.get("userid") or user.get("id") or "")
+
+
+_XHS_SEARCH_SORT = {
+    "general": "general",
+    "latest": "time_descending",
+    "most_liked": "popularity_descending",
+}
+_XHS_NOTE_TYPE = {"all": 0, "video": 1, "images": 2}
+_XHS_TIME_SECONDS = {
+    "day": 86400,
+    "week": 7 * 86400,
+    "half_year": 180 * 86400,
+}
+
+
+def _xhs_count(value) -> int:
+    text = str(value or "").strip().replace("+", "")
+    try:
+        if "万" in text:
+            return int(float(text.replace("万", "")) * 10_000)
+        if "亿" in text:
+            return int(float(text.replace("亿", "")) * 100_000_000)
+        return int(float(text))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sort_xhs_search_items(items: list[dict], search_sort: str) -> list[dict]:
+    """Keep general ranking stable and make explicit XHS sorts deterministic."""
+    if search_sort == "latest":
+        return sorted(
+            items,
+            key=lambda item: int((parse_note_brief(item) or {}).get("create_time") or 0),
+            reverse=True,
+        )
+    if search_sort == "most_liked":
+        def likes(item: dict) -> int:
+            card = item.get("note_card") or item
+            interact = card.get("interact_info") or {}
+            return _xhs_count(interact.get("liked_count") or interact.get("likedCount"))
+        return sorted(items, key=likes, reverse=True)
+    return list(items)
+
+
+def _xhs_content_matches(aweme: Aweme, job: KeywordCollectionJob,
+                         *, now: int | None = None) -> bool:
+    if job.content_type != "all" and aweme.media_type != job.content_type:
+        return False
+    if aweme.like_count < max(0, int(job.min_likes or 0)):
+        return False
+    if aweme.comment_count < max(0, int(job.min_comments or 0)):
+        return False
+    window = _XHS_TIME_SECONDS.get(job.publish_time)
+    if window and aweme.create_time:
+        if aweme.create_time < int(now or time.time()) - window:
+            return False
+    return True
 
 
 class KeywordCollector:
@@ -220,25 +278,40 @@ class KeywordCollector:
         )
 
     async def _discover_xhs(self, client: XhsApiClient, keyword: str,
-                            limit: int) -> tuple[list[dict], str]:
+                            job: KeywordCollectionJob) -> tuple[list[dict], str]:
         found: dict[str, dict] = {}
-        pages = max(1, min(10, math.ceil(limit / 20) + 1))
+        pages = max(1, min(40, int(job.max_pages_per_keyword or 1)))
+        needs_local_filter = bool(
+            job.publish_time != "all" or job.min_likes or job.min_comments)
+        candidate_limit = (pages * 20 if needs_local_filter
+                           else job.max_contents_per_keyword)
+        stagnant = 0
         try:
             for page in range(1, pages + 1):
-                raw_items = await client.search_notes(keyword, page=page, page_size=20)
+                raw_items = await client.search_notes(
+                    keyword,
+                    page=page,
+                    page_size=20,
+                    sort=_XHS_SEARCH_SORT.get(job.search_sort, "general"),
+                    note_type=_XHS_NOTE_TYPE.get(job.content_type, 0),
+                )
                 before = len(found)
                 for raw in raw_items:
                     brief = parse_note_brief(raw)
                     if brief:
                         found.setdefault(brief["note_id"], raw)
-                    if len(found) >= limit:
+                    if len(found) >= candidate_limit:
                         break
-                if len(found) >= limit or not raw_items or len(found) == before:
+                stagnant = stagnant + 1 if len(found) == before else 0
+                if len(found) >= candidate_limit:
                     break
-                await asyncio.sleep(0.6)
+                if not raw_items or stagnant >= max(1, int(job.stagnant_pages or 1)):
+                    break
+                await self._xhs_gap(0.6)
         except Exception as exc:
-            return list(found.values())[:limit], f"小红书搜索失败: {exc}"
-        return list(found.values())[:limit], ""
+            return _sort_xhs_search_items(
+                list(found.values()), job.search_sort), f"小红书搜索失败: {exc}"
+        return _sort_xhs_search_items(list(found.values()), job.search_sort), ""
 
     async def _discover_xhs_browser(
             self, identity, keyword: str, job: KeywordCollectionJob
@@ -248,10 +321,13 @@ class KeywordCollector:
             identity,
             keyword,
             set(),
-            max_scrolls=max(1, min(10, int(job.max_pages_per_keyword or 1))),
+            max_scrolls=max(1, min(40, int(job.max_pages_per_keyword or 1))),
+            stagnant_limit=max(1, min(8, int(job.stagnant_pages or 1))),
+            search_sort=job.search_sort,
+            content_type=job.content_type,
             block_media=self.cfg.engine.block_media_resources,
         )
-        return values[:job.max_contents_per_keyword], error
+        return _sort_xhs_search_items(values, job.search_sort), error
 
     async def _materialize_xhs(self, client: XhsApiClient, raw: dict) \
             -> tuple[Aweme | None, dict, str]:
@@ -303,7 +379,8 @@ class KeywordCollector:
 
     @staticmethod
     def _upsert_content(job: KeywordCollectionJob, keyword: str, aweme: Aweme,
-                        author_id: str, xsec_token: str, detail_error: str) \
+                        author_id: str, xsec_token: str, xsec_source: str,
+                        detail_error: str) \
             -> KeywordCollectionContent:
         with get_session() as session:
             row = session.exec(
@@ -327,6 +404,7 @@ class KeywordCollector:
             row.comment_count = aweme.comment_count
             row.media_json = _media_json(aweme)
             row.xsec_token = xsec_token
+            row.xsec_source = xsec_source
             row.error = detail_error
             if job.download_media and aweme.medias and row.download_status != "done":
                 row.download_status = "pending"
@@ -423,7 +501,7 @@ class KeywordCollector:
         return self._dedupe_comments(parsed, limit), error
 
     async def _xhs_comments(self, client: XhsApiClient, note_id: str,
-                            xsec_token: str, limit: int,
+                            xsec_token: str, xsec_source: str, limit: int,
                             include_replies: bool) -> tuple[list[dict], str]:
         if limit <= 0:
             return [], ""
@@ -431,7 +509,8 @@ class KeywordCollector:
         error = ""
         try:
             page = await client.collect_note_comments(
-                note_id, xsec_token=xsec_token, xsec_source="pc_search",
+                note_id, xsec_token=xsec_token,
+                xsec_source=xsec_source or "pc_search",
                 max_comments=limit,
                 max_requests=max(1, min(20, math.ceil(limit / 10) + 1)),
                 include_replies=include_replies,
@@ -445,7 +524,8 @@ class KeywordCollector:
         return self._dedupe_comments(parsed, limit), error
 
     async def _xhs_comments_browser(
-            self, identity, note_id: str, xsec_token: str, limit: int,
+            self, identity, note_id: str, xsec_token: str, xsec_source: str,
+            limit: int,
             include_replies: bool) -> tuple[list[dict], str]:
         if limit <= 0:
             return [], ""
@@ -455,7 +535,7 @@ class KeywordCollector:
             note_id,
             set(),
             xsec_token=xsec_token,
-            xsec_source="pc_search",
+            xsec_source=xsec_source or "pc_search",
             max_scrolls=max(1, min(20, math.ceil(limit / 10) + 1)),
             block_media=self.cfg.engine.block_media_resources,
         )
@@ -594,7 +674,7 @@ class KeywordCollector:
                     identity, keyword, job)
             else:
                 raw_items, search_error = await self._discover_xhs(
-                    xhs_client, keyword, job.max_contents_per_keyword)
+                    xhs_client, keyword, job)
             if search_error:
                 self._record_error(job_id, f"{keyword}: {search_error}")
                 if "登录态已失效" in search_error:
@@ -607,14 +687,20 @@ class KeywordCollector:
             if not raw_items:
                 continue
 
-            for index, raw in enumerate(raw_items[:job.max_contents_per_keyword], 1):
+            candidates = (raw_items[:job.max_contents_per_keyword]
+                          if job.platform == "douyin" else raw_items)
+            accepted = 0
+            for index, raw in enumerate(candidates, 1):
                 if self._cancel_requested(job_id):
                     return {"canceled": True, "errors": self._job(job_id).error_count}
                 self._progress(
                     job_id, keyword=keyword,
-                    step=f"处理作品 {index}/{min(len(raw_items), job.max_contents_per_keyword)}")
+                    step=f"处理作品 {index}/{len(candidates)}")
+                if job.platform == "xhs" and index > 1:
+                    await self._xhs_gap(self.cfg.engine.xhs_item_gap_seconds)
                 detail_error = ""
                 detail_raw = raw
+                source = ""
                 if job.platform == "douyin":
                     aweme = parse_aweme(raw, job.video_quality or "highest")
                     if aweme is None and raw.get("aweme_id"):
@@ -635,12 +721,14 @@ class KeywordCollector:
                     card = parts.get("card") or {}
                     detail_raw = card or raw
                     token = brief.get("xsec_token") or ""
+                    source = brief.get("xsec_source") or "pc_search"
                 else:
                     aweme, parts, detail_error = await self._materialize_xhs(xhs_client, raw)
                     brief = parts.get("brief") or {}
                     card = parts.get("card") or {}
                     detail_raw = card or raw
                     token = brief.get("xsec_token") or ""
+                    source = brief.get("xsec_source") or "pc_search"
                 if job.platform == "xhs" and detail_error:
                     category, _ = classify_platform_error(detail_error)
                     if category in {
@@ -654,11 +742,14 @@ class KeywordCollector:
                 if aweme is None:
                     self._record_error(job_id, f"{keyword}: 无法解析一条搜索结果")
                     continue
+                if job.platform == "xhs" and not _xhs_content_matches(aweme, job):
+                    continue
 
                 current = self._job(job_id)
                 content = self._upsert_content(
                     current, keyword, aweme, _author_id(detail_raw, job.platform),
-                    token, detail_error)
+                    token, source, detail_error)
+                accepted += 1
                 if detail_error:
                     self._record_error(
                         job_id, f"{keyword}/{aweme.aweme_id}: {detail_error}")
@@ -677,11 +768,11 @@ class KeywordCollector:
                             context=context)
                     elif browser_reads:
                         comments, comment_error = await self._xhs_comments_browser(
-                            identity, aweme.aweme_id, token,
+                            identity, aweme.aweme_id, token, source,
                             job.max_comments_per_content, job.include_replies)
                     else:
                         comments, comment_error = await self._xhs_comments(
-                            xhs_client, aweme.aweme_id, token,
+                            xhs_client, aweme.aweme_id, token, source,
                             job.max_comments_per_content, job.include_replies)
                     self._persist_comments(
                         job_id, content.id, job.platform, aweme.aweme_id, comments)
@@ -694,9 +785,9 @@ class KeywordCollector:
                                 RiskCategory.NETWORK}:
                             return self._result(job_id, stopped=True)
                 self._refresh_counts(job_id)
-                if job.platform == "xhs":
-                    await self._xhs_gap(self.cfg.engine.xhs_item_gap_seconds)
-                else:
+                if job.platform != "xhs":
                     await asyncio.sleep(0.4)
+                if accepted >= job.max_contents_per_keyword:
+                    break
 
         return self._result(job_id)

@@ -202,6 +202,9 @@ def test_api_defaults_match_the_note_list_origin(scanning, kind, source):
     f.client.search_notes.return_value = rows
     result = asyncio.run(f.engine.scan_target(f.target_id))
     assert result["ok"] and not result["partial"]
+    if kind == "keyword":
+        f.client.search_notes.assert_awaited_once_with(
+            "fixture", sort="time_descending")
     assert f.client.note_detail.call_args.kwargs["xsec_source"] == source
     assert records(f)[0].xsec_source == source
 

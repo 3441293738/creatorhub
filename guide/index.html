@@ -50,14 +50,14 @@
       <h2>平台能力速查</h2>
       <div class="table-scroll"><table><caption>按当前项目实现整理；平台切换后以可见入口为准</caption><thead><tr><th scope="col">功能</th><th scope="col">抖音</th><th scope="col">小红书</th><th scope="col">快手</th><th scope="col">视频号</th></tr></thead><tbody>
       <tr><th scope="row">作品 / 评论监控</th><td>支持</td><td>支持</td><td>支持</td><td>仅本账号数据</td></tr>
-      <tr><th scope="row">关键词批量采集</th><td>支持</td><td>规划中</td><td>—</td><td>—</td></tr>
+      <tr><th scope="row">关键词批量采集</th><td>支持</td><td>支持</td><td>—</td><td>—</td></tr>
       <tr><th scope="row">短视频弹幕</th><td>支持</td><td>—</td><td>—</td><td>—</td></tr>
       <tr><th scope="row">内容下载</th><td>支持</td><td>图集 / 视频</td><td>支持</td><td>—</td></tr>
       <tr><th scope="row">发布</th><td>支持</td><td>图集 / 视频 / 定时</td><td>支持</td><td>支持</td></tr>
       <tr><th scope="row">自动评论 / 回复</th><td>支持</td><td>支持</td><td>支持</td><td>—</td></tr>
       <tr><th scope="row">我的内容</th><td>作品 / 关注 / 粉丝 / 私信</td><td>作品 / 关注 / 粉丝 / 私信</td><td>作品 / 关注 / 粉丝</td><td>作品 / 数据 / 评论</td></tr>
       </tbody></table></div>
-      <p>小红书的<strong>关键词作品监控</strong>与<strong>关键词批量采集</strong>是不同功能：前者持续检查一个搜索词，后者是一次性批处理，目前仅抖音支持。</p>
+      <p><strong>关键词作品监控</strong>与<strong>关键词批量采集</strong>是不同功能：前者持续检查一个搜索词，后者是一次性批处理。抖音和小红书均支持批量采集。</p>
       <figure><a href="images/overview-douyin.png"><img src="images/overview-douyin.png" alt="CreatorHub 工作概览，左侧为功能导航，顶部可切换平台" width="1600" loading="lazy"></a><figcaption>界面截图使用示例数据。点击图片可查看原图；实际入口会随平台变化。</figcaption></figure>
     </section>
 
@@ -123,10 +123,10 @@ cd creatorhub</code></pre><p>克隆方式便于以后更新；ZIP 方式不要�
     </section>
 
     <section id="collection">
-      <h2>关键词采集：一次性收集一批结果</h2><p class="path">入口：切换到抖音 → 关键词采集 → 新建关键词采集</p>
+      <h2>关键词采集：一次性收集一批结果</h2><p class="path">入口：切换到抖音或小红书 → 关键词采集 → 新建关键词采集</p>
       <ol><li>输入关键词，一次最多 20 个。第一次先填 1 个容易理解的词，例如“摄影教程”。</li><li>选择可用账号，将每词作品数设为较小值，例如 5；不需要评论或媒体时关闭对应选项。</li><li>如需要评论，设置每作品评论数，并明确是否包含二级评论。数量代表上限，不保证达到该数量。</li><li>提交后查看任务进度和错误信息。等待本次采集结束，再检查结果和 Excel 导出。</li><li>需要继续采集时，可对已结束任务编辑配置并保留结果去重续跑，避免重复新建相同任务。</li></ol>
       <p><strong>完成标志：</strong>任务结束，有结果可查看或导出；数量少于上限不一定是故障，结果受平台排序、登录状态和当前可见内容影响。</p>
-      <div class="note">这不是定时监控。小红书关键词批量采集仍在规划中，勿把小红书关键词监控理解为同一功能。</div>
+      <div class="note">这不是定时监控。小红书需要有效的主站登录态；选择“最新发布”后会按发布时间处理候选。“页面可见但详情媒体未读取到”可能是访问参数过期或页面结构变化，不等同于账号失效。</div>
     </section>
 
     <section id="comments">

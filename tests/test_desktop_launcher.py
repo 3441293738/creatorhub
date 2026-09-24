@@ -1,4 +1,5 @@
 from pathlib import Path
+import io
 import os
 import socket
 import sqlite3
@@ -8,7 +9,9 @@ from unittest.mock import patch
 import zipfile
 from contextlib import closing
 
-from desktop.launcher import prepare_home, user_directory, snapshot, bind_local_port, child_command, InstanceLock
+from desktop.launcher import (InstanceLock, bind_local_port, child_command,
+                              configure_process_streams, prepare_home, snapshot,
+                              user_directory, utf8_child_environment)
 
 
 class DesktopTests(unittest.TestCase):
@@ -53,6 +56,26 @@ class DesktopTests(unittest.TestCase):
     def test_frozen_command_is_not_python_module_invocation(self):
         with patch("sys.frozen", True, create=True), patch("sys.executable", "CreatorHub.exe"):
             self.assertEqual(child_command("--serve"), ["CreatorHub.exe", "--serve"])
+
+    def test_child_environment_overrides_legacy_windows_encoding(self):
+        with patch.dict(os.environ, {"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252"}):
+            environment = utf8_child_environment(CREATORHUB_DESKTOP_HOME="C:/CreatorHub")
+        self.assertEqual(environment["PYTHONUTF8"], "1")
+        self.assertEqual(environment["PYTHONIOENCODING"], "utf-8")
+        self.assertEqual(environment["PYTHONUNBUFFERED"], "1")
+        self.assertEqual(environment["CREATORHUB_DESKTOP_HOME"], "C:/CreatorHub")
+
+    def test_redirected_cp1252_stream_is_reconfigured_for_chinese_startup_message(self):
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="cp1252")
+        try:
+            with patch("sys.stdout", stream), patch("sys.stderr", stream):
+                configure_process_streams(Path("unused"))
+                print("首次启动：下载浏览器组件，请保持联网。完成后会自动打开面板。", flush=True)
+            self.assertEqual(stream.encoding.lower(), "utf-8")
+            self.assertIn("首次启动", raw.getvalue().decode("utf-8"))
+        finally:
+            stream.detach()
 
     @unittest.skipUnless(os.name == "nt", "Windows locking")
     def test_single_instance_lock(self):

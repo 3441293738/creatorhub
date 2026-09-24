@@ -31,6 +31,9 @@ const composerSpecs = {
   autocomment: ["ac-templates", "新建评论规则", "规则默认关闭，先试跑、检查文案，再手动启用。"],
   notifications: ["n-name", "添加通知渠道", "配置推送渠道，添加后可发送测试通知。"],
 };
+const composerTitle = (key, platform) => key === "collections"
+  ? `新建${platform === "xhs" ? "小红书" : "抖音"}关键词采集`
+  : composerSpecs[key]?.[1] || "新建任务";
 // Notifications previously mixed configuration and saved objects in one card.
 const notificationCard = $("n-name").closest(".card");
 const notificationForm = document.createElement("div");
@@ -416,7 +419,7 @@ function App() {
       </span>
       {ctx.tab === "accounts" && <ActionMenu label="添加平台账号" triggerLabel="添加账号" heading="选择登录方式" icon="plus"
         buttons={[...loginChoices.querySelectorAll("button")].filter(button => !button.classList.contains("hidden"))} onOpenChange={open => { menuOpen = open; }} />}
-      {composers[ctx.tab] && <button type="button" id="wb-create" onClick={() => openComposer(ctx.tab)}><Icon name="plus" />{composerSpecs[ctx.tab][1]}</button>}
+      {composers[ctx.tab] && <button type="button" id="wb-create" onClick={() => openComposer(ctx.tab)}><Icon name="plus" />{composerTitle(ctx.tab, ctx.platform)}</button>}
       {ctx.tab === "overview" && <button type="button" onClick={() => bridge.navigate("publish", true)}><Icon name="plus" />创作内容</button>}
     </div>, actionTarget)}
     {createPortal(showConnection && <div className="wb-connection" role="status"><Icon name={!online ? "offline" : "alert"} /><span><b>{!online ? "当前离线" : "部分数据刷新失败"}</b> · 已保留输入与已加载的记录；提交前请确认连接恢复。</span>
@@ -427,7 +430,7 @@ function App() {
       return slot && createPortal(<ActionMenu label={`${row.querySelector('[data-account-detail]')?.textContent.trim()}的更多操作`}
         buttons={[...row.querySelectorAll("[data-account-actions] button")]} onOpenChange={open => { menuOpen = open; }} />, slot, row.dataset.accountId);
     })}
-    <Sheet open={!!currentComposer} title={currentComposer?.title || "新建任务"}
+    <Sheet open={!!currentComposer} title={composerTitle(composer, ctx.platform)}
       description={currentComposer?.description || ""} onOpenChange={() => setComposer(null)} onReturnFocus={returnFocus} busy={busy}>
       {currentComposer && <><div className="wb-sheet-scroll"><NodeHost node={currentComposer.node} /></div>
         <div className="wb-sheet-footer wb-composer-footer"><span className="wb-sheet-status" data-tone={feedback?.type} role={feedback ? "alert" : undefined} tabIndex={feedback ? 0 : undefined}>{feedback?.message || "关闭后保留本次未提交内容"}</span><button className="ghost" disabled={busy} onClick={() => setComposer(null)}>返回列表</button></div></>}

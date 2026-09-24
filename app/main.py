@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Dict
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from datetime import date, datetime, time, timedelta, timezone
@@ -6441,7 +6441,7 @@ def _meta_matches(item: MonitorTarget | CommentWatch, group_name: str, tag: str)
     return True
 
 
-# ─────────── 关键词批量采集（当前版本：抖音）───────────
+# ─────────── 抖音 / 小红书关键词批量采集 ───────────
 class KeywordCollectionIn(BaseModel):
     platform: str = "douyin"
     account_id: int
@@ -6465,8 +6465,8 @@ def _validated_collection_input(body: KeywordCollectionIn) \
         -> tuple[str, list[str], str, str, dict]:
     """校验创建/编辑共用的任务配置并返回规范化值。"""
     platform = body.platform.strip().lower()
-    if platform != "douyin":
-        raise HTTPException(400, "当前版本关键词批量采集仅支持抖音")
+    if platform not in {"douyin", "xhs"}:
+        raise HTTPException(400, "关键词批量采集仅支持抖音或小红书")
     keywords = _collection_keywords(body.keywords)
     if not keywords:
         raise HTTPException(400, "请至少填写一个关键词")
@@ -6651,9 +6651,16 @@ def _collection_local_media_paths(row: KeywordCollectionContent) -> list[Path]:
 
 
 def _collection_content_dict(row: KeywordCollectionContent) -> dict:
-    url = (f"https://www.xiaohongshu.com/explore/{row.aweme_id}"
-           if row.platform == "xhs"
-           else f"https://www.douyin.com/video/{row.aweme_id}")
+    if row.platform == "xhs":
+        query = urlencode({
+            "xsec_token": row.xsec_token,
+            "xsec_source": row.xsec_source or "pc_search",
+        }) if row.xsec_token else ""
+        url = f"https://www.xiaohongshu.com/explore/{row.aweme_id}"
+        if query:
+            url += "?" + query
+    else:
+        url = f"https://www.douyin.com/video/{row.aweme_id}"
     local_files = _collection_local_media_paths(row)
     remote_medias = _collection_remote_medias(row)
     try:
@@ -6669,6 +6676,7 @@ def _collection_content_dict(row: KeywordCollectionContent) -> dict:
         "comment_count": row.comment_count,
         "collected_comment_count": row.collected_comment_count,
         "download_status": row.download_status, "local_path": row.local_path,
+        "xsec_token": row.xsec_token, "xsec_source": row.xsec_source,
         "error": row.error, "url": url,
         "local_exists": bool(local_files),
         "media_count": len(local_files) or len(remote_medias),
@@ -6723,8 +6731,8 @@ async def update_keyword_collection(job_id: int, body: KeywordCollectionIn):
         job = session.get(KeywordCollectionJob, job_id)
         if not job:
             raise HTTPException(404, "采集任务不存在")
-        if job.platform != "douyin":
-            raise HTTPException(400, "当前版本仅支持编辑抖音采集任务")
+        if platform != job.platform:
+            raise HTTPException(400, "采集任务创建后不能变更平台")
         if job.status in {"pending", "running"}:
             raise HTTPException(409, "等待或执行中的任务请先取消，再编辑配置")
         account = session.get(DouyinAccount, body.account_id)

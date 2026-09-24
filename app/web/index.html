@@ -2145,7 +2145,7 @@
     <div class="card">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-hash"/></svg></span>
-        <h2>新建抖音关键词采集 <span class="sub">批量搜索视频并抓取评论</span></h2>
+        <h2><span id="collection-create-title">新建关键词采集</span> <span class="sub" id="collection-create-sub">批量搜索作品并抓取评论</span></h2>
       </div>
       <div class="stack">
         <div class="form-field">
@@ -2160,7 +2160,7 @@
           <div class="form-field dy-only"><label for="col-quality">视频画质</label><select id="col-quality"><option value="highest">原画 / 最高</option><option value="1080">1080P</option><option value="720">720P</option><option value="540">540P</option><option value="lowest">最低省流</option></select></div>
         </div>
         <div class="form-grid cols-4 collection-filter-grid" aria-label="搜索深度与排序">
-          <div class="form-field"><label for="col-page-limit">每词采集深度 <span class="field-scope">1–40 页</span></label><input id="col-page-limit" type="number" min="1" max="40" value="12" inputmode="numeric"><p class="hint">一页对应一次搜索结果下滑。</p></div>
+          <div class="form-field"><label for="col-page-limit">每词采集深度 <span class="field-scope">1–40 页</span></label><input id="col-page-limit" type="number" min="1" max="40" value="12" inputmode="numeric"><p class="hint" id="col-page-help">一页对应一次搜索结果下滑。</p></div>
           <div class="form-field"><label for="col-sort">搜索排序</label><select id="col-sort"><option value="general">综合排序</option><option value="latest">最新发布</option><option value="most_liked">最多点赞</option></select></div>
           <div class="form-field"><label for="col-publish-time">发布时间</label><select id="col-publish-time"><option value="all">不限</option><option value="day">一天内</option><option value="week">一周内</option><option value="half_year">半年内</option></select></div>
           <div class="form-field"><label for="col-content-type">内容类型</label><select id="col-content-type"><option value="all">全部作品</option><option value="video">视频</option><option value="images">图文 / 图集</option></select></div>
@@ -2181,11 +2181,11 @@
         </div>
         <div class="option-grid" aria-label="采集选项">
           <label class="switch-row"><input type="checkbox" id="col-download" onchange="applyCollectionForm()"><span class="switch-copy"><b>下载媒体</b><span>保存视频、图集和封面来源</span></span></label>
-          <label class="switch-row"><input type="checkbox" id="col-replies"><span class="switch-copy"><b>包含二级评论</b><span>采集抖音当前可返回的回复</span></span></label>
+          <label class="switch-row"><input type="checkbox" id="col-replies"><span class="switch-copy"><b>包含二级评论</b><span id="col-replies-help">采集平台当前可返回的回复</span></span></label>
         </div>
         <div class="platform-callout" role="note">
           <svg aria-hidden="true"><use href="#i-info"/></svg>
-          <div><b>作品上限、深度页和停止条件任一满足即结束</b><p>抖音采集会临时打开可见浏览器窗口；平台筛选后还会在本地复核类型、时间和数据门槛；任务默认串行执行，可随时取消，已入库结果会保留。</p></div>
+          <div><b id="collection-callout-title">作品上限、采集深度和停止条件任一满足即结束</b><p id="collection-callout-copy">平台筛选后会在本地复核类型、时间和数据门槛；任务默认串行执行，可随时取消，已入库结果会保留。</p></div>
         </div>
         <div class="form-actions">
           <span class="status-text" id="col-create-msg" role="status" aria-live="polite"></span>

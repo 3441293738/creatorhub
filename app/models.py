@@ -404,6 +404,7 @@ class KeywordCollectionContent(SQLModel, table=True):
     collected_comment_count: int = 0        # 本任务实际入库数
     media_json: str = "[]"
     xsec_token: str = ""
+    xsec_source: str = ""               # 与搜索结果令牌配套的来源
     download_status: str = "skipped"       # skipped | pending | downloading | done | failed
     local_path: str = ""
     error: str = ""

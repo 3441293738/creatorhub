@@ -114,6 +114,42 @@ def child_command(*args: str) -> list[str]:
     return [sys.executable, str(Path(__file__).resolve()), *args]
 
 
+def utf8_child_environment(**overrides: str) -> dict[str, str]:
+    """Return a deterministic Unicode environment for Python child processes."""
+    env = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUNBUFFERED": "1",
+    }
+    env.update(overrides)
+    return env
+
+
+def configure_process_streams(home: Path) -> None:
+    """Make frozen and redirected output independent of the Windows code page."""
+    if sys.stdout is None or sys.stderr is None:
+        (home / "logs").mkdir(parents=True, exist_ok=True)
+        stream = (home / "logs" / f"process-{os.getpid()}.log").open(
+            "a", encoding="utf-8", errors="backslashreplace", buffering=1
+        )
+        sys.stdout = sys.stderr = stream
+
+    configured = set()
+    for stream in (sys.stdout, sys.stderr):
+        if id(stream) in configured:
+            continue
+        configured.add(id(stream))
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (OSError, ValueError):
+                # Some embedded/test streams cannot be reconfigured. They remain
+                # usable, while real TextIOWrapper streams are forced to UTF-8.
+                pass
+
+
 def serve(home: Path, session: str, install_browser: bool, parent_pid=0) -> int:
     from desktop.lifecycle import watch_parent
     service_lock = InstanceLock(home, "service.lock")
@@ -318,7 +354,7 @@ class Launcher:
             log = self.home / "logs" / f"desktop-{time.strftime('%Y%m%d-%H%M%S')}.log"
             self.events.put(("status", "正在启动；如缺少浏览器组件，将自动下载…"))
             with log.open("w", encoding="utf-8") as output:
-                env = {**os.environ, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
+                env = utf8_child_environment(CREATORHUB_DESKTOP_HOME=str(self.home))
                 self.process = subprocess.Popen(child_command("--serve", "--session", self.session, "--parent-pid", str(os.getpid())),
                     cwd=self.home, env=env, stdout=output, stderr=subprocess.STDOUT,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
@@ -515,12 +551,7 @@ def main() -> int:
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
-    # Windowed frozen executables may not initialize Python's standard streams.
-    if sys.stdout is None or sys.stderr is None:
-        home = user_directory()
-        (home / "logs").mkdir(parents=True, exist_ok=True)
-        stream = (home / "logs" / f"process-{os.getpid()}.log").open("a", encoding="utf-8", buffering=1)
-        sys.stdout = sys.stderr = stream
+    configure_process_streams(user_directory())
     try:
         result = main()
     except Exception:

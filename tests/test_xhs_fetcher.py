@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs, urlsplit
 
 from app.browser.identity import Identity
 from app.browser.xhs_fetcher import (
@@ -9,6 +10,7 @@ from app.browser.xhs_fetcher import (
     SEARCH_API_LEGACY,
     USER_ME_API,
     _xhs_page_failure,
+    _xhs_search_value,
     fetch_xhs_search,
     fetch_xhs_note_detail,
     fetch_xhs_self_profile,
@@ -59,6 +61,18 @@ class _Manager:
 
 
 class XhsFetcherResponseTests(unittest.TestCase):
+    def test_search_values_normalize_time_and_human_readable_likes(self):
+        self.assertEqual(
+            _xhs_search_value({"note_card": {"time": 1_700_000_000_000}}, "time"),
+            1_700_000_000,
+        )
+        self.assertEqual(
+            _xhs_search_value({"note_card": {
+                "interact_info": {"liked_count": "1.2万"},
+            }}, "likes"),
+            12_000,
+        )
+
     def test_waited_detail_response_is_parsed_before_page_is_released(self):
         async def scenario():
             identity = Identity(
@@ -282,6 +296,7 @@ class XhsFetcherResponseTests(unittest.TestCase):
                 self.url = "about:blank"
                 self.response = Response(path)
                 self.listeners = []
+                self.visited_urls = []
                 self.enter_pressed = False
                 self.search_listener_armed = False
                 self.typed_text = ""
@@ -298,6 +313,9 @@ class XhsFetcherResponseTests(unittest.TestCase):
 
             async def goto(self, url, **_kwargs):
                 self.url = url
+                self.visited_urls.append(url)
+                if "/search_result?" in url:
+                    await self.emit_response()
 
             def locator(self, _selector):
                 return Locator(self)
@@ -314,22 +332,41 @@ class XhsFetcherResponseTests(unittest.TestCase):
             async def visible_page(self, _identity):
                 yield self.page
 
-        async def scenario(path):
+        async def scenario(path, *, search_sort="general", content_type="all"):
             manager = Manager(path)
             identity = Identity(
                 account_id=1, profile_dir="fixture", platform="xhs",
                 identity_mode="native")
             items, error = await fetch_xhs_search(
-                manager, identity, "防晒霜", set(), max_scrolls=0)
+                manager, identity, "防晒霜", set(), max_scrolls=0,
+                search_sort=search_sort, content_type=content_type)
             self.assertEqual(error, "")
             self.assertEqual([item["id"] for item in items], ["note-v2"])
-            self.assertEqual(manager.page.typed_text, "防晒霜")
-            self.assertTrue(manager.page.search_listener_armed)
-            self.assertTrue(manager.page.enter_pressed)
+            self.assertGreaterEqual(len(manager.page.listeners), 2)
+            return manager
 
         for path in (SEARCH_API, SEARCH_API_LEGACY):
             with self.subTest(path=path):
-                asyncio.run(scenario(path))
+                manager = asyncio.run(scenario(path))
+                self.assertEqual(manager.page.typed_text, "防晒霜")
+                self.assertTrue(manager.page.search_listener_armed)
+                self.assertTrue(manager.page.enter_pressed)
+
+        filters = (
+            ("latest", "images", "time_descending", "image"),
+            ("most_liked", "video", "popularity_descending", "video"),
+        )
+        for search_sort, content_type, expected_sort, expected_type in filters:
+            with self.subTest(search_sort=search_sort, content_type=content_type):
+                manager = asyncio.run(scenario(
+                    SEARCH_API, search_sort=search_sort,
+                    content_type=content_type))
+                query = parse_qs(urlsplit(manager.page.url).query)
+                self.assertEqual(query["keyword"], ["防晒霜"])
+                self.assertEqual(query["sort"], [expected_sort])
+                self.assertEqual(query["note_type"], [expected_type])
+                self.assertEqual(manager.page.typed_text, "")
+                self.assertFalse(manager.page.enter_pressed)
 
     def test_page_failure_requires_an_explicit_login_or_verification_signal(self):
         class Locator:

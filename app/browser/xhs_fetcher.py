@@ -31,6 +31,35 @@ def _is_search_notes_response(url: str) -> bool:
         SEARCH_API, SEARCH_API_LEGACY))
 
 
+def _xhs_search_value(item: dict, field: str) -> int:
+    card = item.get("note_card") or item
+    if field == "time":
+        value = card.get("time") or card.get("create_time") or card.get("createTime") or 0
+        try:
+            timestamp = int(value)
+        except (TypeError, ValueError):
+            timestamp = 0
+        if timestamp > 10_000_000_000:
+            timestamp //= 1000
+        if not timestamp:
+            note_id = str(card.get("note_id") or item.get("id") or "")
+            try:
+                timestamp = int(note_id[:8], 16) if len(note_id) >= 8 else 0
+            except ValueError:
+                timestamp = 0
+        return timestamp
+    interact = card.get("interact_info") or {}
+    value = str(interact.get("liked_count") or interact.get("likedCount") or "0")
+    try:
+        if "万" in value:
+            return int(float(value.replace("万", "")) * 10_000)
+        if "亿" in value:
+            return int(float(value.replace("亿", "")) * 100_000_000)
+        return int(float(value.replace("+", "")))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _profile_url(user_id: str, xsec_token: str = "", xsec_source: str = "") -> str:
     url = f"{_BASE}/user/profile/{user_id}"
     qs = {}
@@ -91,11 +120,41 @@ _SSR_NOTE_DETAIL_JS = """(noteId) => {
         break;
       }
     }
-    let map = st && st.note && st.note.noteDetailMap;
-    if (map && map._rawValue !== undefined) map = map._rawValue;
-    let entry = map && map[noteId];
-    if (entry && entry._rawValue !== undefined) entry = entry._rawValue;
-    const note = entry && (entry.note || entry.noteCard || entry);
+    const unwrap = value => {
+      let current = value;
+      for (let i = 0; i < 4 && current && typeof current === 'object'; i++) {
+        if (current._rawValue !== undefined) current = current._rawValue;
+        else if (current.value !== undefined && Object.keys(current).length <= 3) current = current.value;
+        else break;
+      }
+      return current;
+    };
+    const asNote = value => {
+      const item = unwrap(value);
+      if (!item || typeof item !== 'object') return null;
+      return unwrap(item.note || item.noteCard || item.note_card || item);
+    };
+    const matches = value => {
+      const note = asNote(value);
+      const id = note && String(note.noteId || note.note_id || note.id || '');
+      return id === String(noteId) ? note : null;
+    };
+    const noteState = unwrap(st && st.note) || {};
+    const map = unwrap(noteState.noteDetailMap || noteState.note_detail_map) || {};
+    let note = matches(map[noteId]);
+    if (!note) {
+      for (const value of Object.values(map)) {
+        note = matches(value);
+        if (note) break;
+      }
+    }
+    if (!note) {
+      for (const key of ['noteDetail', 'note_detail', 'currentNote', 'current_note',
+                         'noteInfo', 'note_info', 'noteData', 'note_data']) {
+        note = matches(noteState[key]);
+        if (note) break;
+      }
+    }
     return JSON.stringify(note && typeof note === 'object' ? note : {});
 }"""
 
@@ -201,7 +260,8 @@ class _ResponseInbox:
 
 
 async def _scroll_collection(mgr: BrowserManager, page, collection: dict,
-                             max_steps: int, stop_ids: Set[str] | None = None) -> None:
+                             max_steps: int, stop_ids: Set[str] | None = None,
+                             stagnant_limit: int = 2) -> None:
     stagnant = 0
     for _ in range(max(0, int(max_steps))):
         if stop_ids and stop_ids & set(collection):
@@ -210,7 +270,7 @@ async def _scroll_collection(mgr: BrowserManager, page, collection: dict,
         await mgr.xhs_interaction.scroll_step(page)
         if len(collection) == before:
             stagnant += 1
-            if stagnant >= 2:
+            if stagnant >= max(1, int(stagnant_limit or 1)):
                 return
         else:
             stagnant = 0
@@ -380,6 +440,9 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
                            known_ids: Set[str], max_scrolls: int = 6, settle_ms: int = 1800,
                            block_media: bool = True,
                            keep_context: bool = False,
+                           stagnant_limit: int = 2,
+                           search_sort: str = "general",
+                           content_type: str = "all",
                            ) -> Tuple[List[dict], str]:
     """打开搜索结果页并下滑,拦截 search/notes 收集笔记。返回 (笔记原始项列表, error)。"""
     collected: Dict[str, dict] = {}
@@ -414,39 +477,59 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
                 lambda r: (_is_search_notes_response(r.url)
                            and r.status == 200))
 
-            # 首选正常搜索入口和逐字输入。
-            await page.goto(
-                f"{_BASE}/explore",
-                wait_until="domcontentloaded", timeout=30000)
-            for sel in (
-                    '#search-input', 'input[placeholder*="搜索"]',
-                    '.search-input input', 'input.search-input'):
-                try:
-                    box = page.locator(sel).first
-                    await box.wait_for(state="visible", timeout=2500)
-                    await mgr.xhs_interaction.type_short(box, keyword)
-                    typed = True
-                    break
-                except Exception:
-                    continue
-            # 搜索响应可能在 Enter/导航完成前就返回，因此用同步事件回调先放入
-            # 队列，再精确解析命中的响应。Python Patchright 没有
-            # page.wait_for_response，不能依赖该方法等待。
+            q = urllib.parse.urlencode({
+                "keyword": keyword,
+                "source": "web_explore_feed",
+                "type": "51",
+                **({"sort": {
+                    "latest": "time_descending",
+                    "most_liked": "popularity_descending",
+                }[search_sort]} if search_sort in {"latest", "most_liked"} else {}),
+                **({"note_type": {
+                    "video": "video",
+                    "images": "image",
+                }[content_type]} if content_type in {"video", "images"} else {}),
+            })
+            search_url = f"{_BASE}/search_result?{q}"
             response = None
-            if typed:
-                await box.press("Enter")
-                response = await responses.wait(4000, on_response)
-            if response is None:
+            filtered_search = (
+                search_sort in {"latest", "most_liked"}
+                or content_type in {"video", "images"}
+            )
+            if filtered_search:
+                # 搜索筛选属于结果页 URL 状态。直接打开筛选后的结果页，确保首屏
+                # 和后续滚动由相同的平台条件产生，而不是只对综合结果做本地排序。
+                await page.goto(
+                    search_url, wait_until="domcontentloaded", timeout=30000)
+                response = await responses.wait(12000, on_response)
+            else:
+                # 综合搜索首选正常入口和逐字输入。
+                await page.goto(
+                    f"{_BASE}/explore",
+                    wait_until="domcontentloaded", timeout=30000)
+                for sel in (
+                        '#search-input', 'input[placeholder*="搜索"]',
+                        '.search-input input', 'input.search-input'):
+                    try:
+                        box = page.locator(sel).first
+                        await box.wait_for(state="visible", timeout=2500)
+                        await mgr.xhs_interaction.type_short(box, keyword)
+                        typed = True
+                        break
+                    except Exception:
+                        continue
+                # 搜索响应可能在 Enter/导航完成前就返回，因此用同步事件回调先放入
+                # 队列，再精确解析命中的响应。Python Patchright 没有
+                # page.wait_for_response，不能依赖该方法等待。
+                if typed:
+                    await box.press("Enter")
+                    response = await responses.wait(4000, on_response)
+            if response is None and not filtered_search:
                 # 页面尚未完成 hydration 时 Enter 偶尔不生效；直接打开正常搜索
                 # 结果 URL。该页面仍由真实浏览器加载并自行发出带签名的 v2 请求。
                 direct_fallback = typed
-                q = urllib.parse.urlencode({
-                    "keyword": keyword,
-                    "source": "web_explore_feed",
-                    "type": "51",
-                })
                 await page.goto(
-                    f"{_BASE}/search_result?{q}",
+                    search_url,
                     wait_until="domcontentloaded", timeout=30000)
                 await responses.wait(12000, on_response)
             if not collected:
@@ -456,7 +539,8 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
                     mgr, content_length=min(
                         1000, len(keyword) * 35 + len(collected) * 70))
                 await _scroll_collection(
-                    mgr, page, collected, max_scrolls)
+                    mgr, page, collected, max_scrolls,
+                    stagnant_limit=stagnant_limit)
             final_url = page.url
             if not collected:
                 page_failure = await _xhs_page_failure(page)
@@ -471,6 +555,9 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
         error = f"打开搜索页失败: {e!r}"
 
     new_items = [it for nid, it in collected.items() if nid not in known_ids]
+    if search_sort in {"latest", "most_liked"}:
+        field = "time" if search_sort == "latest" else "likes"
+        new_items.sort(key=lambda item: _xhs_search_value(item, field), reverse=True)
     return new_items, error
 
 
@@ -526,7 +613,7 @@ async def fetch_xhs_note_detail(mgr: BrowserManager, identity: Identity, note_id
                 page_failure = page_failure or await _xhs_page_failure(page)
         if not result:
             error = (page_failure
-                     or "未拦截到笔记详情(xsec_token 可能已过期或笔记不可见)")
+                     or "页面已打开，但未读取到笔记详情媒体（页面结构可能已调整，或访问参数已过期）")
     except Exception as e:
         error = f"打开笔记详情失败: {e!r}"
     return (result or None), error
