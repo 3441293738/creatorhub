@@ -93,7 +93,7 @@ def _author_id(raw: dict, platform: str) -> str:
         return str(author.get("username") or author.get("finderUsername")
                    or raw.get("username") or raw.get("finderUsername") or "")
     card = raw.get("note_card") or raw
-    user = card.get("user") or {}
+    user = card.get("user") or raw.get("user") or {}
     return str(user.get("user_id") or user.get("userid") or user.get("id") or "")
 
 
@@ -563,7 +563,8 @@ class KeywordCollector:
         if aweme is None:
             aweme = Aweme(
                 aweme_id=brief["note_id"], desc=brief.get("title", ""),
-                create_time=int(brief.get("create_time") or 0), author_name="",
+                create_time=int(brief.get("create_time") or 0),
+                author_name=brief.get("author_name") or "",
                 media_type="video" if brief.get("type") == "video" else "images",
             )
             aweme.platform = "xhs"
@@ -587,7 +588,8 @@ class KeywordCollector:
         if aweme is None:
             aweme = Aweme(
                 aweme_id=brief["note_id"], desc=brief.get("title", ""),
-                create_time=int(brief.get("create_time") or 0), author_name="",
+                create_time=int(brief.get("create_time") or 0),
+                author_name=brief.get("author_name") or "",
                 media_type="video" if brief.get("type") == "video" else "images",
             )
             aweme.platform = "xhs"

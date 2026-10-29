@@ -1984,17 +1984,20 @@ class MonitorEngine:
                     break
                 derr = str(e)
             aw = parse_note_detail(card or {}, brief) if card else None
-            if not aw:
+            if not aw or not aw.medias:
                 detail_failures += 1
                 consecutive_detail_failures += 1
                 first_detail_error = first_detail_error or XhsApiError(
                     derr or "笔记详情未取到媒体直链", signal="note_detail_unavailable")
-                # 详情抓取失败也建一条 failed 记录,保留 xsec_token 便于重试
-                aw = Aweme(aweme_id=brief["note_id"], desc=brief.get("title", ""),
-                           create_time=int(brief.get("create_time") or 0), author_name="",
-                           media_type="video" if brief.get("type") == "video" else "images")
-                aw.platform = "xhs"
-                aw.cover = brief.get("cover", "")
+                # 详情抓取失败也建一条 failed 记录,保留 xsec_token 便于重试;
+                # 若详情卡已解析出作者等元数据,则保留它,只补空壳。
+                if aw is None:
+                    aw = Aweme(aweme_id=brief["note_id"], desc=brief.get("title", ""),
+                               create_time=int(brief.get("create_time") or 0),
+                               author_name=brief.get("author_name") or "",
+                               media_type="video" if brief.get("type") == "video" else "images")
+                    aw.platform = "xhs"
+                    aw.cover = brief.get("cover", "")
             else:
                 consecutive_detail_failures = 0
             if aw.medias and not _monitor_content_matches(aw, strategy):
