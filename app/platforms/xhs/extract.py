@@ -77,6 +77,9 @@ def parse_note_brief(item: dict) -> Optional[dict]:
                 create_time = candidate
         except ValueError:
             pass
+    # 搜索结果卡片本身带作者信息。详情接口失败时采集会用这份 brief 兜底，
+    # 因此这里一并保留作者，避免最终入库只剩空作者。
+    user = card.get("user") or item.get("user") or {}
     return {
         "note_id": note_id,
         "xsec_token": xsec_token,
@@ -85,6 +88,8 @@ def parse_note_brief(item: dict) -> Optional[dict]:
         "title": _first(card, "display_title", "title", "desc", default="") or "",
         "cover": cov_url,
         "create_time": create_time,
+        "author_name": _first(user, "nickname", "nick_name", "name", default="") or "",
+        "author_id": str(_first(user, "user_id", "userId", "id", default="") or ""),
     }
 
 
@@ -102,16 +107,69 @@ def _img_url(img: dict) -> Optional[str]:
     return _first(img, "url_default", "url_pre", "url")
 
 
+# 小红书 feed 的 video.media.stream 目前用 EF4/EF5/EF6/EF7 表示编码档位，
+# 旧接口则用 h264/h265/av1/h266。EF4 实测为 720p/30fps，兼容性最好；
+# 产品上要求优先取 EF4，只有 EF4 缺失时才回退到其它档位。
+_VIDEO_STREAM_CODEC_PRIORITY = (
+    "ef4", "h264", "ef5", "h265", "ef6", "av1", "ef7", "h266",
+)
+
+
+def _stream_variants(stream: dict, codec: str) -> list[dict]:
+    """取某个编码档位下的所有清晰度；兼容 list/单个 dict 两种结构。"""
+    for key, value in (stream or {}).items():
+        if str(key).lower() != codec:
+            continue
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        return []
+    return []
+
+
+def _stream_rank(item: dict) -> tuple[int, int, int]:
+    """同一编码档位内优先分辨率，其次码率/体积。"""
+    def number(key: str) -> int:
+        try:
+            return int(item.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return (number("width") * number("height"),
+            number("video_bitrate") or number("avg_bitrate"),
+            number("size"))
+
+
+def _stream_url(item: dict) -> Optional[str]:
+    url = item.get("master_url")
+    if isinstance(url, str) and url:
+        return url
+    backup = item.get("backup_urls") or []
+    if isinstance(backup, str):
+        backup = [backup]
+    if isinstance(backup, list):
+        for candidate in backup:
+            if isinstance(candidate, str) and candidate:
+                return candidate
+    return None
+
+
 def _video_url(note_card: dict) -> Optional[str]:
     video = note_card.get("video") or {}
     media = video.get("media") or {}
     stream = media.get("stream") or {}
-    for codec in ("h264", "h265", "av1", "h266"):
-        arr = stream.get(codec) or []
-        for s in arr:
-            url = s.get("master_url") or (s.get("backup_urls") or [None])[0]
-            if url:
-                return url
+    for codec in _VIDEO_STREAM_CODEC_PRIORITY:
+        best_url, best_rank = None, None
+        for item in _stream_variants(stream, codec):
+            url = _stream_url(item)
+            if not url:
+                continue
+            rank = _stream_rank(item)
+            if best_rank is None or rank > best_rank:
+                best_url, best_rank = url, rank
+        if best_url:
+            return best_url
     # 老结构兜底:consumer.origin_video_key
     key = ((video.get("consumer") or {}).get("origin_video_key")
            or (video.get("consumer") or {}).get("originVideoKey"))
@@ -121,14 +179,14 @@ def _video_url(note_card: dict) -> Optional[str]:
 
 
 def parse_note_detail(note_card: dict, brief: dict | None = None) -> Optional[Aweme]:
-    """把 feed 接口的 note_card 解析成 Aweme(含媒体直链)。"""
+    """把 feed 接口的 note_card 解析成 Aweme(媒体可能为空，元数据仍保留)。"""
     if not isinstance(note_card, dict):
         return None
     note_id = str(_first(note_card, "note_id", "id",
                          default=(brief or {}).get("note_id", "")) or "")
     if not note_id:
         return None
-    user = note_card.get("user") or {}
+    user = note_card.get("user") or note_card.get("author") or {}
     title = _first(note_card, "title", "display_title", default="") or ""
     desc = (note_card.get("desc") or "").strip()
     full_desc = (title + ("\n" + desc if desc and desc != title else "")).strip() \
@@ -144,7 +202,8 @@ def parse_note_detail(note_card: dict, brief: dict | None = None) -> Optional[Aw
         aweme_id=note_id,
         desc=full_desc,
         create_time=created,
-        author_name=_first(user, "nickname", "nick_name", "name", default="") or "",
+        author_name=_first(user, "nickname", "nick_name", "name",
+                           default=(brief or {}).get("author_name", "")) or "",
         media_type="video" if ntype == "video" else "images",
     )
     aw.platform = "xhs"
@@ -169,7 +228,9 @@ def parse_note_detail(note_card: dict, brief: dict | None = None) -> Optional[Aw
             aw.cover = aw.medias[0].url
     if not aw.cover:
         aw.cover = (brief or {}).get("cover") or ""
-    return aw if aw.medias else None
+    # 媒体直链可能暂时缺失(视频流改版/风控),但作者、标题、互动等元数据
+    # 仍然有效;是否可下载由调用方根据 aw.medias 判断,不能在这里丢掉主体。
+    return aw
 
 
 # ── 评论 ──
