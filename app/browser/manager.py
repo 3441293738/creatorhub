@@ -124,14 +124,15 @@ class _ProfileProcessLock:
 
 
 def _parse_proxy(s: str) -> Optional[Dict[str, str]]:
-    """把 http://user:pass@host:port / socks5://host:port 解析成 Patchright proxy 配置。"""
+    """把标准代理 URL 或服务商导出格式解析成 Patchright proxy 配置。"""
     plan = try_proxy_plan(s)
     return plan.playwright() if plan else None
 
 
 def normalize_proxy(s: str) -> str:
     """把用户输入规范成带协议头的代理 URL(httpx 必须带 scheme)。
-    裸 host:port -> http://host:port;保留账号密码;无法解析则原样返回。
+    服务商导出格式统一为 URL；裸 host:port 默认 HTTP；保留账号密码。
+    无效或有歧义的输入原样返回，由调用方执行校验。
     例:'1.2.3.4:8080' -> 'http://1.2.3.4:8080'。"""
     s = (s or "").strip()
     plan = try_proxy_plan(s)

@@ -53,6 +53,7 @@ from .browser.backends import (
     parse_extra_launch_args,
 )
 from .browser.ip_fingerprint import derive_ip_fingerprint
+from .browser.proxy import ProxyConfigError, ProxyInputFormat, ProxyPlan, ProxyScheme
 from .browser.douyin_auth import douyin_login_prompt_visible
 from .browser.douyin_detail import fetch_douyin_video_detail
 from .browser.runtime_catalog import (
@@ -3253,12 +3254,8 @@ def _mask_proxy(proxy: str) -> str:
     if not proxy:
         return ""
     try:
-        from urllib.parse import urlparse
-        u = urlparse(proxy if "://" in proxy else "http://" + proxy)
-        host = u.hostname or ""
-        port = f":{u.port}" if u.port else ""
-        auth = "***@" if u.username else ""
-        return f"{u.scheme}://{auth}{host}{port}"
+        plan = ProxyPlan.parse(proxy)
+        return plan.redacted if plan else ""
     except Exception:
         return "***"
 
@@ -5018,7 +5015,27 @@ async def open_account_environment_check(account_id: int):
 
 
 # ─────────── 账号代理(风控隔离)───────────
-class ProxyIn(BaseModel):
+class ProxyInputOptions(BaseModel):
+    default_scheme: ProxyScheme = "http"
+    input_format: ProxyInputFormat = "auto"
+
+
+def _parse_proxy_input(raw: str, options: ProxyInputOptions) -> ProxyPlan | None:
+    return ProxyPlan.parse(raw, default_scheme=options.default_scheme,
+                           input_format=options.input_format)
+
+
+def _proxy_input_url(raw: str, options: ProxyInputOptions, *, allow_empty: bool = False) -> str:
+    try:
+        plan = _parse_proxy_input(raw, options)
+    except ProxyConfigError as exc:
+        raise HTTPException(400, str(exc)) from None
+    if plan is None and not allow_empty:
+        raise HTTPException(400, "请填写代理地址")
+    return plan.normalized if plan else ""
+
+
+class ProxyIn(ProxyInputOptions):
     proxy: str = ""
 
 
@@ -5035,11 +5052,7 @@ def _reset_account_exit_baseline(acc) -> None:
 @app.put("/api/accounts/{account_id}/proxy")
 async def set_account_proxy(account_id: int, body: ProxyIn):
     """手动设置/清空账号专属代理。改后会关掉该账号常驻 context,下次用新代理重开。"""
-    from .browser.manager import _parse_proxy, normalize_proxy
-    p = (body.proxy or "").strip()
-    if p and not _parse_proxy(p):
-        raise HTTPException(400, "代理格式无法解析,示例:http://user:pass@host:port 或 socks5://host:port")
-    p = normalize_proxy(p)
+    p = _proxy_input_url(body.proxy, body, allow_empty=True)
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if not acc:
@@ -5104,22 +5117,78 @@ def _proxy_status_from_detail(ok: bool, detail: str) -> str:
     return "bad"
 
 
-async def _probe_proxy(url: str, platform: str = "douyin", timeout: float = 15):
-    """经代理实连一次目标站,返回 (ok, detail)。"""
+def _proxy_probe_error(exc: Exception, raw: str, plan: ProxyPlan) -> str:
+    """Keep useful transport diagnostics without returning proxy credentials."""
+    import httpx
+    from urllib.parse import quote
+    text = str(exc)
+    auth_error = isinstance(exc, httpx.ProxyError) and (
+        re.search(r"\b407\b", text) or "username/password" in text.lower())
+    for secret in (raw, plan.normalized, quote(plan.username, safe=""),
+                   quote(plan.password, safe=""), plan.username, plan.password):
+        if secret:
+            text = text.replace(secret, "***")
+    prefix = "HTTP 407 · " if auth_error else ""
+    return f"{prefix}{type(exc).__name__}: {text[:300]}"
+
+
+async def _probe_proxy(url: str, platform: str | None = None, timeout: float = 15):
+    """Pool/detection: neutral IP services; account: only its requested platform.
+
+    A target-specific failure must never disable an otherwise working pool
+    entry. Fallback stays on the exact same proxy, never on a direct connection.
+    """
     import httpx
     if not url:
         return False, "未配置代理"
-    test_url = ("https://www.xiaohongshu.com/" if platform == "xhs"
-                else "https://www.kuaishou.com/" if platform == "kuaishou"
-                else "https://www.tiktok.com/" if platform == "tiktok"
-                else "https://channels.weixin.qq.com/" if platform == "shipinhao"
-                else "https://www.douyin.com/")
     try:
-        async with httpx.AsyncClient(proxy=url, timeout=timeout, follow_redirects=True) as cli:
-            r = await cli.get(test_url)
-        return _proxy_status_ok(r.status_code), f"HTTP {r.status_code}"
-    except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        plan = ProxyPlan.parse(url)
+    except ProxyConfigError as exc:
+        return False, str(exc)
+    if plan is None:
+        return False, "未配置代理"
+    platform_urls = {
+        "douyin": "https://www.douyin.com/", "xhs": "https://www.xiaohongshu.com/",
+        "kuaishou": "https://www.kuaishou.com/", "tiktok": "https://www.tiktok.com/",
+        "shipinhao": "https://channels.weixin.qq.com/",
+    }
+    if platform is not None and platform not in platform_urls:
+        return False, "未配置该平台的检测地址"
+    targets = ([platform_urls[platform]] if platform is not None else
+               ["https://ipinfo.io/json", "https://api.ipify.org?format=json"])
+    failures = []
+    try:
+        async with httpx.AsyncClient(proxy=plan.normalized, timeout=timeout,
+                                     follow_redirects=True, trust_env=False) as cli:
+            for target in targets:
+                host = urlsplit(target).hostname
+                try:
+                    response = await cli.get(target)
+                    detail = f"{host}: HTTP {response.status_code}"
+                    if response.status_code == 407:
+                        return False, detail
+                    if _proxy_status_ok(response.status_code):
+                        if platform is not None:
+                            return True, detail
+                        try:
+                            payload = response.json()
+                            value = payload.get("ip") if isinstance(payload, dict) else None
+                            if not isinstance(value, str):
+                                raise ValueError("missing IP")
+                            ip_address(value)
+                        except (TypeError, ValueError):
+                            detail += "（未返回有效出口 IP）"
+                        else:
+                            return True, f"通用连通性正常（{detail}）；不代表所有平台均可访问"
+                except Exception as exc:
+                    detail = f"{host}: {_proxy_probe_error(exc, url, plan)}"
+                    if _proxy_status_from_detail(False, detail) == "auth_error":
+                        return False, detail
+                failures.append(detail)
+    except Exception as exc:
+        failures.append(_proxy_probe_error(exc, url, plan))
+    scope = "平台访问失败" if platform is not None else "通用连通性检测失败"
+    return False, scope + "：" + "；".join(failures)
 
 
 def _parse_ipinfo(j: dict) -> dict:
@@ -5179,49 +5248,40 @@ def _geo_text(g: dict | None) -> str:
     return "  ".join(parts)
 
 
-async def _detect_proxy(raw: str) -> dict:
+async def _detect_proxy(raw: str, options: ProxyInputOptions | None = None) -> dict:
     """自动判别代理类型(HTTP / SOCKS5)与是否需要认证。
-    对同一 host:port 依次试 [按输入协议 或 http+socks5] × [免密 / 带密(若输入含账密)],
-    取第一个连通的组合。返回判别结果 + 推荐的规范化地址 + 浏览器兼容性。"""
-    from urllib.parse import urlparse
+    保留输入中的账密/会话参数，只切换协议，不擅自改成免密出口。
+    返回判别结果 + 推荐的规范化地址 + 浏览器兼容性。"""
+    from dataclasses import replace
     raw = (raw or "").strip()
     if not raw:
         return {"ok": False, "error": "请先填代理地址"}
-    has_scheme = "://" in raw
-    u = urlparse(raw if has_scheme else "http://" + raw)
-    host, port = u.hostname, u.port
-    if not host or not port:
-        return {"ok": False, "error": "地址需含 host:port"}
-    user, pwd = u.username, u.password
-    cred = f"{user}:{pwd}@" if user else ""
+    has_scheme = bool(re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", raw))
+    try:
+        plan = _parse_proxy_input(raw, options or ProxyInputOptions())
+    except ProxyConfigError as exc:
+        return {"ok": False, "error": str(exc)}
     # 候选协议:输入已带则只测它,否则 http 与 socks5 都试
-    if has_scheme and u.scheme in ("http", "https", "socks5", "socks5h"):
-        schemes = [u.scheme]
+    if has_scheme:
+        schemes = [plan.scheme]
     else:
-        schemes = ["http", "socks5"]
+        schemes = list(dict.fromkeys([plan.scheme, "http", "socks5"]))
 
     tried = []
     found = None   # (scheme, auth_mode, url)
     for sch in schemes:
-        # 先试免密
-        url0 = f"{sch}://{host}:{port}"
-        ok, detail = await _probe_proxy(url0, timeout=8)
-        tried.append({"scheme": sch, "auth": "none", "ok": ok, "detail": detail})
+        candidate = replace(plan, scheme=sch)
+        url = candidate.normalized
+        auth_mode = "required" if candidate.authenticated else "none"
+        ok, detail = await _probe_proxy(url, timeout=8)
+        tried.append({"scheme": sch, "auth": auth_mode, "ok": ok, "detail": detail})
         if ok:
-            found = (sch, "none", url0)
+            found = (sch, auth_mode, url)
             break
-        # 免密不通且输入带账密 -> 再试带密
-        if cred:
-            url1 = f"{sch}://{cred}{host}:{port}"
-            ok1, detail1 = await _probe_proxy(url1, timeout=8)
-            tried.append({"scheme": sch, "auth": "required", "ok": ok1, "detail": detail1})
-            if ok1:
-                found = (sch, "required", url1)
-                break
 
     if not found:
-        return {"ok": False, "error": "所有组合都连不通(可能是 IP 未加白名单/需账号密码/代理已失效)",
-                "tried": tried, "need_auth_hint": not cred}
+        return {"ok": False, "error": "通用连通性检测未通过，请检查协议、账密及服务商连接限制",
+                "tried": tried, "need_auth_hint": not plan.authenticated}
 
     sch, auth_mode, url = found
     is_socks = sch.startswith("socks")
@@ -5237,13 +5297,13 @@ async def _detect_proxy(raw: str) -> dict:
     }
 
 
-class ProxyDetectIn(BaseModel):
+class ProxyDetectIn(ProxyInputOptions):
     url: str
 
 
 @app.post("/api/proxies/detect")
 async def detect_proxy(body: ProxyDetectIn):
-    return await _detect_proxy(body.url)
+    return await _detect_proxy(body.url, body)
 
 
 @app.post("/api/accounts/assign-proxies-all")
@@ -5341,7 +5401,7 @@ async def test_account_proxy(account_id: int):
 
 
 # ─────────── 代理池(提前配置,账号关联使用)───────────
-class PoolProxyIn(BaseModel):
+class PoolProxyIn(ProxyInputOptions):
     url: str
     label: str = ""
     note: str = ""
@@ -5349,7 +5409,7 @@ class PoolProxyIn(BaseModel):
     geo: Dict[str, Any] | None = None       # 判别得到的归属地(可选,建库时一并写入)
 
 
-class PoolProxyUpdate(BaseModel):
+class PoolProxyUpdate(ProxyInputOptions):
     url: str | None = None
     label: str | None = None
     note: str | None = None
@@ -5394,11 +5454,7 @@ async def list_proxies():
 
 @app.post("/api/proxies")
 async def add_proxy(body: PoolProxyIn):
-    from .browser.manager import _parse_proxy, normalize_proxy
-    url = (body.url or "").strip()
-    if not url or not _parse_proxy(url):
-        raise HTTPException(400, "代理格式无法解析,示例:http://user:pass@host:port 或 socks5://host:port")
-    url = normalize_proxy(url)
+    url = _proxy_input_url(body.url, body)
     with get_session() as s:
         if s.exec(select(ProxyPool).where(ProxyPool.url == url)).first():
             raise HTTPException(409, "该代理已在池中")
@@ -5412,37 +5468,46 @@ async def add_proxy(body: PoolProxyIn):
         return _pool_dict(p)
 
 
-class ProxyImportIn(BaseModel):
+class ProxyImportIn(ProxyInputOptions):
     text: str = ""        # 多行,每行一个代理(可带 # 注释、空行)
 
 
 @app.post("/api/proxies/import")
 async def import_proxies(body: ProxyImportIn):
     """批量粘贴多行导入代理池。每行一个,支持 # 注释/空行,自动校验+去重。"""
-    from .browser.manager import _parse_proxy, normalize_proxy
     added = skipped = invalid = 0
     invalid_lines = []
     with get_session() as s:
         existing = {p.url for p in s.exec(select(ProxyPool)).all()}
         seen = set(existing)
-        for raw in (body.text or "").splitlines():
+        for line_number, raw in enumerate((body.text or "").splitlines(), 1):
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
-            # 允许 "备注,地址" 或 "备注 地址" 形式;否则整行当地址
-            label, url = "", line
-            for sep in (",", "\t", " | ", " "):
-                if sep in line:
+            # Parse the whole line first: commas can belong to a provider export.
+            label, plan, error = "", None, "代理配置无效"
+            try:
+                plan = _parse_proxy_input(line, body)
+            except ProxyConfigError as exc:
+                error = str(exc)
+            if plan is None:
+                for sep in (" | ", "\t", ",", " "):
+                    if sep not in line:
+                        continue
                     a, b = line.split(sep, 1)
-                    if _parse_proxy(b.strip()):
-                        label, url = a.strip(), b.strip()
-                    break
-            url = normalize_proxy(url.strip())
-            if not _parse_proxy(url):
+                    try:
+                        plan = _parse_proxy_input(b.strip(), body)
+                    except ProxyConfigError:
+                        continue
+                    if plan:
+                        label = a.strip()
+                        break
+            if plan is None:
                 invalid += 1
                 if len(invalid_lines) < 8:
-                    invalid_lines.append(line[:60])
+                    invalid_lines.append(f"第 {line_number} 行：{error}")
                 continue
+            url = plan.normalized
             if url in seen:
                 skipped += 1
                 continue
@@ -5457,16 +5522,12 @@ async def import_proxies(body: ProxyImportIn):
 
 @app.put("/api/proxies/{pid}")
 async def update_proxy(pid: int, body: PoolProxyUpdate):
-    from .browser.manager import _parse_proxy, normalize_proxy
     with get_session() as s:
         p = s.get(ProxyPool, pid)
         if not p:
             raise HTTPException(404, "代理不存在")
         if body.url is not None:
-            url = body.url.strip()
-            if not url or not _parse_proxy(url):
-                raise HTTPException(400, "代理格式无法解析")
-            p.url = normalize_proxy(url)
+            p.url = _proxy_input_url(body.url, body)
         if body.label is not None:
             p.label = body.label.strip()
         if body.note is not None:

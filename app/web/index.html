@@ -588,6 +588,34 @@
   .form-grid.cols-4 { grid-template-columns:minmax(140px,.7fr) minmax(190px,1fr) minmax(240px,1.5fr) minmax(150px,.7fr); }
   .form-grid.download-grid { grid-template-columns:minmax(0,1fr) minmax(170px,.28fr); }
   .form-field { min-width:0; }
+  .form-grid.proxy-input-grid { grid-template-columns:minmax(140px,.85fr) minmax(108px,.55fr) minmax(190px,1fr) minmax(280px,2fr); }
+  .proxy-pool-intro { margin:-4px 0 14px; font-size:12px; }
+  .proxy-input-grid .form-field > label, .proxy-address-label { min-height:24px; margin:0 0 6px; }
+  .proxy-address-field { position:relative; }
+  .proxy-address-label { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .proxy-address-label > label { color:var(--mut); font-size:12px; font-weight:550; }
+  .proxy-format-disclosure > summary { display:flex; align-items:center; gap:6px; min-height:24px; padding:0 2px; border-radius:4px; color:var(--mut); font-size:12px; cursor:pointer; list-style:none; white-space:nowrap; }
+  .proxy-format-disclosure > summary::-webkit-details-marker { display:none; }
+  .proxy-format-disclosure > summary::after { content:""; width:5px; height:5px; margin-top:-3px; border:solid currentColor; border-width:0 1px 1px 0; transform:rotate(45deg); }
+  .proxy-format-disclosure[open] > summary::after { margin-top:3px; transform:rotate(225deg); }
+  .proxy-format-disclosure > summary:hover, .proxy-format-disclosure[open] > summary { color:var(--acc); }
+  .proxy-format-disclosure > summary:focus-visible { outline:2px solid var(--acc); outline-offset:3px; }
+  .proxy-format-panel { position:absolute; right:0; top:calc(100% + 8px); z-index:60; width:360px; max-width:100%; max-height:60vh; overflow:auto; padding:16px 18px; border:1px solid var(--line-soft); border-radius:12px; background:var(--surface-raised); box-shadow:var(--sh-popover); color:var(--mut); font-size:12px; line-height:1.6; }
+  .proxy-format-disclosure:not([open]) .proxy-format-panel { display:none; }
+  .proxy-format-panel strong { display:block; margin-bottom:4px; color:var(--fg-strong); font-size:13px; font-weight:600; }
+  .proxy-format-panel p { margin:0; }
+  .proxy-format-examples { padding:0; margin:10px 0; list-style:none; counter-reset:proxy-format; }
+  .proxy-format-examples li { display:flex; gap:12px; min-width:0; padding:6px 0; border-bottom:1px solid var(--line-soft); }
+  .proxy-format-examples li:last-child { border-bottom:0; }
+  .proxy-format-examples li::before { counter-increment:proxy-format; content:counter(proxy-format,decimal-leading-zero); color:var(--mut); font-family:var(--mono); }
+  .proxy-format-examples code { color:var(--fg); font-size:12px; white-space:normal; overflow-wrap:anywhere; }
+  .card[data-section="proxies"] > .form-actions { margin-top:16px; }
+  @media(max-width:1100px) {
+    .form-grid.proxy-input-grid { grid-template-columns:minmax(140px,1fr) minmax(108px,.6fr) minmax(190px,1fr); }
+    .proxy-address-field { grid-column:1 / -1; }
+  }
+  @media(max-width:700px) { .form-grid.proxy-input-grid { grid-template-columns:minmax(0,1fr); } }
+  @media(pointer:coarse) { .proxy-input-grid .form-field > label, .proxy-address-label, .proxy-format-disclosure > summary { min-height:44px; } }
   .form-field > label, .form-label { display:flex; align-items:center; gap:6px; margin:0 0 6px; color:var(--mut); font-size:12px; font-weight:550; }
   .form-field > input, .form-field > textarea, .form-field > select, .form-field > .cs, .form-field > .input-affix { width:100%; }
   .field-help { margin-top:5px; color:var(--mut-2); font-size:11.5px; line-height:1.45; }
@@ -1984,16 +2012,45 @@
         <span class="card-ic"><svg><use href="#i-shield"/></svg></span>
         <h2>代理池 <span class="sub">提前配置 · 账号关联使用</span></h2>
       </div>
-      <p class="mut" style="font-size:12px;margin:-4px 0 12px">
-        住宅/4G 长效代理,一号一代理固定绑定(防多账号同 IP 关联)。
-        添加后在上方账号点「代理」→ 选池里的一条;或点账号「代理」填 <code>auto</code> 自动分配占用最少的一条。
+      <p class="mut proxy-pool-intro">
+        添加后可为账号分配独立代理。测试仅验证网络连通性，不代表所有平台均可访问。
       </p>
-      <div class="form-grid cols-auto">
+      <div class="form-grid proxy-input-grid">
         <div class="form-field"><label for="px-label">代理备注</label><input id="px-label" placeholder="例如：住宅-广东-01"></div>
-        <div class="form-field"><label for="px-proto">默认协议</label><select id="px-proto" title="裸 IP:端口按此协议补全；已带协议时忽略">
+        <div class="form-field"><label for="px-proto">默认协议</label><select id="px-proto" title="未带协议的地址按此协议解析；已带协议时忽略">
             <option value="http">HTTP</option><option value="socks5">SOCKS5</option>
         </select></div>
-        <div class="form-field"><label for="px-url">代理地址</label><input id="px-url" inputmode="url" placeholder="1.2.3.4:8080 或 user:pass@host:port"></div>
+        <div class="form-field"><label for="px-format">输入格式</label><select id="px-format" aria-describedby="px-input-hint">
+            <option value="auto">自动识别（推荐）</option>
+            <option value="host_colon">主机:端口:用户名:密码</option>
+            <option value="host_csv">主机,端口,用户名,密码</option>
+            <option value="host_at">主机:端口@用户名:密码</option>
+            <option value="auth_colon">用户名:密码:主机:端口</option>
+            <option value="auth_at">用户名:密码@主机:端口</option>
+            <option value="host_hash">主机:端口##用户名##密码</option>
+        </select></div>
+        <div class="form-field proxy-address-field">
+          <div class="proxy-address-label">
+            <label for="px-url">代理地址</label>
+            <details class="proxy-format-disclosure" id="px-format-help" ontoggle="syncProxyFormatHelp(this)">
+              <summary id="px-format-toggle" aria-controls="px-format-panel">格式示例</summary>
+              <div class="proxy-format-panel" id="px-format-panel" role="note" aria-labelledby="px-format-title">
+                <strong id="px-format-title">代理地址格式</strong>
+                <p id="px-input-hint">任选一种粘贴，默认自动识别。有歧义时在「输入格式」中指定。</p>
+                <ul class="proxy-format-examples" id="px-format-examples" aria-label="六种代理地址格式">
+                  <li><code>主机:端口:用户名:密码</code></li>
+                  <li><code>主机,端口,用户名,密码</code></li>
+                  <li><code>主机:端口@用户名:密码</code></li>
+                  <li><code>用户名:密码:主机:端口</code></li>
+                  <li><code>用户名:密码@主机:端口</code></li>
+                  <li><code>主机:端口##用户名##密码</code></li>
+                </ul>
+                <p>无账密可只填「主机:端口」。标准地址可带 <code>http://</code> 或 <code>socks5://</code> 前缀。</p>
+              </div>
+            </details>
+          </div>
+          <input id="px-url" aria-describedby="px-input-hint" autocomplete="off" spellcheck="false" placeholder="例：用户名:密码@主机:端口">
+        </div>
       </div>
       <div class="form-actions">
         <button class="ghost" onclick="detectProxy()" title="自动判别 HTTP/SOCKS5 与是否需要认证"><svg><use href="#i-eye"/></svg>自动判别</button>

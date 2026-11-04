@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import hashlib
+import re
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Dict, Literal, Optional
@@ -16,6 +18,11 @@ from urllib.parse import quote, unquote, urlparse
 
 
 ProxyScheme = Literal["http", "https", "socks5"]
+ProxyInputFormat = Literal[
+    "auto", "host_colon", "host_csv", "host_at", "auth_colon", "auth_at", "host_hash",
+]
+_INPUT_FORMATS = ("host_colon", "host_csv", "host_at", "auth_colon", "auth_at", "host_hash")
+_INPUT_HOST = r"(?:\[[^\]]+\]|[^:\s/@?#,\[\]]+)"
 
 
 class ProxyConfigError(ValueError):
@@ -24,6 +31,64 @@ class ProxyConfigError(ValueError):
 
 def _bracket_host(host: str) -> str:
     return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def _proxy_endpoint(value: str) -> tuple[str, int] | None:
+    """Parse only host:port, never userinfo, URL paths, or credential fields."""
+    if not re.fullmatch(rf"{_INPUT_HOST}:[0-9]{{1,5}}", value):
+        return None
+    try:
+        parsed = urlparse("//" + value)
+        if parsed.hostname and parsed.port and 1 <= parsed.port <= 65535:
+            return parsed.hostname, parsed.port
+    except ValueError:
+        pass
+    return None
+
+
+def _proxy_input_parts(value: str, input_format: str) -> tuple[str, int, str, str] | None:
+    endpoint = username = password = ""
+    if input_format == "auth_at":
+        credentials, sep, endpoint = value.rpartition("@")
+        if not sep:
+            return None
+        username, _, password = credentials.partition(":")
+        # Only URL-style userinfo is percent-encoded. CSV/hash exports are raw.
+        username, password = unquote(username), unquote(password)
+        endpoint = endpoint.removesuffix("/")
+    elif input_format == "host_at":
+        endpoint, sep, credentials = value.partition("@")
+        username, colon, password = credentials.partition(":")
+        if not sep or not colon:
+            return None
+    elif input_format == "host_hash":
+        parts = value.split("##", 2)
+        if len(parts) != 3:
+            return None
+        endpoint, username, password = parts
+    elif input_format == "host_csv":
+        try:
+            parts = next(csv.reader([value], skipinitialspace=True, strict=True))
+        except (csv.Error, StopIteration):
+            return None
+        if len(parts) != 4:
+            return None
+        host, port, username, password = parts
+        endpoint = f"{host.strip()}:{port.strip()}"
+    elif input_format == "host_colon":
+        match = re.fullmatch(rf"({_INPUT_HOST}:[0-9]{{1,5}}):([^:]*):(.*)", value)
+        if not match:
+            return None
+        endpoint, username, password = match.groups()
+    elif input_format == "auth_colon":
+        match = re.fullmatch(rf"([^:]*):(.*):({_INPUT_HOST}:[0-9]{{1,5}})", value)
+        if not match:
+            return None
+        username, password, endpoint = match.groups()
+    parsed = _proxy_endpoint(endpoint)
+    if parsed is None or any(ord(ch) < 32 or ord(ch) == 127 for ch in username + password):
+        return None
+    return *parsed, username, password
 
 
 @dataclass(frozen=True)
@@ -35,34 +100,44 @@ class ProxyPlan:
     password: str = ""
 
     @classmethod
-    def parse(cls, raw: str) -> Optional["ProxyPlan"]:
+    def parse(cls, raw: str, *, default_scheme: str = "http",
+              input_format: ProxyInputFormat = "auto") -> Optional["ProxyPlan"]:
+        """Accept standard URLs and six common provider export formats.
+
+        Ambiguous bare inputs require an explicit format rather than silently
+        exchanging the proxy endpoint with numeric credentials. An explicit
+        standard URL always has ordinary URL userinfo semantics.
+        """
         value = str(raw or "").strip()
         if not value:
             return None
-        try:
-            parsed = urlparse(value if "://" in value else f"http://{value}")
-            scheme = (parsed.scheme or "http").lower()
-            if scheme == "socks":
-                scheme = "socks5"
-            if scheme not in {"http", "https", "socks5"}:
-                raise ProxyConfigError("不支持的代理协议")
-            host = parsed.hostname or ""
-            port = parsed.port
-        except ProxyConfigError:
-            raise
-        except (TypeError, ValueError):
-            raise ProxyConfigError("代理配置无效：端口格式错误") from None
-        if not host or port is None or not (1 <= int(port) <= 65535):
-            raise ProxyConfigError("代理配置无效：必须包含主机和端口")
-        username = unquote(parsed.username or "")
-        password = unquote(parsed.password or "")
-        return cls(
-            scheme=scheme,  # type: ignore[arg-type]
-            host=host,
-            port=int(port),
-            username=username,
-            password=password,
-        )
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+            raise ProxyConfigError("代理配置无效：请每行填写一条代理")
+        has_scheme = bool(re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", value))
+        scheme, value = value.split("://", 1) if has_scheme else (default_scheme, value)
+        scheme = scheme.lower()
+        if scheme in {"socks", "socks5h"}:
+            scheme = "socks5"
+        if scheme not in {"http", "https", "socks5"}:
+            raise ProxyConfigError("不支持的代理协议")
+        if input_format != "auto" and input_format not in _INPUT_FORMATS:
+            raise ProxyConfigError("不支持的代理输入格式")
+
+        if input_format == "auto":
+            endpoint = _proxy_endpoint(value.removesuffix("/") if has_scheme else value)
+            if endpoint:
+                return cls(scheme, *endpoint)
+            standard = _proxy_input_parts(value, "auth_at") if has_scheme else None
+            if standard:
+                return cls(scheme, *standard)
+        formats = _INPUT_FORMATS if input_format == "auto" else (input_format,)
+        candidates = {parts for fmt in formats if (parts := _proxy_input_parts(value, fmt)) is not None}
+        if len(candidates) > 1:
+            raise ProxyConfigError(
+                "代理格式有歧义：请选择对应输入格式，或填写 协议://用户名:密码@主机:端口")
+        if not candidates:
+            raise ProxyConfigError("代理配置无效：请检查输入格式、主机及端口（1–65535）")
+        return cls(scheme, *candidates.pop())
 
     @property
     def authenticated(self) -> bool:
