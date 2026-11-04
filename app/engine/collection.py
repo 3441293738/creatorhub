@@ -138,9 +138,7 @@ def _author_id(raw: dict, platform: str) -> str:
         author = item.get("author") or {}
         return str(author.get("secUid") or author.get("sec_uid")
                    or author.get("id") or author.get("uid") or "")
-    card = raw.get("note_card") or raw
-    user = card.get("user") or {}
-    return str(user.get("user_id") or user.get("userid") or user.get("id") or "")
+    return str((parse_note_brief(raw) or {}).get("author_id") or "")
 
 
 _XHS_SEARCH_SORT = {
@@ -648,15 +646,10 @@ class KeywordCollector:
                 xsec_source=brief.get("xsec_source") or "pc_search")
         except Exception as exc:
             error = f"详情抓取失败: {exc}"
-        aweme = parse_note_detail(card, brief) if card else None
-        if aweme is None:
-            aweme = Aweme(
-                aweme_id=brief["note_id"], desc=brief.get("title", ""),
-                create_time=int(brief.get("create_time") or 0), author_name="",
-                media_type="video" if brief.get("type") == "video" else "images",
-            )
-            aweme.platform = "xhs"
-            aweme.cover = brief.get("cover") or ""
+        # Media absence is a download failure, not a reason to erase the
+        # detail's author/title/counts (or the list metadata if detail failed).
+        aweme = parse_note_detail(
+            card if isinstance(card, dict) else {}, brief, require_media=False)
         return aweme, {"brief": brief, "card": card}, error
 
     async def _materialize_xhs_browser(self, identity, raw: dict) \
@@ -672,15 +665,8 @@ class KeywordCollector:
             xsec_source=brief.get("xsec_source") or "pc_search",
             block_media=self.cfg.engine.block_media_resources,
         )
-        aweme = parse_note_detail(card or {}, brief) if card else None
-        if aweme is None:
-            aweme = Aweme(
-                aweme_id=brief["note_id"], desc=brief.get("title", ""),
-                create_time=int(brief.get("create_time") or 0), author_name="",
-                media_type="video" if brief.get("type") == "video" else "images",
-            )
-            aweme.platform = "xhs"
-            aweme.cover = brief.get("cover") or ""
+        aweme = parse_note_detail(
+            card if isinstance(card, dict) else {}, brief, require_media=False)
         return aweme, {"brief": brief, "card": card or {}}, error
 
     @staticmethod
@@ -1260,6 +1246,8 @@ class KeywordCollector:
 
                 current = self._job(job_id)
                 author_id = _author_id(detail_raw, job.platform)
+                if job.platform == "xhs" and not author_id:
+                    author_id = brief.get("author_id") or ""
                 if job.platform == "shipinhao" and not author_id:
                     author_id = str(getattr(account, "sec_uid", "") or "")
                 content = self._upsert_content(
