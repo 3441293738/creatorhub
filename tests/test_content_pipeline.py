@@ -11,6 +11,7 @@ import pytest
 import app.content_api as content_api
 import app.main as main
 from app.content_pipeline import (
+    AdsAIJSONClient,
     AdsContentSyncClient,
     PLATFORMS,
     AIContentService,
@@ -195,6 +196,35 @@ def test_ads_sync_uses_authenticated_metadata_only_request():
     )
     assert client.sync([{"source_id": "1", "drafts": []}])["count"] == 1
     assert len(requests) == 2
+
+
+def test_ads_ai_client_logs_in_once_and_returns_provider():
+    paths = []
+
+    def handler(request: httpx.Request):
+        paths.append(request.url.path)
+        if request.url.path == "/login":
+            return httpx.Response(
+                302,
+                headers={"set-cookie": "session_token=test; Path=/; HttpOnly; Secure"},
+            )
+        return httpx.Response(
+            200,
+            json={"result": {"title": "自动标题"}, "provider": "deepseek"},
+        )
+
+    client = AdsAIJSONClient(
+        "https://ads.example",
+        "uploader",
+        "secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        assert client.call_json("first")[1] == "deepseek"
+        assert client.call_json("second")[0]["title"] == "自动标题"
+    finally:
+        client.close()
+    assert paths == ["/login", "/api/content-index/ai-json", "/api/content-index/ai-json"]
 
 
 def test_local_scan_api_indexes_real_files_without_ai(tmp_path, monkeypatch):

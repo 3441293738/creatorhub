@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from .content_pipeline import (
+    AdsAIJSONClient,
     AdsContentSyncClient,
     AIContentService,
     ContentIndexStore,
@@ -81,9 +82,20 @@ async def scan_content_index():
 async def process_content_index():
     """自动执行扫描、AI 元数据和九平台草稿。"""
     share, inbox, _ = content_paths()
+    ads_user = os.environ.get("CREATORHUB_ADS_USER", "") or resolve_secret("CREATORHUB_ADS_USER")
+    ads_password = resolve_secret("CREATORHUB_ADS_PASSWORD")
+    caller = (
+        AdsAIJSONClient(
+            os.environ.get("CREATORHUB_ADS_URL", "https://ads.slcoolco.net"),
+            ads_user,
+            ads_password,
+        )
+        if ads_user and ads_password
+        else OpenAICompatibleJSONClient()
+    )
     pipeline = ContentPipeline(
         content_store(),
-        AIContentService(OpenAICompatibleJSONClient()),
+        AIContentService(caller),
     )
     try:
         result = await asyncio.to_thread(pipeline.run, share, inbox)
@@ -92,6 +104,9 @@ async def process_content_index():
             {"detail": f"{exc}；检查 AI 凭证或网络后重试"},
             status_code=503,
         )
+    finally:
+        if isinstance(caller, AdsAIJSONClient):
+            caller.close()
     status = 200 if result["failed"] == 0 else 207
     return JSONResponse(result, status_code=status)
 

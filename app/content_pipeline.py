@@ -704,3 +704,70 @@ class AdsContentSyncClient:
             except json.JSONDecodeError as exc:
                 raise PipelineError("Ads 同步返回格式错误") from exc
             return result
+
+
+class AdsAIJSONClient:
+    """通过公司共享 API 调用云端 AI，客户端不持有模型密钥。"""
+
+    def __init__(
+        self,
+        base_url: str,
+        username: str,
+        password: str,
+        *,
+        transport: Optional[httpx.BaseTransport] = None,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.username = username
+        self.password = password
+        self.client = httpx.Client(
+            base_url=self.base_url,
+            transport=transport,
+            follow_redirects=False,
+            timeout=90,
+        )
+        self.logged_in = False
+
+    def _login(self) -> None:
+        """按需登录一次并复用安全会话。"""
+        if self.logged_in:
+            return
+        if not self.username or not self.password:
+            raise PipelineError("公司 AI 账号尚未配置到系统凭证库")
+        response = self.client.post(
+            "/login",
+            data={"username": self.username, "password": self.password},
+        )
+        if response.status_code != 302 or "session_token" not in self.client.cookies:
+            raise PipelineError("公司 AI 登录失败")
+        self.logged_in = True
+
+    def call_json(self, prompt: str) -> Tuple[dict, str]:
+        """发送口播提示词，返回结构化结果；不上传原视频。"""
+        self._login()
+        try:
+            response = self.client.post(
+                "/api/content-index/ai-json",
+                json={"prompt": prompt},
+            )
+        except httpx.HTTPError as exc:
+            raise PipelineError("公司 AI 网络连接失败") from exc
+        if response.status_code != 200:
+            try:
+                detail = response.json().get("error") or ""
+            except json.JSONDecodeError:
+                detail = ""
+            raise PipelineError(detail or f"公司 AI 处理失败：HTTP {response.status_code}")
+        try:
+            payload = response.json()
+            result = payload["result"]
+            provider = payload["provider"]
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise PipelineError("公司 AI 返回格式错误") from exc
+        if not isinstance(result, dict):
+            raise PipelineError("公司 AI 未返回 JSON 对象")
+        return result, str(provider)
+
+    def close(self) -> None:
+        """释放网络连接。"""
+        self.client.close()
