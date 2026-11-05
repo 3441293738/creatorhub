@@ -47,6 +47,7 @@ def _quote() -> dict:
         "scene_count": 4,
         "scene_duration_seconds": 5,
         "total_cost_cny": 4.8,
+        "generation_id": "b" * 32,
     }
 
 
@@ -224,6 +225,7 @@ def test_video_job_claim_is_atomic_and_active_plan_is_immutable(tmp_path):
     store = ContentIndexStore(database)
     store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=4.8)
     assert store.claim_video_job("asset-1", "preview", _quote()) is True
+    assert store.get_video_job("asset-1")["generation_id"] == _quote()["generation_id"]
     assert ContentIndexStore(database).claim_video_job(
         "asset-1",
         "preview",
@@ -277,6 +279,82 @@ def test_generate_api_requires_explicit_cost_confirmation(tmp_path, monkeypatch)
             assert "确认" in response.json()["detail"]
 
     asyncio.run(scenario())
+
+
+def test_generate_video_revalidates_exact_generation_quote(monkeypatch):
+    """制作时必须用用户确认过的同一批次重新验价。"""
+    quote = _quote()
+
+    class FakeStore:
+        def get_video_job(self, source_id):
+            return {"status": "planned"}
+
+        def claim_video_job(self, source_id, quality, current_quote):
+            return current_quote == quote
+
+    class FakeGateway:
+        def __init__(self):
+            self.generation_id = ""
+
+        def quote(self, quality, generation_id=""):
+            self.generation_id = generation_id
+            return quote
+
+        def close(self):
+            return None
+
+    gateway = FakeGateway()
+    monkeypatch.setattr(content_api, "content_store", lambda: FakeStore())
+    monkeypatch.setattr(content_api, "_ads_media_client", lambda: gateway)
+    monkeypatch.setattr(content_api, "_run_video_job", lambda *args: None)
+    response = asyncio.run(
+        content_api.generate_content_video(
+            "asset-1",
+            {
+                "quality": "preview",
+                "confirm_cost": True,
+                "quote_id": quote["quote_id"],
+                "generation_id": quote["generation_id"],
+            },
+        )
+    )
+    assert response.status_code == 202
+    assert gateway.generation_id == quote["generation_id"]
+
+
+def test_generate_video_rejects_changed_generation_before_claim(monkeypatch):
+    """服务端返回不同批次时，必须在启动付费任务前阻断。"""
+    quote = _quote()
+    changed = {**quote, "generation_id": "c" * 32}
+
+    class FakeStore:
+        def get_video_job(self, source_id):
+            return {"status": "planned"}
+
+        def claim_video_job(self, *args):
+            raise AssertionError("批次不一致时不得认领付费任务")
+
+    class FakeGateway:
+        def quote(self, quality, generation_id=""):
+            return changed
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(content_api, "content_store", lambda: FakeStore())
+    monkeypatch.setattr(content_api, "_ads_media_client", FakeGateway)
+    response = asyncio.run(
+        content_api.generate_content_video(
+            "asset-1",
+            {
+                "quality": "preview",
+                "confirm_cost": True,
+                "quote_id": quote["quote_id"],
+                "generation_id": quote["generation_id"],
+            },
+        )
+    )
+    assert response.status_code == 409
 
 
 def test_full_mock_video_job_reaches_ready_without_source_upload(tmp_path, monkeypatch):
@@ -459,8 +537,8 @@ def test_retry_reuses_paid_scene_and_downloaded_files(tmp_path, monkeypatch):
     assert len(gateway.submitted) == 2
 
 
-def test_uncertain_submission_stops_without_second_paid_call(tmp_path, monkeypatch):
-    """上次提交结果不确定时必须停住，不能自动再次扣费。"""
+def test_paid_polling_timeout_stops_without_new_generation(tmp_path, monkeypatch):
+    """已付费场景轮询超时必须锁定，不能换批次再次扣费。"""
     database = tmp_path / "content.sqlite"
     store = ContentIndexStore(database)
     store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=4.8)
@@ -499,17 +577,24 @@ def test_uncertain_submission_stops_without_second_paid_call(tmp_path, monkeypat
 
         def submit_scene(self, *args):
             self.replays += 1
-            raise PipelineError("视频提交结果确认中，禁止重复扣费")
+            return {"task_id": "existing-paid-task"}
 
         def close(self):
             return None
 
     gateway = FakeGateway()
     monkeypatch.setattr(content_api, "_ads_media_client", lambda: gateway)
+    monkeypatch.setattr(
+        content_api,
+        "_wait_video_scene",
+        lambda *args: (_ for _ in ()).throw(
+            PipelineError("视频模型等待超过十分钟")
+        ),
+    )
     content_api._run_video_job("asset-1", "preview")
     job = ContentIndexStore(database).get_video_job("asset-1")
     assert job["status"] == "uncertain"
-    assert "禁止重复扣费" in job["error"]
+    assert "等待超过十分钟" in job["error"]
     assert gateway.replays == 1
     assert ContentIndexStore(database).claim_video_job(
         "asset-1",

@@ -8683,6 +8683,7 @@ async function startContentVideo(sourceId, button) {
         body: JSON.stringify({
           quality,
           quote_id: quote.quote_id,
+          generation_id: quote.generation_id,
           confirm_cost: true,
         }),
       });

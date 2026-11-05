@@ -233,8 +233,11 @@ def _wait_video_scene(client: AdsMediaGatewayClient, task_id: str) -> str:
             if not url:
                 raise PipelineError("视频任务完成但没有结果地址")
             return url
-        if status in {"FAILED", "CANCELED", "UNKNOWN"}:
-            raise PipelineError(result.get("error") or f"视频任务状态：{status}")
+        if status in {"FAILED", "CANCELED"}:
+            detail = result.get("error") or ""
+            raise PipelineError(f"视频任务明确失败（{status}）：{detail}")
+        if status == "UNKNOWN":
+            raise PipelineError("视频任务状态未知，已停止自动重试")
         time.sleep(5)
     raise PipelineError("视频模型等待超过十分钟")
 
@@ -255,6 +258,7 @@ def _run_video_job(source_id: str, quality: str) -> None:
         / str(job["generation_id"])
     )
     try:
+        paid_started = False
         workspace.mkdir(parents=True, exist_ok=True)
         store.update_video_job(
             source_id,
@@ -266,6 +270,8 @@ def _run_video_job(source_id: str, quality: str) -> None:
         for index, scene in enumerate(job["plan"]["scenes"], start=1):
             scene_path = workspace / f"scene-{index}.mp4"
             task_path = workspace / f"scene-{index}.task.json"
+            if scene_path.is_file():
+                paid_started = True
             if not scene_path.is_file():
                 task_id = ""
                 if task_path.is_file():
@@ -275,6 +281,7 @@ def _run_video_job(source_id: str, quality: str) -> None:
                             raise PipelineError("视频场景幂等编号不一致")
                         if manifest.get("state") == "submitted":
                             task_id = str(manifest["task_id"])
+                            paid_started = True
                     except (OSError, KeyError, TypeError, ValueError):
                         task_id = ""
                 if not task_id:
@@ -311,6 +318,7 @@ def _run_video_job(source_id: str, quality: str) -> None:
                         str(job["generation_id"]),
                         index,
                     )
+                    paid_started = True
                     task_id = str(submitted["task_id"])
                     _write_json_atomic(
                         task_path,
@@ -366,7 +374,14 @@ def _run_video_job(source_id: str, quality: str) -> None:
         message = str(exc)
         status = (
             "uncertain"
-            if "禁止重复扣费" in message or "提交结果确认中" in message
+            if (
+                (
+                    paid_started
+                    and "视频任务明确失败" not in message
+                )
+                or "禁止重复扣费" in message
+                or "提交结果确认中" in message
+            )
             else "failed"
         )
         store.update_video_job(
@@ -420,7 +435,11 @@ async def quote_content_video(source_id: str, body: dict):
         return JSONResponse({"detail": "视频计划不存在"}, status_code=404)
     client = _ads_media_client()
     try:
-        quote = await asyncio.to_thread(client.quote, quality)
+        quote = await asyncio.to_thread(
+            client.quote,
+            quality,
+            str(body.get("generation_id") or ""),
+        )
     except PipelineError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=503)
     finally:
@@ -452,11 +471,17 @@ async def generate_content_video(source_id: str, body: dict):
         return JSONResponse({"detail": "成片已完成，无需重复付费制作"}, status_code=409)
     client = _ads_media_client()
     try:
-        quote = await asyncio.to_thread(client.quote, quality)
+        quote = await asyncio.to_thread(
+            client.quote,
+            quality,
+            str(body.get("generation_id") or ""),
+        )
     except PipelineError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=503)
     finally:
         client.close()
+    if str(body.get("generation_id") or "") != str(quote.get("generation_id") or ""):
+        return JSONResponse({"detail": "生成批次已变化，请重新确认费用"}, status_code=409)
     if str(body.get("quote_id") or "") != str(quote.get("quote_id") or ""):
         return JSONResponse({"detail": "视频报价已变化，请重新确认"}, status_code=409)
     if not store.claim_video_job(source_id, quality, quote):

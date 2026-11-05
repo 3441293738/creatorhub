@@ -155,13 +155,16 @@ class AdsMediaGatewayClient:
             raise PipelineError(f"{action}未返回 JSON 对象")
         return payload
 
-    def quote(self, quality: str) -> dict:
+    def quote(self, quality: str, generation_id: str = "") -> dict:
         """读取媒体网关当前模型的精确整条视频报价。"""
         self._login()
         try:
             response = self.client.get(
                 "/api/content-index/video/quote",
-                params={"quality": quality},
+                params={
+                    "quality": quality,
+                    "generation_id": generation_id,
+                },
             )
         except httpx.HTTPError as exc:
             raise PipelineError("视频报价网络失败") from exc
@@ -174,6 +177,7 @@ class AdsMediaGatewayClient:
                 == SCENE_DURATION_SECONDS
                 and float(quote.get("total_cost_cny")) > 0
                 and len(str(quote.get("quote_id") or "")) == 64
+                and len(str(quote.get("generation_id") or "")) == 32
                 and bool(str(quote.get("model") or ""))
             )
         except (TypeError, ValueError):

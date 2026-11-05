@@ -19,6 +19,7 @@ def test_content_index_is_a_first_class_local_navigation_page():
     assert "confirm_cost: true" in script
     assert "精确视频模型费用" in script
     assert "quote_id: quote.quote_id" in script
+    assert "generation_id: quote.generation_id" in script
     assert "Wan 重新生成全部画面" in html
     assert "CosyVoice 生成新配音" in html
     assert "/static/app.js?v=20261105-video-safety" in html

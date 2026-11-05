@@ -12,7 +12,6 @@ import re
 import sqlite3
 import subprocess
 import sys
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -600,7 +599,7 @@ class ContentIndexStore:
                     float(quote["total_cost_cny"]),
                     str(quote["quote_id"]),
                     str(quote["model"]),
-                    uuid.uuid4().hex,
+                    str(quote["generation_id"]),
                     self._now(),
                     source_id,
                 ),
