@@ -1,0 +1,25 @@
+根据元数据和口播，为九个平台分别生成真正适配平台的草稿，不得把同一正文复制九次。
+
+共同规则：
+- 只使用口播能支持的事实，不保证维修效果，不补猜车型和年份。
+- 全部初始为草稿，文案中不要声称已经发布。
+- 输出一个 JSON 对象，必须恰有以下九个键：
+  douyin、tiktok、youtube、facebook、x、reddit、pinterest、quora、linkedin。
+- 每个平台至少包含 title、body、hashtags、language、notes。
+
+平台要求：
+- douyin：中文短标题、口语正文、话题和开场钩子 hook。
+- tiktok：适合短视频的 title/body/hashtags/language/hook。
+- youtube：title/body/chapters/tags，并注明 format 是 shorts 或 long。
+- facebook：title/body/cta。
+- x：title/body/thread，单条不超过平台字符限制。
+- reddit：title/body/subreddit；不知道目标社区时 subreddit 留空。
+- pinterest：title/body/board；不知道画板时 board 留空。
+- quora：title/body/question；没有选定问题时 question 留空。
+- linkedin：专业标题、行业观点正文和 hashtags，避免短视频营销腔。
+
+元数据：
+{{metadata}}
+
+口播稿：
+{{transcript}}

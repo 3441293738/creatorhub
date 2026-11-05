@@ -1080,6 +1080,9 @@ const PAGE_META = {
   autocomment: {
     title: "自动评论", desc: "配置评论与回复规则，并审核待发布文案。"
   },
+  "content-index": {
+    title: "成品索引", desc: "本机自动扫描、AI 整理并生成九个平台草稿；外部原片不会上传。"
+  },
   "share-download": {
     title: "链接下载", desc: "从分享文案识别链接，检查媒体信息并下载到本地。"
   },
@@ -1478,11 +1481,12 @@ function switchTab(name, pushHistory = false) {
     loadShareAccounts();
     refreshShareHistory();
   }
+  if (name === "content-index") refreshContentIndex();
   if (name === "collections") { populateCollectionAccount(); refreshCollections(); }
   if (name === "tiktok-tools") populateTikTokAccounts();
   if (name === "queue") refreshTaskQueue();
   if (name === "risk-control") refreshRiskCenter();
-  if (changed && !["hub", "share-download", "collections", "queue", "risk-control"].includes(name)) loop();
+  if (changed && !["hub", "content-index", "share-download", "collections", "queue", "risk-control"].includes(name)) loop();
 }
 
 // ─── 扫码登录(真实浏览器窗口) ───
@@ -8507,6 +8511,108 @@ function openTaskQueueSource(tab) {
   switchTab(tab, true);
 }
 
+let CONTENT_INDEX_ITEMS = [];
+
+async function refreshContentIndex() {
+  const list = $("ci-list");
+  if (!list) return;
+  list.innerHTML = skeleton(4);
+  try {
+    const data = await api("/api/content-index");
+    CONTENT_INDEX_ITEMS = data.items || [];
+    renderContentIndex();
+  } catch (e) {
+    list.innerHTML = empty(4, "成品索引暂时无法读取", "i-info", e.message || "请稍后重试");
+  }
+}
+
+function renderContentIndex() {
+  const list = $("ci-list");
+  if (!list) return;
+  const query = ($("ci-query")?.value || "").trim().toLocaleLowerCase();
+  const status = $("ci-status")?.value || "";
+  const rows = CONTENT_INDEX_ITEMS.filter(item => {
+    if (status && item.status !== status) return false;
+    const metadata = item.metadata || {};
+    const haystack = [item.source_id, item.author, item.source_title, metadata.title, metadata.make, metadata.model]
+      .join(" ").toLocaleLowerCase();
+    return !query || haystack.includes(query);
+  });
+  const drafted = CONTENT_INDEX_ITEMS.filter(item => item.status === "drafted").length;
+  const drafts = CONTENT_INDEX_ITEMS.reduce((sum, item) => sum + Number(item.draft_count || 0), 0);
+  if ($("ci-total")) $("ci-total").textContent = fmtNum(CONTENT_INDEX_ITEMS.length);
+  if ($("ci-ready")) $("ci-ready").textContent = fmtNum(drafted);
+  if ($("ci-drafts")) $("ci-drafts").textContent = fmtNum(drafts);
+  if ($("ci-count")) $("ci-count").textContent = `${rows.length} 条`;
+  if ($("tb-content-index")) $("tb-content-index").textContent = fmtNum(CONTENT_INDEX_ITEMS.length);
+  if (!rows.length) {
+    list.innerHTML = empty(4, "没有匹配内容", "i-info", "先点“重新扫描”，系统会自动关联本机原片与口播稿。");
+    return;
+  }
+  const labels = { indexed: "待 AI 处理", drafted: "已生成草稿", failed: "处理失败" };
+  list.innerHTML = rows.map(item => {
+    const metadata = item.metadata || {};
+    const title = metadata.title || "等待 AI 生成自己的标题";
+    const vehicle = [metadata.make, metadata.model, metadata.year_start && metadata.year_end
+      ? `${metadata.year_start}-${metadata.year_end}` : metadata.year_start].filter(Boolean).join(" · ") || "车型未从口播确认";
+    return `<article class="card compact-card">
+      <div class="card-head"><span class="card-ic"><svg><use href="#i-film"/></svg></span>
+        <h3>${esc(title)} <span class="sub">${esc(labels[item.status] || item.status)}</span></h3>
+      </div>
+      <p><b>原始标题：</b>${esc(item.source_title)}<br><b>来源作者：</b>${esc(item.author)}
+        · <b>编号：</b>${esc(item.source_id)}</p>
+      <p class="mut"><b>车型：</b>${esc(vehicle)} · <b>主题：</b>${esc(metadata.topic || "待识别")}
+        · <b>草稿：</b>${Number(item.draft_count || 0)} / 9</p>
+      ${item.error ? `<div class="alert err">${esc(item.error)}</div>` : ""}
+      <details><summary>查看 AI 摘要与处理依据</summary>
+        <div class="hint">${esc(metadata.summary || "尚未处理")}<br>
+        <b>依据范围：</b>仅口播文字；不会声称看到了画面。</div>
+      </details>
+    </article>`;
+  }).join("");
+}
+
+async function scanContentIndex(button) {
+  await withBusy(button || evtBtn(), "扫描中…", async () => {
+    try {
+      const result = await api("/api/content-index/scan", { method: "POST" });
+      $("ci-msg").textContent = `已关联 ${result.matched}/${result.video} 条，待匹配 ${result.missing} 条`;
+      toast("本机扫描完成", "ok");
+      await refreshContentIndex();
+    } catch (e) {
+      $("ci-msg").textContent = e.message || "扫描失败";
+      toast("扫描失败：" + e.message, "err");
+    }
+  });
+}
+
+async function processContentIndex(button) {
+  await withBusy(button || evtBtn(), "AI 处理中…", async () => {
+    try {
+      const result = await api("/api/content-index/process", { method: "POST" });
+      $("ci-msg").textContent = `AI 已处理 ${result.processed} 条，失败 ${result.failed} 条`;
+      toast(result.failed ? "部分内容需要重试" : "AI 自动处理完成", result.failed ? "warn" : "ok");
+      await refreshContentIndex();
+    } catch (e) {
+      $("ci-msg").textContent = e.message || "AI 处理失败";
+      toast("AI 处理失败：" + e.message, "err");
+    }
+  });
+}
+
+async function syncContentIndex(button) {
+  await withBusy(button || evtBtn(), "同步中…", async () => {
+    try {
+      const result = await api("/api/content-index/sync", { method: "POST" });
+      $("ci-msg").textContent = `已同步 ${result.sent || 0} 条到共享审核中心`;
+      toast("共享索引同步完成", "ok");
+    } catch (e) {
+      $("ci-msg").textContent = e.message || "同步失败";
+      toast("同步失败：" + e.message, "err");
+    }
+  });
+}
+
 function esc(s) { return (s || "").toString().replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 async function refreshOverviewSummary() {
@@ -8539,6 +8645,7 @@ async function loop() {
     autocomment: [refreshCommentRules, refreshCommentTasks],
     publish: [refreshPublish],
     collections: [refreshCollections],
+    "content-index": [refreshContentIndex],
     "risk-control": [refreshRiskCenter],
     queue: [refreshTaskQueue],
     hub: [refreshHubSummary],
@@ -8574,7 +8681,7 @@ $("collection-content-list").innerHTML = collectionResultSkeleton(4);
 $("queue-table").innerHTML = skeleton(7);
 
 // restore last-selected section (default: 总览);旧版四个独立页已并入「账号管理」
-const VALID_TABS = ["overview", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "tiktok-tools", "publish", "autocomment", "share-download", "notifications", "settings"];
+const VALID_TABS = ["overview", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "tiktok-tools", "publish", "autocomment", "content-index", "share-download", "notifications", "settings"];
 const LEGACY_HUB_TABS = ["myworks", "following", "fans", "dm"];
 switchTab((() => {
   try {
@@ -8666,6 +8773,7 @@ window.CreatorHubBridge = {
       autocomment: [refreshCommentRules, refreshCommentTasks],
       notifications: [refreshChannels, refreshWebhooks], settings: [loadSettings],
       "risk-control": [refreshRiskCenter], hub: [refreshHubSummary, refreshHubPanel],
+      "content-index": [refreshContentIndex],
       "share-download": [refreshShareHistory],
     };
     await Promise.allSettled((refreshers[CURRENT_TAB] || []).map(fn => Promise.resolve().then(() => fn())));

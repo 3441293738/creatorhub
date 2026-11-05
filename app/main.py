@@ -69,6 +69,7 @@ from .platforms.douyin import (
     safe_title,
 )
 from .config import load_config
+from .content_api import router as content_index_router
 from .db import get_session, init_db
 from .account_merge import (
     cleanup_merged_profiles,
@@ -645,6 +646,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CreatorHub", lifespan=lifespan)
+app.include_router(content_index_router)
 app.add_middleware(LocalAccessMiddleware)
 WEB_DIR = Path(__file__).parent / "web"
 

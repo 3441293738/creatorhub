@@ -268,7 +268,8 @@ let readSerial = 0;
 const prefixes = { overview: ["/api/overview", "/api/stats", "/api/task-queue"], accounts: ["/api/accounts", "/api/browser-runtimes", "/api/proxies"],
   monitors: ["/api/monitors", "/api/contents"], comments: ["/api/comment-watches", "/api/comments"], danmaku: ["/api/danmaku"],
   collections: ["/api/collections"], queue: ["/api/task-queue"], publish: ["/api/publish"], autocomment: ["/api/comment-rules", "/api/comment-tasks"],
-  settings: ["/api/settings"], notifications: ["/api/notifications"], "risk-control": ["/api/risk"], hub: ["/api/accounts", "/api/hub"] };
+  settings: ["/api/settings"], notifications: ["/api/notifications"], "risk-control": ["/api/risk"], hub: ["/api/accounts", "/api/hub"],
+  "content-index": ["/api/content-index"] };
 let menuOpen = false, sheetOpen = false;
 let lastContext = context();
 const drafts = new Map();

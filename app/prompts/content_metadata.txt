@@ -1,0 +1,25 @@
+你是汽车内容编辑。只根据下面的口播稿生成结构化元数据。
+
+硬规则：
+1. Make 只允许 Toyota、Honda、Nissan；Model 是 Prado、Hiace 等车型。
+2. 口播没有明确说出 Make、Model 或年份时，对应字段必须为空，不得从作者、标题或常识猜。
+3. summary 必须以“根据口播”开头，不能声称看到了画面。
+4. topic 只能是：维修、养护、车型对比、故障诊断、零件知识、用车技巧、其他。
+5. evidence 只能逐字摘录口播中的短句。
+
+输出 JSON：
+{
+  "title": "自己的清晰标题",
+  "summary": "根据口播，...",
+  "content_type": "故障讲解/零件知识/维修过程/其他",
+  "make": "",
+  "model": "",
+  "year_start": null,
+  "year_end": null,
+  "topic": "故障诊断",
+  "confidence": 0.0,
+  "evidence": ["口播原句"]
+}
+
+口播稿：
+{{transcript}}
