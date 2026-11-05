@@ -37,6 +37,18 @@ def _plan() -> dict:
     }
 
 
+def _quote() -> dict:
+    """返回一份服务端预览报价。"""
+    return {
+        "quote_id": "a" * 64,
+        "quality": "preview",
+        "model": "wanx2.1-t2v-turbo",
+        "scene_count": 4,
+        "scene_duration_seconds": 5,
+        "total_cost_cny": 4.8,
+    }
+
+
 class FakeJSONCaller:
     """返回固定视频计划的文字模型替身。"""
 
@@ -81,9 +93,17 @@ def test_media_gateway_never_sends_local_source_path():
             )
         if request.url.path == "/api/content-index/video/submit":
             body = json.loads(request.content)
-            assert set(body) == {"prompt", "duration", "quality", "cost_confirmed"}
+            assert set(body) == {
+                "prompt",
+                "duration",
+                "quality",
+                "cost_confirmed",
+                "quote_id",
+            }
             assert body["cost_confirmed"] is True
             return httpx.Response(200, json={"task_id": "task-1"})
+        if request.url.path == "/api/content-index/video/quote":
+            return httpx.Response(200, json=_quote())
         if request.url.path == "/api/content-index/video/tasks/task-1":
             return httpx.Response(
                 200,
@@ -108,7 +128,13 @@ def test_media_gateway_never_sends_local_source_path():
         transport=httpx.MockTransport(handler),
     )
     try:
-        assert client.submit_scene("全新生成镜头", 5, "preview")["task_id"] == "task-1"
+        quote = client.quote("preview")
+        assert client.submit_scene(
+            "全新生成镜头",
+            5,
+            "preview",
+            quote["quote_id"],
+        )["task_id"] == "task-1"
         assert client.get_task("task-1")["status"] == "SUCCEEDED"
         assert client.synthesize_voice("重写旁白")["audio_url"].endswith(".mp3")
     finally:
@@ -187,6 +213,23 @@ def test_video_job_is_persisted_and_visible_in_asset_list(tmp_path):
     assert store.get_video_job("asset-1")["progress"] == 100
 
 
+def test_video_job_claim_is_atomic_and_active_plan_is_immutable(tmp_path):
+    """并发只能领取一次，排队中的分镜不能被 AI 重写覆盖。"""
+    database = tmp_path / "content.sqlite"
+    store = ContentIndexStore(database)
+    store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=4.8)
+    assert store.claim_video_job("asset-1", "preview", _quote()) is True
+    assert ContentIndexStore(database).claim_video_job(
+        "asset-1",
+        "preview",
+        _quote(),
+    ) is False
+    changed = _plan()
+    changed["title"] = "不应覆盖"
+    store.save_video_plan("asset-1", changed, "deepseek", estimated_cost_cny=4.8)
+    assert store.get_video_job("asset-1")["plan"]["title"] != "不应覆盖"
+
+
 def test_generate_api_requires_explicit_cost_confirmation(tmp_path, monkeypatch):
     """任何付费视频调用前必须由用户确认估算费用。"""
     database = tmp_path / "content.sqlite"
@@ -253,6 +296,7 @@ def test_full_mock_video_job_reaches_ready_without_source_upload(tmp_path, monke
         "deepseek",
         estimated_cost_cny=4.8,
     )
+    store.claim_video_job("asset-1", "preview", _quote())
     monkeypatch.setattr(
         content_api,
         "content_paths",
@@ -263,7 +307,7 @@ def test_full_mock_video_job_reaches_ready_without_source_upload(tmp_path, monke
     class FakeGateway:
         prompts = []
 
-        def submit_scene(self, prompt, duration, quality):
+        def submit_scene(self, prompt, duration, quality, quote_id):
             self.prompts.append(prompt)
             return {"task_id": f"task-{len(self.prompts)}"}
 
@@ -322,8 +366,15 @@ def test_retry_reuses_paid_scene_and_downloaded_files(tmp_path, monkeypatch):
         }
     )
     store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=4.8)
+    store.claim_video_job("asset-1", "preview", _quote())
     output = tmp_path / "output"
-    workspace = output / "asset-1" / "work" / "preview"
+    workspace = (
+        output
+        / "asset-1"
+        / "work"
+        / "preview"
+        / content_api._plan_hash(_plan())
+    )
     workspace.mkdir(parents=True)
     (workspace / "scene-1.mp4").write_bytes(b"existing")
     (workspace / "scene-2.task.json").write_text(
@@ -341,7 +392,7 @@ def test_retry_reuses_paid_scene_and_downloaded_files(tmp_path, monkeypatch):
         submitted = []
         queried = []
 
-        def submit_scene(self, prompt, duration, quality):
+        def submit_scene(self, prompt, duration, quality, quote_id):
             self.submitted.append(prompt)
             return {"task_id": f"new-{len(self.submitted)}"}
 
@@ -379,6 +430,51 @@ def test_retry_reuses_paid_scene_and_downloaded_files(tmp_path, monkeypatch):
     assert len(gateway.submitted) == 2
 
 
+def test_uncertain_submission_stops_without_second_paid_call(tmp_path, monkeypatch):
+    """上次提交结果不确定时必须停住，不能自动再次扣费。"""
+    database = tmp_path / "content.sqlite"
+    store = ContentIndexStore(database)
+    store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=4.8)
+    store.claim_video_job("asset-1", "preview", _quote())
+    output = tmp_path / "output"
+    workspace = (
+        output
+        / "asset-1"
+        / "work"
+        / "preview"
+        / content_api._plan_hash(_plan())
+    )
+    workspace.mkdir(parents=True)
+    (workspace / "scene-1.task.json").write_text(
+        '{"state":"submitting","quote_id":"' + ("a" * 64) + '"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        content_api,
+        "content_paths",
+        lambda: (tmp_path / "share", tmp_path / "inbox", database),
+    )
+    monkeypatch.setattr(content_api, "VIDEO_OUTPUT_ROOT", output)
+
+    class FakeGateway:
+        submitted = 0
+
+        def submit_scene(self, *args):
+            self.submitted += 1
+            raise AssertionError("must not resubmit")
+
+        def close(self):
+            return None
+
+    gateway = FakeGateway()
+    monkeypatch.setattr(content_api, "_ads_media_client", lambda: gateway)
+    content_api._run_video_job("asset-1", "preview")
+    job = ContentIndexStore(database).get_video_job("asset-1")
+    assert job["status"] == "failed"
+    assert "避免重复扣费" in job["error"]
+    assert gateway.submitted == 0
+
+
 def test_generated_download_blocks_ssrf_and_upgrades_aliyun_http(tmp_path, monkeypatch):
     """模型结果下载只允许阿里云结果域名，并把文档中的 HTTP 地址升级为 HTTPS。"""
     with pytest.raises(PipelineError, match="地址无效"):
@@ -390,6 +486,12 @@ def test_generated_download_blocks_ssrf_and_upgrades_aliyun_http(tmp_path, monke
     captured = []
 
     class FakeResponse:
+        status_code = 200
+        headers = {}
+        url = httpx.URL(
+            "https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/voice.mp3"
+        )
+
         def __enter__(self):
             return self
 
@@ -400,13 +502,25 @@ def test_generated_download_blocks_ssrf_and_upgrades_aliyun_http(tmp_path, monke
             return None
 
         def iter_bytes(self):
-            yield b"generated"
+            yield b"ID3generated"
 
-    def stream(method, url, **kwargs):
-        captured.append(url)
-        return FakeResponse()
+    class FakeClient:
+        def __init__(self, **kwargs):
+            assert kwargs["trust_env"] is False
 
-    monkeypatch.setattr(content_api.httpx, "stream", stream)
+        def stream(self, method, url):
+            captured.append(url)
+            return FakeResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(content_api.httpx, "Client", FakeClient)
+    monkeypatch.setattr(
+        content_api.socket,
+        "getaddrinfo",
+        lambda *args: [(2, 1, 6, "", ("8.8.8.8", 443))],
+    )
     target = tmp_path / "voice.mp3"
     content_api._download_generated_file(
         "http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/voice.mp3",
@@ -416,4 +530,23 @@ def test_generated_download_blocks_ssrf_and_upgrades_aliyun_http(tmp_path, monke
     assert captured == [
         "https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/voice.mp3"
     ]
-    assert target.read_bytes() == b"generated"
+    assert target.read_bytes() == b"ID3generated"
+
+    class OversizeResponse(FakeResponse):
+        def iter_bytes(self):
+            yield b"ID3" + b"x" * 200
+
+    class OversizeClient(FakeClient):
+        def stream(self, method, url):
+            return OversizeResponse()
+
+    monkeypatch.setattr(content_api.httpx, "Client", OversizeClient)
+    failed = tmp_path / "failed.mp3"
+    with pytest.raises(PipelineError, match="安全上限"):
+        content_api._download_generated_file(
+            "https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/voice.mp3",
+            failed,
+            max_bytes=20,
+        )
+    assert not failed.exists()
+    assert not (tmp_path / "failed.mp3.part").exists()

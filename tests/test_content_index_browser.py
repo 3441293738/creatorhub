@@ -13,11 +13,12 @@ def test_content_index_is_a_first_class_local_navigation_page():
     assert "本机 AI 二创" in html
     assert "原片不上传" in html
     assert "生成文案与分镜" in html
-    assert "制作 AI 视频" in script
+    assert "查看精确费用并制作" in script
     assert '"文案已生成"' in script
     assert '"文案与分镜已生成"' in script
     assert "confirm_cost: true" in script
-    assert "预计视频模型费用" in script
+    assert "精确视频模型费用" in script
+    assert "quote_id: quote.quote_id" in script
     assert "Wan 重新生成全部画面" in html
     assert "CosyVoice 生成新配音" in html
     assert '"content-index": {' in script

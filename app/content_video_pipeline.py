@@ -155,7 +155,40 @@ class AdsMediaGatewayClient:
             raise PipelineError(f"{action}未返回 JSON 对象")
         return payload
 
-    def submit_scene(self, prompt: str, duration: int, quality: str) -> dict:
+    def quote(self, quality: str) -> dict:
+        """读取媒体网关当前模型的精确整条视频报价。"""
+        self._login()
+        try:
+            response = self.client.get(
+                "/api/content-index/video/quote",
+                params={"quality": quality},
+            )
+        except httpx.HTTPError as exc:
+            raise PipelineError("视频报价网络失败") from exc
+        quote = self._payload(response, "视频报价")
+        try:
+            valid = (
+                quote.get("quality") == quality
+                and int(quote.get("scene_count")) == SCENE_COUNT
+                and int(quote.get("scene_duration_seconds"))
+                == SCENE_DURATION_SECONDS
+                and float(quote.get("total_cost_cny")) > 0
+                and len(str(quote.get("quote_id") or "")) == 64
+                and bool(str(quote.get("model") or ""))
+            )
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise PipelineError("视频报价内容无效")
+        return quote
+
+    def submit_scene(
+        self,
+        prompt: str,
+        duration: int,
+        quality: str,
+        quote_id: str,
+    ) -> dict:
         """提交付费视频场景；调用方必须已取得本次费用确认。"""
         self._login()
         try:
@@ -166,6 +199,7 @@ class AdsMediaGatewayClient:
                     "duration": duration,
                     "quality": quality,
                     "cost_confirmed": True,
+                    "quote_id": quote_id,
                 },
             )
         except httpx.HTTPError as exc:

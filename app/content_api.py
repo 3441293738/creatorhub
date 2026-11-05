@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import ipaddress
 import json
 import os
 import re
+import socket
 import time
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -36,6 +39,7 @@ router = APIRouter(prefix="/api/content-index", tags=["content-index"])
 ROOT = Path(__file__).resolve().parent.parent
 VIDEO_OUTPUT_ROOT = ROOT / "data" / "content_output"
 _VIDEO_BACKGROUND_TASKS: set[asyncio.Task] = set()
+_VIDEO_RESUME_STARTED = False
 
 
 def content_paths() -> tuple[Path, Path, Path]:
@@ -69,6 +73,7 @@ def content_store() -> ContentIndexStore:
 @router.get("")
 async def list_content_index():
     """列出本机素材状态和 AI 草稿数量。"""
+    _resume_incomplete_video_jobs()
     store = content_store()
     items = store.list_assets()
     return {"count": len(items), "items": items}
@@ -137,30 +142,86 @@ def _ads_media_client() -> AdsMediaGatewayClient:
 
 def _download_generated_file(url: str, path: Path, *, max_bytes: int) -> None:
     """下载模型生成结果，并限制文件大小。"""
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
-    if parsed.scheme not in {"https", "http"} or not host.endswith(
-        (".aliyuncs.com", ".aliyun.com")
-    ):
-        raise PipelineError("模型返回的文件地址无效")
-    if parsed.scheme == "http":
-        parsed = parsed._replace(scheme="https")
-        url = urlunparse(parsed)
+    def validated_url(candidate: str) -> str:
+        parsed = urlparse(candidate)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme not in {"https", "http"} or not host.endswith(
+            (".aliyuncs.com", ".aliyun.com")
+        ):
+            raise PipelineError("模型返回的文件地址无效")
+        try:
+            addresses = {
+                info[4][0]
+                for info in socket.getaddrinfo(host, parsed.port or 443)
+            }
+        except socket.gaierror as exc:
+            raise PipelineError("模型结果域名无法解析") from exc
+        if not addresses or any(
+            not ipaddress.ip_address(address).is_global for address in addresses
+        ):
+            raise PipelineError("模型结果地址不是公网地址")
+        if parsed.scheme == "http":
+            parsed = parsed._replace(scheme="https")
+        return urlunparse(parsed)
+
+    url = validated_url(url)
     path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(path.suffix + ".part")
+    partial.unlink(missing_ok=True)
     received = 0
+    client = httpx.Client(follow_redirects=False, timeout=120, trust_env=False)
     try:
-        with httpx.stream("GET", url, follow_redirects=True, timeout=120) as response:
-            response.raise_for_status()
-            with path.open("wb") as handle:
-                for chunk in response.iter_bytes():
-                    received += len(chunk)
-                    if received > max_bytes:
-                        raise PipelineError("模型生成文件超过本机安全上限")
-                    handle.write(chunk)
-    except httpx.HTTPError as exc:
+        for _ in range(4):
+            with client.stream("GET", url) as response:
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("location", "")
+                    url = validated_url(str(response.url.join(location)))
+                    continue
+                response.raise_for_status()
+                with partial.open("wb") as handle:
+                    for chunk in response.iter_bytes():
+                        received += len(chunk)
+                        if received > max_bytes:
+                            raise PipelineError("模型生成文件超过本机安全上限")
+                        handle.write(chunk)
+                break
+        else:
+            raise PipelineError("模型生成文件重定向过多")
+    except PipelineError:
+        partial.unlink(missing_ok=True)
+        raise
+    except (httpx.HTTPError, OSError) as exc:
+        partial.unlink(missing_ok=True)
         raise PipelineError("模型生成文件下载失败") from exc
-    if received == 0:
+    finally:
+        client.close()
+    if received == 0 or not partial.is_file():
+        partial.unlink(missing_ok=True)
         raise PipelineError("模型生成文件为空")
+    header = partial.read_bytes()[:32]
+    if path.suffix.lower() == ".mp4" and b"ftyp" not in header:
+        partial.unlink(missing_ok=True)
+        raise PipelineError("模型视频文件格式无效")
+    if path.suffix.lower() == ".mp3" and not (
+        header.startswith(b"ID3") or header[:1] == b"\xff"
+    ):
+        partial.unlink(missing_ok=True)
+        raise PipelineError("模型配音文件格式无效")
+    partial.replace(path)
+
+
+def _plan_hash(plan: dict) -> str:
+    """为分镜生成稳定版本号，隔离失败重试与新计划。"""
+    return hashlib.sha256(
+        json.dumps(plan, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()[:16]
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    """原子写入小型任务清单。"""
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload), encoding="utf-8")
+    temporary.replace(path)
 
 
 def _wait_video_scene(client: AdsMediaGatewayClient, task_id: str) -> str:
@@ -186,7 +247,13 @@ def _run_video_job(source_id: str, quality: str) -> None:
     if not job:
         return
     client = _ads_media_client()
-    workspace = VIDEO_OUTPUT_ROOT / source_id / "work" / quality
+    workspace = (
+        VIDEO_OUTPUT_ROOT
+        / source_id
+        / "work"
+        / quality
+        / _plan_hash(job["plan"])
+    )
     try:
         workspace.mkdir(parents=True, exist_ok=True)
         store.update_video_job(
@@ -194,7 +261,6 @@ def _run_video_job(source_id: str, quality: str) -> None:
             status="generating",
             progress=2,
             quality=quality,
-            estimated_cost_cny=estimate_plan_cost(job["plan"], quality),
         )
         scene_paths = []
         for index, scene in enumerate(job["plan"]["scenes"], start=1):
@@ -204,21 +270,55 @@ def _run_video_job(source_id: str, quality: str) -> None:
                 task_id = ""
                 if task_path.is_file():
                     try:
-                        task_id = str(
-                            json.loads(task_path.read_text(encoding="utf-8"))["task_id"]
-                        )
+                        manifest = json.loads(task_path.read_text(encoding="utf-8"))
+                        if manifest.get("state") == "submitting":
+                            raise PipelineError(
+                                f"第 {index} 段提交结果不确定，已停止以避免重复扣费"
+                            )
+                        task_id = str(manifest["task_id"])
                     except (OSError, KeyError, TypeError, ValueError):
                         task_id = ""
                 if not task_id:
+                    try:
+                        descriptor = os.open(
+                            task_path,
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                            0o600,
+                        )
+                    except FileExistsError as exc:
+                        try:
+                            existing = json.loads(
+                                task_path.read_text(encoding="utf-8")
+                            )
+                        except (OSError, TypeError, ValueError):
+                            existing = {}
+                        if existing.get("state") == "submitting":
+                            raise PipelineError(
+                                f"第 {index} 段提交结果不确定，已停止以避免重复扣费"
+                            ) from exc
+                        raise PipelineError("视频场景已被另一任务领取") from exc
+                    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                        json.dump(
+                            {
+                                "state": "submitting",
+                                "quote_id": job["quote_id"],
+                            },
+                            handle,
+                        )
                     submitted = client.submit_scene(
                         scene["visual_prompt"],
                         int(scene["duration"]),
                         quality,
+                        str(job["quote_id"]),
                     )
                     task_id = str(submitted["task_id"])
-                    task_path.write_text(
-                        json.dumps({"task_id": task_id}),
-                        encoding="utf-8",
+                    _write_json_atomic(
+                        task_path,
+                        {
+                            "state": "submitted",
+                            "task_id": task_id,
+                            "quote_id": job["quote_id"],
+                        },
                     )
                 url = _wait_video_scene(client, task_id)
                 _download_generated_file(
@@ -271,6 +371,45 @@ def _run_video_job(source_id: str, quality: str) -> None:
         client.close()
 
 
+def _resume_incomplete_video_jobs() -> None:
+    """应用重启后按持久化任务编号安全续跑，不重新提交不确定任务。"""
+    global _VIDEO_RESUME_STARTED
+    if _VIDEO_RESUME_STARTED:
+        return
+    _VIDEO_RESUME_STARTED = True
+    for job in content_store().list_incomplete_video_jobs():
+        task = asyncio.create_task(
+            asyncio.to_thread(
+                _run_video_job,
+                str(job["source_id"]),
+                str(job["quality"]),
+            )
+        )
+        _VIDEO_BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_VIDEO_BACKGROUND_TASKS.discard)
+
+
+@router.post("/video/{source_id}/quote")
+async def quote_content_video(source_id: str, body: dict):
+    """取得服务端当前模型报价，供用户确认后原样提交。"""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", source_id):
+        return JSONResponse({"detail": "素材编号无效"}, status_code=400)
+    quality = str(body.get("quality") or "preview")
+    if quality not in {"preview", "quality"}:
+        return JSONResponse({"detail": "未知视频质量档位"}, status_code=400)
+    job = content_store().get_video_job(source_id)
+    if not job:
+        return JSONResponse({"detail": "视频计划不存在"}, status_code=404)
+    client = _ads_media_client()
+    try:
+        quote = await asyncio.to_thread(client.quote, quality)
+    except PipelineError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=503)
+    finally:
+        client.close()
+    return quote
+
+
 @router.post("/video/{source_id}/generate")
 async def generate_content_video(source_id: str, body: dict):
     """确认费用后启动一条本机 AI 二创任务。"""
@@ -291,18 +430,19 @@ async def generate_content_video(source_id: str, body: dict):
             {"detail": "尚未生成视频分镜，请先运行 AI 文案处理"},
             status_code=400,
         )
-    if job["status"] in {"queued", "generating", "rendering"}:
+    if job["status"] == "ready":
+        return JSONResponse({"detail": "成片已完成，无需重复付费制作"}, status_code=409)
+    client = _ads_media_client()
+    try:
+        quote = await asyncio.to_thread(client.quote, quality)
+    except PipelineError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=503)
+    finally:
+        client.close()
+    if str(body.get("quote_id") or "") != str(quote.get("quote_id") or ""):
+        return JSONResponse({"detail": "视频报价已变化，请重新确认"}, status_code=409)
+    if not store.claim_video_job(source_id, quality, quote):
         return JSONResponse({"detail": "视频正在生成，请勿重复提交"}, status_code=409)
-    cost = estimate_plan_cost(job["plan"], quality)
-    store.update_video_job(
-        source_id,
-        status="queued",
-        progress=0,
-        quality=quality,
-        estimated_cost_cny=cost,
-        output_path="",
-        error="",
-    )
     task = asyncio.create_task(asyncio.to_thread(_run_video_job, source_id, quality))
     _VIDEO_BACKGROUND_TASKS.add(task)
     task.add_done_callback(_VIDEO_BACKGROUND_TASKS.discard)
@@ -310,7 +450,8 @@ async def generate_content_video(source_id: str, body: dict):
         {
             "source_id": source_id,
             "status": "queued",
-            "estimated_cost_cny": cost,
+            "estimated_cost_cny": quote["total_cost_cny"],
+            "model": quote["model"],
         },
         status_code=202,
     )

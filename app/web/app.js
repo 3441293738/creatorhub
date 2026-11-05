@@ -8571,18 +8571,17 @@ function renderContentIndex() {
     const contentStatus = item.status === "drafted" && videoPlan
       ? "文案与分镜已生成"
       : (labels[item.status] || item.status);
-    const previewCost = Number(item.video_estimated_cost_cny || 0);
     const safeId = esc(item.source_id);
     let videoAction = `<div class="alert">先点上方“生成文案与分镜”，系统才会准备视频脚本。</div>`;
-    if (videoPlan && ["planned", "failed", "ready"].includes(videoStatus)) {
+    if (videoPlan && ["planned", "failed"].includes(videoStatus)) {
       videoAction = `<div class="form-actions">
         <label class="field" for="ci-quality-${safeId}">视频质量</label>
         <select id="ci-quality-${safeId}" onchange="updateContentVideoCost('${safeId}')">
-          <option value="preview">标准 720P · 约 ¥${previewCost.toFixed(2)}</option>
-          <option value="quality">高质量 720P · 约 ¥${(previewCost * 2.5).toFixed(2)}</option>
+          <option value="preview">标准 720P</option>
+          <option value="quality">高质量 720P</option>
         </select>
         <button id="ci-video-btn-${safeId}" onclick="startContentVideo('${safeId}', this)">
-          <svg><use href="#i-film"/></svg>${videoStatus === "ready" ? "重新制作 AI 视频" : "制作 AI 视频"} · 约 ¥${previewCost.toFixed(2)}
+          <svg><use href="#i-film"/></svg>查看精确费用并制作
         </button>
       </div>`;
     }
@@ -8652,32 +8651,39 @@ async function processContentIndex(button) {
   });
 }
 
-function contentVideoCost(sourceId, quality) {
-  const item = CONTENT_INDEX_ITEMS.find(row => row.source_id === sourceId);
-  const preview = Number(item?.video_estimated_cost_cny || 0);
-  return quality === "quality" ? preview * 2.5 : preview;
-}
-
 function updateContentVideoCost(sourceId) {
   const select = $(`ci-quality-${sourceId}`);
   const button = $(`ci-video-btn-${sourceId}`);
   if (!select || !button) return;
-  const cost = contentVideoCost(sourceId, select.value);
-  button.innerHTML = `<svg><use href="#i-film"/></svg>制作 AI 视频 · 约 ¥${cost.toFixed(2)}`;
+  button.innerHTML = `<svg><use href="#i-film"/></svg>查看精确费用并制作`;
 }
 
 async function startContentVideo(sourceId, button) {
   const quality = $(`ci-quality-${sourceId}`)?.value || "preview";
-  const cost = contentVideoCost(sourceId, quality);
+  let quote;
+  try {
+    quote = await api(`/api/content-index/video/${encodeURIComponent(sourceId)}/quote`, {
+      method: "POST",
+      body: JSON.stringify({ quality }),
+    });
+  } catch (e) {
+    toast("无法取得视频报价：" + e.message, "err");
+    return;
+  }
+  const cost = Number(quote.total_cost_cny || 0);
   const accepted = window.confirm(
-    `将生成 4 段全新 AI 画面、AI 配音和字幕。\n\n预计视频模型费用：¥${cost.toFixed(2)}\n模型任务提交后通常不能退款。\n\n确认现在开始制作吗？`
+    `将生成 4 段全新 AI 画面、AI 配音和字幕。\n\n模型：${quote.model}\n精确视频模型费用：¥${cost.toFixed(2)}\n模型任务提交后通常不能退款。\n\n确认现在开始制作吗？`
   );
   if (!accepted) return;
   await withBusy(button || evtBtn(), "正在提交…", async () => {
     try {
       const result = await api(`/api/content-index/video/${encodeURIComponent(sourceId)}/generate`, {
         method: "POST",
-        body: JSON.stringify({ quality, confirm_cost: true }),
+        body: JSON.stringify({
+          quality,
+          quote_id: quote.quote_id,
+          confirm_cost: true,
+        }),
       });
       $("ci-msg").textContent = `视频已排队，预计费用 ¥${Number(result.estimated_cost_cny || cost).toFixed(2)}`;
       toast("AI 视频开始制作，可稍后回来查看", "ok");

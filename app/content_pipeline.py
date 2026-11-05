@@ -413,10 +413,32 @@ class ContentIndexStore:
                     status TEXT NOT NULL DEFAULT 'planned',
                     progress INTEGER NOT NULL DEFAULT 0,
                     estimated_cost_cny REAL NOT NULL DEFAULT 0,
+                    quote_id TEXT NOT NULL DEFAULT '',
+                    quote_model TEXT NOT NULL DEFAULT '',
                     output_path TEXT NOT NULL DEFAULT '',
                     error TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL
                 );
+                """
+            )
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(video_jobs)").fetchall()
+            }
+            if "quote_id" not in columns:
+                conn.execute(
+                    "ALTER TABLE video_jobs ADD COLUMN quote_id TEXT NOT NULL DEFAULT ''"
+                )
+            if "quote_model" not in columns:
+                conn.execute(
+                    "ALTER TABLE video_jobs ADD COLUMN quote_model TEXT NOT NULL DEFAULT ''"
+                )
+            conn.execute(
+                """
+                UPDATE video_jobs SET status='failed', progress=0,
+                    error='旧任务缺少服务端报价，请重新确认费用后再制作'
+                WHERE status IN ('queued', 'generating', 'rendering')
+                    AND quote_id=''
                 """
             )
 
@@ -522,7 +544,12 @@ class ContentIndexStore:
                 "SELECT status FROM video_jobs WHERE source_id=?",
                 (source_id,),
             ).fetchone()
-            if row and row["status"] in {"generating", "ready"}:
+            if row and row["status"] in {
+                "queued",
+                "generating",
+                "rendering",
+                "ready",
+            }:
                 return
             conn.execute(
                 """
@@ -543,6 +570,45 @@ class ContentIndexStore:
                     self._now(),
                 ),
             )
+
+    def claim_video_job(self, source_id: str, quality: str, quote: dict) -> bool:
+        """原子领取一条付费任务，防止并发点击重复提交。"""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                "SELECT status FROM video_jobs WHERE source_id=?",
+                (source_id,),
+            ).fetchone()
+            if not current or current["status"] not in {"planned", "failed"}:
+                return False
+            changed = conn.execute(
+                """
+                UPDATE video_jobs SET status='queued', progress=0, quality=?,
+                    estimated_cost_cny=?, quote_id=?, quote_model=?,
+                    output_path='', error='', updated_at=?
+                WHERE source_id=? AND status IN ('planned', 'failed')
+                """,
+                (
+                    quality,
+                    float(quote["total_cost_cny"]),
+                    str(quote["quote_id"]),
+                    str(quote["model"]),
+                    self._now(),
+                    source_id,
+                ),
+            ).rowcount
+        return changed == 1
+
+    def list_incomplete_video_jobs(self) -> List[dict]:
+        """列出重启后需要安全续跑的本机视频任务。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT source_id, quality FROM video_jobs
+                WHERE status IN ('queued', 'generating', 'rendering')
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def update_video_job(
         self,
