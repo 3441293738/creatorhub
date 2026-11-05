@@ -147,7 +147,7 @@ def _download_generated_file(url: str, path: Path, *, max_bytes: int) -> None:
         parsed = urlparse(candidate)
         host = (parsed.hostname or "").lower()
         if parsed.scheme not in {"https", "http"} or not host.endswith(
-            (".aliyuncs.com", ".aliyun.com")
+            (".aliyuncs.com", ".aliyun.com", ".volces.com")
         ):
             raise PipelineError("模型返回的文件地址无效")
         try:

@@ -1033,3 +1033,47 @@ def test_generated_download_blocks_ssrf_and_upgrades_aliyun_http(tmp_path, monke
         )
     assert not failed.exists()
     assert not (tmp_path / "failed.mp3.part").exists()
+
+
+def test_generated_download_accepts_seedance_volces_result(tmp_path, monkeypatch):
+    """Seedance 结果域名通过同一套公网与文件头门禁。"""
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+        url = httpx.URL("https://seedance-output.tos-cn-beijing.volces.com/video.mp4")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self):
+            yield b"\x00\x00\x00\x18ftypmp42generated"
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            assert kwargs["trust_env"] is False
+
+        def stream(self, method, url):
+            return FakeResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(content_api.httpx, "Client", FakeClient)
+    monkeypatch.setattr(
+        content_api.socket,
+        "getaddrinfo",
+        lambda *args: [(2, 1, 6, "", ("8.8.8.8", 443))],
+    )
+    target = tmp_path / "seedance.mp4"
+    content_api._download_generated_file(
+        "https://seedance-output.tos-cn-beijing.volces.com/video.mp4",
+        target,
+        max_bytes=100,
+    )
+    assert target.is_file()
