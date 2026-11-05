@@ -22,19 +22,111 @@ from app.content_video_pipeline import (
 
 def _plan() -> dict:
     """返回一份 20 秒安全二创计划。"""
-    return {
-        "title": "进气压力传感器故障排查",
-        "hook": "发动机抖动，不一定是点火系统。",
-        "rights_mode": "regenerate",
-        "scenes": [
+    steps = [
+        (
+            "查看缺缸异响怠速",
+            "发动机怠速剧烈抖动",
+            "hand_insert 指向抖动区域",
+            "open",
+            "杰克逊滑步致敬冷幽默入画，棒球帽檐 MAXCOOL 一闪，胸标 Kaka Auto Parts 可读",
+        ),
+        (
+            "对比已换火花塞仍抖动",
+            "火花塞与喷油嘴区域仍异常",
+            "cutaway_host 短切讲解",
+            "mid",
+            "操作中袖口 MAXCOOL 自然入画",
+        ),
+        (
+            "指向关键传感器插头",
+            "曲轴位置传感器插头与线束",
+            "over_shoulder 看向插头",
+            "mid",
+            "肩后可见工服标识不抢戏",
+        ),
+        (
+            "拔插头验证怠速变稳",
+            "拔掉传感器插头后怠速变稳",
+            "hand_insert 完成拔插",
+            "close",
+            "碟中谍滑索致敬冷幽默出画，痞帅痞笑被向上一点点拉出画外，胸前品牌 lockup",
+        ),
+    ]
+    scenes = []
+    for index, (process, structure, insert, brand_beat, brand_note) in enumerate(
+        steps, start=1
+    ):
+        scenes.append(
             {
                 "duration": 5,
-                "visual_prompt": f"全新生成的竖屏汽修科普动画镜头 {index}",
-                "narration": f"这是第{index}段重新创作的旁白。",
-                "subtitle": f"第{index}段故障排查",
+                "beat": f"第{index}段教学接力",
+                "brand_beat": brand_beat,
+                "transcript_anchor": f"口播第{index}节：{process}",
+                "core_claim": f"核心判断{index}：{process}",
+                "process_step": process,
+                "structure_focus": structure,
+                "detail_checklist": [
+                    f"细节{index}a：关键面清晰",
+                    f"细节{index}b：动作前后状态可对比",
+                ],
+                "character_insert": insert,
+                "camera_move": f"第{index}段缓推连续运镜落到操作点",
+                "visual_prompt": (
+                    f"连续竖屏镜头 {index}：发动机舱结构主体，{structure}，"
+                    f"执行{process}，{brand_note}，浅景深但操作面清晰，无商标无水印"
+                ),
+                "beat_ids": [f"B{index:02d}"],
+                "narration": f"这是第{index}段对齐口播的旁白。",
+                "narration_en": f"Beat {index}: verify the sensor connector, then watch idle.",
             }
-            for index in range(1, 5)
-        ],
+        )
+    source_beats = [
+        {
+            "beat_id": f"B{index:02d}",
+            "source_quote": f"原稿第{index}条：{process}",
+            "corrected_fact": process,
+            "evidence_status": "source_supported",
+        }
+        for index, (process, *_rest) in enumerate(steps, start=1)
+    ]
+    coverage_check = [
+        {
+            "beat_id": beat["beat_id"],
+            "copy_cn_sentence": f"第{index}项。",
+            "copy_en_sentence": f"Beat {index}.",
+            "covered": True,
+            "no_new_fact": True,
+            "no_causal_change": True,
+        }
+        for beat in source_beats
+    ]
+    return {
+        "title": "发动机缺缸异响一招排查",
+        "title_en": "Rough idle? Check this sensor before a rebuild",
+        "hook": "怠速抖得像拖拉机，先别急着大修。",
+        "hook_en": "Idle shakes hard — don't rebuild yet. Watch this connector.",
+        "rights_mode": "regenerate",
+        "direction": "一镜到底商业广告科普：品牌前中后；入出场冷幽默大片致敬",
+        "core_arc": "异响现象→乱修无效→定位传感器→拔插头验证→结论",
+        "character_lock": (
+            "以品牌本人真实样貌为底，做年轻化与轻微美化：脸型更利落、皮肤更干净；"
+            "后脑勺轮廓略更饱满圆润；仍可辨认为本人，半框眼镜可保留。"
+            "神态冷静专注，眼神盯零件不游离；出场可痞帅痞笑；"
+            "穿着带 Kaka Auto Parts 与 MAXCOOL 标识的专业汽修工服。"
+        ),
+        "look_variant": "no_hat",
+        "look": "一镜到底感商业广告汽修科普，侧逆光；入出场特色 setpiece，竖屏 9:16",
+        "branding": "Kaka Auto Parts + MAXCOOL；前开场露出、中段操作穿插、末段 lockup + 痞帅痞笑",
+        "setpiece_open": "致敬杰克逊滑步冷幽默入场：棒球帽檐 MAXCOOL 一闪再蹲进机舱",
+        "setpiece_close": "致敬碟中谍滑索冷幽默出场：痞帅痞笑被向上一点点拉出画外 + lockup",
+        "source_beats": source_beats,
+        "copy_cn": " ".join(item["copy_cn_sentence"] for item in coverage_check),
+        "copy_en": " ".join(item["copy_en_sentence"] for item in coverage_check),
+        "coverage_check": coverage_check,
+        "episode_count": 1,
+        "active_episode": 1,
+        "episode_plan": [{"episode": 1, "beat_ids": [item["beat_id"] for item in source_beats]}],
+        "scenes": scenes,
     }
 
 
@@ -46,7 +138,8 @@ def _quote() -> dict:
         "model": "wanx2.1-t2v-turbo",
         "scene_count": 4,
         "scene_duration_seconds": 5,
-        "total_cost_cny": 4.8,
+        "scene_durations": [5, 5, 5, 5],
+        "total_cost_cny": 3.0,
         "generation_id": "b" * 32,
     }
 
@@ -56,7 +149,8 @@ class FakeJSONCaller:
 
     def call_json(self, prompt: str) -> tuple[dict, str]:
         """返回测试计划。"""
-        assert "不得复用原视频画面" in prompt
+        assert "禁止复用原视频画面" in prompt
+        assert "品牌本人" in prompt
         return _plan(), "deepseek"
 
 
@@ -71,7 +165,7 @@ def test_video_plan_requires_four_regenerated_scenes():
     assert plan["rights_mode"] == "regenerate"
     assert len(plan["scenes"]) == 4
     assert sum(scene["duration"] for scene in plan["scenes"]) == 20
-    assert estimate_plan_cost(plan, "preview") == 4.8
+    assert estimate_plan_cost(plan, "preview") == 0.82
 
 
 def test_video_plan_rejects_source_footage_reuse():
@@ -80,6 +174,225 @@ def test_video_plan_rejects_source_footage_reuse():
     unsafe["rights_mode"] = "reuse_source"
     with pytest.raises(PipelineError, match="重新生成"):
         VideoPlanService.guard_plan(unsafe)
+
+
+def test_video_plan_requires_locked_brand_self_likeness():
+    """多条成片必须锁定品牌本人年轻化形象，禁止漂移成路人。"""
+    plan = _plan()
+    guarded = VideoPlanService.guard_plan(plan)
+    assert "品牌本人" in guarded["character_lock"]
+    assert guarded["look_variant"] in {"no_hat", "with_hat"}
+    assert all(scene["structure_focus"] for scene in guarded["scenes"])
+    broken = _plan()
+    broken["character_lock"] = "普通路人修车师傅"
+    with pytest.raises(PipelineError, match="品牌本人"):
+        VideoPlanService.guard_plan(broken)
+
+
+def test_video_plan_requires_verifiable_process_details():
+    """流程与细节必须能慢放核对，不能只是好看的修车氛围。"""
+    plan = _plan()
+    guarded = VideoPlanService.guard_plan(plan)
+    assert "一镜到底" in guarded["direction"]
+    assert guarded["core_arc"]
+    for scene in guarded["scenes"]:
+        assert scene["process_step"]
+        assert scene["transcript_anchor"]
+        assert scene["core_claim"]
+        assert len(scene["detail_checklist"]) >= 2
+        assert scene["camera_move"]
+    weak = _plan()
+    weak["scenes"][0]["detail_checklist"] = ["只有一条"]
+    with pytest.raises(PipelineError, match="detail_checklist"):
+        VideoPlanService.guard_plan(weak)
+    vague = _plan()
+    vague["scenes"][1]["process_step"] = "展示氛围感车间"
+    with pytest.raises(PipelineError, match="可执行动作"):
+        VideoPlanService.guard_plan(vague)
+
+
+def test_build_render_prompt_locks_transcript_process_and_details():
+    """提交生成时必须把口播锚点与可核对步骤打进提示词。"""
+    plan = _plan()
+    scene = plan["scenes"][3]
+    prompt = VideoPlanService.build_render_prompt(plan, scene)
+    assert "TRANSCRIPT ANCHOR" in prompt
+    assert scene["process_step"] in prompt
+    assert scene["structure_focus"] in prompt
+    assert "DETAILS THAT MUST SURVIVE" in prompt
+    assert "Do NOT invent a different fault" in prompt
+    assert "never vacant/wandering" in prompt
+    assert "No long talking-head" in prompt or "lip-sync" in prompt
+    assert "BRAND CLOSE" in prompt
+    assert "SETPIECE" in prompt
+    assert "rogue smirk" in prompt or "痞帅痞笑" in prompt
+    assert "composited later" in prompt
+    assert "NO on-screen text" in prompt
+    assert "Kaka Auto Parts" not in prompt and "MAXCOOL" not in prompt
+    assert "碟中谍" in prompt or "滑索" in prompt
+
+
+def test_video_plan_requires_brand_beats_open_mid_close():
+    """品牌植入必须前中后都有，入出场要有冷幽默大片致敬。"""
+    plan = _plan()
+    guarded = VideoPlanService.guard_plan(plan)
+    beats = {scene["brand_beat"] for scene in guarded["scenes"]}
+    assert beats == {"open", "mid", "close"}
+    assert guarded["setpiece_open"]
+    assert guarded["setpiece_close"]
+    missing_close = _plan()
+    missing_close["scenes"][3]["brand_beat"] = "mid"
+    missing_close["scenes"][3]["visual_prompt"] = (
+        "连续竖屏：拔插头验证怠速，操作面清晰，无品牌落点"
+    )
+    with pytest.raises(PipelineError, match="前中后"):
+        VideoPlanService.guard_plan(missing_close)
+    weak_close = _plan()
+    weak_close["scenes"][3]["visual_prompt"] = (
+        "连续竖屏：拔插头验证怠速，胸前 Kaka Auto Parts 标识可读，挥手硬广推销结束"
+    )
+    with pytest.raises(PipelineError, match="冷幽默|大片致敬"):
+        VideoPlanService.guard_plan(weak_close)
+    same_setpiece = _plan()
+    same_setpiece["setpiece_close"] = same_setpiece["setpiece_open"]
+    with pytest.raises(PipelineError, match="不能雷同"):
+        VideoPlanService.guard_plan(same_setpiece)
+
+
+def test_video_plan_limits_face_on_host_cuts():
+    """正脸讲解整片最多一段，其余用手部/肩后穿插降露怯。"""
+    plan = _plan()
+    plan["scenes"][0]["character_insert"] = "cutaway_host 短切"
+    plan["scenes"][2]["character_insert"] = "cutaway_host 再讲一次"
+    with pytest.raises(PipelineError, match="cutaway_host"):
+        VideoPlanService.guard_plan(plan)
+    ok = _plan()
+    ok["scenes"][1]["character_insert"] = "cutaway_host 仅一次"
+    guarded = VideoPlanService.guard_plan(ok)
+    assert sum("cutaway_host" in s["character_insert"] for s in guarded["scenes"]) == 1
+    no_eyes = _plan()
+    no_eyes["character_lock"] = (
+        "以品牌本人真实样貌为底，做年轻化美化，穿着 Kaka Auto Parts 与 MAXCOOL 工服。"
+    )
+    with pytest.raises(PipelineError, match="专注眼神"):
+        VideoPlanService.guard_plan(no_eyes)
+
+
+def test_video_plan_requires_localized_cn_en_copy():
+    """国内中文与海外英文文案都要有，且拒绝英文吆喝腔。"""
+    plan = _plan()
+    guarded = VideoPlanService.guard_plan(plan)
+    assert guarded["title_en"]
+    assert guarded["hook_en"]
+    assert guarded["copy_cn"] and guarded["copy_en"]
+    assert all(scene["narration_en"] for scene in guarded["scenes"])
+    missing = _plan()
+    missing["hook_en"] = ""
+    with pytest.raises(PipelineError, match="英文标题或钩子"):
+        VideoPlanService.guard_plan(missing)
+    hype = _plan()
+    hype["scenes"][0]["narration_en"] = "Must see this 100% fix amazing!!!"
+    with pytest.raises(PipelineError, match="英文旁白"):
+        VideoPlanService.guard_plan(hype)
+
+
+def test_video_plan_requires_complete_source_beat_coverage():
+    """每条原稿事实必须映射到中英文文案，且不得新增事实或改变因果。"""
+    guarded = VideoPlanService.guard_plan(_plan())
+    assert [item["beat_id"] for item in guarded["source_beats"]] == [
+        "B01",
+        "B02",
+        "B03",
+        "B04",
+    ]
+    assert all(item["covered"] for item in guarded["coverage_check"])
+
+    missing = _plan()
+    missing["coverage_check"].pop()
+    with pytest.raises(PipelineError, match="覆盖"):
+        VideoPlanService.guard_plan(missing)
+
+    invented = _plan()
+    invented["coverage_check"][0]["no_new_fact"] = False
+    with pytest.raises(PipelineError, match="新增事实"):
+        VideoPlanService.guard_plan(invented)
+
+
+def test_video_plan_splits_more_than_four_beats_into_episode_map():
+    """信息点超过四条必须分集，不能为凑 20 秒删除原稿事实。"""
+    plan = _plan()
+    extra_beats = []
+    for index in range(5, 9):
+        beat = {
+            "beat_id": f"B{index:02d}",
+            "source_quote": f"原稿第{index}个易坏件及故障现象",
+            "corrected_fact": f"第{index}个易坏件及故障现象",
+            "evidence_status": "source_supported",
+        }
+        extra_beats.append(beat)
+        plan["coverage_check"].append(
+            {
+                "beat_id": beat["beat_id"],
+                "copy_cn_sentence": f"中文覆盖{beat['corrected_fact']}。",
+                "copy_en_sentence": f"English covers fact {index}.",
+                "covered": True,
+                "no_new_fact": True,
+                "no_causal_change": True,
+            }
+        )
+    plan["source_beats"].extend(extra_beats)
+    plan["copy_cn"] += " " + " ".join(
+        item["copy_cn_sentence"] for item in plan["coverage_check"][4:]
+    )
+    plan["copy_en"] += " " + " ".join(
+        item["copy_en_sentence"] for item in plan["coverage_check"][4:]
+    )
+    plan["episode_count"] = 2
+    plan["episode_plan"] = [
+        {"episode": 1, "beat_ids": ["B01", "B02", "B03", "B04"]},
+        {"episode": 2, "beat_ids": ["B05", "B06", "B07", "B08"]},
+    ]
+    guarded = VideoPlanService.guard_plan(plan)
+    assert guarded["episode_count"] == 2
+    assert guarded["episode_plan"][1]["beat_ids"] == ["B05", "B06", "B07", "B08"]
+    assert len(guarded["source_beats"]) == 8
+
+
+def test_episode_plan_uses_realistic_spoken_duration_budget():
+    """长信息点即使不满四条也必须分集，单集口播估算不得超过30秒。"""
+    coverage = [
+        {
+            "beat_id": "B01",
+            "copy_cn_sentence": "节温器安装在发动机缸体上，水温高、暖风不热、高速油耗偏高时，需要检查冷却系统和节温器。",
+        },
+        {
+            "beat_id": "B02",
+            "copy_cn_sentence": "喷油嘴安装在进气歧管上，发动机抖动、油耗偏高、启动困难时，需要检查喷油嘴和供油状态。",
+        },
+        {
+            "beat_id": "B03",
+            "copy_cn_sentence": "刹车真空单向阀位于真空管路中间，刹车踏板发硬或高速制动效果异常时，要检查真空管路和单向阀。",
+        },
+    ]
+    episodes = VideoPlanService.build_episode_plan(coverage)
+    assert [item["beat_ids"] for item in episodes] == [
+        ["B01", "B02"],
+        ["B03"],
+    ]
+    assert all(item["estimated_seconds"] <= 30 for item in episodes)
+
+
+def test_scene_durations_cover_active_episode_spoken_budget():
+    """四段镜头可变时长，但必须覆盖当前分集口播估时且单段不少于4秒。"""
+    plan = _plan()
+    plan["scenes"][0]["duration"] = 8
+    guarded = VideoPlanService.guard_plan(plan)
+    assert guarded["duration_seconds"] == 23
+
+    too_short = _plan()
+    too_short["scenes"][0]["duration"] = 3
+    with pytest.raises(PipelineError, match="4～15"):
+        VideoPlanService.guard_plan(too_short)
 
 
 def test_media_gateway_never_sends_local_source_path():
@@ -103,8 +416,10 @@ def test_media_gateway_never_sends_local_source_path():
                 "quote_id",
                 "generation_id",
                 "scene_index",
+                "look_variant",
             }
             assert body["cost_confirmed"] is True
+            assert body["look_variant"] in {"no_hat", "with_hat"}
             return httpx.Response(200, json={"task_id": "task-1"})
         if request.url.path == "/api/content-index/video/quote":
             return httpx.Response(200, json=_quote())
@@ -149,8 +464,8 @@ def test_media_gateway_never_sends_local_source_path():
     assert "/Users/" not in encoded and "原口播全文" not in encoded
 
 
-def test_renderer_burns_subtitles_without_reading_source_video(tmp_path, monkeypatch):
-    """本地合成只读取 AI 片段与配音，不读取参考原片。"""
+def test_renderer_does_not_generate_or_burn_subtitles(tmp_path, monkeypatch):
+    """本地合成只混入配音，禁止生成 SRT 或向画面烧录字幕。"""
     scene_paths = []
     for index in range(4):
         path = tmp_path / f"scene-{index}.mp4"
@@ -181,7 +496,8 @@ def test_renderer_burns_subtitles_without_reading_source_video(tmp_path, monkeyp
     )
     assert result.is_file()
     joined = " ".join(str(part) for command in commands for part in command)
-    assert "subtitles=" in joined
+    assert "subtitles=" not in joined
+    assert not (tmp_path / "output" / "asset-1" / "subtitles.srt").exists()
     assert "source.mp4" not in joined
 
 
@@ -204,11 +520,11 @@ def test_video_job_is_persisted_and_visible_in_asset_list(tmp_path):
         "asset-1",
         _plan(),
         "deepseek",
-        estimated_cost_cny=4.8,
+        estimated_cost_cny=3.0,
     )
     row = store.list_assets()[0]
     assert row["video_status"] == "planned"
-    assert row["video_estimated_cost_cny"] == 4.8
+    assert row["video_estimated_cost_cny"] == 3.0
     assert row["video_plan"]["rights_mode"] == "regenerate"
     store.update_video_job(
         "asset-1",
@@ -223,7 +539,7 @@ def test_video_job_claim_is_atomic_and_active_plan_is_immutable(tmp_path):
     """并发只能领取一次，排队中的分镜不能被 AI 重写覆盖。"""
     database = tmp_path / "content.sqlite"
     store = ContentIndexStore(database)
-    store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=4.8)
+    store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=3.0)
     assert store.claim_video_job("asset-1", "preview", _quote()) is True
     assert store.get_video_job("asset-1")["generation_id"] == _quote()["generation_id"]
     assert ContentIndexStore(database).claim_video_job(
@@ -233,7 +549,7 @@ def test_video_job_claim_is_atomic_and_active_plan_is_immutable(tmp_path):
     ) is False
     changed = _plan()
     changed["title"] = "不应覆盖"
-    store.save_video_plan("asset-1", changed, "deepseek", estimated_cost_cny=4.8)
+    store.save_video_plan("asset-1", changed, "deepseek", estimated_cost_cny=3.0)
     assert store.get_video_job("asset-1")["plan"]["title"] != "不应覆盖"
 
 
@@ -257,7 +573,7 @@ def test_generate_api_requires_explicit_cost_confirmation(tmp_path, monkeypatch)
         "asset-1",
         _plan(),
         "deepseek",
-        estimated_cost_cny=4.8,
+        estimated_cost_cny=3.0,
     )
     monkeypatch.setattr(
         content_api,
@@ -296,7 +612,7 @@ def test_generate_video_revalidates_exact_generation_quote(monkeypatch):
         def __init__(self):
             self.generation_id = ""
 
-        def quote(self, quality, generation_id=""):
+        def quote(self, quality, generation_id="", scene_durations=None):
             self.generation_id = generation_id
             return quote
 
@@ -335,7 +651,7 @@ def test_generate_video_rejects_changed_generation_before_claim(monkeypatch):
             raise AssertionError("批次不一致时不得认领付费任务")
 
     class FakeGateway:
-        def quote(self, quality, generation_id=""):
+        def quote(self, quality, generation_id="", scene_durations=None):
             return changed
 
         def close(self):
@@ -377,7 +693,7 @@ def test_full_mock_video_job_reaches_ready_without_source_upload(tmp_path, monke
         "asset-1",
         _plan(),
         "deepseek",
-        estimated_cost_cny=4.8,
+        estimated_cost_cny=3.0,
     )
     store.claim_video_job("asset-1", "preview", _quote())
     monkeypatch.setattr(
@@ -398,6 +714,8 @@ def test_full_mock_video_job_reaches_ready_without_source_upload(tmp_path, monke
             quote_id,
             generation_id,
             scene_index,
+            look_variant="no_hat",
+            scene_durations=None,
         ):
             self.prompts.append(prompt)
             return {"task_id": f"task-{len(self.prompts)}"}
@@ -456,7 +774,7 @@ def test_retry_reuses_paid_scene_and_downloaded_files(tmp_path, monkeypatch):
             "mtime": 1,
         }
     )
-    store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=4.8)
+    store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=3.0)
     store.claim_video_job("asset-1", "preview", _quote())
     generation_id = store.get_video_job("asset-1")["generation_id"]
     output = tmp_path / "output"
@@ -499,6 +817,8 @@ def test_retry_reuses_paid_scene_and_downloaded_files(tmp_path, monkeypatch):
             quote_id,
             generation_id,
             scene_index,
+            look_variant="no_hat",
+            scene_durations=None,
         ):
             self.submitted.append(prompt)
             return {"task_id": f"new-{len(self.submitted)}"}
@@ -541,7 +861,7 @@ def test_paid_polling_timeout_stops_without_new_generation(tmp_path, monkeypatch
     """已付费场景轮询超时必须锁定，不能换批次再次扣费。"""
     database = tmp_path / "content.sqlite"
     store = ContentIndexStore(database)
-    store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=4.8)
+    store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=3.0)
     store.claim_video_job("asset-1", "preview", _quote())
     generation_id = store.get_video_job("asset-1")["generation_id"]
     output = tmp_path / "output"
@@ -575,7 +895,7 @@ def test_paid_polling_timeout_stops_without_new_generation(tmp_path, monkeypatch
     class FakeGateway:
         replays = 0
 
-        def submit_scene(self, *args):
+        def submit_scene(self, *args, **kwargs):
             self.replays += 1
             return {"task_id": "existing-paid-task"}
 

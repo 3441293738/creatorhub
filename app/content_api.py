@@ -7,8 +7,10 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import socket
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -216,6 +218,78 @@ def _plan_hash(plan: dict) -> str:
     ).hexdigest()[:16]
 
 
+def _synthesize_voice_locally(text: str, path: Path) -> None:
+    """网关配音不可用时，用本机百炼 CLI 或系统语音生成旁白。"""
+    narration = (text or "").strip()
+    if not narration:
+        raise PipelineError("旁白为空，无法生成本机配音")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    bl = shutil.which("bl")
+    if bl:
+        try:
+            subprocess.run(
+                [
+                    bl,
+                    "speech",
+                    "synthesize",
+                    "--text",
+                    narration,
+                    "--out",
+                    str(path),
+                    "--format",
+                    "mp3",
+                    "--quiet",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            if path.is_file() and path.stat().st_size > 0:
+                return
+        except (OSError, subprocess.SubprocessError) as exc:
+            path.unlink(missing_ok=True)
+            # 继续尝试系统语音
+            _ = exc
+    say = shutil.which("say")
+    ffmpeg = _find_ffmpeg()
+    if not say or not ffmpeg:
+        raise PipelineError("本机配音兜底不可用，请配置百炼 CLI 或系统语音")
+    aiff = path.with_suffix(".aiff")
+    try:
+        subprocess.run(
+            [say, "-v", "Tingting", "-o", str(aiff), narration],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(aiff),
+                "-codec:a",
+                "libmp3lame",
+                "-qscale:a",
+                "4",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        path.unlink(missing_ok=True)
+        raise PipelineError("本机配音生成失败") from exc
+    finally:
+        aiff.unlink(missing_ok=True)
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise PipelineError("本机配音文件为空")
+
+
 def _write_json_atomic(path: Path, payload: dict) -> None:
     """原子写入小型任务清单。"""
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -267,6 +341,10 @@ def _run_video_job(source_id: str, quality: str) -> None:
             quality=quality,
         )
         scene_paths = []
+        scene_durations = [
+            int(item.get("duration") or 0)
+            for item in (job.get("plan") or {}).get("scenes") or []
+        ]
         for index, scene in enumerate(job["plan"]["scenes"], start=1):
             scene_path = workspace / f"scene-{index}.mp4"
             task_path = workspace / f"scene-{index}.task.json"
@@ -310,13 +388,21 @@ def _run_video_job(source_id: str, quality: str) -> None:
                                 },
                                 handle,
                             )
+                    render_prompt = VideoPlanService.build_render_prompt(
+                        job.get("plan") or {},
+                        scene,
+                    )
                     submitted = client.submit_scene(
-                        scene["visual_prompt"],
+                        render_prompt,
                         int(scene["duration"]),
                         quality,
                         str(job["quote_id"]),
                         str(job["generation_id"]),
                         index,
+                        look_variant=str(
+                            (job.get("plan") or {}).get("look_variant") or "no_hat"
+                        ),
+                        scene_durations=scene_durations,
                     )
                     paid_started = True
                     task_id = str(submitted["task_id"])
@@ -347,12 +433,16 @@ def _run_video_job(source_id: str, quality: str) -> None:
         )
         voice_path = workspace / "voice.mp3"
         if not voice_path.is_file():
-            voice = client.synthesize_voice(narration)
-            _download_generated_file(
-                str(voice["audio_url"]),
-                voice_path,
-                max_bytes=30 * 1024 * 1024,
-            )
+            try:
+                voice = client.synthesize_voice(narration)
+                _download_generated_file(
+                    str(voice["audio_url"]),
+                    voice_path,
+                    max_bytes=30 * 1024 * 1024,
+                )
+            except PipelineError:
+                # 国际 Key 的 CosyVoice 仅支持 WebSocket；本机先用百炼 CLI 兜底。
+                _synthesize_voice_locally(narration, voice_path)
         store.update_video_job(source_id, status="rendering", progress=85)
         ffmpeg_path = _find_ffmpeg()
         if not ffmpeg_path:
@@ -434,11 +524,16 @@ async def quote_content_video(source_id: str, body: dict):
     if not job:
         return JSONResponse({"detail": "视频计划不存在"}, status_code=404)
     client = _ads_media_client()
+    scene_durations = [
+        int(scene.get("duration") or 0)
+        for scene in (job.get("plan") or {}).get("scenes") or []
+    ]
     try:
         quote = await asyncio.to_thread(
             client.quote,
             quality,
             str(body.get("generation_id") or ""),
+            scene_durations,
         )
     except PipelineError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=503)
@@ -470,11 +565,16 @@ async def generate_content_video(source_id: str, body: dict):
     if job["status"] == "ready":
         return JSONResponse({"detail": "成片已完成，无需重复付费制作"}, status_code=409)
     client = _ads_media_client()
+    scene_durations = [
+        int(scene.get("duration") or 0)
+        for scene in (job.get("plan") or {}).get("scenes") or []
+    ]
     try:
         quote = await asyncio.to_thread(
             client.quote,
             quality,
             str(body.get("generation_id") or ""),
+            scene_durations,
         )
     except PipelineError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=503)
