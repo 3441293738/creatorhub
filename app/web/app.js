@@ -8512,6 +8512,7 @@ function openTaskQueueSource(tab) {
 }
 
 let CONTENT_INDEX_ITEMS = [];
+let CONTENT_VIDEO_REFRESH_TIMER = null;
 
 async function refreshContentIndex() {
   const list = $("ci-list");
@@ -8540,36 +8541,87 @@ function renderContentIndex() {
   });
   const drafted = CONTENT_INDEX_ITEMS.filter(item => item.status === "drafted").length;
   const drafts = CONTENT_INDEX_ITEMS.reduce((sum, item) => sum + Number(item.draft_count || 0), 0);
+  const videos = CONTENT_INDEX_ITEMS.filter(item => item.video_status === "ready").length;
   if ($("ci-total")) $("ci-total").textContent = fmtNum(CONTENT_INDEX_ITEMS.length);
   if ($("ci-ready")) $("ci-ready").textContent = fmtNum(drafted);
   if ($("ci-drafts")) $("ci-drafts").textContent = fmtNum(drafts);
+  if ($("ci-videos")) $("ci-videos").textContent = fmtNum(videos);
   if ($("ci-count")) $("ci-count").textContent = `${rows.length} 条`;
   if ($("tb-content-index")) $("tb-content-index").textContent = fmtNum(CONTENT_INDEX_ITEMS.length);
   if (!rows.length) {
     list.innerHTML = empty(4, "没有匹配内容", "i-info", "先点“重新扫描”，系统会自动关联本机原片与口播稿。");
     return;
   }
-  const labels = { indexed: "待 AI 处理", drafted: "已生成草稿", failed: "处理失败" };
+  const labels = { indexed: "待 AI 处理", drafted: "文案已生成", failed: "处理失败" };
+  const videoLabels = {
+    planned: "分镜已准备，尚未付费制作",
+    queued: "已排队",
+    generating: "AI 正在重新生成画面",
+    rendering: "本机正在合成字幕和配音",
+    ready: "AI 成片已完成",
+    failed: "视频制作失败"
+  };
   list.innerHTML = rows.map(item => {
     const metadata = item.metadata || {};
     const title = metadata.title || "等待 AI 生成自己的标题";
     const vehicle = [metadata.make, metadata.model, metadata.year_start && metadata.year_end
       ? `${metadata.year_start}-${metadata.year_end}` : metadata.year_start].filter(Boolean).join(" · ") || "车型未从口播确认";
+    const videoStatus = item.video_status || "";
+    const videoPlan = item.video_plan || null;
+    const contentStatus = item.status === "drafted" && videoPlan
+      ? "文案与分镜已生成"
+      : (labels[item.status] || item.status);
+    const previewCost = Number(item.video_estimated_cost_cny || 0);
+    const safeId = esc(item.source_id);
+    let videoAction = `<div class="alert">先点上方“生成文案与分镜”，系统才会准备视频脚本。</div>`;
+    if (videoPlan && ["planned", "failed", "ready"].includes(videoStatus)) {
+      videoAction = `<div class="form-actions">
+        <label class="field" for="ci-quality-${safeId}">视频质量</label>
+        <select id="ci-quality-${safeId}" onchange="updateContentVideoCost('${safeId}')">
+          <option value="preview">标准 720P · 约 ¥${previewCost.toFixed(2)}</option>
+          <option value="quality">高质量 720P · 约 ¥${(previewCost * 2.5).toFixed(2)}</option>
+        </select>
+        <button id="ci-video-btn-${safeId}" onclick="startContentVideo('${safeId}', this)">
+          <svg><use href="#i-film"/></svg>${videoStatus === "ready" ? "重新制作 AI 视频" : "制作 AI 视频"} · 约 ¥${previewCost.toFixed(2)}
+        </button>
+      </div>`;
+    }
+    if (["queued", "generating", "rendering"].includes(videoStatus)) {
+      videoAction = `<div class="hint"><b>${esc(videoLabels[videoStatus])}</b>
+        <div class="progress-track"><div class="progress-fill" style="width:${Math.max(0, Math.min(100, Number(item.video_progress || 0)))}%"></div></div>
+        <span class="mut">进度 ${Number(item.video_progress || 0)}%；可以离开页面，稍后回来查看。</span></div>`;
+    }
+    const videoResult = videoStatus === "ready"
+      ? `<video controls preload="metadata" style="width:min(100%,360px);border-radius:12px" src="/api/content-index/video/${safeId}/file"></video>
+         <p><a class="btn ghost" href="/api/content-index/video/${safeId}/file" download>下载 AI 成片</a></p>`
+      : "";
+    const videoError = item.video_error
+      ? `<div class="alert err">${esc(item.video_error)}</div>` : "";
     return `<article class="card compact-card">
       <div class="card-head"><span class="card-ic"><svg><use href="#i-film"/></svg></span>
-        <h3>${esc(title)} <span class="sub">${esc(labels[item.status] || item.status)}</span></h3>
+        <h3>${esc(title)} <span class="sub">${esc(contentStatus)}</span></h3>
       </div>
       <p><b>原始标题：</b>${esc(item.source_title)}<br><b>来源作者：</b>${esc(item.author)}
         · <b>编号：</b>${esc(item.source_id)}</p>
       <p class="mut"><b>车型：</b>${esc(vehicle)} · <b>主题：</b>${esc(metadata.topic || "待识别")}
         · <b>草稿：</b>${Number(item.draft_count || 0)} / 9</p>
       ${item.error ? `<div class="alert err">${esc(item.error)}</div>` : ""}
+      <div class="hint"><b>视频阶段：</b>${esc(videoLabels[videoStatus] || "尚未生成视频分镜")}
+        ${videoPlan ? ` · 全新画面 ${videoPlan.scenes?.length || 0} 段 · ${videoPlan.duration_seconds || 20} 秒` : ""}
+      </div>
+      ${videoError}
+      ${videoAction}
+      ${videoResult}
       <details><summary>查看 AI 摘要与处理依据</summary>
         <div class="hint">${esc(metadata.summary || "尚未处理")}<br>
-        <b>依据范围：</b>仅口播文字；不会声称看到了画面。</div>
+        <b>依据范围：</b>仅口播文字；参考原片不会上传给视频模型。</div>
       </details>
     </article>`;
   }).join("");
+  clearTimeout(CONTENT_VIDEO_REFRESH_TIMER);
+  if (CONTENT_INDEX_ITEMS.some(item => ["queued", "generating", "rendering"].includes(item.video_status))) {
+    CONTENT_VIDEO_REFRESH_TIMER = setTimeout(refreshContentIndex, 5000);
+  }
 }
 
 async function scanContentIndex(button) {
@@ -8590,12 +8642,49 @@ async function processContentIndex(button) {
   await withBusy(button || evtBtn(), "AI 处理中…", async () => {
     try {
       const result = await api("/api/content-index/process", { method: "POST" });
-      $("ci-msg").textContent = `AI 已处理 ${result.processed} 条，失败 ${result.failed} 条`;
+      $("ci-msg").textContent = `新文案 ${result.processed} 条，新分镜 ${result.planned || 0} 条，跳过已完成 ${result.skipped || 0} 条，失败 ${result.failed} 条`;
       toast(result.failed ? "部分内容需要重试" : "AI 自动处理完成", result.failed ? "warn" : "ok");
       await refreshContentIndex();
     } catch (e) {
       $("ci-msg").textContent = e.message || "AI 处理失败";
       toast("AI 处理失败：" + e.message, "err");
+    }
+  });
+}
+
+function contentVideoCost(sourceId, quality) {
+  const item = CONTENT_INDEX_ITEMS.find(row => row.source_id === sourceId);
+  const preview = Number(item?.video_estimated_cost_cny || 0);
+  return quality === "quality" ? preview * 2.5 : preview;
+}
+
+function updateContentVideoCost(sourceId) {
+  const select = $(`ci-quality-${sourceId}`);
+  const button = $(`ci-video-btn-${sourceId}`);
+  if (!select || !button) return;
+  const cost = contentVideoCost(sourceId, select.value);
+  button.innerHTML = `<svg><use href="#i-film"/></svg>制作 AI 视频 · 约 ¥${cost.toFixed(2)}`;
+}
+
+async function startContentVideo(sourceId, button) {
+  const quality = $(`ci-quality-${sourceId}`)?.value || "preview";
+  const cost = contentVideoCost(sourceId, quality);
+  const accepted = window.confirm(
+    `将生成 4 段全新 AI 画面、AI 配音和字幕。\n\n预计视频模型费用：¥${cost.toFixed(2)}\n模型任务提交后通常不能退款。\n\n确认现在开始制作吗？`
+  );
+  if (!accepted) return;
+  await withBusy(button || evtBtn(), "正在提交…", async () => {
+    try {
+      const result = await api(`/api/content-index/video/${encodeURIComponent(sourceId)}/generate`, {
+        method: "POST",
+        body: JSON.stringify({ quality, confirm_cost: true }),
+      });
+      $("ci-msg").textContent = `视频已排队，预计费用 ¥${Number(result.estimated_cost_cny || cost).toFixed(2)}`;
+      toast("AI 视频开始制作，可稍后回来查看", "ok");
+      await refreshContentIndex();
+    } catch (e) {
+      $("ci-msg").textContent = e.message || "视频制作启动失败";
+      toast("视频制作启动失败：" + e.message, "err");
     }
   });
 }

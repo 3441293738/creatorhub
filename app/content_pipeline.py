@@ -405,6 +405,18 @@ class ContentIndexStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (source_id, platform)
                 );
+                CREATE TABLE IF NOT EXISTS video_jobs (
+                    source_id TEXT PRIMARY KEY,
+                    plan_json TEXT NOT NULL,
+                    plan_model TEXT NOT NULL,
+                    quality TEXT NOT NULL DEFAULT 'preview',
+                    status TEXT NOT NULL DEFAULT 'planned',
+                    progress INTEGER NOT NULL DEFAULT 0,
+                    estimated_cost_cny REAL NOT NULL DEFAULT 0,
+                    output_path TEXT NOT NULL DEFAULT '',
+                    error TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -496,6 +508,99 @@ class ContentIndexStore:
                     ),
                 )
 
+    def save_video_plan(
+        self,
+        source_id: str,
+        plan: dict,
+        model: str,
+        *,
+        estimated_cost_cny: float,
+    ) -> None:
+        """保存安全二创计划；已生成的成片不会被自动重置。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM video_jobs WHERE source_id=?",
+                (source_id,),
+            ).fetchone()
+            if row and row["status"] in {"generating", "ready"}:
+                return
+            conn.execute(
+                """
+                INSERT INTO video_jobs (
+                    source_id, plan_json, plan_model, quality, status, progress,
+                    estimated_cost_cny, output_path, error, updated_at
+                ) VALUES (?, ?, ?, 'preview', 'planned', 0, ?, '', '', ?)
+                ON CONFLICT(source_id) DO UPDATE SET
+                    plan_json=excluded.plan_json, plan_model=excluded.plan_model,
+                    estimated_cost_cny=excluded.estimated_cost_cny,
+                    status='planned', progress=0, error='', updated_at=excluded.updated_at
+                """,
+                (
+                    source_id,
+                    json.dumps(plan, ensure_ascii=False),
+                    model,
+                    float(estimated_cost_cny),
+                    self._now(),
+                ),
+            )
+
+    def update_video_job(
+        self,
+        source_id: str,
+        *,
+        status: str,
+        progress: int,
+        quality: Optional[str] = None,
+        estimated_cost_cny: Optional[float] = None,
+        output_path: str = "",
+        error: str = "",
+    ) -> None:
+        """更新本机生成进度；状态只允许明确的有限集合。"""
+        allowed = {"planned", "queued", "generating", "rendering", "ready", "failed"}
+        if status not in allowed:
+            raise PipelineError("未知视频任务状态")
+        with self._connect() as conn:
+            current = conn.execute(
+                "SELECT * FROM video_jobs WHERE source_id=?",
+                (source_id,),
+            ).fetchone()
+            if not current:
+                raise PipelineError("视频计划不存在")
+            conn.execute(
+                """
+                UPDATE video_jobs SET status=?, progress=?, quality=?,
+                    estimated_cost_cny=?, output_path=?, error=?, updated_at=?
+                WHERE source_id=?
+                """,
+                (
+                    status,
+                    max(0, min(100, int(progress))),
+                    quality or current["quality"],
+                    (
+                        float(estimated_cost_cny)
+                        if estimated_cost_cny is not None
+                        else current["estimated_cost_cny"]
+                    ),
+                    output_path or current["output_path"],
+                    error[:500],
+                    self._now(),
+                    source_id,
+                ),
+            )
+
+    def get_video_job(self, source_id: str) -> Optional[dict]:
+        """读取一条视频计划与生成状态。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM video_jobs WHERE source_id=?",
+                (source_id,),
+            ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["plan"] = json.loads(result.pop("plan_json"))
+        return result
+
     def mark_failed(self, source_id: str, message: str) -> None:
         """记录可重试错误。"""
         with self._connect() as conn:
@@ -519,8 +624,14 @@ class ContentIndexStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT a.*, COUNT(d.platform) AS draft_count
+                SELECT a.*, COUNT(d.platform) AS draft_count,
+                    v.status AS video_status, v.progress AS video_progress,
+                    v.quality AS video_quality,
+                    v.estimated_cost_cny AS video_estimated_cost_cny,
+                    v.output_path AS video_output_path,
+                    v.error AS video_error, v.plan_json AS video_plan_json
                 FROM assets a LEFT JOIN drafts d ON d.source_id=a.source_id
+                LEFT JOIN video_jobs v ON v.source_id=a.source_id
                 GROUP BY a.source_id ORDER BY a.updated_at DESC
                 """
             ).fetchall()
@@ -528,6 +639,8 @@ class ContentIndexStore:
         for row in rows:
             item = dict(row)
             item["metadata"] = json.loads(item.pop("metadata_json")) if item.get("metadata_json") else None
+            raw_plan = item.pop("video_plan_json", None)
+            item["video_plan"] = json.loads(raw_plan) if raw_plan else None
             result.append(item)
         return result
 
@@ -630,22 +743,62 @@ class ContentIndexStore:
 class ContentPipeline:
     """扫描、AI 处理和本机落库的总调度器。"""
 
-    def __init__(self, store: ContentIndexStore, service: AIContentService):
+    def __init__(
+        self,
+        store: ContentIndexStore,
+        service: AIContentService,
+        video_planner=None,
+    ):
         self.store = store
         self.service = service
+        self.video_planner = video_planner
 
     def run(self, share_root: Path, inbox_root: Path) -> dict:
-        """处理全部唯一关联素材；单条失败不阻塞其余素材。"""
+        """只处理新增或缺步骤素材；单条失败不阻塞其余素材。"""
         report = scan_sources(share_root, inbox_root)
         processed = 0
+        planned = 0
+        skipped = 0
         failed = 0
         for item in report.items:
             self.store.upsert_asset(item.asset_record())
             try:
+                existing = self.store.get_asset(item.source_id) or {}
+                draft_count = len(self.store.list_drafts(item.source_id))
+                video_job = self.store.get_video_job(item.source_id)
+                if existing.get("metadata") and draft_count == len(PLATFORMS):
+                    if self.video_planner and not video_job:
+                        from .content_video_pipeline import estimate_plan_cost
+
+                        plan, plan_model = self.video_planner.create(
+                            existing["metadata"],
+                            item.transcript,
+                        )
+                        self.store.save_video_plan(
+                            item.source_id,
+                            plan,
+                            plan_model,
+                            estimated_cost_cny=estimate_plan_cost(plan, "preview"),
+                        )
+                        planned += 1
+                    else:
+                        skipped += 1
+                    continue
                 metadata, metadata_model = self.service.analyze(item)
                 drafts, draft_model = self.service.make_drafts(metadata, item.transcript)
                 self.store.save_metadata(item.source_id, metadata, metadata_model, confirmed=False)
                 self.store.save_drafts(item.source_id, drafts, draft_model)
+                if self.video_planner:
+                    from .content_video_pipeline import estimate_plan_cost
+
+                    plan, plan_model = self.video_planner.create(metadata, item.transcript)
+                    self.store.save_video_plan(
+                        item.source_id,
+                        plan,
+                        plan_model,
+                        estimated_cost_cny=estimate_plan_cost(plan, "preview"),
+                    )
+                    planned += 1
                 processed += 1
             except PipelineError as exc:
                 failed += 1
@@ -654,6 +807,8 @@ class ContentPipeline:
         return {
             **report.counts,
             "processed": processed,
+            "planned": planned,
+            "skipped": skipped,
             "failed": failed,
             "pending": report.pending,
         }
@@ -734,10 +889,13 @@ class AdsAIJSONClient:
             return
         if not self.username or not self.password:
             raise PipelineError("公司 AI 账号尚未配置到系统凭证库")
-        response = self.client.post(
-            "/login",
-            data={"username": self.username, "password": self.password},
-        )
+        try:
+            response = self.client.post(
+                "/login",
+                data={"username": self.username, "password": self.password},
+            )
+        except httpx.HTTPError as exc:
+            raise PipelineError("公司 AI 网络连接失败") from exc
         if response.status_code != 302 or "session_token" not in self.client.cookies:
             raise PipelineError("公司 AI 登录失败")
         self.logged_in = True

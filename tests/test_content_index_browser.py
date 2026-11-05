@@ -10,9 +10,16 @@ def test_content_index_is_a_first_class_local_navigation_page():
     script = (ROOT / "app/web/app.js").read_text(encoding="utf-8")
     assert 'data-tab="content-index"' in html
     assert 'data-panel="content-index"' in html
-    assert "本机自动处理" in html
+    assert "本机 AI 二创" in html
     assert "原片不上传" in html
-    assert "自动处理全部" in html
+    assert "生成文案与分镜" in html
+    assert "制作 AI 视频" in script
+    assert '"文案已生成"' in script
+    assert '"文案与分镜已生成"' in script
+    assert "confirm_cost: true" in script
+    assert "预计视频模型费用" in script
+    assert "Wan 重新生成全部画面" in html
+    assert "CosyVoice 生成新配音" in html
     assert '"content-index": {' in script
     assert '"/api/content-index/process"' in script
     assert '"/api/content-index/sync"' in script
@@ -20,7 +27,6 @@ def test_content_index_is_a_first_class_local_navigation_page():
 
 def test_page_does_not_make_manual_metadata_the_primary_action():
     html = (ROOT / "app/web/index.html").read_text(encoding="utf-8")
-    assert "DeepSeek 提取标题、车型和主题" in html
-    assert "百炼失败回退" in html
-    assert "无口播证据的车型和年份会自动留空" in html
+    assert "DeepSeek 重写标题、旁白和四段分镜" in html
+    assert "无证据的车型和年份自动留空" in html
     assert "手动填写车型" not in html
