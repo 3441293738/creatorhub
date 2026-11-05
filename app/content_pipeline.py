@@ -12,6 +12,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -415,6 +416,7 @@ class ContentIndexStore:
                     estimated_cost_cny REAL NOT NULL DEFAULT 0,
                     quote_id TEXT NOT NULL DEFAULT '',
                     quote_model TEXT NOT NULL DEFAULT '',
+                    generation_id TEXT NOT NULL DEFAULT '',
                     output_path TEXT NOT NULL DEFAULT '',
                     error TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL
@@ -433,12 +435,16 @@ class ContentIndexStore:
                 conn.execute(
                     "ALTER TABLE video_jobs ADD COLUMN quote_model TEXT NOT NULL DEFAULT ''"
                 )
+            if "generation_id" not in columns:
+                conn.execute(
+                    "ALTER TABLE video_jobs ADD COLUMN generation_id TEXT NOT NULL DEFAULT ''"
+                )
             conn.execute(
                 """
                 UPDATE video_jobs SET status='failed', progress=0,
                     error='旧任务缺少服务端报价，请重新确认费用后再制作'
                 WHERE status IN ('queued', 'generating', 'rendering')
-                    AND quote_id=''
+                    AND (quote_id='' OR generation_id='')
                 """
             )
 
@@ -549,6 +555,7 @@ class ContentIndexStore:
                 "generating",
                 "rendering",
                 "ready",
+                "uncertain",
             }:
                 return
             conn.execute(
@@ -585,7 +592,7 @@ class ContentIndexStore:
                 """
                 UPDATE video_jobs SET status='queued', progress=0, quality=?,
                     estimated_cost_cny=?, quote_id=?, quote_model=?,
-                    output_path='', error='', updated_at=?
+                    generation_id=?, output_path='', error='', updated_at=?
                 WHERE source_id=? AND status IN ('planned', 'failed')
                 """,
                 (
@@ -593,6 +600,7 @@ class ContentIndexStore:
                     float(quote["total_cost_cny"]),
                     str(quote["quote_id"]),
                     str(quote["model"]),
+                    uuid.uuid4().hex,
                     self._now(),
                     source_id,
                 ),
@@ -622,7 +630,15 @@ class ContentIndexStore:
         error: str = "",
     ) -> None:
         """更新本机生成进度；状态只允许明确的有限集合。"""
-        allowed = {"planned", "queued", "generating", "rendering", "ready", "failed"}
+        allowed = {
+            "planned",
+            "queued",
+            "generating",
+            "rendering",
+            "ready",
+            "failed",
+            "uncertain",
+        }
         if status not in allowed:
             raise PipelineError("未知视频任务状态")
         with self._connect() as conn:

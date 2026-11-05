@@ -188,6 +188,8 @@ class AdsMediaGatewayClient:
         duration: int,
         quality: str,
         quote_id: str,
+        generation_id: str,
+        scene_index: int,
     ) -> dict:
         """提交付费视频场景；调用方必须已取得本次费用确认。"""
         self._login()
@@ -200,6 +202,8 @@ class AdsMediaGatewayClient:
                     "quality": quality,
                     "cost_confirmed": True,
                     "quote_id": quote_id,
+                    "generation_id": generation_id,
+                    "scene_index": scene_index,
                 },
             )
         except httpx.HTTPError as exc:

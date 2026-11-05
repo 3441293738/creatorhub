@@ -8559,7 +8559,8 @@ function renderContentIndex() {
     generating: "AI 正在重新生成画面",
     rendering: "本机正在合成字幕和配音",
     ready: "AI 成片已完成",
-    failed: "视频制作失败"
+    failed: "视频制作失败",
+    uncertain: "付费提交结果待核对，系统已停止重试"
   };
   list.innerHTML = rows.map(item => {
     const metadata = item.metadata || {};

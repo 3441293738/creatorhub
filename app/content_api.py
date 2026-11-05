@@ -8,6 +8,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import time
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -39,7 +40,6 @@ router = APIRouter(prefix="/api/content-index", tags=["content-index"])
 ROOT = Path(__file__).resolve().parent.parent
 VIDEO_OUTPUT_ROOT = ROOT / "data" / "content_output"
 _VIDEO_BACKGROUND_TASKS: set[asyncio.Task] = set()
-_VIDEO_RESUME_STARTED = False
 
 
 def content_paths() -> tuple[Path, Path, Path]:
@@ -73,7 +73,6 @@ def content_store() -> ContentIndexStore:
 @router.get("")
 async def list_content_index():
     """列出本机素材状态和 AI 草稿数量。"""
-    _resume_incomplete_video_jobs()
     store = content_store()
     items = store.list_assets()
     return {"count": len(items), "items": items}
@@ -253,6 +252,7 @@ def _run_video_job(source_id: str, quality: str) -> None:
         / "work"
         / quality
         / _plan_hash(job["plan"])
+        / str(job["generation_id"])
     )
     try:
         workspace.mkdir(parents=True, exist_ok=True)
@@ -271,45 +271,45 @@ def _run_video_job(source_id: str, quality: str) -> None:
                 if task_path.is_file():
                     try:
                         manifest = json.loads(task_path.read_text(encoding="utf-8"))
-                        if manifest.get("state") == "submitting":
-                            raise PipelineError(
-                                f"第 {index} 段提交结果不确定，已停止以避免重复扣费"
-                            )
-                        task_id = str(manifest["task_id"])
+                        if manifest.get("generation_id") != job["generation_id"]:
+                            raise PipelineError("视频场景幂等编号不一致")
+                        if manifest.get("state") == "submitted":
+                            task_id = str(manifest["task_id"])
                     except (OSError, KeyError, TypeError, ValueError):
                         task_id = ""
                 if not task_id:
-                    try:
-                        descriptor = os.open(
-                            task_path,
-                            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                            0o600,
-                        )
-                    except FileExistsError as exc:
+                    if not task_path.exists():
                         try:
-                            existing = json.loads(
-                                task_path.read_text(encoding="utf-8")
+                            descriptor = os.open(
+                                task_path,
+                                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                                0o600,
                             )
-                        except (OSError, TypeError, ValueError):
-                            existing = {}
-                        if existing.get("state") == "submitting":
+                        except FileExistsError as exc:
                             raise PipelineError(
-                                f"第 {index} 段提交结果不确定，已停止以避免重复扣费"
+                                "视频场景已被另一任务领取"
                             ) from exc
-                        raise PipelineError("视频场景已被另一任务领取") from exc
-                    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                        json.dump(
-                            {
-                                "state": "submitting",
-                                "quote_id": job["quote_id"],
-                            },
-                            handle,
-                        )
+                        with os.fdopen(
+                            descriptor,
+                            "w",
+                            encoding="utf-8",
+                        ) as handle:
+                            json.dump(
+                                {
+                                    "state": "submitting",
+                                    "quote_id": job["quote_id"],
+                                    "generation_id": job["generation_id"],
+                                    "scene_index": index,
+                                },
+                                handle,
+                            )
                     submitted = client.submit_scene(
                         scene["visual_prompt"],
                         int(scene["duration"]),
                         quality,
                         str(job["quote_id"]),
+                        str(job["generation_id"]),
+                        index,
                     )
                     task_id = str(submitted["task_id"])
                     _write_json_atomic(
@@ -318,6 +318,8 @@ def _run_video_job(source_id: str, quality: str) -> None:
                             "state": "submitted",
                             "task_id": task_id,
                             "quote_id": job["quote_id"],
+                            "generation_id": job["generation_id"],
+                            "scene_index": index,
                         },
                     )
                 url = _wait_video_scene(client, task_id)
@@ -361,23 +363,37 @@ def _run_video_job(source_id: str, quality: str) -> None:
             output_path=str(final),
         )
     except (OSError, PipelineError) as exc:
+        message = str(exc)
+        status = (
+            "uncertain"
+            if "禁止重复扣费" in message or "提交结果确认中" in message
+            else "failed"
+        )
         store.update_video_job(
             source_id,
-            status="failed",
+            status=status,
             progress=0,
-            error=str(exc),
+            error=message,
         )
     finally:
         client.close()
 
 
-def _resume_incomplete_video_jobs() -> None:
-    """应用重启后按持久化任务编号安全续跑，不重新提交不确定任务。"""
-    global _VIDEO_RESUME_STARTED
-    if _VIDEO_RESUME_STARTED:
-        return
-    _VIDEO_RESUME_STARTED = True
-    for job in content_store().list_incomplete_video_jobs():
+async def resume_incomplete_video_jobs() -> int:
+    """应用启动时恢复任务；本地数据库暂时不可用时自动重试。"""
+    jobs = None
+    for attempt in range(3):
+        try:
+            jobs = await asyncio.to_thread(
+                content_store().list_incomplete_video_jobs
+            )
+            break
+        except (OSError, sqlite3.Error):
+            if attempt == 2:
+                raise
+            await asyncio.sleep(1 + attempt)
+    resumed = 0
+    for job in jobs or []:
         task = asyncio.create_task(
             asyncio.to_thread(
                 _run_video_job,
@@ -387,6 +403,8 @@ def _resume_incomplete_video_jobs() -> None:
         )
         _VIDEO_BACKGROUND_TASKS.add(task)
         task.add_done_callback(_VIDEO_BACKGROUND_TASKS.discard)
+        resumed += 1
+    return resumed
 
 
 @router.post("/video/{source_id}/quote")

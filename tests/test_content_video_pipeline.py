@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 
 import httpx
@@ -99,6 +100,8 @@ def test_media_gateway_never_sends_local_source_path():
                 "quality",
                 "cost_confirmed",
                 "quote_id",
+                "generation_id",
+                "scene_index",
             }
             assert body["cost_confirmed"] is True
             return httpx.Response(200, json={"task_id": "task-1"})
@@ -134,6 +137,8 @@ def test_media_gateway_never_sends_local_source_path():
             5,
             "preview",
             quote["quote_id"],
+            "b" * 32,
+            1,
         )["task_id"] == "task-1"
         assert client.get_task("task-1")["status"] == "SUCCEEDED"
         assert client.synthesize_voice("重写旁白")["audio_url"].endswith(".mp3")
@@ -307,7 +312,15 @@ def test_full_mock_video_job_reaches_ready_without_source_upload(tmp_path, monke
     class FakeGateway:
         prompts = []
 
-        def submit_scene(self, prompt, duration, quality, quote_id):
+        def submit_scene(
+            self,
+            prompt,
+            duration,
+            quality,
+            quote_id,
+            generation_id,
+            scene_index,
+        ):
             self.prompts.append(prompt)
             return {"task_id": f"task-{len(self.prompts)}"}
 
@@ -367,6 +380,7 @@ def test_retry_reuses_paid_scene_and_downloaded_files(tmp_path, monkeypatch):
     )
     store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=4.8)
     store.claim_video_job("asset-1", "preview", _quote())
+    generation_id = store.get_video_job("asset-1")["generation_id"]
     output = tmp_path / "output"
     workspace = (
         output
@@ -374,11 +388,18 @@ def test_retry_reuses_paid_scene_and_downloaded_files(tmp_path, monkeypatch):
         / "work"
         / "preview"
         / content_api._plan_hash(_plan())
+        / generation_id
     )
     workspace.mkdir(parents=True)
     (workspace / "scene-1.mp4").write_bytes(b"existing")
     (workspace / "scene-2.task.json").write_text(
-        '{"task_id": "already-paid-task"}',
+        json.dumps(
+            {
+                "state": "submitted",
+                "task_id": "already-paid-task",
+                "generation_id": generation_id,
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -392,7 +413,15 @@ def test_retry_reuses_paid_scene_and_downloaded_files(tmp_path, monkeypatch):
         submitted = []
         queried = []
 
-        def submit_scene(self, prompt, duration, quality, quote_id):
+        def submit_scene(
+            self,
+            prompt,
+            duration,
+            quality,
+            quote_id,
+            generation_id,
+            scene_index,
+        ):
             self.submitted.append(prompt)
             return {"task_id": f"new-{len(self.submitted)}"}
 
@@ -436,6 +465,7 @@ def test_uncertain_submission_stops_without_second_paid_call(tmp_path, monkeypat
     store = ContentIndexStore(database)
     store.save_video_plan("asset-1", _plan(), "deepseek", estimated_cost_cny=4.8)
     store.claim_video_job("asset-1", "preview", _quote())
+    generation_id = store.get_video_job("asset-1")["generation_id"]
     output = tmp_path / "output"
     workspace = (
         output
@@ -443,10 +473,18 @@ def test_uncertain_submission_stops_without_second_paid_call(tmp_path, monkeypat
         / "work"
         / "preview"
         / content_api._plan_hash(_plan())
+        / generation_id
     )
     workspace.mkdir(parents=True)
     (workspace / "scene-1.task.json").write_text(
-        '{"state":"submitting","quote_id":"' + ("a" * 64) + '"}',
+        json.dumps(
+            {
+                "state": "submitting",
+                "quote_id": "a" * 64,
+                "generation_id": generation_id,
+                "scene_index": 1,
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -457,11 +495,11 @@ def test_uncertain_submission_stops_without_second_paid_call(tmp_path, monkeypat
     monkeypatch.setattr(content_api, "VIDEO_OUTPUT_ROOT", output)
 
     class FakeGateway:
-        submitted = 0
+        replays = 0
 
         def submit_scene(self, *args):
-            self.submitted += 1
-            raise AssertionError("must not resubmit")
+            self.replays += 1
+            raise PipelineError("视频提交结果确认中，禁止重复扣费")
 
         def close(self):
             return None
@@ -470,9 +508,49 @@ def test_uncertain_submission_stops_without_second_paid_call(tmp_path, monkeypat
     monkeypatch.setattr(content_api, "_ads_media_client", lambda: gateway)
     content_api._run_video_job("asset-1", "preview")
     job = ContentIndexStore(database).get_video_job("asset-1")
-    assert job["status"] == "failed"
-    assert "避免重复扣费" in job["error"]
-    assert gateway.submitted == 0
+    assert job["status"] == "uncertain"
+    assert "禁止重复扣费" in job["error"]
+    assert gateway.replays == 1
+    assert ContentIndexStore(database).claim_video_job(
+        "asset-1",
+        "preview",
+        _quote(),
+    ) is False
+
+
+def test_startup_recovery_retries_database_and_resumes_job(monkeypatch):
+    """应用启动恢复不依赖打开页面，数据库瞬时失败会重试。"""
+    attempts = []
+    resumed = []
+
+    class FakeStore:
+        def list_incomplete_video_jobs(self):
+            attempts.append(True)
+            if len(attempts) < 3:
+                raise sqlite3.OperationalError("busy")
+            return [{"source_id": "asset-1", "quality": "preview"}]
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(content_api, "content_store", lambda: FakeStore())
+    monkeypatch.setattr(content_api.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(
+        content_api,
+        "_run_video_job",
+        lambda source_id, quality: resumed.append((source_id, quality)),
+    )
+
+    async def scenario():
+        count = await content_api.resume_incomplete_video_jobs()
+        tasks = list(content_api._VIDEO_BACKGROUND_TASKS)
+        if tasks:
+            await asyncio.gather(*tasks)
+        return count
+
+    assert asyncio.run(scenario()) == 1
+    assert len(attempts) == 3
+    assert resumed == [("asset-1", "preview")]
 
 
 def test_generated_download_blocks_ssrf_and_upgrades_aliyun_http(tmp_path, monkeypatch):
