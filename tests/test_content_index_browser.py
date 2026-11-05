@@ -21,6 +21,7 @@ def test_content_index_is_a_first_class_local_navigation_page():
     assert "quote_id: quote.quote_id" in script
     assert "Wan 重新生成全部画面" in html
     assert "CosyVoice 生成新配音" in html
+    assert "/static/app.js?v=20261105-video-safety" in html
     assert '"content-index": {' in script
     assert '"/api/content-index/process"' in script
     assert '"/api/content-index/sync"' in script
