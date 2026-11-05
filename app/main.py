@@ -69,6 +69,10 @@ from .platforms.douyin import (
     safe_title,
 )
 from .config import load_config
+from .content_api import (
+    resume_incomplete_video_jobs,
+    router as content_index_router,
+)
 from .db import get_session, init_db
 from .account_merge import (
     cleanup_merged_profiles,
@@ -532,6 +536,12 @@ async def lifespan(app: FastAPI):
     global browser, engine, im_receiver, _webhook_delivery_task
     init_db(cfg.db_path)
     try:
+        resumed_videos = await resume_incomplete_video_jobs()
+        if resumed_videos:
+            print(f"[startup] 已恢复 {resumed_videos} 条 AI 视频任务")
+    except Exception as e:
+        print(f"[startup] AI 视频任务恢复失败(不影响启动): {e!r}")
+    try:
         with get_session() as session:
             merged_accounts = reconcile_xhs_accounts(session)
         if merged_accounts:
@@ -645,6 +655,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CreatorHub", lifespan=lifespan)
+app.include_router(content_index_router)
 app.add_middleware(LocalAccessMiddleware)
 WEB_DIR = Path(__file__).parent / "web"
 

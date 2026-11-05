@@ -1871,6 +1871,7 @@
     <button class="navitem tk-only" data-tab="tiktok-tools" onclick="switchTab('tiktok-tools', true)"><svg><use href="#i-user"/></svg><span class="nav-label">用户互动</span></button>
     <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish', true)"><svg><use href="#i-send"/></svg><span class="nav-label">发布</span><span class="nav-badge" id="tb-pub">0</span></button>
     <button class="navitem notsh-only tk-hide" data-tab="autocomment" onclick="switchTab('autocomment', true)"><svg><use href="#i-automation"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
+    <button class="navitem" data-tab="content-index" onclick="switchTab('content-index', true)"><svg><use href="#i-library"/></svg><span class="nav-label">成品索引</span><span class="nav-badge" id="tb-content-index">0</span></button>
     <button class="navitem" data-tab="share-download" onclick="switchTab('share-download', true)"><svg><use href="#i-download"/></svg><span class="nav-label">链接下载</span></button>
     <button class="navitem" data-tab="notifications" onclick="switchTab('notifications', true)"><svg><use href="#i-bell"/></svg><span class="nav-label">通知</span></button>
     <button class="navitem" data-tab="settings" onclick="switchTab('settings', true)"><svg><use href="#i-settings"/></svg><span class="nav-label">设置</span></button>
@@ -2461,6 +2462,54 @@
           <button onclick="addMonitor()"><svg><use href="#i-target"/></svg>开始监控</button>
         </div>
       </div>
+    </div>
+  </section>
+
+  <section data-panel="content-index">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-library"/></svg></span>
+        <h2>本机 AI 二创 <span class="sub">原片不上传 · 人只做最终审核</span></h2>
+      </div>
+      <div class="stack">
+        <div class="hint">
+          <b>自动流程：</b>扫描素材与口播 → DeepSeek 重写标题、旁白和四段分镜
+          → Wan 重新生成全部画面 → CosyVoice 生成新配音 → 本机烧录字幕并合成视频
+          → 生成 9 个平台独立草稿。原片不会发送给视频模型；无证据的车型和年份自动留空。
+        </div>
+        <div class="stats" aria-label="成品索引统计">
+          <div class="stat"><span class="stat-ic a"><svg><use href="#i-film"/></svg></span><div><div class="stat-v" id="ci-total">—</div><div class="stat-l">本机素材</div></div></div>
+          <div class="stat"><span class="stat-ic b"><svg><use href="#i-bolt"/></svg></span><div><div class="stat-v" id="ci-ready">—</div><div class="stat-l">AI 已处理</div></div></div>
+          <div class="stat"><span class="stat-ic c"><svg><use href="#i-send"/></svg></span><div><div class="stat-v" id="ci-drafts">—</div><div class="stat-l">平台草稿</div></div></div>
+          <div class="stat"><span class="stat-ic b"><svg><use href="#i-film"/></svg></span><div><div class="stat-v" id="ci-videos">—</div><div class="stat-l">AI 成片</div></div></div>
+        </div>
+        <div class="alert warn">
+          <b>费用说明：</b>生成文案和分镜不会调用付费视频模型。只有你在单条素材上确认费用并点击“制作 AI 视频”后，才会提交 Wan 视频任务。
+        </div>
+        <div class="form-actions">
+          <span class="status-text" id="ci-msg" role="status" aria-live="polite"></span>
+          <button class="ghost" id="ci-scan-btn" onclick="scanContentIndex(this)"><svg><use href="#i-search"/></svg>重新扫描</button>
+          <button id="ci-process-btn" onclick="processContentIndex(this)"><svg><use href="#i-bolt"/></svg>生成文案与分镜</button>
+          <button class="ghost" id="ci-sync-btn" onclick="syncContentIndex(this)"><svg><use href="#i-send"/></svg>同步审核中心</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-list"/></svg></span>
+        <h2>内容清单 <span class="sub" id="ci-count">0 条</span></h2>
+        <button class="ghost sm" onclick="refreshContentIndex()"><svg><use href="#i-clock"/></svg>刷新</button>
+      </div>
+      <div class="manage-toolbar">
+        <input type="search" id="ci-query" placeholder="搜索标题、作者或视频编号" aria-label="搜索成品索引" oninput="renderContentIndex()">
+        <select id="ci-status" aria-label="按处理状态筛选" onchange="renderContentIndex()">
+          <option value="">全部状态</option>
+          <option value="indexed">待 AI 处理</option>
+          <option value="drafted">已生成草稿</option>
+          <option value="failed">处理失败</option>
+        </select>
+      </div>
+      <div id="ci-list" class="stack" aria-live="polite"></div>
     </div>
   </section>
 
@@ -3847,7 +3896,7 @@
 
 <script src="/static/submissions.js"></script>
 <script src="/static/engine-settings.js"></script>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20261105-video-safety"></script>
 <script src="/static/workspace-ui.js"></script>
 <script src="/static/workbench.js"></script>
 </body>

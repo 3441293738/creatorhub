@@ -1080,6 +1080,9 @@ const PAGE_META = {
   autocomment: {
     title: "自动评论", desc: "配置评论与回复规则，并审核待发布文案。"
   },
+  "content-index": {
+    title: "成品索引", desc: "本机自动扫描、AI 整理并生成九个平台草稿；外部原片不会上传。"
+  },
   "share-download": {
     title: "链接下载", desc: "从分享文案识别链接，检查媒体信息并下载到本地。"
   },
@@ -1478,11 +1481,12 @@ function switchTab(name, pushHistory = false) {
     loadShareAccounts();
     refreshShareHistory();
   }
+  if (name === "content-index") refreshContentIndex();
   if (name === "collections") { populateCollectionAccount(); refreshCollections(); }
   if (name === "tiktok-tools") populateTikTokAccounts();
   if (name === "queue") refreshTaskQueue();
   if (name === "risk-control") refreshRiskCenter();
-  if (changed && !["hub", "share-download", "collections", "queue", "risk-control"].includes(name)) loop();
+  if (changed && !["hub", "content-index", "share-download", "collections", "queue", "risk-control"].includes(name)) loop();
 }
 
 // ─── 扫码登录(真实浏览器窗口) ───
@@ -8507,6 +8511,205 @@ function openTaskQueueSource(tab) {
   switchTab(tab, true);
 }
 
+let CONTENT_INDEX_ITEMS = [];
+let CONTENT_VIDEO_REFRESH_TIMER = null;
+
+async function refreshContentIndex() {
+  const list = $("ci-list");
+  if (!list) return;
+  list.innerHTML = skeleton(4);
+  try {
+    const data = await api("/api/content-index");
+    CONTENT_INDEX_ITEMS = data.items || [];
+    renderContentIndex();
+  } catch (e) {
+    list.innerHTML = empty(4, "成品索引暂时无法读取", "i-info", e.message || "请稍后重试");
+  }
+}
+
+function renderContentIndex() {
+  const list = $("ci-list");
+  if (!list) return;
+  const query = ($("ci-query")?.value || "").trim().toLocaleLowerCase();
+  const status = $("ci-status")?.value || "";
+  const rows = CONTENT_INDEX_ITEMS.filter(item => {
+    if (status && item.status !== status) return false;
+    const metadata = item.metadata || {};
+    const haystack = [item.source_id, item.author, item.source_title, metadata.title, metadata.make, metadata.model]
+      .join(" ").toLocaleLowerCase();
+    return !query || haystack.includes(query);
+  });
+  const drafted = CONTENT_INDEX_ITEMS.filter(item => item.status === "drafted").length;
+  const drafts = CONTENT_INDEX_ITEMS.reduce((sum, item) => sum + Number(item.draft_count || 0), 0);
+  const videos = CONTENT_INDEX_ITEMS.filter(item => item.video_status === "ready").length;
+  if ($("ci-total")) $("ci-total").textContent = fmtNum(CONTENT_INDEX_ITEMS.length);
+  if ($("ci-ready")) $("ci-ready").textContent = fmtNum(drafted);
+  if ($("ci-drafts")) $("ci-drafts").textContent = fmtNum(drafts);
+  if ($("ci-videos")) $("ci-videos").textContent = fmtNum(videos);
+  if ($("ci-count")) $("ci-count").textContent = `${rows.length} 条`;
+  if ($("tb-content-index")) $("tb-content-index").textContent = fmtNum(CONTENT_INDEX_ITEMS.length);
+  if (!rows.length) {
+    list.innerHTML = empty(4, "没有匹配内容", "i-info", "先点“重新扫描”，系统会自动关联本机原片与口播稿。");
+    return;
+  }
+  const labels = { indexed: "待 AI 处理", drafted: "文案已生成", failed: "处理失败" };
+  const videoLabels = {
+    planned: "分镜已准备，尚未付费制作",
+    queued: "已排队",
+    generating: "AI 正在重新生成画面",
+    rendering: "本机正在合成字幕和配音",
+    ready: "AI 成片已完成",
+    failed: "视频制作失败",
+    uncertain: "付费提交结果待核对，系统已停止重试"
+  };
+  list.innerHTML = rows.map(item => {
+    const metadata = item.metadata || {};
+    const title = metadata.title || "等待 AI 生成自己的标题";
+    const vehicle = [metadata.make, metadata.model, metadata.year_start && metadata.year_end
+      ? `${metadata.year_start}-${metadata.year_end}` : metadata.year_start].filter(Boolean).join(" · ") || "车型未从口播确认";
+    const videoStatus = item.video_status || "";
+    const videoPlan = item.video_plan || null;
+    const contentStatus = item.status === "drafted" && videoPlan
+      ? "文案与分镜已生成"
+      : (labels[item.status] || item.status);
+    const safeId = esc(item.source_id);
+    let videoAction = `<div class="alert">先点上方“生成文案与分镜”，系统才会准备视频脚本。</div>`;
+    if (videoPlan && ["planned", "failed"].includes(videoStatus)) {
+      videoAction = `<div class="form-actions">
+        <label class="field" for="ci-quality-${safeId}">视频质量</label>
+        <select id="ci-quality-${safeId}" onchange="updateContentVideoCost('${safeId}')">
+          <option value="preview">标准 720P</option>
+          <option value="quality">高质量 720P</option>
+        </select>
+        <button id="ci-video-btn-${safeId}" onclick="startContentVideo('${safeId}', this)">
+          <svg><use href="#i-film"/></svg>查看精确费用并制作
+        </button>
+      </div>`;
+    }
+    if (["queued", "generating", "rendering"].includes(videoStatus)) {
+      videoAction = `<div class="hint"><b>${esc(videoLabels[videoStatus])}</b>
+        <div class="progress-track"><div class="progress-fill" style="width:${Math.max(0, Math.min(100, Number(item.video_progress || 0)))}%"></div></div>
+        <span class="mut">进度 ${Number(item.video_progress || 0)}%；可以离开页面，稍后回来查看。</span></div>`;
+    }
+    const videoResult = videoStatus === "ready"
+      ? `<video controls preload="metadata" style="width:min(100%,360px);border-radius:12px" src="/api/content-index/video/${safeId}/file"></video>
+         <p><a class="btn ghost" href="/api/content-index/video/${safeId}/file" download>下载 AI 成片</a></p>`
+      : "";
+    const videoError = item.video_error
+      ? `<div class="alert err">${esc(item.video_error)}</div>` : "";
+    return `<article class="card compact-card">
+      <div class="card-head"><span class="card-ic"><svg><use href="#i-film"/></svg></span>
+        <h3>${esc(title)} <span class="sub">${esc(contentStatus)}</span></h3>
+      </div>
+      <p><b>原始标题：</b>${esc(item.source_title)}<br><b>来源作者：</b>${esc(item.author)}
+        · <b>编号：</b>${esc(item.source_id)}</p>
+      <p class="mut"><b>车型：</b>${esc(vehicle)} · <b>主题：</b>${esc(metadata.topic || "待识别")}
+        · <b>草稿：</b>${Number(item.draft_count || 0)} / 9</p>
+      ${item.error ? `<div class="alert err">${esc(item.error)}</div>` : ""}
+      <div class="hint"><b>视频阶段：</b>${esc(videoLabels[videoStatus] || "尚未生成视频分镜")}
+        ${videoPlan ? ` · 全新画面 ${videoPlan.scenes?.length || 0} 段 · ${videoPlan.duration_seconds || 20} 秒` : ""}
+      </div>
+      ${videoError}
+      ${videoAction}
+      ${videoResult}
+      <details><summary>查看 AI 摘要与处理依据</summary>
+        <div class="hint">${esc(metadata.summary || "尚未处理")}<br>
+        <b>依据范围：</b>仅口播文字；参考原片不会上传给视频模型。</div>
+      </details>
+    </article>`;
+  }).join("");
+  clearTimeout(CONTENT_VIDEO_REFRESH_TIMER);
+  if (CONTENT_INDEX_ITEMS.some(item => ["queued", "generating", "rendering"].includes(item.video_status))) {
+    CONTENT_VIDEO_REFRESH_TIMER = setTimeout(refreshContentIndex, 5000);
+  }
+}
+
+async function scanContentIndex(button) {
+  await withBusy(button || evtBtn(), "扫描中…", async () => {
+    try {
+      const result = await api("/api/content-index/scan", { method: "POST" });
+      $("ci-msg").textContent = `已关联 ${result.matched}/${result.video} 条，待匹配 ${result.missing} 条`;
+      toast("本机扫描完成", "ok");
+      await refreshContentIndex();
+    } catch (e) {
+      $("ci-msg").textContent = e.message || "扫描失败";
+      toast("扫描失败：" + e.message, "err");
+    }
+  });
+}
+
+async function processContentIndex(button) {
+  await withBusy(button || evtBtn(), "AI 处理中…", async () => {
+    try {
+      const result = await api("/api/content-index/process", { method: "POST" });
+      $("ci-msg").textContent = `新文案 ${result.processed} 条，新分镜 ${result.planned || 0} 条，跳过已完成 ${result.skipped || 0} 条，失败 ${result.failed} 条`;
+      toast(result.failed ? "部分内容需要重试" : "AI 自动处理完成", result.failed ? "warn" : "ok");
+      await refreshContentIndex();
+    } catch (e) {
+      $("ci-msg").textContent = e.message || "AI 处理失败";
+      toast("AI 处理失败：" + e.message, "err");
+    }
+  });
+}
+
+function updateContentVideoCost(sourceId) {
+  const select = $(`ci-quality-${sourceId}`);
+  const button = $(`ci-video-btn-${sourceId}`);
+  if (!select || !button) return;
+  button.innerHTML = `<svg><use href="#i-film"/></svg>查看精确费用并制作`;
+}
+
+async function startContentVideo(sourceId, button) {
+  const quality = $(`ci-quality-${sourceId}`)?.value || "preview";
+  let quote;
+  try {
+    quote = await api(`/api/content-index/video/${encodeURIComponent(sourceId)}/quote`, {
+      method: "POST",
+      body: JSON.stringify({ quality }),
+    });
+  } catch (e) {
+    toast("无法取得视频报价：" + e.message, "err");
+    return;
+  }
+  const cost = Number(quote.total_cost_cny || 0);
+  const accepted = window.confirm(
+    `将生成 4 段全新 AI 画面、AI 配音和字幕。\n\n模型：${quote.model}\n精确视频模型费用：¥${cost.toFixed(2)}\n模型任务提交后通常不能退款。\n\n确认现在开始制作吗？`
+  );
+  if (!accepted) return;
+  await withBusy(button || evtBtn(), "正在提交…", async () => {
+    try {
+      const result = await api(`/api/content-index/video/${encodeURIComponent(sourceId)}/generate`, {
+        method: "POST",
+        body: JSON.stringify({
+          quality,
+          quote_id: quote.quote_id,
+          generation_id: quote.generation_id,
+          confirm_cost: true,
+        }),
+      });
+      $("ci-msg").textContent = `视频已排队，预计费用 ¥${Number(result.estimated_cost_cny || cost).toFixed(2)}`;
+      toast("AI 视频开始制作，可稍后回来查看", "ok");
+      await refreshContentIndex();
+    } catch (e) {
+      $("ci-msg").textContent = e.message || "视频制作启动失败";
+      toast("视频制作启动失败：" + e.message, "err");
+    }
+  });
+}
+
+async function syncContentIndex(button) {
+  await withBusy(button || evtBtn(), "同步中…", async () => {
+    try {
+      const result = await api("/api/content-index/sync", { method: "POST" });
+      $("ci-msg").textContent = `已同步 ${result.sent || 0} 条到共享审核中心`;
+      toast("共享索引同步完成", "ok");
+    } catch (e) {
+      $("ci-msg").textContent = e.message || "同步失败";
+      toast("同步失败：" + e.message, "err");
+    }
+  });
+}
+
 function esc(s) { return (s || "").toString().replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 async function refreshOverviewSummary() {
@@ -8539,6 +8742,7 @@ async function loop() {
     autocomment: [refreshCommentRules, refreshCommentTasks],
     publish: [refreshPublish],
     collections: [refreshCollections],
+    "content-index": [refreshContentIndex],
     "risk-control": [refreshRiskCenter],
     queue: [refreshTaskQueue],
     hub: [refreshHubSummary],
@@ -8574,7 +8778,7 @@ $("collection-content-list").innerHTML = collectionResultSkeleton(4);
 $("queue-table").innerHTML = skeleton(7);
 
 // restore last-selected section (default: 总览);旧版四个独立页已并入「账号管理」
-const VALID_TABS = ["overview", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "tiktok-tools", "publish", "autocomment", "share-download", "notifications", "settings"];
+const VALID_TABS = ["overview", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "tiktok-tools", "publish", "autocomment", "content-index", "share-download", "notifications", "settings"];
 const LEGACY_HUB_TABS = ["myworks", "following", "fans", "dm"];
 switchTab((() => {
   try {
@@ -8666,6 +8870,7 @@ window.CreatorHubBridge = {
       autocomment: [refreshCommentRules, refreshCommentTasks],
       notifications: [refreshChannels, refreshWebhooks], settings: [loadSettings],
       "risk-control": [refreshRiskCenter], hub: [refreshHubSummary, refreshHubPanel],
+      "content-index": [refreshContentIndex],
       "share-download": [refreshShareHistory],
     };
     await Promise.allSettled((refreshers[CURRENT_TAB] || []).map(fn => Promise.resolve().then(() => fn())));
