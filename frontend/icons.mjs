@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 
 export const icons = {
   more: "ellipsis", refresh: "refresh-cw", sun: "sun", moon: "moon", monitor: "monitor",
-  menu: "menu", logo: "search", user: "user-round", plus: "plus", target: "radar",
+  menu: "menu", logo: "search", search: "search", user: "user-round", plus: "plus", target: "radar",
   download: "download", filter: "sliders-horizontal", bell: "bell", list: "list-ordered",
   film: "clapperboard", msg: "message-circle", bolt: "zap", check: "check", x: "x",
   info: "info", shield: "shield-check", inbox: "inbox", heart: "heart", image: "image",

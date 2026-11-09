@@ -124,7 +124,9 @@ body {
   --control-hover:color-mix(in srgb,var(--fg) 5%,var(--surface));
   --control-pressed:color-mix(in srgb,var(--fg) 9%,var(--surface));
   --selected-surface:color-mix(in srgb,var(--acc) 6%,var(--surface));
-  --canvas-ambient:radial-gradient(960px 420px at 50% -140px,color-mix(in srgb,var(--acc) 5.5%,transparent),transparent 70%);
+  --canvas-ambient:
+    radial-gradient(980px 380px at 46% -130px,color-mix(in srgb,var(--acc) 6%,transparent),transparent 72%),
+    radial-gradient(640px 320px at 88% -90px,color-mix(in srgb,var(--chart-secondary) 4.5%,transparent),transparent 70%);
   background-color:var(--bg);
   background-image:var(--canvas-ambient);
   background-repeat:no-repeat;
@@ -522,7 +524,7 @@ html[data-transparency="reduced"] .command-dialog::backdrop {
   -webkit-backdrop-filter:none !important;
 }
 @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))) {
-  header, .sidebar, .command-dialog, .wb-menu {
+  header, .sidebar, .tabbar, .command-dialog, .wb-menu, .wb-sheet, .wb-onboarding {
     background:var(--surface);
   }
 }
