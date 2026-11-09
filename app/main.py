@@ -10151,6 +10151,9 @@ class PublishIn(BaseModel):
     media_paths: list[str] = []
     visibility: str = "public"            # 抖音:public | friends | private
     allow_save: bool = True               # 抖音:是否允许他人保存
+    allow_comment: bool = True             # TikTok:允许评论
+    allow_duet: bool = True                # TikTok:允许 Duet
+    allow_stitch: bool = True              # TikTok:允许 Stitch
     scheduled_at: str | None = None       # ISO 带偏移；无偏移按账号时区，空=尽快发
 
 
@@ -10162,6 +10165,9 @@ class PublishUpdate(BaseModel):
     location: str | None = None
     visibility: str | None = None
     allow_save: bool | None = None
+    allow_comment: bool | None = None
+    allow_duet: bool | None = None
+    allow_stitch: bool | None = None
     scheduled_at: str | None = None
 
 
@@ -10182,6 +10188,8 @@ def _publish_dict(t: PublishTask) -> dict:
         "topics": t.topics, "location": t.location,
         "status": t.status, "result_url": result_url,
         "visibility": t.visibility, "allow_save": t.allow_save,
+        "allow_comment": t.allow_comment, "allow_duet": t.allow_duet,
+        "allow_stitch": t.allow_stitch,
         "error": t.error, "media_count": len(json.loads(t.media_json or "[]")),
         "source_platform": t.source_platform, "source_content_id": t.source_content_id,
         "scheduled_at": (utc_iso(t.scheduled_at) if t.scheduled_at_is_utc
@@ -10217,8 +10225,10 @@ async def add_publish(body: PublishIn, request: Request = None):
             if body.media_type not in ("images", "video"):
                 raise HTTPException(400, "media_type 须为 images 或 video")
             acc = s.get(DouyinAccount, body.account_id)
-            if not acc or acc.platform not in ("xhs", "kuaishou", "douyin", "shipinhao"):
-                raise HTTPException(400, "请选择一个已登录的抖音 / 小红书 / 快手 / 视频号账号")
+            if not acc or acc.platform not in (
+                    "xhs", "kuaishou", "douyin", "shipinhao", "tiktok"):
+                raise HTTPException(
+                    400, "请选择一个已登录的抖音 / 小红书 / 快手 / 视频号 / TikTok 账号")
             if acc.platform == "xhs":
                 from .platforms.xhs.media import validate_publish_files
                 try:
@@ -10229,9 +10239,15 @@ async def add_publish(body: PublishIn, request: Request = None):
                 paths = [p for p in body.media_paths if Path(p).is_file()]
                 if not paths:
                     raise HTTPException(400, "没有可用的媒体文件,请先上传")
+                if acc.platform == "tiktok":
+                    if body.media_type != "video":
+                        raise HTTPException(422, "TikTok 网页发布当前仅支持视频")
+                    if len(paths) != 1:
+                        raise HTTPException(422, "TikTok 每个发布任务须选择一个视频")
             pname = {"kuaishou": "快手", "douyin": "抖音",
-                     "shipinhao": "视频号"}.get(acc.platform, "小红书")
-            if acc.platform in ("kuaishou", "douyin", "shipinhao"):
+                     "shipinhao": "视频号", "tiktok": "TikTok"}.get(
+                         acc.platform, "小红书")
+            if acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok"):
                 if not (acc.creator_storage_state or acc.storage_state):
                     raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
@@ -10242,6 +10258,9 @@ async def add_publish(body: PublishIn, request: Request = None):
                 title=body.title.strip()[:20], desc=body.desc, topics=body.topics,
                 location=(body.location or "").strip()[:60],
                 visibility=vis, allow_save=bool(body.allow_save),
+                allow_comment=bool(body.allow_comment),
+                allow_duet=bool(body.allow_duet),
+                allow_stitch=bool(body.allow_stitch),
                 media_json=json.dumps(paths),
                 scheduled_at=_parse_when(body.scheduled_at, acc.timezone_id),
             )
@@ -10280,6 +10299,12 @@ async def update_publish(tid: int, body: PublishUpdate):
             t.visibility = body.visibility
         if body.allow_save is not None:
             t.allow_save = body.allow_save
+        if body.allow_comment is not None:
+            t.allow_comment = body.allow_comment
+        if body.allow_duet is not None:
+            t.allow_duet = body.allow_duet
+        if body.allow_stitch is not None:
+            t.allow_stitch = body.allow_stitch
         if "scheduled_at" in body.model_fields_set:
             account = s.get(DouyinAccount, t.account_id) if t.account_id else None
             t.scheduled_at = _parse_when(body.scheduled_at, account.timezone_id if account else "Asia/Shanghai")

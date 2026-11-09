@@ -1059,6 +1059,46 @@ class WriteGateTests(unittest.TestCase):
             self.assertIsNone(task.done_at)
             self.assertIsNone(task.scheduled_at)
 
+    def test_tiktok_publish_passes_permissions_and_never_retries_uncertain_submit(self):
+        account_id = self._account(platform="tiktok")
+        task_id = self._publish_task(account_id, platform="tiktok")
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            task.media_type = "video"
+            task.visibility = "friends"
+            task.allow_comment = False
+            task.allow_duet = False
+            task.allow_stitch = True
+            session.add(task)
+            session.commit()
+        engine = MonitorEngine(self.cfg, _BrowserStub())
+        calls = []
+
+        async def ambiguous(*_args, **kwargs):
+            calls.append(kwargs)
+            self.assertEqual(kwargs["visibility"], "friends")
+            self.assertFalse(kwargs["allow_comment"])
+            self.assertFalse(kwargs["allow_duet"])
+            self.assertTrue(kwargs["allow_stitch"])
+            kwargs["on_submit"]()
+            with db.get_session() as session:
+                self.assertEqual(session.get(PublishTask, task_id).error,
+                                 "write_submitted:browser")
+            return False, "", "write_uncertain:发布后连接中断"
+
+        with patch("app.engine.monitor.publish_tiktok", ambiguous):
+            result = asyncio.run(engine.publish_task(task_id))
+            replay = asyncio.run(engine.publish_task(task_id))
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(replay["ok"])
+        self.assertEqual(len(calls), 1)
+        with db.get_session() as session:
+            task = session.get(PublishTask, task_id)
+            self.assertEqual(task.status, "uncertain")
+            self.assertIsNone(task.scheduled_at)
+            self.assertIsNone(task.next_allowed_at)
+
     def test_xhs_api_submit_marker_prevents_replay_after_adapter_exception(self):
         self.cfg.engine.xhs_publish_mode = "api"
         account_id = self._account(platform="xhs")

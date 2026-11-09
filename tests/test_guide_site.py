@@ -104,13 +104,12 @@ class GuideSiteTests(unittest.TestCase):
             page = target / "tiktok" / "index.html"
             parsed = self.parse(page)
             self.assertTrue({"collection", "monitor", "comments", "download",
-                             "my-content", "tiktok-tools"}.issubset(parsed.ids))
-            self.assertNotIn("publish", parsed.ids)
+                             "my-content", "publish", "tiktok-tools"}.issubset(parsed.ids))
             self.assertNotIn("autocomment", parsed.ids)
             content = page.read_text(encoding="utf-8")
             for text in ("TikTok Web", "native", "auto", "browser",
                          "@username", "目标评论 ID", "原文", "结果待确认",
-                         "暂不支持直播、短视频弹幕和内容发布"):
+                         "单个视频", "评论、Duet、Stitch", "暂不支持直播"):
                 self.assertIn(text, content)
 
     def test_readme_community_uses_direct_qr_images(self):

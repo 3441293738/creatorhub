@@ -1099,8 +1099,8 @@ function updatePageContext(name = CURRENT_TAB) {
   document.title = `${meta.title} · ${PF_NAME[PLATFORM] || ""} | CreatorHub`;
   globalThis.CreatorHubWorkbench?.navigate?.();
 }
-// 是否支持「发布」面板(四平台均有)
-function pfHasPublish(pf) { return pf === "xhs" || pf === "kuaishou" || pf === "douyin" || pf === "shipinhao"; }
+// 是否支持「发布」面板
+function pfHasPublish(pf) { return ["xhs", "kuaishou", "douyin", "shipinhao", "tiktok"].includes(pf); }
 // 视频号只有「本账号」数据(助手接口本账号),不支持监控他人作品/评论
 function pfIsChannels(pf) { return pf === "shipinhao"; }
 function switchPlatform(pf) {
@@ -1168,22 +1168,36 @@ function applyPlatformUI() {
   document.querySelectorAll(".meta-scope").forEach(e => {
     e.textContent = (PF_NAME[PLATFORM] || "当前平台") + "内独立";
   });
-  // 发布面板入口:抖音 / 小红书 / 快手均显示
+  // 发布面板入口
   document.querySelectorAll(".pub-only").forEach(e => e.classList.toggle("hidden", !pfHasPublish(PLATFORM)));
   // 发布面板文案随平台切换
-  const ks = PLATFORM === "kuaishou", dy = PLATFORM === "douyin", sph = PLATFORM === "shipinhao";
+  const ks = PLATFORM === "kuaishou", dy = PLATFORM === "douyin", sph = PLATFORM === "shipinhao", tk = PLATFORM === "tiktok";
+  const pubType = $("pub-type");
+  if (pubType) {
+    const before = pubType.value;
+    if (tk) pubType.innerHTML = '<option value="video">视频</option>';
+    else if (![...pubType.options].some(o => o.value === "images")) {
+      pubType.innerHTML = '<option value="images">图文（图集）</option><option value="video">视频</option>';
+      pubType.value = before === "video" ? "video" : "images";
+    }
+    if (tk) pubType.value = "video";
+    if (pubType.value !== before) onPubType();
+  }
   const pubSub = $("pub-head-sub");
   if (pubSub) pubSub.textContent = dy ? "上传图集 / 视频到抖音创作平台(实验性)"
     : ks ? "上传图集 / 视频到快手创作平台(实验性)"
-    : sph ? "上传视频到视频号助手(实验性)" : "上传图集 / 视频到小红书(实验性)";
-  if ($("pub-head-lead")) $("pub-head-lead").textContent = (ks || dy || sph) ? "发布作品" : "发布笔记";
-  if ($("pub-title")) $("pub-title").placeholder = (ks || dy || sph) ? "给作品起个标题" : "给笔记起个标题";
+    : sph ? "上传视频到视频号助手(实验性)"
+    : tk ? "上传视频到 TikTok Studio(实验性)" : "上传图集 / 视频到小红书(实验性)";
+  if ($("pub-head-lead")) $("pub-head-lead").textContent = (ks || dy || sph || tk) ? "发布作品" : "发布笔记";
+  if ($("pub-title")) $("pub-title").placeholder = tk ? "视频说明的首行标题" : (ks || dy || sph) ? "给作品起个标题" : "给笔记起个标题";
   const pubHintText = dy
     ? "发布通过自动化抖音创作平台完成。首次登录或触发验证时，请在弹出窗口中完成短信验证或扫码；视频上传后还需等待转码。注意：定时发布可能因本人验证而暂停，建议发布时在场。"
     : ks
     ? "发布通过自动化快手创作平台完成。若遇验证码或需要补充封面，请在弹出窗口中手动处理；定时任务由后台引擎按计划执行。"
     : sph
     ? "发布通过自动化视频号助手完成。视频需等待转码，发布前可能要求补充封面、实名或人脸验证，请在弹出窗口中处理。注意：平台页面改版后可能需要重新适配。"
+    : tk
+    ? "发布通过账号独立的可见 TikTok Studio 页面完成，目前支持单视频、话题、可见范围、评论、Duet 与 Stitch。提交只点击一次；若显示“结果待确认”，请先到 TikTok Studio 核对，系统不会自动重发。"
     : "发布通过账号独立的可见 Chrome 页面完成。提交只点击一次；若显示“结果待确认”，请先到小红书核对，系统不会自动重发。";
   const pubHint = $("pub-hint");
   if (pubHint) {
@@ -5503,7 +5517,7 @@ function applyCollectionForm() {
   if ($("collection-callout-copy")) $("collection-callout-copy").textContent = channels
     ? "视频号助手会分别读取视频与图文管理页；作品元数据和统计可正常保存。若平台仅返回加密媒体，任务会保留元数据并跳过直接下载。评论入口如遇页面改版会在任务异常中明确记录。"
     : tiktok
-    ? "TikTok 当前默认 native：关键词、评论和二级回复均由离线签名 API 直连，全程不打开浏览器；只有在设置中手动选择 auto/browser 才会使用页面。暂不处理直播和发布。"
+    ? "TikTok 当前默认 native：关键词、评论和二级回复均由离线签名 API 直连，全程不打开浏览器；只有在设置中手动选择 auto/browser 才会使用页面。直播不在采集范围；视频发布请使用独立发布入口。"
     : xhs
     ? "小红书采集复用所选账号的可见浏览器或显式 API 读取模式；最新、类型、时间和数据门槛会在入库前复核；任务串行执行，可随时取消，已入库结果会保留。"
     : PLATFORM === "kuaishou"
@@ -7521,14 +7535,15 @@ document.addEventListener("keydown", e => {
   else if (modal === $("preview") && e.key === "ArrowRight") pvNav(1);
 });
 
-// ─── 发布到小红书 ───
+// ─── 多平台发布 ───
 function populatePubAcc() {
   const sel = $("pub-acc"); if (!sel) return;
   // 小红书发布需创作者号;抖音 / 快手发布有登录态即可(走浏览器自动化)
   const list = PLATFORM === "xhs" ? ACCOUNTS.filter(a => a.has_creator) : ACCOUNTS;
   const ph = list.length ? "选择发布账号"
     : (PLATFORM === "kuaishou" ? "请先完成「快手扫码登录」"
-      : PLATFORM === "douyin" ? "请先完成「抖音扫码/创作者登录」" : "请先完成「小红书创作者登录」");
+      : PLATFORM === "douyin" ? "请先完成「抖音扫码/创作者登录」"
+      : PLATFORM === "tiktok" ? "请先完成「TikTok 登录」" : "请先完成「小红书创作者登录」");
   sel.innerHTML = accOptions(list, ph);
   if (list.length) sel.value = String(list[0].id);
 }
@@ -7581,12 +7596,16 @@ function bindPubFilePicker() {
 }
 let PUB_SUBMITTING = false, PUB_UPLOAD_CACHE = null;
 function publishFormPayload() {
+  const tiktok = PLATFORM === "tiktok";
   return { account_id: +$("pub-acc").value, media_type: $("pub-type").value,
     title: $("pub-title").value.trim(), desc: $("pub-desc").value,
     topics: $("pub-topics").value.trim(), scheduled_at: scheduleToApi($("pub-when").value || null),
     location: $("pub-location") ? $("pub-location").value.trim() : "",
-    visibility: $("pub-visibility") ? $("pub-visibility").value : "public",
-    allow_save: $("pub-allowsave") ? $("pub-allowsave").value !== "0" : true };
+    visibility: tiktok ? $("pub-tk-visibility").value : $("pub-visibility") ? $("pub-visibility").value : "public",
+    allow_save: $("pub-allowsave") ? $("pub-allowsave").value !== "0" : true,
+    allow_comment: tiktok ? $("pub-tk-comment").value !== "0" : true,
+    allow_duet: tiktok ? $("pub-tk-duet").value !== "0" : true,
+    allow_stitch: tiktok ? $("pub-tk-stitch").value !== "0" : true };
 }
 async function addPublish() {
   if (PUB_SUBMITTING) return;
@@ -7647,6 +7666,9 @@ async function editPublish(id) {
       location: $("ep-location") ? $("ep-location").value.trim() : "",
       visibility: $("ep-visibility") ? $("ep-visibility").value : "public",
       allow_save: $("ep-allowsave") ? $("ep-allowsave").value !== "0" : true,
+      allow_comment: $("ep-tk-comment") ? $("ep-tk-comment").value !== "0" : true,
+      allow_duet: $("ep-tk-duet") ? $("ep-tk-duet").value !== "0" : true,
+      allow_stitch: $("ep-tk-stitch") ? $("ep-tk-stitch").value !== "0" : true,
     });
     $("ui-body").innerHTML = `
       <div><label class="field" for="ep-account">发布账号</label>
@@ -7667,12 +7689,26 @@ async function editPublish(id) {
           <select id="ep-visibility"><option value="public">公开</option><option value="friends">好友可见</option><option value="private">仅自己可见</option></select></div>
         <div class="publish-permission"><label class="field" for="ep-allowsave">保存权限</label>
           <select id="ep-allowsave"><option value="1">允许他人保存</option><option value="0">不允许</option></select></div>
+      </fieldset>` : ""}
+      ${task.platform === "tiktok" ? `<fieldset class="publish-permissions">
+        <legend>TikTok 可见范围与互动</legend>
+        <div class="publish-permission"><label class="field" for="ep-visibility">谁可以看</label>
+          <select id="ep-visibility"><option value="public">所有人</option><option value="friends">好友</option><option value="private">仅自己</option></select></div>
+        <div class="publish-permission"><label class="field" for="ep-tk-comment">评论</label>
+          <select id="ep-tk-comment"><option value="1">允许</option><option value="0">关闭</option></select></div>
+        <div class="publish-permission"><label class="field" for="ep-tk-duet">Duet</label>
+          <select id="ep-tk-duet"><option value="1">允许</option><option value="0">关闭</option></select></div>
+        <div class="publish-permission"><label class="field" for="ep-tk-stitch">Stitch</label>
+          <select id="ep-tk-stitch"><option value="1">允许</option><option value="0">关闭</option></select></div>
       </fieldset>` : ""}`;
     $("ep-account").value = task.account_id ? String(task.account_id) : "";
     $("ep-when").value = localDateTimeValue(task.scheduled_at);
     if ($("ep-visibility")) $("ep-visibility").value = task.visibility || "public";
     if ($("ep-allowsave")) $("ep-allowsave").value = task.allow_save === false ? "0" : "1";
-    ["ep-account", "ep-visibility", "ep-allowsave"].forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
+    if ($("ep-tk-comment")) $("ep-tk-comment").value = task.allow_comment === false ? "0" : "1";
+    if ($("ep-tk-duet")) $("ep-tk-duet").value = task.allow_duet === false ? "0" : "1";
+    if ($("ep-tk-stitch")) $("ep-tk-stitch").value = task.allow_stitch === false ? "0" : "1";
+    ["ep-account", "ep-visibility", "ep-allowsave", "ep-tk-comment", "ep-tk-duet", "ep-tk-stitch"].forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
     enhanceDateTime($("ep-when"));
     _uiOpen("编辑发布任务", `${task.media_count} 个附件保持不变。调整文案、账号、预约时间与权限。`, {
       okText: "保存修改", wide: true, icon: "i-send",
@@ -7701,7 +7737,7 @@ async function refreshPublish() {
     <td class="num">${t.media_count}</td>
     <td>${t.source_platform ? esc(t.source_platform) + " 转发" : "手动"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>
-    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? (["kuaishou", "shipinhao"].includes(t.platform) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeMediaUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}</td>
+    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? (["kuaishou", "shipinhao", "tiktok"].includes(t.platform) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeMediaUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}</td>
     <td class="acttd">
       ${["draft", "pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">${t.schedule_needs_confirmation ? "确认预约时间" : "编辑"}</button>` : ""}
       ${["pending", "failed"].includes(t.status) ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
@@ -7709,12 +7745,14 @@ async function refreshPublish() {
     </td></tr>`).join("") || empty(7, "暂无发布任务", "i-send",
       PLATFORM === "kuaishou" ? "上传图集/视频加入队列(发布到快手创作平台)"
       : PLATFORM === "douyin" ? "上传图集/视频加入队列(发布到抖音创作平台)"
+      : PLATFORM === "tiktok" ? "上传单个视频加入队列(发布到 TikTok Studio)"
       : "上传图集/视频加入队列,或在抖音作品上点「发小红书」转发过来");
 }
-// 快手创作页、视频号管理页都必须复用账号自己的登录态，不能交给系统浏览器。
+// 创作平台管理页必须复用账号自己的登录态，不能交给系统浏览器。
 async function openPubInBrowser(accountId, url, platform = "shipinhao") {
   if (!accountId) { toast("缺少账号信息", "err"); return; }
-  const pageName = platform === "kuaishou" ? "快手作品管理页" : "视频号管理页";
+  const pageName = platform === "kuaishou" ? "快手作品管理页"
+    : platform === "tiktok" ? "TikTok Studio 内容页" : "视频号管理页";
   toast("正在用该账号浏览器打开" + pageName + "…", "info", 5000);
   try {
     await api("/api/accounts/" + accountId + "/open-browser?url=" + encodeURIComponent(url || ""), { method: "POST" });

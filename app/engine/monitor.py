@@ -62,7 +62,8 @@ from ..platforms.channels import (parse_channels_feed, parse_channels_comment,
                    flatten_channels_comments, parse_self_user as parse_channels_self_user,
                    publish_channels)
 from ..platforms.tiktok import (TikTokNativeClient, parse_tiktok_aweme,
-                                parse_tiktok_comment, tiktok_display_text)
+                                parse_tiktok_comment, publish_tiktok,
+                                tiktok_display_text)
 from ..platforms.tiktok.urls import profile_url as tiktok_profile_url
 from ..platforms.tiktok.urls import video_url as tiktok_video_url
 from ..models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
@@ -3779,6 +3780,9 @@ class MonitorEngine:
                         else self.browser.identity_for(acc))
             media_type, title, desc, topics = t.media_type, t.title, t.desc, t.topics
             visibility, allow_save = t.visibility, t.allow_save
+            allow_comment = getattr(t, "allow_comment", True)
+            allow_duet = getattr(t, "allow_duet", True)
+            allow_stitch = getattr(t, "allow_stitch", True)
             location = getattr(t, "location", "") or ""
             platform = t.platform
             files = _loads_list(t.media_json)
@@ -3834,6 +3838,30 @@ class MonitorEngine:
             except Exception as e:
                 ok, url, err = False, "", f"发布异常: {e!r}"
             return await self._finish_publish(task_id, ok, url, err, platform="douyin")
+
+        if platform == "tiktok":
+            if not state:
+                return await self._finish_publish(
+                    task_id, False, "", "该账号未完成 TikTok 登录，请先在账号页登录",
+                    platform="tiktok")
+            try:
+                ok, url, err = await publish_tiktok(
+                    self.browser, identity, state, media_type, title, desc, files,
+                    topics=topics, visibility=visibility,
+                    allow_comment=allow_comment, allow_duet=allow_duet,
+                    allow_stitch=allow_stitch, headed=True,
+                    on_submit=(lambda: self._mark_write_submit(
+                        PublishTask, task_id, channel="browser")))
+            except asyncio.CancelledError:
+                await self._finish_publish(
+                    task_id, False, "",
+                    "write_uncertain:TikTok 发布已中断，结果需到平台核对",
+                    platform="tiktok")
+                raise
+            except Exception as e:
+                ok, url, err = False, "", f"发布异常: {e!r}"
+            return await self._finish_publish(
+                task_id, ok, url, err, platform="tiktok")
 
         if not state:
             return await self._finish_publish(
@@ -3913,7 +3941,8 @@ class MonitorEngine:
                     channels = [{"type": c.type, "config": _loads(c.config)} for c in chans]
                 if channels:
                     pname = {"kuaishou": "快手", "douyin": "抖音",
-                             "shipinhao": "视频号"}.get(platform, "小红书")
+                             "shipinhao": "视频号", "tiktok": "TikTok"}.get(
+                                 platform, "小红书")
                     await notify_all(channels, f"{pname}发布成功", url or "已发布一条作品")
             except Exception:
                 pass

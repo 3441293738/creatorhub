@@ -191,6 +191,7 @@ def test_kuaishou_publish_view_reuses_the_account_browser():
     end = source.index("async function runPublish", start)
     publish = source[start:end]
 
-    assert '["kuaishou", "shipinhao"].includes(t.platform)' in publish
+    assert '["kuaishou", "shipinhao", "tiktok"].includes(t.platform)' in publish
     assert "快手作品管理页" in publish
+    assert "TikTok Studio 内容页" in publish
     assert "不能交给系统浏览器" in publish

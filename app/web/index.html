@@ -1936,7 +1936,7 @@
   </div>
   <div class="platform-callout" role="note">
     <svg aria-hidden="true"><use href="#i-info"/></svg>
-    <div><b>平台数据彼此独立</b><p>切换平台后，账号、采集与任务数据会独立展示；通知和下载设置全局共用。TikTok 已提供登录、关键词采集、本账号作品与数据、用户搜索及受控写操作，不含直播和发布。</p></div>
+    <div><b>平台数据彼此独立</b><p>切换平台后，账号、采集与任务数据会独立展示；通知和下载设置全局共用。TikTok 已提供登录、关键词采集、本账号作品与数据、单视频发布、用户搜索及受控写操作，暂不含直播。</p></div>
   </div>
   </section>
 
@@ -2961,6 +2961,35 @@
             <select id="pub-allowsave" aria-label="保存权限">
               <option value="1">允许他人保存</option>
               <option value="0">不允许</option>
+            </select>
+          </div>
+        </fieldset>
+        <fieldset class="publish-permissions tk-only" id="pub-tiktok-opts">
+          <legend>TikTok 可见范围与互动</legend>
+          <div class="publish-permission">
+            <label class="field" for="pub-tk-visibility">谁可以看</label>
+            <select id="pub-tk-visibility" aria-label="TikTok 谁可以看">
+              <option value="public">所有人</option>
+              <option value="friends">好友</option>
+              <option value="private">仅自己</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-tk-comment">评论</label>
+            <select id="pub-tk-comment" aria-label="TikTok 评论权限">
+              <option value="1">允许</option><option value="0">关闭</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-tk-duet">Duet</label>
+            <select id="pub-tk-duet" aria-label="TikTok Duet 权限">
+              <option value="1">允许</option><option value="0">关闭</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-tk-stitch">Stitch</label>
+            <select id="pub-tk-stitch" aria-label="TikTok Stitch 权限">
+              <option value="1">允许</option><option value="0">关闭</option>
             </select>
           </div>
         </fieldset>

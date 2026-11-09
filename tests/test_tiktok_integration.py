@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +15,7 @@ from app.browser.tiktok_fetcher import fetch_tiktok_self_profile
 from app.browser.account_hub import _norm_tiktok_work
 from app.browser.identity import Identity
 from app.browser.manager import BrowserManager
-from app.models import CommentTask, DouyinAccount
+from app.models import CommentTask, DouyinAccount, PublishTask
 
 
 @pytest.fixture()
@@ -193,7 +194,7 @@ def test_tiktok_comment_route_creates_pending_reply_task(tiktok_account):
         assert task.target_text == "Original comment"
 
 
-def test_tiktok_ui_exposes_supported_features_and_hides_publish_live():
+def test_tiktok_ui_exposes_supported_features_and_video_publish():
     root = Path(__file__).parents[1]
     html = (root / "app" / "web" / "index.html").read_text(encoding="utf-8")
     js = (root / "app" / "web" / "app.js").read_text(encoding="utf-8")
@@ -211,7 +212,12 @@ def test_tiktok_ui_exposes_supported_features_and_hides_publish_live():
     assert 'target_sec_uid: user.unique_id || ""' in js
     assert 'function pfHasPublish(pf)' in js
     publish_body = js.split("function pfHasPublish(pf)", 1)[1].split("}", 1)[0]
-    assert "tiktok" not in publish_body
+    assert '"tiktok"' in publish_body
+    assert 'id="pub-tiktok-opts"' in html
+    assert 'id="pub-tk-comment"' in html
+    assert 'id="pub-tk-duet"' in html
+    assert 'id="pub-tk-stitch"' in html
+    assert '上传视频到 TikTok Studio' in js
     assert 'class="navitem dy-only" data-tab="danmaku"' in html
     assert 'class="navitem pub-only" data-tab="publish"' in html
     for tab in ("monitors", "comments"):
@@ -227,6 +233,47 @@ def test_tiktok_ui_exposes_supported_features_and_hides_publish_live():
     assert 'if (PLATFORM === "tiktok" && CURRENT_TAB === "autocomment")' in js
     main_source = (root / "app" / "main.py").read_text(encoding="utf-8")
     assert "await browser.close_context(identity.key)" in main_source
+
+
+def test_tiktok_publish_route_accepts_one_video_and_persists_permissions(tiktok_account):
+    with tempfile.TemporaryDirectory() as root:
+        video = Path(root) / "clip.mp4"
+        video.write_bytes(b"fixture-video")
+        result = asyncio.run(main.add_publish(main.PublishIn(
+            account_id=tiktok_account,
+            media_type="video",
+            media_paths=[str(video)],
+            title="Launch",
+            desc="Creator update",
+            topics="tools,news",
+            visibility="friends",
+            allow_comment=False,
+            allow_duet=False,
+            allow_stitch=True,
+        )))
+
+        assert result["platform"] == "tiktok"
+        assert result["media_type"] == "video"
+        assert result["visibility"] == "friends"
+        assert result["allow_comment"] is False
+        assert result["allow_duet"] is False
+        assert result["allow_stitch"] is True
+        with db.get_session() as session:
+            task = session.get(PublishTask, result["id"])
+            assert json.loads(task.media_json) == [str(video)]
+
+
+def test_tiktok_publish_route_rejects_photo_posts(tiktok_account):
+    with tempfile.TemporaryDirectory() as root:
+        image = Path(root) / "photo.jpg"
+        image.write_bytes(b"fixture-image")
+        with pytest.raises(HTTPException, match="仅支持视频") as caught:
+            asyncio.run(main.add_publish(main.PublishIn(
+                account_id=tiktok_account,
+                media_type="images",
+                media_paths=[str(image)],
+            )))
+        assert caught.value.status_code == 422
 
 
 def test_tiktok_write_contract_keeps_uncertain_terminal_state():
