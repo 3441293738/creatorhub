@@ -2,13 +2,14 @@
 import json
 from pathlib import Path
 import plistlib
+import queue
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 import yaml
 
-from desktop import build_macos, updates
+from desktop import build_macos, updates, webview_smoke
 from desktop.package_report import package_report
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,3 +92,26 @@ def test_notarization_must_be_accepted_not_just_exit_zero(monkeypatch, status):
 def test_macos_entitlements_only_allow_required_jit():
     with (ROOT / "desktop/entitlements.macos.plist").open("rb") as stream:
         assert plistlib.load(stream) == {"com.apple.security.cs.allow-jit": True}
+
+
+def test_native_smoke_uses_csp_compatible_probe_without_return_value():
+    results = queue.Queue()
+    expected = {"stopped": True, "theme": False, "updates": False, "mains": 1}
+    def run_js(script):
+        assert "eval(" not in script
+        assert '"sample-token"' in script
+        assert "document.body.innerText" in script
+        assert "X-Desktop-Token" in script
+        assert "renderer_snapshot" in script
+        results.put(expected)
+        return None
+    window = SimpleNamespace(run_js=run_js)
+    assert webview_smoke.renderer_snapshot(window, "sample-token", results) == expected
+
+
+def test_native_smoke_fails_if_dom_probe_never_returns():
+    results = Mock()
+    results.get.side_effect = queue.Empty
+    with pytest.raises(AssertionError, match="DOM snapshot"):
+        webview_smoke.renderer_snapshot(Mock(), "sample-token", results)
+    results.get.assert_called_once_with(timeout=5)
