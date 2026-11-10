@@ -96,16 +96,36 @@ def test_bundled_node_does_not_need_system_node(tmp_path, monkeypatch):
     assert find_node() == str(node)
 
 
-def test_frozen_execjs_uses_absolute_node_with_empty_path(monkeypatch):
+@pytest.mark.parametrize("frozen", [True, False])
+def test_execjs_uses_absolute_node_and_utf8_even_with_ansi_locale(monkeypatch, frozen):
     import shutil
     from app.platforms.xhs import creator_sign
     node = shutil.which("node")
     assert node, "Build tests require Node (the installer bundles its own runtime)"
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "frozen", frozen, raising=False)
     monkeypatch.setattr(creator_sign, "find_node", lambda: node)
     monkeypatch.setattr(creator_sign, "_JS_CACHE", {})
     monkeypatch.setenv("PATH", "")
-    assert creator_sign._ctx("xhs_rap.js").eval("1 + 1") == 2
+    # Match English Windows even when the test interpreter itself uses UTF-8.
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "cp1252")
+    context = creator_sign._ctx("xhs_rap.js")
+    assert context.eval("1 + 1") == 2
+    assert context.eval("'中文输入输出😀'") == "中文输入输出😀"
+    import execjs
+    with pytest.raises(execjs.ProgramError, match="中文错误"):
+        context.exec_("throw new Error('中文错误')")
+
+
+def test_execjs_pipe_has_a_bounded_runtime(monkeypatch):
+    from app.platforms.xhs import creator_sign
+    monkeypatch.setattr(creator_sign, "find_node", lambda: "node")
+    monkeypatch.setattr(creator_sign, "_JS_CACHE", {})
+    run = Mock(side_effect=subprocess.TimeoutExpired("node", 30))
+    monkeypatch.setattr(creator_sign.subprocess, "run", run)
+    with pytest.raises(subprocess.TimeoutExpired):
+        creator_sign._ctx("xhs_rap.js").eval("1 + 1")
+    assert run.call_args.kwargs["encoding"] == "utf-8"
+    assert run.call_args.kwargs["timeout"] == 30
 
 
 def test_windows_and_mac_bundles_exclude_unused_heavy_dependencies():

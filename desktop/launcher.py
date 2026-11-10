@@ -300,6 +300,7 @@ def verify_shared_runtimes():
     try:
         assert creator_sign.available(), "Bundled Node signing runtime failed its offline self-test"
         assert creator_sign._ctx("xhs_rap.js").eval("1 + 1") == 2
+        assert creator_sign._ctx("xhs_rap.js").eval("'中文运行环境'") == "中文运行环境"
     finally:
         creator_sign.close_signers()
     with tempfile.TemporaryDirectory(prefix="creatorhub-media-smoke-") as directory:

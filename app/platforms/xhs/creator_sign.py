@@ -151,17 +151,33 @@ def _ctx(filename: str):
     if filename not in _JS_CACHE:
         import execjs
         runtime = execjs
-        if getattr(sys, "frozen", False):
+        node = find_node()
+        if not node and getattr(sys, "frozen", False):
+            raise RuntimeError("随包 Node 运行环境缺失")
+        if node:
             from execjs._external_runtime import ExternalRuntime
             from execjs._runner_sources import Node
-            node = find_node()
-            if not node:
-                raise RuntimeError("随包 Node 运行环境缺失")
+            from ...processes import child_options
+
             class BundledNode(ExternalRuntime):
                 def _binary(self):
                     # ExecJS's Windows PATH search appends PATHEXT even to an
                     # absolute .exe path. Use the already verified executable.
                     return [node]
+
+                class Context(ExternalRuntime.Context):
+                    def _exec_with_pipe(self, source):
+                        # PyExecJS ignores its encoding setting for pipes and
+                        # uses the Windows ANSI locale. Frozen Python also
+                        # ignores PYTHONUTF8 at startup: set pipe encoding here.
+                        result = subprocess.run(
+                            self._runtime._binary(), input=self._compile(source),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", cwd=self._cwd,
+                            timeout=30, **child_options())
+                        self._fail_on_non_zero_status(result.returncode, result.stdout, result.stderr)
+                        return result.stdout
+
             runtime = BundledNode("CreatorHub Node", [node], Node, encoding="utf8")
         _JS_CACHE[filename] = runtime.compile((_STATIC / filename).read_text(encoding="utf-8"))
     return _JS_CACHE[filename]
