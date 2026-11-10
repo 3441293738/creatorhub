@@ -43,7 +43,14 @@
 
 相关本地日志在 `build/optimized-*.log`；UI 截图与结果在 `build/desktop-qa/`。测试只使用临时目录和本地样本，不使用真实账号、不执行真实安装、不写用户配置/数据库。
 
-## 尚待发布验收
+## v0.2.7 云端发布前构建
+
+- [Windows 构建](https://github.com/3441293738/creatorhub/actions/runs/42768651167)已通过全部发布回归、冻结资源/中文 JS 检查、原生 WebView2 页面导航、后台启停、独立更新器交接、增量切换及失败回滚，安装包和校验文件已生成。下述本机 .NET 问题未在该云端构建中阻断验收，未放宽安全策略或移除检查。
+- [Mac 双架构构建](https://github.com/3441293738/creatorhub/actions/runs/42768658541)已通过 ARM/Intel 原生构建与冒烟检查，生成同版本 `UNTESTED` DMG。按本次发布选择，它们保持测试产物，不公开为已签名、公证的正式安装包。
+- 发布准备中修复严格 CSP 下的原生验收脚本、英文 Windows 的 ExecJS UTF-8 管道，并缓存关闭连接的空库模板加快回归；测试数据库仍逐例独立、持久化与迁移检查仍保留。
+- 含上述修复的最新本地复构产物位于 `dist/installer-release-0.2.7/`：安装包约 **94.98 MiB**，展开约 **281.92 MiB**；空 PATH 下的中文 JS、媒体和资源检查通过。正式下载仍以 Releases 资产为准。
+
+## 尚待人工安装验收
 
 1. **Windows 原生 WebView2**：当前主机 .NET 将程序集加载位置判为网络来源，报 `Python.Runtime.Loader.Initialize` 错误。旧 v0.2.5 包及原源码环境同样复现，相同 DLL 的 SHA-256 一致。没有放宽 .NET 或系统安全策略，也没有移除 CI 的原生窗口验收。需在干净 Windows 10/11 上复验窗口、完整安装/覆盖清理、无 WebView2 的安装、正常退出和卸载保留数据。
 2. **macOS**：本地优化阶段仅完成平台合同/脚本检查；随后 v0.2.7 的 [ARM/Intel 云端构建](https://github.com/3441293738/creatorhub/actions/runs/42765280470)已同时通过，产出 DMG，完成随包运行环境、WKWebView 页面导航与服务启停检查。仍需配置维护者的证书和公证凭据，完成真机、最低系统版本、签名及安装验收。未签名/未公证产物标为 `UNTESTED`，流水线不会直接发布 Mac Release 资产。

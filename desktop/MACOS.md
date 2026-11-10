@@ -6,7 +6,7 @@
 - 单独构建 `macos-arm64` 与 `macos-x86_64`，避免让每位用户下载两套原生依赖。
 - 用户数据：`~/Library/Application Support/CreatorHub/user-data`；不写入 `.app`。
 - `.github/workflows/macos-installer.yml` 与 Windows 一起响应 `v*` 版本标签，从同一提交构建同版本 ARM/Intel 包；也支持手动构建。当前只上传 Actions artifacts，不自动发布 Mac Release 资产。
-- 2026-11-10 已在 GitHub macOS 15 ARM/Intel runner 完成两架构原生构建、WKWebView 页面导航、随包 Node/FFmpeg 与本地服务冒烟检查，见[首次通过的云端构建](https://github.com/3441293738/creatorhub/actions/runs/42765280470)。实际安装、托盘、最低系统版本、Developer ID 签名与 Apple 公证仍需后续验收。
+- 2026-11-10 已在 GitHub macOS 15 ARM/Intel runner 完成两架构原生构建、WKWebView 页面导航、随包 Node/FFmpeg 与本地服务冒烟检查，见[云端验证构建](https://github.com/3441293738/creatorhub/actions/runs/42768658541)。实际安装、托盘、最低系统版本、Developer ID 签名与 Apple 公证仍需后续验收。
 - macOS 首版通过下载匹配架构的完整 DMG 更新，退出应用后拖入 Applications 替换。暂不运行 Windows 文件增量更新器，也不修改已签名 `.app` 内的单个文件。
 
 ## 未签名验证构建
