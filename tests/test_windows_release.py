@@ -101,6 +101,9 @@ class WindowsReleaseTests(unittest.TestCase):
         dependencies = next(s for s in steps if s.get('name') == 'Install build dependencies')['run']
         self.assertIn(' pytest ', dependencies)
         checks = next(s for s in steps if s.get('name') == 'Test monitor API and frontend contracts')['run']
+        self.assertIn('faulthandler_timeout=90', checks)
+        monitor_gate = next(s for s in steps if s.get('name') == 'Test monitor API and frontend contracts')
+        self.assertEqual(monitor_gate['timeout-minutes'], '10')
         for test in ('test_monitor_accounts.py', 'test_monitor_intervals.py', 'test_engine_settings.py', 'test_web_optimizations.py'):
             self.assertIn(test, checks)
         smoke = (ROOT / 'desktop/smoke_windows.py').read_text(encoding='utf-8')
