@@ -15,6 +15,8 @@ AppPublisher=CreatorHub
 AppPublisherURL=https://github.com/3441293738/creatorhub
 DefaultDirName={localappdata}\Programs\CreatorHub
 DefaultGroupName=CreatorHub
+DisableProgramGroupPage=yes
+DisableDirPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -49,6 +51,13 @@ UninstallKeepData=卸载将保留账号资料、配置、下载内容和备份�
 [Files]
 Source: "..\build\windows\MicrosoftEdgeWebview2Setup.exe"; Flags: dontcopy
 Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+; Full-package upgrades also retire the old media stack. These three paths
+; belong exclusively to the application, never to user-data or account profiles.
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal\cv2"
+Type: filesandordirs; Name: "{app}\_internal\numpy"
+Type: filesandordirs; Name: "{app}\_internal\numpy.libs"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: checkedonce

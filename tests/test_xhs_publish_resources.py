@@ -75,28 +75,20 @@ def test_pixel_budget_is_checked_without_decoding(monkeypatch):
         creator_api._image_info(blob)
 
 
-@pytest.mark.parametrize("stage", ["open", "metadata", "read", "encode", "success"])
+@pytest.mark.parametrize("stage", ["metadata", "success"])
 def test_video_snapshot_reuses_path_and_releases_decoder(tmp_path, monkeypatch, stage):
-    import cv2
     path = tmp_path / "fixture.mp4"
     path.write_bytes(b"video")
-    cap = Mock()
-    cap.isOpened.return_value = stage != "open"
-    cap.get.side_effect = RuntimeError("metadata") if stage == "metadata" else lambda _key: 1
-    cap.read.side_effect = RuntimeError("read") if stage == "read" else None
-    cap.read.return_value = (True, "frame")
-    capture = Mock(return_value=cap)
-    monkeypatch.setattr(cv2, "VideoCapture", capture)
-    monkeypatch.setattr(cv2, "imencode", Mock(return_value=(
-        stage != "encode", SimpleNamespace(tobytes=lambda: b"cover"))))
+    capture = Mock(return_value=(b"cover", {}),
+                   side_effect=creator_api.MediaToolError("metadata") if stage == "metadata" else None)
+    monkeypatch.setattr(creator_api, "video_cover_and_meta", capture)
     monkeypatch.setattr(creator_api.tempfile, "NamedTemporaryFile", Mock(side_effect=AssertionError("no duplicate video copy")))
     if stage == "success":
         assert creator_api._video_cover_and_meta(media.MediaFile(path, 5))[0] == b"cover"
     else:
         with pytest.raises((XhsApiError, RuntimeError)):
             creator_api._video_cover_and_meta(media.MediaFile(path, 5))
-    capture.assert_called_once_with(str(path))
-    cap.release.assert_called_once()
+    capture.assert_called_once_with(str(path), max_pixels=creator_api.MAX_IMAGE_PIXELS)
     assert path.exists()
 
 

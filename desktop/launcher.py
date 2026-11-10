@@ -36,8 +36,8 @@ def user_directory() -> Path:
     override = os.environ.get("CREATORHUB_DESKTOP_HOME")
     if override:
         return Path(override).expanduser().resolve()
-    base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".local" / "share")))
-    return base / "CreatorHub" / "user-data"
+    from desktop.platform_support import default_home
+    return default_home()
 
 
 def version() -> str:
@@ -171,15 +171,9 @@ def _serve(home: Path, session: str, install_browser: bool) -> int:
         os.environ["CREATORHUB_DESKTOP"] = "1"
     else:
         os.environ.pop("CREATORHUB_DESKTOP", None)
-    if install_browser:
-        from patchright.sync_api import sync_playwright
-        with sync_playwright() as playwright:
-            available = Path(playwright.chromium.executable_path).is_file()
-        if not available:
-            print("首次启动：下载浏览器组件，请保持联网。完成后会自动打开面板。", flush=True)
-            from patchright._impl._driver import compute_driver_executable, get_driver_env
-            node, cli = compute_driver_executable()
-            subprocess.run([node, cli, "install", "chromium"], env=get_driver_env(), check=True)
+    # Opening the workbench must not wait for a browser download. BrowserManager
+    # prepares Chromium only when a compatible local browser is actually needed.
+    os.environ["CREATORHUB_BROWSER_AUTO_INSTALL"] = "1" if install_browser else "0"
     from fastapi.staticfiles import StaticFiles
     from app.main import app
     import uvicorn
@@ -235,7 +229,7 @@ def smoke_test() -> int:
             assert app and (WEB_DIR / "workbench.js").is_file()
             assert (resources() / "config.example.yaml").is_file()
             assert (resources() / "desktop-guide" / "xhs" / "index.html").is_file()
-            if getattr(sys, "frozen", False):
+            if os.name == "nt" and getattr(sys, "frozen", False):
                 updater = resources() / "desktop" / "CreatorHubUpdater.exe"
                 assert updater.is_file()
                 from desktop.update_helper import clean_environment
@@ -243,6 +237,7 @@ def smoke_test() -> int:
                                check=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
             assert all(Path(path).is_file() for path in compute_driver_executable())
             assert Path(get_ffmpeg_exe()).is_file()
+            verify_shared_runtimes()
             with sync_playwright() as playwright:
                 assert playwright.chromium.executable_path
             ui = tk.Tk()
@@ -281,9 +276,40 @@ def update_health_check() -> int:
                 assert (resources() / name).is_file(), name
             assert all(Path(path).is_file() for path in compute_driver_executable())
             assert Path(get_ffmpeg_exe()).is_file()
+            verify_shared_runtimes()
             return 0
         finally:
             os.chdir(previous)
+
+
+def verify_shared_runtimes():
+    """Offline packaging gate: JS signing dependencies and video decode work."""
+    if not getattr(sys, "frozen", False):
+        return
+    from app.runtime_tools import find_node, find_ffmpeg
+    from app.media_tools import video_cover_and_meta
+    from app.processes import child_options
+    import tempfile
+    node = find_node()
+    assert node
+    # An absolute module directory avoids relying on the caller's PATH/CWD.
+    module = str(resources() / "node_modules" / "crypto-js")
+    subprocess.run([node, "-e", "if (!require(process.argv[1]).SHA256) process.exit(1)", module],
+                   check=True, timeout=15, **child_options())
+    from app.platforms.xhs import creator_sign
+    try:
+        assert creator_sign.available(), "Bundled Node signing runtime failed its offline self-test"
+        assert creator_sign._ctx("xhs_rap.js").eval("1 + 1") == 2
+    finally:
+        creator_sign.close_signers()
+    with tempfile.TemporaryDirectory(prefix="creatorhub-media-smoke-") as directory:
+        path = Path(directory) / "sample.mp4"
+        subprocess.run([find_ffmpeg(), "-nostdin", "-y", "-f", "lavfi", "-i",
+                        "color=c=blue:s=160x90:r=25:d=1", "-c:v", "libx264", str(path)],
+                       check=True, timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       **child_options())
+        cover, meta = video_cover_and_meta(path)
+        assert cover.startswith(b"\xff\xd8") and meta["video"]["width"] == 160
 
 
 def recover_interrupted_update(home):
@@ -432,7 +458,8 @@ class Launcher:
     def open_data(self):
         from tkinter import messagebox
         try:
-            os.startfile(str(self.home))
+            from desktop.platform_support import open_folder
+            open_folder(self.home)
         except OSError as exc:
             messagebox.showerror("打开目录失败", str(exc))
 
@@ -540,7 +567,12 @@ def main() -> int:
             ui.root.mainloop()
         else:
             from desktop.web_shell import run_desktop
-            run_desktop(home, install_browser=not args.skip_browser_install)
+            # Older installed updaters restart without CLI flags. Honor their
+            # result/pending markers before Controller consumes the result.
+            update_restart = any((home / "runtime" / name).exists()
+                                 for name in ("update-result.json", "update-pending.json"))
+            run_desktop(home, autostart=not args.no_autostart and not update_restart,
+                        install_browser=not args.skip_browser_install)
     except Exception as exc:
         from tkinter import messagebox
         messagebox.showerror("CreatorHub 启动提示", str(exc))

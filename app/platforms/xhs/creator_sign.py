@@ -17,10 +17,12 @@ import os
 import random
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 from urllib.parse import urlencode
+from ...runtime_tools import find_node
 
 _STATIC = Path(__file__).parent / "static"
 _NODE_MODULES = Path(__file__).resolve().parents[3] / "node_modules"
@@ -46,7 +48,7 @@ class _NodeSigner:
     """
 
     def __init__(self, filename: str):
-        node = shutil.which("node")
+        node = find_node()
         if not node:
             raise RuntimeError("node runtime not found")
         module_path = str((_STATIC / filename).resolve())
@@ -148,7 +150,20 @@ atexit.register(close_signers)
 def _ctx(filename: str):
     if filename not in _JS_CACHE:
         import execjs
-        _JS_CACHE[filename] = execjs.compile((_STATIC / filename).read_text(encoding="utf-8"))
+        runtime = execjs
+        if getattr(sys, "frozen", False):
+            from execjs._external_runtime import ExternalRuntime
+            from execjs._runner_sources import Node
+            node = find_node()
+            if not node:
+                raise RuntimeError("随包 Node 运行环境缺失")
+            class BundledNode(ExternalRuntime):
+                def _binary(self):
+                    # ExecJS's Windows PATH search appends PATHEXT even to an
+                    # absolute .exe path. Use the already verified executable.
+                    return [node]
+            runtime = BundledNode("CreatorHub Node", [node], Node, encoding="utf8")
+        _JS_CACHE[filename] = runtime.compile((_STATIC / filename).read_text(encoding="utf-8"))
     return _JS_CACHE[filename]
 
 

@@ -27,8 +27,6 @@ imageio-ffmpeg==0.6.0
 iniconfig==2.3.0
 markdown-it-py==4.2.0
 mdurl==0.1.2
-numpy==2.2.6
-opencv-python-headless==4.13.0.92
 openpyxl==3.1.5
 packaging==26.2
 patchright==1.61.2

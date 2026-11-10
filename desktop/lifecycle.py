@@ -32,12 +32,18 @@ def watch_parent(parent_pid, stop_file):
                 if alive():
                     continue
                 stop_file.touch()
+                (stop_file.parent / "browser-component.cancel").touch()
                 # The ordinary server stop path releases tasks and browsers first.
                 # During a stalled download/startup, bound the wait and end only this tree.
                 if not finished.wait(30):
                     if os.name == "nt":
                         subprocess.run(["taskkill", "/PID", str(os.getpid()), "/T", "/F"],
                             capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                    elif os.getpgrp() == os.getpid():
+                        # The controller starts a dedicated session on POSIX.
+                        # Never signal an inherited/user process group.
+                        import signal
+                        os.killpg(os.getpgrp(), signal.SIGKILL)
                     os._exit(1)
                 return
         finally:

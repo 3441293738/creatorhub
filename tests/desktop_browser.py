@@ -42,6 +42,20 @@ def main():
                 assert controller.process is None and controller.worker is None
                 assert not (home / "data" / "creatorhub.db").exists()
                 done("opening the desktop waits for manual startup")
+                component = home / "runtime/browser-component.json"
+                component.write_text(json.dumps({"status": "downloading", "progress": 45,
+                    "message": "正在下载并校验浏览器组件（各组件分别显示进度）。"}), encoding="utf-8")
+                expect(page.get_by_role("progressbar")).to_have_attribute("value", "45")
+                page.set_viewport_size({"width": 390, "height": 844})
+                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                page.screenshot(path=str(screenshots / "component-download.png"), full_page=True)
+                page.get_by_role("button", name="取消下载", exact=True).click()
+                expect(page.get_by_text("正在取消浏览器准备；已完成的组件保留。", exact=True)).to_be_visible()
+                assert (home / "runtime/browser-component.cancel").exists()
+                component.unlink()
+                expect(page.get_by_role("progressbar")).to_have_count(0)
+                page.set_viewport_size({"width": 1100, "height": 800})
+                done("on-demand component progress, narrow layout and cancellation")
                 page.get_by_role("button", name="启动本地服务", exact=True).click()
                 expect(page.get_by_role("button", name="打开工作台", exact=True)).to_be_enabled(timeout=45000)
                 page.screenshot(path=str(screenshots / "workspace-light.png"), full_page=True)

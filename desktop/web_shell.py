@@ -10,6 +10,7 @@ import threading
 
 from desktop.controller import Controller
 from desktop.launcher import InstanceLock, resources
+from desktop.platform_support import webview_options
 
 
 class ShellServer(ThreadingHTTPServer):
@@ -136,7 +137,8 @@ def run_desktop(home, *, autostart=False, install_browser=True):
     window.events.loaded += lambda: controller.start() if autostart else None
     window.events.loaded += controller.updates.start_monitor
     try:
-        webview.start(gui="edgechromium", private_mode=False, storage_path=str(home / "runtime" / "shell-browser"))
+        webview.start(**webview_options(), private_mode=False,
+                      storage_path=str(home / "runtime" / "shell-browser"))
     finally:
         controller.updates.stop_monitor()
         controller.updates.cancel_download()

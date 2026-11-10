@@ -30,6 +30,10 @@ class FixtureApp {
         File.Exists(Path.Combine(dir, "_internal", "fail-installed-health.txt")) ? 3 : 0;
     }
     string runtime = Path.Combine(Environment.GetEnvironmentVariable("CREATORHUB_DESKTOP_HOME"), "runtime");
+    if (args.Length == 1 && args[0] == "--no-autostart") {
+      File.WriteAllText(Path.Combine(runtime, "restarted.txt"), "launcher-only");
+      return 0;
+    }
     if (args.Length == 1) {
       using (var file = new FileStream(Path.Combine(runtime, "desktop.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite)) {
         file.Lock(0, 1);
@@ -43,8 +47,8 @@ class FixtureApp {
       }
       return 0;
     }
-    File.WriteAllText(Path.Combine(runtime, "restarted.txt"), "launcher-only");
-    return 0;
+    File.WriteAllText(Path.Combine(runtime, "restarted.txt"), "unexpected-autostart");
+    return 3;
   }
 }
 '''

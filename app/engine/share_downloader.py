@@ -419,16 +419,8 @@ def _is_audio_quality(quality: str) -> bool:
 
 
 def _find_ffmpeg() -> str:
-    """优先使用系统 ffmpeg，找不到时使用 Python 依赖附带的可执行文件。"""
-    executable = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
-    if executable:
-        return executable
-    try:
-        from imageio_ffmpeg import get_ffmpeg_exe  # type: ignore
-        executable = get_ffmpeg_exe()
-    except Exception:
-        return ""
-    return executable if executable and Path(executable).is_file() else ""
+    from app.runtime_tools import find_ffmpeg
+    return find_ffmpeg()
 
 
 def _download_format_options(quality: str, ffmpeg_location: str = "") -> dict[str, Any]:

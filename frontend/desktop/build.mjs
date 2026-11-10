@@ -2,7 +2,7 @@ import { build } from "esbuild";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 const out = "desktop/web";
 await mkdir(out, { recursive: true });
-const result = await build({ entryPoints: ["frontend/desktop/app.jsx"], outfile: `${out}/app.js`, bundle: true, minify: true, format: "iife", target: ["chrome110"], define: { "process.env.NODE_ENV": '"production"' }, legalComments: "linked", metafile: true });
+const result = await build({ entryPoints: ["frontend/desktop/app.jsx"], outfile: `${out}/app.js`, bundle: true, minify: true, format: "iife", target: ["chrome110", "safari16"], define: { "process.env.NODE_ENV": '"production"' }, legalComments: "linked", metafile: true });
 await writeFile(`${out}/index.html`, await readFile("frontend/desktop/index.html", "utf8"));
 const icons = ["file-text", "layout-dashboard", "activity", "book-open", "sliders-horizontal", "monitor", "shield-check", "search", "sun", "moon", "check", "x", "refresh-cw", "wifi-off", "unplug", "arrow-up-right", "loader-circle", "play", "stethoscope", "file-video", "image", "send", "copy", "ellipsis", "panel-bottom-close", "square", "folder", "folder-open", "arrow-right", "arrow-left", "circle-alert", "triangle-alert", "circle-dot", "chevron-right", "search-x", "check-check", "info", "power", "download", "corner-down-left"];
 const symbols = await Promise.all(icons.map(async name => { const svg = await readFile(`node_modules/lucide-static/icons/${name}.svg`, "utf8"); return `<symbol id="${name}" viewBox="0 0 24 24">${svg.match(/<svg[^>]*>([\s\S]*?)<\/svg>/)[1]}</symbol>`; }));

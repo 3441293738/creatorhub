@@ -1,6 +1,6 @@
 """小红书创作平台「API 直发」客户端(参考 Spider_XHS-master/apis/xhs_creator_apis.py)。
 流程:获取上传凭证 -> PUT 文件到 ros-upload(COS 签名)-> (视频)轮询转码 -> POST 发布笔记。
-同步实现(curl_cffi.Session + execjs 签名 + cv2 取图像尺寸/视频封面),由引擎用线程调度。
+同步实现(curl_cffi.Session + execjs 签名 + Pillow/FFmpeg 媒体处理),由引擎用线程调度。
 走 curl_cffi 的 impersonate 复刻 Chrome TLS 指纹(发布是写操作,风控更严)。
 """
 from __future__ import annotations
@@ -25,6 +25,7 @@ from .media import (COPY_CHUNK_BYTES, MediaFile, media_size, validate_media_coun
                     validate_media_size)
 from .responses import XhsApiError, check_http_status, parse_response
 from ...netfp import impersonate_for_ua
+from ...media_tools import MediaToolError, video_cover_and_meta
 
 CREATOR_URL = "https://creator.xiaohongshu.com"
 UPLOAD_URL = "https://ros-upload.xiaohongshu.com"
@@ -460,7 +461,7 @@ def parse_creator_user(d: dict) -> dict:
     }
 
 
-# ── 媒体信息(图片仅读元信息，视频使用 cv2)──
+# ── 媒体信息(图片仅读元信息，视频复用 FFmpeg)──
 def _image_info(file_bytes: bytes | bytearray | MediaFile):
     from PIL import Image
     try:
@@ -481,9 +482,7 @@ def _image_info(file_bytes: bytes | bytearray | MediaFile):
 
 
 def _video_cover_and_meta(video: bytes | MediaFile):
-    import cv2
     tmp = None
-    cap = None
     try:
         if isinstance(video, MediaFile):
             source = str(video.path)
@@ -491,32 +490,10 @@ def _video_cover_and_meta(video: bytes | MediaFile):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as f:
                 f.write(video); tmp = f.name
             source = tmp
-        cap = cv2.VideoCapture(source)
-        if not cap.isOpened():
-            raise XhsPublishError("视频解码失败")
-        fps = cap.get(cv2.CAP_PROP_FPS) or 0
-        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        dur = int(frames / fps * 1000) if fps else 0
-        ok, frame = cap.read()
-        if not ok:
-            raise XhsPublishError("视频封面帧解码失败")
-        ok, enc = cv2.imencode(".jpg", frame)
-        if not ok:
-            raise XhsPublishError("封面编码失败")
-        meta = {
-            "video": {"bitrate": None, "colour_primaries": "BT.709", "duration": dur,
-                      "format": "AVC", "frame_rate": round(fps, 3) if fps else 0,
-                      "height": h, "matrix_coefficients": "BT.709", "rotation": 0,
-                      "transfer_characteristics": "BT.709", "width": w},
-            "audio": {"bitrate": None, "channels": 2, "duration": dur,
-                      "format": "AAC", "sampling_rate": 48000},
-        }
-        return enc.tobytes(), meta
+        return video_cover_and_meta(source, max_pixels=MAX_IMAGE_PIXELS)
+    except (MediaToolError, OSError) as exc:
+        raise XhsPublishError(str(exc)) from exc
     finally:
-        if cap is not None:
-            cap.release()
         if tmp and os.path.exists(tmp):
             os.remove(tmp)
 

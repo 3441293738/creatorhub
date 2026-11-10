@@ -18,6 +18,9 @@ from desktop.launcher import (InstanceLock, child_command, resources, snapshot,
                               utf8_child_environment, version)
 from desktop.updates import UpdateChecker, RELEASES_URL
 from desktop.update_helper import atomic_json, clean_environment, read_request, verify_installer
+from desktop.platform_support import open_folder
+from app.processes import child_options, terminate_owned
+from app.browser.runtime_install import read_status
 
 
 class Controller:
@@ -108,6 +111,7 @@ class Controller:
                     "can_stop": bool((self.process and self.process.poll() is None) or (self.worker and self.worker.is_alive())),
                     "uptime": int(time.monotonic() - self.started_at) if self.started_at else 0,
                     "preferences": dict(self.preferences), "close_requested": self.close_requested,
+                    "browser_component": read_status(self.home),
                     "native": self.hide_window is not None}
 
     def change(self, phase, detail):
@@ -123,9 +127,10 @@ class Controller:
             if self.process and self.process.poll() is None:
                 raise ValueError("上一次服务尚未退出，请先停止服务再重试。")
             self.cancel.clear()
+            (self.home / "runtime" / "browser-component.json").unlink(missing_ok=True)
             self.url = None
-            self.phase, self.detail = "starting", "正在检查环境并启动本地服务。首次使用可能需要下载浏览器。"
-            self.event("开始启动", "检查环境、准备浏览器并连接本地服务。")
+            self.phase, self.detail = "starting", "正在启动工作台；浏览器组件将在需要时准备。"
+            self.event("开始启动", "连接本地服务，不等待浏览器下载。")
             self.worker = threading.Thread(target=self.run, daemon=True)
             self.worker.start()
 
@@ -146,7 +151,7 @@ class Controller:
             with (self.home / "logs" / f"desktop-{session[:8]}.log").open("w", encoding="utf-8") as log:
                 process = subprocess.Popen(child_command(*args), cwd=self.home,
                     env=utf8_child_environment(CREATORHUB_DESKTOP_HOME=str(self.home)),
-                    stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
+                    stdout=log, stderr=subprocess.STDOUT, **child_options())
             with self.lock:
                 self.process = process
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -193,11 +198,7 @@ class Controller:
                     process.wait(timeout=30)
                 except subprocess.TimeoutExpired:
                     self.event("服务退出超时", "正在结束本次启动的进程。", "warning")
-                    if os.name == "nt":
-                        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                                       capture_output=True, creationflags=flags, check=True)
-                    else:
-                        process.terminate()
+                    terminate_owned(process)
                     process.wait(timeout=15)
             else:
                 raise RuntimeError(f"Service exited: {process.returncode}")
@@ -235,6 +236,7 @@ class Controller:
             if alive:
                 self.phase = "stopping"
                 self.cancel.set()
+                (self.home / "runtime" / "browser-component.cancel").touch()
             elif self.process and self.process.poll() is None:
                 self.phase = "stopping"
                 self.worker = threading.Thread(target=self.retry_stop, daemon=True)
@@ -246,11 +248,8 @@ class Controller:
         """Recover a failed shutdown, touching only the child owned by this controller."""
         process = self.process
         try:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=20)
-            else:
-                process.terminate()
+            (self.home / "runtime" / "browser-component.cancel").touch()
+            terminate_owned(process)
             process.wait(timeout=15)
             with self.lock:
                 self.process = None
@@ -413,7 +412,9 @@ class Controller:
                 raise ValueError("本地服务尚未就绪，请先启动或等待连接恢复。")
             webbrowser.open(url)
         elif name in {"open_data", "open_logs"}:
-            os.startfile(str(self.home if name == "open_data" else self.home / "logs"))
+            open_folder(self.home if name == "open_data" else self.home / "logs")
+        elif name == "cancel_browser_download":
+            (self.home / "runtime" / "browser-component.cancel").touch()
         elif name == "open_guide":
             slug = data.get("platform", "")
             if slug not in {"", "douyin", "xhs", "kuaishou", "shipinhao", "tiktok"}:

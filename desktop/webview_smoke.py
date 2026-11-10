@@ -3,6 +3,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from desktop.platform_support import webview_options
 
 
 def smoke():
@@ -40,11 +41,11 @@ def smoke():
                 window.destroy()
 
         try:
-            webview.start(verify, gui="edgechromium")
+            webview.start(verify, **webview_options())
         finally:
             server.shutdown()
             server.server_close()
     if failures:
         raise AssertionError("; ".join(failures))
-    print("PASS native WebView2 desktop renderer and navigation")
+    print("PASS native desktop renderer and navigation")
     return 0
