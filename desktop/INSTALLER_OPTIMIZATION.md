@@ -46,7 +46,7 @@
 ## 尚待发布验收
 
 1. **Windows 原生 WebView2**：当前主机 .NET 将程序集加载位置判为网络来源，报 `Python.Runtime.Loader.Initialize` 错误。旧 v0.2.5 包及原源码环境同样复现，相同 DLL 的 SHA-256 一致。没有放宽 .NET 或系统安全策略，也没有移除 CI 的原生窗口验收。需在干净 Windows 10/11 上复验窗口、完整安装/覆盖清理、无 WebView2 的安装、正常退出和卸载保留数据。
-2. **macOS**：Windows 上完成的是平台合同/脚本检查，没有产出并实测 Mac DMG。需在 ARM/Intel Mac runner 运行流水线，配置维护者的证书和公证凭据，完成真机、最低系统版本、签名及安装验收。未签名/未公证产物标为 `UNTESTED`，流水线不会直接发布 Release。
+2. **macOS**：本地优化阶段仅完成平台合同/脚本检查；随后 v0.2.7 的 [ARM/Intel 云端构建](https://github.com/3441293738/creatorhub/actions/runs/42765280470)已同时通过，产出 DMG，完成随包运行环境、WKWebView 页面导航与服务启停检查。仍需配置维护者的证书和公证凭据，完成真机、最低系统版本、签名及安装验收。未签名/未公证产物标为 `UNTESTED`，流水线不会直接发布 Mac Release 资产。
 3. **全量测试基线**：本次全量运行在 1208 项通过、24 项跳过后达到 6 个失败而停止。五项已在未改动的 `c6cb0cf` 导出目录中复现；另一个 Tk 初始化失败在独立批次通过。没有删除这些断言或将失败改成跳过：
    - `test_douyin_im_response.py` 的两项历史 `.pb` 样本对照测试；
    - `test_guide_site.py::test_readme_community_uses_direct_qr_images`（后续发布准备中已补齐原有赞赏码的断言，保留图片存在性、标签和链接校验）；

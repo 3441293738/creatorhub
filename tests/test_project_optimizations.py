@@ -1,6 +1,7 @@
 """Offline regressions for account retirement, scheduling and write outcomes."""
 import asyncio
 import json
+import shutil
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -35,10 +36,32 @@ class BrowserStub:
         return self.locks.setdefault(key, asyncio.Lock())
 
 
+def empty_project_schema(root):
+    """Reuse only a closed, empty schema; each test still gets a real disk DB.
+
+    Hundreds of CREATE TABLE/INDEX fsyncs per case are very slow on hosted
+    Windows disks. Never share a live engine or populated database across cases.
+    """
+    template = root / "empty-project-schema.db"
+    ready = root / "empty-project-schema.ready"
+    if not (template.is_file() and ready.is_file()):
+        previous_engine = db._engine
+        try:
+            db.init_db(str(template))
+        finally:
+            if db._engine is not previous_engine and db._engine is not None:
+                db._engine.dispose()
+            db._engine = previous_engine
+        ready.touch()
+    return template
+
+
 @pytest.fixture
-def local_project(tmp_path, monkeypatch):
+def local_project(tmp_path, tmp_path_factory, monkeypatch):
     previous_engine = db._engine
     db_path = tmp_path / "optimizations.db"
+    shutil.copyfile(empty_project_schema(tmp_path_factory.getbasetemp()), db_path)
+    # Still exercise normal initialization and idempotent migrations per case.
     db.init_db(str(db_path))
     cfg = Config()
     cfg.engine.profiles_dir = str(tmp_path / "profiles")
