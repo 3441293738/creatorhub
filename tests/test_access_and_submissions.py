@@ -22,6 +22,12 @@ from app.submissions import submit_once
 from test_project_optimizations import local_project, store
 
 
+@pytest.fixture(autouse=True)
+def active_license_for_submission_contract(monkeypatch):
+    # Scope to this API boundary suite; commercial license verification remains separate.
+    monkeypatch.setattr(main.licensing, "is_active", lambda: True)
+
+
 def client(*, peer="127.0.0.1", base="http://127.0.0.1"):
     return httpx.AsyncClient(transport=httpx.ASGITransport(
         app=main.app, client=(peer, 1234)), base_url=base)

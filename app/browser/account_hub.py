@@ -1962,9 +1962,11 @@ async def send_dm_api(mgr: BrowserManager, identity, conv_id: str,
             return True, ""
         if resp.status == 200 and r["ok"]:
             return False, "write_uncertain:发送回包命令不匹配"
+        if r["cmd"] != 100 or resp.status >= 500:
+            return False, "write_uncertain:未取得有效发送回执"
         return False, f"发送被拒 status={resp.status} msg={r['msg']} code={r['error_code']}"
     except Exception as e:
-        return False, f"发送失败: {e!r}"
+        return False, f"write_uncertain:发送失败: {e!r}"
 
 
 async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str = "",
@@ -2078,6 +2080,34 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
             await page.keyboard.type(text, delay=35)
             await page.wait_for_timeout(500)
         sent = False
+        if platform == "douyin":
+            # One submission only. A click is not proof of delivery.
+            from .douyin_im_pb import parse_send_response
+            button = None
+            for sel in _DM_SEND:
+                candidate = page.locator(sel).first
+                if await candidate.count() and await candidate.is_enabled():
+                    button = candidate
+                    break
+            try:
+                async with page.expect_response(
+                    lambda response: response.url.split("?", 1)[0] == _SEND_URL
+                    and response.request.method == "POST", timeout=15000) as pending:
+                    if on_submit:
+                        on_submit()
+                    if button is not None:
+                        await button.click(timeout=3000)
+                    else:
+                        await page.keyboard.press("Enter")
+                response = await pending.value
+                parsed = parse_send_response(await response.body())
+                if response.status == 200 and parsed["cmd"] == 100 and parsed["ok"]:
+                    return True, ""
+                if parsed["cmd"] == 100 and parsed["error_code"] and response.status < 500:
+                    return False, f"发送被拒 code={parsed['error_code']} msg={parsed['msg']}"
+                return False, "write_uncertain:未取得有效平台回执，请核对会话"
+            except Exception as exc:
+                return False, f"write_uncertain:发送后未确认结果: {exc!r}"
         for sel in _DM_SEND:
             try:
                 btn = page.locator(sel).first

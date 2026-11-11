@@ -37,6 +37,9 @@ def _subscribed(subscription: WebhookSubscription, event_type: str) -> bool:
 
 async def dispatch_event(event_id: int) -> dict:
     import httpx
+    from .licensing import is_active
+    if not is_active():
+        return {"ok": False, "error": "license_required", "deferred": True}
 
     with get_session() as session:
         event = session.get(WebhookEvent, event_id)

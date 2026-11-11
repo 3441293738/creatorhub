@@ -1,3 +1,5 @@
+import { syncBrand } from "./brand.mjs";
+await syncBrand();
 import { build } from "esbuild";
 import { readFile, writeFile } from "node:fs/promises";
 import { buildIcons } from "./icons.mjs";

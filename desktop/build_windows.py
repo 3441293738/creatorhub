@@ -56,6 +56,9 @@ def main():
     if not (ROOT / "desktop" / "web" / "index.html").exists():
         raise SystemExit("Build the desktop renderer first: npm run build:desktop")
     for source, destination in ((ROOT / "config.example.yaml", "."),
+                                (ROOT / "COMMERCIAL-NOTICE.txt", "."),
+                                (ROOT / "app" / "brand.json", "app"),
+                                (ROOT / "app" / "license_public.pem", "app"),
                                 (helper, "desktop"),
                                 (ROOT / "desktop" / "languages" / "ChineseSimplified-LICENSE.txt", "desktop/licenses"),
                                 (ROOT / "desktop" / "web", "desktop/web"),

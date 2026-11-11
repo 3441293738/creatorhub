@@ -207,6 +207,7 @@ class UpdateChecker:
             self.manual_notice = False
 
     def start_monitor(self):
+        return
         """Native packaged app only. Loading/reloading the UI never duplicates timers."""
         with self.lock:
             if (not self.install_dir or numeric_version(self.current) is None
@@ -229,6 +230,7 @@ class UpdateChecker:
             self.monitor.join(timeout=2)
 
     def check(self, *, automatic=False):
+        raise ValueError("本地商业验证版不提供上游更新，请使用本地构建。")
         with self.lock:
             if automatic and (self.monitor_stop.is_set() or not self.install_dir
                     or numeric_version(self.current) is None or not self.policy.due(time.time())
@@ -291,12 +293,14 @@ class UpdateChecker:
             self.result = {**result, "checked_at": time.time()}
 
     def download_url(self, tag):
+        raise ValueError("本地商业验证版不提供上游更新，请使用本地构建。")
         with self.lock:
             if self.result.get("tag") != tag or self.result.get("status") not in {"available", "development", "download_error", "cancelled", "downloaded", "install_error"} or not self.result.get("download_url"):
                 raise ValueError("版本信息已变化或安装包尚未就绪，请重新检查更新。")
             return self.result["download_url"]
 
     def download(self, tag):
+        raise ValueError("本地商业验证版不提供上游更新，请使用本地构建。")
         with self.lock:
             self.download_url(tag)
             if not self.cache_dir or not self.result.get("verified_download"):
@@ -394,6 +398,7 @@ class UpdateChecker:
                                progress=min(99, int(downloaded * 100 / size)))
 
     def begin_install(self, tag):
+        raise ValueError("本地商业验证版不提供上游更新，请使用本地构建。")
         with self.lock:
             if (self.result.get("status") not in {"downloaded", "install_error"}
                     or not self.artifact or self.artifact["tag"] != tag):

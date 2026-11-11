@@ -4,6 +4,7 @@ import { createPortal, flushSync } from "react-dom";
 import { Sheet, ActionMenu, Tabs, Icon } from "./ui/primitives";
 import { installMotion, reveal, selectionMarker } from "./ui/motion";
 import { Onboarding } from "./onboarding";
+import { LicenseControl } from "./license";
 
 const $ = id => document.getElementById(id);
 const bridge = window.CreatorHubBridge;
@@ -431,6 +432,7 @@ function App() {
   return <>
     {groups.map(group => createPortal(<SectionTabs group={group} platform={ctx.platform} />, group.target, group.key))}
     {createPortal(<div className="wb-page-actions">
+      <LicenseControl />
       <Onboarding platform={ctx.platform} />
       <span className="wb-refresh-control">
         <button type="button" className="ghost wb-icon-button" aria-label="刷新当前页面" title="刷新当前页面" aria-busy={retrying} data-feedback={refreshFeedback === "已刷新" ? "success" : undefined} onClick={retry} disabled={retrying || !online}><Icon name={refreshFeedback === "已刷新" ? "check" : "refresh"} /></button>

@@ -334,6 +334,9 @@ class XhsDmAutomation:
         self._observer_callbacks.clear()
 
     async def poll(self, account: DouyinAccount, *, trigger: str = "scheduled") -> dict:
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required"}
         account_id = int(account.id or 0)
         identity = self.browser.identity_for(account)
         await self.ensure_realtime(account, force=(trigger == "manual"))

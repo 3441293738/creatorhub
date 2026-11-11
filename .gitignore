@@ -42,3 +42,15 @@ config.yaml
 
 # 内部方案文档(不随公开仓库发布)
 docs/
+
+/operator-secrets/
+*.private.pem
+
+/.test-tmp/
+
+.playwright-cli/
+
+# Local delivery notes and machine-specific diagnostic evidence
+/validation/
+/DELIVERY.md
+/DOUYIN-DM-DELIVERY.md

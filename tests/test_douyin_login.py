@@ -1,6 +1,7 @@
 import json
 import unittest
 from unittest.mock import AsyncMock, patch
+from patchright.async_api import TimeoutError as BrowserTimeoutError
 
 from app.browser.identity import Identity
 from app.browser.login import interactive_login
@@ -84,6 +85,51 @@ class _Manager:
 class DouyinReloginTests(unittest.IsolatedAsyncioTestCase):
     def _identity(self):
         return Identity(account_id=1, profile_dir="fixture", platform="douyin")
+
+    async def test_navigation_timeout_keeps_loaded_login_window_until_scan(self):
+        context = _Context(login_visible=True)
+        async def slow_navigation(url, **kwargs):
+            context.page.url = url
+            raise BrowserTimeoutError("DOMContentLoaded timed out")
+        context.page.goto = AsyncMock(side_effect=slow_navigation)
+        async def scan(_seconds):
+            self.assertFalse(context.closed)
+            context.page.login_visible = False
+        with patch("app.browser.login.asyncio.sleep", new=scan):
+            ok, state, _ = await interactive_login(
+                _Manager(context), self._identity(), timeout_seconds=2)
+        self.assertTrue(ok)
+        self.assertTrue(state)
+        context.page.goto.assert_awaited_once()
+        self.assertTrue(context.closed)
+
+    async def test_navigation_timeout_without_scan_never_reports_success(self):
+        context = _Context(login_visible=True)
+        context.page.url = "https://www.douyin.com/"
+        context.page.goto = AsyncMock(side_effect=BrowserTimeoutError("timeout"))
+        with patch("app.browser.login.asyncio.sleep", new=AsyncMock()):
+            ok, state, _ = await interactive_login(
+                _Manager(context), self._identity(), timeout_seconds=1)
+        self.assertFalse(ok)
+        self.assertEqual(state, "")
+        self.assertTrue(context.closed)
+
+    async def test_navigation_timeout_on_blank_or_error_page_has_clear_error(self):
+        for url in ("about:blank", "chrome-error://chromewebdata/", "https://other.example/"):
+            context = _Context()
+            context.page.url = url
+            context.page.goto = AsyncMock(side_effect=BrowserTimeoutError("timeout"))
+            with self.assertRaisesRegex(RuntimeError, "检查网络或所选代理"):
+                await interactive_login(_Manager(context), self._identity())
+            self.assertEqual(context.cookie_reads, 0)
+            self.assertTrue(context.closed)
+
+    async def test_non_timeout_navigation_failure_is_not_swallowed(self):
+        context = _Context()
+        context.page.goto = AsyncMock(side_effect=RuntimeError("net::ERR_PROXY_CONNECTION_FAILED"))
+        with self.assertRaisesRegex(RuntimeError, "ERR_PROXY_CONNECTION_FAILED"):
+            await interactive_login(_Manager(context), self._identity())
+        self.assertTrue(context.closed)
 
     async def test_force_reauth_clears_stale_cookies_before_polling(self):
         context = _Context()

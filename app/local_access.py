@@ -63,7 +63,8 @@ class LocalAccessMiddleware:
             error = "当前工作台仅供本机使用，请通过 127.0.0.1 或 localhost 访问"
         elif api and (request.headers.get("sec-fetch-site", "") in {"cross-site", "same-site"}
                       or ("origin" in request.headers and not _same_origin(request, request.headers["origin"]))):
-            error = "请从 CreatorHub 同源页面发起请求"
+            from .brand import PRODUCT_NAME
+            error = f"请从 {PRODUCT_NAME} 同源页面发起请求"
         if error:
             await JSONResponse({"detail": error}, status_code=403,
                                headers={"Cache-Control": "no-store"})(scope, receive, send)

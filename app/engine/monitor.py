@@ -2,6 +2,7 @@
 后台循环:到点的目标 -> 真实浏览器抓新作品 -> 入库 -> 下载。
 """
 from __future__ import annotations
+from ..licensing import LicenseRequired
 
 import asyncio
 import inspect
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from sqlmodel import select
-from sqlalchemy import or_
+from sqlalchemy import or_, update
 
 from ..browser import (BrowserManager, fetch_videos, fetch_comments,
                        fetch_creator_comments, fetch_danmaku, fetch_creator_danmaku,
@@ -498,6 +499,8 @@ class MonitorEngine:
                 async with lock:
                     if account_id and self._load_account(account_id) is None:
                         raise AccountUnavailableError("绑定账号已删除，操作已停止")
+                    from ..licensing import require_active
+                    require_active()
                     yield account
 
     def _fail_missing_account_task(self, model, task_id: int) -> dict:
@@ -808,6 +811,10 @@ class MonitorEngine:
     async def _loop(self):
         next_maintenance_at = 0.0
         while self._running:
+            from ..licensing import is_active
+            if not is_active():
+                await asyncio.sleep(1)
+                continue
             poll_seconds = 15
             try:
                 maintenance_due = time.monotonic() >= next_maintenance_at
@@ -837,6 +844,9 @@ class MonitorEngine:
             await asyncio.sleep(poll_seconds)
 
     async def poll_xhs_dm_now(self, account_id: int, *, trigger: str = "manual") -> dict:
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         with get_session() as session:
             account = session.get(DouyinAccount, account_id)
             if not account or account.platform != "xhs":
@@ -875,6 +885,9 @@ class MonitorEngine:
                         reason, account_id, result.get("error"))
 
     async def _process_xhs_dm_automation(self) -> None:
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         enabled = bool(self.cfg.engine.xhs_dm_monitor_enabled
                        or self.cfg.engine.xhs_dm_auto_reply_enabled)
         if not enabled:
@@ -924,6 +937,9 @@ class MonitorEngine:
         return True
 
     async def _process_collection_jobs(self) -> None:
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         if self._collection_tasks:
             return
         with get_session() as s:
@@ -945,6 +961,9 @@ class MonitorEngine:
 
     async def run_collection_job(self, job_id: int) -> dict:
         """执行一个持久化关键词任务，并维护可恢复的状态机。"""
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         started_clock = time.monotonic()
         with get_session() as s:
             job = s.get(KeywordCollectionJob, job_id)
@@ -1118,6 +1137,8 @@ class MonitorEngine:
                         job.status, job.current_step,
                         duration_ms=int((time.monotonic() - started_clock) * 1000))
             raise
+        except LicenseRequired:
+            return {"ok": False, "error": "license_required", "deferred": True}
         except Exception as exc:
             self.risk.record_failure(account_id, OperationKind.READ_HEAVY, exc)
             with get_session() as s:
@@ -1422,6 +1443,9 @@ class MonitorEngine:
 
     async def _process_risk_recovery(self) -> int:
         """Probe recovering accounts independently of idle keepalive cadence."""
+        from ..licensing import is_active
+        if not is_active():
+            return 0
         now = datetime.utcnow()
         gap = max(1, self.cfg.risk_control.recovery_probe_gap_seconds)
         with get_session() as session:
@@ -1637,6 +1661,9 @@ class MonitorEngine:
             await asyncio.gather(*(self.scan_target(tid) for tid, _ in ordered))
 
     async def scan_target(self, target_id: int) -> dict:
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         if target_id in self._inflight:
             return {"ok": True, "new": 0, "skipped": "正在抓取中"}
         self._inflight.add(target_id)
@@ -2403,6 +2430,9 @@ class MonitorEngine:
             self._inflight.discard(key)
 
     async def scan_danmaku_watch(self, watch_id: int) -> dict:
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         key = f"dw:{watch_id}"
         if key in self._inflight:
             return {"ok": True, "new_danmaku": 0, "skipped": "正在抓取中"}
@@ -3044,6 +3074,9 @@ class MonitorEngine:
         return out, (client.last_error or ("" if out else "empty"))
 
     async def scan_comment_watch(self, watch_id: int) -> dict:
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         key = f"cw:{watch_id}"
         if key in self._inflight:
             return {"ok": True, "new_comments": 0, "skipped": "正在抓取中"}
@@ -3680,6 +3713,9 @@ class MonitorEngine:
             return task.id
 
     async def _process_publish(self):
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         due = []
         now = datetime.utcnow()
         with get_session() as s:
@@ -3698,6 +3734,9 @@ class MonitorEngine:
             await self.publish_task(tid)
 
     async def publish_task(self, task_id: int) -> dict:
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         if task_id in self._publishing:
             return {"ok": False, "error": "正在发布中"}
         self._publishing.add(task_id)
@@ -3711,6 +3750,8 @@ class MonitorEngine:
                         account_id, OperationKind.PUBLISH,
                         fallback_key=f"pub:{task_id}"):
                     return await self._publish_task_locked(task_id)
+        except LicenseRequired:
+            return {"ok": False, "error": "license_required", "deferred": True}
         except AccountUnavailableError:
             return self._fail_missing_account_task(PublishTask, task_id)
         finally:
@@ -4012,6 +4053,9 @@ class MonitorEngine:
         return ""
 
     async def _process_comment_rules(self):
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         due = []
         with get_session() as s:
             rules = s.exec(select(CommentRule).where(CommentRule.enabled == True)).all()  # noqa: E712
@@ -4047,6 +4091,9 @@ class MonitorEngine:
 
     async def run_comment_rule(self, rule_id: int) -> dict:
         """跑一轮规则:发现目标 -> 去重/过滤 -> 生成 CommentTask(错峰排期)。"""
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         with get_session() as s:
             r = s.get(CommentRule, rule_id)
             if not r:
@@ -4478,6 +4525,9 @@ class MonitorEngine:
         return cands, ""
 
     async def _process_comment_tasks(self):
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         now = datetime.utcnow()
         due = []
         with get_session() as s:
@@ -4551,6 +4601,9 @@ class MonitorEngine:
         return ""
 
     async def _process_action_tasks(self):
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         now = datetime.utcnow()
         due = []
         with get_session() as s:
@@ -4573,6 +4626,9 @@ class MonitorEngine:
                 log.warning("写操作任务 %s 执行异常: %s", tid, e)
 
     async def execute_action_task(self, task_id: int) -> dict:
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         if task_id in self._actioning:
             return {"ok": False, "error": "正在执行中"}
         self._actioning.add(task_id)
@@ -4585,6 +4641,8 @@ class MonitorEngine:
             async with self._operation_guard(
                     account_id, kind, fallback_key=f"act:{task_id}"):
                 return await self._execute_action_task_locked(task_id)
+        except LicenseRequired:
+            return {"ok": False, "error": "license_required", "deferred": True}
         except AccountUnavailableError:
             return self._fail_missing_account_task(AccountActionTask, task_id)
         finally:
@@ -4666,6 +4724,12 @@ class MonitorEngine:
             # 纯 API 模式不需要构造浏览器身份；hybrid/browser 只有在
             # 页面写入或明确拒绝后的回退路径才建立账号浏览器上下文。
             identity = None if api_only else self.browser.identity_for(acc)
+            claimed = s.exec(update(AccountActionTask).where(
+                AccountActionTask.id == task_id,
+                AccountActionTask.status == "pending").values(status="doing"))
+            if claimed.rowcount != 1:
+                s.rollback()
+                return {"ok": False, "error": "任务已取消或已执行"}
             t.status = "doing"; t.method = ("api" if api_only else "browser"); t.error = ""
             self._clear_row_block(t)
             s.add(t); s.commit()
@@ -4694,8 +4758,8 @@ class MonitorEngine:
                                               target_uid, target_sec_uid, unfollow=True)
                 return ok, err, "browser"
             if action == "send_dm":
-                # Preserve the pre-existing browser-context imapi route when
-                # browser mode is selected, then fall back to the visible page.
+                # Existing conversations use browser-context IM once. Return
+                # platform rejections directly; never submit again via the page.
                 if (platform == "douyin" and not native_mode
                         and dm_conv_id and dm_short_id and dm_ticket):
                     ok, err = await send_dm_api(
@@ -4703,9 +4767,7 @@ class MonitorEngine:
                         dm_ticket, content)
                     if ok:
                         return True, "", "api_browser_context"
-                    category, _signal = classify_platform_error(err)
-                    if category != RiskCategory.BUSINESS:
-                        return False, err, "api_browser_context"
+                    return False, err, "api_browser_context"
                 if platform == "tiktok":
                     ok, err = await send_tiktok_dm(
                         self.browser, identity, target_sec_uid or target_uid, content,
@@ -4932,7 +4994,7 @@ class MonitorEngine:
                             secure_data, secure_error or "secure_api_no_response")
                 # A known rejection has a response and can fall back; an
                 # ambiguous request is deliberately not submitted twice.
-                if (not ok and dy_write_mode == "hybrid"
+                if (not ok and dy_write_mode == "hybrid" and action != "send_dm"
                         and not str(err or "").startswith((
                             "write_uncertain:", "target_resolution_failed:"))):
                     category, _signal = classify_platform_error(err)
@@ -4944,6 +5006,8 @@ class MonitorEngine:
                 ok, err, method = await _browser_action()
         except Exception as e:
             ok, err = False, (str(e) or f"{e!r}")
+            if action == "send_dm":
+                err = f"write_uncertain:私信执行中断，请核对平台；{err}"
 
         kind = OperationKind.DM if action == "send_dm" else OperationKind.SOCIAL
         uncertain = not ok and str(err or "").startswith("write_uncertain:")
@@ -5014,6 +5078,9 @@ class MonitorEngine:
         return {"ok": ok, "error": "" if ok else err, "method": method}
 
     async def execute_comment_task(self, task_id: int) -> dict:
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         if task_id in self._commenting:
             return {"ok": False, "error": "正在执行中"}
         self._commenting.add(task_id)
@@ -5025,6 +5092,8 @@ class MonitorEngine:
                     account_id, OperationKind.COMMENT,
                     fallback_key=f"cmt:{task_id}"):
                 return await self._execute_comment_task_locked(task_id)
+        except LicenseRequired:
+            return {"ok": False, "error": "license_required", "deferred": True}
         except AccountUnavailableError:
             return self._fail_missing_account_task(CommentTask, task_id)
         finally:
@@ -5357,6 +5426,9 @@ class MonitorEngine:
     async def retry_download(self, record_id: int) -> dict:
         """重新下载某条作品(用入库时存下的媒体直链;直链可能过期则需重抓目标)。
         小红书:若当初连详情都没拿到(无媒体快照),这里会用 xsec_token 重新拉一次详情。"""
+        from ..licensing import is_active
+        if not is_active():
+            return {"ok": False, "error": "license_required", "deferred": True}
         with get_session() as s:
             rec = s.get(ContentRecord, record_id)
             if not rec:

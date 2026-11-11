@@ -32,7 +32,7 @@ MIN_PYTHON = (3, 10)
 
 
 def log(message: str) -> None:
-    print(f"[CreatorHub] {message}", flush=True)
+    print(f"[获客助手] {message}", flush=True)
 
 
 def venv_python() -> Path:
@@ -272,7 +272,7 @@ def check() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="CreatorHub 一键安装与启动",
+        description="获客助手 一键安装与启动",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

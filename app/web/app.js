@@ -1,3 +1,4 @@
+const PRODUCT_NAME = document.querySelector("h1")?.firstChild?.textContent?.trim() || document.title;
 const $ = (id) => document.getElementById(id);
 // 有用户发起的慢操作(开浏览器抓评论/发评论/解析链接等)在进行时,暂停 8 秒轮询刷新,
 // 否则定时重渲染会把按钮的「…中」加载态冲掉。
@@ -1096,7 +1097,7 @@ function updatePageContext(name = CURRENT_TAB) {
   if ($("page-desc")) $("page-desc").textContent = meta.desc;
   if ($("page-platform")) $("page-platform").textContent = PF_NAME[PLATFORM] || "当前平台";
   if ($("page-kicker")) $("page-kicker").textContent = pfIsChannels(PLATFORM) ? "本账号工作台" : "多平台工作台";
-  document.title = `${meta.title} · ${PF_NAME[PLATFORM] || ""} | CreatorHub`;
+  document.title = `${meta.title} · ${PF_NAME[PLATFORM] || ""} | ${PRODUCT_NAME}`;
   globalThis.CreatorHubWorkbench?.navigate?.();
 }
 // 是否支持「发布」面板(四平台均有)
@@ -4099,7 +4100,7 @@ async function toggleBrowserRuntime(runtimeId, enabled) {
 async function deleteBrowserRuntime(runtimeId) {
   if (!await uiConfirm({
     title: "移除内核记录",
-    message: "仅移除 CreatorHub 中的内核记录，不会删除原安装目录中的浏览器文件。",
+    message: `仅移除 ${PRODUCT_NAME} 中的内核记录，不会删除原安装目录中的浏览器文件。`,
     okText: "移除",
   })) return;
   try {

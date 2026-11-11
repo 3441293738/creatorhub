@@ -46,6 +46,11 @@ class _BrowserStub:
 
 class WriteGateTests(unittest.TestCase):
     def setUp(self):
+        # These offline gate tests exercise platform/risk behavior under an active license.
+        # Expiry is tested independently in test_commercial_license.py.
+        license_patch = patch("app.licensing.is_active", return_value=True)
+        license_patch.start()
+        self.addCleanup(license_patch.stop)
         self.previous_engine = db._engine
         self.tmp = tempfile.TemporaryDirectory()
         db.init_db(str(Path(self.tmp.name) / "gates.db"))
@@ -298,6 +303,7 @@ class WriteGateTests(unittest.TestCase):
             self.assertIsNotNone(task.next_allowed_at)
 
     def test_dm_risk_response_does_not_retry_through_browser(self):
+        self.cfg.engine.douyin_write_mode = "browser"
         account_id = self._account()
         with db.get_session() as session:
             session.add(DmConversation(
@@ -334,6 +340,12 @@ class WriteGateTests(unittest.TestCase):
         self.assertEqual(browser_calls, 0)
         with db.get_session() as session:
             self.assertEqual(session.get(AccountActionTask, task_id).status, "pending")
+        later_id = self._action_task(account_id)
+        with patch("app.engine.monitor.send_dm_api", api_risk), \
+                patch("app.engine.monitor.send_dm", browser_retry):
+            later = asyncio.run(engine.execute_action_task(later_id))
+        self.assertFalse(later["ok"])
+        self.assertEqual(browser_calls, 0)
 
     def test_douyin_api_comment_success_skips_browser(self):
         account_id = self._cookie_account()

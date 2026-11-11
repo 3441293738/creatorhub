@@ -1,3 +1,5 @@
+import { syncBrand } from "../brand.mjs";
+await syncBrand();
 import { build } from "esbuild";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 const out = "desktop/web";
@@ -7,7 +9,7 @@ await writeFile(`${out}/index.html`, await readFile("frontend/desktop/index.html
 const icons = ["file-text", "layout-dashboard", "activity", "book-open", "sliders-horizontal", "monitor", "shield-check", "search", "sun", "moon", "check", "x", "refresh-cw", "wifi-off", "unplug", "arrow-up-right", "loader-circle", "play", "stethoscope", "file-video", "image", "send", "copy", "ellipsis", "panel-bottom-close", "square", "folder", "folder-open", "arrow-right", "arrow-left", "circle-alert", "triangle-alert", "circle-dot", "chevron-right", "search-x", "check-check", "info", "power", "download", "corner-down-left"];
 const symbols = await Promise.all(icons.map(async name => { const svg = await readFile(`node_modules/lucide-static/icons/${name}.svg`, "utf8"); return `<symbol id="${name}" viewBox="0 0 24 24">${svg.match(/<svg[^>]*>([\s\S]*?)<\/svg>/)[1]}</symbol>`; }));
 const brand = await readFile("frontend/brand.svg", "utf8");
-symbols.push(`<symbol id="brand" viewBox="0 0 24 24">${brand.match(/<svg[^>]*>([\s\S]*?)<\/svg>/)[1]}</symbol>`);
+symbols.push(`<symbol id="brand" viewBox="0 0 256 256">${brand.match(/<svg[^>]*>([\s\S]*?)<\/svg>/)[1]}</symbol>`);
 await writeFile(`${out}/icons.svg`, `<svg xmlns="http://www.w3.org/2000/svg"><defs>${symbols.join("")}</defs></svg>`);
 // Preserve upstream notices for every bundled UI dependency.
 const packages = [...new Set(Object.keys(result.metafile.inputs).map(p => p.match(/node_modules\/((?:@[^/]+\/)?[^/]+)/)?.[1]).filter(Boolean)), "lucide-static"];

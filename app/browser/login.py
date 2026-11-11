@@ -8,6 +8,7 @@ import json
 import logging
 from typing import Optional, Tuple
 from urllib.parse import parse_qs, urlparse
+from patchright.async_api import TimeoutError as BrowserTimeoutError
 
 from .identity import Identity
 from .manager import BrowserManager
@@ -74,7 +75,20 @@ async def interactive_login(mgr: BrowserManager, identity: Identity,
     state_json = ""
 
     try:
-        await page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
+        try:
+            await page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
+        except BrowserTimeoutError as exc:
+            # Douyin can render its login UI while scripts still delay DOMContentLoaded.
+            # Keep that window available for the normal scan timeout; do not navigate
+            # again or treat the navigation timeout as an authenticated session.
+            current = urlparse(page.url)
+            host = (current.hostname or "").lower()
+            if (page.is_closed() or current.scheme not in {"http", "https"}
+                    or not (host == "douyin.com" or host.endswith(".douyin.com"))):
+                raise RuntimeError(
+                    "抖音登录页在30秒内未能打开，请检查网络或所选代理后重试"
+                ) from exc
+            _LOG.warning("抖音登录页加载超时，保留窗口继续等待扫码")
         await _focus(page)
         # 尝试自动弹出登录框(失败也没关系,用户可自行点“登录”)
         for sel in ('text=登录', '[data-e2e="login-button"]', 'button:has-text("登录")'):

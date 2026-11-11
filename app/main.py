@@ -618,7 +618,7 @@ async def lifespan(app: FastAPI):
     async def webhook_delivery_loop():
         while True:
             try:
-                await dispatch_pending(20)
+                await dispatch_pending(20) if licensing.is_active() else None
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -644,7 +644,32 @@ async def lifespan(app: FastAPI):
         await browser.stop()
 
 
-app = FastAPI(title="CreatorHub", lifespan=lifespan)
+from .brand import PRODUCT_NAME
+app = FastAPI(title=PRODUCT_NAME, lifespan=lifespan)
+from . import licensing
+from fastapi.responses import JSONResponse
+
+@app.middleware("http")
+async def commercial_license_gate(request: Request, call_next):
+    path = request.url.path
+    local_action = path.endswith(("/cancel", "/reveal", "/open", "/mark-read")) or path == "/api/task-queue/batch-stop"
+    remote_read = path.endswith("/xhs/favorite-boards") or path in {"/api/publish/published", "/api/publish/note-media", "/api/publish/note-comments", "/api/dm/stream"}
+    protected = path.startswith("/api/") and not path.startswith("/api/license") and not local_action and (request.method not in {"GET", "HEAD", "OPTIONS"} or remote_read)
+    if protected and not licensing.is_active():
+        return JSONResponse(status_code=403, content={"detail": "授权未激活或已到期，请激活或续期", "code": "license_required"})
+    return await call_next(request)
+
+@app.get("/api/license")
+def commercial_license_status():
+    return licensing.status()
+
+@app.post("/api/license/activate")
+def commercial_license_activate(payload: dict = Body(...)):
+    try:
+        return licensing.activate(payload.get("code", ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 app.add_middleware(LocalAccessMiddleware)
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -4619,9 +4644,15 @@ async def cancel_account_action(task_id: int):
         t = s.get(AccountActionTask, task_id)
         if not t:
             raise HTTPException(404, "任务不存在")
-        if t.status in ("done", "doing"):
+        if t.status not in ("pending", "draft"):
             raise HTTPException(400, "该任务已执行,无法取消")
-        t.status = "canceled"; s.add(t); s.commit()
+        from sqlalchemy import update
+        result = s.exec(update(AccountActionTask).where(
+            AccountActionTask.id == task_id,
+            AccountActionTask.status.in_(["pending", "draft"])).values(status="canceled"))
+        if result.rowcount != 1:
+            raise HTTPException(409, "任务已开始执行，无法取消")
+        s.commit()
     return {"ok": True}
 
 
@@ -11733,6 +11764,9 @@ async def index():
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Pragma": "no-cache", "Expires": "0"})
 
+
+from .douyin_dm_batches import router as douyin_dm_router
+app.include_router(douyin_dm_router)
 
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 

@@ -32,7 +32,7 @@ def smoke():
                 window.evaluate_js("location.hash = '#/settings'")
                 time.sleep(1)
                 assert "跟随系统" in window.evaluate_js("document.body.innerText")
-                assert "检查更新" in window.evaluate_js("document.body.innerText")
+                assert "更新由本地构建提供" in window.evaluate_js("document.body.innerText")
                 assert window.evaluate_js("document.querySelectorAll('main').length") == 1
             except Exception as exc:
                 failures.append(str(exc))

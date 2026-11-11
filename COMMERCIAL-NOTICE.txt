@@ -1,0 +1,7 @@
+获客助手 — 本地开发验证版
+
+基于 CreatorHub：https://github.com/3441293738/creatorhub
+上游提交：b96ee378d92d4228c1503d69987e1df9678d6e32
+原作者及贡献者的版权归原权利人所有。主体代码商用许可仍待明确。
+本次修改仅用于本地开发验证，不代表取得商业分发许可。
+第三方许可证保留在 app/web/workbench-licenses.txt、desktop/web/THIRD-PARTY-NOTICES.txt 及其他原有许可文件中。

@@ -74,6 +74,22 @@ class ImReceiverManager:
                 pass
 
     async def _run(self, account_id: int):
+        from ..licensing import is_active
+        while True:
+            state = self._accts.get(account_id)
+            if not state or not state["queues"]:
+                return
+            if not is_active():
+                await asyncio.sleep(1)
+                continue
+            await self._receive_once(account_id)
+            if is_active():
+                return
+
+    async def _receive_once(self, account_id: int):
+        from ..licensing import is_active
+        if not is_active():
+            return
         # 等 uid(允许"先开面板后同步"):最多轮询 ~30s 读 DB,同步存下 uid 即自愈
         uid, identity = "", None
         for _ in range(15):
@@ -105,7 +121,7 @@ class ImReceiverManager:
 
         def should_stop():
             st = self._accts.get(account_id)
-            return not st or not st["queues"]
+            return not st or not st["queues"] or not is_active()
 
         await receive_messages(cookie, uid, on_msg, self_uid=uid,
                                should_stop=should_stop)

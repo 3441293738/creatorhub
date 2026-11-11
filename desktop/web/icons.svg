@@ -153,4 +153,4 @@
 </symbol><symbol id="corner-down-left" viewBox="0 0 24 24">
   <path d="M20 4v7a4 4 0 0 1-4 4H4" />
   <path d="m9 10-5 5 5 5" />
-</symbol><symbol id="brand" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/><circle cx="11" cy="11" r="2.5"/></symbol></defs></svg>
+</symbol><symbol id="brand" viewBox="0 0 256 256"><rect x="2" y="2" width="252" height="252" rx="54" fill="white"/><text x="128" y="186" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="190" fill="#d9244e">获</text></symbol></defs></svg>

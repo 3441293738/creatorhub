@@ -4,6 +4,7 @@ No server, file access or task execution here; lifecycle remains in launcher.py.
 """
 import tkinter as tk
 from tkinter import ttk
+from app.brand import PRODUCT_NAME, BRAND
 
 COLORS = {
     "bg": "#f4f5f8", "surface": "#ffffff", "fg": "#2c313c",
@@ -20,10 +21,11 @@ def brand_image(size=64):
     image = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((2, 2, 254, 254), radius=54, fill="#ffffff")
-    draw.ellipse((38, 34, 190, 186), outline="#25c9ce", width=14)
-    draw.ellipse((54, 34, 206, 186), outline=COLORS["accent"], width=14)
-    draw.ellipse((102, 82, 157, 137), outline=COLORS["accent"], width=12)
-    draw.line((183, 174, 223, 220), fill=COLORS["accent"], width=16)
+    from PIL import ImageFont
+    import os
+    font_path = os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "msyh.ttc")
+    font = ImageFont.truetype(font_path, 170)
+    draw.text((128, 118), BRAND["mark"], font=font, anchor="mm", fill=BRAND["accent"])
     return image.resize((size, size), Image.Resampling.LANCZOS)
 
 
@@ -114,7 +116,7 @@ class LauncherView:
     def __init__(self, owner, version):
         self.owner = owner
         root = owner.root
-        root.title("CreatorHub · 启动管理器")
+        root.title(f"{PRODUCT_NAME} · 启动管理器")
         root.geometry("840x670")
         root.minsize(780, 650)
         configure_styles(root)
@@ -135,7 +137,7 @@ class LauncherView:
         mark.create_oval(9, 5, 39, 35, outline=COLORS["accent"], width=3)
         mark.create_oval(18, 15, 29, 26, outline=COLORS["accent"], width=2)
         mark.create_line(34, 32, 44, 43, fill=COLORS["accent"], width=3)
-        ttk.Label(header, text="CreatorHub", style="Title.TLabel").grid(row=0, column=1, sticky="w")
+        ttk.Label(header, text=PRODUCT_NAME, style="Title.TLabel").grid(row=0, column=1, sticky="w")
         ttk.Label(header, text="启动管理器  /  你的本地内容工作台", style="Subtitle.TLabel").grid(row=1, column=1, sticky="w")
         ttk.Label(header, text=f"桌面版 {version}", style="Idle.TLabel").grid(row=0, column=2, rowspan=2)
 

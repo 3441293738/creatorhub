@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import brand from "../app/brand.json";
 
 const KEY = "creatorhub:onboarding:v1";
 const platforms = {
@@ -42,7 +43,7 @@ export function Onboarding({ platform }) {
     <Dialog.Portal>
       <Dialog.Overlay className="wb-sheet-overlay" />
       <Dialog.Content className="wb-onboarding">
-        <div className="wb-onboarding-head"><span>CREATORHUB / GET STARTED</span><Dialog.Close asChild><button className="ghost sm" aria-label="关闭新手向导">关闭</button></Dialog.Close></div>
+        <div className="wb-onboarding-head"><span>{brand.name} / 开始使用</span><Dialog.Close asChild><button className="ghost sm" aria-label="关闭新手向导">关闭</button></Dialog.Close></div>
         <Dialog.Title>跟着三步，完成第一次使用</Dialog.Title>
         <Dialog.Description>{demo ? "当前是示例演示：操作不会登录真实账号或产生真实任务。" : "先选平台、再登录、最后完成一个小任务。不会自动发布或发送任何内容。"}</Dialog.Description>
         <ol className="wb-onboarding-steps" aria-label="上手步骤">{["选择平台", "登录账号", "第一个任务"].map((label, i) => <li key={label}><button className="ghost" aria-current={step === i ? "step" : undefined} onClick={() => setStep(i)}>{i + 1}. {label}</button></li>)}</ol>
