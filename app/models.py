@@ -8,6 +8,53 @@ from sqlalchemy import Index
 from sqlmodel import Field, SQLModel
 
 
+class AgentRun(SQLModel, table=True):
+    """Bounded assistant run; no model credentials or raw provider history."""
+    id: str = Field(primary_key=True)
+    request_hash: str
+    conversation_id: str = Field(default="", index=True)
+    conversation_title: str = ""
+    parent_run_id: Optional[str] = Field(default=None, index=True)
+    context_key: str = ""
+    channel_id: str = ""
+    channel_name: str = ""
+    task_type: str = ""
+    task_id: Optional[int] = None
+    platform: str = ""
+    account_id: Optional[int] = None
+    mode: str = "chat"
+    prompt: str = ""
+    provider: str = ""
+    model_name: str = ""
+    status: str = Field(default="queued", index=True)
+    answer: str = ""
+    partial_answer: str = ""
+    error: str = ""
+    evidence_json: str = "[]"
+    steps_json: str = "[]"
+    input_tokens: int = 0
+    output_tokens: int = 0
+    usage_json: str = "[]"
+    reasoning_json: str = "[]"
+    duration_ms: int = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    finished_at: Optional[datetime] = None
+
+
+class AgentWorkflow(SQLModel, table=True):
+    """Immutable plan approved by content hash; each step has a durable receipt."""
+    id: str = Field(primary_key=True)
+    run_id: str = Field(index=True)
+    title: str = ""
+    plan_json: str = "{}"
+    plan_hash: str = ""
+    status: str = Field(default="draft", index=True)
+    results_json: str = "[]"
+    error: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class TaskSubmission(SQLModel, table=True):
     """A request receipt committed in the same transaction as its new task."""
     digest: str = Field(primary_key=True)
