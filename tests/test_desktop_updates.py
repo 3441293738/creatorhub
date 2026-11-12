@@ -11,7 +11,7 @@ from desktop.launcher import prepare_home
 
 
 def release(tag="v0.3.0", asset=True):
-    name = f"CreatorHub-Setup-{tag.removeprefix('v')}-windows-x64.exe"
+    name = f"aispace-Setup-{tag.removeprefix('v')}-windows-x64.exe"
     return {"tag_name": tag, "draft": False, "prerelease": False, "body": "更新说明\n<script>alert(1)</script>",
             "assets": [{"name": name, "state": "uploaded", "size": 123456,
                         "browser_download_url": f"{RELEASES_URL}/download/{tag}/{name}"}] if asset else []}

@@ -91,10 +91,10 @@ jobs:
             python desktop/build_macos.py --version "$APP_VERSION" --arch "$APP_ARCH" --identity ""
           fi
       - name: Record package size
-        run: python desktop/package_report.py "dist/macos-$APP_ARCH/CreatorHub.app" --output "dist/macos-$APP_ARCH/package-size.json"
+        run: python desktop/package_report.py "dist/macos-$APP_ARCH/aispace.app" --output "dist/macos-$APP_ARCH/package-size.json"
       - uses: actions/upload-artifact@v4
         with:
-          name: CreatorHub-macOS-${{ matrix.arch }}-${{ env.SIGN_BUILD == 'true' && 'signed' || 'UNTESTED' }}
+          name: aispace-macOS-${{ matrix.arch }}-${{ env.SIGN_BUILD == 'true' && 'signed' || 'UNTESTED' }}
           path: |
             dist/macos-*/*.dmg
             dist/macos-*/SHA256-*.txt

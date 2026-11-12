@@ -119,7 +119,7 @@ def release_info(data, current):
     version = tag.removeprefix("v")
     target = platform_tag()
     windows = target == "windows-x64"
-    asset_name = f"CreatorHub-Setup-{version}-{target}.{'exe' if windows else 'dmg'}"
+    asset_name = f"aispace-Setup-{version}-{target}.{'exe' if windows else 'dmg'}"
     download_url = f"{RELEASES_URL}/download/{quote(tag, safe='')}/{asset_name}"
     asset = next((a for a in data.get("assets", []) if isinstance(a, dict)
                   and a.get("name") == asset_name and a.get("state") == "uploaded"

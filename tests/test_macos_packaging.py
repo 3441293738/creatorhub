@@ -19,8 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_macos_update_selects_matching_dmg_and_no_windows_delta(monkeypatch, arch):
     target = f"macos-{arch}"
     monkeypatch.setattr(updates, "platform_tag", lambda: target)
-    names = [f"CreatorHub-Setup-0.2.7-{target}.dmg", f"SHA256-{target}.txt",
-             "CreatorHub-Setup-0.2.7-windows-x64.exe"]
+    names = [f"aispace-Setup-0.2.7-{target}.dmg", f"SHA256-{target}.txt",
+             "aispace-Setup-0.2.7-windows-x64.exe"]
     data = {"tag_name": "v0.2.7", "assets": [
         {"name": name, "size": 1234, "state": "uploaded",
          "browser_download_url": f"{updates.RELEASES_URL}/download/v0.2.7/{name}"}
@@ -39,7 +39,7 @@ def test_package_report_distinguishes_compressed_and_expanded_bytes(tmp_path):
     folder = bundle / "_internal" / "patchright"
     folder.mkdir(parents=True)
     (folder / "node").write_bytes(b"x" * 100)
-    (bundle / "CreatorHub.exe").write_bytes(b"y" * 50)
+    (bundle / "aispace.exe").write_bytes(b"y" * 50)
     installer = tmp_path / "setup.exe"
     installer.write_bytes(b"z" * 30)
     report = package_report(bundle, installer)

@@ -15,6 +15,14 @@ MAX_FILE_SIZE = 2 * 1024 ** 3
 MAX_TREE_SIZE = 4 * 1024 ** 3
 
 
+def installed_executable(directory):
+    """Prefer the new executable, retaining recovery of an older installation."""
+    directory = Path(directory)
+    current = directory / "aispace.exe"
+    legacy = directory / "CreatorHub.exe"
+    return legacy if not current.is_file() and legacy.is_file() else current
+
+
 def version_tuple(value):
     if not isinstance(value, str) or not re.fullmatch(r"\d{1,8}\.\d{1,8}\.\d{1,8}(?:\.\d{1,8})?", value):
         raise ValueError("Invalid manifest version")
@@ -24,13 +32,13 @@ def version_tuple(value):
 
 def manifest_name(version):
     version_tuple(version)
-    return f"CreatorHub-Update-{version}-windows-x64.json"
+    return f"aispace-Update-{version}-windows-x64.json"
 
 
 def delta_name(base, version):
     version_tuple(base)
     version_tuple(version)
-    return f"CreatorHub-Delta-{base}-to-{version}-windows-x64.zip"
+    return f"aispace-Delta-{base}-to-{version}-windows-x64.zip"
 
 
 def valid_digest(value):
@@ -46,7 +54,7 @@ def file_path(value):
             not p or p in {".", ".."} or p.endswith((".", " "))
             or re.search(r'[<>:"\\|?*\x00-\x1f]', p) or re.fullmatch(reserved, p)
             for p in parts)
-            or not (value == "CreatorHub.exe" or (len(parts) > 1 and parts[0] == "_internal"))):
+            or not (value in {"aispace.exe", "CreatorHub.exe"} or (len(parts) > 1 and parts[0] == "_internal"))):
         raise ValueError("Manifest names a non-application path")
     return value
 
@@ -88,7 +96,8 @@ def validate_files(files):
             raise ValueError("Invalid or duplicate application file")
         seen.add(name)
         total += entry["size"]
-    if total > MAX_TREE_SIZE or not {"creatorhub.exe", "_internal/desktop-version.txt"} <= seen:
+    if (total > MAX_TREE_SIZE or "_internal/desktop-version.txt" not in seen
+            or len(seen & {"aispace.exe", "creatorhub.exe"}) != 1):
         raise ValueError("Incomplete or oversized application inventory")
     for name in seen:
         if any("/".join(name.split("/")[:i]) in seen for i in range(1, len(name.split("/")))):

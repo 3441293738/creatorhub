@@ -16,7 +16,7 @@ from app.processes import child_options, terminate_owned
 
 def main():
     bundle = Path(sys.argv[1]).resolve(strict=True)
-    executable = bundle / "Contents/MacOS/CreatorHub"
+    executable = bundle / "Contents/MacOS/aispace"
     with tempfile.TemporaryDirectory(prefix="creatorhub-macos-smoke-") as directory:
         home = Path(directory)
         env = {**os.environ, "CREATORHUB_DESKTOP_HOME": str(home), "PYTHONUTF8": "1"}

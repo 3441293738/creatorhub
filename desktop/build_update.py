@@ -36,7 +36,10 @@ def build_update(app_dir, output_dir, version, base=None):
         base = parse_manifest(Path(base).read_bytes()) if isinstance(base, (str, Path)) else validate_manifest(base)
         if version_tuple(base["version"]) >= version_tuple(version):
             raise ValueError("Delta base must precede this release")
-        if base["runtime_id"] == data["runtime_id"]:
+        # Legacy updaters only accept CreatorHub.exe. Rename upgrades use the
+        # full installer; subsequent aispace releases may use deltas normally.
+        if (base["runtime_id"] == data["runtime_id"]
+                and any(entry["path"] == "aispace.exe" for entry in base["files"])):
             changed, _ = changes(base["files"], files)
             package = output_dir / delta_name(base["version"], version)
             with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
@@ -53,7 +56,7 @@ def build_update(app_dir, output_dir, version, base=None):
     validate_manifest(data)
     (output_dir / manifest_name(version)).write_text(json.dumps(data, ensure_ascii=False, sort_keys=True), encoding="utf-8")
     # Include only this version's release artifacts, never stale packages or logs.
-    names = [f"CreatorHub-Setup-{version}-windows-x64.exe", manifest_name(version)]
+    names = [f"aispace-Setup-{version}-windows-x64.exe", manifest_name(version)]
     if data.get("delta"):
         names.append(data["delta"]["asset_name"])
     present = [output_dir / name for name in names if (output_dir / name).is_file()]
@@ -63,7 +66,7 @@ def build_update(app_dir, output_dir, version, base=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--app-dir", default="dist/windows/CreatorHub")
+    parser.add_argument("--app-dir", default="dist/windows/aispace")
     parser.add_argument("--output-dir", default="dist/installer")
     parser.add_argument("--version", default="0.2.0")
     parser.add_argument("--base-manifest")

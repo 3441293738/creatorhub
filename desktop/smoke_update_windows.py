@@ -64,7 +64,7 @@ class FixtureSetup {
       string dir = Array.Find(args, a => a.StartsWith("/DIR=", StringComparison.Ordinal)).Substring(5);
       string log = Array.Find(args, a => a.StartsWith("/LOG=", StringComparison.Ordinal)).Substring(5);
       // Windows rejects this overwrite if the original app process is still alive.
-      File.Copy(Path.Combine(stage, "replacement.exe"), Path.Combine(dir, "CreatorHub.exe"), true);
+      File.Copy(Path.Combine(stage, "replacement.exe"), Path.Combine(dir, "aispace.exe"), true);
       File.WriteAllText(Path.Combine(dir, "_internal", "desktop-version.txt"), "0.3.0");
       File.WriteAllLines(log, args);
       return 0;
@@ -108,20 +108,20 @@ def main():
         (home / "data" / "preserve.txt").write_text("unchanged", encoding="utf-8")
         (app / "_internal").mkdir(parents=True)
         (app / "_internal" / "desktop-version.txt").write_text("0.2.0", encoding="utf-8")
-        installer = stage / "CreatorHub-Setup-0.3.0-windows-x64.exe"
-        for name, source, target in (("App", APP_SOURCE, app / "CreatorHub.exe"),
+        installer = stage / "aispace-Setup-0.3.0-windows-x64.exe"
+        for name, source, target in (("App", APP_SOURCE, app / "aispace.exe"),
                                      ("Setup", SETUP_SOURCE, installer)):
             file = work / (name + ".cs")
             file.write_text(source, encoding="utf-8-sig")
             subprocess.run([str(compiler), "/nologo", "/target:winexe", f"/out:{target}", str(file)],
                            check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        shutil.copy2(app / "CreatorHub.exe", stage / "replacement.exe")
-        copied = stage / "CreatorHubUpdater.exe"
+        shutil.copy2(app / "aispace.exe", stage / "replacement.exe")
+        copied = stage / "aispaceUpdater.exe"
         shutil.copy2(updater, copied)
         env = {**clean_environment(), "CREATORHUB_DESKTOP_HOME": str(home)}
         subprocess.run([str(copied), "--self-test"], env=env, check=True, timeout=30,
                        creationflags=subprocess.CREATE_NO_WINDOW)
-        parent = subprocess.Popen([str(app / "CreatorHub.exe"), str(stage / "ready.json")],
+        parent = subprocess.Popen([str(app / "aispace.exe"), str(stage / "ready.json")],
                                   env=env, creationflags=subprocess.CREATE_NO_WINDOW)
         child = None
         try:
@@ -176,12 +176,12 @@ def delta_smoke(updater):
             (app / "_internal/dependency.dat").write_bytes(b"unchanged" * 10000)
             source = root / "App.cs"
             source.write_text(APP_SOURCE, encoding="utf-8-sig")
-            subprocess.run([str(compiler), "/nologo", "/target:winexe", f"/out:{app / 'CreatorHub.exe'}", str(source)],
+            subprocess.run([str(compiler), "/nologo", "/target:winexe", f"/out:{app / 'aispace.exe'}", str(source)],
                            check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
             baseline = build_update(app, root / "baseline", "0.2.0")
             shutil.copytree(app, new)
             # A legal PE overlay changes the executable digest without changing the fixture's behavior.
-            with (new / "CreatorHub.exe").open("ab") as stream:
+            with (new / "aispace.exe").open("ab") as stream:
                 stream.write(b"\nCreatorHub delta executable fixture\n")
             (new / "_internal/desktop-version.txt").write_text("0.2.1")
             (new / "_internal/new-code.js").write_text("// updated code fixture")
@@ -197,10 +197,10 @@ def delta_smoke(updater):
             meta = stage / manifest_name("0.2.1")
             shutil.copy2(release / package.name, package)
             shutil.copy2(release / meta.name, meta)
-            copied = stage / "CreatorHubUpdater.exe"
+            copied = stage / "aispaceUpdater.exe"
             shutil.copy2(updater, copied)
             env = {**clean_environment(), "CREATORHUB_DESKTOP_HOME": str(home)}
-            parent = subprocess.Popen([str(app / "CreatorHub.exe"), str(stage / "ready.json")],
+            parent = subprocess.Popen([str(app / "aispace.exe"), str(stage / "ready.json")],
                                       env=env, creationflags=subprocess.CREATE_NO_WINDOW)
             child = None
             try:

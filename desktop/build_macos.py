@@ -72,7 +72,7 @@ def main():
     output = ROOT / "dist" / f"macos-{args.arch}"
     staging.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
-    brand_image(1024).save(staging / "CreatorHub.icns")
+    brand_image(1024).save(staging / "aispace.icns")
     build_guide(staging / "desktop-guide")
     (staging / "desktop-version.txt").write_text(args.version, encoding="utf-8")
     (staging / "build-runtime.json").write_text(json.dumps({
@@ -80,7 +80,7 @@ def main():
         "pyinstaller": package_version("pyinstaller"), "update_protocol": 1,
     }, sort_keys=True), encoding="utf-8")
     command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir", "--windowed",
-               "--name", "CreatorHub", "--icon", str(staging / "CreatorHub.icns"),
+               "--name", "aispace", "--icon", str(staging / "aispace.icns"),
                "--distpath", str(output), "--workpath", str(staging / "work"), "--specpath", str(staging),
                "--paths", str(ROOT), "--target-arch", args.arch,
                "--osx-bundle-identifier", "io.github.creatorhub.desktop"]
@@ -91,7 +91,7 @@ def main():
         command += ["--add-data", f"{source}:{destination}"]
     command += [str(ROOT / "desktop/launcher.py")]
     subprocess.run(command, cwd=ROOT, check=True)
-    bundle = output / "CreatorHub.app"
+    bundle = output / "aispace.app"
     plist_path = bundle / "Contents/Info.plist"
     with plist_path.open("rb") as stream:
         info = plistlib.load(stream)
@@ -111,12 +111,12 @@ def main():
     # Build the disk-image source without mutating a previously published bundle.
     import tempfile
     verified = bool(args.identity and args.notary_profile)
-    prefix = "CreatorHub-Setup" if verified else "CreatorHub-UNTESTED"
+    prefix = "aispace-Setup" if verified else "aispace-UNTESTED"
     dmg = output / f"{prefix}-{args.version}-macos-{args.arch}.dmg"
     with tempfile.TemporaryDirectory(prefix="dmg-", dir=staging) as temp:
-        shutil.copytree(bundle, Path(temp) / "CreatorHub.app", symlinks=True)
+        shutil.copytree(bundle, Path(temp) / "aispace.app", symlinks=True)
         (Path(temp) / "Applications").symlink_to("/Applications", target_is_directory=True)
-        subprocess.run(["hdiutil", "create", "-volname", "CreatorHub", "-srcfolder", temp,
+        subprocess.run(["hdiutil", "create", "-volname", "aispace", "-srcfolder", temp,
                         "-format", "UDZO", "-ov", str(dmg)], check=True)
     if args.identity:
         subprocess.run(["codesign", "--sign", args.identity, "--timestamp", str(dmg)], check=True)

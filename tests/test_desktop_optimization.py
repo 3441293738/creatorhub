@@ -143,7 +143,7 @@ def test_windows_and_mac_bundles_exclude_unused_heavy_dependencies():
 def test_update_restart_does_not_replay_tasks(tmp_path):
     from desktop.update_helper import restart_app
     with patch("desktop.update_helper.subprocess.Popen") as spawn:
-        restart_app({"home": tmp_path, "executable": tmp_path / "CreatorHub.exe"})
+        restart_app({"home": tmp_path, "executable": tmp_path / "aispace.exe"})
     assert spawn.call_args.args[0][-1] == "--no-autostart"
 
 
@@ -151,6 +151,6 @@ def test_full_upgrade_cleanup_is_limited_to_retired_application_libraries():
     root = Path(__file__).resolve().parents[1]
     installer = (root / "desktop/installer.iss").read_text(encoding="utf-8")
     cleanup = installer.split("[InstallDelete]", 1)[1].split("[Tasks]", 1)[0]
-    lines = [line for line in cleanup.splitlines() if line.startswith("Type:")]
+    lines = [line for line in cleanup.splitlines() if line.startswith("Type: filesandordirs;")]
     assert lines == [f'Type: filesandordirs; Name: "{{app}}\\_internal\\{name}"'
                      for name in ("cv2", "numpy", "numpy.libs")]

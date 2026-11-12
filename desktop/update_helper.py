@@ -17,7 +17,7 @@ import re
 import subprocess
 import sys
 import time
-from desktop.update_manifest import MAX_MANIFEST_SIZE, delta_name, manifest_name, valid_digest
+from desktop.update_manifest import MAX_MANIFEST_SIZE, delta_name, manifest_name, valid_digest, installed_executable
 from desktop.update_delta import apply_delta, load_delta, read_journal, rollback
 
 
@@ -67,7 +67,7 @@ def read_request(filename):
     if kind not in {"full", "delta"}:
         raise ValueError("Unsupported update kind")
     expected_name = (delta_name(data.get("from_version"), data["version"]) if kind == "delta"
-                     else f"CreatorHub-Setup-{data['version']}-windows-x64.exe")
+                     else f"aispace-Setup-{data['version']}-windows-x64.exe")
     if (data["installer"].parent != stage or data["installer"].name != expected_name
             or not data["installer"].is_file()):
         raise ValueError("Invalid staged installer")
@@ -76,7 +76,7 @@ def read_request(filename):
             or not isinstance(data.get("sha256"), str)
             or not re.fullmatch(r"[a-f0-9]{64}", data["sha256"])):
         raise ValueError("Invalid update identity or digest")
-    executable = data["install_dir"] / "CreatorHub.exe"
+    executable = installed_executable(data["install_dir"])
     current = (data["install_dir"] / "_internal" / "desktop-version.txt").read_text(encoding="utf-8").strip()
     if not executable.is_file() or target <= numeric_version(current):
         raise ValueError("Only a newer version may be installed")
@@ -218,7 +218,7 @@ def restart_app(data):
     env = clean_environment()
     env["CREATORHUB_DESKTOP_HOME"] = str(data["home"])
     # Reopen the launcher only. Running tasks are never replayed automatically.
-    subprocess.Popen([str(data["executable"]), "--no-autostart"], cwd=data["home"], env=env,
+    subprocess.Popen([str(installed_executable(Path(data["executable"]).parent)), "--no-autostart"], cwd=data["home"], env=env,
                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
@@ -318,7 +318,7 @@ def recover_update(home, parent_pid=0):
     parent = None
     try:
         if parent_pid:
-            parent = ParentProcess(parent_pid, journal["install_dir"] / "CreatorHub.exe")
+            parent = ParentProcess(parent_pid, installed_executable(journal["install_dir"]))
             atomic_json(home / "runtime/update-recovery-ready.json", {"pid": parent_pid})
             parent.wait(home / "runtime/update-recovery-cancel")
         with ExitStack() as stack:
@@ -327,7 +327,7 @@ def recover_update(home, parent_pid=0):
             rollback(home, journal)
             atomic_json(home / "runtime/update-result.json", {"status": "install_error",
                         "version": journal["version"], "reason": "recovered", "prefer_full": True})
-        restart_app({"home": home, "executable": journal["install_dir"] / "CreatorHub.exe"})
+        restart_app({"home": home, "executable": installed_executable(journal["install_dir"])})
         return 0
     finally:
         if parent:

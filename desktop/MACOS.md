@@ -24,7 +24,7 @@ python desktop/build_macos.py --version 0.2.7 --arch arm64
 # Intel 构建机使用 --arch x86_64
 ```
 
-输出到 `dist/macos-架构/`。未完成签名和公证的文件命名为 `CreatorHub-UNTESTED-...dmg`，不作为正式下载资产，也不要求用户关闭 Gatekeeper。
+输出到 `dist/macos-架构/`。未完成签名和公证的文件命名为 `aispace-UNTESTED-...dmg`，不作为正式下载资产，也不要求用户关闭 Gatekeeper。
 
 ## Developer ID 签名与公证
 
@@ -52,8 +52,8 @@ python desktop/build_macos.py --version 0.2.7 --arch arm64 --notary-profile crea
 
 正式资产命名：
 
-- `CreatorHub-Setup-版本-macos-arm64.dmg` + `SHA256-macos-arm64.txt`
-- `CreatorHub-Setup-版本-macos-x86_64.dmg` + `SHA256-macos-x86_64.txt`
+- `aispace-Setup-版本-macos-arm64.dmg` + `SHA256-macos-arm64.txt`
+- `aispace-Setup-版本-macos-x86_64.dmg` + `SHA256-macos-x86_64.txt`
 
 ## 发布前验收清单
 

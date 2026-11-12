@@ -252,7 +252,7 @@ def smoke_test() -> int:
             assert (resources() / "config.example.yaml").is_file()
             assert (resources() / "desktop-guide" / "xhs" / "index.html").is_file()
             if os.name == "nt" and getattr(sys, "frozen", False):
-                updater = resources() / "desktop" / "CreatorHubUpdater.exe"
+                updater = resources() / "desktop" / "aispaceUpdater.exe"
                 assert updater.is_file()
                 from desktop.update_helper import clean_environment
                 subprocess.run([str(updater), "--self-test"], env=clean_environment(),
@@ -341,7 +341,9 @@ def recover_interrupted_update(home):
     if not journal or journal.get("phase") in {"committed", "rolled_back"}:
         return False
     from desktop.update_helper import clean_environment
-    helper = home / "runtime/updates" / journal["attempt"] / "CreatorHubUpdater.exe"
+    helper = home / "runtime/updates" / journal["attempt"] / "aispaceUpdater.exe"
+    if not helper.is_file():
+        helper = helper.with_name("CreatorHubUpdater.exe")  # Existing interrupted update.
     ready = home / "runtime/update-recovery-ready.json"
     ready.unlink(missing_ok=True)
     (home / "runtime/update-recovery-cancel").unlink(missing_ok=True)

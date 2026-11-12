@@ -21,8 +21,8 @@ def installation_fixture(root):
     internal = app / "_internal"
     (internal / "desktop").mkdir(parents=True)
     (internal / "desktop-version.txt").write_text("0.2.0", encoding="utf-8")
-    (internal / "desktop" / "CreatorHubUpdater.exe").write_bytes(b"helper-fixture")
-    (app / "CreatorHub.exe").write_bytes(b"old-app-fixture")
+    (internal / "desktop" / "aispaceUpdater.exe").write_bytes(b"helper-fixture")
+    (app / "aispace.exe").write_bytes(b"old-app-fixture")
     info = verified_release()
     stage = home / "runtime" / "updates" / ("update-" + "a" * 32)
     stage.mkdir(parents=True)
@@ -42,7 +42,7 @@ class InstallTests(unittest.TestCase):
         self.controller.updates.artifact = dict(self.artifact)
         self.controller.exit_window = Mock()
         self.patches = [patch.object(self.controller, "update_install_supported", return_value=True),
-                        patch("desktop.controller.sys.executable", str(self.app / "CreatorHub.exe")),
+                        patch("desktop.controller.sys.executable", str(self.app / "aispace.exe")),
                         patch("desktop.controller.resources", return_value=self.app / "_internal")]
         for item in self.patches:
             item.start()
@@ -53,7 +53,7 @@ class InstallTests(unittest.TestCase):
             self.assertFalse(self.controller.install_worker.is_alive())
         for item in reversed(self.patches):
             item.stop()
-        self.assertEqual((self.app / "CreatorHub.exe").read_bytes(), b"old-app-fixture")
+        self.assertEqual((self.app / "aispace.exe").read_bytes(), b"old-app-fixture")
         self.temp.cleanup()
 
     def install(self):

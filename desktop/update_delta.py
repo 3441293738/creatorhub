@@ -16,7 +16,7 @@ import tempfile
 import zipfile
 
 from desktop.update_manifest import (changes, hash_file, parse_manifest, safe_path,
-                                    verify_tree)
+                                    verify_tree, installed_executable)
 
 
 def atomic_record(path, data):
@@ -96,7 +96,7 @@ def health_check(app, environment):
         env = {**environment, "CREATORHUB_DESKTOP_HOME": temp,
                "CREATORHUB_CONFIG_PATH": str(Path(temp) / "absent.yaml")}
         with (Path(temp) / "health.log").open("wb") as log:
-            subprocess.run([str(app / "CreatorHub.exe"), "--update-health-check"],
+            subprocess.run([str(installed_executable(app)), "--update-health-check"],
                            cwd=temp, env=env, stdout=log, stderr=log,
                            check=True, timeout=90,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

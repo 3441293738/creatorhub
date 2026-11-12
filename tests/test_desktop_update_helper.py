@@ -35,7 +35,7 @@ class HelperTests(unittest.TestCase):
         helper.verify_installer(data)
         for field, invalid in (("schema", 2), ("parent_pid", 0), ("size", True),
                                ("sha256", "bad"), ("home", "."), ("version", "../0.3.0"),
-                               ("installer", str(self.app / "CreatorHub.exe")),
+                               ("installer", str(self.app / "aispace.exe")),
                                ("version", "0.1.0")):
             with self.subTest(field=field, invalid=invalid):
                 helper.atomic_json(self.request, {**self.manifest, field: invalid})

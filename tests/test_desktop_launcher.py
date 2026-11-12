@@ -54,8 +54,8 @@ class DesktopTests(unittest.TestCase):
                 self.assertEqual(chosen.getsockname()[0], "127.0.0.1")
 
     def test_frozen_command_is_not_python_module_invocation(self):
-        with patch("sys.frozen", True, create=True), patch("sys.executable", "CreatorHub.exe"):
-            self.assertEqual(child_command("--serve"), ["CreatorHub.exe", "--serve"])
+        with patch("sys.frozen", True, create=True), patch("sys.executable", "aispace.exe"):
+            self.assertEqual(child_command("--serve"), ["aispace.exe", "--serve"])
 
     def test_child_environment_overrides_legacy_windows_encoding(self):
         with patch.dict(os.environ, {"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252"}):

@@ -92,8 +92,8 @@ class Controller:
 
     def update_install_supported(self):
         return bool(os.name == "nt" and getattr(sys, "frozen", False)
-                    and Path(sys.executable).name.lower() == "creatorhub.exe"
-                    and (resources() / "desktop" / "CreatorHubUpdater.exe").is_file()
+                    and Path(sys.executable).name.lower() == "aispace.exe"
+                    and (resources() / "desktop" / "aispaceUpdater.exe").is_file()
                     and self.exit_window is not None)
 
     def event(self, title, detail="", level="info"):
@@ -294,8 +294,8 @@ class Controller:
             data = read_request(request)
             verify_installer(data)
             verified = True
-            copied = stage / "CreatorHubUpdater.exe"
-            shutil.copy2(resources() / "desktop" / "CreatorHubUpdater.exe", copied)
+            copied = stage / "aispaceUpdater.exe"
+            shutil.copy2(resources() / "desktop" / "aispaceUpdater.exe", copied)
             # Preflight before interrupting any work. Start remains locked until
             # handoff or failure; backup is taken only after the service releases DB.
             self.updates.install_status("preparing", "正在停止本地服务，随后备份配置与数据库…")
