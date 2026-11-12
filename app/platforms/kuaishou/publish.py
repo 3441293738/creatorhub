@@ -321,6 +321,8 @@ async def publish_kuaishou(mgr: BrowserManager, identity: Identity,
             await _dump(page, "no-publish-button")
             return False, "", "未找到可用的“发布”按钮(已保存 data/debug 诊断快照)"
         await button.scroll_into_view_if_needed(timeout=3000)
+        from app.licensing import require_active
+        require_active()
         await button.click(timeout=5000)
         _log("已点击发布，等待平台确认")
 

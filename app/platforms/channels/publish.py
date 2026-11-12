@@ -289,6 +289,8 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
             diag = await _collect_diag(page, "no-publish-btn")
             return False, "", (f"上传/填写已完成但未找到发表按钮。DOM诊断: {diag}")
         try:
+            from app.licensing import require_active
+            require_active()
             await pub.click(timeout=5000)
         except Exception as e:
             return False, "", f"点发表失败: {e!r}"

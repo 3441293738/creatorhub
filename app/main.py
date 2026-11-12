@@ -531,6 +531,7 @@ def _seed_browser_runtimes() -> list[dict]:
 async def lifespan(app: FastAPI):
     global browser, engine, im_receiver, _webhook_delivery_task
     init_db(cfg.db_path)
+    await asyncio.to_thread(licensing.start)
     try:
         with get_session() as session:
             merged_accounts = reconcile_xhs_accounts(session)
@@ -626,6 +627,7 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(15)
     _webhook_delivery_task = asyncio.create_task(webhook_delivery_loop())
     yield
+    licensing.stop()
     if _webhook_delivery_task:
         _webhook_delivery_task.cancel()
         await asyncio.gather(_webhook_delivery_task, return_exceptions=True)
@@ -669,6 +671,10 @@ def commercial_license_activate(payload: dict = Body(...)):
         return licensing.activate(payload.get("code", ""))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.post("/api/license/revalidate")
+def commercial_license_revalidate():
+    return licensing.revalidate()
 
 app.add_middleware(LocalAccessMiddleware)
 WEB_DIR = Path(__file__).parent / "web"

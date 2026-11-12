@@ -336,3 +336,12 @@ def test_share_api_only_runs_real_client_without_browser_or_generic_fallback(loc
         assert result["metadata"]["api_diagnostics"]["origin"] == ORIGIN
     browser_read.assert_not_awaited()
     http.get.assert_awaited_once()
+
+
+# These platform contract tests exercise an authorized running client.
+# License-denial behavior is covered by test_device_business_gate.py.
+import pytest as _license_pytest
+
+@_license_pytest.fixture(autouse=True)
+def _authorized_platform_test(monkeypatch):
+    monkeypatch.setattr("app.licensing.is_active", lambda: True)

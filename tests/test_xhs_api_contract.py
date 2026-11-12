@@ -448,3 +448,12 @@ def test_failed_api_publish_is_not_retried_or_sent_through_browser(tmp_path, mon
     api.post_note.assert_called_once()
     api.close.assert_called_once()
     browser.assert_not_awaited()
+
+
+# These platform contract tests exercise an authorized running client.
+# License-denial behavior is covered by test_device_business_gate.py.
+import pytest as _license_pytest
+
+@_license_pytest.fixture(autouse=True)
+def _authorized_platform_test(monkeypatch):
+    monkeypatch.setattr("app.licensing.is_active", lambda: True)

@@ -54,3 +54,8 @@ docs/
 /validation/
 /DELIVERY.md
 /DOUYIN-DM-DELIVERY.md
+
+.npm-cache/
+
+/DEVICE-LICENSE-DELIVERY.md
+/output/

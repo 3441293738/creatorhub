@@ -422,6 +422,8 @@ async def _publish_button(page):
 
 
 async def _notify_submit(callback: Callable[[], object] | None) -> None:
+    from app.licensing import require_active
+    require_active()
     if callback is None:
         return
     result = callback()

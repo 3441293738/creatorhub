@@ -17,6 +17,8 @@ from ..platforms.tiktok.urls import COMMENT_PUBLISH_HINTS, profile_url, video_ur
 
 
 async def _mark_submit(on_submit: Any) -> None:
+    from app.licensing import require_active
+    require_active()
     if on_submit is None:
         return
     result = on_submit()
@@ -97,8 +99,12 @@ async def post_tiktok_comment(
         button = await _visible(page, COMMENT_SUBMITS)
         await _mark_submit(on_submit)
         if button is not None:
+            from app.licensing import require_active
+            require_active()
             await button.click(timeout=4000)
         else:
+            from app.licensing import require_active
+            require_active()
             await page.keyboard.press("Enter")
         submitted = True
         for _ in range(30):
@@ -145,11 +151,15 @@ async def do_tiktok_follow(
         if following == (not unfollow):
             return True, ""
         await _mark_submit(on_submit)
+        from app.licensing import require_active
+        require_active()
         await button.click(timeout=4000)
         clicked = True
         if unfollow:
             confirm = await _visible(page, ('button:has-text("Unfollow")', 'button:has-text("Confirm")'))
             if confirm is not None:
+                from app.licensing import require_active
+                require_active()
                 await confirm.click(timeout=3000)
         for _ in range(15):
             await page.wait_for_timeout(400)
@@ -214,6 +224,8 @@ async def send_tiktok_dm(
         except Exception:
             await target.keyboard.type(text, delay=35)
         await _mark_submit(on_submit)
+        from app.licensing import require_active
+        require_active()
         await target.keyboard.press("Enter")
         submitted = True
         await page.wait_for_timeout(1000)

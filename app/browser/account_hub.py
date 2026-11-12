@@ -1682,6 +1682,8 @@ async def fetch_dm_history(mgr: BrowserManager, identity, platform: str,
         ctx = await mgr.context_for(identity)      # 常驻无头 context(带 cookie)
         req = build_history_request(conv_id, int(conv_type or 1),
                                     int(conv_short_id), int(cursor or 0), count)
+        from app.licensing import require_active
+        require_active()
         resp = await ctx.request.post(
             GET_BY_CONV_URL, data=req,
             headers={"content-type": "application/x-protobuf",
@@ -1870,6 +1872,8 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
         after = text
         if platform == "xhs":
             try:
+                from app.licensing import require_active
+                require_active()
                 await interaction.click_visible(btn)
             except Exception as e:
                 return False, f"{want}点击失败: {e!r}"
@@ -1884,6 +1888,8 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
                            "为避免重复操作，本次不再点击")
         for attempt in range(3):
             try:
+                from app.licensing import require_active
+                require_active()
                 await btn.click(timeout=4000)
             except Exception as e:
                 if attempt == 2:
@@ -1949,6 +1955,8 @@ async def send_dm_api(mgr: BrowserManager, identity, conv_id: str,
         stime = int(time.time() * 1000)
         req = build_send_request(conv_id, int(conv_type or 1), int(conv_short_id),
                                  ticket, text, cmid, stime)
+        from app.licensing import require_active
+        require_active()
         resp = await ctx.request.post(
             _SEND_URL, data=req,
             headers={"accept": "application/x-protobuf",
@@ -2096,8 +2104,12 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
                     if on_submit:
                         on_submit()
                     if button is not None:
+                        from app.licensing import require_active
+                        require_active()
                         await button.click(timeout=3000)
                     else:
+                        from app.licensing import require_active
+                        require_active()
                         await page.keyboard.press("Enter")
                 response = await pending.value
                 parsed = parse_send_response(await response.body())
@@ -2113,8 +2125,12 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
                 btn = page.locator(sel).first
                 if await btn.count() and await btn.is_enabled():
                     if platform == "xhs":
+                        from app.licensing import require_active
+                        require_active()
                         await mgr.xhs_interaction.click_visible(btn)
                     else:
+                        from app.licensing import require_active
+                        require_active()
                         await btn.click(timeout=3000)
                     sent = True
                     break
@@ -2122,6 +2138,8 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
                 continue
         if not sent:
             try:
+                from app.licensing import require_active
+                require_active()
                 await page.keyboard.press("Enter")
                 sent = True
             except Exception:

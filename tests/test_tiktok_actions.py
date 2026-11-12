@@ -11,3 +11,12 @@ def test_tiktok_action_selectors_and_uncertain_contract_exist():
     assert "write_uncertain:私信已提交" in source
     assert 'target_url: str = ""' in source
     assert 'or video_url(aweme_id, author_unique_id)' in source
+
+
+# These platform contract tests exercise an authorized running client.
+# License-denial behavior is covered by test_device_business_gate.py.
+import pytest as _license_pytest
+
+@_license_pytest.fixture(autouse=True)
+def _authorized_platform_test(monkeypatch):
+    monkeypatch.setattr("app.licensing.is_active", lambda: True)

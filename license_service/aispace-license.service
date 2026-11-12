@@ -1,0 +1,17 @@
+[Unit]
+Description=Aispace internal license service
+After=network.target
+[Service]
+User=aispace-license
+Group=aispace-license
+WorkingDirectory=/opt/aispace-license
+Environment=LICENSE_DATA=/var/lib/aispace-license
+ExecStart=/opt/aispace-license/venv/bin/uvicorn license_service.server:app --host 0.0.0.0 --port 8088 --no-access-log
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/aispace-license
+[Install]
+WantedBy=multi-user.target

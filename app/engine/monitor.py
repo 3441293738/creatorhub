@@ -439,6 +439,8 @@ class MonitorEngine:
     @staticmethod
     def _mark_write_submit(model, task_id: int, *, channel: str = "browser") -> None:
         """Durably mark the no-retry boundary before one click or API POST."""
+        from ..licensing import require_active
+        require_active()
         if channel not in {"browser", "api"}:
             raise ValueError("未知的提交通道")
         with get_session() as s:

@@ -302,10 +302,14 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
         except Exception:
             pass
         try:
+            from app.licensing import require_active
+            require_active()
             await btn.click(timeout=5000)
             _log("已点击发布按钮")
         except Exception:
             # 兜底:用文本选择器再点一次
+            from app.licensing import require_active
+            require_active()
             if not await _click_first(page, _PUBLISH_BTN, timeout=4000):
                 await _dump(page, "clickfail")
                 return False, "", "发布按钮点击失败(可能被弹层遮挡/需补封面)。已存诊断截图。"

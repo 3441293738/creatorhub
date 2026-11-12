@@ -19,6 +19,8 @@ _DM_WRITE_PATHS = (
 
 
 async def _mark_submit(on_submit: Any) -> None:
+    from app.licensing import require_active
+    require_active()
     if on_submit is None:
         return
     result = on_submit()

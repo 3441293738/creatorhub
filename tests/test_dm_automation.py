@@ -22,6 +22,9 @@ from sqlmodel import select
 
 class DmAutomationTests(unittest.TestCase):
     def setUp(self):
+        active_license = patch("app.licensing.is_active", return_value=True)
+        active_license.start()
+        self.addCleanup(active_license.stop)
         self.previous_engine = db._engine
         self.tmp = tempfile.TemporaryDirectory()
         db.init_db(str(Path(self.tmp.name) / "dm.db"))

@@ -48,3 +48,12 @@ def test_browser_send_has_platform_receipt_and_no_second_submit(raw,status,click
     page.keyboard.press.assert_not_awaited()
     page.close.assert_awaited_once()
     ctx.close.assert_awaited_once()
+
+
+# These platform contract tests exercise an authorized running client.
+# License-denial behavior is covered by test_device_business_gate.py.
+import pytest as _license_pytest
+
+@_license_pytest.fixture(autouse=True)
+def _authorized_platform_test(monkeypatch):
+    monkeypatch.setattr("app.licensing.is_active", lambda: True)

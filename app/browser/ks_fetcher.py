@@ -954,6 +954,8 @@ async def post_ks_comment(mgr: BrowserManager, identity: Identity, photo_id: str
             try:
                 btn = page.locator(sel).first
                 if await btn.count() and await btn.is_enabled():
+                    from app.licensing import require_active
+                    require_active()
                     await btn.click(timeout=3000)
                     sent = True
                     break

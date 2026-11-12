@@ -305,6 +305,8 @@ class _SubmitLocator:
         return getattr(self._locator, name)
 
     async def click(self, *args, **kwargs):
+        from app.licensing import require_active
+        require_active()
         if self._on_submit is not None:
             result = self._on_submit()
             if inspect.isawaitable(result):

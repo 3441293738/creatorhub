@@ -187,3 +187,12 @@ def test_token_source_distinguishes_issued_token_from_random_fallback(monkeypatc
     assert isinstance(value, str)
     assert value.source == ("sdk" if sdk_success else "random_fallback")
     assert value == "ISSUED" if sdk_success else len(value) == 126
+
+
+# These platform contract tests exercise an authorized running client.
+# License-denial behavior is covered by test_device_business_gate.py.
+import pytest as _license_pytest
+
+@_license_pytest.fixture(autouse=True)
+def _authorized_platform_test(monkeypatch):
+    monkeypatch.setattr("app.licensing.is_active", lambda: True)

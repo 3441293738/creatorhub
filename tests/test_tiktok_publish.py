@@ -107,3 +107,12 @@ def test_tiktok_publish_marks_no_retry_boundary_before_click():
     click = source.index("await button.click(timeout=5000)", marker)
     assert marker < click
     assert "write_uncertain:" in source
+
+
+# These platform contract tests exercise an authorized running client.
+# License-denial behavior is covered by test_device_business_gate.py.
+import pytest as _license_pytest
+
+@_license_pytest.fixture(autouse=True)
+def _authorized_platform_test(monkeypatch):
+    monkeypatch.setattr("app.licensing.is_active", lambda: True)

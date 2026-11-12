@@ -537,6 +537,8 @@ class DouyinClient:
                 "Origin": BASE,
             })
             headers.update(self._write_security_headers(path, url))
+            from app.licensing import require_active
+            require_active()
             response = await cli.post(
                 url, data=encoded_form,
                 headers=headers, impersonate=self.impersonate, timeout=self.timeout,
@@ -718,6 +720,8 @@ class DouyinClient:
             body = build_create_conversation_request(
                 target_uid, self_uid,
                 **self._im_request_options(referer))
+            from app.licensing import require_active
+            require_active()
             response = await cli.post(
                 IMAPI_CREATE_URL, data=body,
                 headers={**self._headers(referer),
@@ -771,6 +775,8 @@ class DouyinClient:
                 str(conv_id), int(conv_type or 1), int(conv_short_id), str(ticket),
                 text, str(uuid.uuid4()), int(time.time() * 1000),
                 **self._im_request_options())
+            from app.licensing import require_active
+            require_active()
             response = await cli.post(
                 IMAPI_SEND_URL, data=body,
                 headers={**self._headers(),
@@ -862,6 +868,8 @@ class DouyinClient:
         try:
             body = build_init_request(
                 int(time.time() * 1_000_000), **self._im_request_options())
+            from app.licensing import require_active
+            require_active()
             response = await cli.post(
                 GET_MESSAGE_BY_INIT_URL, data=body,
                 headers={**self._headers(),
