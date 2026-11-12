@@ -2,7 +2,7 @@
 
 本地运行的多平台内容管理工作台，支持 **抖音 / 小红书 / 快手 / 视频号 / TikTok**。
 
-[在线预览](https://3441293738.github.io/creatorhub/) · [平台能力](#平台能力) · [使用指南](https://3441293738.github.io/creatorhub/guide/) · [下载安装](https://github.com/3441293738/creatorhub/releases/latest) · [问题反馈](https://github.com/3441293738/creatorhub/issues) · [交流群](#交流群)
+[在线预览](https://3441293738.github.io/creatorhub/) · [平台能力](#平台能力) · [使用指南](https://3441293738.github.io/creatorhub/guide/) · [下载安装](https://github.com/3441293738/creatorhub/releases/latest) · [问题反馈](https://github.com/3441293738/creatorhub/issues) · [赞赏与交流](#赞赏与交流)
 
 <p align="center">
   <a href="https://3441293738.github.io/creatorhub/">
@@ -25,9 +25,9 @@
 | 小红书 | 笔记 / 评论监控、关键词与收藏采集、下载、发布与私信管理 |
 | 快手 | 作品 / 评论监控、批量采集、下载与发布 |
 | 视频号 | 本账号作品、数据与评论管理，批量采集与发布 |
-| TikTok | 关键词视频采集、作品 / 评论监控、下载与用户互动 |
+| TikTok | 关键词视频采集、作品 / 评论监控、下载、视频发布与用户互动 |
 
-> 视频号仅处理本账号内容；TikTok 暂不支持发布与直播。详细能力、操作步骤和使用限制见[使用指南](https://3441293738.github.io/creatorhub/guide/#welcome)。
+> 视频号仅处理本账号内容；TikTok 当前支持单视频发布，暂不支持图文发布与直播。详细能力、操作步骤和使用限制见[使用指南](https://3441293738.github.io/creatorhub/guide/#welcome)。
 
 ## 快速开始
 
@@ -97,22 +97,31 @@ chmod +x start.sh
   覆盖 195+ 地区，包含动态代理 / 静态代理 / 不限量代理，支持 HTTP / HTTPS / SOCKS5 多种协议。
   可免费试用，优惠折扣码：<code>0201</code>。
 </p>
-## 交流群
+
+## 赞赏与交流
+
+如果 CreatorHub 对你有帮助，欢迎自愿赞赏，支持项目持续维护与改进。
 
 欢迎加入 **CreatorHub 交流群**，交流使用经验、问题反馈和功能建议。
 
 <table>
   <tr>
-    <th align="center">扫码加群</th>
-    <th align="center">添加作者微信</th>
+    <th align="center" width="33%">赞赏支持</th>
+    <th align="center" width="33%">扫码加群</th>
+    <th align="center" width="33%">添加作者微信</th>
   </tr>
   <tr>
-    <td align="center">
+    <td align="center" valign="middle">
+      <a href="assets/community/wechat-reward.jpg">
+        <img src="assets/community/wechat-reward.jpg" alt="CreatorHub 作者微信赞赏码" width="240">
+      </a>
+    </td>
+    <td align="center" valign="middle">
       <a href="assets/community/wechat-group.png">
         <img src="assets/community/wechat-group.png" alt="CreatorHub 交流群二维码" width="240">
       </a>
     </td>
-    <td align="center">
+    <td align="center" valign="middle">
       <a href="assets/community/wechat-personal.jpg">
         <img src="assets/community/wechat-personal.jpg" alt="作者个人微信二维码，扫码添加好友" width="240">
       </a>
@@ -121,8 +130,9 @@ chmod +x start.sh
 </table>
 
 <p align="center">
-  使用微信扫描群二维码加入交流群，点击图片可查看原图。
-  入群遇到问题，也可以添加作者微信联系。
+  使用微信扫码赞赏、加入交流群或添加作者，点击图片可查看原图。
+  <br>
+  赞赏金额随心，感谢每一份支持！入群遇到问题，也可以添加作者微信联系。
 </p>
 
 ## 友链

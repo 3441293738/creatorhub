@@ -10,6 +10,7 @@ from importlib.metadata import version as package_version
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from preview.build_preview import build_guide
+from desktop.bundle_config import dependency_options, node_module_data
 
 
 def main():
@@ -49,16 +50,15 @@ def main():
                "--name", "CreatorHub", "--icon", str(staging / "CreatorHub.ico"),
                "--distpath", str(dist_root),
                "--workpath", str(staging / "work"), "--specpath", str(staging),
-               "--paths", str(ROOT), "--hidden-import", "pystray._win32",
-               "--collect-submodules", "uvicorn"]
-    for package in ("app", "patchright", "xhshow", "curl_cffi", "imageio_ffmpeg", "tzdata", "webview", "clr_loader", "pythonnet"):
-        command += ["--collect-all", package]
+               "--paths", str(ROOT)]
+    command += dependency_options("windows")
     if not (ROOT / "desktop" / "web" / "index.html").exists():
         raise SystemExit("Build the desktop renderer first: npm run build:desktop")
     for source, destination in ((ROOT / "config.example.yaml", "."),
                                 (ROOT / "COMMERCIAL-NOTICE.txt", "."),
                                 (ROOT / "app" / "brand.json", "app"),
                                 (ROOT / "app" / "license_public.pem", "app"),
+                                node_module_data(ROOT),
                                 (helper, "desktop"),
                                 (ROOT / "desktop" / "languages" / "ChineseSimplified-LICENSE.txt", "desktop/licenses"),
                                 (ROOT / "desktop" / "web", "desktop/web"),

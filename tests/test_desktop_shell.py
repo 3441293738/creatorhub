@@ -59,6 +59,12 @@ class DesktopShellTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn(self.server.token.encode(), body)
 
+    def test_native_shell_keeps_strict_script_policy(self):
+        with self.opener.open(self.server.origin + "/") as response:
+            policy = response.headers["Content-Security-Policy"]
+        self.assertIn("script-src 'self';", policy)
+        self.assertNotIn("'unsafe-eval'", policy)
+
     def test_preferences_persist_only_known_fields(self):
         self.controller.action("preferences", {"theme": "dark", "open_on_ready": False, "config": "ignored"})
         next_controller = Controller(self.home)

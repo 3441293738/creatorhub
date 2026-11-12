@@ -1279,6 +1279,11 @@ kbd, .key-button {
   font-size: 11.5px;
 }
 .connection-banner > span { flex: 1; }
+.component-progress { flex-wrap: wrap; }
+.component-progress > div { flex: 1 1 14rem; min-width: 0; }
+.component-progress p { margin: 0 0 8px; }
+.component-progress progress { width: min(18rem, 100%); accent-color: var(--accent); }
+.component-progress .button { min-height: 44px; }
 .connection-banner .button { font-size: 11.5px; color: inherit; }
 
 /* Layer 3: Liquid Glass Overlays, Modals, Sheets, Menus & Toasts */

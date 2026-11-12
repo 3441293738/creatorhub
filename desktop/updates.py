@@ -16,6 +16,7 @@ from desktop.update_download import DownloadCancelled, download_file
 from desktop.update_manifest import (MAX_MANIFEST_SIZE, manifest_name, delta_name,
                                     parse_manifest, verify_tree)
 from desktop.update_policy import UpdatePolicy
+from desktop.platform_support import platform_tag
 
 REPOSITORY = "3441293738/creatorhub"
 RELEASES_URL = f"https://github.com/{REPOSITORY}/releases"
@@ -116,15 +117,18 @@ def release_info(data, current):
     if data.get("draft") or data.get("prerelease") or latest is None:
         raise ValueError("Not a supported stable release")
     version = tag.removeprefix("v")
-    asset_name = f"CreatorHub-Setup-{version}-windows-x64.exe"
+    target = platform_tag()
+    windows = target == "windows-x64"
+    asset_name = f"CreatorHub-Setup-{version}-{target}.{'exe' if windows else 'dmg'}"
     download_url = f"{RELEASES_URL}/download/{quote(tag, safe='')}/{asset_name}"
     asset = next((a for a in data.get("assets", []) if isinstance(a, dict)
                   and a.get("name") == asset_name and a.get("state") == "uploaded"
                   and a.get("browser_download_url") == download_url
                   and type(a.get("size")) is int and 0 < a["size"] <= MAX_INSTALLER_SIZE), None)
-    checksum_url = f"{RELEASES_URL}/download/{quote(tag, safe='')}/SHA256.txt"
+    checksum_name = "SHA256.txt" if windows else f"SHA256-{target}.txt"
+    checksum_url = f"{RELEASES_URL}/download/{quote(tag, safe='')}/{checksum_name}"
     checksum_asset = next((a for a in data.get("assets", []) if isinstance(a, dict)
-                           and a.get("name") == "SHA256.txt" and a.get("state") == "uploaded"
+                           and a.get("name") == checksum_name and a.get("state") == "uploaded"
                            and a.get("browser_download_url") == checksum_url
                            and type(a.get("size")) is int
                            and 0 < a["size"] <= MAX_CHECKSUM_SIZE), None)
@@ -137,7 +141,7 @@ def release_info(data, current):
                 "current": "当前版本已是最新，或比最新正式版更新。"}
     if status == "available" and not asset:
         status = "unavailable"
-        messages[status] = "发现新版本，但 Windows x64 安装包尚未发布。"
+        messages[status] = f"发现新版本，但 {target} 安装包尚未发布。"
     return {"status": status, "message": messages[status], "version": version,
             "tag": tag, "release_url": f"{RELEASES_URL}/tag/{quote(tag, safe='')}",
             "notes": str(data.get("body") or "维护者暂未填写更新说明。")[:50000],
@@ -149,9 +153,9 @@ def release_info(data, current):
             "asset_sha256": asset_sha256,
             "verified_download": bool(asset and (checksum_asset or asset_sha256)),
             "download_kind": "full", "download_size": asset["size"] if asset else None,
-            "manifest_asset": release_asset(data, manifest_name(version), MAX_MANIFEST_SIZE),
+            "manifest_asset": release_asset(data, manifest_name(version), MAX_MANIFEST_SIZE) if windows else None,
             "delta_asset": release_asset(data, delta_name(current.removeprefix('v'), version))
-                           if installed is not None and latest > installed else None}
+                           if windows and installed is not None and latest > installed else None}
 
 
 def fetch_release(current):

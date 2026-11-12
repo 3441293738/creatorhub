@@ -218,7 +218,7 @@ def restart_app(data):
     env = clean_environment()
     env["CREATORHUB_DESKTOP_HOME"] = str(data["home"])
     # Reopen the launcher only. Running tasks are never replayed automatically.
-    subprocess.Popen([str(data["executable"])], cwd=data["home"], env=env,
+    subprocess.Popen([str(data["executable"]), "--no-autostart"], cwd=data["home"], env=env,
                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 

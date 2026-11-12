@@ -24,6 +24,7 @@ from .client import (
     search_pairs,
 )
 from .offline_sign import sign as sign_tiktok_offline
+from .publish import MANAGE_URL as TIKTOK_STUDIO_CONTENT_URL, publish_tiktok
 
 __all__ = [
     "flatten_tiktok_comments",
@@ -44,4 +45,6 @@ __all__ = [
     "native_protocol_summary",
     "search_pairs",
     "sign_tiktok_offline",
+    "publish_tiktok",
+    "TIKTOK_STUDIO_CONTENT_URL",
 ]

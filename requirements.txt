@@ -10,9 +10,7 @@ curl_cffi>=0.15.0      # 小红书 API 会话复用与 discard_cookies 隔离；
 python-multipart>=0.0.9   # 发布:上传图集/视频文件
 openpyxl>=3.1.5          # 监控报告:Excel 导出
 PyExecJS>=1.5.1           # 发布:运行小红书创作平台签名 JS(需 Node.js)
-opencv-python-headless>=4.8  # 发布:视频封面与元数据
 Pillow>=12.3.0            # 发布:真实图片格式/尺寸与有界元信息校验
-numpy>=1.24               # opencv 依赖
 
 websockets>=12
 yt-dlp>=2025.1.15        # 通用分享链接解析/下载（抖音、B站、YouTube 等及通用媒体页）

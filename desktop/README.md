@@ -1,14 +1,14 @@
-# Windows 桌面分发
+# 桌面分发（Windows / macOS）
 
-桌面启动中心使用独立 React + Radix UI 界面，由 WebView2 原生窗口承载。不修改原 Web 工作台，也不替换 `start.cmd` / `start.sh`。
+桌面启动中心使用独立 React + Radix UI 界面，Windows 使用 WebView2，macOS 使用系统 WKWebView。不替换 `start.cmd` / `start.sh`。macOS 原生构建、签名与验收见 [MACOS.md](MACOS.md)；尚未进行 Mac 真机验收的构建不作为正式安装包发布。
 
 ## 普通用户
 
-安装向导默认使用简体中文，包含路径选择、快捷方式、安装/卸载按钮与 WebView2 错误提示。语言资源随仓库固定保存，不依赖构建机是否装有中文语言包。
+安装向导默认使用简体中文，默认安装到当前用户目录，跳过路径和开始菜单目录选择，保留快捷方式、安装/卸载按钮与 WebView2 错误提示。语言资源随仓库固定保存，不依赖构建机是否装有中文语言包。
 
 1. 安装已发布的 `CreatorHub-Setup-版本-windows-x64.exe`，通过桌面快捷方式启动。
-2. 无需自行安装 Python。安装器检测 Microsoft Edge WebView2 Runtime，缺少时自动通过随包附带的微软引导程序联网安装；失败会提示重试，不继续启动应用。首次点击“启动本地服务”会自动下载 Patchright Chromium；小红书建议安装系统 Chrome。
-3. 打开桌面版只显示启动中心，不启动后台服务、不下载浏览器、不执行任务。点击“启动本地服务”后再等待就绪；是否自动打开工作台由偏好设置控制。端口 8000 被占用时自动换用空闲端口。
+2. 无需自行安装 Python 或 Node。安装器检测 Microsoft Edge WebView2 Runtime，缺少时自动通过随包附带的微软引导程序联网安装。浏览器自动化优先复用已验证可启动的系统 Chrome；仅在需要默认浏览器的操作中补齐缺失的 Patchright Chromium。小红书仍使用系统稳定版 Chrome/CDP，不以 Chromium 替代该要求。
+3. 新版直接启动本地服务，默认就绪后打开工作台；已有启用的监控和队列随服务启动运行。浏览器下载不再阻塞进入工作台。使用 `--no-autostart` 可只打开启动中心，内置更新器重启时固定使用此模式，避免自动重放任务。是否自动打开工作台由偏好设置控制，端口 8000 被占用时自动换用空闲端口。
 4. 使用“新手向导”选择平台，按登录 → 第一个任务完成操作。
 5. 可最小化到托盘；关闭网页不停止任务。“停止并退出”或关闭管理窗口会确认并停止服务。
 
@@ -17,7 +17,7 @@
 数据位于 `%LOCALAPPDATA%\CreatorHub\user-data`，与安装目录分开：
 
 - `config.yaml`、`data/`：配置、账号 Profile、数据库与媒体。
-- `browsers/`：浏览器组件，不打进安装包，首次启动自动下载。
+- `browsers/`：按需准备的浏览器组件，已完成的组件跨启动复用。下载进度和取消入口位于启动中心；失败后再次执行相关操作即可重试。底层下载器可能重新下载未完成的文件，不承诺浏览器组件断点续传。
 - `logs/`：本机诊断日志，可能含敏感信息，不要直接公开。
 - `backups/`：版本变化时启动前自动备份配置和数据库，不包含媒体与 Profile；原始用户数据不会被安装器删除。
 
@@ -82,6 +82,8 @@ python desktop/release.py 0.2.0
 3. 仅在构建成功后，以独立的 `contents: write` 发布任务创建 Release 草稿、上传安装包与摘要，再公开发布。本版中文说明从 `CHANGELOG.md` 自动提取到 `RELEASE_NOTES.md`，同时用于 Release 正文与客户端展示，不再让用户阅读自动生成的英文提交列表。发布调用采用 [GitHub CLI](https://cli.github.com/manual/gh_release_create)。
 4. 用户从 README 的最新正式版入口下载；客户端“检查更新”也使用同一 Releases 通道。GitHub 自动判断 latest，补发旧版本不强制顶替新版。
 
+同一标签同时触发 **Build macOS installer**，分别构建 Apple Silicon 与 Intel 的同版本 DMG。Mac 默认生成标注 `UNTESTED` 的 Actions 测试产物，不自动进入正式更新通道；配置证书、公证凭据与 `MACOS_SIGN_RELEASE=true` 后可签名构建，详见 [MACOS.md](MACOS.md)。Windows 发布不等待尚待验收的 Mac 构建。
+
 在仓库 Actions 查看运行结果。构建失败不发布；草稿上传失败可重跑失败任务。已公开的同标签版本不会被覆盖，需要修复时发布新版本号。若发布权限被组织策略限制，请允许该发布任务使用 `contents: write`。
 
 ### 仅构建测试包
@@ -104,7 +106,7 @@ python desktop/release.py 0.2.0
 
 ## 桌面开发与测试
 
-默认启动为手动模式，旧 `--no-autostart` 参数保留兼容。服务进程独立持有 `service.lock`，即使启动中心异常退出，新服务也不能同时使用同一数据目录。启动中心消失时先请求正常停止，启动或下载卡住超过 30 秒后结束本次服务进程树；源码版没有离线文档时继续使用在线教程。旧版本没有此保护，升级前仍需先退出旧版。
+默认启动服务；`--no-autostart` 保留手动模式，更新后重启显式使用该参数。服务进程独立持有 `service.lock`，即使启动中心异常退出，新服务也不能同时使用同一数据目录。启动中心消失时先取消组件准备并请求正常停止，卡住超过 30 秒后结束本次服务进程树；POSIX 使用独立进程组，不终止用户的其他浏览器。源码版没有离线文档时继续使用在线教程。
 
 父进程监视使用 Windows 进程句柄，避免仅按 PID 轮询；参考 [OpenProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess) 和 [WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)。`tests/test_desktop_lifecycle.py` 在临时数据目录覆盖手动启动、重复服务拒绝、运行中丢失启动中心和启动卡住时的回收。
 

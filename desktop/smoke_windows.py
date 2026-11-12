@@ -66,7 +66,7 @@ def main():
             assert duplicate.returncode != 0, "A duplicate frozen service used the same data directory"
             web = source / "app" / "web"
             assets = ("app.js", "engine-settings.js", "workbench.js", "workbench.css",
-                      "appearance.js", "appearance.css")
+                      "appearance.js", "appearance.css", "douyin-dm.js", "submissions.js")
             for path in ("/", "/health", "/guide/", "/guide/xhs/", "/guide/douyin/", "/guide/guide.css",
                          *(f"/static/{name}" for name in assets)):
                 with opener.open(url + path, timeout=5) as response:
@@ -79,6 +79,12 @@ def main():
                     elif path.startswith("/static/"):
                         assert response.read() == (web / path.rsplit("/", 1)[1]).read_bytes(), \
                             f"Frozen workbench asset differs from the current build: {path}"
+            with opener.open(url + "/openapi.json", timeout=5) as response:
+                paths = json.load(response)["paths"]
+                assert "/api/douyin/dm/preview" in paths
+                assert "/api/douyin/dm/batches" in paths
+            with opener.open(url + "/api/license", timeout=5) as response:
+                assert not json.load(response)["valid"], "Empty test data must require activation"
             (home / "runtime" / f"{session}.stop").touch()
             assert child.wait(timeout=35) == 0, "Service shutdown failed"
             assert (home / "data" / "creatorhub.db").is_file()

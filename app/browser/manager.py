@@ -516,6 +516,7 @@ class BrowserManager:
         for channel in ("chrome", None):
             launch_kwargs: Dict[str, Any] = {
                 "headless": True,
+                "timeout": 8000,
             }
             if channel:
                 launch_kwargs["channel"] = channel
@@ -979,6 +980,17 @@ class BrowserManager:
     async def _launch_persistent(self, identity: Identity, headless: bool = True
                                  ) -> BrowserContext:
         effective_backend = self.effective_browser_backend(identity)
+        if (effective_backend != FINGERPRINT_CHROMIUM_BACKEND
+                and self._browser_channel is None
+                and os.environ.get("CREATORHUB_BROWSER_AUTO_INSTALL") == "1"):
+            from .runtime_install import ensure_chromium
+            executable = self._pw.chromium.executable_path
+            if not Path(executable).is_file():
+                # Chrome may have been installed since the service started.
+                self._chrome_major = await self._detect_chrome_major()
+                if self._browser_channel is None:
+                    await asyncio.to_thread(ensure_chromium, executable)
+                    self._chrome_major = await self._detect_chrome_major()
         fingerprint_backend = None
         runtime_id = ""
         if effective_backend == FINGERPRINT_CHROMIUM_BACKEND:

@@ -61,7 +61,8 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install -r requirements.txt -r desktop/requirements-build.txt pytest -c desktop/constraints-windows.txt
       - name: Test monitor API and frontend contracts
-        run: python -m pytest tests/test_monitor_accounts.py tests/test_monitor_intervals.py tests/test_automatic_cadence.py tests/test_engine_settings.py tests/test_web_optimizations.py -q
+        timeout-minutes: 10
+        run: python -m pytest tests/test_project_fixture.py tests/test_monitor_accounts.py tests/test_monitor_intervals.py tests/test_automatic_cadence.py tests/test_engine_settings.py tests/test_web_optimizations.py -v -o faulthandler_timeout=90
       - name: Test TikTok and multi-platform compatibility
         run: >-
           python -m pytest
@@ -75,6 +76,8 @@ jobs:
           -q
       - name: Test release contract
         run: python -m unittest discover -s tests -p test_windows_release.py
+      - name: Test lightweight media and runtime contracts
+        run: python -m pytest tests/test_desktop_optimization.py tests/test_media_tools.py tests/test_macos_packaging.py tests/test_owned_processes.py tests/test_xhs_publish_resources.py -q
       - name: Test release helper
         run: python -m unittest discover -s tests -p test_desktop_release.py
       - name: Test installer localization contract
@@ -131,7 +134,10 @@ jobs:
           $file = Get-Item "dist/installer/CreatorHub-Setup-$env:APP_VERSION-windows-x64.exe"
           "$((Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower())  $($file.Name)" | Set-Content dist/installer/SHA256.txt -Encoding ascii
       - name: Fetch verified previous release inventory
+        # Size limits use compressed bytes and expanded bytes separately.
         run: python desktop/fetch_update_base.py --version $env:APP_VERSION
+      - name: Enforce installer size budget
+        run: python desktop/package_report.py dist/windows/CreatorHub --installer "dist/installer/CreatorHub-Setup-$env:APP_VERSION-windows-x64.exe" --output dist/installer/package-size.json --max-installer-mib 110 --max-bundle-mib 330
       - name: Build file delta and release inventory
         run: python desktop/build_update.py --version $env:APP_VERSION --base-manifest build/windows/update-base.json
       - uses: actions/upload-artifact@v4

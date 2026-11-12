@@ -1,0 +1,7 @@
+# Build on each native architecture; do not reuse Windows-only constraints.
+-r requirements-build.txt
+pyobjc-core==12.1; sys_platform == "darwin"
+pyobjc-framework-Cocoa==12.1; sys_platform == "darwin"
+pyobjc-framework-WebKit==12.1; sys_platform == "darwin"
+pyobjc-framework-Quartz==12.1; sys_platform == "darwin"
+imageio-ffmpeg==0.6.0

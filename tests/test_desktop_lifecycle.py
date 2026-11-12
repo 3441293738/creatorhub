@@ -15,13 +15,27 @@ from desktop.web_shell import run_desktop
 
 
 class DesktopLifecycleTests(unittest.TestCase):
-    def test_default_entry_is_manual(self):
+    def test_default_entry_opens_workbench_but_update_can_disable_autostart(self):
         self.assertFalse(inspect.signature(run_desktop).parameters["autostart"].default)
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"CREATORHUB_DESKTOP_HOME": temp}), patch.object(sys, "argv", ["launcher.py"]), patch("desktop.web_shell.run_desktop") as show:
             self.assertEqual(main(), 0)
-            self.assertNotIn("autostart", show.call_args.kwargs)
+            self.assertTrue(show.call_args.kwargs["autostart"])
             self.assertFalse((Path(temp) / "browsers").exists())
             self.assertFalse((Path(temp) / "data" / "creatorhub.db").exists())
+            with patch.object(sys, "argv", ["launcher.py", "--no-autostart"]):
+                self.assertEqual(main(), 0)
+                self.assertFalse(show.call_args.kwargs["autostart"])
+
+    def test_old_updater_without_cli_flag_still_does_not_autostart(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"CREATORHUB_DESKTOP_HOME": temp}), patch.object(sys, "argv", ["launcher.py"]), patch("desktop.web_shell.run_desktop") as show:
+            home = Path(temp)
+            prepare_home(home)
+            for filename in ("update-result.json", "update-pending.json"):
+                marker = home / "runtime" / filename
+                marker.write_text('{}', encoding="utf-8")
+                self.assertEqual(main(), 0)
+                self.assertFalse(show.call_args.kwargs["autostart"])
+                marker.unlink()
 
     def test_service_lock_is_independent_of_window_lock(self):
         with tempfile.TemporaryDirectory() as temp:

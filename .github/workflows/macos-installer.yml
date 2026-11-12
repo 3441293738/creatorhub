@@ -1,0 +1,107 @@
+name: Build macOS installer
+
+# Build both Mac architectures from the same version tag as Windows.
+# Until native acceptance/signing is complete, keep downloads as Actions artifacts.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Numeric version, for example 0.2.7
+        required: true
+        type: string
+        default: "0.2.7"
+      sign:
+        description: Sign with Developer ID and notarize (requires configured secrets)
+        default: false
+        type: boolean
+
+concurrency:
+  group: macos-installer-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            python_arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+            python_arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      PYTHONUTF8: "1"
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      APP_ARCH: ${{ matrix.arch }}
+      SIGN_BUILD: ${{ (github.event_name == 'workflow_dispatch' && inputs.sign) || (github.event_name == 'push' && vars.MACOS_SIGN_RELEASE == 'true') }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          architecture: ${{ matrix.python_arch }}
+      - name: Resolve version and prepare Chinese release notes
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="$INPUT_VERSION"
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then version="${GITHUB_REF_NAME#v}"; fi
+          python desktop/release.py "$version" --notes-output "dist/macos-$APP_ARCH/RELEASE_NOTES.md"
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install build dependencies
+        run: |
+          python -m pip install -r requirements.txt -r desktop/requirements-macos.txt pytest
+          python -m pip freeze > macos-dependencies.txt
+          npm ci
+          npm run build:ui
+          npm run build:desktop
+      - name: Test shared runtime and packaging contracts
+        run: python -m pytest tests/test_desktop_optimization.py tests/test_media_tools.py tests/test_macos_packaging.py tests/test_owned_processes.py tests/test_desktop_launcher.py tests/test_xhs_publish_resources.py -q
+      - name: Prepare isolated signing keychain
+        if: env.SIGN_BUILD == 'true'
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: python desktop/macos_signing_ci.py prepare
+      - name: Build app and DMG
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          if [ "$SIGN_BUILD" = "true" ]; then
+            python desktop/build_macos.py --version "$APP_VERSION" --arch "$APP_ARCH" --notary-profile creatorhub
+          else
+            python desktop/build_macos.py --version "$APP_VERSION" --arch "$APP_ARCH" --identity ""
+          fi
+      - name: Record package size
+        run: python desktop/package_report.py "dist/macos-$APP_ARCH/CreatorHub.app" --output "dist/macos-$APP_ARCH/package-size.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CreatorHub-macOS-${{ matrix.arch }}-${{ env.SIGN_BUILD == 'true' && 'signed' || 'UNTESTED' }}
+          path: |
+            dist/macos-*/*.dmg
+            dist/macos-*/SHA256-*.txt
+            dist/macos-*/package-size.json
+            dist/macos-*/RELEASE_NOTES.md
+            macos-dependencies.txt
+          if-no-files-found: error
+      - name: Remove temporary signing credentials
+        if: always() && env.SIGN_BUILD == 'true'
+        run: python desktop/macos_signing_ci.py cleanup
