@@ -1,0 +1,4 @@
+# Optional companion process: install in its own venv, not the desktop bundle.
+# The application itself needs no additional packages for its AI assistant.
+mcp==1.30.0
+httpx==0.28.1

@@ -17,6 +17,7 @@ artifacts/
 
 # Virtualenv
 .venv/
+.venv-mcp/
 venv/
 env/
 

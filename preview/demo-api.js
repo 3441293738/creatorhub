@@ -189,6 +189,10 @@
 
   function getData(url) {
     const path = url.pathname;
+    if (path === "/api/agent/settings") return { display_name:"", models:[], enabled:false, mcp_enabled:false, provider:"openai_compatible", base_url:"", model:"", api_key_set:false, tool_calling:true, output_token_parameter:"max_tokens", timeout_seconds:45, max_rounds:4, max_output_tokens:2048 };
+    if (path === "/api/agent/channels") return { active_channel_id:"default", channels:[{id:"default", display_name:"", models:[], enabled:false, mcp_enabled:false, provider:"openai_compatible", base_url:"", model:"", api_key_set:false, api_path_mode:"auto", tool_calling:true, output_token_parameter:"max_tokens", timeout_seconds:45, max_rounds:4, max_output_tokens:2048}] };
+    if (path === "/api/agent/runs") return [];
+    if (path === "/api/agent/context") return { accounts:{accounts:[]}, tasks:{tasks:[]}, metrics:{accounts:0, task_status_counts:{}} };
     const platform = url.searchParams.get("platform") || "douyin";
     if (path === "/api/overview/summary") return {
       platform, accounts: accounts.filter(item => item.platform === platform).length,
@@ -251,6 +255,9 @@
     const raw = typeof input === "string" ? input : input && input.url;
     const url = new URL(raw || "", window.location.href);
     if (!url.pathname.startsWith("/api/")) return realFetch(input, init);
+    if (url.pathname.startsWith("/api/agent/") && (init?.method || "GET").toUpperCase() !== "GET") {
+      return new Response(JSON.stringify({detail:"静态演示不连接模型、不保存密钥。请在本地运行 CreatorHub 后使用 AI 助手。"}), {status:403, headers:{"Content-Type":"application/json"}});
+    }
     await new Promise((resolve) => setTimeout(resolve, 90));
     const method = String((init && init.method) || "GET").toUpperCase();
     if (method === "GET" && url.pathname === "/api/reports/share-download-history.xlsx") {

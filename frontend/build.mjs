@@ -5,6 +5,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { buildIcons } from "./icons.mjs";
 
 await buildIcons();
+await writeFile("app/web/agent.css", await readFile("frontend/agent.css", "utf8"));
 
 const result = await build({
   entryPoints: ["frontend/workbench.jsx"], outfile: "app/web/workbench.js",

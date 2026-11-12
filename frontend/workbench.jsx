@@ -5,6 +5,7 @@ import { Sheet, ActionMenu, Tabs, Icon } from "./ui/primitives";
 import { installMotion, reveal, selectionMarker } from "./ui/motion";
 import { Onboarding } from "./onboarding";
 import { LicenseControl } from "./license";
+import { AgentAssistant } from "./agent";
 
 const $ = id => document.getElementById(id);
 const bridge = window.CreatorHubBridge;
@@ -470,6 +471,7 @@ function App() {
     {createPortal(showConnection && <div className="wb-connection" role="status"><Icon name={!online ? "offline" : "alert"} /><span><b>{!online ? "当前离线" : "部分数据刷新失败"}</b> · 已保留输入与已加载的记录；提交前请确认连接恢复。</span>
       <button className="ghost sm" onClick={retry} disabled={!online || retrying}>{retrying ? "正在重试…" : "重新加载"}</button></div>, connectionTarget)}
     {createPortal(<Attention summary={summary} platform={ctx.platform} />, overviewTarget)}
+    {createPortal(<AgentAssistant page={ctx} />, $("agent-root"))}
     {createPortal(<PublishPreview revision={previewVersion} contextVersion={`${ctx.platform}/${accountsVersion}`} />, previewTarget)}
     {rows.map(row => { const slot = row.querySelector("[data-account-menu]");
       return slot && createPortal(<ActionMenu label={`${row.querySelector('[data-account-detail]')?.textContent.trim()}的更多操作`}

@@ -532,6 +532,8 @@ async def lifespan(app: FastAPI):
     global browser, engine, im_receiver, _webhook_delivery_task
     init_db(cfg.db_path)
     await asyncio.to_thread(licensing.start)
+    from .agent.runtime import recover_interrupted, shutdown as shutdown_agent
+    recover_interrupted()
     try:
         with get_session() as session:
             merged_accounts = reconcile_xhs_accounts(session)
@@ -628,6 +630,7 @@ async def lifespan(app: FastAPI):
     _webhook_delivery_task = asyncio.create_task(webhook_delivery_loop())
     yield
     licensing.stop()
+    await shutdown_agent()
     if _webhook_delivery_task:
         _webhook_delivery_task.cancel()
         await asyncio.gather(_webhook_delivery_task, return_exceptions=True)
@@ -8019,7 +8022,11 @@ def _ensure_creator_monitor_available(session, *, platform: str, sec_uid: str,
 
 
 @app.post("/api/monitors")
-async def add_monitor(body: TargetIn):
+async def add_monitor(body: TargetIn, request: Request = None):
+    with get_session() as session:
+        replay = replay_if_exists(session, request=request, scope="monitor", body=body)
+        if replay is not None:
+            return replay
     platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "tiktok") else "douyin"
     sec_uid = keyword = xsec_token = ""
     kind = "creator"
@@ -8069,62 +8076,66 @@ async def add_monitor(body: TargetIn):
         except Exception as e:
             raise HTTPException(400, f"下载目录不可用: {e}")
     with get_session() as s:
-        if platform in {"douyin", "tiktok"}:
-            platform_name = "TikTok" if platform == "tiktok" else "抖音"
-            if not body.account_id:
-                raise HTTPException(
-                    400, f"{platform_name}作品监控必须选择已登录账号")
-            monitor_acc = s.get(DouyinAccount, body.account_id)
-            if (not monitor_acc or monitor_acc.platform != platform
-                    or monitor_acc.status != "active"):
-                raise HTTPException(400, f"所选{platform_name}账号不存在或登录态已失效")
-            if (platform == "tiktok"
-                    and not (monitor_acc.storage_state
-                             or monitor_acc.creator_storage_state)):
-                raise HTTPException(400, "所选 TikTok 账号缺少登录会话，请重新登录")
-        elif body.account_id:
-            monitor_acc = s.get(DouyinAccount, body.account_id)
-            if not monitor_acc or monitor_acc.platform != platform:
-                raise HTTPException(400, "所选账号不存在或与监控平台不匹配")
-        if kind == "keyword":
-            dup = s.exec(select(MonitorTarget).where(MonitorTarget.platform == platform)
-                         .where(MonitorTarget.keyword == keyword)).first()
-            if dup:
-                raise HTTPException(409, "该监控目标已存在")
-        else:
-            _ensure_creator_monitor_available(
-                s, platform=platform, sec_uid=sec_uid, account_id=body.account_id)
-        q = body.video_quality.strip()
-        if q and q not in QUALITY_CHOICES:
-            raise HTTPException(400, f"画质取值无效: {q}")
-        backfill_count = (cfg.engine.monitor_initial_backfill_count
-                          if body.initial_backfill_count is None
-                          else body.initial_backfill_count)
-        if backfill_count < -1 or backfill_count > 1000:
-            raise HTTPException(400, "首次回填数须为 -1(尽可能全量)或 0~1000")
-        t = MonitorTarget(platform=platform, target_kind=kind, keyword=keyword,
-                          sec_uid=sec_uid, xsec_token=xsec_token,
-                          nickname=("#" + keyword) if kind == "keyword" else "",
-                          alias=_meta_text(body.alias, 60),
-                          group_name=_meta_text(body.group_name, 40),
-                          tags=_dump_meta_tags(_meta_tags(body.tags)),
-                          account_id=body.account_id or None,
-                          interval_seconds=body.interval_seconds, download_dir=dl,
-                          initial_backfill_count=backfill_count, video_quality=q,
-                          download_enabled=body.download_enabled,
-                          media_filter=body.media_filter,
-                          max_scrolls=body.max_scrolls,
-                          max_items_per_scan=body.max_items_per_scan,
-                          record_media_filter=body.record_media_filter,
-                          min_like_count=body.min_like_count,
-                          min_comment_count=body.min_comment_count,
-                          recent_days=body.recent_days,
-                          include_keywords=_dump_meta_tags(
-                              _meta_tags(body.include_keywords)),
-                          exclude_keywords=_dump_meta_tags(
-                              _meta_tags(body.exclude_keywords)))
-        s.add(t); s.commit(); s.refresh(t)
-        return _target_dict(t)
+        def create():
+            if platform in {"douyin", "tiktok"}:
+                platform_name = "TikTok" if platform == "tiktok" else "抖音"
+                if not body.account_id:
+                    raise HTTPException(
+                        400, f"{platform_name}作品监控必须选择已登录账号")
+                monitor_acc = s.get(DouyinAccount, body.account_id)
+                if (not monitor_acc or monitor_acc.platform != platform
+                        or monitor_acc.status != "active"):
+                    raise HTTPException(400, f"所选{platform_name}账号不存在或登录态已失效")
+                if (platform == "tiktok"
+                        and not (monitor_acc.storage_state
+                                 or monitor_acc.creator_storage_state)):
+                    raise HTTPException(400, "所选 TikTok 账号缺少登录会话，请重新登录")
+            elif body.account_id:
+                monitor_acc = s.get(DouyinAccount, body.account_id)
+                if not monitor_acc or monitor_acc.platform != platform:
+                    raise HTTPException(400, "所选账号不存在或与监控平台不匹配")
+            if kind == "keyword":
+                dup = s.exec(select(MonitorTarget).where(MonitorTarget.platform == platform)
+                             .where(MonitorTarget.keyword == keyword)).first()
+                if dup:
+                    raise HTTPException(409, "该监控目标已存在")
+            else:
+                _ensure_creator_monitor_available(
+                    s, platform=platform, sec_uid=sec_uid, account_id=body.account_id)
+            q = body.video_quality.strip()
+            if q and q not in QUALITY_CHOICES:
+                raise HTTPException(400, f"画质取值无效: {q}")
+            backfill_count = (cfg.engine.monitor_initial_backfill_count
+                              if body.initial_backfill_count is None
+                              else body.initial_backfill_count)
+            if backfill_count < -1 or backfill_count > 1000:
+                raise HTTPException(400, "首次回填数须为 -1(尽可能全量)或 0~1000")
+            t = MonitorTarget(platform=platform, target_kind=kind, keyword=keyword,
+                              sec_uid=sec_uid, xsec_token=xsec_token,
+                              nickname=("#" + keyword) if kind == "keyword" else "",
+                              alias=_meta_text(body.alias, 60),
+                              group_name=_meta_text(body.group_name, 40),
+                              tags=_dump_meta_tags(_meta_tags(body.tags)),
+                              account_id=body.account_id or None,
+                              interval_seconds=body.interval_seconds, download_dir=dl,
+                              initial_backfill_count=backfill_count, video_quality=q,
+                              download_enabled=body.download_enabled,
+                              media_filter=body.media_filter,
+                              max_scrolls=body.max_scrolls,
+                              max_items_per_scan=body.max_items_per_scan,
+                              record_media_filter=body.record_media_filter,
+                              min_like_count=body.min_like_count,
+                              min_comment_count=body.min_comment_count,
+                              recent_days=body.recent_days,
+                              include_keywords=_dump_meta_tags(
+                                  _meta_tags(body.include_keywords)),
+                              exclude_keywords=_dump_meta_tags(
+                                  _meta_tags(body.exclude_keywords)))
+            s.add(t); s.flush()
+            return _target_dict(t)
+
+        payload, _created = submit_once(s, request=request, scope="monitor", body=body, create=create)
+        return payload
 
 
 @app.put("/api/monitors/{tid}")
@@ -11785,7 +11796,7 @@ async def index():
                             'data-guide-base="/guide/"')
     # Version all local UI assets, including pre-paint appearance boot and CSS.
     try:
-        for asset in ("app.js", "submissions.js", "appearance.js", "appearance.css", "workspace-ui.js", "workbench.js", "workbench.css"):
+        for asset in ("app.js", "submissions.js", "appearance.js", "appearance.css", "workspace-ui.js", "workbench.js", "workbench.css", "agent.css"):
             ver = int((WEB_DIR / asset).stat().st_mtime)
             html = html.replace(f"/static/{asset}", f"/static/{asset}?v={ver}")
     except Exception:
@@ -11805,3 +11816,21 @@ app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# The assistant uses the same validated, idempotent task creation paths as the UI.
+# Register after those handlers exist; importing the Agent never starts a model.
+async def _agent_create_collection(payload: dict, request: Request):
+    return await create_keyword_collection(KeywordCollectionIn(**payload), request=request)
+
+
+async def _agent_create_monitor(payload: dict, request: Request):
+    return await add_monitor(TargetIn(**payload), request=request)
+
+
+from .agent.api import create_router as create_agent_router
+
+app.include_router(create_agent_router({
+    "create_collection": _agent_create_collection,
+    "create_monitor": _agent_create_monitor,
+}))

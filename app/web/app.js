@@ -463,7 +463,8 @@ function focusAdjacentControl(origin, backwards = false) {
   if (next) requestAnimationFrame(() => next.focus({ preventScroll: true }));
 }
 function enhanceSelect(sel) {
-  if (sel.dataset.cs) return;
+  // React owns the assistant's native controls; reparenting them breaks updates.
+  if (sel.dataset.cs || sel.closest(".agent-workspace")) return;
   sel.dataset.cs = "1";
   const wrap = document.createElement("div");
   wrap.className = "cs" + (sel.className ? " " + sel.className : "");
@@ -1452,6 +1453,10 @@ function applyMonitorForm() {
 
 // ─── 标签页切换 ───
 function switchTab(name, pushHistory = false) {
+  if (name === "agent") {
+    window.dispatchEvent(new Event("creatorhub:assistant:open"));
+    return;
+  }
   if (!PAGE_META[name]) name = "overview";
   globalThis.CreatorHubWorkbench?.beforeNavigate?.();
   const changed = CURRENT_TAB !== name;
@@ -5803,6 +5808,7 @@ function updateCollectionResultStats(job) {
 async function openCollectionResults(jobId) {
   const btn = evtBtn();
   COLLECTION_JOB_ID = Number(jobId); COLLECTION_PAGE = 1;
+  window.dispatchEvent(new Event("creatorhub:agent-context"));
   const job = COLLECTION_JOBS.find(j => j.id === COLLECTION_JOB_ID);
   if (job) updateCollectionResultStats(job);
   $("collection-results-card").style.display = "";
@@ -5815,6 +5821,7 @@ async function openCollectionResults(jobId) {
 }
 function closeCollectionResults() {
   COLLECTION_JOB_ID = 0; COLLECTION_PAGE = 1;
+  window.dispatchEvent(new Event("creatorhub:agent-context"));
   if ($("collection-results-card")) $("collection-results-card").style.display = "none";
   globalThis.CreatorHubWorkbench?.collectionDetail?.(false);
 }
@@ -8618,6 +8625,10 @@ const LEGACY_HUB_TABS = ["myworks", "following", "fans", "dm"];
 switchTab((() => {
   try {
     const hashTab = decodeURIComponent(location.hash.replace(/^#/, ""));
+    if (hashTab === "agent" || (!hashTab && localStorage.getItem("dym-tab") === "agent")) {
+      window.CreatorHubOpenAssistant = true;
+      return "overview";
+    }
     if (VALID_TABS.includes(hashTab)) return hashTab;
     const t = localStorage.getItem("dym-tab");
     if (LEGACY_HUB_TABS.includes(t)) { HUB_TAB = t; return "hub"; }
@@ -8651,6 +8662,11 @@ controlEnhancer.observe(document.body, { childList: true, subtree: true });
 // shell 交互：浏览器前进/后退、平台键盘切换、长页面返回顶部。
 window.addEventListener("hashchange", () => {
   const tab = decodeURIComponent(location.hash.replace(/^#/, ""));
+  if (tab === "agent") {
+    history.replaceState(null, "", "#" + CURRENT_TAB);
+    window.dispatchEvent(new Event("creatorhub:assistant:open"));
+    return;
+  }
   if (VALID_TABS.includes(tab) && tab !== CURRENT_TAB) {
     switchTab(tab);
     globalThis.CreatorHubWorkbench?.restoreScroll?.();
@@ -8685,6 +8701,12 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) loop
 window.CreatorHubBridge = {
   selectPlatform: switchPlatform,
   getContext: () => ({ tab: CURRENT_TAB, platform: PLATFORM }),
+  getAgentContext() {
+    const job = CURRENT_TAB === "collections" && COLLECTION_JOB_ID
+      ? COLLECTION_JOBS.find(item => item.id === COLLECTION_JOB_ID && item.platform === PLATFORM) : null;
+    return { tab: CURRENT_TAB, platform: PLATFORM, title: (PAGE_META[CURRENT_TAB] || PAGE_META.overview).title,
+      task: job ? { task_type: "collections", id: job.id, platform: job.platform, status: job.status } : null };
+  },
   navigate: switchTab,
   openAccount: openAccountHub,
   openQueue(state) {
