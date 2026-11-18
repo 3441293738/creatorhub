@@ -82,6 +82,21 @@ def test_workflow_builds_native_architectures_on_shared_tags_without_publishing(
     assert "RELEASE_NOTES.md" in upload["with"]["path"]
 
 
+def test_macos_cryptography_never_builds_from_source_on_intel():
+    """cryptography 49+ has no x86_64 macOS wheel; a source build links Homebrew OpenSSL and crashes the bundle."""
+    from packaging.requirements import Requirement
+
+    lines = [line.strip() for line in (ROOT / "desktop/requirements-macos.txt").read_text(encoding="utf-8").splitlines()]
+    assert "--only-binary=cryptography" in lines
+    pins = [Requirement(line) for line in lines if line.startswith("cryptography")]
+    assert len(pins) == 1
+    pin = pins[0]
+    intel = {"sys_platform": "darwin", "platform_machine": "x86_64"}
+    arm = {"sys_platform": "darwin", "platform_machine": "arm64"}
+    assert pin.marker.evaluate(intel) and not pin.marker.evaluate(arm)
+    assert pin.specifier.contains("48.0.1") and not pin.specifier.contains("49.0.0")
+
+
 @pytest.mark.parametrize("status", ["Invalid", "In Progress"])
 def test_notarization_must_be_accepted_not_just_exit_zero(monkeypatch, status):
     monkeypatch.setattr(build_macos.subprocess, "run", Mock(return_value=SimpleNamespace(stdout=json.dumps({"status": status}))))
