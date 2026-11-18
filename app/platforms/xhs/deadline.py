@@ -2,9 +2,27 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
 
 from .responses import XhsApiError
+
+
+class PublishCancelEvent(threading.Event):
+    """Cancel signal that remembers whether the publish budget ran out.
+
+    asyncio runs timers up to one clock tick early (15.6 ms with Windows'
+    GetTickCount64), so a worker woken by the budget timer may still see time
+    left on the clock. The reason travels with the signal instead.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.timed_out = False
+
+    def expire(self) -> None:
+        self.timed_out = True
+        self.set()
 
 
 def deadline_after(timeout_seconds: float) -> float:
@@ -25,5 +43,7 @@ def remaining_seconds(deadline: float | None, cancel_event=None) -> float | None
     if remaining is not None and remaining < 0.001:
         raise timeout_error()
     if cancel_event is not None and cancel_event.is_set():
+        if getattr(cancel_event, "timed_out", False):
+            raise timeout_error()
         raise XhsApiError("API 发布已取消", signal="publish_cancelled")
     return remaining
