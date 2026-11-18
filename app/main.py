@@ -16,7 +16,7 @@ import uuid
 from contextlib import asynccontextmanager, suppress
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Literal
 from urllib.parse import urlencode, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -24,7 +24,7 @@ from datetime import date, datetime, time, timedelta, timezone
 import uuid as _uuid
 
 from fastapi import Body, FastAPI, HTTPException, Request, UploadFile, File
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field as PydanticField, StrictInt, ValidationError
 from sqlalchemy import delete, func, or_, update
@@ -87,7 +87,23 @@ from .platforms.kuaishou import (resolve_ks_user_id, resolve_ks_photo_id,
                   looks_like_photo as ks_looks_like_photo,
                   parse_self_user as parse_ks_self_user,
                   MANAGE_URL as KS_MANAGE_URL)
-from .platforms.channels import parse_self_user as parse_channels_self_user
+from .platforms.channels import (
+    ChannelsBridgeManager,
+    ChannelsProtocolClient,
+    ChannelsProtocolTransportError,
+    ChannelsProxyManager,
+    discover_local_cdp_endpoints,
+    discover_wechat_processes,
+    inspect_or_download_channels_share,
+    looks_like_photo as channels_looks_like_photo,
+    parse_channels_url,
+    parse_self_user as parse_channels_self_user,
+    recover_stale_system_proxy,
+    resolve_channels_creator,
+    resolve_channels_photo_id,
+    resolve_channels_user_id,
+    set_active_proxy_manager,
+)
 from .platforms.tiktok import (
     TikTokNativeClient,
     native_protocol_summary,
@@ -134,6 +150,15 @@ from .risk_admin import (RiskSettingsError, apply_risk_settings,
                          export_risk_settings, load_persisted_risk_settings,
                          save_risk_settings)
 from .settings import get_setting, set_setting
+from .channels_settings import (
+    ChannelsProtocolPatch,
+    export_channels_settings,
+    load_persisted_channels_settings,
+    reset_channels_settings,
+    save_channels_settings,
+    validate_channels_endpoint,
+    validate_channels_endpoint_file,
+)
 from .engine_settings import (EngineSettingsPatch, export_engine_settings,
                               load_persisted_engine_settings, save_engine_settings)
 from .transport_matrix import (
@@ -156,6 +181,9 @@ cfg = load_config()
 browser: BrowserManager | None = None
 engine: MonitorEngine | None = None
 im_receiver = None      # ImReceiverManager(私信实时接收)
+channels_bridge = ChannelsBridgeManager(Path(cfg.db_path).resolve().parent)
+channels_proxy = ChannelsProxyManager(Path(cfg.db_path).resolve().parent)
+set_active_proxy_manager(channels_proxy)
 login_tasks: Dict[str, dict] = {}
 # 用户手动打开的账号浏览器窗口(account_id -> BrowserContext),留引用防 GC、便于复用/清理
 open_browsers: Dict[int, Any] = {}
@@ -546,6 +574,17 @@ async def lifespan(app: FastAPI):
         print("[startup] 已加载风控中心保存的运行时规则")
     if load_persisted_engine_settings(cfg):
         print("[startup] 已加载设置页保存的采集与运行配置")
+    channels_bridge.configure_data_dir(Path(cfg.db_path).resolve().parent)
+    channels_proxy_dir = Path(cfg.db_path).resolve().parent
+    channels_proxy.configure_data_dir(channels_proxy_dir)
+    try:
+        proxy_recovery = recover_stale_system_proxy(channels_proxy_dir)
+        if proxy_recovery.get("recovered"):
+            print("[startup] 已自动恢复上次未正常退出残留的 Windows 系统代理")
+    except Exception as e:
+        print(f"[startup] 清理残留系统代理失败（不影响启动）: {e!r}")
+    if load_persisted_channels_settings(cfg):
+        print("[startup] 已加载视频号微信通道配置")
     try:
         repaired = _backfill_danmaku_records()
         if repaired:
@@ -645,6 +684,8 @@ async def lifespan(app: FastAPI):
         await engine.stop()
     if browser:
         await browser.stop()
+    await channels_bridge.stop()
+    await channels_proxy.stop()
 
 
 app = FastAPI(title="CreatorHub", lifespan=lifespan)
@@ -1699,7 +1740,7 @@ class CookieIn(BaseModel):
 @app.post("/api/login/cookie")
 async def login_cookie(body: CookieIn):
     """Cookie 粘贴兜底登录:转成浏览器登录态。"""
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao") else "douyin"
     state = cookie_string_to_state(body.cookie, platform)
     with get_session() as s:
         acc = DouyinAccount(
@@ -1727,6 +1768,359 @@ async def overview_summary(platform: str = "douyin"):
             "downloaded": count(ContentRecord, ContentRecord.download_status == "done"),
             "comments": count(CommentRecord),
         }
+
+
+class ChannelsProbeIn(BaseModel):
+    connection_mode: Literal["none", "proxy", "endpoint", "endpoint_file"] | None = None
+    cdp_endpoint: str | None = None
+    cdp_endpoint_file: str | None = None
+
+
+class ChannelsBridgeStartIn(BaseModel):
+    debug_port: int = 9421
+    cdp_port: int = 9422
+    allowed_pids: list[int] | None = None
+    apply_to_config: bool = True
+
+
+class ChannelsProxyStartIn(BaseModel):
+    proxy_port: int = 2023
+    enable_system_proxy: bool = True
+    apply_to_config: bool = True
+
+
+def _channels_status_payload() -> dict[str, Any]:
+    channels_proxy.configure_data_dir(Path(cfg.db_path).resolve().parent)
+    config_state = export_channels_settings(cfg)
+    read_mode = config_state["read_mode"]
+    proxy_configured = bool(config_state.get("proxy_enabled"))
+    endpoint_configured = bool(config_state["cdp_endpoint"])
+    endpoint_file_configured = bool(config_state["cdp_endpoint_file"])
+    configured = bool(config_state["configured"])
+    ep_info = config_state.get("endpoint_file_info")
+    proxy_state = channels_proxy.status()
+    if proxy_configured:
+        protocol_usable = bool(proxy_state.get("running"))
+    elif endpoint_file_configured and isinstance(ep_info, dict):
+        protocol_usable = bool(ep_info.get("exists") and ep_info.get("valid"))
+    else:
+        protocol_usable = endpoint_configured
+    return {
+        "platform": "shipinhao",
+        "read_mode": read_mode,
+        "configured": configured,
+        "proxy_configured": proxy_configured,
+        "endpoint_configured": endpoint_configured,
+        "endpoint_file_configured": endpoint_file_configured,
+        "config": config_state,
+        "bridge": channels_bridge.status(include_processes=False),
+        "proxy": proxy_state,
+        "capabilities": {
+            "account_works": True,
+            "keyword_search": protocol_usable and read_mode != "browser",
+            "creator_works": protocol_usable and read_mode != "browser",
+            "full_comment_threads": protocol_usable and read_mode != "browser",
+            "encrypted_video_decode": True,
+            "share_preview": True,
+        },
+    }
+
+
+@app.get("/api/channels/protocol/status")
+async def channels_protocol_status(probe: bool = False):
+    """查询视频号本地微信 Finder 原生协议通道配置与(可选)实时握手状态。"""
+    result = _channels_status_payload()
+    if probe:
+        client = ChannelsProtocolClient.from_config(cfg)
+        if client is None:
+            result["probe"] = {
+                "ok": False,
+                "ready": False,
+                "error": "尚未配置本地微信通道，请在「设置 → 视频号微信通道」启用代理或配置 CDP 端点",
+            }
+        else:
+            result["probe"] = await client.probe()
+    return result
+
+
+@app.get("/api/channels/protocol/config")
+async def get_channels_protocol_config():
+    """读取视频号本机微信协议通道可视化配置(不包含 Cookie 明文或口令 URL)。"""
+    channels_proxy.configure_data_dir(Path(cfg.db_path).resolve().parent)
+    return {
+        "config": export_channels_settings(cfg),
+        "bridge": channels_bridge.status(include_processes=False),
+        "proxy": channels_proxy.status(),
+    }
+
+
+@app.put("/api/channels/protocol/config", openapi_extra={
+    "requestBody": {"content": {"application/json": {
+        "schema": ChannelsProtocolPatch.model_json_schema()}}}})
+async def put_channels_protocol_config(body: Any = Body(...)):
+    """校验并保存视频号微信通道配置，立即对后续任务生效并重启保留。"""
+    try:
+        saved = save_channels_settings(cfg, body)
+    except ValidationError as exc:
+        details = exc.errors(include_url=False, include_context=False, include_input=False)
+        for detail in details:
+            detail["loc"] = ["body", *detail["loc"]]
+        raise HTTPException(422, details) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception:
+        raise HTTPException(503, "视频号通道配置尚未保存，请稍后重试") from None
+    if channels_proxy.running and not saved.get("proxy_enabled"):
+        await channels_proxy.stop()
+    return _channels_status_payload()
+
+
+@app.delete("/api/channels/protocol/config")
+async def delete_channels_protocol_config():
+    """清除页面保存的视频号通道覆盖配置，恢复 config.yaml / 环境变量默认值。"""
+    saved = reset_channels_settings(cfg)
+    if channels_proxy.running and not saved.get("proxy_enabled"):
+        await channels_proxy.stop()
+    return _channels_status_payload()
+
+
+@app.post("/api/channels/protocol/probe")
+async def probe_channels_protocol(body: ChannelsProbeIn = Body(default_factory=ChannelsProbeIn)):
+    """使用当前已保存配置或页面草稿参数，对本机微信 Finder 通道执行一次实时探活。"""
+    mode = body.connection_mode
+    use_proxy = False
+    endpoint = ""
+    endpoint_file = ""
+    try:
+        if mode == "none":
+            return {
+                "ok": False,
+                "ready": False,
+                "configured": False,
+                "error": "当前选择未连接本机微信通道，仅可使用创作者助手管理本账号",
+            }
+        if mode == "proxy":
+            use_proxy = True
+        elif mode == "endpoint":
+            endpoint = validate_channels_endpoint(body.cdp_endpoint or "")
+            if not endpoint:
+                return {
+                    "ok": False,
+                    "ready": False,
+                    "configured": False,
+                    "error": "请先填写本机回环 CDP 端点地址（如 http://127.0.0.1:9222）",
+                }
+        elif mode == "endpoint_file":
+            endpoint_file = validate_channels_endpoint_file(body.cdp_endpoint_file or "")
+            if not endpoint_file:
+                return {
+                    "ok": False,
+                    "ready": False,
+                    "configured": False,
+                    "error": "请先填写 WMPF 控制口令文件路径",
+                }
+        else:
+            if body.cdp_endpoint is None and body.cdp_endpoint_file is None:
+                use_proxy = bool(getattr(cfg.engine, "channels_proxy_enabled", False))
+            if not use_proxy:
+                if body.cdp_endpoint is not None:
+                    endpoint = validate_channels_endpoint(body.cdp_endpoint)
+                if body.cdp_endpoint_file is not None:
+                    endpoint_file = validate_channels_endpoint_file(body.cdp_endpoint_file)
+                if body.cdp_endpoint is None and body.cdp_endpoint_file is None:
+                    endpoint = str(getattr(cfg.engine, "channels_cdp_endpoint", "") or "").strip()
+                    endpoint_file = str(getattr(cfg.engine, "channels_cdp_endpoint_file", "") or "").strip()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    if not use_proxy and not endpoint and not endpoint_file:
+        return {
+            "ok": False,
+            "ready": False,
+            "configured": False,
+            "error": "尚未配置本地微信通道（可启用内置微信代理或填写 CDP 端点）",
+        }
+
+    timeout = max(15.0, float(getattr(cfg.engine, "request_timeout_seconds", 30.0) or 30.0))
+    client = ChannelsProtocolClient(
+        endpoint=endpoint,
+        endpoint_file=endpoint_file,
+        use_proxy=use_proxy,
+        proxy_manager=channels_proxy if use_proxy else None,
+        timeout=timeout,
+    )
+    probe_result = await client.probe()
+    return {
+        "ok": bool(probe_result.get("ok")),
+        "ready": bool(probe_result.get("ready")),
+        "configured": True,
+        "probe": probe_result,
+        "error": str(probe_result.get("error") or ""),
+    }
+
+
+@app.get("/api/channels/protocol/discover")
+async def discover_channels_protocol():
+    """扫描本机回环常见 CDP 端口及运行中的桌面微信/WMPF 进程。"""
+    extra = []
+    cur = str(getattr(cfg.engine, "channels_cdp_endpoint", "") or "").strip()
+    if cur:
+        extra.append(cur)
+    endpoints, processes = await asyncio.gather(
+        discover_local_cdp_endpoints(extra),
+        asyncio.to_thread(discover_wechat_processes),
+    )
+    bridge_state = channels_bridge.status(include_processes=False)
+    bridge_state["wechat_processes"] = processes
+    return {
+        "endpoints": endpoints,
+        "wechat_processes": processes,
+        "bridge": bridge_state,
+    }
+
+
+@app.post("/api/channels/protocol/bridge/start")
+async def start_channels_protocol_bridge(
+    body: ChannelsBridgeStartIn = Body(default_factory=ChannelsBridgeStartIn),
+):
+    """在 CreatorHub 内受管启动单会话 WMPF LoopbackBridge，并可选写入当前通道配置。"""
+    channels_bridge.configure_data_dir(Path(cfg.db_path).resolve().parent)
+    try:
+        bridge_state = await channels_bridge.start(
+            debug_port=body.debug_port,
+            cdp_port=body.cdp_port,
+            allowed_pids=body.allowed_pids,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(409, f"无法监听本机回环端口（可能已被占用）: {exc}") from exc
+
+    if body.apply_to_config:
+        if channels_proxy.running:
+            await channels_proxy.stop()
+        save_channels_settings(
+            cfg,
+            {
+                "connection_mode": "endpoint_file",
+                "channels_cdp_endpoint_file": str(channels_bridge.endpoint_file),
+            },
+        )
+    payload = _channels_status_payload()
+    payload["bridge"] = bridge_state
+    return {"ok": True, **payload}
+
+
+@app.post("/api/channels/protocol/bridge/stop")
+async def stop_channels_protocol_bridge():
+    """停止受管 WMPF LoopbackBridge 并清理其生成的临时控制口令文件。"""
+    bridge_state = await channels_bridge.stop()
+    cur_file = str(getattr(cfg.engine, "channels_cdp_endpoint_file", "") or "").strip()
+    if cur_file:
+        try:
+            if Path(cur_file).expanduser().resolve() == channels_bridge.endpoint_file:
+                save_channels_settings(cfg, {"channels_cdp_endpoint_file": ""})
+        except OSError:
+            pass
+    payload = _channels_status_payload()
+    payload["bridge"] = bridge_state
+    return {"ok": True, **payload}
+
+
+@app.post("/api/channels/protocol/proxy/start")
+async def start_channels_protocol_proxy(
+    body: ChannelsProxyStartIn = Body(default_factory=ChannelsProxyStartIn),
+):
+    """启动内置选择性本地视频号 HTTPS 代理（仅拦截 channels.weixin.qq.com）并按需接管本机 WinINet 代理。"""
+    channels_proxy.configure_data_dir(Path(cfg.db_path).resolve().parent)
+    try:
+        proxy_state = await channels_proxy.start(
+            proxy_port=body.proxy_port,
+            enable_system_proxy_flag=body.enable_system_proxy,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except (OSError, ChannelsProtocolTransportError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+    if body.apply_to_config:
+        if channels_bridge.status(include_processes=False).get("running"):
+            await channels_bridge.stop()
+        save_channels_settings(
+            cfg,
+            {
+                "connection_mode": "proxy",
+                "channels_proxy_port": int(proxy_state.get("proxy_port") or body.proxy_port),
+            },
+        )
+    payload = _channels_status_payload()
+    payload["proxy"] = proxy_state
+    return {"ok": True, **payload}
+
+
+@app.post("/api/channels/protocol/proxy/stop")
+async def stop_channels_protocol_proxy():
+    """停止内置视频号代理并立即恢复退出前的 Windows 系统代理配置。"""
+    proxy_state = await channels_proxy.stop()
+    payload = _channels_status_payload()
+    payload["proxy"] = proxy_state
+    return {"ok": True, **payload}
+
+
+@app.post("/api/channels/protocol/proxy/cert/install")
+async def install_channels_proxy_cert():
+    """将本机自签名 CA 根证书安装到当前用户受信任根证书存储（需用户在系统弹窗确认）。"""
+    channels_proxy.configure_data_dir(Path(cfg.db_path).resolve().parent)
+    res = await asyncio.to_thread(channels_proxy.ca.install_trust)
+    return {
+        **res,
+        "proxy": channels_proxy.status(),
+    }
+
+
+@app.post("/api/channels/protocol/proxy/cert/uninstall")
+async def uninstall_channels_proxy_cert():
+    """从当前用户受信任根证书存储移除本机自签名 CA 根证书。"""
+    channels_proxy.configure_data_dir(Path(cfg.db_path).resolve().parent)
+    res = await asyncio.to_thread(channels_proxy.ca.uninstall_trust)
+    return {
+        **res,
+        "proxy": channels_proxy.status(),
+    }
+
+
+@app.get("/api/channels/protocol/proxy/ca.cer")
+async def download_channels_proxy_ca():
+    """导出本地自签名 CA 公钥证书文件（仅导出公钥 .cer，绝不导出私钥 .key）。"""
+    channels_proxy.configure_data_dir(Path(cfg.db_path).resolve().parent)
+    cert_path, _, _ = channels_proxy.ca.ensure_ca()
+    return Response(
+        content=cert_path.read_bytes(),
+        media_type="application/x-x509-ca-cert",
+        headers={
+            "Content-Disposition": 'attachment; filename="creatorhub-channels-ca.cer"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+class ChannelsCreatorResolveIn(BaseModel):
+    target: str
+
+
+@app.post("/api/channels/resolve-creator")
+async def resolve_channels_creator_endpoint(body: ChannelsCreatorResolveIn):
+    """把视频号主页链接、finderUsername 或单条作品分享链反查为创作者 finderUsername。"""
+    res = await _resolve_channels_creator_target(body.target)
+    return {
+        "ok": True,
+        "username": res.username,
+        "nickname": res.nickname,
+        "avatar": res.avatar,
+        "source_kind": res.source_kind,
+    }
 
 
 @app.get("/api/accounts")
@@ -6587,6 +6981,33 @@ async def share_download(body: ShareDownloadIn):
                             save_thumbnail=body.save_thumbnail,
                             proxy=proxy,
                         )
+                    elif link.platform == "wechat":
+                        account_state = ""
+                        if body.account_id:
+                            with get_session() as s_acc:
+                                acc = s_acc.get(DouyinAccount, body.account_id)
+                                if acc:
+                                    account_state = (
+                                        acc.storage_state
+                                        or acc.creator_storage_state
+                                        or ""
+                                    )
+                        try:
+                            item = await inspect_or_download_channels_share(
+                                link.url,
+                                cfg=cfg,
+                                output_root=output_root,
+                                quality=body.quality,
+                                should_download=body.download,
+                                save_metadata=body.save_metadata,
+                                save_thumbnail=body.save_thumbnail,
+                                proxy=proxy,
+                                user_agent=user_agent,
+                                account_storage_state=account_state,
+                            )
+                        except ShareDownloadFallback:
+                            # 非视频号的 qq.com 链接(如 v.qq.com)直接交由通用提取器处理
+                            item = None
                     if item is not None:
                         pass
                     elif body.download:
@@ -6883,7 +7304,7 @@ def _meta_matches(item: MonitorTarget | CommentWatch, group_name: str, tag: str)
 # ─────────── 抖音 / 小红书 / 快手 / 视频号批量采集 ───────────
 class KeywordCollectionIn(BaseModel):
     platform: str = "douyin"
-    account_id: int
+    account_id: int | None = None
     source_type: str = "keyword"
     source_ref: str = ""
     source_name: str = ""
@@ -7052,8 +7473,6 @@ def _validated_collection_input(body: KeywordCollectionIn) \
             "keyword", "favorite_all", "favorite_board", "creator",
             "account_works"}:
         raise HTTPException(400, "采集来源须为关键词、创作者主页、全部收藏、指定收藏夹或本账号作品")
-    if platform == "shipinhao" and source_type != "account_works":
-        raise HTTPException(400, "视频号批量采集仅支持当前登录账号的本账号作品")
     if platform != "shipinhao" and source_type == "account_works":
         raise HTTPException(400, "本账号作品来源仅支持视频号")
     if platform == "tiktok" and source_type != "keyword":
@@ -7149,6 +7568,36 @@ async def _resolve_ks_creator_source(body: KeywordCollectionIn) -> None:
         body.source_ref = resolved
         if not body.source_name or body.source_name == f"创作者 {original_ref}":
             body.source_name = f"创作者 {resolved}"
+
+
+async def _resolve_channels_creator_target(raw_input: str):
+    """把视频号主页链接、finderUsername 或单条作品分享链接解析为创作者信息。"""
+    cleaned = _clean_platform_target_input(raw_input, "shipinhao")
+    res = await resolve_channels_creator(cleaned, cfg.engine.user_agent, cfg=cfg)
+    if not res.username:
+        raise HTTPException(
+            400,
+            res.error or (
+                "无法解析视频号创作者标识，请粘贴创作者主页链接、"
+                "作品分享链接(weixin.qq.com/sph/...)、finderUsername(v2_...@finder) 或视频号 sph 标识"
+            ),
+        )
+    return res
+
+
+async def _resolve_channels_creator_source(body: KeywordCollectionIn) -> None:
+    """把视频号创作者采集的 source_ref 规范化为 finderUsername(v2_...@finder) 或视频号标识。"""
+    if (body.platform.strip().lower() == "shipinhao"
+            and body.source_type.strip().lower() == "creator"):
+        original_ref = body.source_ref.strip()
+        res = await _resolve_channels_creator_target(original_ref)
+        body.source_ref = res.username
+        if not body.source_name or body.source_name == f"创作者 {original_ref}":
+            body.source_name = (
+                f"创作者 {res.nickname} ({res.username})"
+                if res.nickname
+                else f"创作者 {res.username}"
+            )
 
 
 def _collection_keywords(values: list[str]) -> list[str]:
@@ -7270,7 +7719,10 @@ def _collection_remote_medias(row: KeywordCollectionContent) -> list[dict]:
         kind = str(item.get("kind") or "").strip().lower()
         if kind not in {"image", "video"}:
             kind = "image" if f".{ext}" in _COLLECTION_IMAGE_EXTS else "video"
-        medias.append({"url": url, "kind": kind, "ext": ext})
+        entry = {"url": url, "kind": kind, "ext": ext}
+        if str(item.get("decode_key") or "").strip():
+            entry["encrypted"] = True
+        medias.append(entry)
     return medias
 
 
@@ -7324,7 +7776,7 @@ def _collection_content_dict(row: KeywordCollectionContent) -> dict:
     elif row.platform == "kuaishou":
         url = f"https://www.kuaishou.com/short-video/{row.aweme_id}"
     elif row.platform == "shipinhao":
-        url = "https://channels.weixin.qq.com/platform/post/list"
+        url = row.source_url or "https://channels.weixin.qq.com/platform/post/list"
     elif row.platform == "tiktok":
         url = row.source_url or ""
     else:
@@ -7469,18 +7921,43 @@ async def list_xhs_favorite_boards(account_id: int):
     } for value in boards if value.get("id") or value.get("board_id")]
 
 
+def _collection_requires_account(platform: str, source_type: str) -> bool:
+    """视频号关键词/外部创作者采集走本机微信通道，无需网页创作者助手登录态。"""
+    return not (platform == "shipinhao" and source_type in {"keyword", "creator"})
+
+
+def _resolve_collection_account_id(
+    session, *, platform: str, source_type: str, requested_id: int | None
+) -> int:
+    acc_id = int(requested_id or 0)
+    account = session.get(DouyinAccount, acc_id) if acc_id else None
+    if _collection_requires_account(platform, source_type):
+        if (not account or account.platform != platform
+                or account.status != "active" or not account.storage_state):
+            raise HTTPException(400, "所选账号不存在、登录态失效或与平台不匹配")
+        return account.id
+    if account is not None and account.platform != platform:
+        raise HTTPException(400, "所选账号与当前采集平台不匹配")
+    if account is not None and account.status == "active" and account.storage_state:
+        return account.id
+    return 0
+
+
 @app.post("/api/collections")
 async def create_keyword_collection(body: KeywordCollectionIn, request: Request = None):
     await _resolve_ks_creator_source(body)
+    await _resolve_channels_creator_source(body)
     with get_session() as session:
         def create():
             platform, keywords, quality, download_dir, options = _validated_collection_input(body)
-            account = session.get(DouyinAccount, body.account_id)
-            if (not account or account.platform != platform
-                    or account.status != "active" or not account.storage_state):
-                raise HTTPException(400, "所选账号不存在、登录态失效或与平台不匹配")
+            account_id = _resolve_collection_account_id(
+                session,
+                platform=platform,
+                source_type=options["source_type"],
+                requested_id=body.account_id,
+            )
             job = KeywordCollectionJob(
-                platform=platform, account_id=body.account_id,
+                platform=platform, account_id=account_id,
                 keywords=json.dumps(keywords, ensure_ascii=False),
                 max_contents_per_keyword=body.max_contents_per_keyword,
                 **options,
@@ -7506,6 +7983,7 @@ async def create_keyword_collection(body: KeywordCollectionIn, request: Request 
 async def update_keyword_collection(job_id: int, body: KeywordCollectionIn):
     """修改已结束任务的配置；历史作品/评论保留，续跑时按任务去重。"""
     await _resolve_ks_creator_source(body)
+    await _resolve_channels_creator_source(body)
     platform, keywords, quality, download_dir, options = _validated_collection_input(body)
     with get_session() as session:
         job = session.get(KeywordCollectionJob, job_id)
@@ -7515,12 +7993,14 @@ async def update_keyword_collection(job_id: int, body: KeywordCollectionIn):
             raise HTTPException(400, "采集任务创建后不能变更平台")
         if job.status in {"pending", "running"}:
             raise HTTPException(409, "等待或执行中的任务请先取消，再编辑配置")
-        account = session.get(DouyinAccount, body.account_id)
-        if (not account or account.platform != platform
-                or account.status != "active" or not account.storage_state):
-            raise HTTPException(400, "所选账号不存在、登录态失效或与平台不匹配")
+        account_id = _resolve_collection_account_id(
+            session,
+            platform=platform,
+            source_type=options["source_type"],
+            requested_id=body.account_id,
+        )
 
-        job.account_id = body.account_id
+        job.account_id = account_id
         job.keywords = json.dumps(keywords, ensure_ascii=False)
         job.max_contents_per_keyword = body.max_contents_per_keyword
         for field, value in options.items():
@@ -7614,7 +8094,16 @@ async def keyword_collection_content_media(job_id: int, content_id: int):
         local_video = next(
             (item for item in local_medias if item["kind"] == "video"), None)
         has_local_images = any(item["kind"] == "image" for item in local_medias)
-        medias = local_medias if has_local_images else remote_medias
+        playable_remote = [
+            {k: v for k, v in item.items() if k != "encrypted"}
+            for item in remote_medias
+            if not item.get("encrypted")
+        ]
+        medias = (
+            local_medias
+            if (has_local_images or (local_video and not playable_remote))
+            else playable_remote
+        )
         return {
             "id": row.id, "platform": row.platform, "desc": row.desc,
             "media_type": row.media_type, "cover_url": row.cover_url,
@@ -7624,6 +8113,8 @@ async def keyword_collection_content_media(job_id: int, content_id: int):
                            if row.platform == "xhs"
                            else row.source_url
                            if row.platform == "tiktok"
+                           else (row.source_url or "https://channels.weixin.qq.com/platform/post/list")
+                           if row.platform == "shipinhao"
                            else f"https://www.kuaishou.com/short-video/{row.aweme_id}"
                            if row.platform == "kuaishou"
                            else f"https://www.douyin.com/video/{row.aweme_id}"),
@@ -7923,15 +8414,16 @@ def _validate_monitor_strategy(*, max_scrolls: int | None,
 def _clean_platform_target_input(value: str, platform: str) -> str:
     """复用分享链接下载的清洗器，返回当前平台的第一条有效链接或原始 ID。"""
     target_input, detected_links = clean_platform_share_target(value, platform)
+    expected_share_platform = "wechat" if platform == "shipinhao" else platform
     if detected_links and not any(
-            item.platform == platform for item in detected_links):
+            item.platform == expected_share_platform for item in detected_links):
         platform_name = {
             "douyin": "抖音", "xhs": "小红书", "kuaishou": "快手",
-            "tiktok": "TikTok",
+            "shipinhao": "视频号", "tiktok": "TikTok",
         }.get(platform, platform)
         detected_names = {
             "douyin": "抖音", "xhs": "小红书", "kuaishou": "快手",
-            "tiktok": "TikTok",
+            "wechat": "微信/视频号", "tiktok": "TikTok",
             "generic": "其他站点",
         }
         names = "、".join(dict.fromkeys(
@@ -7990,8 +8482,9 @@ async def add_monitor(body: TargetIn, request: Request = None):
         replay = replay_if_exists(session, request=request, scope="monitor", body=body)
         if replay is not None:
             return replay
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "tiktok") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok") else "douyin"
     sec_uid = keyword = xsec_token = ""
+    nickname = avatar = ""
     kind = "creator"
 
     if platform == "xhs" and body.target_kind == "keyword":
@@ -8011,6 +8504,11 @@ async def add_monitor(body: TargetIn, request: Request = None):
         sec_uid = await resolve_ks_user_id(target_input, cfg.engine.user_agent)
         if not sec_uid:
             raise HTTPException(400, "无法解析快手 user_id,请粘贴完整分享文案、创作者主页链接 / v.kuaishou.com 短链 / user_id")
+    elif platform == "shipinhao":
+        channels_res = await _resolve_channels_creator_target(target_input)
+        sec_uid = channels_res.username
+        nickname = channels_res.nickname
+        avatar = channels_res.avatar
     elif platform == "tiktok":
         target_input, video_ref, profile_id = await _resolve_tiktok_target(target_input)
         sec_uid = profile_id or (video_ref.author_unique_id if video_ref else "")
@@ -8075,7 +8573,8 @@ async def add_monitor(body: TargetIn, request: Request = None):
                 raise HTTPException(400, "首次回填数须为 -1(尽可能全量)或 0~1000")
             t = MonitorTarget(platform=platform, target_kind=kind, keyword=keyword,
                               sec_uid=sec_uid, xsec_token=xsec_token,
-                              nickname=("#" + keyword) if kind == "keyword" else "",
+                              nickname=("#" + keyword) if kind == "keyword" else nickname,
+                              avatar=avatar,
                               alias=_meta_text(body.alias, 60),
                               group_name=_meta_text(body.group_name, 40),
                               tags=_dump_meta_tags(_meta_tags(body.tags)),
@@ -9280,7 +9779,7 @@ async def list_watches(platform: str | None = None):
 
 @app.post("/api/comment-watches")
 async def add_watch(body: WatchIn):
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "tiktok") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok") else "douyin"
     aweme_id = sec_uid = xsec_token = ""
     title = ""
     target_input = _clean_platform_target_input(body.url_or_id, platform)
@@ -9333,6 +9832,39 @@ async def add_watch(body: WatchIn):
             sec_uid = await resolve_ks_user_id(target_input, cfg.engine.user_agent)
             if not sec_uid:
                 raise HTTPException(400, "无法解析快手 user_id,请粘贴完整分享文案、主页链接 / 短链 / user_id")
+        mode = "public"
+    elif platform == "shipinhao":
+        kind = body.kind if body.kind in {"auto", "video", "user"} else "auto"
+        parsed_ref = parse_channels_url(target_input)
+        if kind == "auto":
+            if parsed_ref is not None and parsed_ref.kind == "creator":
+                kind = "user"
+            elif parsed_ref is not None or channels_looks_like_photo(target_input):
+                kind = "video"
+            else:
+                kind = "user"
+        if kind == "video":
+            if parsed_ref is not None and parsed_ref.object_nonce_id:
+                xsec_token = parsed_ref.object_nonce_id
+            aweme_id = await resolve_channels_photo_id(target_input, cfg.engine.user_agent) or ""
+            if not aweme_id and parsed_ref is not None:
+                aweme_id = (
+                    parsed_ref.object_id
+                    or parsed_ref.export_id
+                    or (f"sph:{parsed_ref.share_id}" if parsed_ref.share_id else "")
+                )
+            if not aweme_id:
+                raise HTTPException(
+                    400,
+                    "无法解析视频号作品，请粘贴 weixin.qq.com/sph/... 分享链、"
+                    "channels.weixin.qq.com/web/pages/feed 链接或十进制 objectId",
+                )
+            title = "视频号作品 " + aweme_id
+        else:
+            channels_res = await _resolve_channels_creator_target(target_input)
+            sec_uid = channels_res.username
+            if channels_res.nickname and not title:
+                title = channels_res.nickname
         mode = "public"
     elif platform == "tiktok":
         target_input, video_ref, profile_id = await _resolve_tiktok_target(target_input)
@@ -10264,9 +10796,10 @@ async def add_publish(body: PublishIn, request: Request = None):
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
                 raise HTTPException(400, "该账号不可发布:请对该号完成「小红书扫码登录」或「创作者登录」")
             vis = body.visibility if body.visibility in ("public", "friends", "private") else "public"
+            title_cap = 16 if acc.platform == "shipinhao" else 20
             t = PublishTask(
                 platform=acc.platform, account_id=body.account_id, media_type=body.media_type,
-                title=body.title.strip()[:20], desc=body.desc, topics=body.topics,
+                title=body.title.strip()[:title_cap], desc=body.desc, topics=body.topics,
                 location=(body.location or "").strip()[:60],
                 visibility=vis, allow_save=bool(body.allow_save),
                 allow_comment=bool(body.allow_comment),
@@ -10297,7 +10830,8 @@ async def update_publish(tid: int, body: PublishUpdate):
                 raise HTTPException(400, "发布账号不存在、登录态失效或与任务平台不匹配")
             t.account_id = body.account_id
         if body.title is not None:
-            t.title = body.title.strip()[:20]
+            title_cap = 16 if t.platform == "shipinhao" else 20
+            t.title = body.title.strip()[:title_cap]
         if body.desc is not None:
             t.desc = body.desc
         if body.topics is not None:

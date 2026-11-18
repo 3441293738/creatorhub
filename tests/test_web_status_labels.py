@@ -16,7 +16,7 @@ def test_xhs_note_card_uses_chinese_status_label_mapper():
     assert ">${r.download_status}${r.error" not in note_card
 
 
-def test_keyword_collection_supports_tiktok_with_channels_account_only_source():
+def test_keyword_collection_supports_tiktok_and_channels_multi_source():
     source = APP_JS.read_text(encoding="utf-8")
     html = INDEX_HTML.read_text(encoding="utf-8")
     workbench = WORKBENCH_JSX.read_text(encoding="utf-8")
@@ -31,14 +31,16 @@ def test_keyword_collection_supports_tiktok_with_channels_account_only_source():
     assert 'canRetry && job.platform === "douyin"' not in source
     assert '@app.put' not in html
     assert 'id="collection-create-title"' in html
+    assert 'id="engine-channels_read_mode"' in html
     assert "新建${platformName}关键词采集" in source
     assert 'kuaishou: "快手"' in workbench
     assert '"快手 user_id / 主页链接 / 短链 / 分享文案"' in source
+    assert '"视频号 v2_...@finder / sph 标识 / 主页链接"' in source
     assert 'value="account_works" data-channels-source>本账号作品' in html
-    assert 'PLATFORM === "shipinhao" ? "account_works"' in source
+    assert 'const sourceType = collectionSourceValue();' in source
     assert '新建视频号本账号作品采集' in source
-    assert '仅采集当前登录视频号账号自己的已发布作品' in source
-    assert 'platform === "shipinhao" ? "新建视频号本账号作品采集"' in workbench
+    assert 'WxIsaac64' in source
+    assert 'platform === "shipinhao" ? "新建视频号作品采集"' in workbench
     assert "composerTitle(ctx.tab, ctx.platform)" in workbench
     assert "按平台支持的来源批量采集作品" in source[source.index("collections: {"):source.index("comments: {")]
 

@@ -134,6 +134,7 @@ def test_all_supported_values_and_live_downloader(local_project, monkeypatch):
     payload = {
         "xhs_read_mode": "api", "monitor_initial_backfill_count": -1,
         "douyin_read_mode": "hybrid", "tiktok_read_mode": "native",
+        "channels_read_mode": "protocol",
         "douyin_profile_mode": "api", "douyin_followers_mode": "hybrid",
         "douyin_dm_sync_mode": "browser", "douyin_creator_danmaku_mode": "browser",
         "douyin_publish_mode": "browser",
@@ -177,7 +178,7 @@ def test_all_supported_values_and_live_downloader(local_project, monkeypatch):
 
 INVALID = [
     {"host": "0.0.0.0"}, {"profiles_dir": "arbitrary-directory"}, {"ai_api_key": "do-not-echo-fixture"},
-    {"xhs_read_mode": "unknown"}, {"douyin_read_mode": "invalid"}, {"tiktok_read_mode": "invalid"}, {"douyin_write_mode": "invalid"},
+    {"xhs_read_mode": "unknown"}, {"douyin_read_mode": "invalid"}, {"tiktok_read_mode": "invalid"}, {"channels_read_mode": "invalid"}, {"douyin_write_mode": "invalid"},
     {"douyin_profile_mode": "invalid"}, {"douyin_followers_mode": "invalid"},
     {"douyin_dm_sync_mode": "invalid"}, {"douyin_creator_danmaku_mode": "invalid"},
     {"douyin_publish_mode": "invalid"},

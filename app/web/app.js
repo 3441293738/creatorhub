@@ -1163,7 +1163,14 @@ function applyPlatformUI() {
   document.querySelectorAll(".sh-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "shipinhao"));
   document.querySelectorAll(".tk-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "tiktok"));
   document.querySelectorAll(".tk-hide").forEach(e => e.classList.toggle("hidden", PLATFORM === "tiktok"));
-  document.querySelectorAll(".notsh-only").forEach(e => e.classList.toggle("hidden", pfIsChannels(PLATFORM)));
+  document.querySelectorAll(".notsh-only").forEach(e => {
+    const allowOnChannels = pfIsChannels(PLATFORM) && (
+      e.dataset?.tab === "monitors"
+      || e.dataset?.tab === "comments"
+      || (e.classList.contains("quick-action") && (e.getAttribute("onclick") || "").includes("'monitors'"))
+    );
+    e.classList.toggle("hidden", pfIsChannels(PLATFORM) && !allowOnChannels);
+  });
   document.querySelectorAll(".collect-only").forEach(e => e.classList.toggle(
     "hidden", !["douyin", "xhs", "kuaishou", "shipinhao", "tiktok"].includes(PLATFORM)));
   document.querySelectorAll(".meta-scope").forEach(e => {
@@ -1219,10 +1226,12 @@ function applyPlatformUI() {
   if (wl) wl.textContent = PLATFORM === "xhs"
     ? "笔记 / 创作者主页 / 完整分享文案 / ID"
     : PLATFORM === "kuaishou" ? "作品 / 创作者主页 / 完整分享文案 / ID"
+    : PLATFORM === "shipinhao" ? "分享链接 / 作品 objectId / 创作者 v2_...@finder"
     : "视频 / 账号主页 / 完整分享文案 / ID";
   if ($("w-url")) $("w-url").placeholder = PLATFORM === "xhs"
     ? "直接粘贴整段小红书分享文案，将自动提取笔记或主页链接"
     : PLATFORM === "kuaishou" ? "直接粘贴整段快手分享文案，将自动提取作品或主页链接"
+    : PLATFORM === "shipinhao" ? "粘贴 weixin.qq.com/sph/... 分享链、视频号作品链接、objectId 或 v2_...@finder"
     : PLATFORM === "tiktok" ? "直接粘贴整段 TikTok 分享文案，将自动提取视频或主页链接"
     : "直接粘贴整段抖音分享文案，将自动提取视频或主页链接";
   resetWatchTargetState();
@@ -1238,10 +1247,10 @@ function applyPlatformUI() {
   applyCollectionForm();
   if (PLATFORM === "douyin") applyDanmakuForm();
   if ($("t-kind") && PLATFORM !== "xhs") $("t-kind").value = "creator";
-  // 视频号只有本账号数据,不支持「监控他人」:若正停在这些面板,自动切到「账号管理」
+  // 视频号不支持自动评论规则:若正停在自动评论面板,切回本账号管理
   if (pfIsChannels(PLATFORM)) {
     const cur = (document.querySelector('.navitem.active') || {}).dataset;
-    if (cur && ["monitors", "comments", "autocomment"].includes(cur.tab)) switchTab("hub");
+    if (cur && cur.tab === "autocomment") switchTab("hub");
     // 视频号本账号只有「我的作品 / 数据」;若停在关注/粉丝/私信子页,切回我的作品
     if (["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
   }
@@ -1260,7 +1269,7 @@ function applyPlatformUI() {
 const SMART_TARGET_PARSE_SEQ = Object.create(null);
 
 function smartTargetPlatformName(platform = PLATFORM) {
-  return PF_NAME[platform] || (platform === "generic" ? "其他站点" : String(platform || "当前平台"));
+  return PF_NAME[platform] || (platform === "wechat" ? "微信/视频号" : platform === "generic" ? "其他站点" : String(platform || "当前平台"));
 }
 
 function setSmartTargetFeedback(feedbackId, message, state = "") {
@@ -1277,8 +1286,47 @@ function resetSmartTargetState(inputId, feedbackId, message) {
   setSmartTargetFeedback(feedbackId, message);
 }
 
+function isChannelsWorkUrl(value) {
+  const text = String(value || "").trim();
+  return /(?:^https?:\/\/)?(?:www\.)?weixin\.qq\.com\/sph\//i.test(text)
+    || /(?:^https?:\/\/)?channels\.weixin\.qq\.com\/(?:finder-preview\/pages\/(?:sph|feed)|web\/pages\/feed)/i.test(text)
+    || /^\d{16,20}$/.test(text);
+}
+
+function isChannelsCreatorId(value) {
+  const text = String(value || "").trim();
+  return /^v2_[0-9a-f]{16,}(?:@finder)?$/i.test(text) || /^sph[0-9a-z_]{5,}$/i.test(text);
+}
+
+async function copyTextValue(value, okMsg = "已复制", errMsg = "复制失败，请手动复制") {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(text);
+      toast(okMsg, "ok", 1800);
+      return true;
+    }
+  } catch (e) {}
+  try {
+    const field = document.createElement("textarea");
+    field.value = text;
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.appendChild(field);
+    field.select();
+    const copied = document.execCommand("copy");
+    field.remove();
+    toast(copied ? okMsg : errMsg, copied ? "ok" : "err", copied ? 1800 : 2800);
+    return copied;
+  } catch (e) {
+    toast(errMsg, "err");
+    return false;
+  }
+}
+
 async function normalizePlatformShareTarget({
-  inputId, feedbackId, platform, button = null, quiet = false,
+  inputId, feedbackId, platform, button = null, quiet = false, resolveChannelsCreator = false,
 }) {
   const input = $(inputId);
   if (!input) return null;
@@ -1301,23 +1349,68 @@ async function normalizePlatformShareTarget({
     });
     if (seq !== SMART_TARGET_PARSE_SEQ[inputId]) return input.value.trim();
     const links = Array.isArray(result.links) ? result.links : [];
+    let candidate = raw;
+    let changed = false;
     if (!links.length) {
-      setSmartTargetFeedback(feedbackId, "未发现链接，将按作品或用户 ID 直接解析");
-      if (!quiet) toast("没有发现链接；也可以直接填写作品或用户 ID", "err");
-      return raw;
+      if (platform === "shipinhao" && isChannelsCreatorId(raw)) {
+        setSmartTargetFeedback(feedbackId, "视频号创作者标识已识别 ✓", "success");
+        return raw;
+      }
+      if (!(platform === "shipinhao" && resolveChannelsCreator && isChannelsWorkUrl(raw))) {
+        setSmartTargetFeedback(feedbackId, "未发现链接，将按作品或用户 ID 直接解析");
+        if (!quiet) toast("没有发现链接；也可以直接填写作品或用户 ID", "err");
+        return raw;
+      }
+    } else {
+      const expectedPlatform = platform === "shipinhao" ? "wechat" : platform;
+      const matched = links.find(item => item && item.platform === expectedPlatform);
+      if (!matched) {
+        const names = [...new Set(links.map(item => smartTargetPlatformName(item.platform)))].join("、");
+        const message = `识别到${names}链接，与当前${smartTargetPlatformName(platform)}页面不匹配`;
+        input.setAttribute("aria-invalid", "true");
+        setSmartTargetFeedback(feedbackId, message, "error");
+        if (!quiet) toast(message, "err");
+        return null;
+      }
+      candidate = String(matched.url || "").trim() || raw;
+      changed = candidate !== raw;
+      if (changed) input.value = candidate;
     }
-    const matched = links.find(item => item && item.platform === platform);
-    if (!matched) {
-      const names = [...new Set(links.map(item => smartTargetPlatformName(item.platform)))].join("、");
-      const message = `识别到${names}链接，与当前${smartTargetPlatformName(platform)}页面不匹配`;
-      input.setAttribute("aria-invalid", "true");
-      setSmartTargetFeedback(feedbackId, message, "error");
-      if (!quiet) toast(message, "err");
-      return null;
+
+    if (platform === "shipinhao" && resolveChannelsCreator && isChannelsWorkUrl(candidate)) {
+      if (quiet) {
+        setSmartTargetFeedback(
+          feedbackId,
+          "已识别视频号作品链接，点击「识别」或提交后将自动反查作者 v2_...@finder ✓",
+          "success",
+        );
+        return candidate;
+      }
+      setSmartTargetFeedback(feedbackId, "正在从视频号作品反查创作者 finderUsername…", "parsing");
+      try {
+        const resolved = await api("/api/channels/resolve-creator", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target: candidate }),
+        });
+        if (seq !== SMART_TARGET_PARSE_SEQ[inputId]) return input.value.trim();
+        const username = String(resolved?.username || "").trim();
+        const nickname = String(resolved?.nickname || "").trim();
+        if (username) {
+          input.value = username;
+          const label = nickname ? `${nickname} (${username})` : username;
+          setSmartTargetFeedback(feedbackId, `已反查到创作者：${label} ✓`, "success");
+          toast(`已反查到创作者：${label}`, "ok", 2400);
+          return username;
+        }
+      } catch (resolveErr) {
+        if (seq !== SMART_TARGET_PARSE_SEQ[inputId]) return input.value.trim();
+        input.setAttribute("aria-invalid", "true");
+        setSmartTargetFeedback(feedbackId, resolveErr.message, "error");
+        toast(resolveErr.message, "err");
+        return null;
+      }
     }
-    const cleaned = String(matched.url || "").trim();
-    const changed = cleaned && cleaned !== raw;
-    if (changed) input.value = cleaned;
+
     setSmartTargetFeedback(
       feedbackId,
       changed
@@ -1325,7 +1418,7 @@ async function normalizePlatformShareTarget({
         : `${smartTargetPlatformName(platform)}链接已识别 ✓`,
       "success",
     );
-    return cleaned || raw;
+    return candidate || raw;
   } catch (e) {
     if (seq !== SMART_TARGET_PARSE_SEQ[inputId]) return input.value.trim();
     setSmartTargetFeedback(feedbackId, "自动识别暂未完成，提交时仍会在服务端解析", "error");
@@ -1343,6 +1436,8 @@ function resetMonitorTargetState() {
   const keywordMode = PLATFORM === "xhs" && $("t-kind") && $("t-kind").value === "keyword";
   resetSmartTargetState("t-url", "t-url-feedback", keywordMode
     ? "输入要持续监控的搜索关键词"
+    : PLATFORM === "shipinhao"
+    ? "支持视频号主页链接、v2_...@finder、sph 标识，或单条视频 weixin.qq.com/sph/... 链接（自动反查作者）"
     : "支持完整分享文案、主页长链、平台短链或用户 ID");
 }
 
@@ -1351,6 +1446,7 @@ async function normalizeMonitorTarget(button = null, { quiet = false } = {}) {
   if (keywordMode) return $("t-url").value.trim();
   return normalizePlatformShareTarget({
     inputId: "t-url", feedbackId: "t-url-feedback", platform: PLATFORM, button, quiet,
+    resolveChannelsCreator: PLATFORM === "shipinhao",
   });
 }
 
@@ -1364,10 +1460,34 @@ function handleMonitorTargetKeydown(event) {
   addMonitor();
 }
 
+function resetCollectionCreatorState() {
+  resetSmartTargetState(
+    "col-source-ref", "col-source-ref-feedback",
+    PLATFORM === "shipinhao"
+      ? "可粘贴视频号 v2_...@finder、主页链接，或直接粘贴单条视频 weixin.qq.com/sph/... 链接（自动反查作者）"
+      : PLATFORM === "kuaishou"
+      ? "使用公开主页作品列表；可粘贴完整分享文案、主页链接、v.kuaishou.com 短链或 user_id"
+      : "使用公开主页作品列表，评论和下载继续沿用下方设置",
+  );
+}
+
+async function normalizeCollectionCreatorTarget(button = null, { quiet = false } = {}) {
+  return normalizePlatformShareTarget({
+    inputId: "col-source-ref", feedbackId: "col-source-ref-feedback", platform: PLATFORM,
+    button, quiet, resolveChannelsCreator: PLATFORM === "shipinhao",
+  });
+}
+
+function handleCollectionCreatorPaste() {
+  setTimeout(() => normalizeCollectionCreatorTarget(null, { quiet: true }), 0);
+}
+
 function resetWatchTargetState() {
   resetSmartTargetState(
     "w-url", "w-url-feedback",
-    "支持完整分享文案、作品链接、创作者主页、平台短链或 ID",
+    PLATFORM === "shipinhao" && $("w-kind")?.value === "user"
+      ? "已选「账号近期作品」：可粘贴 v2_...@finder、主页链接或单条视频 weixin.qq.com/sph/...（自动反查作者）"
+      : "支持完整分享文案、作品链接、创作者主页、平台短链或 ID",
   );
 }
 
@@ -1375,6 +1495,7 @@ function normalizeWatchTarget(button = null, options = {}) {
   return normalizePlatformShareTarget({
     inputId: "w-url", feedbackId: "w-url-feedback", platform: PLATFORM,
     button, quiet: !!options.quiet,
+    resolveChannelsCreator: PLATFORM === "shipinhao" && $("w-kind")?.value === "user",
   });
 }
 
@@ -1412,22 +1533,38 @@ function handleDanmakuTargetKeydown(event) {
   addDanmakuWatch();
 }
 
+let _LAST_MONITOR_PLATFORM = "";
+
 function applyMonitorForm() {
   const title = $("mon-add-title");
   const lbl = $("t-url-label");
   const parseButton = document.querySelector('[data-panel="monitors"] .smart-target-action');
-  if (PLATFORM === "douyin" || PLATFORM === "kuaishou" || PLATFORM === "tiktok") {
+  const isSph = PLATFORM === "shipinhao";
+  if ($("t-acc-wrap")) $("t-acc-wrap").style.display = isSph ? "none" : "";
+  if (isSph && $("t-acc")) $("t-acc").value = "";
+  const supportsBackfill = PLATFORM === "douyin" || isSph;
+  if ($("t-backfill-wrap")) $("t-backfill-wrap").style.display = supportsBackfill ? "" : "none";
+  if ($("t-backfill") && _LAST_MONITOR_PLATFORM !== PLATFORM) {
+    $("t-backfill").value = isSph ? "5" : "";
+    $("t-backfill")._csSync?.();
+  }
+  _LAST_MONITOR_PLATFORM = PLATFORM;
+  if (PLATFORM === "douyin" || PLATFORM === "kuaishou" || PLATFORM === "shipinhao" || PLATFORM === "tiktok") {
     const isKs = PLATFORM === "kuaishou";
     const isTikTok = PLATFORM === "tiktok";
-    if (title) title.innerHTML = (isKs ? '添加创作者监控' : '添加作品监控')
+    if (title) title.innerHTML = (isKs || isSph ? '添加创作者监控' : '添加作品监控')
       + ' <span class="sub">监控并下载新作品</span>';
     if (lbl) lbl.textContent = isTikTok
       ? "创作者主页 / 完整分享文案 / @username"
+      : isSph
+      ? "创作者主页 / v2_...@finder / 单条视频分享链接"
       : isKs
       ? "创作者主页 / 完整分享文案 / user_id"
       : "创作者主页 / 完整分享文案 / sec_uid";
     $("t-url").placeholder = isTikTok
       ? "直接粘贴整段 TikTok 主页或作品分享文案，将自动提取 @username"
+      : isSph
+      ? "粘贴视频号主页链接、v2_...@finder、sph 标识或单条视频 weixin.qq.com/sph/... 链接"
       : isKs
       ? "直接粘贴整段快手主页分享文案，将自动提取有效链接"
       : "直接粘贴整段抖音主页分享文案，将自动提取有效链接";
@@ -3825,37 +3962,61 @@ function accOptions(list, ph) {
 function populateAccountSelect() {
   const sel = $("t-acc"); if (!sel) return;
   const required = ["xhs", "douyin", "tiktok"].includes(PLATFORM);
+  const channels = PLATFORM === "shipinhao";
   const platformName = PF_NAME[PLATFORM] || "当前平台";
   const list = PLATFORM === "tiktok"
     ? ACCOUNTS.filter(a => a.status === "active" && a.has_storage)
     : ACCOUNTS;
-  sel.innerHTML = accOptions(list, required ? `请选择${platformName}账号(必选)` : "不指定账号");
+  sel.innerHTML = accOptions(
+    list,
+    required ? `请选择${platformName}账号(必选)` : channels ? "默认走本机微信客户端（无需账号）" : "不指定账号",
+  );
   // 抖音匿名主页可能返回风控后的旧快照；作品监控与小红书一样必须使用登录态。
   if (required && list.length) sel.value = String(list[0].id);
+  else if (channels) sel.value = "";
+  if ($("t-acc-wrap")) $("t-acc-wrap").style.display = channels ? "none" : "";
+}
+function collectionRequiresAccount(platform = PLATFORM, source = collectionSourceValue()) {
+  return !(platform === "shipinhao" && ["keyword", "creator"].includes(source));
 }
 function populateCollectionAccount() {
   const sel = $("col-account"); if (!sel) return;
   const current = sel.value;
   const platformName = PF_NAME[PLATFORM] || "平台";
+  const requiresAccount = collectionRequiresAccount(PLATFORM, collectionSourceValue());
+  const channels = PLATFORM === "shipinhao";
   const list = ACCOUNTS.filter(a => a.platform === PLATFORM && a.status !== "invalid" && a.has_storage);
-  sel.innerHTML = accOptions(list, list.length ? `请选择${platformName}账号` : `暂无可用${platformName}账号`);
-  if (list.some(a => String(a.id) === current)) sel.value = current;
+  const placeholder = requiresAccount
+    ? (list.length ? `请选择${platformName}账号` : `暂无可用${platformName}账号`)
+    : "使用本机微信通道（无需网页账号）";
+  sel.innerHTML = accOptions(list, placeholder);
+  sel.required = requiresAccount;
+  if ($("col-account-wrap")) $("col-account-wrap").style.display = (channels && !requiresAccount) ? "none" : "";
+  if (!requiresAccount) {
+    setFieldError(sel, "");
+    sel.value = "";
+  } else if (list.some(a => String(a.id) === current)) sel.value = current;
   else if (list.length) sel.value = String(list[0].id);
+  else sel.value = "";
   if (sel._csSync) sel._csSync();
 }
 function populateWatchAccount() {
   const sel = $("w-acc"); if (!sel) return;
   const xhs = PLATFORM === "xhs";
   const tiktok = PLATFORM === "tiktok";
+  const channels = PLATFORM === "shipinhao";
   const required = xhs || tiktok;
   const creatorOnly = PLATFORM === "douyin" && $("w-mode") && $("w-mode").value === "creator";
   const list = tiktok
     ? ACCOUNTS.filter(a => a.status === "active" && a.has_storage)
     : creatorOnly ? ACCOUNTS.filter(a => a.has_creator) : ACCOUNTS;
   const ph = required ? "请选择" + PF_NAME[PLATFORM] + "账号(必选)"
-    : (creatorOnly && list.length === 0 ? "无创作者账号,请先创作者登录" : "不指定账号");
+    : (creatorOnly && list.length === 0 ? "无创作者账号,请先创作者登录" : channels ? "默认走本机微信客户端（无需账号）" : "不指定账号");
   sel.innerHTML = accOptions(list, ph);
   if (required && list.length) sel.value = String(list[0].id);
+  else if (channels) sel.value = "";
+  if ($("w-acc-wrap")) $("w-acc-wrap").style.display = channels ? "none" : "";
+  if (sel._csSync) sel._csSync();
 }
 function populateDanmakuAccount() {
   const sel = $("d-w-acc"); if (!sel) return;
@@ -4590,6 +4751,7 @@ async function delAccount(id) {
 let TRANSPORT_MATRIX = null;
 function transportModeLabel(mode) {
   return ({ api: "API 直连", browser: "浏览器", hybrid: "API → 浏览器回退",
+    auto: "原生协议优先", protocol: "仅原生协议",
     manual: "人工草稿", unavailable: "当前不可用", deferred: "已暂缓" })[mode] || mode || "未知";
 }
 function transportModeTag(mode) {
@@ -4620,7 +4782,7 @@ function renderTransportMatrix(data) {
     <td>${transportSupportTag(!!row.api, "API")}</td>
     <td>${transportSupportTag(!!row.browser, "浏览器")}</td>
     <td>${transportModeTag(row.effective_mode)}${row.configured_mode !== row.effective_mode ? `<div class="isolation-note">配置：${esc(transportModeLabel(row.configured_mode))}</div>` : ""}</td>
-    <td>${esc(row.reason || row.note || (row.fallback === "browser_on_confirmed_failure" ? "明确失败时回退；不确定写结果不重试" : "—"))}</td>
+    <td>${esc(row.reason || row.note || (row.fallback === "browser_on_confirmed_failure" ? "明确失败时回退；不确定写结果不重试" : "—"))}${row.platform === "shipinhao" && row.requires_channels_cdp ? `<div class="isolation-note"><a class="channels-inline-jump" href="#channels-protocol-card" onclick="event.preventDefault();openChannelsProtocolSettings()">${data?.settings?.channels_cdp_ready ? "管理本机微信通道 →" : "去配置本机微信通道 →"}</a></div>` : ""}</td>
   </tr>`).join("") : empty(6, "尚无兼容矩阵", "i-info");
   const accounts = Array.isArray(data?.accounts) ? data.accounts : [];
   isolation.innerHTML = accounts.length ? accounts.map(account => {
@@ -4652,6 +4814,7 @@ globalThis.CreatorHubTransportMatrix = { load: refreshTransportMatrix, route: tr
 // ─── 下载设置 ───
 async function loadSettings() {
   globalThis.CreatorHubEngineSettings?.load();
+  globalThis.CreatorHubChannelsProtocol?.load?.();
   refreshTransportMatrix();
   try {
     const s = await api("/api/settings");
@@ -4725,6 +4888,725 @@ async function saveSettings() {
   } catch (e) { $("dl-msg").textContent = "失败: " + e.message; toast("保存失败:" + e.message, "err"); }
   });
 }
+
+// ─── 视频号本机微信通道可视化配置 ───
+function openChannelsProtocolSettings() {
+  switchTab("settings");
+  globalThis.CreatorHubWorkbench?.showSection?.("settings", "channels");
+  globalThis.CreatorHubChannelsProtocol?.load?.();
+}
+
+const CreatorHubChannelsProtocol = (() => {
+  const dirtyIds = [
+    "ch-proto-read-mode",
+    "ch-proto-mode",
+    "ch-proto-proxy-port",
+    "ch-proto-endpoint",
+    "ch-proto-endpoint-file",
+  ];
+  let lastStatus = null;
+
+  function setMsg(text, state = "") {
+    const el = $("ch-proto-msg");
+    if (!el) return;
+    el.textContent = text;
+    el.dataset.state = state;
+  }
+
+  function clearDirtyFlags() {
+    for (const id of dirtyIds) {
+      const el = $(id);
+      if (el) el.dataset.wbEdited = "false";
+    }
+  }
+
+  function onModeChange() {
+    const mode = $("ch-proto-mode")?.value || "none";
+    const proxyWrap = $("ch-proto-proxy-wrap");
+    const epWrap = $("ch-proto-endpoint-wrap");
+    const fileWrap = $("ch-proto-file-wrap");
+    if (proxyWrap) proxyWrap.hidden = mode !== "proxy";
+    if (epWrap) epWrap.hidden = mode !== "endpoint";
+    if (fileWrap) fileWrap.hidden = mode !== "endpoint_file";
+    const proxyPanel = $("channels-proxy-panel");
+    const bridgePanel = $("channels-bridge-panel");
+    if (mode === "proxy" && proxyPanel) proxyPanel.open = true;
+    if (mode === "endpoint_file" && bridgePanel) bridgePanel.open = true;
+  }
+
+  function renderCapabilities(caps, readMode) {
+    const box = $("ch-proto-caps");
+    if (!box) return;
+    const c = caps || {};
+    const items = [
+      ["account_works", "本账号作品同步"],
+      ["keyword_search", "关键词搜索"],
+      ["creator_works", "任意创作者主页"],
+      ["full_comment_threads", "全量二级评论"],
+      ["encrypted_video_decode", "WxIsaac64 视频解密"],
+      ["share_preview", "公开分享预览"],
+    ];
+    box.innerHTML = items.map(([key, label]) => {
+      const ok = !!c[key];
+      const cls = ok ? "done" : "skipped";
+      const suffix = !ok && readMode === "browser" && ["keyword_search", "creator_works", "full_comment_threads"].includes(key)
+        ? " · 浏览器模式禁用"
+        : "";
+      return `<span class="pill ${cls} bare">${esc(label)}${esc(suffix)}</span>`;
+    }).join("");
+  }
+
+  function renderProbeBox(probe) {
+    const box = $("ch-proto-probe-box");
+    if (!box) return;
+    if (!probe) {
+      box.hidden = true;
+      box.innerHTML = "";
+      box.dataset.state = "";
+      return;
+    }
+    box.hidden = false;
+    if (probe.ok && probe.ready) {
+      box.dataset.state = "ready";
+      if (probe.transport === "channels-local-proxy") {
+        const rawCaps = probe.capabilities;
+        const capList = Array.isArray(rawCaps)
+          ? rawCaps.map(x => String(x || "").trim()).filter(Boolean)
+          : Object.entries(rawCaps || {}).filter(([, v]) => !!v).map(([k]) => k);
+        box.innerHTML = `<b>握手成功 · 内置微信视频号代理已就绪</b>`
+          + `<div>页面：<code>${esc(probe.url || "https://channels.weixin.qq.com/web/pages/")}</code>`
+          + (probe.title ? ` · 标题：<b>${esc(probe.title)}</b>` : "")
+          + ` · 已连接页面数：<b>${Number(probe.connected_pages || 1)}</b></div>`
+          + (capList.length ? `<div>已挂载服务：<code>${esc(capList.join(" / "))}</code></div>` : "");
+        return;
+      }
+      const env = probe.environment || {};
+      const methods = Array.isArray(probe.service?.capabilities) ? probe.service.capabilities : [];
+      box.innerHTML = `<b>握手成功 · 微信原生视频号页面就绪</b>`
+        + `<div>页面：<code>${esc((env.host || "channels.weixin.qq.com") + (env.path || ""))}</code>`
+        + ` · WeixinJSBridge：<b>${env.nativeBridge ? "可用" : "缺失"}</b>`
+        + ` · 微信 UA：<b>${env.wechatUA ? "匹配" : "不匹配"}</b></div>`
+        + (methods.length ? `<div>已挂载服务：<code>${esc(methods.join(" / "))}</code></div>` : "");
+    } else {
+      box.dataset.state = "error";
+      box.innerHTML = `<b>通道未就绪</b><div>${esc(probe.error || "无法连接本地微信 Finder 通道")}</div>`;
+    }
+  }
+
+  function renderProcesses(procs) {
+    const box = $("ch-bridge-procs");
+    if (!box) return;
+    const list = Array.isArray(procs) ? procs : [];
+    if (!list.length) {
+      box.innerHTML = '<span class="field-help" style="margin:0">当前未检测到运行中的桌面微信（Weixin.exe / WeChat.exe / WeChatAppEx.exe）进程。</span>';
+      return;
+    }
+    const preview = list.slice(0, 12).map(p =>
+      `<span class="pill bare">${esc(p.name)} · PID ${Number(p.pid)}</span>`
+    ).join("");
+    const extra = list.length > 12 ? `<span class="field-help" style="margin:0">等共 ${list.length} 个微信相关进程</span>` : "";
+    box.innerHTML = preview + extra;
+  }
+
+  function renderProxy(proxy) {
+    if (!proxy) return;
+    const badge = $("ch-proxy-badge");
+    const statusText = $("ch-proxy-status-text");
+    const startBtn = $("ch-proxy-start-btn");
+    const stopBtn = $("ch-proxy-stop-btn");
+    const caBadge = $("ch-proxy-ca-badge");
+    const caText = $("ch-proxy-ca-text");
+    const caInstallBtn = $("ch-proxy-ca-install-btn");
+    const caUninstallBtn = $("ch-proxy-ca-uninstall-btn");
+    const pagesBox = $("ch-proxy-pages");
+
+    const running = !!proxy.running;
+    const readyPages = Number(proxy.ready_pages || 0);
+    const connectedPages = Number(proxy.connected_pages || 0);
+    const ca = proxy.ca || {};
+    const caTrusted = !!ca.trusted;
+
+    if (badge) {
+      if (!running) {
+        badge.className = "pill skipped";
+        badge.textContent = "未启动";
+      } else if (readyPages > 0) {
+        badge.className = "pill done";
+        badge.textContent = "运行中 · 页面就绪";
+      } else if (connectedPages > 0) {
+        badge.className = "pill pending";
+        badge.textContent = "运行中 · 加载中";
+      } else {
+        badge.className = "pill pending";
+        badge.textContent = "运行中 · 待开微信";
+      }
+    }
+    if (statusText) {
+      if (running) {
+        const sysProxy = proxy.system_proxy || {};
+        const sysLabel = proxy.system_proxy_managed && sysProxy.proxy_enable
+          ? `WinINet 系统代理已指向 ${sysProxy.proxy_server || ("127.0.0.1:" + (proxy.proxy_port || 2023))}`
+          : "系统代理未托管（手动模式）";
+        const connLabel = readyPages > 0
+          ? `已就绪 ${readyPages} 个视频号页面`
+          : (connectedPages > 0 ? `已接入 ${connectedPages} 页，等待模块加载` : "请在微信中打开一次视频号页面");
+        statusText.textContent = `监听 127.0.0.1:${proxy.proxy_port || 2023} · ${sysLabel} · ${connLabel} · 已转发 ${Number(proxy.commands_forwarded || 0)} 条请求`;
+      } else if (proxy.system_proxy?.low_integrity) {
+        statusText.textContent = "检测到后端处于 Windows 低完整性级别（Low IL），无法自动改写系统代理；建议用外部 Python 启动 uvicorn，或取消勾选下方开关后手动将系统代理指向 127.0.0.1:" + (proxy.proxy_port || 2023) + "。";
+      } else {
+        statusText.textContent = "仅拦截 channels.weixin.qq.com，其余网站流量原样加密直通，停止或退出软件时自动恢复系统代理。";
+      }
+    }
+    if (startBtn) startBtn.disabled = running;
+    if (stopBtn) stopBtn.disabled = !running;
+
+    if (caBadge) {
+      if (caTrusted) {
+        caBadge.className = "pill done";
+        caBadge.textContent = "根证书已受信任";
+      } else if (ca.exists) {
+        caBadge.className = "pill pending";
+        caBadge.textContent = "证书已生成 · 未信任";
+      } else {
+        caBadge.className = "pill skipped";
+        caBadge.textContent = "根证书未安装";
+      }
+    }
+    if (caText) {
+      if (caTrusted) {
+        caText.textContent = `已安装到 ${ca.store || "CurrentUser\\Root"}（指纹 ${String(ca.thumbprint || "").slice(0, 12)}…）。`;
+      } else {
+        caText.textContent = "本地自签名 CA 仅用于签发 channels.weixin.qq.com 本机证书；安装时请在 Windows 安全弹窗点击「是」。";
+      }
+    }
+    if (caInstallBtn) caInstallBtn.disabled = caTrusted;
+    if (caUninstallBtn) caUninstallBtn.disabled = !caTrusted;
+
+    if (pagesBox) {
+      const pages = Array.isArray(proxy.pages) ? proxy.pages : [];
+      if (!pages.length) {
+        pagesBox.innerHTML = running
+          ? '<span class="field-help" style="margin:0">代理已监听，等待桌面微信打开 <code>https://channels.weixin.qq.com/web/pages/*</code> 页面…</span>'
+          : '<span class="field-help" style="margin:0">启动代理并在桌面微信中打开视频号后，此处将实时显示已桥接的视频号页面。</span>';
+      } else {
+        pagesBox.innerHTML = pages.map(p => {
+          const pill = p.ready
+            ? '<span class="pill done bare">协议就绪</span>'
+            : `<span class="pill pending bare">${esc(p.reason || "等待加载")}</span>`;
+          const copyBtn = p.url
+            ? `<button type="button" class="ghost sm" onclick="CreatorHubChannelsProtocol.copyPageUrl(${jsArg(p.url)})">复制链接</button>`
+            : "";
+          return `<div class="channels-proxy-page-row"><div class="channels-proxy-page-copy"><b>${esc(p.title || "微信视频号页面")}</b> <code>${esc(p.url || "")}</code></div><div class="channels-proxy-page-meta">${copyBtn}${pill}</div></div>`;
+        }).join("");
+      }
+    }
+  }
+
+  function renderBridge(bridge) {
+    if (!bridge) return;
+    const badge = $("ch-bridge-badge");
+    const statusText = $("ch-bridge-status-text");
+    const startBtn = $("ch-bridge-start-btn");
+    const stopBtn = $("ch-bridge-stop-btn");
+    const running = !!bridge.running;
+    if (badge) {
+      badge.className = `pill ${running ? "done" : "skipped"}`;
+      badge.textContent = running ? "运行中" : "未启动";
+    }
+    if (statusText) {
+      if (running) {
+        const nativeState = bridge.native_connected ? "微信已接入" : "等待微信接入";
+        statusText.textContent = `监听 127.0.0.1:${bridge.debug_listening_port || "-"} → CDP :${bridge.cdp_listening_port || "-"} · ${nativeState} · 已转发 ${Number(bridge.commands_forwarded || 0)} 条命令 / ${Number(bridge.results_forwarded || 0)} 条结果`;
+      } else {
+        statusText.textContent = "仅在需要由 CreatorHub 托管本机 127.0.0.1 WMPF 转发桥时启动。";
+      }
+    }
+    if (startBtn) startBtn.disabled = running;
+    if (stopBtn) stopBtn.disabled = !running;
+    if (Array.isArray(bridge.wechat_processes)) renderProcesses(bridge.wechat_processes);
+  }
+
+  function renderStatus(data, probeOverride = null) {
+    if (!data) return;
+    lastStatus = data;
+    const cfgState = data.config || {};
+    const epInfo = cfgState.endpoint_file_info;
+    const proxyState = data.proxy || {};
+    const badge = $("ch-proto-badge");
+    const summaryText = $("ch-proto-summary-text");
+    const probe = probeOverride || data.probe || null;
+
+    if (badge && summaryText) {
+      if (probe && probe.ok && probe.ready) {
+        badge.className = "pill done";
+        badge.textContent = "已连通微信视频号";
+        summaryText.textContent = "本机桌面微信 Finder 通道握手正常，可执行搜索、创作者采集、全量二级评论与视频解密。";
+      } else if (probe && !probe.ok) {
+        badge.className = "pill failed";
+        badge.textContent = "连接未就绪";
+        summaryText.textContent = probe.error || "本地微信 Finder 通道暂不可达";
+      } else if (data.configured) {
+        if (cfgState.connection_mode === "proxy") {
+          if (proxyState.running && Number(proxyState.ready_pages || 0) > 0) {
+            badge.className = "pill done";
+            badge.textContent = "代理已就绪";
+            summaryText.textContent = `内置本地代理 127.0.0.1:${proxyState.proxy_port || 2023} 已接入桌面微信视频号页面，可直接使用。`;
+          } else if (proxyState.running) {
+            badge.className = "pill pending";
+            badge.textContent = "代理待微信接入";
+            summaryText.textContent = "内置本地代理已运行，请在桌面微信中打开一次视频号页面。";
+          } else {
+            badge.className = "pill pending";
+            badge.textContent = "已选代理 · 未启动";
+            summaryText.textContent = "已配置内置视频号代理模式，请先在下方安装根证书并点击「启动代理并应用」。";
+          }
+        } else if (cfgState.connection_mode === "endpoint_file" && epInfo && !epInfo.exists) {
+          badge.className = "pill pending";
+          badge.textContent = "口令文件未就绪";
+          summaryText.textContent = "已配置口令文件路径，但文件尚不存在；请先启动对应 WMPF 桥接。";
+        } else if (cfgState.connection_mode === "endpoint_file" && epInfo && !epInfo.valid) {
+          badge.className = "pill failed";
+          badge.textContent = "口令文件无效";
+          summaryText.textContent = epInfo.error || "口令文件未通过回环校验";
+        } else {
+          badge.className = "pill pending";
+          badge.textContent = "已配置 · 待测试";
+          summaryText.textContent = cfgState.connection_mode === "endpoint_file"
+            ? "已绑定 WMPF 控制口令文件；点击「测试通道连接」校验桌面微信页面。"
+            : `已配置端点 ${cfgState.cdp_endpoint}；点击「测试通道连接」校验桌面微信页面。`;
+        }
+      } else {
+        badge.className = "pill skipped";
+        badge.textContent = "未配置";
+        summaryText.textContent = "当前仅支持创作者助手同步本账号作品与公开分享预览；建议启用「内置本机微信代理桥接」解锁全量能力。";
+      }
+    }
+
+    const fileHelp = $("ch-proto-file-help");
+    if (fileHelp) {
+      if (epInfo && epInfo.path) {
+        fileHelp.textContent = epInfo.exists
+          ? (epInfo.valid ? `口令文件有效（server PID ${epInfo.server_pid || "未知"}${epInfo.server_running === false ? "，进程已退出" : ""}）。` : `口令文件异常：${epInfo.error}`)
+          : "当前路径尚未生成口令文件；可先启动下方 WMPF 托管桥接。";
+      } else {
+        fileHelp.innerHTML = "指向 <code>wmpf_cdp.LoopbackBridge</code> 生成的 JSON 描述文件；若使用下方托管桥接会自动填入。";
+      }
+    }
+
+    renderCapabilities(data.capabilities, data.read_mode || cfgState.read_mode);
+    renderProbeBox(probe);
+    renderProxy(data.proxy);
+    renderBridge(data.bridge);
+  }
+
+  function applyConfigToForm(data, force = false) {
+    const cfgState = data?.config || {};
+    const assign = (id, val) => {
+      const el = $(id);
+      if (!el) return;
+      if (force || !globalThis.CreatorHubWorkbench?.isDirty?.(id)) el.value = val;
+    };
+    assign("ch-proto-read-mode", cfgState.read_mode || data?.read_mode || "auto");
+    assign("ch-proto-mode", cfgState.connection_mode || "none");
+    assign("ch-proto-proxy-port", String(cfgState.proxy_port || data?.proxy?.proxy_port || 2023));
+    assign("ch-proto-endpoint", cfgState.cdp_endpoint || "");
+    assign("ch-proto-endpoint-file", cfgState.cdp_endpoint_file || "");
+    if (force) {
+      clearDirtyFlags();
+    }
+    onModeChange();
+    csSyncAll();
+  }
+
+  async function load(force = false) {
+    if (!$("channels-protocol-card")) return null;
+    try {
+      const data = await api("/api/channels/protocol/status");
+      applyConfigToForm(data, force);
+      renderStatus(data);
+      return data;
+    } catch (e) {
+      setMsg("读取通道状态失败：" + e.message, "error");
+      return null;
+    }
+  }
+
+  function fillEndpoint(url) {
+    if ($("ch-proto-mode")) $("ch-proto-mode").value = "endpoint";
+    if ($("ch-proto-endpoint")) $("ch-proto-endpoint").value = url;
+    onModeChange();
+    csSyncAll();
+    setMsg(`已填入端点 ${url}，点击「测试通道连接」或「保存通道配置」`, "warning");
+  }
+
+  async function discover() {
+    const btn = $("ch-proto-scan-btn");
+    const box = $("ch-proto-discovered");
+    await withBusy(btn, "扫描中", async () => {
+      try {
+        const res = await api("/api/channels/protocol/discover");
+        renderProcesses(res.wechat_processes);
+        renderBridge(res.bridge);
+        const list = Array.isArray(res.endpoints) ? res.endpoints : [];
+        if (box) {
+          box.hidden = false;
+          if (!list.length) {
+            box.innerHTML = '<div class="field-help" style="margin:0">未扫描到本机回环 CDP HTTP 端口（已检查 9222/9223/9229/9333）。标准零售版桌面微信默认不开放 CDP 端口，建议直接使用「内置本机微信代理桥接」。</div>';
+          } else {
+            box.innerHTML = list.map(item => {
+              const targets = Array.isArray(item.finder_targets) ? item.finder_targets : [];
+              const tag = item.has_finder_page
+                ? `<span class="pill done bare">发现 ${targets.length} 个视频号页</span>`
+                : `<span class="pill skipped bare">${Number(item.total_pages || 0)} 个非视频号页</span>`;
+              const detail = targets.length
+                ? targets.map(t => `${t.title || "视频号"} (${t.path})`).join("、")
+                : "当前端口暂无 channels.weixin.qq.com/web/pages/* 页面";
+              return `<div class="channels-proto-port">
+                <div class="channels-proto-port-copy"><div><code>${esc(item.endpoint)}</code> ${tag}</div><div class="field-help" style="margin:2px 0 0">${esc(detail)}</div></div>
+                <button type="button" class="ghost sm" onclick="CreatorHubChannelsProtocol.fillEndpoint(${jsArg(item.endpoint)})">选用此端点</button>
+              </div>`;
+            }).join("");
+          }
+        }
+        setMsg(list.some(x => x.has_finder_page) ? "已发现本机微信视频号 CDP 端口" : "端口扫描完成", list.some(x => x.has_finder_page) ? "success" : "");
+      } catch (e) {
+        setMsg("端口扫描失败：" + e.message, "error");
+      }
+    });
+  }
+
+  async function probe(explicitMode = null) {
+    const useProxyDirect = explicitMode === "proxy";
+    const btn = useProxyDirect
+      ? ($("ch-proxy-probe-btn") || $("ch-proto-probe-btn"))
+      : $("ch-proto-probe-btn");
+    const mode = useProxyDirect ? "proxy" : ($("ch-proto-mode")?.value || "none");
+    const endpoint = $("ch-proto-endpoint")?.value.trim() || "";
+    const endpointFile = $("ch-proto-endpoint-file")?.value.trim() || "";
+    setMsg("正在握手探测本机微信 Finder 页面…");
+    await withBusy(btn, "探测中", async () => {
+      try {
+        const res = await api("/api/channels/protocol/probe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            connection_mode: mode,
+            cdp_endpoint: useProxyDirect ? "" : endpoint,
+            cdp_endpoint_file: useProxyDirect ? "" : endpointFile,
+          }),
+        });
+        const probeObj = res.probe || { ok: !!res.ok, ready: !!res.ready, error: res.error || "" };
+        if (lastStatus) renderStatus(lastStatus, probeObj);
+        else renderProbeBox(probeObj);
+        if (probeObj.ok && probeObj.ready) {
+          setMsg("通道握手成功 ✓ 已命中微信原生视频号页面", "success");
+          toast("微信视频号通道连通正常 ✓", "ok");
+        } else {
+          setMsg(probeObj.error || "通道未就绪", "error");
+          toast(probeObj.error || "通道未就绪", "err", 6000);
+        }
+      } catch (e) {
+        setMsg("探测失败：" + e.message, "error");
+        toast("探测失败：" + e.message, "err", 6000);
+      }
+    });
+  }
+
+  async function save() {
+    const btn = $("ch-proto-save-btn");
+    const mode = $("ch-proto-mode")?.value || "none";
+    const readMode = $("ch-proto-read-mode")?.value || "auto";
+    const proxyPort = Number($("ch-proto-proxy-port")?.value || 2023);
+    const endpoint = $("ch-proto-endpoint")?.value.trim() || "";
+    const endpointFile = $("ch-proto-endpoint-file")?.value.trim() || "";
+
+    if (mode === "proxy" && (!Number.isInteger(proxyPort) || proxyPort < 1024 || proxyPort > 65535)) {
+      setMsg("内置代理端口必须是 1024-65535 之间的整数", "error");
+      $("ch-proto-proxy-port")?.focus();
+      return;
+    }
+    if (mode === "endpoint" && !endpoint) {
+      setMsg("直连模式下请先填写本机回环 CDP 端点地址", "error");
+      $("ch-proto-endpoint")?.focus();
+      return;
+    }
+    if (mode === "endpoint_file" && !endpointFile) {
+      setMsg("口令文件模式下请填写 WMPF 控制口令文件路径", "error");
+      $("ch-proto-endpoint-file")?.focus();
+      return;
+    }
+
+    setMsg("正在保存…");
+    await withBusy(btn, "保存中", async () => {
+      try {
+        const payload = {
+          channels_read_mode: readMode,
+          connection_mode: mode,
+          channels_cdp_endpoint: mode === "endpoint" ? endpoint : "",
+          channels_cdp_endpoint_file: mode === "endpoint_file" ? endpointFile : "",
+        };
+        if (mode === "proxy" || Number.isInteger(proxyPort)) {
+          payload.channels_proxy_port = proxyPort;
+        }
+        const data = await api("/api/channels/protocol/config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        applyConfigToForm(data, true);
+        renderStatus(data);
+        setMsg("已保存 ✓ 后续视频号采集、监控与分享下载将按此配置执行", "success");
+        toast("视频号微信通道配置已保存", "ok");
+        globalThis.CreatorHubEngineSettings?.load?.();
+        globalThis.CreatorHubTransportMatrix?.load?.();
+      } catch (e) {
+        setMsg("保存失败：" + e.message, "error");
+        toast("保存失败：" + e.message, "err", 6000);
+      }
+    });
+    if (lastStatus?.proxy) renderProxy(lastStatus.proxy);
+    if (lastStatus?.bridge) renderBridge(lastStatus.bridge);
+  }
+
+  async function reset() {
+    const btn = $("ch-proto-reset-btn");
+    setMsg("正在恢复默认配置…");
+    await withBusy(btn, "恢复中", async () => {
+      try {
+        const data = await api("/api/channels/protocol/config", { method: "DELETE" });
+        applyConfigToForm(data, true);
+        renderStatus(data);
+        setMsg("已恢复 config.yaml / 环境变量默认配置", "success");
+        toast("已恢复默认配置", "ok");
+        globalThis.CreatorHubEngineSettings?.load?.();
+        globalThis.CreatorHubTransportMatrix?.load?.();
+      } catch (e) {
+        setMsg("恢复失败：" + e.message, "error");
+      }
+    });
+    if (lastStatus?.proxy) renderProxy(lastStatus.proxy);
+    if (lastStatus?.bridge) renderBridge(lastStatus.bridge);
+  }
+
+  async function startProxy() {
+    const btn = $("ch-proxy-start-btn");
+    const proxyPort = Number($("ch-proto-proxy-port")?.value || 2023);
+    const sysProxyCheck = $("ch-proxy-manage-sysproxy");
+    const manageSysProxy = sysProxyCheck ? !!sysProxyCheck.checked : true;
+    if (!Number.isInteger(proxyPort) || proxyPort < 1024 || proxyPort > 65535) {
+      setMsg("内置代理端口必须是 1024-65535 之间的整数", "error");
+      $("ch-proto-proxy-port")?.focus();
+      return;
+    }
+    setMsg(manageSysProxy ? "正在启动内置本地视频号代理并设置系统代理…" : "正在启动内置本地视频号代理（不修改系统代理）…");
+    await withBusy(btn, "启动中", async () => {
+      try {
+        const data = await api("/api/channels/protocol/proxy/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            proxy_port: proxyPort,
+            enable_system_proxy: manageSysProxy,
+            apply_to_config: true,
+          }),
+        });
+        applyConfigToForm(data, true);
+        renderStatus(data);
+        const caTrusted = !!data?.proxy?.ca?.trusted;
+        const sysManagedMsg = manageSysProxy
+          ? "内置视频号代理已启动 ✓ 请在桌面微信打开一次视频号页面"
+          : `内置视频号代理已监听 127.0.0.1:${proxyPort}（未修改系统代理），请将 channels.weixin.qq.com 流量指向该端口`;
+        setMsg(
+          caTrusted
+            ? sysManagedMsg
+            : "内置代理已启动，请先点击「安装根证书」让微信信任本机证书",
+          caTrusted ? "success" : "warning"
+        );
+        toast("内置视频号代理已启动", "ok");
+        globalThis.CreatorHubTransportMatrix?.load?.();
+      } catch (e) {
+        setMsg("启动代理失败：" + e.message, "error");
+        toast("启动代理失败：" + e.message, "err", 7000);
+      }
+    });
+    if (lastStatus?.proxy) renderProxy(lastStatus.proxy);
+  }
+
+  async function stopProxy() {
+    const btn = $("ch-proxy-stop-btn");
+    setMsg("正在停止代理并恢复 Windows 系统代理…");
+    await withBusy(btn, "停止中", async () => {
+      try {
+        const data = await api("/api/channels/protocol/proxy/stop", { method: "POST" });
+        applyConfigToForm(data, true);
+        renderStatus(data);
+        setMsg("内置视频号代理已停止，已恢复系统代理设置", "");
+        toast("内置视频号代理已停止", "info");
+        globalThis.CreatorHubTransportMatrix?.load?.();
+      } catch (e) {
+        setMsg("停止代理失败：" + e.message, "error");
+      }
+    });
+    if (lastStatus?.proxy) renderProxy(lastStatus.proxy);
+  }
+
+  async function installProxyCert() {
+    const btn = $("ch-proxy-ca-install-btn");
+    setMsg("正在请求安装本地 CA 根证书（请在 Windows 安全弹窗点击「是」）…");
+    await withBusy(btn, "安装中", async () => {
+      try {
+        const res = await api("/api/channels/protocol/proxy/cert/install", { method: "POST" });
+        if (lastStatus && res.proxy) {
+          lastStatus = { ...lastStatus, proxy: res.proxy };
+          renderStatus(lastStatus);
+        } else if (res.proxy) {
+          renderProxy(res.proxy);
+        }
+        if (res.ok) {
+          setMsg(res.message || "本地 CA 根证书已受信任 ✓", "success");
+          toast("根证书安装成功 ✓", "ok");
+        } else {
+          setMsg(res.error || "根证书未完成安装", "error");
+          toast(res.error || "根证书未完成安装", "err", 7000);
+        }
+      } catch (e) {
+        setMsg("安装根证书失败：" + e.message, "error");
+        toast("安装根证书失败：" + e.message, "err", 7000);
+      }
+    });
+    if (lastStatus?.proxy) renderProxy(lastStatus.proxy);
+  }
+
+  async function uninstallProxyCert() {
+    const btn = $("ch-proxy-ca-uninstall-btn");
+    setMsg("正在从当前用户受信任根证书卸载…");
+    await withBusy(btn, "卸载中", async () => {
+      try {
+        const res = await api("/api/channels/protocol/proxy/cert/uninstall", { method: "POST" });
+        if (lastStatus && res.proxy) {
+          lastStatus = { ...lastStatus, proxy: res.proxy };
+          renderStatus(lastStatus);
+        } else if (res.proxy) {
+          renderProxy(res.proxy);
+        }
+        if (res.ok) {
+          setMsg(res.message || "已卸载本地根证书", "");
+          toast("已卸载本地根证书", "info");
+        } else {
+          setMsg(res.error || "卸载根证书失败", "error");
+          toast(res.error || "卸载根证书失败", "err", 7000);
+        }
+      } catch (e) {
+        setMsg("卸载根证书失败：" + e.message, "error");
+      }
+    });
+    if (lastStatus?.proxy) renderProxy(lastStatus.proxy);
+  }
+
+  function downloadProxyCert() {
+    const a = document.createElement("a");
+    a.href = "/api/channels/protocol/proxy/ca.cer";
+    a.download = "creatorhub-channels-ca.cer";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  async function startBridge() {
+    const btn = $("ch-bridge-start-btn");
+    const debugPort = Number($("ch-bridge-debug-port")?.value || 9421);
+    const cdpPort = Number($("ch-bridge-cdp-port")?.value || 9422);
+    const rawPids = ($("ch-bridge-pids")?.value || "").trim();
+    let allowedPids = null;
+    if (rawPids) {
+      const parts = rawPids.split(/[\s,，]+/).filter(Boolean);
+      const parsed = parts.map(Number);
+      if (parsed.some(n => !Number.isInteger(n) || n <= 0)) {
+        setMsg("允许的 PID 格式有误，请填写正整数（多个用逗号分隔）", "error");
+        $("ch-bridge-pids")?.focus();
+        return;
+      }
+      allowedPids = parsed;
+    }
+    setMsg("正在启动本地 WMPF 回环桥接…");
+    await withBusy(btn, "启动中", async () => {
+      try {
+        const data = await api("/api/channels/protocol/bridge/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            debug_port: debugPort,
+            cdp_port: cdpPort,
+            allowed_pids: allowedPids,
+            apply_to_config: true,
+          }),
+        });
+        applyConfigToForm(data, true);
+        renderStatus(data);
+        setMsg("WMPF 本地回环桥接已启动并写入当前配置 ✓", "success");
+        toast("WMPF 本地桥接已启动", "ok");
+        globalThis.CreatorHubTransportMatrix?.load?.();
+      } catch (e) {
+        setMsg("启动桥接失败：" + e.message, "error");
+        toast("启动桥接失败：" + e.message, "err", 7000);
+      }
+    });
+    if (lastStatus?.bridge) renderBridge(lastStatus.bridge);
+  }
+
+  async function stopBridge() {
+    const btn = $("ch-bridge-stop-btn");
+    setMsg("正在停止桥接…");
+    await withBusy(btn, "停止中", async () => {
+      try {
+        const data = await api("/api/channels/protocol/bridge/stop", { method: "POST" });
+        applyConfigToForm(data, true);
+        renderStatus(data);
+        setMsg("WMPF 本地回环桥接已停止", "");
+        toast("WMPF 本地桥接已停止", "info");
+        globalThis.CreatorHubTransportMatrix?.load?.();
+      } catch (e) {
+        setMsg("停止桥接失败：" + e.message, "error");
+      }
+    });
+    if (lastStatus?.bridge) renderBridge(lastStatus.bridge);
+  }
+
+  async function copyPageUrl(url) {
+    const text = String(url || "").trim();
+    if (!text) return false;
+    if (typeof copyTextValue === "function") {
+      return copyTextValue(text, "视频号页面链接已复制", "复制失败，请手动复制链接");
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("视频号页面链接已复制", "ok", 1800);
+      return true;
+    } catch (e) {
+      toast("复制失败，请手动复制链接", "err");
+      return false;
+    }
+  }
+
+  return {
+    load,
+    onModeChange,
+    fillEndpoint,
+    discover,
+    probe,
+    save,
+    reset,
+    startProxy,
+    stopProxy,
+    installProxyCert,
+    uninstallProxyCert,
+    downloadProxyCert,
+    copyPageUrl,
+    startBridge,
+    stopBridge,
+  };
+})();
+globalThis.CreatorHubChannelsProtocol = CreatorHubChannelsProtocol;
 const QMAP = { "": "默认", highest: "原画", "1080": "1080P", "720": "720P", "540": "540P", lowest: "省流" };
 
 // ─── 通用分享链接下载 ───
@@ -5475,15 +6357,18 @@ function rebuildCollectionSources(xhs, channels, tiktok) {
     let keep;
     if (o.channels) keep = channels;
     else if (o.xhs) keep = xhs;
-    else keep = !channels && !(tiktok && o.value !== "keyword");
+    else keep = !(tiktok && o.value !== "keyword");
     if (!keep) continue;
     const opt = document.createElement("option");
     opt.value = o.value;
     opt.textContent = o.label;
     sel.appendChild(opt);
   }
+  const hasActiveChannelsAccount = channels && ACCOUNTS.some(
+    a => a.platform === "shipinhao" && a.status !== "invalid" && a.has_storage
+  );
   if ([...sel.options].some(o => o.value === current)) sel.value = current;
-  else if (channels) sel.value = "account_works";
+  else if (channels) sel.value = hasActiveChannelsAccount ? "account_works" : "keyword";
   else if (tiktok) sel.value = "keyword";
   else sel.value = "keyword";
 }
@@ -5495,14 +6380,16 @@ function applyCollectionForm() {
   const tiktok = PLATFORM === "tiktok";
   const platformName = PF_NAME[PLATFORM] || "平台";
   rebuildCollectionSources(xhs, channels, tiktok);
+  populateCollectionAccount();
   const source = collectionSourceValue();
+  const channelsAccountOnly = channels && source === "account_works";
   const favorite = ["favorite_all", "favorite_board"].includes(source);
   const alternate = source !== "keyword";
   if ($("col-keywords-wrap")) $("col-keywords-wrap").style.display = alternate ? "none" : "";
   if ($("col-board-wrap")) $("col-board-wrap").style.display = source === "favorite_board" ? "" : "none";
   if ($("col-source-ref-wrap")) $("col-source-ref-wrap").style.display = source === "creator" ? "" : "none";
   if ($("collection-create-title")) {
-    $("collection-create-title").textContent = channels
+    $("collection-create-title").textContent = channelsAccountOnly
       ? "新建视频号本账号作品采集"
       : favorite
       ? `新建${platformName}收藏采集`
@@ -5510,17 +6397,18 @@ function applyCollectionForm() {
         ? `新建${platformName}创作者采集`
         : `新建${platformName}关键词采集`;
   }
-  if ($("collection-create-sub")) $("collection-create-sub").textContent = channels ? "同步当前登录账号的视频与图文，并按需采集评论" : favorite ? "导入收藏笔记并继续抓取详情与评论" : source === "creator" ? "导入创作者公开作品并抓取评论" : xhs ? "批量搜索笔记并抓取评论" : tiktok ? "通过离线签名 API 批量搜索 TikTok 视频并抓取评论" : "批量搜索视频并抓取评论";
-  if ($("nav-collections-label")) $("nav-collections-label").textContent = channels ? "本账号作品采集" : "关键词采集";
-  if ($("col-content-limit-label")) $("col-content-limit-label").textContent = channels ? "作品上限" : "每词作品上限";
-  if ($("col-page-limit-label")) $("col-page-limit-label").innerHTML = channels ? '作品页采集深度 <span class="field-scope">1–40 页</span>' : '每词采集深度 <span class="field-scope">1–40 页</span>';
-  if ($("col-sort-wrap")) $("col-sort-wrap").style.display = channels ? "none" : "";
-  if ($("col-page-help")) $("col-page-help").textContent = channels ? "依次读取视频与图文管理页，滚动加载本账号作品。" : xhs ? "一页对应一次搜索结果下滑或接口翻页。" : "一页对应一次搜索结果下滑。";
-  if ($("col-source-ref")) $("col-source-ref").placeholder = PLATFORM === "douyin" ? "抖音 sec_uid" : PLATFORM === "xhs" ? "小红书 user_id" : "快手 user_id / 主页链接 / 短链 / 分享文案";
+  if ($("collection-create-sub")) $("collection-create-sub").textContent = channelsAccountOnly ? "同步当前登录账号的视频与图文，并按需采集评论与解密媒体" : channels ? "通过微信原生 Finder 协议采集作品、解密视频并拉取全量评论线程" : favorite ? "导入收藏笔记并继续抓取详情与评论" : source === "creator" ? "导入创作者公开作品并抓取评论" : xhs ? "批量搜索笔记并抓取评论" : tiktok ? "通过离线签名 API 批量搜索 TikTok 视频并抓取评论" : "批量搜索视频并抓取评论";
+  if ($("nav-collections-label")) $("nav-collections-label").textContent = channels ? "作品批量采集" : "关键词采集";
+  if ($("col-content-limit-label")) $("col-content-limit-label").textContent = channelsAccountOnly ? "作品上限" : "每词作品上限";
+  if ($("col-page-limit-label")) $("col-page-limit-label").innerHTML = channelsAccountOnly ? '作品页采集深度 <span class="field-scope">1–40 页</span>' : '每词采集深度 <span class="field-scope">1–40 页</span>';
+  if ($("col-sort-wrap")) $("col-sort-wrap").style.display = (channelsAccountOnly || source === "creator") ? "none" : "";
+  if ($("col-page-help")) $("col-page-help").textContent = channelsAccountOnly ? "依次读取视频与图文管理页(或复用微信原生 Finder 主页协议)。" : channels ? "一页对应一次微信原生 Finder 搜索或主页翻页请求。" : xhs ? "一页对应一次搜索结果下滑或接口翻页。" : "一页对应一次搜索结果下滑。";
+  if ($("col-source-ref")) $("col-source-ref").placeholder = PLATFORM === "douyin" ? "抖音 sec_uid" : PLATFORM === "xhs" ? "小红书 user_id" : PLATFORM === "shipinhao" ? "视频号 v2_...@finder / sph 标识 / 主页链接" : "快手 user_id / 主页链接 / 短链 / 分享文案";
+  resetCollectionCreatorState();
   if ($("col-replies-help")) $("col-replies-help").textContent = `采集${platformName}当前可返回的回复`;
-  if ($("collection-callout-title")) $("collection-callout-title").textContent = channels ? "仅采集当前登录视频号账号自己的已发布作品" : "作品上限、采集深度和停止条件任一满足即结束";
+  if ($("collection-callout-title")) $("collection-callout-title").textContent = channelsAccountOnly ? "支持创作者助手本账号同步与微信原生 Finder 协议增强" : channels ? "连接本机已登录微信即可搜索、采主页、抓全量评论与解密下载（无需网页账号）" : "作品上限、采集深度和停止条件任一满足即结束";
   if ($("collection-callout-copy")) $("collection-callout-copy").textContent = channels
-    ? "视频号助手会分别读取视频与图文管理页；作品元数据和统计可正常保存。若平台仅返回加密媒体，任务会保留元数据并跳过直接下载。评论入口如遇页面改版会在任务异常中明确记录。"
+    ? "视频号采用双通道架构：「关键词搜索 / 创作者主页」直接走「设置 → 视频号微信通道」一键连接的本机微信，无需登录创作者助手；「本账号作品」则读取创作者助手中已登录的本账号视频与图文。"
     : tiktok
     ? "TikTok 当前默认 native：关键词、评论和二级回复均由离线签名 API 直连，全程不打开浏览器；只有在设置中手动选择 auto/browser 才会使用页面。直播不在采集范围；视频发布请使用独立发布入口。"
     : xhs
@@ -5545,11 +6433,16 @@ function collectionDate(value) {
 }
 async function createCollection() {
   const keywords = collectionKeywords();
-  const sourceType = PLATFORM === "shipinhao" ? "account_works" : collectionSourceValue();
+  const sourceType = collectionSourceValue();
   const board = $("col-board");
+  if (sourceType === "creator") {
+    const normalizedCreator = await normalizeCollectionCreatorTarget(null, { quiet: true });
+    if (normalizedCreator === null) return;
+  }
   const sourceRef = sourceType === "favorite_board" ? (board?.value || "") : sourceType === "creator" ? ($("col-source-ref")?.value.trim() || "") : "";
   const sourceName = sourceType === "account_works" ? "本账号作品" : sourceType === "favorite_all" ? "全部收藏" : sourceType === "favorite_board" ? (board?.selectedOptions?.[0]?.textContent || "").replace(/（[\d,.万亿]+）$/, "") : sourceType === "creator" ? `创作者 ${sourceRef}` : "";
-  const accountId = Number($("col-account").value || 0);
+  const requiresAccount = collectionRequiresAccount(PLATFORM, sourceType);
+  const accountId = requiresAccount || PLATFORM !== "shipinhao" ? Number($("col-account").value || 0) : 0;
   const contentLimit = Number($("col-content-limit").value || 0);
   const commentLimit = Number($("col-comment-limit").value || 0);
   const pageLimit = Number($("col-page-limit").value || 0);
@@ -5560,7 +6453,9 @@ async function createCollection() {
   valid = setFieldError($("col-keywords"), sourceType === "keyword" && !keywords.length ? "请至少填写一个关键词" : keywords.length > 20 ? "单个任务最多 20 个关键词" : "") && valid;
   if (sourceType === "favorite_board") valid = setFieldError(board, !sourceRef ? "请选择收藏夹" : "") && valid;
   if (sourceType === "creator") valid = setFieldError($("col-source-ref"), !sourceRef ? "请填写创作者用户 ID" : "") && valid;
-  valid = setFieldError($("col-account"), !accountId ? "请选择一个已登录账号" : "") && valid;
+  valid = requiresAccount
+    ? setFieldError($("col-account"), !accountId ? "请选择一个已登录账号" : "") && valid
+    : setFieldError($("col-account"), "") && valid;
   valid = setFieldError($("col-content-limit"), contentLimit < 1 || contentLimit > 100 ? "请输入 1–100" : "") && valid;
   valid = setFieldError($("col-comment-limit"), commentLimit < 0 || commentLimit > 200 ? "请输入 0–200" : "") && valid;
   valid = setFieldError($("col-page-limit"), pageLimit < 1 || pageLimit > 40 ? "请输入 1–40" : "") && valid;
@@ -5721,7 +6616,9 @@ async function editCollection(jobId, draft = null) {
       ${initial.source_type === "keyword" ? `<div class="form-field"><label for="ecol-keywords">关键词 <span class="field-scope">最多 20 个</span></label>
         <textarea id="ecol-keywords" rows="5" placeholder="每行一个关键词">${esc(initial.keywords)}</textarea></div>` : `<div class="form-note"><svg aria-hidden="true"><use href="#i-library"/></svg><span>采集来源：<b>${esc(initial.source_name || (initial.source_type === "account_works" ? "本账号作品" : initial.source_type === "favorite_all" ? "全部收藏" : "收藏夹"))}</b>。来源不可在续跑时切换，可新建任务选择其他来源。</span></div>`}
       <div class="form-grid">
-        <div class="form-field"><label for="ecol-account">使用账号</label><select id="ecol-account">${accOptions(accounts, accounts.length ? `请选择${platformName}账号` : `暂无可用${platformName}账号`)}</select></div>
+        ${collectionRequiresAccount(job.platform, initial.source_type) || job.platform !== "shipinhao"
+          ? `<div class="form-field"><label for="ecol-account">使用账号</label><select id="ecol-account">${accOptions(accounts, !collectionRequiresAccount(job.platform, initial.source_type) ? "使用本机微信通道（无需网页账号）" : (accounts.length ? `请选择${platformName}账号` : `暂无可用${platformName}账号`))}</select></div>`
+          : ""}
         ${job.platform === "douyin" ? '<div class="form-field"><label for="ecol-quality">视频画质</label><select id="ecol-quality"><option value="highest">原画 / 最高</option><option value="1080">1080P</option><option value="720">720P</option><option value="540">540P</option><option value="lowest">最低省流</option></select></div>' : ""}
         <div class="form-field"><label for="ecol-content-limit">每词作品上限</label><input id="ecol-content-limit" type="number" min="1" max="100" value="${Number(initial.max_contents_per_keyword) || 20}"></div>
         <div class="form-field"><label for="ecol-comment-limit">每作品评论上限</label><input id="ecol-comment-limit" type="number" min="0" max="200" value="${Number(initial.max_comments_per_content) || 0}"></div>
@@ -5745,14 +6642,14 @@ async function editCollection(jobId, draft = null) {
       </div>
       <div class="form-field" id="ecol-dir-wrap" style="display:${initial.download_media ? "" : "none"}"><label for="ecol-download-dir">下载目录（可选）</label><input id="ecol-download-dir" value="${esc(initial.download_dir)}" placeholder="留空使用默认目录"></div>
       </fieldset>`;
-    $("ecol-account").value = String(initial.account_id || "");
+    if ($("ecol-account")) $("ecol-account").value = String(initial.account_id || "");
     if ($("ecol-quality")) $("ecol-quality").value = initial.video_quality || "highest";
     $("ecol-sort").value = initial.search_sort || "general";
     $("ecol-publish-time").value = initial.publish_time || "all";
     $("ecol-content-type").value = initial.content_type || "all";
     enhanceAllSelects($("ui-body")); csSyncAll();
     _uiGetVal = () => ({
-      account_id: Number($("ecol-account").value || 0),
+      account_id: $("ecol-account") ? Number($("ecol-account").value || 0) : 0,
       source_type: initial.source_type,
       source_ref: initial.source_ref,
       source_name: initial.source_name,
@@ -5777,7 +6674,7 @@ async function editCollection(jobId, draft = null) {
         const keywords = parseCollectionKeywords(value.keywords);
         if (value.source_type === "keyword" && !keywords.length) uiEditorError("请至少填写一个关键词", "ecol-keywords");
         if (keywords.length > 20) uiEditorError("单个任务最多 20 个关键词", "ecol-keywords");
-        if (!value.account_id) uiEditorError(`请选择一个可用${platformName}账号`, "ecol-account");
+        if (collectionRequiresAccount(job.platform, value.source_type) && !value.account_id) uiEditorError(`请选择一个可用${platformName}账号`, "ecol-account");
         if (value.max_contents_per_keyword < 1 || value.max_contents_per_keyword > 100) uiEditorError("每词作品上限须为 1–100", "ecol-content-limit");
         if (value.max_pages_per_keyword < 1 || value.max_pages_per_keyword > 40) uiEditorError("每词采集深度须为 1–40 页", "ecol-page-limit");
         if (value.stagnant_pages < 1 || value.stagnant_pages > 8) uiEditorError("连续无新增停止阈值须为 1–8 页", "ecol-stagnant-pages");
@@ -5852,6 +6749,10 @@ function collectionResultCard(item) {
   const downloadClass = fileExists ? "done" : item.download_status === "failed" ? "failed" : "skipped";
   const downloadLabel = fileExists ? "已下载" : item.download_status === "failed" ? "下载失败" : item.download_status === "done" ? "文件缺失" : "未下载";
   const byline = [item.author_name || "未知作者", item.create_time ? fmtTime(item.create_time) : "", item.aweme_id || ""].filter(Boolean);
+  const authorId = String(item.author_id || "").trim();
+  const authorRow = authorId
+    ? `<div class="collection-author-row"><button type="button" class="collection-author-chip" data-author-id="${esc(authorId)}" onclick="copyCollectionAuthorId(this)" title="点击复制创作者 ID：${esc(authorId)}" aria-label="复制创作者 ID：${esc(authorId)}"><span>创作者 ID: ${esc(authorId)}</span>${ic("i-copy")}</button></div>`
+    : "";
   const cover = item.cover_url
     ? `<img src="${esc(item.cover_url)}" alt="${esc(title.slice(0, 60))}封面" loading="lazy" referrerpolicy="no-referrer">`
     : `<span class="collection-cover-empty">${ic(isGallery ? "i-image" : "i-film")}</span>`;
@@ -5874,6 +6775,7 @@ function collectionResultCard(item) {
       <div class="collection-result-tags"><span class="meta-chip group">#${esc(item.keyword)}</span><span class="pill ${downloadClass}" title="${esc(item.error || "")}">${downloadLabel}</span></div>
       <a class="collection-result-title" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer" title="${esc(title)}">${esc(title)}</a>
       <div class="collection-result-byline">${byline.map((part, index) => `<span${index === byline.length - 1 ? ' class="collection-result-id"' : ""}>${esc(part)}</span>`).join("<span>·</span>")}</div>
+      ${authorRow}
       <div class="collection-result-metrics" aria-label="作品数据">
         <div class="collection-result-metric"><b>${ic("i-heart")}${fmtNum(item.like_count)}</b><span>点赞</span></div>
         <div class="collection-result-metric"><b>${ic("i-msg")}${fmtNum(item.comment_count)}</b><span>平台评论</span></div>
@@ -5908,19 +6810,19 @@ async function collectionLocalAction(jobId, contentId, action, button) {
 }
 function openCollectionFile(jobId, contentId, button) { return collectionLocalAction(jobId, contentId, "open", button); }
 function revealCollectionFile(jobId, contentId, button) { return collectionLocalAction(jobId, contentId, "reveal", button); }
-async function copyCollectionPath(button) {
-  const value = String(button && button.dataset.path || "");
-  if (!value) return;
-  try {
-    await navigator.clipboard.writeText(value);
-    toast("本地路径已复制", "ok", 1800);
-  } catch (e) {
-    const field = document.createElement("textarea");
-    field.value = value; field.style.position = "fixed"; field.style.opacity = "0";
-    document.body.appendChild(field); field.select();
-    const copied = document.execCommand("copy"); field.remove();
-    toast(copied ? "本地路径已复制" : "复制失败，请手动复制路径", copied ? "ok" : "err");
-  }
+function copyCollectionAuthorId(button) {
+  return copyTextValue(
+    button?.dataset?.authorId || "",
+    "创作者 ID 已复制，可用于创作者采集或作品监控",
+    "复制失败，请手动复制创作者 ID",
+  );
+}
+function copyCollectionPath(button) {
+  return copyTextValue(
+    button?.dataset?.path || "",
+    "本地路径已复制",
+    "复制失败，请手动复制路径",
+  );
 }
 async function loadCollectionContents(page = COLLECTION_PAGE, quiet = false) {
   if (!COLLECTION_JOB_ID) return;
@@ -6096,9 +6998,9 @@ async function addMonitor() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url_or_secuid, platform: PLATFORM, target_kind,
-          account_id: $("t-acc").value ? +$("t-acc").value : null,
+          account_id: PLATFORM === "shipinhao" ? null : ($("t-acc").value ? +$("t-acc").value : null),
           interval_seconds: monitorIntervalSeconds("t-interval"),
-          initial_backfill_count: PLATFORM === "douyin"
+          initial_backfill_count: (PLATFORM === "douyin" || PLATFORM === "shipinhao")
             ? ($("t-backfill").value === "" ? null : +$("t-backfill").value) : 0,
           download_dir: $("t-dir").value.trim(),
           video_quality: PLATFORM === "xhs" ? "" : $("t-quality").value,
@@ -6233,7 +7135,9 @@ async function editMonitor(id) {
         group_name: getMetaValue("em-group").trim(),
         tags: parseTags(getMetaValue("em-tags")),
         interval_seconds: monitorIntervalSeconds("em-interval"),
-        account_id: $("em-account").value ? +$("em-account").value : null,
+        account_id: item.platform === "shipinhao"
+          ? null
+          : ($("em-account") && $("em-account").value ? +$("em-account").value : null),
         download_dir: $("em-dir").value.trim(),
         video_quality: $("em-quality") ? $("em-quality").value : "",
         download_enabled: downloadMode !== "none",
@@ -6265,10 +7169,12 @@ async function editMonitor(id) {
         <div class="row">
           <div><label class="field" for="em-interval">抓取频率</label>
             <select id="em-interval">${intervalOptions}</select></div>
-          <div><label class="field" for="em-account">抓取账号</label><select id="em-account">${accountOptions}</select></div>
+          ${item.platform === "shipinhao"
+            ? ""
+            : `<div><label class="field" for="em-account">抓取账号</label><select id="em-account">${accountOptions}</select></div>`}
         </div>
-        ${item.last_scan_at ? "" : `<div><label class="field" for="em-backfill">首次历史回填</label>
-          <select id="em-backfill">${backfillOptions}</select></div>`}
+        ${(!item.last_scan_at || !(item.content_count > 0)) ? `<div><label class="field" for="em-backfill">首次历史回填</label>
+          <select id="em-backfill">${backfillOptions}</select></div>` : ""}
         <div class="form-grid cols-4">
           <div><label class="field" for="em-max-scrolls">抓取深度</label><select id="em-max-scrolls">${depthOptions}</select></div>
           <div><label class="field" for="em-max-items">每轮作品上限</label><select id="em-max-items">${itemLimitOptions}</select></div>
@@ -6297,7 +7203,7 @@ async function editMonitor(id) {
     enhanceMetaControl($("em-group"), "group"); enhanceMetaControl($("em-tags"), "tags");
     setMetaValue("em-group", item.group_name || ""); setMetaValue("em-tags", itemTags(item).join(","));
     setupMonitorInterval("em-interval", item.interval_seconds || 300);
-    $("em-account").value = item.account_id ? String(item.account_id) : "";
+    if ($("em-account")) $("em-account").value = item.account_id ? String(item.account_id) : "";
     if ($("em-backfill")) $("em-backfill").value = String(item.initial_backfill_count ?? 0);
     if ($("em-quality")) $("em-quality").value = item.video_quality || "";
     $("em-download").value = item.download_enabled === false ? "none" : (item.media_filter || "all");
@@ -6339,8 +7245,10 @@ function monRow(t) {
   const label = t.target_kind === "keyword"
     ? `<span class="ic-text">${ic("i-hash")}${esc(t.keyword)}</span>` : esc(t.nickname || (t.sec_uid || "").slice(0, 12));
   const acc = ACCOUNTS.find(a => a.id === t.account_id);
-  // 抖音/小红书都显示绑定账号:抖音未登录抓主页易拿到风控过的旧快照,绑号才稳定
-  const accTag = acc
+  // 抖音/小红书都显示绑定账号:抖音未登录抓主页易拿到风控过的旧快照,绑号才稳定;视频号走本机微信客户端,无需绑定账号
+  const accTag = t.platform === "shipinhao"
+    ? `<div class="mut" style="font-size:11px;margin-top:2px">${acc ? `通道：本机微信客户端（附账号:${esc(acc.nickname)}）` : "通道：本机微信客户端"}</div>`
+    : acc
     ? `<div class="mut" style="font-size:11px;margin-top:2px">账号:${esc(acc.nickname)}</div>`
     : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--danger)">${ic("i-info")}未绑定账号</div>`;
   const downloadLabel = t.download_enabled === false ? "仅记录"
@@ -6402,6 +7310,9 @@ async function runNow(id) {
       else if (r.partial) toast(`部分完成：已获取 ${r.captured ?? r.new} 条作品，${r.failed || 0} 条详情失败。${r.error || ""}`, "info", 10000);
       else if (r.error) toast("抓取未成功:" + r.error, "err", 10000);
       else if (r.refreshed) toast(`抓取完成，新增 ${r.new} 条记录；已刷新 ${r.refreshed} 条失败记录的访问参数，可在作品记录中手动重试。`, "info", 10000);
+      else if ((r.scanned ?? 0) === 0 && (r.new ?? 0) === 0 && !r.filtered && (r.backfill_count === 0 || monitorById(id)?.initial_backfill_count === 0)) {
+        toast("未抓取到作品：当前「首次历史回填」为“不回填历史(0 条)”，仅监控新建之后的新发布；可在「编辑」中改为“最近 5 条”后重抓。", "info", 8000);
+      }
       else toast(`抓取完成,检查 ${r.scanned ?? r.new} 条，筛除 ${r.filtered || 0} 条，新增 ${r.new} 条`, "ok");
     } catch (e) { toast("抓取失败:" + e.message, "err"); }
   });
@@ -7133,7 +8044,7 @@ async function addWatch() {
         body: JSON.stringify({
           url_or_id, platform: PLATFORM, kind: $("w-kind").value,
           mode: PLATFORM === "douyin" ? $("w-mode").value : "public",
-          account_id: $("w-acc").value ? +$("w-acc").value : null,
+          account_id: PLATFORM === "shipinhao" ? null : ($("w-acc").value ? +$("w-acc").value : null),
           interval_seconds: monitorIntervalSeconds("w-interval"),
           recent_works: +$("w-recent").value,
           recent_days: +$("w-days").value,
@@ -7221,7 +8132,9 @@ async function editWatchMeta(id) {
       group_name: getMetaValue("ew-group").trim(),
       tags: parseTags(getMetaValue("ew-tags")),
       interval_seconds: monitorIntervalSeconds("ew-interval"),
-      account_id: $("ew-account").value ? +$("ew-account").value : null,
+      account_id: item.platform === "shipinhao"
+        ? null
+        : ($("ew-account") && $("ew-account").value ? +$("ew-account").value : null),
       mode: $("ew-mode").value,
       recent_works: $("ew-recent") ? +$("ew-recent").value : item.recent_works || 0,
       recent_days: $("ew-days") ? +$("ew-days").value : item.recent_days || 0,
@@ -7242,7 +8155,9 @@ async function editWatchMeta(id) {
         <div class="row">
           <div><label class="field" for="ew-interval">抓取频率</label>
             <select id="ew-interval">${intervalOptions}</select></div>
-          <div><label class="field" for="ew-account">抓取账号</label><select id="ew-account">${accountOptions}</select></div>
+          ${item.platform === "shipinhao"
+            ? ""
+            : `<div><label class="field" for="ew-account">抓取账号</label><select id="ew-account">${accountOptions}</select></div>`}
         </div>
         <div><label class="field" for="ew-mode">评论来源</label>
           <select id="ew-mode"><option value="public">公开评论区</option>${canCreator ? '<option value="creator">创作中心（仅自有账号）</option>' : ""}</select></div>
@@ -7256,7 +8171,7 @@ async function editWatchMeta(id) {
     enhanceMetaControl($("ew-group"), "group"); enhanceMetaControl($("ew-tags"), "tags");
     setMetaValue("ew-group", item.group_name || ""); setMetaValue("ew-tags", itemTags(item).join(","));
     setupMonitorInterval("ew-interval", item.interval_seconds || 600);
-    $("ew-account").value = item.account_id ? String(item.account_id) : "";
+    if ($("ew-account")) $("ew-account").value = item.account_id ? String(item.account_id) : "";
     $("ew-mode").value = canCreator ? (item.mode || "public") : "public";
     if ($("ew-recent")) $("ew-recent").value = String(item.recent_works || 0);
     if ($("ew-days")) $("ew-days").value = String(item.recent_days || 0);
@@ -8361,7 +9276,7 @@ function taskQueueSourceLabel(tab) {
 function taskQueueRow(item) {
   const stateMeta = TASK_QUEUE_STATE_META[item.state] || [item.state || "未知", "skipped"];
   const rawStatus = TASK_QUEUE_RAW_STATUS[item.status] || item.status || "未知";
-  const account = item.account_name || (item.account_id ? `账号 #${item.account_id}` : "未绑定账号");
+  const account = item.account_name || (item.account_id ? `账号 #${item.account_id}` : item.platform === "shipinhao" ? "本机微信客户端" : "未绑定账号");
   const scheduled = item.scheduled_at ? `<b>计划 ${taskQueueDate(item.scheduled_at)}${item.schedule_needs_confirmation ? "（待确认时区）" : ""}</b>` : "";
   const created = item.created_at ? `<small>创建 ${taskQueueDate(item.created_at)}</small>` : "";
   const nextAllowed = item.next_allowed_at ? `<small>最早继续：${taskQueueDate(item.next_allowed_at)}</small>` : "";

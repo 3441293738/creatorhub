@@ -85,7 +85,8 @@ def test_workbench_section_bindings_survive_card_reordering(ui):
     reorder_cards_before_boot(page)
     for section, tabs in (
         ("settings", (("外观与体验", "#appearance-motion"), ("下载设置", "#dl-dir"),
-                      ("AI 文案", "#ai-key"), ("采集与运行", "#engine-settings-card"))),
+                      ("AI 文案", "#ai-key"), ("采集与运行", "#engine-settings-card"),
+                      ("视频号微信通道", "#channels-protocol-card"))),
         ("monitors", (("监控目标", "#mon-table"), ("作品记录", "#content-table"))),
         ("comments", (("监控目标", "#watch-table"), ("评论记录", "#comment-table"))),
         ("danmaku", (("监控目标", "#danmaku-watch-table"), ("弹幕记录", "#danmaku-table"))),

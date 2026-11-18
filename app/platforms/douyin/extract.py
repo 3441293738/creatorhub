@@ -14,6 +14,7 @@ class MediaItem:
     kind: str          # "video" | "image"
     ext: str           # "mp4" | "jpeg" ...
     index: int = 0
+    decode_key: str = ""  # 视频号加密 CDN 的 uint64 十进制解码密钥(非空且非 "0" 时下载后离线解密)
 
 
 @dataclass
@@ -30,9 +31,10 @@ class Aweme:
     comment_count: int = 0
     duration: int = 0           # 秒
     avatar: str = ""            # 作者头像
-    platform: str = "douyin"    # douyin | xhs(决定下载时的 Referer)
+    platform: str = "douyin"    # douyin | xhs | kuaishou | shipinhao | tiktok(决定下载时的 Referer)
     source_url: str = ""        # 平台作品规范链接（可用时持久化，避免后续猜链接）
-    author_unique_id: str = ""  # TikTok 等平台构造规范作品链接所需的公开账号名
+    author_unique_id: str = ""  # TikTok/视频号等平台构造规范作品链接所需的公开账号名
+    object_nonce_id: str = ""   # 视频号原生协议所需的 objectNonceId
 
 
 def _first_http(urls) -> Optional[str]:

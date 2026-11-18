@@ -58,9 +58,14 @@ from ..platforms.xhs import (parse_note_brief, parse_note_detail,
 from ..platforms.kuaishou import (parse_ks_feed, parse_ks_comment,
                    flatten_ks_comments, parse_self_user as parse_ks_self_user,
                    publish_kuaishou)
-from ..platforms.channels import (parse_channels_feed, parse_channels_comment,
-                   flatten_channels_comments, parse_self_user as parse_channels_self_user,
-                   publish_channels)
+from ..platforms.channels import (
+    ChannelsProtocolClient,
+    parse_channels_feed,
+    parse_channels_comment,
+    flatten_channels_comments,
+    parse_self_user as parse_channels_self_user,
+    publish_channels,
+)
 from ..platforms.tiktok import (TikTokNativeClient, parse_tiktok_aweme,
                                 parse_tiktok_comment, publish_tiktok,
                                 tiktok_display_text)
@@ -270,6 +275,30 @@ def _select_ks_awemes(items: list, quality: str, first_scan: bool,
     parsed.sort(key=lambda aw: (aw.create_time, aw.aweme_id), reverse=True)
     if not first_scan:
         # create_time 缺失时宁可保留，避免平台字段小改后静默漏掉真正的新作品。
+        return [aw for aw in parsed
+                if not aw.create_time or aw.create_time >= monitor_since]
+    if initial_backfill_count < 0:
+        return parsed
+    current = [aw for aw in parsed
+               if aw.create_time and aw.create_time >= monitor_since]
+    historical = [aw for aw in parsed
+                  if aw.create_time and aw.create_time < monitor_since]
+    return current + historical[:max(0, initial_backfill_count)]
+
+
+def _select_channels_awemes(items: list, quality: str, first_scan: bool,
+                            monitor_since: int, initial_backfill_count: int) -> list[Aweme]:
+    """视频号作品按发布时间稳定排序，应用「订阅后新增 + 可选首次回填」策略。"""
+    parsed = []
+    seen = set()
+    for item in items:
+        aw = parse_channels_feed(item, quality)
+        if not aw or aw.aweme_id in seen:
+            continue
+        seen.add(aw.aweme_id)
+        parsed.append(aw)
+    parsed.sort(key=lambda aw: (aw.create_time, aw.aweme_id), reverse=True)
+    if not first_scan:
         return [aw for aw in parsed
                 if not aw.create_time or aw.create_time >= monitor_since]
     if initial_backfill_count < 0:
@@ -964,9 +993,15 @@ class MonitorEngine:
                 return {"ok": True, "deferred": True,
                         "reason": job.blocked_reason or "等待执行间隔",
                         "next_allowed_at": job.next_allowed_at.isoformat() + "Z"}
-            account = s.get(DouyinAccount, job.account_id)
-            if (not account or account.platform != job.platform
-                    or account.status != "active" or not account.storage_state):
+            requires_account = not (
+                job.platform == "shipinhao"
+                and job.source_type in {"keyword", "creator"}
+            )
+            account = s.get(DouyinAccount, job.account_id) if job.account_id else None
+            if requires_account and (
+                not account or account.platform != job.platform
+                or account.status != "active" or not account.storage_state
+            ):
                 job.status = "failed"
                 job.current_step = "执行失败"
                 job.error = "所选账号不存在、登录态失效或平台不匹配"
@@ -975,7 +1010,12 @@ class MonitorEngine:
                 s.add(job); s.commit()
                 self._log_collection_operation(job, "failed", "failed", job.error)
                 return {"ok": False, "error": job.error}
-            account_id = account.id
+            account_id = (
+                account.id
+                if (account is not None and account.platform == job.platform
+                    and (requires_account or (account.status == "active" and account.storage_state)))
+                else 0
+            )
 
         decision = self.risk.preflight(account_id, OperationKind.READ_HEAVY)
         if not decision.allowed:
@@ -1035,7 +1075,7 @@ class MonitorEngine:
                     job.started_at = job.started_at or datetime.utcnow()
                     job.finished_at = None
                     s.add(job); s.commit()
-                    account = s.get(DouyinAccount, account_id)
+                    account = s.get(DouyinAccount, account_id) if account_id else None
                     self._log_collection_operation(job, "started", "running")
                 result = await self.keyword_collector.run(job_id, account)
 
@@ -1696,6 +1736,8 @@ class MonitorEngine:
             return await self._scan_ks_target_locked(target_id)
         if platform == "tiktok":
             return await self._scan_tiktok_target_locked(target_id)
+        if platform == "shipinhao":
+            return await self._scan_channels_target_locked(target_id)
         with get_session() as s:
             target = s.get(MonitorTarget, target_id)
             if not target:
@@ -1990,6 +2032,158 @@ class MonitorEngine:
             for rec, aw, should_download in new_records if should_download))
         return {"ok": not error, "new": len(new_records), "error": error,
                 "scanned": len(selected), "filtered": filtered_count}
+
+    # ── 视频号:创作者主页作品监控(优先微信 Finder 本地 CDP 协议 + WxIsaac64 解密下载)──
+    async def _scan_channels_target_locked(self, target_id: int) -> dict:
+        with get_session() as s:
+            target = s.get(MonitorTarget, target_id)
+            if not target:
+                return {"ok": False, "error": "target not found"}
+            is_first_scan = target.last_scan_at is None
+            identity = self.browser.anon_identity()
+            proxy = ""
+            acc_sec_uid = ""
+            has_active_account = False
+            if target.account_id:
+                acc = s.get(DouyinAccount, target.account_id)
+                if acc:
+                    if self._proxy_bad(acc):
+                        return self._mark_target_skip(
+                            target_id, "账号代理标记为不可用(proxy bad),已跳过以免暴露真实 IP")
+                    identity, proxy = self._identity_proxy(acc)
+                    acc_sec_uid = acc.sec_uid or ""
+                    has_active_account = (
+                        acc.platform == "shipinhao"
+                        and acc.status == "active"
+                        and bool(acc.storage_state or acc.creator_storage_state)
+                    )
+            known = set(s.exec(
+                select(ContentRecord.aweme_id)
+                .where(ContentRecord.target_id == target_id)).all())
+            known_create_times = list(s.exec(
+                select(ContentRecord.create_time)
+                .where(ContentRecord.target_id == target_id)).all())
+            user_id = target.sec_uid
+            base_dir = target.download_dir or get_setting(
+                "download_dir", self.cfg.engine.media_dir)
+            quality = target.video_quality or get_setting("video_quality", "highest")
+            monitor_since = int(target.created_at.timestamp())
+            scan_since = _douyin_scan_since(monitor_since, known_create_times)
+            backfill_count = target.initial_backfill_count
+            should_backfill = is_first_scan or (backfill_count != 0 and not known)
+            auto_download = target.download_enabled
+            media_filter = target.media_filter or "all"
+            strategy = _monitor_strategy(
+                target, default_scrolls=10, default_items=0)
+
+        read_mode = str(getattr(self.cfg.engine, "channels_read_mode", "auto") or "auto").lower()
+        proto_client = (
+            ChannelsProtocolClient.from_config(self.cfg)
+            if read_mode in {"auto", "protocol"}
+            else None
+        )
+        items: list = []
+        author = None
+        error = ""
+        if proto_client is not None:
+            try:
+                items, author, error = await proto_client.fetch_user_feeds(
+                    user_id,
+                    max_results=max(40, strategy["max_items"] or 40),
+                    max_pages=strategy["max_scrolls"],
+                    stop_before=(0 if should_backfill and backfill_count != 0 else scan_since),
+                )
+            finally:
+                await proto_client.close()
+        if not items and (proto_client is None or (read_mode == "auto" and error)):
+            if has_active_account and (not user_id or user_id == acc_sec_uid):
+                items, author, browser_err = await fetch_channels_works(
+                    self.browser, identity, known,
+                    max_scrolls=strategy["max_scrolls"],
+                    block_media=self.cfg.engine.block_media_resources,
+                )
+                error = browser_err or ("" if items else error)
+            elif proto_client is None:
+                return self._mark_target_skip(
+                    target_id,
+                    "视频号外部创作者监控需要连接本机已登录微信，请先在「设置 → 视频号微信通道」开启一键本地代理并检测连通",
+                )
+
+        selected = _select_channels_awemes(
+            items, quality, should_backfill, scan_since, backfill_count)
+        new_records = []
+        filtered_count = 0
+        for aw in selected:
+            if aw.aweme_id in known:
+                continue
+            if not _monitor_content_matches(aw, strategy):
+                filtered_count += 1
+                continue
+            if strategy["max_items"] and len(new_records) >= strategy["max_items"]:
+                break
+            wants_download = auto_download and (
+                media_filter == "all" or aw.media_type == media_filter)
+            should_download = wants_download and bool(aw.medias)
+            media_rows = []
+            for m in aw.medias:
+                entry = {"url": m.url, "kind": m.kind, "ext": m.ext, "index": m.index}
+                if getattr(m, "decode_key", ""):
+                    entry["decode_key"] = m.decode_key
+                media_rows.append(entry)
+            media_json = json.dumps(media_rows, ensure_ascii=False)
+            rec = ContentRecord(
+                platform="shipinhao", target_id=target_id, aweme_id=aw.aweme_id,
+                desc=aw.desc, media_type=aw.media_type, quality=aw.quality_label,
+                create_time=aw.create_time, cover_url=aw.cover or "",
+                like_count=aw.like_count, comment_count=aw.comment_count,
+                duration=aw.duration, media_json=media_json,
+                xsec_token=aw.object_nonce_id or "",
+                download_status="pending" if should_download else "skipped",
+                error=("" if aw.medias or not wants_download
+                       else "视频号助手未返回媒体直链，仅保存作品元数据"),
+            )
+            new_records.append((rec, aw, should_download))
+
+        target_name = ""
+        with get_session() as s:
+            for rec, _, _ in new_records:
+                s.add(rec)
+            t = s.get(MonitorTarget, target_id)
+            if t:
+                t.last_scan_at = datetime.utcnow()
+                t.last_error = str(error or "")
+                if author:
+                    p = parse_channels_self_user(author)
+                    if not t.nickname:
+                        t.nickname = p.get("nickname") or t.nickname
+                    if not t.avatar:
+                        t.avatar = p.get("avatar") or t.avatar
+                first_aw = next((aw for _, aw, _ in new_records), None)
+                if first_aw:
+                    if not t.nickname and first_aw.author_name:
+                        t.nickname = first_aw.author_name
+                    if not t.avatar and first_aw.avatar:
+                        t.avatar = first_aw.avatar
+                s.add(t)
+                target_name = t.nickname or (user_id[:16] if user_id else "shipinhao")
+            s.commit()
+            for rec, _, _ in new_records:
+                s.refresh(rec)
+
+        if new_records and not should_backfill:
+            await self._notify_new(target_name, [aw for _, aw, _ in new_records])
+
+        await asyncio.gather(*(
+            self._download(
+                rec.id, aw, base_dir, proxy,
+                referer="https://channels.weixin.qq.com/",
+            )
+            for rec, aw, should_download in new_records
+            if should_download
+        ))
+        return {"ok": not error, "new": len(new_records), "error": error,
+                "scanned": len(selected), "filtered": filtered_count,
+                "backfill_count": backfill_count}
 
     def _mark_target_skip(self, target_id: int, msg: str) -> dict:
         """把跳过原因写到目标 last_error,并推进 last_scan_at(避免下轮立刻重试)。"""
@@ -2927,15 +3121,51 @@ class MonitorEngine:
                 fresh = [c for c in (parse_ks_comment(rc) for rc in flatten_ks_comments(raw))
                          if c and c["comment_id"] not in known]
             elif platform == "shipinhao":
-                source = configured_mode = "browser"
-                raw, err = await fetch_channels_comments(
-                    self.browser, identity, item_id, known,
-                    max_scrolls=self.cfg.engine.comment_max_scrolls,
-                    block_media=self.cfg.engine.block_media_resources)
-                error = err or ""
-                fresh = [c for c in (parse_channels_comment(rc)
-                                     for rc in flatten_channels_comments(raw))
-                         if c and c["comment_id"] not in known]
+                read_mode = str(
+                    getattr(self.cfg.engine, "channels_read_mode", "auto") or "auto"
+                ).lower()
+                configured_mode = (
+                    read_mode if read_mode in {"auto", "protocol", "browser"} else "auto"
+                )
+                proto_client = (
+                    ChannelsProtocolClient.from_config(self.cfg)
+                    if configured_mode in {"auto", "protocol"}
+                    else None
+                )
+                used_protocol = False
+                if proto_client is not None:
+                    try:
+                        proto_comments, _audit, proto_err = await proto_client.collect_comments(
+                            item_id,
+                            xsec_token,
+                            limit=300,
+                            include_replies=True,
+                        )
+                    finally:
+                        await proto_client.close()
+                    if proto_comments or not proto_err or configured_mode == "protocol":
+                        used_protocol = True
+                        source = "protocol"
+                        error = proto_err or ""
+                        fresh = [
+                            c for c in proto_comments
+                            if c and c.get("comment_id") and c["comment_id"] not in known
+                        ]
+                elif configured_mode == "protocol":
+                    used_protocol = True
+                    source = "protocol"
+                    error = "尚未连接本机微信视频号通道，请在「设置 → 视频号微信通道」开启一键本地代理并在微信内打开一次视频号页面"
+                    fresh = []
+                if not used_protocol:
+                    source = "browser_fallback" if proto_client is not None else "browser"
+                    raw, err = await fetch_channels_comments(
+                        self.browser, identity, item_id, known,
+                        max_scrolls=self.cfg.engine.comment_max_scrolls,
+                        block_media=self.cfg.engine.block_media_resources)
+                    error = err or ""
+                    fresh = [c for c in (parse_channels_comment(rc)
+                                         for rc in flatten_channels_comments(raw))
+                             if c and c["comment_id"] not in known]
             elif platform == "tiktok":
                 source = configured_mode = "browser"
                 raw, err = await fetch_tiktok_comments(
@@ -3166,6 +3396,12 @@ class MonitorEngine:
                 total_new, author = await self._cw_tiktok_video(
                     watch_id, identity, state, aweme_id, sec_uid, name,
                     first_scan, proxy)
+            elif platform == "shipinhao" and kind == "user":
+                total_new, author = await self._cw_channels_user(
+                    watch_id, identity, state, sec_uid, name, first_scan)
+            elif platform == "shipinhao":
+                total_new, author = await self._cw_channels_video(
+                    watch_id, identity, state, aweme_id, xsec_token, name, first_scan)
             elif kind == "user" and mode == "creator":
                 total_new, author = await self._cw_creator(watch_id, identity, has_creator,
                                                            name, first_scan)
@@ -3375,6 +3611,154 @@ class MonitorEngine:
         return total, ({"nickname": author_dict["nickname"],
                         "avatar_thumb": {"url_list": [author_dict["avatar"]]}}
                        if author_dict else None)
+
+    # ── 视频号评论监控(优先微信 Finder 原生 pc_findergetcommentlist 协议)──
+    async def _cw_channels_video(
+            self, watch_id, identity, state, object_id, object_nonce_id,
+            name, first_scan, work_desc="", proto_client=None):
+        cfg = self.cfg.engine
+        settings = self._comment_watch_settings(watch_id)
+        read_mode = str(getattr(cfg, "channels_read_mode", "auto") or "auto").lower()
+        owns_client = False
+        if proto_client is None and read_mode in {"auto", "protocol"}:
+            proto_client = ChannelsProtocolClient.from_config(self.cfg)
+            owns_client = proto_client is not None
+
+        resolved_oid = str(object_id or "").strip()
+        resolved_nid = str(object_nonce_id or "").strip()
+        try:
+            if proto_client is not None:
+                if not resolved_oid.isdecimal() or not resolved_nid:
+                    is_obj_or_share = resolved_oid.isdecimal() or resolved_oid.startswith("sph:")
+                    detail_obj, detail_err = await proto_client.fetch_feed_detail(
+                        object_id=resolved_oid if is_obj_or_share else "",
+                        export_id="" if is_obj_or_share else resolved_oid,
+                    )
+                    if detail_obj:
+                        resolved_oid = str(
+                            detail_obj.get("id") or detail_obj.get("objectId") or resolved_oid
+                        )
+                        resolved_nid = str(detail_obj.get("objectNonceId") or resolved_nid)
+                        aw_detail = parse_channels_feed(detail_obj)
+                        with get_session() as s:
+                            w = s.get(CommentWatch, watch_id)
+                            if w:
+                                w.aweme_id = resolved_oid
+                                if resolved_nid:
+                                    w.xsec_token = resolved_nid
+                                if aw_detail and not w.title:
+                                    w.title = aw_detail.desc[:40] or aw_detail.author_name or w.title
+                                s.add(w)
+                                s.commit()
+                    elif read_mode == "protocol" or not state:
+                        raise RuntimeError(detail_err or "无法解析视频号作品详情(objectId/objectNonceId)")
+
+                if resolved_oid.isdecimal() and resolved_nid:
+                    with get_session() as s:
+                        known = set(s.exec(select(CommentRecord.comment_id).where(
+                            CommentRecord.watch_id == watch_id,
+                            CommentRecord.aweme_id == resolved_oid)).all())
+                    comments, _audit, proto_err = await proto_client.collect_comments(
+                        resolved_oid,
+                        resolved_nid,
+                        limit=max(100, settings["max_scrolls"] * 20),
+                        include_replies=True,
+                        max_pages=max(2, settings["max_scrolls"]),
+                    )
+                    if comments or not proto_err or read_mode == "protocol" or not state:
+                        if proto_err and not comments:
+                            raise RuntimeError(proto_err)
+                        fresh = [c for c in comments if c and c["comment_id"] not in known]
+                        n = await self._ingest(
+                            watch_id, resolved_oid, fresh, name,
+                            work_desc or name, first_scan, platform="shipinhao")
+                        return n, None
+        finally:
+            if owns_client and proto_client is not None:
+                await proto_client.close()
+
+        if read_mode == "protocol" or not state:
+            raise RuntimeError(
+                "视频号评论监控需要连接本机已登录微信，请先在「设置 → 视频号微信通道」开启一键本地代理并在微信内打开一次视频号页面"
+            )
+        with get_session() as s:
+            known = set(s.exec(select(CommentRecord.comment_id).where(
+                CommentRecord.watch_id == watch_id,
+                CommentRecord.aweme_id == resolved_oid)).all())
+        raw, err = await fetch_channels_comments(
+            self.browser, identity, resolved_oid, known,
+            max_scrolls=settings["max_scrolls"],
+            block_media=cfg.block_media_resources)
+        if err:
+            log.info("评论监控(视频号作品)%s: %s", resolved_oid, err)
+        fresh = [
+            c for c in (parse_channels_comment(rc) for rc in flatten_channels_comments(raw))
+            if c and c["comment_id"] not in known
+        ]
+        n = await self._ingest(
+            watch_id, resolved_oid, fresh, name, work_desc or name,
+            first_scan, platform="shipinhao")
+        return n, None
+
+    async def _cw_channels_user(self, watch_id, identity, state, user_id, name, first_scan):
+        cfg = self.cfg.engine
+        settings = self._comment_watch_settings(watch_id)
+        read_mode = str(getattr(cfg, "channels_read_mode", "auto") or "auto").lower()
+        proto_client = (
+            ChannelsProtocolClient.from_config(self.cfg)
+            if read_mode in {"auto", "protocol"}
+            else None
+        )
+        items: list = []
+        author = None
+        err = ""
+        try:
+            if proto_client is not None:
+                items, author, err = await proto_client.fetch_user_feeds(
+                    user_id,
+                    max_results=max(10, settings["recent_works"]),
+                    max_pages=4,
+                )
+            if not items and (proto_client is None or (read_mode == "auto" and err)):
+                if state and read_mode != "protocol":
+                    items, author, err = await fetch_channels_works(
+                        self.browser, identity, set(),
+                        max_scrolls=4,
+                        block_media=cfg.block_media_resources)
+                elif proto_client is None:
+                    raise RuntimeError(
+                        "视频号创作者评论监控需要连接本机已登录微信，请先在「设置 → 视频号微信通道」开启一键本地代理并在微信内打开一次视频号页面"
+                    )
+                elif err:
+                    raise RuntimeError(err)
+
+            cutoff = int(time.time()) - settings["recent_days"] * 86400
+            works = []
+            for feed in items:
+                aw = parse_channels_feed(feed)
+                if aw and (not aw.create_time or aw.create_time >= cutoff):
+                    works.append((aw.aweme_id, aw.object_nonce_id, aw.desc))
+                    if len(works) >= settings["recent_works"]:
+                        break
+
+            total = 0
+            for oid, nid, desc in works:
+                n, _ = await self._cw_channels_video(
+                    watch_id, identity, state, oid, nid, name, first_scan,
+                    work_desc=desc, proto_client=proto_client)
+                total += n
+            author_dict = parse_channels_self_user(author) if author else None
+            return total, (
+                {
+                    "nickname": author_dict["nickname"],
+                    "avatar_thumb": {"url_list": [author_dict["avatar"]]},
+                }
+                if author_dict and (author_dict.get("nickname") or author_dict.get("avatar"))
+                else None
+            )
+        finally:
+            if proto_client is not None:
+                await proto_client.close()
 
     async def _cw_tiktok_video(self, watch_id, identity, state, aweme_id,
                                author_unique_id, name, first_scan, proxy,
@@ -5376,11 +5760,19 @@ class MonitorEngine:
     # ── 失败重试 ──
     def _rebuild_aweme(self, rec: ContentRecord, author_name: str) -> Aweme:
         aw = Aweme(aweme_id=rec.aweme_id, desc=rec.desc, create_time=rec.create_time,
-                   author_name=author_name, media_type=rec.media_type)
+                   author_name=author_name, media_type=rec.media_type,
+                   object_nonce_id=rec.xsec_token if rec.platform == "shipinhao" else "")
         aw.platform = rec.platform or "douyin"
-        for m in _loads(rec.media_json) if rec.media_json else []:
-            aw.medias.append(MediaItem(url=m["url"], kind=m.get("kind", "video"),
-                                       ext=m.get("ext", "mp4"), index=m.get("index", 0)))
+        for m in _loads_list(rec.media_json) if rec.media_json else []:
+            if not isinstance(m, dict) or not m.get("url"):
+                continue
+            aw.medias.append(MediaItem(
+                url=m["url"],
+                kind=m.get("kind", "video"),
+                ext=m.get("ext", "mp4"),
+                index=m.get("index", 0),
+                decode_key=str(m.get("decode_key") or ""),
+            ))
         return aw
 
     async def retry_download(self, record_id: int) -> dict:

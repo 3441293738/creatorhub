@@ -1129,6 +1129,82 @@ button, input, textarea, select, .cs-trg, .dt-trg { border-radius:10px; }
   .engine-settings-actions .status-text { flex-basis:100%; }
   .engine-settings-actions button { flex:1 1 auto; }
 }
+/* Local WeChat Channels CDP visual config panel */
+#channels-protocol-card .channels-proto-summary,
+#channels-protocol-card .channels-oneclick-panel {
+  padding:14px 16px;
+  border:1px solid var(--border-card);
+  border-radius:var(--r-md);
+  background:var(--surface-inset);
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.channels-proto-caps { display:flex; flex-wrap:wrap; gap:8px; }
+.channels-proto-probe {
+  padding:12px 14px;
+  border-radius:var(--r-sm);
+  border:1px solid var(--line-soft);
+  background:var(--surface);
+  font-size:12.5px;
+  line-height:1.65;
+  overflow-wrap:anywhere;
+}
+.channels-proto-probe[data-state=ready] { border-color:color-mix(in srgb,var(--success) 45%,transparent); }
+.channels-proto-probe[data-state=error] { border-color:color-mix(in srgb,var(--danger) 45%,transparent); }
+#channels-protocol-form .form-grid, #channels-bridge-panel .form-grid, #channels-proxy-panel .form-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+#channels-protocol-form .form-field, #channels-bridge-panel .form-field, #channels-proxy-panel .form-field { min-width:0; }
+#channels-protocol-card :is(input:not([type=checkbox]),select,.cs-trg) { min-height:44px; }
+.channels-proto-inline-tools { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center; }
+.channels-proto-inline-tools button, .channels-proto-actions button, .channels-bridge-actions button, .channels-proxy-actions button { min-height:44px; white-space:nowrap; }
+.channels-proxy-ca-box {
+  padding:12px 14px;
+  border:1px solid var(--line-soft);
+  border-radius:var(--r-sm);
+  background:var(--surface);
+}
+.channels-proxy-pages { display:grid; gap:8px; }
+.channels-proxy-page-row {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:8px 12px;
+  border:1px solid var(--line-soft);
+  border-radius:var(--r-sm);
+  background:var(--surface);
+  font-size:12.5px;
+  flex-wrap:wrap;
+}
+.channels-proxy-page-copy { min-width:0; flex:1 1 260px; overflow-wrap:anywhere; }
+.channels-proxy-page-meta { display:inline-flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.channels-proto-discovered { display:grid; gap:8px; margin-top:10px; }
+.channels-proto-port {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:10px 12px;
+  border:1px solid var(--line-soft);
+  border-radius:var(--r-sm);
+  background:var(--surface);
+  flex-wrap:wrap;
+}
+.channels-proto-port-copy { min-width:0; flex:1 1 220px; font-size:12.5px; line-height:1.55; }
+.channels-proto-port-copy code { font-size:12px; }
+.channels-proto-actions, .channels-bridge-actions, .channels-proxy-actions { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+.channels-proto-actions .status-text, #ch-bridge-status-text, #ch-proxy-status-text, #ch-proxy-ca-text { min-width:0; overflow-wrap:anywhere; }
+#ch-proto-msg[data-state=warning] { color:var(--warn); }
+#ch-proto-msg[data-state=error] { color:var(--danger); }
+#ch-proto-msg[data-state=success] { color:var(--success); }
+.channels-proc-chips { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.channels-inline-jump { margin-left:6px; font-weight:550; text-decoration:underline; color:var(--acc); cursor:pointer; }
+@media(max-width:600px) {
+  #channels-protocol-form .form-grid, #channels-bridge-panel .form-grid, #channels-proxy-panel .form-grid { grid-template-columns:minmax(0,1fr); }
+  #channels-protocol-card :is(input:not([type=checkbox]),select,.cs-trg) { font-size:16px; }
+  .channels-proto-actions .status-text, .channels-proxy-actions .status-text { flex-basis:100%; }
+  .channels-proto-actions button, .channels-bridge-actions button, .channels-proxy-actions button { flex:1 1 auto; }
+}
 /* Record attribution stays visible even when secondary filters are collapsed. */
 .content-scope {
   display:flex;

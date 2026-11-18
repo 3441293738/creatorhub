@@ -117,7 +117,8 @@ class GuideSiteTests(unittest.TestCase):
         images = [img for img in readme.images if img.get("src", "").startswith("assets/community/")]
         self.assertEqual([img["src"] for img in images], [
             "assets/community/wechat-reward.jpg",
-            "assets/community/wechat-group.png", "assets/community/wechat-personal.jpg",
+            "assets/community/wechat-group.png", "assets/community/qq-group.jpg",
+            "assets/community/wechat-personal.jpg",
         ])
         for img in images:
             self.assertTrue((ROOT / img["src"]).is_file())

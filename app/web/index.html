@@ -617,7 +617,8 @@
   @media(max-width:700px) { .form-grid.proxy-input-grid { grid-template-columns:minmax(0,1fr); } }
   @media(pointer:coarse) { .proxy-input-grid .form-field > label, .proxy-address-label, .proxy-format-disclosure > summary { min-height:44px; } }
   .form-field > label, .form-label { display:flex; align-items:center; gap:6px; margin:0 0 6px; color:var(--mut); font-size:12px; font-weight:550; }
-  .form-field > input, .form-field > textarea, .form-field > select, .form-field > .cs, .form-field > .input-affix { width:100%; }
+  .form-field > input, .form-field > textarea, .form-field > select, .form-field > .cs, .form-field > .input-affix, .form-field > .smart-target-input { width:100%; }
+  #col-source-ref-wrap { grid-column:2 / -1; }
   .field-help { margin-top:5px; color:var(--mut-2); font-size:11.5px; line-height:1.45; }
   .field-error { margin:5px 0 0; color:var(--danger); font-size:11.5px; line-height:1.4; }
   .input-affix { position:relative; }
@@ -628,8 +629,8 @@
   }
   button.input-action:hover { color:var(--fg); background:var(--surface-2); filter:none; }
   button.input-action:active { transform:translateY(-50%); }
-  .smart-target-input { position:relative; }
-  .smart-target-input > input { padding-right:98px; }
+  .smart-target-input { position:relative; width:100%; }
+  .smart-target-input > input { width:100%; padding-right:98px; }
   .smart-target-action {
     position:absolute; top:50%; right:5px; transform:translateY(-50%);
     min-height:30px; padding:5px 9px; gap:5px; border:0; border-radius:7px;
@@ -1411,6 +1412,15 @@
     min-width:0; max-width:128px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
     color:var(--mut-2); font-family:var(--mono);
   }
+  .collection-author-row { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  button.collection-author-chip {
+    display:inline-flex; align-items:center; gap:5px; max-width:100%; min-height:24px; padding:3px 8px;
+    border:1px solid var(--line-soft); border-radius:var(--r-xs); background:var(--surface-2);
+    color:var(--mut); font:500 11px/1.25 var(--mono); cursor:pointer; box-shadow:none;
+  }
+  button.collection-author-chip span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  button.collection-author-chip svg { width:12px; height:12px; flex:0 0 auto; opacity:.78; }
+  button.collection-author-chip:hover { color:var(--fg-strong); border-color:color-mix(in srgb,var(--acc) 45%,var(--line)); background:var(--surface-3); filter:none; }
   .collection-result-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; margin-top:11px; }
   .collection-result-metric { padding:7px 8px; border-radius:var(--r-xs); background:var(--surface-2); }
   .collection-result-metric b { display:flex; align-items:center; gap:4px; color:var(--fg); font:600 12px/1.2 var(--mono); }
@@ -1615,6 +1625,7 @@
     .option-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   }
   @media(max-width:860px) {
+    #col-source-ref-wrap { grid-column:auto; }
     main { padding:20px 18px; }
     .page-context { align-items:center; }
     .page-context h2 { font-size:20px; }
@@ -2272,7 +2283,21 @@
         <div class="form-grid cols-4">
           <div class="form-field"><label for="col-source">采集来源</label><select id="col-source" onchange="collectionSourceChanged()"><option value="keyword">关键词搜索</option><option value="creator">创作者主页</option><option value="favorite_all" data-xhs-source>全部收藏</option><option value="favorite_board" data-xhs-source>指定收藏夹</option><option value="account_works" data-channels-source>本账号作品</option></select></div>
           <div class="form-field xhs-only" id="col-board-wrap" style="display:none"><label for="col-board">收藏夹</label><select id="col-board"><option value="">先选择账号并加载</option></select><p class="hint" id="col-board-help"></p></div>
-          <div class="form-field" id="col-source-ref-wrap" style="display:none"><label for="col-source-ref">创作者用户 ID</label><input id="col-source-ref" placeholder="抖音 sec_uid / 小红书 user_id / 快手 user_id 或主页链接或短链"><p class="hint">使用公开主页作品列表，评论和下载继续沿用下方设置。快手可粘贴完整分享文案或 v.kuaishou.com 短链自动解析。</p></div>
+          <div class="form-field" id="col-source-ref-wrap" style="display:none">
+            <label for="col-source-ref" id="col-source-ref-label">创作者用户 ID / 主页或视频链接</label>
+            <div class="smart-target-input">
+              <input id="col-source-ref" maxlength="100000" autocomplete="off"
+                placeholder="抖音 sec_uid / 小红书 user_id / 快手 user_id 或主页链接或短链"
+                onpaste="handleCollectionCreatorPaste()" oninput="resetCollectionCreatorState()">
+              <button type="button" class="smart-target-action" onclick="normalizeCollectionCreatorTarget(this)"
+                aria-label="识别并清洗创作者链接" title="识别并提取创作者标识">
+                <svg><use href="#i-bolt"/></svg><span>识别</span>
+              </button>
+            </div>
+            <div class="smart-target-feedback" id="col-source-ref-feedback" role="status" aria-live="polite">
+              使用公开主页作品列表；视频号可粘贴 v2_...@finder、主页链接或单条视频 weixin.qq.com/sph/... 链接（自动反查作者）
+            </div>
+          </div>
         </div>
         <div class="form-field" id="col-keywords-wrap">
           <label for="col-keywords">关键词 <span class="field-scope">必填 · 最多 20 个</span></label>
@@ -2280,7 +2305,7 @@
           <p class="hint" id="col-keywords-help">支持换行或逗号分隔；任务会按关键词逐个执行并自动去重。</p>
         </div>
         <div class="form-grid cols-4">
-          <div class="form-field"><label for="col-account">使用账号</label><select id="col-account" required onchange="collectionAccountChanged()"></select></div>
+          <div class="form-field" id="col-account-wrap"><label for="col-account">使用账号</label><select id="col-account" onchange="collectionAccountChanged()"></select></div>
           <div class="form-field"><label for="col-content-limit" id="col-content-limit-label">每词作品上限</label><input id="col-content-limit" type="number" min="1" max="100" value="20" inputmode="numeric"></div>
           <div class="form-field"><label for="col-comment-limit">每作品评论上限</label><input id="col-comment-limit" type="number" min="0" max="200" value="20" inputmode="numeric"></div>
           <div class="form-field dy-only"><label for="col-quality">视频画质</label><select id="col-quality"><option value="highest">原画 / 最高</option><option value="1080">1080P</option><option value="720">720P</option><option value="540">540P</option><option value="lowest">最低省流</option></select></div>
@@ -2311,7 +2336,7 @@
         </div>
         <div class="platform-callout" role="note">
           <svg aria-hidden="true"><use href="#i-info"/></svg>
-          <div><b id="collection-callout-title">作品上限、采集深度和停止条件任一满足即结束</b><p id="collection-callout-copy">平台筛选后会在本地复核类型、时间和数据门槛；任务默认串行执行，可随时取消，已入库结果会保留。</p></div>
+          <div><b id="collection-callout-title">作品上限、采集深度和停止条件任一满足即结束</b><p id="collection-callout-copy">平台筛选后会在本地复核类型、时间和数据门槛；任务默认串行执行，可随时取消，已入库结果会保留。</p><div class="channels-proto-inline-tools sh-only hidden"><button type="button" class="ghost sm" onclick="openChannelsProtocolSettings()"><svg aria-hidden="true"><use href="#i-network"/></svg>配置本地微信通道</button></div></div>
         </div>
         <div class="form-actions">
           <span class="status-text" id="col-create-msg" role="status" aria-live="polite"></span>
@@ -2400,7 +2425,7 @@
           </div>
         </div>
         <div class="form-grid cols-auto">
-          <div class="form-field"><label for="t-acc">使用账号</label><select id="t-acc"></select></div>
+          <div class="form-field" id="t-acc-wrap"><label for="t-acc">使用账号</label><select id="t-acc"></select></div>
           <div class="form-field"><label for="t-interval">检查频率</label><select id="t-interval" aria-describedby="t-interval-help">
               <option value="1">每 1 秒</option><option value="5">每 5 秒</option><option value="10">每 10 秒</option>
               <option value="15">每 15 秒</option><option value="30">每 30 秒</option><option value="60">每 1 分钟</option>
@@ -2413,7 +2438,7 @@
               <option value="1080">1080P</option><option value="720">720P</option>
               <option value="540">540P</option><option value="lowest">最低省流</option>
           </select></div>
-          <div class="form-field dy-only"><label for="t-backfill">首次历史回填</label><select id="t-backfill">
+          <div class="form-field" id="t-backfill-wrap"><label for="t-backfill">首次历史回填</label><select id="t-backfill">
               <option value="">跟随全局设置</option>
               <option value="0">不下载历史作品</option><option value="5">最近 5 条</option>
               <option value="20">最近 20 条</option><option value="-1">尽可能全量</option>
@@ -2745,6 +2770,13 @@
             <p class="field-help" id="engine-tiktok-read-help">native 模式的关键词、评论和二级回复均使用本账号 Cookie、UA、代理与离线 X-Dynosaur/X-Gnarly，全程不打开浏览器；只有手动选择 auto/browser 才可能打开页面。</p>
           </div>
           <div class="form-field">
+            <label for="engine-channels_read_mode">视频号读取方式</label>
+            <select id="engine-channels_read_mode" name="channels_read_mode" disabled aria-describedby="engine-channels-read-help">
+              <option value="auto">原生协议优先，本账号回退创作者助手（推荐）</option><option value="protocol">仅微信本地 Finder 协议</option><option value="browser">仅创作者助手浏览器页面</option>
+            </select>
+            <p class="field-help" id="engine-channels-read-help">配置本地微信 Finder CDP 端点后，支持关键词搜索、创作者主页、主评论与二级回复独立分页及 WxIsaac64 视频解密下载；未配置时本账号作品仍可通过创作者助手读取。<a class="channels-inline-jump" href="#channels-protocol-card" onclick="event.preventDefault();openChannelsProtocolSettings()">去配置微信通道 →</a></p>
+          </div>
+          <div class="form-field">
             <label for="engine-monitor_initial_backfill_count">抖音新监控的历史作品数量</label>
             <input id="engine-monitor_initial_backfill_count" name="monitor_initial_backfill_count" type="number" min="-1" max="1000" step="1" required disabled aria-describedby="engine-backfill-help">
             <p class="field-help" id="engine-backfill-help">0 = 只看新增，-1 = 尽可能读取全部历史。仅影响抖音新建时选择“跟随全局设置”的监控，已建监控不变。</p>
@@ -2908,6 +2940,163 @@
         <p class="field-help" id="transport-matrix-status" role="status" aria-live="polite"></p>
       </div>
     </details>
+  </div>
+  <!-- 视频号本机微信通道可视化配置 -->
+  <div class="card" id="channels-protocol-card" data-section="channels">
+    <div class="card-head">
+      <span class="card-ic"><svg aria-hidden="true"><use href="#i-network"/></svg></span>
+      <h2>视频号微信通道 <span class="sub">一键连接本机微信 · 搜索 / 他人主页 / 视频解密</span></h2>
+    </div>
+    <div class="stack">
+      <div class="channels-proto-summary" id="channels-proto-summary">
+        <div class="row-between gap-wrap">
+          <div class="row gap-wrap">
+            <span class="pill pending" id="ch-proto-badge">正在读取…</span>
+            <span class="field-help" id="ch-proto-summary-text" style="margin:0">正在检查本机微信通道配置与能力状态…</span>
+          </div>
+          <button type="button" class="ghost sm" id="ch-proto-refresh-btn" onclick="CreatorHubChannelsProtocol.load()"><svg aria-hidden="true"><use href="#i-refresh"/></svg>刷新状态</button>
+        </div>
+        <div class="channels-proto-caps" id="ch-proto-caps" aria-label="视频号双通道当前能力"></div>
+        <div class="channels-proto-probe" id="ch-proto-probe-box" hidden></div>
+      </div>
+
+      <div class="channels-oneclick-panel stack" id="channels-proxy-panel">
+        <div class="row-between gap-wrap">
+          <div class="row gap-wrap">
+            <b>连接本机已登录微信（一键模式）</b>
+            <span class="pill skipped" id="ch-proxy-badge">未启动</span>
+          </div>
+          <button type="button" class="ghost sm" id="ch-proxy-refresh-btn" onclick="CreatorHubChannelsProtocol.load()"><svg aria-hidden="true"><use href="#i-refresh"/></svg>刷新状态</button>
+        </div>
+        <p class="field-help" id="ch-proxy-status-text" style="margin:0">仅拦截 channels.weixin.qq.com，其余网站流量原样加密直通，停止或退出软件时自动恢复系统代理。</p>
+
+        <div class="channels-proxy-ca-box">
+          <div class="row-between gap-wrap">
+            <div class="row gap-wrap">
+              <span class="pill skipped" id="ch-proxy-ca-badge">根证书未安装</span>
+              <span class="field-help" id="ch-proxy-ca-text" style="margin:0">本地自签名 CA 仅用于签发 channels.weixin.qq.com 本机证书；安装时请在系统弹窗点击「是」。</span>
+            </div>
+            <div class="channels-proto-inline-tools" style="margin-top:0">
+              <button type="button" class="ghost sm" id="ch-proxy-ca-install-btn" onclick="CreatorHubChannelsProtocol.installProxyCert()"><svg aria-hidden="true"><use href="#i-shield"/></svg>① 安装根证书</button>
+              <button type="button" class="ghost sm" id="ch-proxy-ca-download-btn" onclick="CreatorHubChannelsProtocol.downloadProxyCert()"><svg aria-hidden="true"><use href="#i-download"/></svg>下载证书</button>
+              <button type="button" class="ghost sm danger" id="ch-proxy-ca-uninstall-btn" onclick="CreatorHubChannelsProtocol.uninstallProxyCert()" disabled>卸载证书</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="ch-proxy-pages" class="channels-proxy-pages" aria-label="已连接的微信视频号页面"></div>
+
+        <label class="switch-row" for="ch-proxy-manage-sysproxy">
+          <input id="ch-proxy-manage-sysproxy" type="checkbox" checked>
+          <span class="switch-copy"><b>自动托管 Windows 系统代理（推荐）</b><span>启动时备份原设置并指向本地代理，停止时自动恢复；若被外部代理守卫或权限限制拦截，可取消勾选后手动将 <code>channels.weixin.qq.com</code> 分流至 <code>127.0.0.1:2023</code>。</span></span>
+        </label>
+
+        <div class="form-actions channels-proxy-actions">
+          <span class="status-text" id="ch-proto-msg" role="status" aria-live="polite"></span>
+          <button type="button" id="ch-proxy-start-btn" onclick="CreatorHubChannelsProtocol.startProxy()"><svg aria-hidden="true"><use href="#i-play"/></svg>② 一键开启并应用</button>
+          <button type="button" class="ghost" id="ch-proxy-probe-btn" onclick="CreatorHubChannelsProtocol.probe('proxy')"><svg aria-hidden="true"><use href="#i-bolt"/></svg>③ 检测微信连通</button>
+          <button type="button" class="ghost danger" id="ch-proxy-stop-btn" onclick="CreatorHubChannelsProtocol.stopProxy()" disabled><svg aria-hidden="true"><use href="#i-x"/></svg>停止</button>
+        </div>
+        <p class="field-help" style="margin:0">操作顺序：① 首次点击「① 安装根证书」并同意系统弹窗 → ② 点击「② 一键开启并应用」→ 在桌面微信内打开一次视频号页面 → ③ 点击「③ 检测微信连通」即可使用。</p>
+      </div>
+
+      <details class="collection-advanced" id="channels-advanced-details">
+        <summary>高级连接方式与调试选项（一般用户无需展开）</summary>
+        <div class="collection-advanced-body stack">
+      <form id="channels-protocol-form" class="stack" novalidate onsubmit="event.preventDefault();CreatorHubChannelsProtocol.save()">
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="ch-proto-read-mode">视频号读取策略</label>
+            <select id="ch-proto-read-mode" aria-describedby="ch-proto-read-mode-help">
+              <option value="auto">原生协议优先，本账号回退创作者助手（推荐）</option>
+              <option value="protocol">仅微信本地 Finder 协议</option>
+              <option value="browser">仅创作者助手浏览器页面</option>
+            </select>
+            <p class="field-help" id="ch-proto-read-mode-help">与「采集与运行 → 视频号读取方式」同步联动；保存后立即用于后续任务。</p>
+          </div>
+          <div class="form-field">
+            <label for="ch-proto-mode">本机微信连接方式</label>
+            <select id="ch-proto-mode" onchange="CreatorHubChannelsProtocol.onModeChange()" aria-describedby="ch-proto-mode-help">
+              <option value="proxy">内置本机微信代理桥接（推荐，免改微信）</option>
+              <option value="none">暂不连接（仅用创作者助手 / 公开预览）</option>
+              <option value="endpoint">直连本机回环 CDP 端点（http / ws）</option>
+              <option value="endpoint_file">WMPF 控制口令文件（wmpf_cdp）</option>
+            </select>
+            <p class="field-help" id="ch-proto-mode-help">内置代理仅拦截 <code>channels.weixin.qq.com</code>，其余 HTTPS 流量原样加密直通，绝不导出账号凭据。</p>
+          </div>
+        </div>
+
+        <div class="form-field" id="ch-proto-proxy-wrap" hidden>
+          <label for="ch-proto-proxy-port">内置本机代理端口（127.0.0.1）</label>
+          <input id="ch-proto-proxy-port" type="number" min="1024" max="65535" step="1" value="2023" aria-describedby="ch-proto-proxy-help">
+          <p class="field-help" id="ch-proto-proxy-help">仅监听本机回环 <code>127.0.0.1</code>（默认 <code>2023</code>）；启动下方内置代理后，在桌面微信中打开一次视频号页面即可自动建立协议桥接。</p>
+        </div>
+
+        <div class="form-field" id="ch-proto-endpoint-wrap">
+          <label for="ch-proto-endpoint">本机回环 CDP 端点地址</label>
+          <input id="ch-proto-endpoint" type="url" inputmode="url" autocomplete="off" placeholder="http://127.0.0.1:9222 或 ws://127.0.0.1:9422/cdp/..." aria-describedby="ch-proto-endpoint-help">
+          <div class="channels-proto-inline-tools">
+            <button type="button" class="ghost sm" id="ch-proto-scan-btn" onclick="CreatorHubChannelsProtocol.discover()"><svg aria-hidden="true"><use href="#i-search"/></svg>扫描本机 CDP 端口</button>
+            <button type="button" class="ghost sm" onclick="CreatorHubChannelsProtocol.fillEndpoint('http://127.0.0.1:9222')">填入 127.0.0.1:9222</button>
+          </div>
+          <p class="field-help" id="ch-proto-endpoint-help">填写桌面微信或 WMPF 调试环境暴露的本机回环地址，也可点击上方按钮自动探测常见端口。</p>
+          <div class="channels-proto-discovered" id="ch-proto-discovered" hidden></div>
+        </div>
+
+        <div class="form-field" id="ch-proto-file-wrap">
+          <label for="ch-proto-endpoint-file">WMPF 控制口令文件路径</label>
+          <input id="ch-proto-endpoint-file" autocomplete="off" placeholder="./data/channels_wmpf_endpoint.json" aria-describedby="ch-proto-file-help">
+          <p class="field-help" id="ch-proto-file-help">指向 <code>wmpf_cdp.LoopbackBridge</code> 生成的 JSON 描述文件；若使用下方托管桥接会自动填入。</p>
+        </div>
+
+        <div class="form-actions channels-proto-actions">
+          <button type="button" class="ghost" id="ch-proto-probe-btn" onclick="CreatorHubChannelsProtocol.probe()"><svg aria-hidden="true"><use href="#i-bolt"/></svg>测试通道连接</button>
+          <button type="button" class="ghost" id="ch-proto-reset-btn" onclick="CreatorHubChannelsProtocol.reset()">恢复默认</button>
+          <button type="submit" id="ch-proto-save-btn"><svg aria-hidden="true"><use href="#i-check"/></svg>保存通道配置</button>
+        </div>
+      </form>
+
+      <details class="collection-advanced" id="channels-bridge-panel">
+        <summary>WMPF 本地回环桥接托管（wmpf_cdp）</summary>
+        <div class="collection-advanced-body stack">
+          <div class="row-between gap-wrap">
+            <div class="row gap-wrap">
+              <span class="pill pending" id="ch-bridge-badge">未启动</span>
+              <span class="field-help" id="ch-bridge-status-text" style="margin:0">仅在需要由 CreatorHub 托管本机 127.0.0.1 WMPF 转发桥时启动。</span>
+            </div>
+            <button type="button" class="ghost sm" id="ch-bridge-refresh-btn" onclick="CreatorHubChannelsProtocol.discover()"><svg aria-hidden="true"><use href="#i-refresh"/></svg>刷新微信进程</button>
+          </div>
+          <div id="ch-bridge-procs" class="channels-proc-chips" aria-label="检测到的微信与 WMPF 进程"></div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="ch-bridge-debug-port">WMPF 调试监听端口</label>
+              <input id="ch-bridge-debug-port" type="number" min="1024" max="65535" step="1" value="9421">
+              <p class="field-help">供本机桌面微信 WMPF 客户端接入（默认 9421，校验 PID 白名单）。</p>
+            </div>
+            <div class="form-field">
+              <label for="ch-bridge-cdp-port">CDP 转发端口</label>
+              <input id="ch-bridge-cdp-port" type="number" min="1024" max="65535" step="1" value="9422">
+              <p class="field-help">仅供 CreatorHub 通过带控制口令的本地 WebSocket 接入（默认 9422）。</p>
+            </div>
+          </div>
+          <div class="form-field">
+            <label for="ch-bridge-pids">允许接入的微信 PID（留空自动识别）</label>
+            <input id="ch-bridge-pids" autocomplete="off" placeholder="留空自动绑定上方检测到的 Weixin.exe / WeChat.exe / WeChatAppEx.exe PID；多个用逗号分隔">
+          </div>
+          <div class="form-actions channels-bridge-actions">
+            <button type="button" id="ch-bridge-start-btn" onclick="CreatorHubChannelsProtocol.startBridge()"><svg aria-hidden="true"><use href="#i-play"/></svg>启动桥接并应用</button>
+            <button type="button" class="ghost danger" id="ch-bridge-stop-btn" onclick="CreatorHubChannelsProtocol.stopBridge()" disabled><svg aria-hidden="true"><use href="#i-x"/></svg>停止桥接</button>
+          </div>
+        </div>
+      </details>
+        </div>
+      </details>
+
+      <div class="form-note">
+        <svg aria-hidden="true"><use href="#i-info"/></svg>
+        <span>遵循零进程注入与零补丁原则：推荐使用「内置本机微信代理桥接」（仅拦截 channels.weixin.qq.com 并信任本地 CA，无需修改微信），或接入本机 CDP / WMPF 调试通道并在微信内打开一次视频号页面（<code>channels.weixin.qq.com/web/pages/*</code>）；仅同步「本账号作品」和发布可直接使用创作者助手。</span>
+      </div>
+    </div>
   </div>
   </section>
 
@@ -3298,13 +3487,13 @@
           </div>
         </div>
         <div class="form-grid cols-auto">
-          <div class="form-field"><label for="w-kind">监控对象类型</label><select id="w-kind">
+          <div class="form-field"><label for="w-kind">监控对象类型</label><select id="w-kind" onchange="resetWatchTargetState()">
               <option value="auto">自动识别</option><option value="video">单条视频</option><option value="user">账号近期作品</option>
           </select></div>
           <div class="form-field dy-only"><label for="w-mode">评论来源</label><select id="w-mode" onchange="populateWatchAccount()">
               <option value="public">公开评论区</option><option value="creator">创作中心（仅自有账号）</option>
           </select></div>
-          <div class="form-field"><label for="w-acc">使用账号</label><select id="w-acc"></select></div>
+          <div class="form-field" id="w-acc-wrap"><label for="w-acc">使用账号</label><select id="w-acc"></select></div>
           <div class="form-field"><label for="w-interval">检查频率</label><select id="w-interval" aria-describedby="w-interval-help">
               <option value="1">每 1 秒</option><option value="5">每 5 秒</option><option value="10">每 10 秒</option>
               <option value="15">每 15 秒</option><option value="30">每 30 秒</option><option value="60">每 1 分钟</option>

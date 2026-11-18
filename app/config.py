@@ -63,6 +63,13 @@ class EngineConfig:
     douyin_read_mode: str = "hybrid"         # 默认 API 优先/浏览器回退；api=仅 API；browser=仅浏览器
     # native=纯 Python 离线签名直连；browser=已授权页面；auto=直连优先/页面回退。
     tiktok_read_mode: str = "native"          # native | auto | browser
+    # 视频号读取模式: auto=优先桌面微信原生 Finder CDP 协议、回退创作者助手页面;
+    # protocol=仅原生 Finder 协议; browser=仅创作者助手页面。
+    channels_read_mode: str = "auto"          # auto | protocol | browser
+    channels_cdp_endpoint: str = ""           # 本地回环 CDP 端点(如 http://127.0.0.1:9222 或 ws://127.0.0.1:9422/cdp/...)
+    channels_cdp_endpoint_file: str = ""      # wmpf_cdp 生成的本地控制口令端点描述文件
+    channels_proxy_enabled: bool = False      # 是否使用内置本机视频号选择性 HTTPS 代理桥接
+    channels_proxy_port: int = 2023           # 内置视频号本机代理监听端口(127.0.0.1)
     # 本账号管理中的独立读取通道。资料与粉丝已支持直连；其余三项保留
     # 独立开关，待协议完整可验证后无需再迁移配置。
     douyin_profile_mode: str = "hybrid"      # hybrid | api | browser
@@ -212,6 +219,14 @@ def load_config(path: str | None = None) -> Config:
             tiktok_read_mode
             if tiktok_read_mode in {"auto", "native", "browser"}
             else "native")
+        channels_read_mode = str(
+            cfg.engine.channels_read_mode or "auto").strip().lower()
+        cfg.engine.channels_read_mode = (
+            channels_read_mode
+            if channels_read_mode in {"auto", "protocol", "browser"}
+            else "auto")
+        proxy_port = int(cfg.engine.channels_proxy_port or 2023)
+        cfg.engine.channels_proxy_port = proxy_port if 1024 <= proxy_port <= 65535 else 2023
         for name, default in (
                 ("douyin_read_mode", "hybrid"),
                 ("douyin_profile_mode", "hybrid"),
@@ -274,6 +289,14 @@ def load_config(path: str | None = None) -> Config:
         cfg.db_path = (raw.get("storage", {}) or {}).get("db_path", cfg.db_path)
         px = raw.get("proxies") or []
         cfg.proxies = [str(p).strip() for p in px if str(p).strip()]
+    if not cfg.engine.channels_cdp_endpoint:
+        cfg.engine.channels_cdp_endpoint = os.environ.get(
+            "CREATORHUB_CHANNELS_CDP_ENDPOINT", ""
+        ).strip()
+    if not cfg.engine.channels_cdp_endpoint_file:
+        cfg.engine.channels_cdp_endpoint_file = os.environ.get(
+            "CREATORHUB_CHANNELS_CDP_ENDPOINT_FILE", ""
+        ).strip()
     Path(cfg.engine.media_dir).mkdir(parents=True, exist_ok=True)
     Path(cfg.engine.profiles_dir).mkdir(parents=True, exist_ok=True)
     Path(cfg.db_path).parent.mkdir(parents=True, exist_ok=True)

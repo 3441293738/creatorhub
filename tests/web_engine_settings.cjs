@@ -71,7 +71,7 @@ function fixture(initial = {}) {
 
 (async () => {
   const f = fixture();
-  assert.equal(f.fields.length, 57);
+  assert.equal(f.fields.length, 58);
   assert(f.fields.every(el => el.disabled));
   await f.api.save(); assert.equal(f.calls.length, 0);
   await f.api.load();
@@ -79,6 +79,8 @@ function fixture(initial = {}) {
   assert.deepEqual(f.byName.douyin_read_mode.options.map(option => option.value), ['hybrid', 'api', 'browser']);
   assert.deepEqual(f.byName.tiktok_read_mode.options.map(option => option.value), ['native', 'auto', 'browser']);
   assert.equal(f.byName.tiktok_read_mode.value, 'native');
+  assert.deepEqual(f.byName.channels_read_mode.options.map(option => option.value), ['auto', 'protocol', 'browser']);
+  assert.equal(f.byName.channels_read_mode.value, 'auto');
   assert.deepEqual(f.byName.douyin_profile_mode.options.map(option => option.value), ['hybrid', 'api', 'browser']);
   assert.deepEqual(f.byName.douyin_followers_mode.options.map(option => option.value), ['hybrid', 'api', 'browser']);
   assert.deepEqual(f.byName.douyin_dm_sync_mode.options.map(option => option.value), ['hybrid', 'api', 'browser']);

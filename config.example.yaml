@@ -82,6 +82,11 @@ engine:
   comment_risk_cooldown_seconds: 21600 # 平台拒绝/验证后暂停该账号写操作(默认6小时)
   xhs_comment_write_mode: browser      # browser=页面发布;api=显式兼容;manual=只保存草稿
   xhs_comment_review_before_publish: true # true=人工审核后自动发布;false=生成后直接发布
+  channels_read_mode: auto             # auto=优先桌面微信 Finder 原生协议,回退创作者助手;protocol=仅原生协议;browser=仅助手页面
+  channels_cdp_endpoint: ""            # 可选:本机回环微信 Finder CDP 端点(如 http://127.0.0.1:9222)
+  channels_cdp_endpoint_file: ""       # 可选:wmpf_cdp 生成的单会话本地回环端点描述文件路径
+  channels_proxy_enabled: false        # 可选:启用内置本机视频号 HTTPS 代理桥接(配合普通版已登录桌面微信)
+  channels_proxy_port: 2023            # 可选:内置视频号本机代理监听端口(127.0.0.1)
   action_daily_cap_per_account: 20     # 每账号每日写操作(关注/取关/私信)总上限(0=不限)
   action_hourly_cap_per_account: 6     # 每账号每小时写操作上限(0=不限)
   action_min_gap_seconds: 90           # 同账号两次写操作全局最小间隔(与任务级 min_gap 取大)

@@ -24,7 +24,7 @@ from .privacy import redact
 class WorkflowStep(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     kind: Literal["create_collection", "create_monitor"]
-    platform: Literal["douyin", "xhs", "kuaishou", "tiktok"]
+    platform: Literal["douyin", "xhs", "kuaishou", "shipinhao", "tiktok"]
     account_id: int = Field(gt=0)
     keywords: list[str] = Field(default_factory=list, max_length=10)
     target: str = Field(default="", max_length=2000)
@@ -51,7 +51,8 @@ class WorkflowStep(BaseModel):
             elif "://" in self.target:
                 parsed = urlsplit(self.target)
                 domains = {"douyin": ("douyin.com", "iesdouyin.com"), "xhs": ("xiaohongshu.com", "xhslink.com"),
-                           "kuaishou": ("kuaishou.com",), "tiktok": ("tiktok.com",)}[self.platform]
+                           "kuaishou": ("kuaishou.com",), "shipinhao": ("weixin.qq.com",),
+                           "tiktok": ("tiktok.com",)}[self.platform]
                 host = (parsed.hostname or "").lower()
                 if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
                         or parsed.port not in {None, 80, 443}
@@ -183,6 +184,6 @@ async def apply_plan(plan_id: str, plan_hash: str, executors: dict) -> dict:
 
 
 PLAN_TOOL = {"name": "propose_workflow", "description": (
-    "仅生成待确认草稿，不执行。支持关键词采集和作品监控（抖音/小红书/快手/TikTok）。"
+    "仅生成待确认草稿，不执行。支持关键词采集和作品监控（抖音/小红书/快手/视频号/TikTok）。"
     "先查询真实账号 ID；缺少目标先询问。日报定时发送、代码修改、发布等未支持需求须列入 unsupported。"
     "每次只提交一个计划，最多五步。"), "inputSchema": WorkflowPlan.model_json_schema()}

@@ -22,14 +22,17 @@ function fixture() {
     });
     return nodes.get(id);
   };
+  const copied = [];
   const context = vm.createContext({
     $, URLSearchParams, Promise, console,
+    navigator: { clipboard: { writeText: async text => { copied.push(text); } } },
     api: path => new Promise((resolve, reject) => pending.push({ path, resolve, reject })),
     _downloadExcelReport: async path => downloads.push(path),
     withBusy: async (_button, _label, work) => work(),
     modalOpened() {}, modalClosed() {}, toast() {},
-    ic: () => '', esc: value => String(value || ''),
+    ic: () => '', esc: value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
     fmtNum: value => String(value || 0), fmtTime: () => '',
+    contentPathMeta: () => null,
     setTimeout: callback => { callback(); return timers.length + 1; },
     clearTimeout() {},
   });
@@ -38,11 +41,12 @@ function fixture() {
     let COLLECTION_COMMENT_PAGE = 1, COLLECTION_COMMENT_TIMER = null;
     let COLLECTION_COMMENT_REQUEST = 0;
   `, context);
-  for (const name of ['collectionCommentParams', 'collectionCommentMarkup',
+  for (const name of ['copyTextValue', 'copyCollectionAuthorId', 'collectionFileDisplay',
+    'collectionResultCard', 'collectionCommentParams', 'collectionCommentMarkup',
     'loadCollectionComments', 'scheduleCollectionCommentFilter',
     'resetCollectionCommentFilters', 'showCollectionComments',
     'exportFilteredCollectionComments']) vm.runInContext(fn(name), context);
-  return { context, $, pending, downloads, run: code => vm.runInContext(code, context) };
+  return { context, $, pending, downloads, copied, run: code => vm.runInContext(code, context) };
 }
 
 async function run() {
@@ -79,6 +83,26 @@ async function run() {
   assert.equal(query.get('q'), '重点');
   assert.equal(query.get('paginate'), null);
   assert.equal(query.get('dedupe_users'), 'true');
+  const cardWithAuthor = f.run(`collectionResultCard({
+    id: 10, job_id: 42, aweme_id: '15048048', desc: '视频号样本', keyword: '露营',
+    author_name: '测试视频号', author_id: 'v2_test_author@finder<script>',
+    like_count: 10, comment_count: 2, collected_comment_count: 1,
+    media_type: 'video', url: 'https://channels.weixin.qq.com/web/pages/feed',
+  })`);
+  assert.match(cardWithAuthor, /collection-author-chip/);
+  assert.match(cardWithAuthor, /v2_test_author@finder/);
+  assert.ok(!cardWithAuthor.includes('<script>'));
+  await f.run('copyCollectionAuthorId({ dataset: { authorId: "v2_test_author@finder" } })');
+  assert.deepEqual(f.copied, ['v2_test_author@finder']);
+
+  const cardNoAuthor = f.run(`collectionResultCard({
+    id: 11, job_id: 42, aweme_id: '15048049', desc: '无作者ID样本', keyword: '露营',
+    author_name: '测试', author_id: '',
+    like_count: 0, comment_count: 0, collected_comment_count: 0,
+    media_type: 'video', url: 'https://channels.weixin.qq.com/web/pages/feed',
+  })`);
+  assert.ok(!cardNoAuthor.includes('collection-author-chip'));
+
   console.log('collection comment filters, stale-safe pagination and filtered export passed');
 }
 

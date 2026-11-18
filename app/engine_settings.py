@@ -20,6 +20,7 @@ class EngineSettingsPatch(BaseModel):
     xhs_read_mode: Literal["browser", "api"] | None = None
     douyin_read_mode: Literal["hybrid", "api", "browser"] | None = None
     tiktok_read_mode: Literal["auto", "native", "browser"] | None = None
+    channels_read_mode: Literal["auto", "protocol", "browser"] | None = None
     douyin_profile_mode: Literal["hybrid", "api", "browser"] | None = None
     douyin_followers_mode: Literal["hybrid", "api", "browser"] | None = None
     douyin_dm_sync_mode: Literal["hybrid", "api", "browser"] | None = None

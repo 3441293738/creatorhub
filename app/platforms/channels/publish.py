@@ -4,9 +4,6 @@
 **开放的** shadow DOM,故下面用普通 CSS 选择器即可;若视频号把 shadow root 设成 closed
 则需改用 CDP pierce(参见 _CHANNELS_* 注释)。
 
-⚠️ 实验性 + 需校准:发布页选择器随视频号改版/wujie 版本变化,集中在下面 _* 常量;
-   选择器初值取自对小V猫的逆向观察(`.post-view` 系),务必用真实账号发一条核对。
-   发布时弹真实窗口,遇「实名/过脸验证」「封面必填」可在窗口里手动处理。
 """
 from __future__ import annotations
 

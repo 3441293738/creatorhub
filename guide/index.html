@@ -29,6 +29,7 @@
       <a href="#tiktok-tools">TikTok 用户互动</a>
       <a href="#autocomment">自动评论与审核</a><a href="#notifications">通知</a>
       <a href="#queue">任务队列与风控</a><a href="#settings">设置与账号环境</a>
+      <a href="#channels-wechat">视频号微信通道</a>
       <a href="#ai-agent">AI 助手与 MCP</a>
       <a href="#browser-environment">浏览器与代理</a><a href="#cli-download">命令行下载</a>
       <p>日常维护</p>
@@ -44,7 +45,7 @@
         <a href="douyin/"><strong>抖音</strong><span>作品下载、监控与关键词采集 →</span></a>
         <a href="xhs/"><strong>小红书</strong><span>双登录、笔记发布与私信 →</span></a>
         <a href="kuaishou/"><strong>快手</strong><span>作品、评论监控与发布 →</span></a>
-        <a href="shipinhao/"><strong>视频号</strong><span>本账号作品、数据与发布 →</span></a>
+        <a href="shipinhao/"><strong>视频号</strong><span>微信通道采集、监控、解密下载与发布 →</span></a>
         <a href="tiktok/"><strong>TikTok</strong><span>关键词采集、作品监控与用户互动 →</span></a>
       </div>
       <div class="actions"><a class="button" href="#install">开始安装</a><a class="button secondary" href="#first-task">已经装好？开始第一个任务</a></div>
@@ -53,18 +54,18 @@
       <dl><dt>平台账号</dt><dd>你登录 CreatorHub 的抖音、小红书、快手、视频号或 TikTok 账号，用来执行任务。</dd><dt>监控目标</dt><dd>你想持续查看的创作者或作品，不等于登录账号。</dd><dt>任务与记录</dt><dd>任务是“准备做什么、正在做什么”；记录是“已经发现或处理的内容”。任务保存成功，不代表已经产生结果。</dd></dl>
       <h2>平台能力速查</h2>
       <div class="table-scroll"><table><caption>按当前项目实现整理；“—”表示暂无该功能，平台切换后以可见入口为准</caption><thead><tr><th scope="col">功能</th><th scope="col">抖音</th><th scope="col">小红书</th><th scope="col">快手</th><th scope="col">视频号</th><th scope="col">TikTok</th></tr></thead><tbody>
-      <tr><th scope="row">登录入口</th><td>扫码 / 创作者 / Cookie</td><td>主站 / 创作者</td><td>扫码 / 创作者</td><td>创作者助手扫码</td><td>TikTok Web 登录</td></tr>
-      <tr><th scope="row">作品 / 评论监控</th><td>支持</td><td>支持；作品可按关键词</td><td>支持</td><td>仅本账号数据</td><td>支持；需绑定账号</td></tr>
-      <tr><th scope="row">批量采集来源</th><td>关键词 / 创作者</td><td>关键词 / 创作者 / 收藏</td><td>关键词 / 创作者</td><td>本账号作品</td><td>关键词视频</td></tr>
+      <tr><th scope="row">登录入口</th><td>扫码 / 创作者 / Cookie</td><td>主站 / 创作者</td><td>扫码 / 创作者</td><td>创作者助手扫码；他人内容走本机微信通道</td><td>TikTok Web 登录</td></tr>
+      <tr><th scope="row">作品 / 评论监控</th><td>支持</td><td>支持；作品可按关键词</td><td>支持</td><td>支持；需连接本机微信通道</td><td>支持；需绑定账号</td></tr>
+      <tr><th scope="row">批量采集来源</th><td>关键词 / 创作者</td><td>关键词 / 创作者 / 收藏</td><td>关键词 / 创作者</td><td>关键词 / 创作者 / 本账号作品</td><td>关键词视频</td></tr>
       <tr><th scope="row">短视频弹幕</th><td>支持</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
-      <tr><th scope="row">内容下载</th><td>可选画质</td><td>图集 / 视频</td><td>支持</td><td>本账号非加密资源，见下方说明</td><td>视频；可随采集 / 监控下载</td></tr>
+      <tr><th scope="row">内容下载</th><td>可选画质</td><td>图集 / 视频</td><td>支持</td><td>分享链接；加密视频需连接微信通道</td><td>视频；可随采集 / 监控下载</td></tr>
       <tr><th scope="row">发布</th><td>支持</td><td>图集 / 视频 / 定时</td><td>支持</td><td>支持</td><td>单视频 / 本地定时队列</td></tr>
       <tr><th scope="row">自动评论规则</th><td>支持</td><td>支持</td><td>支持</td><td>—</td><td>—；使用手动评论 / 回复任务</td></tr>
       <tr><th scope="row">本账号管理</th><td>作品 / 关注 / 粉丝 / 私信</td><td>作品 / 关注 / 粉丝 / 私信</td><td>作品 / 关注 / 粉丝</td><td>作品 / 数据 / 评论</td><td>本账号作品 / 数据</td></tr>
       <tr><th scope="row">TikTok 用户互动</th><td>—</td><td>—</td><td>—</td><td>—</td><td>用户搜索 / 关注 / 取关 / 私信 / 评论 / 回复</td></tr>
       </tbody></table></div>
       <p><strong>关键词作品监控</strong>与<strong>关键词批量采集</strong>是不同功能：前者是小红书持续检查一个搜索词的监控任务，后者是一次性批处理。通知渠道 Bark、钉钉、Telegram 全局共用。</p>
-      <p>视频号只处理本账号，不支持监控或下载他人作品；本账号采集遇到加密媒体会保留元数据并跳过直接下载。TikTok 暂不支持直播、短视频弹幕和图文发布；主动发送私信不等于支持私信会话同步或自动回复。</p>
+      <p>视频号有两条通道：创作者助手登录用于本账号作品、数据和发布；关键词搜索、他人主页、作品与评论监控和加密视频下载需要先连接<a href="#channels-wechat">本机微信通道</a>，不需要绑定网页账号。视频号不支持弹幕监控和自动评论规则。TikTok 暂不支持直播、短视频弹幕和图文发布；主动发送私信不等于支持私信会话同步或自动回复。</p>
       <figure><a href="images/overview-douyin.png"><img src="images/overview-douyin.png" alt="CreatorHub 工作概览，左侧为功能导航，顶部可切换平台" width="1600" loading="lazy"></a><figcaption>界面截图使用示例数据。点击图片可查看原图；实际入口会随平台变化。</figcaption></figure>
     </section>
 
@@ -126,7 +127,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
 
     <section id="first-task">
       <div class="eyebrow">03 / FIRST RESULT</div><h2>完成第一个任务：下载一条内容</h2>
-      <p>先用自己拥有或获准保存的一条抖音、小红书或快手内容验证完整流程；视频号不支持这条下载路线，请改从<a href="#my-content">本账号管理</a>同步自己的作品。</p>
+      <p>先用自己拥有或获准保存的一条抖音、小红书或快手内容验证完整流程。视频号用户可以先在<a href="#my-content">本账号管理</a>同步自己的作品；要下载视频，先连接<a href="#channels-wechat">本机微信通道</a>，再粘贴分享链接。</p>
       <p>TikTok 新用户建议先做一次<a href="tiktok/">小规模关键词采集</a>：选一个已登录账号、一个关键词、每词 5 条，先关闭评论与下载。确认有结果后，再逐项开启其他选项。</p>
       <ol><li>完成对应平台账号登录，复制一条作品的完整分享文案或链接。</li><li>打开“链接下载”，粘贴分享内容；如表单提供账号、画质或保存选项，选择刚登录的账号，其余先保留默认值。</li><li>提交下载，等待页面返回结果，不要连续点击。</li><li>查看下载历史和保存路径，到电脑上的对应目录确认文件。</li></ol>
       <div class="success"><strong>完成标志：</strong>下载历史显示完成，实际文件可以打开。你已经验证了“本地服务 → 账号 → 任务 → 文件”这条流程。</div>
@@ -136,19 +137,20 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
 
     <section id="monitor">
       <h2>作品监控：持续发现更新</h2><p class="path">入口：作品监控 → 新建作品监控</p>
-      <p><strong>适用：</strong>抖音、小红书、快手、TikTok。视频号请使用“本账号管理”查看自己的作品。</p>
+      <p><strong>适用：</strong>抖音、小红书、快手、TikTok、视频号。视频号监控需要先连接<a href="#channels-wechat">本机微信通道</a>。</p>
       <ol><li>复制创作者主页的完整分享文案或链接。小红书选择“创作者笔记”或“关键词”监控类型，并填写对应目标；链接尽量保留有效的 <code>xsec_token</code>。</li><li>粘贴目标，按需要使用“识别”，检查识别结果，再选择使用账号。</li><li>设置检查频率。第一次可先用“每 30 分钟”或“每小时”，而不是同时添加大量高频目标。</li><li>选择“自动下载范围”：只想观察结果时选“仅记录，不下载”；确实需要媒体时选择对应类型。</li><li>如当前平台提供“首次历史回填”，先选最近 5 条或不下载历史。分组、标签、下载目录和高级筛选可以稍后配置。</li><li>保存后在“监控目标”查看状态，在“作品记录”查看发现的内容。</li></ol>
       <div class="note"><strong>为什么新建后没有旧作品？</strong>默认主要监控订阅后的新内容。历史回填与持续监控是两件事；没有新内容、尚未到检查时间、筛选过严，都可能导致暂时没有记录。</div>
       <p><strong>完成标志：</strong>目标出现在列表；执行后有检查状态，有符合条件的内容时出现在作品记录中。无需继续监控时，暂停目标，不要只关网页。</p>
       <p>作品、评论、弹幕监控的新建与编辑均支持秒级频率。选择“自定义”后输入数值，并选择“秒”或“分钟”；范围为 1–86400 秒，分钟允许小数但须换算为整秒（例如 1.5 分钟 = 90 秒）。切换单位保持实际间隔，弹幕仍可选择跟随全局设置。配置是期望间隔，实际执行还受任务耗时、错峰和账号限速影响。</p>
       <h3>账号、历史与下载目录</h3>
-      <ul><li><strong>TikTok：</strong>目标使用创作者主页、完整分享文案或 <code>@username</code>，识别后必须绑定有效的 TikTok 登录账号。主页作品读取使用浏览器；关键词采集的 <code>native</code> 设置不代表所有功能都不打开浏览器。</li><li><strong>多账号订阅：</strong>抖音、小红书、快手支持不同执行账号分别订阅同一主页，各自维护扫描进度与采集策略。同账号同主页只保留一条任务，包括已暂停的任务；小红书关键词任务仍按关键词规则去重。</li><li><strong>历史回填：</strong>默认只关注订阅后的新内容。需要旧作品时在新建目标时选择回填数量，先用小批量验证。</li><li><strong>共享目录：</strong>多个任务写入同一路径的同一媒体时串行写入并复用已有文件；需要分开保存时，为任务配置不同目录。</li></ul>
+      <ul><li><strong>TikTok：</strong>目标使用创作者主页、完整分享文案或 <code>@username</code>，识别后必须绑定有效的 TikTok 登录账号。主页作品读取使用浏览器；关键词采集的 <code>native</code> 设置不代表所有功能都不打开浏览器。</li><li><strong>视频号：</strong>目标可填 <code>v2_...@finder</code> 创作者标识、主页链接，也可以直接粘贴一条 <code>weixin.qq.com/sph/...</code> 视频链接，点击“识别”会自动反查作者。视频号监控通过本机已登录的桌面微信读取，不需要也不能绑定网页账号；账号列显示“本机微信客户端”。支持首次历史回填。</li><li><strong>多账号订阅：</strong>抖音、小红书、快手支持不同执行账号分别订阅同一主页，各自维护扫描进度与采集策略。同账号同主页只保留一条任务，包括已暂停的任务；小红书关键词任务仍按关键词规则去重。</li><li><strong>历史回填：</strong>默认只关注订阅后的新内容。需要旧作品时在新建目标时选择回填数量，先用小批量验证。</li><li><strong>共享目录：</strong>多个任务写入同一路径的同一媒体时串行写入并复用已有文件；需要分开保存时，为任务配置不同目录。</li></ul>
       <figure><a href="images/monitor-create.png"><img src="images/monitor-create.png" alt="新建作品监控抽屉，包含目标、账号、检查频率与采集选项" width="1600" loading="lazy"></a><figcaption>先填目标和账号，再决定检查频率与是否下载，最后考虑高级选项。</figcaption></figure>
     </section>
 
     <section id="collection">
-      <h2>批量采集：一次性收集一批结果</h2><p class="path">入口：关键词采集 → 新建任务；视频号入口为“本账号作品采集”</p>
-      <p>抖音、小红书、快手、TikTok 支持关键词来源。抖音、小红书、快手还可按创作者采集；小红书可选全部收藏或指定收藏夹；视频号只采集当前登录账号自己的作品。下列步骤以关键词为例，其他来源按表单填写主页标识或收藏夹 ID。</p>
+      <h2>批量采集：一次性收集一批结果</h2><p class="path">入口：关键词采集 → 新建任务；视频号入口为“作品批量采集”</p>
+      <p>抖音、小红书、快手、TikTok、视频号支持关键词来源。抖音、小红书、快手、视频号还可按创作者采集；小红书可选全部收藏或指定收藏夹；视频号另有本账号作品来源。下列步骤以关键词为例，其他来源按表单填写主页标识或收藏夹 ID。</p>
+      <p>选择创作者来源时，可以直接粘贴主页链接、短链或分享文案，点击输入框右侧的“识别”提取创作者标识，识别结果会显示在输入框下方。结果列表中带作者标识的作品，可点击标识复制，方便再建监控或采集任务。</p>
       <ol><li>输入关键词，一次最多 20 个。第一次先填 1 个容易理解的词，例如“摄影教程”。</li><li>选择可用账号，将每词作品数设为较小值，例如 5；不需要评论或媒体时关闭对应选项。</li><li>如需要评论，设置每作品评论数，并明确是否包含二级评论。数量代表上限，不保证达到该数量。</li><li>提交后查看任务进度和错误信息。等待本次采集结束，再检查结果和 Excel 导出。</li><li>需要继续采集时，可对已结束任务编辑配置并保留结果去重续跑，避免重复新建相同任务。</li></ol>
       <p><strong>完成标志：</strong>任务结束，有结果可查看或导出；数量少于上限不一定是故障，结果受平台排序、登录状态和当前可见内容影响。</p>
       <h3>如何选择采集选项</h3>
@@ -157,13 +159,15 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
       <p>当前批量来源只支持关键词视频搜索，可附带评论、二级回复与媒体下载。“设置 → 采集与运行 → TikTok 关键词获取方式”对应 <code>engine.tiktok_read_mode</code>：</p>
       <ul><li><code>native</code>（默认）：使用所选账号的 Cookie、UA 和代理进行离线签名后的网络请求，关键词、评论和二级回复不打开浏览器；失败直接显示原因，不自动切换页面。</li><li><code>auto</code>：优先直连，兼容失败时可回退到可见浏览器。</li><li><code>browser</code>：使用账号浏览器页面读取。</li></ul>
       <p>“离线签名”只是签名计算在本地完成，采集仍需要联网和有效登录态。用户搜索、主页作品读取、登录和写操作另有浏览器流程，不受“不打开浏览器”的关键词模式承诺覆盖。</p>
+      <h3>视频号采集来源</h3>
+      <ul><li><strong>关键词搜索 / 创作者主页：</strong>通过<a href="#channels-wechat">本机微信通道</a>读取，“使用账号”显示为“使用本机微信通道（无需网页账号）”。创作者来源可填 <code>v2_...@finder</code>、<code>sph</code> 标识、主页链接，或单条视频的 <code>weixin.qq.com/sph/...</code> 链接（自动反查作者）。未连接微信通道时，任务会提示先去连接。</li><li><strong>本账号作品：</strong>选择已登录创作者助手的视频号账号，读取自己的视频与图文管理页。</li><li>评论可读取主评论和二级回复；勾选下载媒体时，加密视频会在本地解密，并在保存前校验文件完整，校验不通过不会保存。</li></ul>
       <div class="note">这不是定时监控。小红书需要有效的主站登录态；选择“最新发布”后会按发布时间处理候选。“页面可见但详情媒体未读取到”可能是访问参数过期或页面结构变化，不等同于账号失效。</div>
     </section>
 
     <section id="comments">
       <h2>评论与弹幕监控</h2>
       <h3>评论监控</h3><p class="path">入口：评论监控 → 新建评论监控</p>
-      <p>适用于抖音、小红书、快手、TikTok。视频号通过本账号管理或本账号作品采集查看自己的评论。TikTok 建议粘贴包含作者 <code>@username</code> 的完整作品链接，或使用创作者主页监控近期作品；任务必须绑定有效的登录账号。</p>
+      <p>适用于抖音、小红书、快手、TikTok、视频号。视频号单条作品可粘贴 <code>weixin.qq.com/sph/...</code> 分享链接或作品 objectId，账号近期作品可填 <code>v2_...@finder</code> 或主页链接；需要先连接<a href="#channels-wechat">本机微信通道</a>，不绑定网页账号，可读取主评论和二级回复。TikTok 建议粘贴包含作者 <code>@username</code> 的完整作品链接，或使用创作者主页监控近期作品；任务必须绑定有效的登录账号。</p>
       <ol><li>选择单条作品或账号近期作品的监控方式，填写相应链接或目标。</li><li>选择已登录账号，按需设置检查周期与采集选项；第一次减少目标数量，其他参数先保留默认。</li><li>保存后查看“监控目标”的状态，执行后到“评论记录”查看结果。</li><li>看不到数据时检查目标是否有可见评论、登录是否有效，以及筛选条件是否排除了结果。</li></ol>
       <p>评论监控是读取和保存评论，<strong>不会因为你创建了监控就自动发出回复</strong>。回复规则见<a href="#autocomment">自动评论与审核</a>。</p>
       <h3>弹幕监控（仅抖音短视频）</h3><p class="path">入口：切换到抖音 → 弹幕监控 → 新建弹幕监控</p>
@@ -175,7 +179,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
     <section id="download">
       <h2>链接下载：保存已知内容</h2><p class="path">入口：链接下载</p>
       <ol><li>从对应平台复制完整分享文案，不必手动删掉文案中的文字。</li><li>粘贴到输入框；按需选择账号、画质和下载选项，再提交。</li><li>查看下载历史或错误提示，成功后检查实际保存路径。</li></ol>
-      <p>抖音支持画质选择，小红书支持图集与视频，快手支持内容下载；TikTok 也可随关键词采集或作品监控下载视频。链接下载对 TikTok 等站点使用通用提取器，成功与否受链接可访问性和提取器兼容性影响。视频号不走通用分享链接下载路线；本账号采集若遇加密媒体，会保留元数据并跳过直接下载。</p>
+      <p>抖音支持画质选择，小红书支持图集与视频，快手支持内容下载；TikTok 也可随关键词采集或作品监控下载视频。链接下载对 TikTok 等站点使用通用提取器，成功与否受链接可访问性和提取器兼容性影响。</p>
+      <p><strong>视频号：</strong>粘贴 <code>weixin.qq.com/sph/...</code> 分享链接或作品链接。未连接<a href="#channels-wechat">本机微信通道</a>时，只能通过公开预览读取标题、作者和封面，不能下载视频。连接后会取得视频地址并在本地解密，保存前校验文件可以正常播放，校验失败不会保存。</p>
       <p>下载有断点续传和失败重试机制，但链接失效或登录失效仍需要先修复原因。高画质取决于平台实际提供的资源；“仅音频”、格式处理或音画合并出现问题时，先更新依赖，必要时检查 ffmpeg。</p>
       <h3 id="cli-download">分享链接命令行下载</h3>
       <p>在仓库根目录、已激活的虚拟环境中执行。只解析文案中的地址，不访问网络：</p>
@@ -206,7 +211,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
       <h3>小红书私信自动回复</h3><p>在私信区域按需配置关键词、排除词、回复模板、冷却时间和消息最大年龄。默认生成待审核草稿，先检查命中对象和文案，再决定是否发送。首次启用只建立消息游标，不会处理全部历史积压。</p>
       <p>后台按带随机间隔的低频节奏检查新版 Web <code>/chat</code> 会话。免审核规则同样受活跃时段、共享写入间隔、小时/每日上限和风险冷却约束；先保持人工审核，确认命中对象和文案符合预期。</p>
       <p>自动回复通过账号自己的可见 Chrome 会话与页面输入框提交。浏览器通道的同步、打开会话和发送复用账号的后台工作标签页，不会每次新建窗口；Chrome 默认最小化，需要查看时点击“打开浏览器收发”。提交结果不确定时先核对会话，不自动重发。</p>
-      <h3>作品健康监控</h3><p>如当前账号页面提供健康监控，可按需开启零播放、违规或下架等提醒，并配置<a href="#notifications">通知渠道</a>。视频号在此管理自己的作品、数据与评论，不用于监控他人账号。</p>
+      <h3>作品健康监控</h3><p>如当前账号页面提供健康监控，可按需开启零播放、违规或下架等提醒，并配置<a href="#notifications">通知渠道</a>。视频号在此管理自己的作品、数据与评论；关注他人作品请用<a href="#monitor">作品监控</a>，需先连接<a href="#channels-wechat">本机微信通道</a>。</p>
       <figure><a href="images/account-hub-dm.png"><img src="images/account-hub-dm.png" alt="我的内容页面中的私信会话工作区" width="1600" loading="lazy"></a><figcaption>发送和账号动作会对平台产生实际影响，先看清账号与会话对象。</figcaption></figure>
     </section>
 
@@ -248,10 +253,10 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
 
     <section id="settings">
       <h2>设置与账号环境</h2><p class="path">入口：设置；账号环境在“平台账号 → 浏览器内核 / 代理池”</p>
-      <dl><dt>外观与体验</dt><dd>切换浅色、深色等显示选项；平台配色与主题分别控制。</dd><dt>下载设置</dt><dd>调整保存目录与默认下载选项。改动后用一条内容确认实际落盘位置。</dd><dt>AI 文案</dt><dd>按页面字段配置自己的服务地址、模型和密钥，在实际生成文案时核对效果。服务可能产生第三方费用，发送前检查生成内容；不用 AI 时可跳过。</dd><dt>采集与运行</dt><dd>调整浏览器、调度等运行参数。新手先保留默认，修改前记录原值，一次只调整一项。</dd></dl>
+      <dl><dt>外观与体验</dt><dd>切换浅色、深色等显示选项；平台配色与主题分别控制。</dd><dt>下载设置</dt><dd>调整保存目录与默认下载选项。改动后用一条内容确认实际落盘位置。</dd><dt>AI 文案</dt><dd>按页面字段配置自己的服务地址、模型和密钥，在实际生成文案时核对效果。服务可能产生第三方费用，发送前检查生成内容；不用 AI 时可跳过。</dd><dt>采集与运行</dt><dd>调整浏览器、调度等运行参数。新手先保留默认，修改前记录原值，一次只调整一项。</dd><dt>视频号微信通道</dt><dd>连接本机已登录的桌面微信，开启视频号搜索、他人主页、评论与视频下载。只用本账号功能时可以不配置，步骤见<a href="#channels-wechat">视频号微信通道</a>。</dd></dl>
       <h3 id="browser-environment">账号隔离与代理</h3><p>每个账号有独立浏览器 Profile，Cookie、缓存和本地存储不共享，和日常个人 Chrome 配置分开。Profile 有跨进程占用保护，不要让其他 Chrome 进程同时打开项目账号的 Profile，也不要随意删除它。</p>
       <p>代理是可选项，不是安装前置条件。确有需要时，在“代理池”填写自己的代理并测试，再为账号关联；保持稳定出口。已配置的代理连接失败时会报错，不会静默改用直连。</p>
-      <p>支持 HTTP、HTTPS、SOCKS5 及账号密码认证。“测试代理”记录出口 IP、国家、ASN 与时区；需验证出口基线的写任务，在出口变化或基线过期后会等待重新验证。同出口多个账号集中触发风险时，可进入出口组熔断。不要把代理密码或账号 Profile 分享到公开反馈中。</p>
+      <p>支持 HTTP、HTTPS、SOCKS5 及账号密码认证。除标准代理 URL 外，添加和批量导入还支持服务商常见的六种导出格式：<code>主机:端口:用户名:密码</code>、<code>主机,端口,用户名,密码</code>、<code>主机:端口@用户名:密码</code>、<code>用户名:密码:主机:端口</code>、<code>用户名:密码@主机:端口</code>、<code>主机:端口##用户名##密码</code>。默认自动判别，无法区分时需手动选择格式；只填 <code>主机:端口</code> 时按 HTTP 处理。“测试代理”记录出口 IP、国家、ASN 与时区；需验证出口基线的写任务，在出口变化或基线过期后会等待重新验证。同出口多个账号集中触发风险时，可进入出口组熔断。不要把代理密码或账号 Profile 分享到公开反馈中。</p>
       <h3>浏览器内核</h3><p>小红书优先系统 Chrome/CDP；自动模式在未安装 Chrome 时可回退到可见 Patchright Chromium，实际后端可在账号列表确认。Fingerprint Chromium 是其他平台的进阶可选项，小红书不使用该组合。普通上手无需安装额外指纹浏览器。</p>
       <details><summary>小红书：登录环境与读写通道</summary>
       <ul><li><code>xhs_browser_mode: auto</code> 优先启动系统稳定版 Chrome/CDP，并长期复用账号专用 Profile；<code>cdp</code> 为严格模式，缺少 Chrome 或 Profile 冲突时直接报错；<code>patchright</code> 显式使用 Patchright Chromium。</li><li>浏览器内核与读取方式是不同设置。<code>xhs_read_mode: api</code> 是当前默认读取方式，源码运行需准备 Node.js 依赖；<code>browser</code> 复用账号浏览器页面。</li><li>页面模式加载图片、字体和媒体，复用浏览器进程与 Profile；可见操作串行执行，搜索、滚动、输入和详情读取采用有界间隔。单轮上限仍按任务配置执行。</li><li>发布和评论默认使用 <code>browser</code>。提交只点击一次；连接中断或缺少成功证据时标记“结果待确认”，先去平台核对。</li><li>设备验证出现时保留当前可见窗口，自动任务暂停，不自动刷新、跳转或重复尝试；按平台提示完成验证后再检查任务。</li></ul>
@@ -267,6 +272,19 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
   fingerprint_chromium_platform: auto</code></pre>
       <p>路径按本机安装位置填写；<code>browser_backend: fingerprint_chromium</code> 可作为未单独指定环境的非小红书账号默认值。内核使用账号稳定种子管理浏览器特征，不叠加旧版 JavaScript 指纹脚本，默认使用有头窗口。“已提示”只表示检测页已打开，不代表平台验证通过；BrowserScan 会看到该环境的出口 IP 和浏览器特征。</p>
       </details>
+      <h3 id="channels-wechat">视频号微信通道</h3>
+      <p class="path">入口：设置 → 视频号微信通道；视频号采集表单中的“配置本地微信通道”也会跳到这里</p>
+      <p>视频号的关键词搜索、他人创作者主页、作品与评论监控、全量评论和加密视频下载，都通过本机已登录的桌面微信读取，不需要创作者助手账号。本账号作品同步、数据和发布仍使用创作者助手登录。只用本账号功能时可以不配置。</p>
+      <ol><li>在本机打开并登录桌面版微信。</li><li>第一次使用时点击“① 安装根证书”，在系统弹窗中点击“是”。这是本机生成的自签名证书，只用来为 <code>channels.weixin.qq.com</code> 签发本机证书。</li><li>点击“② 一键开启并应用”。默认勾选“自动托管 Windows 系统代理”：启动时备份原有代理设置并指向本地代理（默认 <code>127.0.0.1:2023</code>），停止或退出软件时自动恢复。</li><li>在桌面微信里打开一次视频号页面，等面板列出已连接的视频号页面。</li><li>点击“③ 检测微信连通”，提示握手成功后再创建采集、监控或下载任务。</li></ol>
+      <div class="success"><strong>完成标志：</strong>状态显示“已连通微信视频号”，能力列表中的关键词搜索、任意创作者主页、全量二级评论和视频解密都显示为可用。</div>
+      <ul><li><strong>代理范围：</strong>只处理 <code>channels.weixin.qq.com</code>，其他网站的 HTTPS 流量原样加密转发。不用时点击“停止”；服务异常退出后，下次启动会自动恢复备份的系统代理。</li><li><strong>系统代理托管失败：</strong>被其他代理软件或权限限制拦截时，可取消勾选自动托管，再手动把 <code>channels.weixin.qq.com</code> 的流量指向本地代理端口。</li><li><strong>证书：</strong>证书和私钥保存在数据目录的 <code>channels_proxy_ca.cer</code> 和 <code>channels_proxy_ca.key</code>，私钥不要分享或上传。不再使用时点击“卸载证书”。自动安装证书和托管系统代理目前只支持 Windows；其他系统可点击“下载证书”手动信任，并自行设置代理。</li><li><strong>读取策略：</strong>与“设置 → 采集与运行 → 视频号读取方式”联动，对应 <code>engine.channels_read_mode</code>。<code>auto</code>（默认）优先使用本机微信，未连接时本账号内容回退创作者助手；<code>protocol</code> 只使用本机微信；<code>browser</code> 只使用创作者助手页面，此时搜索、他人主页和全量评论不可用。</li><li><strong>进阶连接方式：</strong>“高级连接方式与调试选项”中还可改用本机回环 CDP 端点（例如 <code>http://127.0.0.1:9222</code>）、WMPF 控制口令文件，或由 CreatorHub 托管 WMPF 本地桥接。普通用户使用一键模式即可。</li></ul>
+      <p>未连接时，视频号分享链接只能读取标题、作者和封面；关键词、他人主页和评论任务会提示先连接本机微信。对应配置项如下，页面保存的设置优先：</p>
+      <pre><code>engine:
+  channels_read_mode: auto        # auto / protocol / browser
+  channels_proxy_enabled: false   # 内置本机代理桥接
+  channels_proxy_port: 2023       # 只监听 127.0.0.1
+  channels_cdp_endpoint: ""       # 可选：本机回环 CDP 端点
+  channels_cdp_endpoint_file: ""  # 可选：WMPF 控制口令文件</code></pre>
       <h3>配置文件与数据目录</h3>
       <p>首次启动从示例生成 <code>config.yaml</code>。常用设置可在面板修改，页面保存项优先且重启后保留；手动编辑 YAML 时，先确认该选项是否已有页面覆盖值。</p>
       <pre><code>engine:
@@ -358,6 +376,8 @@ proxies: []</code></pre>
       <details><summary>小红书出现设备安全验证</summary><p>使用本机稳定版 Chrome，保持原账号 Profile 和网络稳定，在当前浏览器窗口完成平台验证。自动任务会暂停，不要反复刷新、重新建号或删除登录目录。</p></details>
       <details><summary>小红书可以看内容，但发布失败</summary><p>主站扫码登录与创作者登录相互独立。先完成创作者登录，再检查素材要求和发布记录。若提示“结果待确认”，先在平台核对，不要立即重发。</p></details>
       <details><summary>链接解析失败 / 作品或评论为空</summary><p>确认平台选对、账号有效、作品在浏览器里可见，重新复制完整分享文案。小红书保留有效的 <code>xsec_token</code>。检查任务执行时间、历史回填、筛选条件及平台本身是否有可见结果。</p></details>
+      <details><summary>视频号提示“需要连接本机已登录微信”</summary><p>关键词搜索、他人主页、评论监控和视频下载都依赖<a href="#channels-wechat">本机微信通道</a>。到“设置 → 视频号微信通道”确认根证书已安装、代理已启动，并在桌面微信里打开过一次视频号页面；状态显示“等待模块加载”时稍等再点“检测微信连通”。读取策略设为 <code>browser</code> 时不会使用本机微信。</p></details>
+      <details><summary>开启视频号代理后网页打不开 / 系统代理没恢复</summary><p>先在“视频号微信通道”点击“停止”，会恢复启动前备份的系统代理。软件异常退出时，下次启动会自动恢复。仍不正常时，到 Windows“设置 → 网络和 Internet → 代理”检查并关闭指向 <code>127.0.0.1</code> 的手动代理。</p></details>
       <details><summary>下载成功但找不到文件 / 没声音 / 画质不够</summary><p>查看下载记录与当前保存目录，默认文件在 <code>data/media/</code> 下。媒体处理异常先更新依赖；项目可使用 Python 依赖附带的 ffmpeg，也可使用加入 PATH 的系统 ffmpeg。画质还受源资源限制。</p></details>
       <details><summary>任务一直等待，重启后也没有立即执行</summary><p>查看“任务队列”和“风控中心”的账号状态，确认审核、活跃时段、限额、共享间隔、代理和风险冷却。等待不是卡死的充分证据，重复提交可能制造重复任务。</p></details>
       <details><summary>Windows 提示浏览器子进程错误</summary><p>先使用项目启动脚本和单 worker，不要额外添加 <code>--workers</code>。更新依赖并运行 <code>.\start.cmd check</code>，仍失败时保留完整错误日志。</p></details>

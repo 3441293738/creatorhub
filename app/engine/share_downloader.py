@@ -62,7 +62,7 @@ _PLATFORM_DOMAINS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("kuaishou", ("kuaishou.com", "kwai.com", "gifshow.com")),
     ("bilibili", ("bilibili.com", "b23.tv")),
     ("weibo", ("weibo.com", "weibo.cn")),
-    ("wechat", ("weixin.qq.com", "qq.com")),
+    ("wechat", ("weixin.qq.com", "qq.com", "yuanbao.tencent.com")),
     ("youtube", ("youtube.com", "youtu.be")),
     ("tiktok", ("tiktok.com",)),
     ("instagram", ("instagram.com",)),
@@ -355,7 +355,8 @@ def clean_platform_share_target(
     """
     normalized = normalize_share_text(value)
     links = extract_share_urls(normalized, limit=max(1, min(int(limit), 20)))
-    selected = next((item for item in links if item.platform == platform), None)
+    match_platform = "wechat" if platform == "shipinhao" else platform
+    selected = next((item for item in links if item.platform == match_platform), None)
     return (selected.url if selected else normalized.strip()), links
 
 

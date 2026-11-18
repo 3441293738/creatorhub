@@ -1,28 +1,217 @@
-"""微信视频号(WeChat Channels / finder)平台包。
+"""微信视频号 (WeChat Channels / Finder) 平台能力包。
 
-⚠️ 与抖音/快手的关键差异(务必先读):
-  1. 视频号的数据只能从**创作者助手** channels.weixin.qq.com 的
-     `cgi-bin/mmfinderassistant-bin/*` 接口拿到,且**只有本账号自己的数据**——
-     平台没有对外的公开 web 作品接口,所以视频号不做「监控别人作品」,只做
-     「本账号作品 / 数据 / 评论 / 发布」。
-  2. 视频号视频走加密 CDN(encfilekey + 需 decode),**基本无法直接下载搬运**,
-     故 parse_channels_feed 允许返回「无可下载媒体」的 Aweme(只记元数据+统计)。
-  3. 助手接口是 POST 带 body、依赖 `_finder_auth` 登录态,采用「登录态浏览器打开
-     助手页 → 拦截其自身发出的响应」路线(免签名),与 ks 一致。
-
-⚠️ 接口路径 / 响应字段 / 发布页选择器都需用**真实视频号账号**跑一遍、对照
-   channels_fetcher 打印的 api_seen 诊断日志校准(见各常量注释)。
+支持双通道协同架构:
+  1. **微信原生 Finder 协议通道** (`ChannelsProtocolClient` + `comment_protocol` + `decrypt`):
+     - 通过本地回环 CDP / WMPF 单会话桥复用已登录桌面微信自身的 Finder 页面服务实例:
+       * 单作品详情解析(`finderGetCommentDetail`: 获取 CDN `url + urlToken`、`decodeKey`、`objectNonceId`)
+       * 创作者主页作品分页(`finderUserPage`: 支持任意 `v2_...@finder` 创作者作品采集与监控)
+       * 关键词作品搜索(`finderSearch`: 支持关键词发现作品与创作者)
+       * 全量可访问评论采集(`finderGetCommentList` / `pc_findergetcommentlist` cmdid 10753:
+         主评论 + 各根评论独立二级回复线程分页、去重、冲突与完整性核验)
+     - 离线 `WxIsaac64` 128KiB 逆序密钥流 XOR 视频解密 + ISO BMFF/MP4 Box 结构完整性核验;
+     - 公开分享短链(`weixin.qq.com/sph/...`)与预览接口(`finder-preview/api/feed/get_feed_info`)解析。
+  2. **视频号创作者助手浏览器通道** (`channels.weixin.qq.com/platform` + `channels_fetcher` + `publish`):
+     - 本账号资料体检、视频与图文(`finderNewLifePostList`)作品同步、评论管理读取与作品发布。
 """
-from .extract import (parse_channels_feed, parse_channels_comment,
-                      flatten_channels_comments, parse_self_user,
-                      safe_title, Aweme, MediaItem)
-from .resolve import (resolve_channels_user_id, resolve_channels_photo_id,
-                      looks_like_photo)
+from .client import (
+    ChannelsProtocolClient,
+    ChannelsProtocolTransportError,
+    choose_finder_target,
+    is_finder_page_target,
+    sanitize_bridge_error,
+    validate_loopback_url,
+)
+from .comment_protocol import (
+    AttributionError,
+    CommentPager,
+    Exchange,
+    JsonlBridgeTransport,
+    ParsedPage,
+    ProtocolError,
+    ProtocolSchema,
+    Request,
+    Target,
+    UnknownProtocol,
+    build_native_bridge_params,
+    build_request,
+    collect_comments_async,
+    collect_main_and_replies,
+    hump_to_underline,
+    parse_exchange,
+    parse_native_bridge_response,
+    protocol_record_to_comment_dict,
+    public_value,
+    safe_response,
+    server_id,
+    to_camel_keys,
+    to_snake_keys,
+    underline_to_hump,
+)
+from .decrypt import (
+    KEYSTREAM_SIZE,
+    ChannelsDecryptError,
+    decrypt_channels_prefix,
+    decrypt_channels_video_bytes,
+    decrypt_channels_video_file,
+    parse_mp4_boxes,
+    validate_decode_key,
+    validate_mp4_structure,
+    wx_isaac64_keystream,
+)
+from .extract import (
+    Aweme,
+    MediaItem,
+    flatten_channels_comments,
+    parse_channels_comment,
+    parse_channels_feed,
+    parse_self_user,
+    safe_title,
+)
 from .publish import publish_channels
+from .resolve import (
+    ChannelsCreatorResolution,
+    ChannelsFeedRef,
+    ChannelsPreviewError,
+    build_finder_feed_url,
+    decode_base64_to_uint64,
+    encode_uint64_base64,
+    fetch_finder_preview_info,
+    is_channels_share_url,
+    looks_like_photo,
+    normalize_finder_username,
+    parse_channels_url,
+    resolve_channels_creator,
+    resolve_channels_photo_id,
+    resolve_channels_user_id,
+)
+from .share import inspect_or_download_channels_share
+from .bridge_manager import (
+    COMMON_CDP_PORTS,
+    ChannelsBridgeManager,
+    discover_local_cdp_endpoints,
+)
+from .wmpf_cdp import (
+    CDP_CATEGORIES,
+    CDP_REQUEST,
+    CDP_RESULT,
+    CdpMessage,
+    CodecError,
+    Envelope,
+    LoopbackBridge,
+    decode_cdp,
+    decode_cdp_body,
+    decode_envelope,
+    discover_wechat_processes,
+    encode_cdp,
+    encode_cdp_body,
+    encode_envelope,
+    inspect_endpoint_file,
+    is_pid_running,
+    owner_pid,
+    unwrap_cdp_result,
+)
+from app.platforms.channels.local_ca import ALLOWED_INTERCEPT_HOSTS, LocalCaManager
+from app.platforms.channels.proxy_bridge import (
+    ChannelsProxyManager,
+    get_active_proxy_manager,
+    set_active_proxy_manager,
+)
+from app.platforms.channels.system_proxy import (
+    enable_system_proxy,
+    get_system_proxy_state,
+    recover_stale_system_proxy,
+    restore_system_proxy,
+)
 
 __all__ = [
-    "parse_channels_feed", "parse_channels_comment", "flatten_channels_comments",
-    "parse_self_user", "safe_title", "Aweme", "MediaItem",
-    "resolve_channels_user_id", "resolve_channels_photo_id", "looks_like_photo",
+    "Aweme",
+    "MediaItem",
+    "safe_title",
+    "parse_channels_feed",
+    "parse_channels_comment",
+    "flatten_channels_comments",
+    "parse_self_user",
     "publish_channels",
+    "ChannelsFeedRef",
+    "ChannelsPreviewError",
+    "encode_uint64_base64",
+    "decode_base64_to_uint64",
+    "build_finder_feed_url",
+    "normalize_finder_username",
+    "is_channels_share_url",
+    "parse_channels_url",
+    "fetch_finder_preview_info",
+    "resolve_channels_user_id",
+    "resolve_channels_photo_id",
+    "looks_like_photo",
+    "KEYSTREAM_SIZE",
+    "ChannelsDecryptError",
+    "validate_decode_key",
+    "wx_isaac64_keystream",
+    "decrypt_channels_prefix",
+    "decrypt_channels_video_bytes",
+    "decrypt_channels_video_file",
+    "parse_mp4_boxes",
+    "validate_mp4_structure",
+    "ProtocolError",
+    "UnknownProtocol",
+    "AttributionError",
+    "ProtocolSchema",
+    "Target",
+    "Request",
+    "Exchange",
+    "ParsedPage",
+    "CommentPager",
+    "JsonlBridgeTransport",
+    "server_id",
+    "public_value",
+    "safe_response",
+    "hump_to_underline",
+    "underline_to_hump",
+    "to_snake_keys",
+    "to_camel_keys",
+    "build_native_bridge_params",
+    "parse_native_bridge_response",
+    "build_request",
+    "parse_exchange",
+    "collect_main_and_replies",
+    "collect_comments_async",
+    "protocol_record_to_comment_dict",
+    "ChannelsProtocolClient",
+    "ChannelsProtocolTransportError",
+    "sanitize_bridge_error",
+    "validate_loopback_url",
+    "is_finder_page_target",
+    "choose_finder_target",
+    "inspect_or_download_channels_share",
+    "CDP_REQUEST",
+    "CDP_RESULT",
+    "CDP_CATEGORIES",
+    "CodecError",
+    "Envelope",
+    "CdpMessage",
+    "LoopbackBridge",
+    "encode_envelope",
+    "decode_envelope",
+    "encode_cdp_body",
+    "decode_cdp_body",
+    "encode_cdp",
+    "decode_cdp",
+    "unwrap_cdp_result",
+    "owner_pid",
+    "is_pid_running",
+    "discover_wechat_processes",
+    "inspect_endpoint_file",
+    "COMMON_CDP_PORTS",
+    "ChannelsBridgeManager",
+    "discover_local_cdp_endpoints",
+    "ALLOWED_INTERCEPT_HOSTS",
+    "LocalCaManager",
+    "ChannelsProxyManager",
+    "get_active_proxy_manager",
+    "set_active_proxy_manager",
+    "enable_system_proxy",
+    "get_system_proxy_state",
+    "recover_stale_system_proxy",
+    "restore_system_proxy",
 ]

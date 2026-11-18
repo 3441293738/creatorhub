@@ -49,6 +49,7 @@ from ..platforms.kuaishou import (
 from ..platforms.tiktok import parse_tiktok_aweme, parse_tiktok_comment
 from ..platforms.tiktok.client import TikTokNativeClient
 from ..platforms.channels import (
+    ChannelsProtocolClient,
     flatten_channels_comments,
     parse_channels_comment,
     parse_channels_feed,
@@ -75,11 +76,19 @@ def _loads_keywords(raw: str) -> list[str]:
 
 
 def _media_json(aweme: Aweme) -> str:
-    return json.dumps([
-        {"url": media.url, "kind": media.kind, "ext": media.ext,
-         "index": media.index}
-        for media in aweme.medias
-    ], ensure_ascii=False)
+    rows = []
+    for media in aweme.medias:
+        entry = {
+            "url": media.url,
+            "kind": media.kind,
+            "ext": media.ext,
+            "index": media.index,
+        }
+        decode_key = str(getattr(media, "decode_key", "") or "")
+        if decode_key:
+            entry["decode_key"] = decode_key
+        rows.append(entry)
+    return json.dumps(rows, ensure_ascii=False)
 
 
 def _tiktok_download_session(account, identity, default_user_agent: str) \
@@ -130,9 +139,16 @@ def _author_id(raw: dict, platform: str) -> str:
         return str(author.get("id") or author.get("userId")
                    or author.get("user_id") or author.get("eid") or "")
     if platform == "shipinhao":
-        author = raw.get("author") or raw.get("finderUser") or {}
-        return str(author.get("username") or author.get("finderUsername")
-                   or raw.get("username") or raw.get("finderUsername") or "")
+        contact = raw.get("contact") if isinstance(raw.get("contact"), dict) else {}
+        author = raw.get("author") or raw.get("finderUser") or contact or {}
+        return str(
+            author.get("username")
+            or author.get("finderUsername")
+            or author.get("id")
+            or raw.get("username")
+            or raw.get("finderUsername")
+            or ""
+        )
     if platform == "tiktok":
         item = raw.get("item") or raw.get("aweme_info") or raw.get("itemStruct") or raw
         author = item.get("author") or {}
@@ -199,6 +215,61 @@ def _sort_ks_search_items(items: list[dict], search_sort: str) -> list[dict]:
     return sorted(items, key=sort_value, reverse=True)
 
 
+def _channels_item_metric(item: dict, field: str) -> int:
+    obj = item.get("object") if isinstance(item.get("object"), dict) else item
+    direct_counts = obj.get("countInfo") if isinstance(obj.get("countInfo"), dict) else {}
+    mono_counts = (
+        (obj.get("monotonicData") or {}).get("countInfo")
+        if isinstance(obj.get("monotonicData"), dict)
+        else {}
+    )
+    ext_counts = (
+        ((obj.get("objectExtend") or {}).get("monotonicData") or {})
+        .get("countInfo") or {}
+    )
+    candidates = [
+        obj.get(field),
+        direct_counts.get(field) if isinstance(direct_counts, dict) else 0,
+        mono_counts.get(field) if isinstance(mono_counts, dict) else 0,
+        ext_counts.get(field) if isinstance(ext_counts, dict) else 0,
+    ]
+    if field == "likeCount":
+        candidates.extend([obj.get("favCount"), obj.get("friendLikeCount")])
+    for val in candidates:
+        num = _xhs_count(val)
+        if num > 0:
+            return num
+    return 0
+
+
+def _sort_channels_search_items(
+    items: list[dict],
+    search_sort: str,
+    *,
+    prefer_engaged: bool = False,
+) -> list[dict]:
+    """视频号搜索结果按响应时间戳或互动量保持本地确定性排序。"""
+    if search_sort in {"latest", "most_liked"}:
+        def sort_value(item: dict) -> int:
+            obj = item.get("object") if isinstance(item.get("object"), dict) else item
+            if search_sort == "latest":
+                return _xhs_count(obj.get("createtime") or obj.get("createTime") or 0)
+            return _channels_item_metric(obj, "likeCount")
+
+        return sorted(items, key=sort_value, reverse=True)
+
+    if prefer_engaged:
+        def engaged_tier(item: dict) -> tuple[int, int]:
+            return (
+                1 if _channels_item_metric(item, "commentCount") > 0 else 0,
+                1 if _channels_item_metric(item, "likeCount") > 0 else 0,
+            )
+
+        return sorted(items, key=engaged_tier, reverse=True)
+
+    return list(items)
+
+
 def _collection_content_matches(aweme: Aweme, job: KeywordCollectionJob,
                                 *, now: int | None = None) -> bool:
     if job.content_type != "all" and aweme.media_type != job.content_type:
@@ -241,6 +312,15 @@ class KeywordCollector:
             self.cfg.engine.xhs_read_mode == "browser"
             and callable(getattr(self.browser, "visible_page", None))
         )
+
+    def _channels_read_mode(self) -> str:
+        mode = str(getattr(self.cfg.engine, "channels_read_mode", "auto") or "auto").lower()
+        return mode if mode in {"auto", "protocol", "browser"} else "auto"
+
+    def _channels_protocol_client(self) -> ChannelsProtocolClient | None:
+        if self._channels_read_mode() not in {"auto", "protocol"}:
+            return None
+        return ChannelsProtocolClient.from_config(self.cfg)
 
     def _direct_request_ua(self, identity) -> str:
         resolver = getattr(self.browser, "direct_request_user_agent", None)
@@ -489,7 +569,34 @@ class KeywordCollector:
         return values[:job.max_contents_per_keyword], error
 
     async def _discover_channels_account(
-            self, identity, job: KeywordCollectionJob) -> tuple[list[dict], str]:
+            self, identity, job: KeywordCollectionJob, *,
+            account=None,
+            proto_client: ChannelsProtocolClient | None = None) -> tuple[list[dict], str]:
+        mode = self._channels_read_mode()
+        sec_uid = str(getattr(account, "sec_uid", "") or "").strip()
+        has_finder_username = bool(sec_uid and (sec_uid.startswith("v2_") or "@finder" in sec_uid))
+
+        if mode == "protocol":
+            if proto_client is None:
+                return [], "视频号原生协议采集尚未连接本机微信通道（请在「设置 → 视频号微信通道」开启一键本地代理或配置 CDP）"
+            if not has_finder_username:
+                return [], "当前视频号账号缺少 finderUsername(v2_...@finder)，无法走原生协议读取作品"
+            values, _author, err = await proto_client.fetch_user_feeds(
+                sec_uid,
+                max_results=job.max_contents_per_keyword,
+                max_pages=job.max_pages_per_keyword,
+            )
+            return values[:job.max_contents_per_keyword], err
+
+        if mode == "auto" and proto_client is not None and has_finder_username:
+            values, _author, proto_err = await proto_client.fetch_user_feeds(
+                sec_uid,
+                max_results=job.max_contents_per_keyword,
+                max_pages=job.max_pages_per_keyword,
+            )
+            if values or not proto_err:
+                return values[:job.max_contents_per_keyword], proto_err
+
         values, _author, error = await fetch_channels_works(
             self.browser,
             identity,
@@ -497,7 +604,74 @@ class KeywordCollector:
             max_scrolls=max(1, min(40, int(job.max_pages_per_keyword or 1))),
             block_media=self.cfg.engine.block_media_resources,
         )
+        if values and job.download_media and proto_client is not None:
+            enriched: list[dict] = []
+            for item in values:
+                brief = parse_channels_feed(item, job.video_quality or "highest")
+                if brief is not None and not brief.medias and brief.aweme_id:
+                    detail_obj, _ = await proto_client.fetch_feed_detail(
+                        object_id=brief.aweme_id
+                    )
+                    if detail_obj:
+                        enriched.append(detail_obj)
+                        continue
+                enriched.append(item)
+            values = enriched
         return values, error
+
+    async def _discover_channels_creator(
+            self, job: KeywordCollectionJob, *,
+            proto_client: ChannelsProtocolClient | None = None) -> tuple[list[dict], str]:
+        if self._channels_read_mode() == "browser" or proto_client is None:
+            return (
+                [],
+                "视频号创作者主页采集需要连接本机已登录微信（请在「设置 → 视频号微信通道」开启一键本地代理并在微信内打开一次视频号页面）",
+            )
+        values, _author, err = await proto_client.fetch_user_feeds(
+            job.source_ref,
+            max_results=job.max_contents_per_keyword,
+            max_pages=job.max_pages_per_keyword,
+        )
+        return values[:job.max_contents_per_keyword], err
+
+    async def _discover_channels_keyword(
+            self, keyword: str, job: KeywordCollectionJob, *,
+            proto_client: ChannelsProtocolClient | None = None) -> tuple[list[dict], str]:
+        if self._channels_read_mode() == "browser" or proto_client is None:
+            return (
+                [],
+                "视频号关键词搜索需要连接本机已登录微信（请在「设置 → 视频号微信通道」开启一键本地代理并在微信内打开一次视频号页面）",
+            )
+        pages = max(1, min(40, int(job.max_pages_per_keyword or 1)))
+        needs_local_filter = bool(
+            job.publish_time != "all"
+            or job.min_likes
+            or job.min_comments
+            or job.search_sort in {"latest", "most_liked"}
+        )
+        candidate_limit = (
+            max(job.max_contents_per_keyword, min(45, pages * 15))
+            if needs_local_filter
+            else (
+                max(job.max_contents_per_keyword, min(15, job.max_contents_per_keyword * 3))
+                if job.max_comments_per_content > 0
+                else job.max_contents_per_keyword
+            )
+        )
+        prefer_engaged = bool(
+            job.max_comments_per_content > 0 or job.search_sort == "most_liked"
+        )
+        values, err = await proto_client.search_feeds(
+            keyword,
+            max_results=candidate_limit,
+            max_pages=pages,
+            prefer_engaged=prefer_engaged,
+        )
+        return _sort_channels_search_items(
+            values,
+            job.search_sort,
+            prefer_engaged=(job.max_comments_per_content > 0),
+        ), err
 
     async def _discover_xhs(self, client: XhsApiClient, keyword: str,
                             job: KeywordCollectionJob) -> tuple[list[dict], str]:
@@ -872,10 +1046,79 @@ class KeywordCollector:
             parsed = [item for item in parsed if not item.get("reply_to")]
         return self._dedupe_comments(parsed, limit), error
 
+    @staticmethod
+    def _extract_channels_audit_counts(audit: Any) -> dict:
+        if not isinstance(audit, dict):
+            return {}
+        pages = (audit.get("main_pagination") or {}).get("pages") or []
+        if isinstance(pages, list) and pages and isinstance(pages[0], dict):
+            ci = pages[0].get("count_info")
+            if isinstance(ci, dict):
+                return ci
+        return {}
+
+    @staticmethod
+    def _backfill_channels_counts(
+        content: KeywordCollectionContent,
+        *,
+        like_count: int = 0,
+        comment_count: int = 0,
+    ) -> None:
+        new_likes = max(int(content.like_count or 0), max(0, int(like_count or 0)))
+        new_comments = max(int(content.comment_count or 0), max(0, int(comment_count or 0)))
+        if new_likes == content.like_count and new_comments == content.comment_count:
+            return
+        with get_session() as session:
+            row = session.get(KeywordCollectionContent, content.id)
+            if row is not None:
+                row.like_count = max(int(row.like_count or 0), new_likes)
+                row.comment_count = max(int(row.comment_count or 0), new_comments)
+                session.add(row)
+                session.commit()
+        content.like_count = new_likes
+        content.comment_count = new_comments
+
     async def _channels_comments(self, identity, object_id: str, limit: int,
-                                 include_replies: bool) -> tuple[list[dict], str]:
+                                 include_replies: bool, *,
+                                 object_nonce_id: str = "",
+                                 proto_client: ChannelsProtocolClient | None = None,
+                                 source_type: str = "account_works") -> tuple[list[dict], str]:
         if limit <= 0:
             return [], ""
+        mode = self._channels_read_mode()
+        max_proto_pages = max(2, min(50, math.ceil(limit / 15) + 2))
+        counts_cache = self.__dict__.setdefault("_last_channels_counts", {})
+        if mode == "protocol":
+            if proto_client is None:
+                return [], "视频号原生评论采集尚未连接本机微信通道（请在「设置 → 视频号微信通道」开启一键本地代理或配置 CDP）"
+            comments, audit, err = await proto_client.collect_comments(
+                object_id,
+                object_nonce_id,
+                limit=limit,
+                include_replies=include_replies,
+                max_pages=max_proto_pages,
+            )
+            counts_cache[object_id] = self._extract_channels_audit_counts(audit)
+            return self._dedupe_comments(comments, limit), err
+
+        if mode == "auto" and proto_client is not None:
+            comments, audit, proto_err = await proto_client.collect_comments(
+                object_id,
+                object_nonce_id,
+                limit=limit,
+                include_replies=include_replies,
+                max_pages=max_proto_pages,
+            )
+            counts_cache[object_id] = self._extract_channels_audit_counts(audit)
+            if comments or not proto_err or source_type != "account_works":
+                return self._dedupe_comments(comments, limit), proto_err
+
+        if source_type != "account_works":
+            return (
+                [],
+                "非本账号视频号作品评论采集需要连接本机已登录微信（请在「设置 → 视频号微信通道」开启一键本地代理并在微信内打开一次视频号页面）",
+            )
+
         raw, error = await fetch_channels_comments(
             self.browser,
             identity,
@@ -999,8 +1242,12 @@ class KeywordCollector:
         if not keywords:
             raise RuntimeError("采集任务没有可执行来源")
 
-        identity = self.browser.identity_for(account)
-        proxy = account.proxy or ""
+        identity = (
+            self.browser.identity_for(account)
+            if account is not None
+            else self.browser.anon_identity()
+        )
+        proxy = (account.proxy or "") if account is not None else ""
         douyin_client = None
         xhs_client = None
         if job.platform == "douyin":
@@ -1058,8 +1305,14 @@ class KeywordCollector:
                 job_id, job, account, keywords, proxy,
                 identity=identity, context=None)
         if job.platform == "shipinhao":
-            return await self._run_keywords(
-                job_id, job, account, keywords, proxy, identity=identity)
+            channels_client = self._channels_protocol_client()
+            try:
+                return await self._run_keywords(
+                    job_id, job, account, keywords, proxy,
+                    identity=identity, channels_client=channels_client)
+            finally:
+                if channels_client is not None:
+                    await channels_client.close()
         if xhs_client is not None:
             async with xhs_client.session_scope():
                 return await self._run_keywords(
@@ -1073,6 +1326,7 @@ class KeywordCollector:
                             account, keywords: list[str], proxy: str,
                              douyin_client: DouyinClient | None = None,
                              xhs_client: XhsApiClient | None = None,
+                             channels_client: ChannelsProtocolClient | None = None,
                              context=None, identity=None) -> dict:
 
         browser_reads = self._xhs_browser_reads_enabled()
@@ -1092,14 +1346,20 @@ class KeywordCollector:
             elif job.platform == "xhs" and keyword_index:
                 await self._xhs_gap(
                     self.cfg.engine.xhs_keyword_gap_seconds)
-            elif job.platform == "kuaishou" and keyword_index:
+            elif job.platform in {"kuaishou", "shipinhao"} and keyword_index:
                 await asyncio.sleep(0.8 * random.uniform(1.0, 1.35))
             elif job.platform == "tiktok" and keyword_index:
                 await asyncio.sleep(1.0 * random.uniform(1.0, 1.35))
             self._progress(
                 job_id,
                 keyword=keyword,
-                step=("同步本账号作品" if job.platform == "shipinhao" else "搜索作品"),
+                step=(
+                    "同步本账号作品"
+                    if (job.platform == "shipinhao" and job.source_type == "account_works")
+                    else "读取创作者作品"
+                    if (job.platform == "shipinhao" and job.source_type == "creator")
+                    else "搜索作品"
+                ),
                 processed_keyword_count=keyword_index,
                 current_item_index=0,
                 current_item_total=0,
@@ -1123,8 +1383,15 @@ class KeywordCollector:
                 raw_items, search_error = await self._discover_tiktok(
                     account, identity, keyword, job)
             elif job.platform == "shipinhao":
-                raw_items, search_error = await self._discover_channels_account(
-                    identity, job)
+                if job.source_type == "creator":
+                    raw_items, search_error = await self._discover_channels_creator(
+                        job, proto_client=channels_client)
+                elif job.source_type == "keyword":
+                    raw_items, search_error = await self._discover_channels_keyword(
+                        keyword, job, proto_client=channels_client)
+                else:
+                    raw_items, search_error = await self._discover_channels_account(
+                        identity, job, account=account, proto_client=channels_client)
             elif browser_reads:
                 if job.source_type in {"favorite_all", "favorite_board"}:
                     raw_items, search_error = await self._discover_xhs_favorites_browser(
@@ -1147,7 +1414,7 @@ class KeywordCollector:
                         xhs_client, keyword, job)
             if search_error:
                 self._record_error(job_id, f"{keyword}: {search_error}")
-                if "登录态已失效" in search_error:
+                if "登录态已失效" in search_error and account is not None:
                     self._mark_account_invalid(account.id)
                 category, _ = classify_platform_error(search_error)
                 if category in {
@@ -1202,9 +1469,31 @@ class KeywordCollector:
                     token = ""
                 elif job.platform == "shipinhao":
                     aweme = parse_channels_feed(raw, job.video_quality or "highest")
-                    if aweme is not None and not aweme.author_name:
+                    if (aweme is not None and channels_client is not None
+                            and job.download_media and not aweme.medias
+                            and aweme.aweme_id):
+                        detail_obj, _ = await channels_client.fetch_feed_detail(
+                            object_id=aweme.aweme_id,
+                            object_nonce_id=aweme.object_nonce_id,
+                        )
+                        if detail_obj:
+                            detail_aweme = parse_channels_feed(
+                                detail_obj, job.video_quality or "highest")
+                            if detail_aweme is not None:
+                                detail_aweme.like_count = max(
+                                    detail_aweme.like_count, aweme.like_count)
+                                detail_aweme.comment_count = max(
+                                    detail_aweme.comment_count, aweme.comment_count)
+                                if not detail_aweme.author_name:
+                                    detail_aweme.author_name = aweme.author_name
+                                if not detail_aweme.desc:
+                                    detail_aweme.desc = aweme.desc
+                                aweme = detail_aweme
+                                detail_raw = detail_obj
+                    if (aweme is not None and not aweme.author_name
+                            and job.source_type == "account_works"):
                         aweme.author_name = str(getattr(account, "nickname", "") or "")
-                    token = ""
+                    token = (aweme.object_nonce_id if aweme is not None else "") or ""
                 elif job.platform == "tiktok":
                     aweme = parse_tiktok_aweme(raw, job.video_quality or "highest")
                     token = ""
@@ -1248,7 +1537,8 @@ class KeywordCollector:
                 author_id = _author_id(detail_raw, job.platform)
                 if job.platform == "xhs" and not author_id:
                     author_id = brief.get("author_id") or ""
-                if job.platform == "shipinhao" and not author_id:
+                if (job.platform == "shipinhao" and not author_id
+                        and job.source_type == "account_works"):
                     author_id = str(getattr(account, "sec_uid", "") or "")
                 content = self._upsert_content(
                     current, keyword, aweme, author_id,
@@ -1267,7 +1557,11 @@ class KeywordCollector:
 
                 should_collect_comments = (
                     job.max_comments_per_content > 0
-                    and (job.platform != "shipinhao" or aweme.comment_count > 0)
+                    and (
+                        job.platform != "shipinhao"
+                        or aweme.comment_count > 0
+                        or channels_client is not None
+                    )
                 )
                 if should_collect_comments:
                     self._progress(job_id, keyword=keyword, step=f"抓取评论 {index}")
@@ -1283,7 +1577,29 @@ class KeywordCollector:
                     elif job.platform == "shipinhao":
                         comments, comment_error = await self._channels_comments(
                             identity, aweme.aweme_id,
-                            job.max_comments_per_content, job.include_replies)
+                            job.max_comments_per_content, job.include_replies,
+                            object_nonce_id=token,
+                            proto_client=channels_client,
+                            source_type=job.source_type)
+                        if (not comments and not comment_error
+                                and aweme.comment_count > 0
+                                and channels_client is not None):
+                            detail_obj, _ = await channels_client.fetch_feed_detail(
+                                object_id=aweme.aweme_id,
+                                object_nonce_id=token,
+                            )
+                            detail_nonce = str(
+                                (detail_obj or {}).get("objectNonceId")
+                                or (detail_obj or {}).get("object_nonce_id")
+                                or ""
+                            ).strip()
+                            if detail_nonce and detail_nonce != token:
+                                comments, comment_error = await self._channels_comments(
+                                    identity, aweme.aweme_id,
+                                    job.max_comments_per_content, job.include_replies,
+                                    object_nonce_id=detail_nonce,
+                                    proto_client=channels_client,
+                                    source_type=job.source_type)
                     elif job.platform == "tiktok":
                         comments, comment_error = await self._tiktok_comments(
                             identity, aweme.aweme_id,
@@ -1300,6 +1616,17 @@ class KeywordCollector:
                             job.max_comments_per_content, job.include_replies)
                     self._persist_comments(
                         job_id, content.id, job.platform, aweme.aweme_id, comments)
+                    if job.platform == "shipinhao":
+                        audit_counts = self.__dict__.get("_last_channels_counts", {}).pop(
+                            aweme.aweme_id, {})
+                        self._backfill_channels_counts(
+                            content,
+                            like_count=_xhs_count(audit_counts.get("likeCount")),
+                            comment_count=max(
+                                _xhs_count(audit_counts.get("commentCount")),
+                                len(comments),
+                            ),
+                        )
                     if comment_error:
                         self._record_error(
                             job_id, f"{keyword}/{aweme.aweme_id}: {comment_error}")

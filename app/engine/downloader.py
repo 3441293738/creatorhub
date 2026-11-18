@@ -51,6 +51,7 @@ class Downloader:
             "https://www.xiaohongshu.com/" if _pf == "xhs" else
             "https://www.kuaishou.com/" if _pf == "kuaishou" else
             "https://www.tiktok.com/" if _pf == "tiktok" else
+            "https://channels.weixin.qq.com/" if _pf == "shipinhao" else
             "https://www.douyin.com/"
         )
         headers = {
@@ -70,6 +71,32 @@ class Downloader:
                     async with lock:
                         if fpath.exists() and fpath.stat().st_size > 0:
                             return str(fpath), ""        # 已存在,跳过
+                        decode_key = str(getattr(m, "decode_key", "") or "").strip()
+                        if decode_key and decode_key != "0" and m.kind == "video":
+                            from ..platforms.channels.decrypt import (
+                                ChannelsDecryptError,
+                                decrypt_channels_video_file,
+                            )
+                            enc_path = fpath.with_suffix(fpath.suffix + ".enc")
+                            async with self._media_sem:
+                                err = await self._download_one(cli, m.url, enc_path)
+                            if err:
+                                return "", err
+                            try:
+                                await asyncio.to_thread(
+                                    decrypt_channels_video_file,
+                                    enc_path,
+                                    fpath,
+                                    decode_key,
+                                    overwrite=True,
+                                    validate_mp4=True,
+                                )
+                            except (ChannelsDecryptError, Exception) as dec_exc:
+                                fpath.unlink(missing_ok=True)
+                                return "", f"视频号媒体解密失败({dec_exc})"
+                            finally:
+                                enc_path.unlink(missing_ok=True)
+                            return str(fpath), ""
                         async with self._media_sem:
                             err = await self._download_one(cli, m.url, fpath)
                         return (str(fpath), "") if not err else ("", err)

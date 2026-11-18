@@ -801,7 +801,7 @@ class KeywordCollectionEditTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.status_code, 400)
 
-    def test_channels_collection_only_accepts_current_account_works(self):
+    def test_channels_collection_supports_account_works_keyword_and_creator_sources(self):
         with db.get_session() as session:
             account = DouyinAccount(
                 platform="shipinhao", nickname="视频号采集账号", status="active",
@@ -820,16 +820,63 @@ class KeywordCollectionEditTests(unittest.TestCase):
         self.assertEqual(result["source_type"], "account_works")
         self.assertEqual(result["source_name"], "本账号作品")
         self.assertEqual(result["keywords"], [])
-        filtered = asyncio.run(list_keyword_collections(platform="shipinhao"))
-        self.assertEqual([job["id"] for job in filtered], [result["id"]])
 
-        for source_type in ("keyword", "creator"):
+        kw_job = asyncio.run(create_keyword_collection(self._body(
+            platform="shipinhao", account_id=account_id,
+            source_type="keyword", keywords=["户外露营"],
+            download_media=False)))
+        self.assertEqual(kw_job["source_type"], "keyword")
+        self.assertEqual(kw_job["keywords"], ["户外露营"])
+
+        creator_job = asyncio.run(create_keyword_collection(self._body(
+            platform="shipinhao", account_id=account_id,
+            source_type="creator", keywords=[],
+            source_ref="v2_060000231003b20faec8c4e5811dc5dcc600ea31b077@finder",
+            download_media=False)))
+        self.assertEqual(creator_job["source_type"], "creator")
+        self.assertEqual(
+            creator_job["source_ref"],
+            "v2_060000231003b20faec8c4e5811dc5dcc600ea31b077@finder",
+        )
+
+        filtered = asyncio.run(list_keyword_collections(platform="shipinhao"))
+        self.assertEqual(len(filtered), 3)
+
+        for source_type in ("favorite_all", "favorite_board"):
             with self.subTest(source_type=source_type), self.assertRaises(HTTPException) as caught:
                 asyncio.run(create_keyword_collection(self._body(
                     platform="shipinhao", account_id=account_id,
-                    source_type=source_type, source_ref="someone")))
+                    source_type=source_type, source_ref="board-1")))
             self.assertEqual(caught.exception.status_code, 400)
-            self.assertIn("本账号作品", caught.exception.detail)
+            self.assertIn("小红书", caught.exception.detail)
+
+        # keyword / creator walk local WeChat channel and do NOT require an active web creator account.
+        with db.get_session() as session:
+            invalid_acc = DouyinAccount(
+                platform="shipinhao", nickname="过期助手账号", status="invalid",
+                storage_state="",
+            )
+            session.add(invalid_acc); session.commit(); session.refresh(invalid_acc)
+            invalid_id = invalid_acc.id
+
+        anon_kw = asyncio.run(create_keyword_collection(self._body(
+            platform="shipinhao", account_id=None,
+            source_type="keyword", keywords=["无需网页账号"], download_media=False)))
+        self.assertEqual(anon_kw["account_id"], 0)
+
+        invalid_acc_creator = asyncio.run(create_keyword_collection(self._body(
+            platform="shipinhao", account_id=invalid_id,
+            source_type="creator", keywords=[],
+            source_ref="v2_060000231003b20faec8c4e5811dc5dcc600ea31b077@finder",
+            download_media=False)))
+        self.assertEqual(invalid_acc_creator["account_id"], 0)
+
+        with self.assertRaises(HTTPException) as caught_own:
+            asyncio.run(create_keyword_collection(self._body(
+                platform="shipinhao", account_id=invalid_id,
+                source_type="account_works", source_name="", keywords=[],
+                download_media=False)))
+        self.assertEqual(caught_own.exception.status_code, 400)
 
     def test_finished_xhs_task_can_be_edited_but_not_moved_between_platforms(self):
         with db.get_session() as session:
@@ -1349,6 +1396,7 @@ class KeywordCollectionReportTests(unittest.TestCase):
             platform="xhs",
             keyword="露营",
             aweme_id="note-1",
+            author_id="v2_report@finder",
             desc="=FORMULA",
             collected_comment_count=1,
         )
@@ -1370,6 +1418,8 @@ class KeywordCollectionReportTests(unittest.TestCase):
 
         self.assertEqual(workbook.sheetnames, ["概览", "作品", "评论", "用户线索"])
         self.assertEqual(workbook["作品"]["E2"].value, "'=FORMULA")
+        self.assertEqual(workbook["作品"]["P1"].value, "作者ID")
+        self.assertEqual(workbook["作品"]["P2"].value, "v2_report@finder")
         self.assertEqual(workbook["评论"]["F2"].value, "'+comment")
         self.assertEqual(workbook["评论"]["H2"].value, "MS4wLj-report-user")
         self.assertEqual(workbook["评论"]["I2"].value, "广东")

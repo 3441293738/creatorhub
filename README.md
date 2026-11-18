@@ -24,10 +24,10 @@
 | 抖音 | 作品 / 评论 / 弹幕监控、批量采集、下载、发布与私信管理 |
 | 小红书 | 笔记 / 评论监控、关键词与收藏采集、下载、发布与私信管理 |
 | 快手 | 作品 / 评论监控、批量采集、下载与发布 |
-| 视频号 | 本账号作品、数据与评论管理，批量采集与发布 |
+| 视频号 | 本账号作品、数据与发布；连接本机微信后支持关键词 / 创作者采集、作品 / 评论监控与加密视频下载 |
 | TikTok | 关键词视频采集、作品 / 评论监控、下载、视频发布与用户互动 |
 
-> 视频号仅处理本账号内容；TikTok 当前支持单视频发布，暂不支持图文发布与直播。详细能力、操作步骤和使用限制见[使用指南](https://3441293738.github.io/creatorhub/guide/#welcome)。
+> 视频号读取他人内容和下载视频需要先在「设置 → 视频号微信通道」连接本机已登录的桌面微信；TikTok 当前支持单视频发布，暂不支持图文发布与直播。详细能力、操作步骤和使用限制见[使用指南](https://3441293738.github.io/creatorhub/guide/#welcome)。
 
 ## 快速开始
 
@@ -106,31 +106,37 @@ chmod +x start.sh
 
 <table>
   <tr>
-    <th align="center" width="33%">赞赏支持</th>
-    <th align="center" width="33%">扫码加群</th>
-    <th align="center" width="33%">添加作者微信</th>
+    <th align="center" width="25%">赞赏支持</th>
+    <th align="center" width="25%">微信交流群</th>
+    <th align="center" width="25%">QQ 交流群</th>
+    <th align="center" width="25%">添加作者微信</th>
   </tr>
   <tr>
     <td align="center" valign="middle">
       <a href="assets/community/wechat-reward.jpg">
-        <img src="assets/community/wechat-reward.jpg" alt="CreatorHub 作者微信赞赏码" width="240">
+        <img src="assets/community/wechat-reward.jpg" alt="CreatorHub 作者微信赞赏码" width="200">
       </a>
     </td>
     <td align="center" valign="middle">
       <a href="assets/community/wechat-group.png">
-        <img src="assets/community/wechat-group.png" alt="CreatorHub 交流群二维码" width="240">
+        <img src="assets/community/wechat-group.png" alt="CreatorHub 微信交流群二维码" width="200">
+      </a>
+    </td>
+    <td align="center" valign="middle">
+      <a href="assets/community/qq-group.jpg">
+        <img src="assets/community/qq-group.jpg" alt="CreatorHub QQ 交流群二维码，群号 1048219261" width="200">
       </a>
     </td>
     <td align="center" valign="middle">
       <a href="assets/community/wechat-personal.jpg">
-        <img src="assets/community/wechat-personal.jpg" alt="作者个人微信二维码，扫码添加好友" width="240">
+        <img src="assets/community/wechat-personal.jpg" alt="作者个人微信二维码，扫码添加好友" width="200">
       </a>
     </td>
   </tr>
 </table>
 
 <p align="center">
-  使用微信扫码赞赏、加入交流群或添加作者，点击图片可查看原图。
+  使用微信扫码赞赏、加入微信群或添加作者；QQ 群可用 QQ 扫码，或搜索群号 <b>1048219261</b> 加入。点击图片可查看原图。
   <br>
   赞赏金额随心，感谢每一份支持！入群遇到问题，也可以添加作者微信联系。
 </p>
