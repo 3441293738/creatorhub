@@ -142,6 +142,38 @@ SELECTOR_GROUPS: Mapping[str, tuple[SelectorCandidate, ...]] = MappingProxyType(
         _css("dm_submit_text", 'span:has-text("发送")'),
         _css("dm_submit_class", ".send-btn"),
     ),
+    # 点点 AI 问答页(/ai_chat)。选择器按“语义优先、类名兜底”排序；页面改版时
+    # 在这里增删候选，不要把选择器散落在抓取函数里。
+    "dots.input": (
+        _css("dots_input_textbox", 'div[role="textbox"][contenteditable="true"]'),
+        _css("dots_input_textarea", "textarea"),
+        _css("dots_input_contenteditable", '[contenteditable="true"]'),
+        _css("dots_input_text", 'input[type="text"]'),
+    ),
+    "dots.send": (
+        _css("dots_send_aria", '[aria-label*="发送"]'),
+        _css("dots_send_button", 'button:has-text("发送")'),
+        _css("dots_send_class", '[class*="send"]'),
+        _css("dots_send_submit", 'button[type="submit"]'),
+    ),
+    "dots.generating": (
+        _text("dots_stop_generate", "停止生成"),
+        _text("dots_stop_answer", "停止回答"),
+        _css("dots_stop_aria", '[aria-label*="停止"]'),
+        _css("dots_stop_button", 'button:has-text("停止")'),
+    ),
+    "dots.answer": (
+        _css("dots_answer_markdown", '[class*="markdown"]'),
+        _css("dots_answer_class", '[class*="answer"]'),
+        _css("dots_answer_assistant", '[class*="assistant"]'),
+        _css("dots_answer_bot", '[class*="bot-msg"], [class*="bot-message"]'),
+        _css("dots_answer_message", '[class*="message-content"], [class*="msg-content"]'),
+        _css("dots_answer_reply", '[class*="reply"]'),
+    ),
+    "dots.sources": (
+        _text("dots_sources_toggle", "参考小红书与全网"),
+        _text("dots_sources_toggle_short", "篇内容"),
+    ),
 })
 
 
@@ -150,6 +182,12 @@ def selector_candidates(group: str) -> tuple[SelectorCandidate, ...]:
         return SELECTOR_GROUPS[group]
     except KeyError as exc:
         raise KeyError(f"未知的小红书选择器语义组: {group}") from exc
+
+
+def css_values(group: str) -> list[str]:
+    """CSS candidates of a group, for page-side JS that needs raw selectors."""
+    return [item.value for item in selector_candidates(group)
+            if item.kind == "css"]
 
 
 def candidate_locator(page: Any, candidate: SelectorCandidate) -> Any:
