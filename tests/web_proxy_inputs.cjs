@@ -124,5 +124,50 @@ function fixture() {
   f.result({ added: 0, skipped: 0, invalid: 1, invalid_samples: ['第 1 行：代理格式有歧义'] });
   await f.run('importProxies()');
   assert(f.messages.at(-1).message.includes('第 1 行'));
+
+  // Verify pre-login proxy selector avoids defaulting domestic platforms to overseas proxies.
+  const preLoginSlice = source.slice(
+    source.indexOf('function formatProxyOptionLabel'),
+    source.indexOf('function loginStartUrl('),
+  );
+  let selectCalls = [];
+  let proxyOptionsPayload = [
+    {
+      id: 1, label: 'socks5://***@us.example:1080', url: 'socks5://us.example:1080',
+      masked: 'socks5://***@us.example:1080', status: 'ok', enabled: true,
+      used_by: 0, country: 'US', geo_loc: 'US · California · Los Angeles',
+      is_mainland: false, geo_checked: true,
+    },
+  ];
+  const preCtx = vm.createContext({
+    PLATFORM: 'xhs',
+    api: async path => (path === '/api/proxies/options' ? proxyOptionsPayload : []),
+    uiSelect: async opts => { selectCalls.push(opts); return opts.value; },
+    uiPrompt: async () => '',
+  });
+  vm.runInContext(preLoginSlice, preCtx);
+
+  const chosenXhs = await vm.runInContext('choosePreLoginProxy({ platform: "xhs" })', preCtx);
+  assert.equal(chosenXhs, '');
+  assert.equal(selectCalls.at(-1).value, '');
+  assert(selectCalls.at(-1).options.some(o => o.label.includes('US · California · Los Angeles') && o.label.includes('⚠️非大陆')));
+
+  const chosenTiktok = await vm.runInContext('choosePreLoginProxy({ platform: "tiktok" })', preCtx);
+  assert.equal(chosenTiktok, 'auto');
+  assert.equal(selectCalls.at(-1).value, 'auto');
+  assert(!selectCalls.at(-1).options.some(o => o.label.includes('⚠️非大陆')));
+
+  proxyOptionsPayload = [
+    {
+      id: 2, label: 'cn-node', url: 'http://cn.example:8080',
+      masked: 'http://***@cn.example:8080', status: 'ok', enabled: true,
+      used_by: 0, country: 'CN', geo_loc: '中国 · 浙江 · 杭州',
+      is_mainland: true, geo_checked: true,
+    },
+  ];
+  const chosenXhsMainland = await vm.runInContext('choosePreLoginProxy({ platform: "xhs" })', preCtx);
+  assert.equal(chosenXhsMainland, 'auto');
+  assert.equal(selectCalls.at(-1).value, 'auto');
+
   console.log('proxy input UI regressions passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

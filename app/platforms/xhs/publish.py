@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple
 
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
+from .._submit import notify_stage as _notify_stage
 from .browser_writes import XhsWriteOutcome, publish_xhs_browser
 from .client import XhsApiError, cookie_str_from_state, has_a1
 from .deadline import PublishCancelEvent, deadline_after, remaining_seconds, timeout_error
@@ -133,7 +134,8 @@ async def publish_xhs(mgr: BrowserManager, identity: Identity, storage_state_jso
                       timeout_seconds: int = 180,
                       mode: str = "browser",
                       visibility: str = "public",
-                      on_submit=None, preserve_error: bool = False
+                      on_submit=None, preserve_error: bool = False,
+                      on_stage=None
                       ) -> Tuple[bool, str, str | XhsApiError]:
     """发布一条小红书笔记。返回 (ok, result_url, error)。
     页面模式使用账号持久 Profile；API 仅为显式兼容模式。"""
@@ -155,8 +157,10 @@ async def publish_xhs(mgr: BrowserManager, identity: Identity, storage_state_jso
         outcome = await publish_xhs_browser(
             mgr, identity, media_type, title, desc, tags, files,
             timeout_seconds=timeout_seconds, visibility=visibility,
-            on_submit=on_submit)
+            on_submit=on_submit, on_stage=on_stage)
         return outcome.legacy()
+
+    await _notify_stage(on_stage, "正在通过小红书创作者 API 上传与发布…")
 
     # 显式 API 兼容模式；失败后不切换到浏览器，避免一次任务被重复提交。
     try:

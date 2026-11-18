@@ -3123,7 +3123,7 @@
           </div>
         </div>
         <div>
-          <label class="field" for="pub-title">标题(≤20 字)</label>
+          <label class="field" for="pub-title"><span id="pub-title-label-text">标题(≤20 字)</span></label>
           <input id="pub-title" maxlength="20" placeholder="给作品起个标题">
         </div>
         <div>
@@ -3137,7 +3137,7 @@
         <div class="form-field sh-only">
           <label for="pub-location">位置（可选）</label><input id="pub-location" placeholder="城市或地点名，例如：东莞市 / 杭州西湖">
         </div>
-        <fieldset class="publish-permissions dy-only" id="pub-dy-opts">
+        <fieldset class="publish-permissions" id="pub-dy-opts">
           <legend>互动与权限</legend>
           <div class="publish-permission">
             <label class="field" for="pub-visibility">谁可以看</label>
@@ -3147,7 +3147,7 @@
               <option value="private">仅自己可见</option>
             </select>
           </div>
-          <div class="publish-permission">
+          <div class="publish-permission dy-only">
             <label class="field" for="pub-allowsave">保存权限</label>
             <select id="pub-allowsave" aria-label="保存权限">
               <option value="1">允许他人保存</option>

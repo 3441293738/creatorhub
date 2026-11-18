@@ -20,6 +20,18 @@ from .models import DouyinAccount, ProxyPool
 
 _proxy_reservation_lock = threading.RLock()
 _proxy_reservations: dict[str, str] = {}
+DOMESTIC_PLATFORMS = {"douyin", "xhs", "kuaishou", "shipinhao"}
+
+
+def is_mainland_geo(country: str, region: str = "", city: str = "") -> bool:
+    """Return True only when geo metadata resolves to mainland China."""
+    if str(country or "").strip() not in ("中国", "China", "CN"):
+        return False
+    blob = (region or "") + (city or "")
+    return not any(
+        mark in blob
+        for mark in ("香港", "澳门", "澳門", "台湾", "台灣", "Hong Kong", "Macau", "Taiwan")
+    )
 
 
 def allocate_profile_dir(profiles_root: str, prefix: str = "account") -> str:
@@ -37,14 +49,20 @@ def allocate_profile_dir(profiles_root: str, prefix: str = "account") -> str:
             return str(candidate)
 
 
-def _pool_urls(session, cfg) -> list:
+def _pool_urls(session, cfg, *, platform: str = "") -> list:
     """Return normalized, unique proxies eligible for automatic assignment."""
     rows = session.exec(select(ProxyPool)).all()
     if rows:
-        sources = [
-            p.url for p in rows
-            if p.enabled and p.status not in {"bad", "auth_error", "blocked"}
-        ]
+        domestic = str(platform or "").strip().lower() in DOMESTIC_PLATFORMS
+        sources = []
+        for p in rows:
+            if not p.enabled or p.status in {"bad", "auth_error", "blocked"}:
+                continue
+            geo_known = bool((p.exit_ip or "").strip() or (p.country or "").strip())
+            if domestic and geo_known and not is_mainland_geo(
+                    p.country, p.region, p.city):
+                continue
+            sources.append(p.url)
     else:
         sources = list(cfg.proxies or [])
 
@@ -58,10 +76,10 @@ def _pool_urls(session, cfg) -> list:
     return urls
 
 
-def assign_proxy_from_pool(session, cfg) -> str:
+def assign_proxy_from_pool(session, cfg, *, platform: str = "") -> str:
     """Return one unoccupied usable proxy, or an empty string."""
     with _proxy_reservation_lock:
-        pool = _pool_urls(session, cfg)
+        pool = _pool_urls(session, cfg, platform=platform)
         if not pool:
             return ""
         occupied = {
@@ -73,15 +91,16 @@ def assign_proxy_from_pool(session, cfg) -> str:
         return next((url for url in pool if url not in occupied), "")
 
 
-def reserve_proxy_from_pool(session, cfg, reservation_key: str) -> str:
+def reserve_proxy_from_pool(
+        session, cfg, reservation_key: str, *, platform: str = "") -> str:
     """Atomically reserve a free proxy while a new login is in progress."""
     key = str(reservation_key or "").strip()
     if not key:
-        return assign_proxy_from_pool(session, cfg)
+        return assign_proxy_from_pool(session, cfg, platform=platform)
     with _proxy_reservation_lock:
         if key in _proxy_reservations:
             return _proxy_reservations[key]
-        proxy = assign_proxy_from_pool(session, cfg)
+        proxy = assign_proxy_from_pool(session, cfg, platform=platform)
         if proxy:
             _proxy_reservations[key] = proxy
         return proxy
@@ -133,7 +152,8 @@ def ensure_identity(acc: DouyinAccount, cfg, session=None, assign_proxy: bool = 
         acc.profile_dir = allocate_profile_dir(cfg.engine.profiles_dir)
         changed = True
     if assign_proxy and not acc.proxy and session is not None:
-        p = assign_proxy_from_pool(session, cfg)
+        p = assign_proxy_from_pool(
+            session, cfg, platform=getattr(acc, "platform", "") or "")
         if p:
             acc.proxy = p
             changed = True

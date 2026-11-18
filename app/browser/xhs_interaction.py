@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import random
+import re
 import sys
 from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
@@ -141,13 +142,32 @@ class XhsInteractionPolicy:
         await self._verify_text(locator, str(text))
         await self.reading_pause(content_length=len(str(text)))
 
+    @staticmethod
+    def _normalize_verified_text(value: str, *, multiline: bool) -> str:
+        text = (
+            str(value or "")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .replace("\xa0", " ")
+        )
+        if multiline:
+            # Contenteditable editors (TipTap/ProseMirror) turn single newlines
+            # into separate <p> blocks whose innerText joins paragraphs with
+            # \n\n and may include a trailing block newline.
+            text = re.sub(r"\n+", "\n", text).strip("\n")
+        return text
+
     async def _verify_text(self, locator: Any, expected: str) -> None:
+        from_dom = False
         try:
             actual = await locator.input_value()
         except Exception:
+            from_dom = True
             actual = await locator.evaluate(
                 "el => el.value ?? el.innerText ?? el.textContent ?? ''")
-        if str(actual) != expected:
+        if self._normalize_verified_text(
+                str(actual), multiline=from_dom) != self._normalize_verified_text(
+                expected, multiline=from_dom):
             raise RuntimeError("小红书文本输入结果与预期不一致")
 
     async def scroll_step(self, page: Any, *, direction: int = 1) -> int:

@@ -368,7 +368,7 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
         # 更容易被重定向到 website-login/captcha 的设备安全验证页。
         await page.goto(
             "https://www.xiaohongshu.com/",
-            wait_until="domcontentloaded", timeout=30000)
+            wait_until="domcontentloaded", timeout=60000)
         security_verification_seen = _is_xhs_security_verification_url(page.url)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(0, timeout_seconds)
@@ -483,16 +483,27 @@ async def interactive_xhs_creator_login(mgr: BrowserManager, identity: Identity,
     与普通登录区分:这里登录的是创作平台,登录态里含 customerClientId / galaxy_creator_session_id 等。"""
     ctx = await mgr.context_for(identity)
     if force_reauth:
-        await ctx.clear_cookies()
+        # Only revoke creator cookies so complementing creator auth on an
+        # active read account preserves the main-site session in the profile.
+        try:
+            await ctx.clear_cookies(domain="creator.xiaohongshu.com")
+            for cookie_name in _XHS_CREATOR_COOKIES:
+                await ctx.clear_cookies(name=cookie_name)
+        except TypeError:
+            await ctx.clear_cookies()
     await _open_first_environment_check(mgr, identity, ctx)
     logged = False
     nickname = ""
     state_json = ""
     async with mgr.visible_page(identity) as page:
         await _focus(page)
+        # creator.xiaohongshu.com/login loads dozens of large script bundles
+        # before DOMContentLoaded; return on commit so slow/proxied networks
+        # render visibly instead of aborting the browser window at 30s.
         await page.goto(
             "https://creator.xiaohongshu.com/login",
-            wait_until="domcontentloaded", timeout=30000)
+            wait_until="commit", timeout=60000)
+        await _focus(page)
         init_ws = await _xhs_web_session(ctx)
         deadline = asyncio.get_running_loop().time() + max(0, timeout_seconds)
         while asyncio.get_running_loop().time() < deadline:

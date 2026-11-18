@@ -357,11 +357,16 @@ class XhsCreatorApi:
                                     privacy_type, infos)
 
         for topic in (topics or []):
-            t = self.get_topic(topic)
+            clean = str(topic or "").strip().lstrip("#").strip()
+            if not clean:
+                continue
+            t = self.get_topic(clean)
             if t:
                 data["common"]["hash_tag"].append(
                     {"id": t["id"], "link": t["link"], "name": t["name"], "type": "topic"})
                 data["common"]["desc"] += f" #{t['name']}[话题]# "
+            elif f"#{clean}" not in data["common"]["desc"]:
+                data["common"]["desc"] = f"{data['common']['desc']} #{clean}".strip()
 
         body = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
         xs, xt, xs_common = sign.generate_xs_xs_common(self.a1, post_api, body)
@@ -505,8 +510,11 @@ def _biz_binds(post_time_ms):
                 '"noteCollectionBind":{"id":""},"noteSketchCollectionBind":{"id":""},'
                 '"coProduceBind":{"enable":true},"noteCopyBind":{"copyable":true},'
                 '"interactionPermissionBind":{"commentPermission":0},"optionRelationList":[]}')
-    return ('{"version":1,"noteId":0,"bizType":13,"noteOrderBind":{},"notePostTiming":'
-            f'{{"postTime":"{post_time_ms}"}},"noteCollectionBind":{{"id":""}}}}')
+    return (
+        f'{{"version":1,"noteId":0,"bizType":13,"noteOrderBind":{{}},'
+        f'"notePostTiming":{{"postTime":"{post_time_ms}"}},'
+        f'"noteCollectionBind":{{"id":""}}}}'
+    )
 
 
 _SOURCE = '{"type":"web","ids":"","extraInfo":"{\\"subType\\":\\"official\\",\\"systemId\\":\\"web\\"}"}'

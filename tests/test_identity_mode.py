@@ -9,9 +9,10 @@ from unittest.mock import AsyncMock, patch
 import app.db as db
 import app.main as main
 from app.browser.identity import Identity
+from app.browser.login import _XHS_CREATOR_COOKIES, interactive_xhs_creator_login
 from app.browser.manager import BrowserManager
 from app.config import Config, load_config
-from app.models import DouyinAccount
+from app.models import DouyinAccount, ProxyPool
 from app.profiles import ensure_identity
 from app.risk import OperationKind
 
@@ -1360,6 +1361,79 @@ class IdentityModeTests(unittest.TestCase):
         self.assertEqual(kwargs["permissions"], ["geolocation"])
         self.assertEqual(len(context.header_calls), 1)
         self.assertEqual(len(context.script_calls), 1)
+
+    def test_proxy_options_expose_geo_metadata(self):
+        with db.get_session() as session:
+            session.add(ProxyPool(
+                url="socks5://alice:secret@us.example:1080",
+                label="",
+                status="ok",
+                enabled=True,
+                exit_ip="203.0.113.10",
+                country="US",
+                region="California",
+                city="Los Angeles",
+            ))
+            session.commit()
+
+        options = asyncio.run(main.proxy_options())
+
+        self.assertEqual(len(options), 1)
+        self.assertEqual(options[0]["country"], "US")
+        self.assertEqual(options[0]["geo_loc"], "US · California · Los Angeles")
+        self.assertFalse(options[0]["is_mainland"])
+        self.assertTrue(options[0]["geo_checked"])
+        self.assertNotIn("secret", options[0]["masked"])
+
+    def test_xhs_creator_login_commits_navigation_and_preserves_read_cookies(self):
+        manager = AsyncMock()
+        context = AsyncMock()
+        page = AsyncMock()
+        manager.context_for.return_value = context
+        context.pages = [page]
+        context.cookies.return_value = [
+            {"name": "web_session", "value": "main-read-session-00000001"}
+        ]
+        clear_calls = []
+
+        async def clear_cookies(**kwargs):
+            clear_calls.append(kwargs)
+
+        context.clear_cookies.side_effect = clear_cookies
+        goto_calls = []
+        page.url = "about:blank"
+        page.is_closed = lambda: len(goto_calls) > 0
+
+        async def goto(url, **kwargs):
+            goto_calls.append((url, kwargs))
+            page.url = url
+
+        page.goto.side_effect = goto
+
+        @asynccontextmanager
+        async def visible_page(_identity):
+            try:
+                yield page
+            finally:
+                await page.close()
+
+        manager.visible_page = visible_page
+        manager.xhs_interaction.pause = AsyncMock()
+
+        logged, state, _nickname = asyncio.run(interactive_xhs_creator_login(
+            manager, Identity(account_id=19, profile_dir="p19", platform="xhs"),
+            timeout_seconds=5, force_reauth=True))
+
+        self.assertFalse(logged)
+        self.assertEqual(state, "")
+        self.assertEqual(goto_calls, [(
+            "https://creator.xiaohongshu.com/login",
+            {"wait_until": "commit", "timeout": 60000},
+        )])
+        self.assertIn({"domain": "creator.xiaohongshu.com"}, clear_calls)
+        for cookie_name in _XHS_CREATOR_COOKIES:
+            self.assertIn({"name": cookie_name}, clear_calls)
+        self.assertNotIn({}, clear_calls)
 
 
 if __name__ == "__main__":

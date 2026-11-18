@@ -141,7 +141,7 @@ from .group_snapshots import ingest_group_snapshot
 from .operations import record_account_operation
 from .notifier import CHANNEL_TYPES, send_one
 from .profiles import (allocate_profile_dir, ensure_identity, migrate_identities,
-                       assign_proxy_from_pool,
+                       assign_proxy_from_pool, is_mainland_geo,
                        release_proxy_reservation, reserve_proxy_from_pool,
                        seed_proxy_pool)
 from .risk import (OperationKind, RiskCategory, RiskController,
@@ -1105,7 +1105,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             elif choice.lower() == "auto":
                 with get_session() as s:
                     proxy_reservation_key = task_id
-                    proxy = reserve_proxy_from_pool(s, cfg, proxy_reservation_key)
+                    proxy = reserve_proxy_from_pool(
+                        s, cfg, proxy_reservation_key, platform=platform)
             else:
                 from .browser.manager import normalize_proxy
                 proxy = normalize_proxy(choice)
@@ -2164,7 +2165,7 @@ async def list_accounts(platform: str | None = None):
                     environment_check = None
             has_creator = (
                 bool(a.creator_storage_state)
-                or (a.platform in ("kuaishou", "douyin", "shipinhao")
+                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok")
                     and bool(a.storage_state))
                 or (a.platform == "xhs" and has_creator_cookies(a.storage_state))
             )
@@ -3786,7 +3787,7 @@ async def refresh_account_profile(account_id: int):
         )
         has_creator_login = bool(acc and (
             acc.creator_storage_state
-            or (acc.platform in ("kuaishou", "douyin", "shipinhao")
+            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok")
                 and acc.storage_state)
             or (acc.platform == "xhs" and has_creator_cookies(acc.storage_state))
         ))
@@ -5328,7 +5329,7 @@ async def open_account_browser(
             xhs_evidence: dict = {}
             if platform == "xhs" and open_scope == "read":
                 page.on("response", _xhs_open_auth_response_handler(xhs_evidence))
-            await page.goto(home, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(home, wait_until="domcontentloaded", timeout=60000)
             try:
                 # Give the async response callback a short opportunity to parse
                 # user/me.  This is stronger than inspecting the first rendered
@@ -5477,9 +5478,9 @@ async def assign_account_proxy(account_id: int):
         acc = s.get(DouyinAccount, account_id)
         if not acc:
             raise HTTPException(404, "账号不存在")
-        p = assign_proxy_from_pool(s, cfg)
+        p = assign_proxy_from_pool(s, cfg, platform=acc.platform)
         if not p:
-            raise HTTPException(400, "代理池为空(请在 config.yaml 的 proxies 里配置)")
+            raise HTTPException(400, "代理池无适合该平台的可用空闲代理(可在「代理池」检查节点地区或状态)")
         acc.proxy = p
         acc.proxy_status = "unknown"
         _reset_account_exit_baseline(acc)
@@ -5716,7 +5717,8 @@ async def assign_proxies_all():
             acc = s.get(DouyinAccount, aid)
             if not acc or acc.proxy:
                 continue
-            p = assign_proxy_from_pool(s, cfg)   # 每次重算占用,保持均衡
+            p = assign_proxy_from_pool(
+                s, cfg, platform=acc.platform)   # 每次重算占用,保持均衡
             if not p:
                 pool_empty = True
                 remaining.append(aid)
@@ -5814,11 +5816,7 @@ class PoolProxyUpdate(ProxyInputOptions):
 
 
 def _is_mainland(country: str, region: str, city: str) -> bool:
-    if country not in ("中国", "China", "CN"):
-        return False
-    blob = (region or "") + (city or "")
-    return not any(x in blob for x in ("香港", "澳门", "澳門", "台湾", "台灣",
-                                       "Hong Kong", "Macau", "Taiwan"))
+    return is_mainland_geo(country, region, city)
 
 
 def _geo_loc(p) -> str:
@@ -5986,7 +5984,10 @@ async def proxy_options():
         return [{"id": p.id, "label": p.label or _mask_proxy(p.url),
                  "url": p.url, "masked": _mask_proxy(p.url),
                  "status": p.status, "enabled": p.enabled,
-                 "used_by": used.get(p.url, 0)} for p in rows]
+                 "used_by": used.get(p.url, 0),
+                 "country": p.country, "geo_loc": _geo_loc(p),
+                 "is_mainland": _is_mainland(p.country, p.region, p.city),
+                 "geo_checked": bool(p.exit_ip or p.country)} for p in rows]
 
 
 # ─────────── 全局设置 ───────────
@@ -10733,7 +10734,8 @@ def _publish_dict(t: PublishTask) -> dict:
         "visibility": t.visibility, "allow_save": t.allow_save,
         "allow_comment": t.allow_comment, "allow_duet": t.allow_duet,
         "allow_stitch": t.allow_stitch,
-        "error": t.error, "media_count": len(json.loads(t.media_json or "[]")),
+        "error": t.error, "live_stage": engine.get_publish_stage(t.id) if (engine and hasattr(engine, "get_publish_stage")) else "",
+        "media_count": len(json.loads(t.media_json or "[]")),
         "source_platform": t.source_platform, "source_content_id": t.source_content_id,
         "scheduled_at": (utc_iso(t.scheduled_at) if t.scheduled_at_is_utc
                          else t.scheduled_at.isoformat() if t.scheduled_at else None),
@@ -10761,6 +10763,34 @@ async def list_publish(platform: str | None = None):
         return [_publish_dict(t) for t in rows]
 
 
+def _publish_title_cap(platform: str) -> int:
+    return {"douyin": 30, "shipinhao": 16}.get(str(platform or "").lower(), 20)
+
+
+def _validate_non_xhs_publish_files(platform: str, media_type: str,
+                                    media_paths: list[str]) -> list[str]:
+    paths: list[str] = []
+    for raw in media_paths:
+        path = Path(raw)
+        if path.is_file():
+            try:
+                if path.stat().st_size <= 0:
+                    raise HTTPException(422, f"媒体文件为空，无法发布: {path.name}")
+            except OSError as exc:
+                raise HTTPException(400, f"无法读取媒体文件: {path.name}") from exc
+            paths.append(raw)
+    if not paths:
+        raise HTTPException(400, "没有可用的媒体文件,请先上传")
+    if platform == "tiktok" and media_type != "video":
+        raise HTTPException(422, "TikTok 网页发布当前仅支持视频")
+    if media_type == "video" and len(paths) != 1:
+        label = "TikTok" if platform == "tiktok" else "视频发布"
+        raise HTTPException(422, f"{label} 每个发布任务须选择一个视频")
+    if media_type == "images" and len(paths) > 18:
+        raise HTTPException(422, "单次图文发布最多支持 18 张图片")
+    return paths
+
+
 @app.post("/api/publish")
 async def add_publish(body: PublishIn, request: Request = None):
     with get_session() as s:
@@ -10779,14 +10809,8 @@ async def add_publish(body: PublishIn, request: Request = None):
                 except ValueError as exc:
                     raise HTTPException(422, str(exc)) from exc
             else:
-                paths = [p for p in body.media_paths if Path(p).is_file()]
-                if not paths:
-                    raise HTTPException(400, "没有可用的媒体文件,请先上传")
-                if acc.platform == "tiktok":
-                    if body.media_type != "video":
-                        raise HTTPException(422, "TikTok 网页发布当前仅支持视频")
-                    if len(paths) != 1:
-                        raise HTTPException(422, "TikTok 每个发布任务须选择一个视频")
+                paths = _validate_non_xhs_publish_files(
+                    acc.platform, body.media_type, body.media_paths)
             pname = {"kuaishou": "快手", "douyin": "抖音",
                      "shipinhao": "视频号", "tiktok": "TikTok"}.get(
                          acc.platform, "小红书")
@@ -10796,7 +10820,7 @@ async def add_publish(body: PublishIn, request: Request = None):
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
                 raise HTTPException(400, "该账号不可发布:请对该号完成「小红书扫码登录」或「创作者登录」")
             vis = body.visibility if body.visibility in ("public", "friends", "private") else "public"
-            title_cap = 16 if acc.platform == "shipinhao" else 20
+            title_cap = _publish_title_cap(acc.platform)
             t = PublishTask(
                 platform=acc.platform, account_id=body.account_id, media_type=body.media_type,
                 title=body.title.strip()[:title_cap], desc=body.desc, topics=body.topics,
@@ -10830,8 +10854,7 @@ async def update_publish(tid: int, body: PublishUpdate):
                 raise HTTPException(400, "发布账号不存在、登录态失效或与任务平台不匹配")
             t.account_id = body.account_id
         if body.title is not None:
-            title_cap = 16 if t.platform == "shipinhao" else 20
-            t.title = body.title.strip()[:title_cap]
+            t.title = body.title.strip()[:_publish_title_cap(t.platform)]
         if body.desc is not None:
             t.desc = body.desc
         if body.topics is not None:
@@ -11261,7 +11284,7 @@ class RepostIn(BaseModel):
 
 
 async def _repost_content(cid: int, body: RepostIn, target_platform: str, request: Request = None):
-    """把已下载作品转成目标平台(xhs / douyin / shipinhao)的发布任务。"""
+    """把已下载作品转成目标平台(xhs / douyin / shipinhao / kuaishou / tiktok)的发布任务。"""
     if not engine:
         raise HTTPException(503, "引擎未就绪")
     with get_session() as s:
@@ -11274,7 +11297,7 @@ async def _repost_content(cid: int, body: RepostIn, target_platform: str, reques
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != target_platform:
                 raise HTTPException(400, "请选择与目标平台匹配的已登录账号")
-            if target_platform in ("douyin", "shipinhao"):
+            if target_platform in ("douyin", "shipinhao", "kuaishou", "tiktok"):
                 if not (acc.creator_storage_state or acc.storage_state):
                     raise HTTPException(400, "请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
@@ -11312,6 +11335,18 @@ async def repost_to_douyin(cid: int, body: RepostIn, request: Request = None):
 async def repost_to_channels(cid: int, body: RepostIn, request: Request = None):
     """把一条已下载的抖音作品转成视频号发布任务。"""
     return await _repost_content(cid, body, "shipinhao", request)
+
+
+@app.post("/api/contents/{cid}/repost-kuaishou")
+async def repost_to_kuaishou(cid: int, body: RepostIn, request: Request = None):
+    """把一条已下载作品转成快手发布任务。"""
+    return await _repost_content(cid, body, "kuaishou", request)
+
+
+@app.post("/api/contents/{cid}/repost-tiktok")
+async def repost_to_tiktok(cid: int, body: RepostIn, request: Request = None):
+    """把一条已下载视频作品转成 TikTok 发布任务。"""
+    return await _repost_content(cid, body, "tiktok", request)
 
 
 # ─────────── 自动评论(规则 + 任务)───────────

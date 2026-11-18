@@ -8,6 +8,7 @@ from app.main import _proxy_probe_status, _proxy_status_ok
 from app.models import DouyinAccount, ProxyPool
 from app.profiles import (
     assign_proxy_from_pool,
+    is_mainland_geo,
     release_proxy_reservation,
     reserve_proxy_from_pool,
 )
@@ -91,6 +92,41 @@ class ProxyAssignmentTests(unittest.TestCase):
         self.assertEqual(_proxy_probe_status(403), "blocked")
         self.assertEqual(_proxy_probe_status(429), "blocked")
         self.assertEqual(_proxy_probe_status(500), "bad")
+
+    def test_domestic_auto_assignment_skips_verified_overseas_proxy(self):
+        overseas = "socks5://user:pass@us-proxy.example:1080"
+        with db.get_session() as session:
+            session.add(ProxyPool(
+                url=overseas,
+                status="ok",
+                enabled=True,
+                exit_ip="203.0.113.10",
+                country="US",
+                region="California",
+                city="Los Angeles",
+            ))
+            session.commit()
+
+            self.assertEqual(
+                assign_proxy_from_pool(session, self.cfg, platform="xhs"),
+                "",
+            )
+            self.assertEqual(
+                reserve_proxy_from_pool(
+                    session, self.cfg, "login-xhs", platform="xhs"),
+                "",
+            )
+            self.assertEqual(
+                assign_proxy_from_pool(session, self.cfg, platform="tiktok"),
+                overseas,
+            )
+
+    def test_is_mainland_geo_distinguishes_overseas_and_special_regions(self):
+        self.assertTrue(is_mainland_geo("CN", "Guangdong", "Shenzhen"))
+        self.assertTrue(is_mainland_geo("中国", "浙江", "杭州"))
+        self.assertFalse(is_mainland_geo("CN", "Hong Kong", "Hong Kong"))
+        self.assertFalse(is_mainland_geo("中国", "台湾", "台北"))
+        self.assertFalse(is_mainland_geo("US", "California", "Los Angeles"))
 
 
 if __name__ == "__main__":

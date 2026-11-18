@@ -5,7 +5,7 @@ let INFLIGHT = 0;
 // 全局忙碌徽章:>350ms 才显示(快速轮询不闪),圆环转圈 + 已等待秒数 + 并发数。
 // 拿不到真实进度百分比(浏览器自动化/接口都是不透明操作),用计时给"在进行"的清晰感知。
 // 判忙 = 有未完成请求(_apiActive)或有用户慢操作(INFLIGHT);并发数用 INFLIGHT(用户点的操作数)。
-let _apiActive = 0, _apiFailures = 0, _barTimer = null, _busyStart = 0, _busyTick = null;
+let _apiActive = 0, _apiFailures = 0, _barTimer = null, _busyStart = 0, _busyTick = null, _busyHint = "";
 function _isBusy() { return _apiActive > 0 || INFLIGHT > 0; }
 function _busyShow() {
   const sp = $("busy-spinner");
@@ -14,7 +14,7 @@ function _busyShow() {
 function _busyLabel() {
   const l = $("bs-label"); if (!l) return;
   const sec = Math.floor((Date.now() - _busyStart) / 1000);
-  l.textContent = "处理中 " + (INFLIGHT > 1 ? "×" + INFLIGHT + " · " : "") + sec + " 秒";
+  l.textContent = "处理中 " + (INFLIGHT > 1 ? "×" + INFLIGHT + " · " : "") + sec + " 秒" + (_busyHint ? " · " + _busyHint : "");
 }
 function _barSync() {
   if (_isBusy()) {
@@ -26,6 +26,7 @@ function _barSync() {
   } else {                            // 全部结束:清理并隐藏
     clearTimeout(_barTimer); _barTimer = null;
     clearInterval(_busyTick); _busyTick = null;
+    _busyHint = "";
     const sp = $("busy-spinner"); if (sp) { sp.classList.remove("on"); sp.setAttribute("aria-hidden", "true"); }
     const l = $("bs-label"); if (l) l.textContent = "处理中";
   }
@@ -1194,10 +1195,16 @@ function applyPlatformUI() {
   const pubSub = $("pub-head-sub");
   if (pubSub) pubSub.textContent = dy ? "上传图集 / 视频到抖音创作平台(实验性)"
     : ks ? "上传图集 / 视频到快手创作平台(实验性)"
-    : sph ? "上传视频到视频号助手(实验性)"
+    : sph ? "上传图集 / 视频到视频号助手(实验性)"
     : tk ? "上传视频到 TikTok Studio(实验性)" : "上传图集 / 视频到小红书(实验性)";
   if ($("pub-head-lead")) $("pub-head-lead").textContent = (ks || dy || sph || tk) ? "发布作品" : "发布笔记";
-  if ($("pub-title")) $("pub-title").placeholder = tk ? "视频说明的首行标题" : (ks || dy || sph) ? "给作品起个标题" : "给笔记起个标题";
+  const titleCap = dy ? 30 : sph ? 16 : 20;
+  if ($("pub-title-label-text")) $("pub-title-label-text").textContent = `标题(≤${titleCap} 字)`;
+  if ($("pub-title")) {
+    $("pub-title").maxLength = titleCap;
+    $("pub-title").placeholder = tk ? "视频说明的首行标题" : (ks || dy || sph) ? "给作品起个标题" : "给笔记起个标题";
+  }
+  if ($("pub-dy-opts")) $("pub-dy-opts").classList.toggle("hidden", !["douyin", "xhs", "kuaishou"].includes(PLATFORM));
   const pubHintText = dy
     ? "发布通过自动化抖音创作平台完成。首次登录或触发验证时，请在弹出窗口中完成短信验证或扫码；视频上传后还需等待转码。注意：定时发布可能因本人验证而暂停，建议发布时在场。"
     : ks
@@ -1701,20 +1708,39 @@ async function choosePreLoginBrowserBackend({ platform = "" } = {}) {
   if (selected !== null) preLoginBrowserBackend = selected;
   return selected;
 }
+function formatProxyOptionLabel(p, platform = PLATFORM) {
+  const domestic = (platform || "douyin") !== "tiktok";
+  const geo = p.geo_loc ? ` · ${p.geo_loc}` : "";
+  const overseasWarn = domestic && p.geo_checked && !p.is_mainland ? " · ⚠️非大陆(慢/高风控)" : "";
+  return `${p.label}${geo}${overseasWarn} · ${p.status} · 占用${p.used_by} · ${p.masked}${p.enabled ? "" : " · 已停用"}`;
+}
 // 登录前选代理:返回 "" (不用) | "auto" | 具体url | null(取消)
-async function choosePreLoginProxy() {
+async function choosePreLoginProxy({ platform = PLATFORM } = {}) {
   let opts = [];
   try { opts = await api("/api/proxies/options"); } catch (e) { }
+  const domestic = (platform || "douyin") !== "tiktok";
+  const usablePool = opts.filter(p => (
+    p.enabled && !["bad", "auth_error", "blocked"].includes(p.status)
+    && Number(p.used_by || 0) === 0 && (!domestic || !p.geo_checked || p.is_mainland)
+  ));
+  const preferDirect = domestic && opts.length > 0 && usablePool.length === 0;
+  const autoLabel = !opts.length
+    ? "自动分配（池为空时不用代理）"
+    : preferDirect
+      ? "自动分配（仅大陆/未标注节点；当前池内无可用节点）"
+      : "自动分配（占用最少）";
   const options = [
-    { value: "auto", label: opts.length ? "自动分配（占用最少）" : "自动分配（池为空时不用代理）" },
-    ...opts.map(p => ({ value: p.url, label: `${p.label} · ${p.status} · 占用${p.used_by} · ${p.masked}${p.enabled ? "" : " · 已停用"}` })),
+    { value: "auto", label: autoLabel },
+    ...opts.map(p => ({ value: p.url, label: formatProxyOptionLabel(p, platform) })),
     { value: "__custom__", label: "✎ 手动输入指定代理…" },
     { value: "", label: "不用代理（使用本机网络）" },
   ];
   const v = await uiSelect({
     title: "选择本次登录使用的代理",
-    hint: "整个登录/扫码过程都走它,从一开始就绑定这条 IP(最稳)。",
-    options, value: "auto",
+    hint: preferDirect
+      ? "当前代理池无可用大陆节点；默认改用本机网络，避免境外代理导致国内平台加载慢或白屏。"
+      : "整个登录/扫码过程都走它,从一开始就绑定这条 IP(最稳)。",
+    options, value: preferDirect ? "" : "auto",
   });
   if (v === null) return null;
   if (v === "__custom__") {
@@ -1780,7 +1806,7 @@ function loginStartOptions(fingerprint) {
 async function startLogin() {
   const browserBackend = await choosePreLoginBrowserBackend();
   if (browserBackend === null) return;
-  const proxy = await choosePreLoginProxy();
+  const proxy = await choosePreLoginProxy({ platform: "douyin" });
   if (proxy === null) return;
   const fingerprint = await configurePreLoginFingerprint(browserBackend);
   if (fingerprint === null) return;
@@ -1851,7 +1877,7 @@ function pollLogin(tid) {
 async function startCreatorLogin() {
   const browserBackend = await choosePreLoginBrowserBackend();
   if (browserBackend === null) return;
-  const proxy = await choosePreLoginProxy();
+  const proxy = await choosePreLoginProxy({ platform: "douyin" });
   if (proxy === null) return;
   const fingerprint = await configurePreLoginFingerprint(browserBackend);
   if (fingerprint === null) return;
@@ -1869,7 +1895,7 @@ async function startCreatorLogin() {
 async function startXhsLogin() {
   const browserBackend = await choosePreLoginBrowserBackend({ platform: "xhs" });
   if (browserBackend === null) return;
-  const proxy = await choosePreLoginProxy();
+  const proxy = await choosePreLoginProxy({ platform: "xhs" });
   if (proxy === null) return;
   const fingerprint = await configurePreLoginFingerprint(browserBackend);
   if (fingerprint === null) return;
@@ -1892,7 +1918,7 @@ async function startXhsLogin() {
 async function startXhsCreatorLogin() {
   const browserBackend = await choosePreLoginBrowserBackend({ platform: "xhs" });
   if (browserBackend === null) return;
-  const proxy = await choosePreLoginProxy();
+  const proxy = await choosePreLoginProxy({ platform: "xhs" });
   if (proxy === null) return;
   const fingerprint = await configurePreLoginFingerprint(browserBackend);
   if (fingerprint === null) return;
@@ -1915,7 +1941,7 @@ async function startXhsCreatorLogin() {
 async function startKsLogin() {
   const browserBackend = await choosePreLoginBrowserBackend();
   if (browserBackend === null) return;
-  const proxy = await choosePreLoginProxy();
+  const proxy = await choosePreLoginProxy({ platform: "kuaishou" });
   if (proxy === null) return;
   const fingerprint = await configurePreLoginFingerprint(browserBackend);
   if (fingerprint === null) return;
@@ -1933,7 +1959,7 @@ async function startKsLogin() {
 async function startKsCreatorLogin() {
   const browserBackend = await choosePreLoginBrowserBackend();
   if (browserBackend === null) return;
-  const proxy = await choosePreLoginProxy();
+  const proxy = await choosePreLoginProxy({ platform: "kuaishou" });
   if (proxy === null) return;
   const fingerprint = await configurePreLoginFingerprint(browserBackend);
   if (fingerprint === null) return;
@@ -1951,7 +1977,7 @@ async function startKsCreatorLogin() {
 async function startChannelsLogin() {
   const browserBackend = await choosePreLoginBrowserBackend();
   if (browserBackend === null) return;
-  const proxy = await choosePreLoginProxy();
+  const proxy = await choosePreLoginProxy({ platform: "shipinhao" });
   if (proxy === null) return;
   const fingerprint = await configurePreLoginFingerprint(browserBackend);
   if (fingerprint === null) return;
@@ -1969,7 +1995,7 @@ async function startChannelsLogin() {
 async function startTikTokLogin() {
   const browserBackend = await choosePreLoginBrowserBackend({ platform: "tiktok" });
   if (browserBackend === null) return;
-  const proxy = await choosePreLoginProxy();
+  const proxy = await choosePreLoginProxy({ platform: "tiktok" });
   if (proxy === null) return;
   const fingerprint = await configurePreLoginFingerprint(browserBackend);
   if (fingerprint === null) return;
@@ -4086,7 +4112,7 @@ async function setProxy(id) {
   const cur = a && a.has_proxy ? a.proxy : "";
   const options = [
     { value: "auto", label: "🔀 自动分配(占用最少)" },
-    ...opts.map(p => ({ value: p.url, label: `${p.label} · ${p.status} · 占用${p.used_by} · ${p.masked}${p.enabled ? "" : " · 已停用"}` })),
+    ...opts.map(p => ({ value: p.url, label: formatProxyOptionLabel(p, a ? a.platform : PLATFORM) })),
     { value: "__custom__", label: "✎ 手动输入地址…" },
     { value: "", label: "🚫 清除代理(走真实 IP)" },
   ];
@@ -8592,11 +8618,13 @@ async function editPublish(id) {
       allow_duet: $("ep-tk-duet") ? $("ep-tk-duet").value !== "0" : true,
       allow_stitch: $("ep-tk-stitch") ? $("ep-tk-stitch").value !== "0" : true,
     });
+    const editCap = task.platform === "douyin" ? 30 : task.platform === "shipinhao" ? 16 : 20;
+    const showVisOpts = ["douyin", "xhs", "kuaishou"].includes(task.platform);
     $("ui-body").innerHTML = `
       <div><label class="field" for="ep-account">发布账号</label>
         <select id="ep-account">${accountOptions}</select></div>
-      <div><label class="field" for="ep-title">标题（≤20 字）</label>
-        <input id="ep-title" maxlength="20" value="${esc(task.title || "")}"></div>
+      <div><label class="field" for="ep-title">标题（≤${editCap} 字）</label>
+        <input id="ep-title" maxlength="${editCap}" value="${esc(task.title || "")}"></div>
       <div><label class="field" for="ep-desc">正文</label>
         <textarea id="ep-desc" rows="4">${esc(task.desc || "")}</textarea></div>
       <div><label class="field" for="ep-topics">话题</label>
@@ -8605,12 +8633,12 @@ async function editPublish(id) {
         <input type="datetime-local" id="ep-when" aria-label="定时发布（留空=尽快发）"></div>
       ${task.platform === "shipinhao" ? `<div><label class="field" for="ep-location">位置</label>
         <input id="ep-location" value="${esc(task.location || "")}" placeholder="城市或地点名"></div>` : ""}
-      ${task.platform === "douyin" ? `<fieldset class="publish-permissions">
+      ${showVisOpts ? `<fieldset class="publish-permissions">
         <legend>互动与权限</legend>
         <div class="publish-permission"><label class="field" for="ep-visibility">谁可以看</label>
           <select id="ep-visibility"><option value="public">公开</option><option value="friends">好友可见</option><option value="private">仅自己可见</option></select></div>
-        <div class="publish-permission"><label class="field" for="ep-allowsave">保存权限</label>
-          <select id="ep-allowsave"><option value="1">允许他人保存</option><option value="0">不允许</option></select></div>
+        ${task.platform === "douyin" ? `<div class="publish-permission"><label class="field" for="ep-allowsave">保存权限</label>
+          <select id="ep-allowsave"><option value="1">允许他人保存</option><option value="0">不允许</option></select></div>` : ""}
       </fieldset>` : ""}
       ${task.platform === "tiktok" ? `<fieldset class="publish-permissions">
         <legend>TikTok 可见范围与互动</legend>
@@ -8663,7 +8691,7 @@ async function refreshPublish() {
     <td class="acttd">
       ${["draft", "pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">${t.schedule_needs_confirmation ? "确认预约时间" : "编辑"}</button>` : ""}
       ${["pending", "failed"].includes(t.status) ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
-      ${t.status === "uncertain" ? `<button class="ghost sm" onclick="resolveTaskResult('publishes',${t.id})">核对结果</button>` : t.status === "publishing" ? `<span class="mut">执行中，请等待结果</span>` : `<button class="ghost sm danger" onclick="delPublish(${t.id})">${ic("i-trash")}删除</button>`}
+      ${t.status === "uncertain" ? `<button class="ghost sm" onclick="resolveTaskResult('publishes',${t.id})">核对结果</button>` : t.status === "publishing" ? `<span class="mut" id="pub-stage-${t.id}">${esc(t.live_stage || "执行中，请等待结果")}</span>` : `<button class="ghost sm danger" onclick="delPublish(${t.id})">${ic("i-trash")}删除</button>`}
     </td></tr>`).join("") || empty(7, "暂无发布任务", "i-send",
       PLATFORM === "kuaishou" ? "上传图集/视频加入队列(发布到快手创作平台)"
       : PLATFORM === "douyin" ? "上传图集/视频加入队列(发布到抖音创作平台)"
@@ -8683,9 +8711,30 @@ async function openPubInBrowser(accountId, url, platform = "shipinhao") {
 async function runPublish(id) {
   const btn = evtBtn();
   toast("发布中…会弹出浏览器窗口完成发布", "info", 8000);
+  let lastStage = "";
+  const stageTimer = setInterval(async () => {
+    try {
+      const resp = await fetch("/api/publish?platform=" + encodeURIComponent(pfHasPublish(PLATFORM) ? PLATFORM : "xhs"));
+      if (!resp.ok) return;
+      const rows = await resp.json();
+      const row = Array.isArray(rows) ? rows.find(item => item.id === id) : null;
+      const stage = String(row?.live_stage || "").trim();
+      if (!stage) return;
+      _busyHint = stage.includes("安全验证") ? "请在弹出窗口完成验证" : stage.slice(0, 24);
+      const rowEl = $(`pub-stage-${id}`);
+      if (rowEl) rowEl.textContent = stage;
+      if (stage !== lastStage) {
+        lastStage = stage;
+        if (stage.includes("安全验证") || stage.includes("验证码") || stage.includes("扫码")) {
+          toast(stage, "info", 12000);
+        }
+      }
+    } catch (_) {}
+  }, 2000);
   await withBusy(btn, "发布中", async () => {
     try { const r = await api("/api/publish/" + id + "/run-now", { method: "POST" }); toast(r.ok ? "发布成功 ✓" : "发布未成功:" + (r.error || ""), r.ok ? "ok" : "err", 6000); }
     catch (e) { toast("发布失败:" + e.message, "err"); }
+    finally { clearInterval(stageTimer); _busyHint = ""; }
   });
   refreshPublish();
 }
@@ -8740,14 +8789,21 @@ let REPOST_TARGET = "xhs";           // xhs / douyin / shipinhao
 const repostXhs = (id) => openRepost(id, "xhs");
 const repostDouyin = (id) => openRepost(id, "douyin");
 const repostChannels = (id) => openRepost(id, "shipinhao");
+const repostKuaishou = (id) => openRepost(id, "kuaishou");
+const repostTiktok = (id) => openRepost(id, "tiktok");
 async function pickRepostTarget(id) {
+  const rec = CONTENTS.find(r => r.id === id);
+  const options = [
+    { value: "xhs", label: "小红书" },
+    { value: "douyin", label: "抖音" },
+    { value: "kuaishou", label: "快手" },
+    { value: "shipinhao", label: "视频号" },
+  ];
+  if (!rec || rec.media_type === "video") options.push({ value: "tiktok", label: "TikTok" });
   const target = await uiSelect({
     title: "转发作品",
     hint: "选择要发布到的平台，下一步可以继续编辑标题、文案和发布时间。",
-    options: [
-      { value: "xhs", label: "小红书" },
-      { value: "shipinhao", label: "视频号" },
-    ],
+    options,
     value: "shipinhao",
   });
   if (target === null) return;
@@ -8755,7 +8811,7 @@ async function pickRepostTarget(id) {
 }
 async function openRepost(id, target) {
   const rec = CONTENTS.find(r => r.id === id);
-  // 拉取目标平台可发布账号:小红书需创作号;抖音/视频号需任一登录态
+  // 拉取目标平台可发布账号:小红书需创作号;其余平台需任一登录态
   const all = await api("/api/accounts?platform=" + target);
   const accs = target === "xhs"
     ? all.filter(a => a.has_creator)
@@ -8765,15 +8821,21 @@ async function openRepost(id, target) {
       ? "请先在小红书账号页完成「创作者登录」(发布用)"
       : target === "shipinhao"
         ? "请先在视频号账号页完成「视频号登录」"
-        : "请先在抖音账号页完成登录(扫码/创作者/Cookie)";
+        : target === "kuaishou"
+          ? "请先在快手账号页完成登录"
+          : target === "tiktok"
+            ? "请先在 TikTok 账号页完成登录"
+            : "请先在抖音账号页完成登录(扫码/创作者/Cookie)";
     toast(loginHint, "err");
     return;
   }
   REPOST_ID = id; REPOST_TARGET = target;
   const isDy = target === "douyin";
   const isChannels = target === "shipinhao";
+  const isKs = target === "kuaishou";
+  const isTk = target === "tiktok";
   const cap = isDy ? 30 : isChannels ? 16 : 20;
-  const pname = isDy ? "抖音" : isChannels ? "视频号" : "小红书";
+  const pname = isDy ? "抖音" : isChannels ? "视频号" : isKs ? "快手" : isTk ? "TikTok" : "小红书";
   $("rp-head").textContent = "发" + pname + " · 编辑后推送";
   $("rp-title-label").textContent = `标题(≤${cap} 字)`;
   $("rp-title").maxLength = cap;
@@ -8907,7 +8969,9 @@ async function submitRepost() {
     media_order: rpMediaOrder(),
   };
   const pname = REPOST_TARGET === "douyin" ? "抖音"
-    : REPOST_TARGET === "shipinhao" ? "视频号" : "小红书";
+    : REPOST_TARGET === "shipinhao" ? "视频号"
+    : REPOST_TARGET === "kuaishou" ? "快手"
+    : REPOST_TARGET === "tiktok" ? "TikTok" : "小红书";
   try {
     body.scheduled_at = scheduleToApi(body.scheduled_at);
     const r = await withBusy(btn, "提交中", () => api("/api/contents/" + REPOST_ID + "/repost-" + REPOST_TARGET, {

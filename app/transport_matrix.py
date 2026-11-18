@@ -13,8 +13,6 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
-from .platforms.channels.wmpf_cdp import inspect_endpoint_file
-
 
 TRANSPORT_SPECS: tuple[dict[str, Any], ...] = (
     # Douyin reads controlled by douyin_read_mode.
@@ -146,6 +144,8 @@ def _channels_cdp_readiness(cfg: Any) -> dict[str, Any]:
             "error": "内置视频号代理已运行，请在桌面微信中打开一次视频号页面",
         }
     if endpoint_file:
+        from .platforms.channels.wmpf_cdp import inspect_endpoint_file
+
         info = inspect_endpoint_file(endpoint_file)
         ready = bool(info.get("exists") and info.get("valid"))
         return {

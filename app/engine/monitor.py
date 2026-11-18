@@ -367,6 +367,7 @@ class MonitorEngine:
         self._inflight: set = set()           # 正在抓取的目标,避免同目标并发
         self._publish_sem = asyncio.Semaphore(1)   # 发布串行(有头浏览器,一次一个)
         self._publishing: set[int] = set()
+        self._publish_stages: dict[int, str] = {}
         self._commenting: set[int] = set()         # 正在执行的评论任务 id
         self._actioning: set[int] = set()           # 正在执行的写操作任务 id
         self._collection_tasks: dict[int, asyncio.Task] = {}  # 一次性关键词采集
@@ -4042,6 +4043,8 @@ class MonitorEngine:
                         or len(set(media_order)) != len(media_order)):
                     raise ValueError("转发媒体选择须为非空、不重复且未越界的整数序号列表")
                 files = [files[i] for i in media_order]
+            if target_platform == "tiktok" and rec.media_type != "video":
+                raise ValueError("TikTok 网页发布当前仅支持视频")
             if target_platform == "xhs":
                 from ..platforms.xhs.media import validate_publish_files
                 files = validate_publish_files(
@@ -4184,92 +4187,113 @@ class MonitorEngine:
             # 快手发布:登录态在该账号持久 profile 里(creator/storage 任一即可),走浏览器自动化
             if not state:
                 return await self._finish_publish(
-                    task_id, False, "", "该账号未完成快手「创作者登录」,请先在账号页点「创作者登录」")
-            try:
-                ok, url, err = await publish_kuaishou(self.browser, identity, state,
-                                                      media_type, title, desc, files,
-                                                      topics=topics, headed=True,
-                                                      visibility=visibility,
-                                                      allow_save=allow_save)
-            except Exception as e:
-                ok, url, err = False, "", f"发布异常: {e!r}"
-            return await self._finish_publish(task_id, ok, url, err, platform="kuaishou")
+                    task_id, False, "",
+                    "该账号未完成快手「创作者登录」,请先在账号页点「创作者登录」",
+                    platform="kuaishou")
+            return await self._run_browser_publish(
+                task_id, "kuaishou", publish_kuaishou,
+                self.browser, identity, state, media_type, title, desc, files,
+                topics=topics, headed=True, visibility=visibility,
+                allow_save=allow_save)
 
         if platform == "shipinhao":
             # 视频号发布:登录态在该账号持久 profile 里,走浏览器自动化(wujie shadowRoot)
             if not state:
                 return await self._finish_publish(
-                    task_id, False, "", "该账号未完成视频号登录,请先在账号页点「视频号登录」")
-            try:
-                ok, url, err = await publish_channels(self.browser, identity, state,
-                                                      media_type, title, desc, files,
-                                                      topics=topics, headed=True,
-                                                      location=location)
-            except Exception as e:
-                ok, url, err = False, "", f"发布异常: {e!r}"
-            return await self._finish_publish(task_id, ok, url, err, platform="shipinhao")
+                    task_id, False, "",
+                    "该账号未完成视频号登录,请先在账号页点「视频号登录」",
+                    platform="shipinhao")
+            return await self._run_browser_publish(
+                task_id, "shipinhao", publish_channels,
+                self.browser, identity, state, media_type, title, desc, files,
+                topics=topics, headed=True, location=location)
 
         if platform == "douyin":
             # 抖音发布:同快手走浏览器自动化,登录态在该账号持久 profile 里
             if not state:
                 return await self._finish_publish(
-                    task_id, False, "", "该账号未完成抖音「创作者登录」,请先在账号页点「创作者登录」")
-            try:
-                ok, url, err = await publish_douyin(self.browser, identity, state,
-                                                    media_type, title, desc, files,
-                                                    topics=topics, visibility=visibility,
-                                                    allow_save=allow_save, headed=True)
-            except Exception as e:
-                ok, url, err = False, "", f"发布异常: {e!r}"
-            return await self._finish_publish(task_id, ok, url, err, platform="douyin")
+                    task_id, False, "",
+                    "该账号未完成抖音「创作者登录」,请先在账号页点「创作者登录」",
+                    platform="douyin")
+            return await self._run_browser_publish(
+                task_id, "douyin", publish_douyin,
+                self.browser, identity, state, media_type, title, desc, files,
+                topics=topics, visibility=visibility,
+                allow_save=allow_save, headed=True)
 
         if platform == "tiktok":
             if not state:
                 return await self._finish_publish(
                     task_id, False, "", "该账号未完成 TikTok 登录，请先在账号页登录",
                     platform="tiktok")
-            try:
-                ok, url, err = await publish_tiktok(
-                    self.browser, identity, state, media_type, title, desc, files,
-                    topics=topics, visibility=visibility,
-                    allow_comment=allow_comment, allow_duet=allow_duet,
-                    allow_stitch=allow_stitch, headed=True,
-                    on_submit=(lambda: self._mark_write_submit(
-                        PublishTask, task_id, channel="browser")))
-            except asyncio.CancelledError:
-                await self._finish_publish(
-                    task_id, False, "",
-                    "write_uncertain:TikTok 发布已中断，结果需到平台核对",
-                    platform="tiktok")
-                raise
-            except Exception as e:
-                ok, url, err = False, "", f"发布异常: {e!r}"
-            return await self._finish_publish(
-                task_id, ok, url, err, platform="tiktok")
+            return await self._run_browser_publish(
+                task_id, "tiktok", publish_tiktok,
+                self.browser, identity, state, media_type, title, desc, files,
+                topics=topics, visibility=visibility,
+                allow_comment=allow_comment, allow_duet=allow_duet,
+                allow_stitch=allow_stitch, headed=True)
 
         if not state:
             return await self._finish_publish(
-                task_id, False, "", "该账号未完成小红书「创作者登录」,请先在账号页点「创作者登录」")
+                task_id, False, "", "该账号未完成小红书「创作者登录」,请先在账号页点「创作者登录」",
+                platform="xhs")
 
         xhs_mode = ("browser" if native_mode
                     else self._xhs_publish_mode())
+        return await self._run_browser_publish(
+            task_id, "xhs", publish_xhs,
+            self.browser, identity, state, media_type, title, desc, files,
+            topics=topics, headed=True, mode=xhs_mode,
+            visibility=visibility, preserve_error=True, channel=xhs_mode,
+            cancel_message="write_uncertain:发布已中断，结果需到平台核对")
+
+    def get_publish_stage(self, task_id: int) -> str:
+        """Return transient browser publish progress/verification hint for UI polling."""
+        return str((getattr(self, "_publish_stages", None) or {}).get(task_id) or "")
+
+    def _set_publish_stage(self, task_id: int, stage: str) -> None:
+        stages = getattr(self, "_publish_stages", None)
+        if stages is None:
+            stages = {}
+            self._publish_stages = stages
+        text = str(stage or "").strip()
+        if text:
+            stages[task_id] = text
+        else:
+            stages.pop(task_id, None)
+
+    async def _run_browser_publish(self, task_id: int, platform: str, publish_fn,
+                                     *args, channel: str = "browser",
+                                     cancel_message: str = "", **kwargs) -> dict:
+        """Execute one platform publisher with uniform submit-boundary & cancel protection."""
+        pname = {"kuaishou": "快手", "douyin": "抖音",
+                 "shipinhao": "视频号", "tiktok": "TikTok",
+                 "xhs": "小红书"}.get(platform, platform)
+        call_kwargs = dict(kwargs)
         try:
-            ok, url, err = await publish_xhs(self.browser, identity, state, media_type,
-                                             title, desc, files, topics=topics,
-                                             headed=True,
-                                             mode=xhs_mode,
-                                             visibility=visibility,
-                                             preserve_error=True,
-                                             on_submit=(
-                                                 lambda: self._mark_write_submit(
-                                                     PublishTask, task_id, channel=xhs_mode)))
+            params = inspect.signature(publish_fn).parameters
+            if "on_stage" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            ):
+                call_kwargs["on_stage"] = lambda msg: self._set_publish_stage(task_id, msg)
+        except Exception:
+            pass
+        try:
+            ok, url, err = await publish_fn(
+                *args,
+                on_submit=(lambda: self._mark_write_submit(
+                    PublishTask, task_id, channel=channel)),
+                **call_kwargs,
+            )
         except asyncio.CancelledError:
-            await self._finish_publish(
-                task_id, False, "", "write_uncertain:发布已中断，结果需到平台核对")
+            msg = cancel_message or f"write_uncertain:{pname} 发布已中断，结果需到平台核对"
+            await self._finish_publish(task_id, False, "", msg, platform=platform)
             raise
         except Exception as e:
             ok, url, err = False, "", f"发布异常: {e!r}"
-        return await self._finish_publish(task_id, ok, url, err)
+        finally:
+            self._set_publish_stage(task_id, "")
+        return await self._finish_publish(task_id, ok, url, err, platform=platform)
 
     async def _finish_publish(self, task_id, ok, url, err, platform="xhs") -> dict:
         platform_error = err

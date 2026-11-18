@@ -97,6 +97,8 @@ SELECTOR_GROUPS: Mapping[str, tuple[SelectorCandidate, ...]] = MappingProxyType(
             '[class*="upload"][class*="progress"]',
         ),
         _css("upload_progress_role", '[role="progressbar"]'),
+        _css("img_upload_area_uploading", ".img-upload-area .uploading"),
+        _css("img_list_uploading", ".img-list .img-container .uploading"),
         _text("upload_in_progress_text", "上传中"),
         _text("upload_processing_text", "处理中"),
     ),

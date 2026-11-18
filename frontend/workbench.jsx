@@ -256,8 +256,9 @@ function PublishPreview({ revision, contextVersion }) {
       const title = $("pub-title").value;
       const desc = $("pub-desc").value;
       if (titleBadge) {
-        titleBadge.textContent = `${title.length} / 20`;
-        titleBadge.dataset.nearLimit = title.length >= 18 ? "true" : "false";
+        const titleLimit = Number($("pub-title")?.maxLength) || 20;
+        titleBadge.textContent = `${title.length} / ${titleLimit}`;
+        titleBadge.dataset.nearLimit = title.length >= Math.max(1, titleLimit - 2) ? "true" : "false";
       }
       if (descBadge) descBadge.textContent = `${desc.length} 字`;
       setCopy({ title, desc, topics: $("pub-topics").value,
