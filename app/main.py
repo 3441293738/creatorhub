@@ -7473,6 +7473,8 @@ class XhsDotsAskIn(BaseModel):
     account_id: int
     question: str = PydanticField(min_length=1, max_length=800)
     timeout_s: int = PydanticField(default=120, ge=10, le=300)
+    # 先点「新对话」再提问,避免主会话历史影响回答;入口没找到时退回主会话(session_mode 标出)
+    new_session: bool = True
 
 
 @app.post("/api/xhs/dots/ask")
@@ -7495,7 +7497,8 @@ async def xhs_dots_ask(body: XhsDotsAskIn):
 
     async def _ask():
         return await fetch_xhs_dots_ask(
-            browser, identity, question, timeout_s=body.timeout_s)
+            browser, identity, question, timeout_s=body.timeout_s,
+            new_session=body.new_session)
 
     payload, outcome = await _run_account_read(
         body.account_id, OperationKind.READ_HEAVY,

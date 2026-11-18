@@ -1,0 +1,568 @@
+{
+ "reply": {
+  "success": true,
+  "msg": "成功",
+  "data": {
+   "messages": [
+    {
+     "reply_to": "msg_ad203013b7364ea4",
+     "timestamp": 1794968186636,
+     "sender_id": "diandian-agent",
+     "msg_info": {
+      "payloads": [
+       {
+        "content_type": 6,
+        "base_deeplink": {
+         "underline": "xhsdiscover://search/result?background_transparent_v2=true&halfShadowCorner=12&needNewRootNavigation=true&business_type=DQA&answer_id=ai-msg_ad203013b7364ea4&result_version=2&halfShadowHeight=0.75&enable_half_screen=true&half_screen_height_ratio=0.7&half_screen_mask=true&add_to_history=true&source=dqa",
+         "underline_v2": "xhsdiscover://search/result?background_transparent_v2=true&halfShadowCorner=12&needNewRootNavigation=true&business_type=DQA&answer_id=ai-msg_ad203013b7364ea4&result_version=2&halfShadowHeight=0.75&enable_half_screen=true&half_screen_height_ratio=0.7&half_screen_mask=true&add_to_history=true&source=dqa",
+         "recommend": "xhsdiscover://rn/diandian/source-panel?background_transparent_v2=true&statusbar_transparent=true&needNewRootNavigation=true&halfShadowHeight=0.75&halfShadowCorner=16&sourceType=0&search_id=ai-msg_ad203013b7364ea4&tag=&size=10&page_from=0&page_source=onebox&quoted_text=",
+         "quote": "xhsdiscover://rn/diandian/source-panel?background_transparent_v2=true&statusbar_transparent=true&needNewRootNavigation=true&halfShadowHeight=0.75&halfShadowCorner=16&sourceType=2&search_id=ai-msg_ad203013b7364ea4&query=&card_id=ai-msg_ad203013b7364ea4&business_type=search_complex_onepage&tag=&size=10&page_from=0&extraInfo=%7B%7D"
+        },
+        "message_type": "ai_answer"
+       },
+       {
+        "content_type": 8,
+        "elements": [
+         {
+          "element_type": "spark",
+          "spark": {
+           "id": "dots_source_header",
+           "template_name": "dots_source_header",
+           "data": {
+            "sub_title": "参考小红书与全网77篇内容",
+            "queryTitle": "参考小红书与全网77篇内容",
+            "avatars": [
+             "https://img.example/x.jpg",
+             "https://img.example/x.jpg"
+            ],
+            "deeplink": "xhsdiscover://rn/diandian/source-panel?background_transparent_v2=true&statusbar_transparent=true&needNewRootNavigation=true&halfShadowHeight=0.75&halfShadowCorner=16&sourceType=2&search_id=ai-msg_ad203013b7364ea4&query=&card_id=ai-msg_ad203013b7364ea4&business_type=search_complex_onepage&tag=&size=10&page_from=0&extraInfo=%7B%7D"
+           }
+          }
+         },
+         {
+          "element_type": "markdown",
+          "markdown": {
+           "text": "​***​夏天7-10天一次，冬天10-14天一次​***​，这是大多数养比熊的人比较认可的节奏。比熊皮脂分泌不算快，千万别天天洗。::dqa:quote:{\"text_length\":66,\"params\":{\"text_source_param\":\"%7B%22id%22%3A%22000000000000000000000003%2C000000000000000000000005%22%2C%22itemType%22%3A%22note%22%2C%22entity_id%22%3A%22000000000000000000000003%2C000000000000000000000005%22%2C%22entity_type%22%3A%22note%22%2C%22source_content_type%22%3A%22note_text%22%2C%22source_content_label%22%3A%22%E6%96%87%E6%9C%AC%22%7D\"},\"avatar_url\":[\"https://img.example/x.jpg\",\"https://img.example/x.jpg\"],\"source_count\":2,\"entity_id\":\"000000000000000000000003,000000000000000000000005\",\"entity_type\":\"note\",\"source_content_type\":\"note_text\",\"source_content_label\":\"文本\"}::\n\n不过也有偏保守的说法认为2-3周一次就够了，主要看你家狗的活动量和皮肤状态。有个养泰迪的铲屎官分享过，之前一周洗一次老年后反复皮肤病，改成2-3周一次反而好了。\n\n所以核心原则是：​***​没脏没味就别硬洗，皮肤舒服比\"按时洗\"更重要。​***​\n\n#### ⚠️ 洗太勤 vs 洗太少\n\n两边都有代价：\n\n- 洗太勤：破坏<u>皮肤屏障</u> → 皮屑、瘙痒、毛枯硬、越洗越臭\n\n- 洗太少：毛打结、氧化发黄、油脂堵塞、皮肤病、泪痕加重\n\n偶尔脏了不用全身洗，擦脚、擦嘴、擦屁股就行。\n\n#### 🚫 这些时候别洗\n\n- 3个月内幼犬 / 疫苗没打完：只能<u>免洗泡沫</u>局部擦\n\n- 刚打完疫苗一周内\n\n- 生病、刚到家、刚吃完饭\n\n- 下雨天（不容易吹干）\n\n#### 🧴 洗的时候注意\n\n上次聊梳毛的时候提到过，这里再强调一下最容易踩的坑：\n\n1. ​**​洗前必须梳通​**​——湿毛+打结=死结，只能剃光\n\n2. ​**​耳朵塞棉花​**​——防进水中耳炎\n\n3. ​**​水温37-40°C​**​——手腕试温不烫就行\n\n4. ​**​沐浴露要稀释​**​——直接搓冲不干净，刺激皮肤\n\n5. ​**​必须彻底吹干​**​——这是最大坑，半干=湿疹+真菌+打结，边吹边梳才行\n"
+          }
+         }
+        ],
+        "message_type": "ai_answer"
+       }
+      ],
+      "extra": {
+       "message_ordinal": "0",
+       "message_role": "main",
+       "platform": "browser",
+       "langfuse_trace_id": "t-0",
+       "env": "prod",
+       "xray_trace_id": "t-0",
+       "user_id": "000000000000000000000001",
+       "assistant_turn_id": "ai-msg_ad203013b7364ea4",
+       "client_session_id": "t-0",
+       "persist_policy": "on_complete",
+       "message_role_ordinal": "0",
+       "app_id": "xhs-pc",
+       "app_version": "131.0.0.0",
+       "message_type": "agent.message.send",
+       "input_extra": "map[client_session_id:2h67170btls2zqdq1ekl4]",
+       "request_id": "t-0",
+       "finish_reason": "stop",
+       "source": "home"
+      }
+     },
+     "session_id": "xhs_dots-000000000000000000000001",
+     "status": 1,
+     "current_version": 1,
+     "max_version": 1,
+     "msg_id": "ai-msg_ad203013b7364ea4"
+    },
+    {
+     "current_version": 1,
+     "msg_id": "ai-msg_ad203013b7364ea4-post-1",
+     "reply_to": "msg_ad203013b7364ea4",
+     "timestamp": 1794968186637,
+     "sender_id": "diandian-agent",
+     "msg_info": {
+      "payloads": [
+       {
+        "element": {
+         "element_type": "spark",
+         "spark": {
+          "id": "dots_continue_ask_card",
+          "template_name": "dots_continue_ask_card",
+          "data": {
+           "type": "recommend",
+           "entities": [
+            {
+             "word": "比熊洗澡用什么沐浴露比较好？"
+            },
+            {
+             "word": "比熊洗完澡怎么吹干才蓬松？"
+            }
+           ]
+          }
+         }
+        },
+        "content_type": 7,
+        "message_type": "ai_suggest"
+       }
+      ],
+      "extra": {}
+     },
+     "max_version": 1,
+     "session_id": "xhs_dots-000000000000000000000001",
+     "status": 1
+    }
+   ],
+   "has_more": false
+  },
+  "code": 0
+ },
+ "detail": {
+  "msg": "成功",
+  "data": {
+   "messages": [
+    {
+     "status": 1,
+     "current_version": 1,
+     "max_version": 1,
+     "session_id": "xhs_dots-000000000000000000000001",
+     "sender_id": "diandian-agent",
+     "msg_info": {
+      "payloads": [
+       {
+        "content_type": 7,
+        "element": {
+         "element_type": "spark",
+         "spark": {
+          "id": "dots_continue_ask_card",
+          "template_name": "dots_continue_ask_card",
+          "data": {
+           "type": "recommend",
+           "entities": [
+            {
+             "word": "比熊洗澡用什么沐浴露比较好？"
+            },
+            {
+             "word": "比熊洗完澡怎么吹干才蓬松？"
+            }
+           ]
+          }
+         }
+        },
+        "message_type": "ai_suggest"
+       }
+      ]
+     },
+     "reply_to": "msg_ad203013b7364ea4",
+     "msg_id": "ai-msg_ad203013b7364ea4-post-1",
+     "timestamp": 1794968186637
+    },
+    {
+     "msg_id": "ai-msg_ad203013b7364ea4",
+     "sender_id": "diandian-agent",
+     "msg_info": {
+      "payloads": [
+       {
+        "content_type": 6,
+        "base_deeplink": {
+         "underline": "xhsdiscover://search/result?background_transparent_v2=true&halfShadowCorner=12&needNewRootNavigation=true&business_type=DQA&answer_id=ai-msg_ad203013b7364ea4&result_version=2&halfShadowHeight=0.75&enable_half_screen=true&half_screen_height_ratio=0.7&half_screen_mask=true&add_to_history=true&source=dqa",
+         "underline_v2": "xhsdiscover://search/result?background_transparent_v2=true&halfShadowCorner=12&needNewRootNavigation=true&business_type=DQA&answer_id=ai-msg_ad203013b7364ea4&result_version=2&halfShadowHeight=0.75&enable_half_screen=true&half_screen_height_ratio=0.7&half_screen_mask=true&add_to_history=true&source=dqa",
+         "recommend": "xhsdiscover://rn/diandian/source-panel?background_transparent_v2=true&statusbar_transparent=true&needNewRootNavigation=true&halfShadowHeight=0.75&halfShadowCorner=16&sourceType=0&search_id=ai-msg_ad203013b7364ea4&tag=&size=10&page_from=0&page_source=onebox&quoted_text=",
+         "quote": "xhsdiscover://rn/diandian/source-panel?background_transparent_v2=true&statusbar_transparent=true&needNewRootNavigation=true&halfShadowHeight=0.75&halfShadowCorner=16&sourceType=2&search_id=ai-msg_ad203013b7364ea4&query=&card_id=ai-msg_ad203013b7364ea4&business_type=search_complex_onepage&tag=&size=10&page_from=0&extraInfo=%7B%7D"
+        },
+        "message_type": "ai_answer"
+       },
+       {
+        "content_type": 8,
+        "elements": [
+         {
+          "element_type": "spark",
+          "spark": {
+           "id": "dots_source_header",
+           "template_name": "dots_source_header",
+           "data": {
+            "sub_title": "参考小红书与全网77篇内容",
+            "queryTitle": "参考小红书与全网77篇内容",
+            "avatars": [
+             "https://img.example/x.jpg",
+             "https://img.example/x.jpg"
+            ],
+            "deeplink": "xhsdiscover://rn/diandian/source-panel?background_transparent_v2=true&statusbar_transparent=true&needNewRootNavigation=true&halfShadowHeight=0.75&halfShadowCorner=16&sourceType=2&search_id=ai-msg_ad203013b7364ea4&query=&card_id=ai-msg_ad203013b7364ea4&business_type=search_complex_onepage&tag=&size=10&page_from=0&extraInfo=%7B%7D"
+           }
+          }
+         },
+         {
+          "element_type": "markdown",
+          "markdown": {
+           "text": "​***​夏天7-10天一次，冬天10-14天一次​***​，这是大多数养比熊的人比较认可的节奏。比熊皮脂分泌不算快，千万别天天洗。::dqa:quote:{\"text_length\":66,\"params\":{\"text_source_param\":\"%7B%22id%22%3A%22000000000000000000000003%2C000000000000000000000005%22%2C%22itemType%22%3A%22note%22%2C%22entity_id%22%3A%22000000000000000000000003%2C000000000000000000000005%22%2C%22entity_type%22%3A%22note%22%2C%22source_content_type%22%3A%22note_text%22%2C%22source_content_label%22%3A%22%E6%96%87%E6%9C%AC%22%7D\"},\"avatar_url\":[\"https://img.example/x.jpg\",\"https://img.example/x.jpg\"],\"source_count\":2,\"entity_id\":\"000000000000000000000003,000000000000000000000005\",\"entity_type\":\"note\",\"source_content_type\":\"note_text\",\"source_content_label\":\"文本\",\"items\":[{\"entity_type\":\"note\",\"title\":\"比熊洗澡频率&在家洗澡避坑指南\",\"author_nickname\":\"作者甲\",\"author_avatar\":\"https://img.example/x.jpg\",\"content_summary\":\"养比熊的家长都懂😭\\n一身雪白小卷毛，洗对就是软fufu棉花糖\\n洗错直接枯黄打结、臭烘烘还烂皮肤\\n真不是你手残，是踩坑太多！\\n\\t\\n一、比熊到底多久洗一次才正确？🕒\\n\\t\\n比熊是双层卷毛，皮脂分泌不算快\",\"publish_time\":1771219140000},{\"entity_type\":\"note\",\"title\":\"🐶比熊多久洗一次澡？新手必看🛁\",\"author_nickname\":\"作者乙\",\"author_avatar\":\"https://img.example/x.jpg\",\"content_summary\":\"养比熊、泰迪这些小型犬，洗澡真的很有讲究！\\n洗太勤伤皮肤，洗太勤又臭烘烘，到底多久洗一次？\\n整理了小型犬洗澡的5个实用要点，看完不纠结👇\\n\\t\\n📌【1. 多久洗一次？】\\n✅ 夏天：7-10天洗一次\",\"publish_time\":1790851711000}]}::\n\n不过也有偏保守的说法认为2-3周一次就够了，主要看你家狗的活动量和皮肤状态。有个养泰迪的铲屎官分享过，之前一周洗一次老年后反复皮肤病，改成2-3周一次反而好了。\n\n所以核心原则是：​***​没脏没味就别硬洗，皮肤舒服比\"按时洗\"更重要。​***​\n\n#### ⚠️ 洗太勤 vs 洗太少\n\n两边都有代价：\n\n- 洗太勤：破坏<u>皮肤屏障</u> → 皮屑、瘙痒、毛枯硬、越洗越臭\n\n- 洗太少：毛打结、氧化发黄、油脂堵塞、皮肤病、泪痕加重\n\n偶尔脏了不用全身洗，擦脚、擦嘴、擦屁股就行。\n\n#### 🚫 这些时候别洗\n\n- 3个月内幼犬 / 疫苗没打完：只能<u>免洗泡沫</u>局部擦\n\n- 刚打完疫苗一周内\n\n- 生病、刚到家、刚吃完饭\n\n- 下雨天（不容易吹干）\n\n#### 🧴 洗的时候注意\n\n上次聊梳毛的时候提到过，这里再强调一下最容易踩的坑：\n\n1. ​**​洗前必须梳通​**​——湿毛+打结=死结，只能剃光\n\n2. ​**​耳朵塞棉花​**​——防进水中耳炎\n\n3. ​**​水温37-40°C​**​——手腕试温不烫就行\n\n4. ​**​沐浴露要稀释​**​——直接搓冲不干净，刺激皮肤\n\n5. ​**​必须彻底吹干​**​——这是最大坑，半干=湿疹+真菌+打结，边吹边梳才行\n"
+          }
+         }
+        ],
+        "message_type": "ai_answer"
+       }
+      ],
+      "extra": {
+       "env": "prod",
+       "app_id": "xhs-pc",
+       "source": "home",
+       "user_id": "000000000000000000000001",
+       "platform": "browser",
+       "request_id": "t-0",
+       "app_version": "131.0.0.0",
+       "message_role": "main",
+       "message_type": "agent.message.send",
+       "finish_reason": "stop",
+       "xray_trace_id": "t-0",
+       "persist_policy": "on_complete",
+       "message_ordinal": "0",
+       "assistant_turn_id": "ai-msg_ad203013b7364ea4",
+       "client_session_id": "t-0",
+       "langfuse_trace_id": "t-0",
+       "message_role_ordinal": "0",
+       "input_extra": {
+        "client_session_id": "t-0"
+       }
+      }
+     },
+     "current_version": 1,
+     "max_version": 1,
+     "session_id": "xhs_dots-000000000000000000000001",
+     "timestamp": 1794968186636,
+     "status": 1,
+     "reply_to": "msg_ad203013b7364ea4"
+    },
+    {
+     "msg_id": "msg_ad203013b7364ea4",
+     "sender_id": "000000000000000000000001",
+     "max_version": 1,
+     "reply_to": "msg_ad203013b7364ea4",
+     "session_id": "xhs_dots-000000000000000000000001",
+     "timestamp": 1794968186629,
+     "msg_info": {
+      "payloads": [
+       {
+        "content_type": 4,
+        "inputs": [
+         {
+          "type": "TEXT",
+          "info": {
+           "text": "比熊多久洗一次澡比较合适"
+          }
+         }
+        ],
+        "message_type": "user_input"
+       }
+      ],
+      "extra": {
+       "env": "prod",
+       "app_id": "xhs-pc",
+       "platform": "browser",
+       "request_id": "t-0",
+       "app_version": "131.0.0.0",
+       "xray_trace_id": "t-0",
+       "input_extra": {
+        "sync_app": "enable",
+        "client_session_id": "t-0",
+        "use_deepseek_model": "true",
+        "forbidden_travel_agent": "enable",
+        "is_first_message_in_page": "true"
+       }
+      }
+     },
+     "status": 1,
+     "current_version": 1
+    },
+    {
+     "session_id": "xhs_dots-000000000000000000000001",
+     "msg_id": "ai-msg_b31bc9b737724026-post-1",
+     "timestamp": 1794968071815,
+     "sender_id": "diandian-agent",
+     "current_version": 1,
+     "reply_to": "msg_b31bc9b737724026",
+     "msg_info": {
+      "payloads": [
+       {
+        "content_type": 7,
+        "element": {
+         "element_type": "spark",
+         "spark": {
+          "id": "dots_continue_ask_card",
+          "template_name": "dots_continue_ask_card",
+          "data": {
+           "type": "recommend",
+           "entities": [
+            {
+             "word": "比熊打结了怎么自己开结？"
+            },
+            {
+             "word": "比熊多久洗一次澡比较合适？"
+            }
+           ]
+          }
+         }
+        },
+        "message_type": "ai_suggest"
+       }
+      ]
+     },
+     "status": 1,
+     "max_version": 1
+    },
+    {
+     "timestamp": 1794968071814,
+     "sender_id": "diandian-agent",
+     "reply_to": "msg_b31bc9b737724026",
+     "session_id": "xhs_dots-000000000000000000000001",
+     "msg_id": "ai-msg_b31bc9b737724026",
+     "msg_info": {
+      "payloads": [
+       {
+        "content_type": 6,
+        "base_deeplink": {
+         "underline": "xhsdiscover://search/result?background_transparent_v2=true&halfShadowCorner=12&needNewRootNavigation=true&business_type=DQA&answer_id=ai-msg_b31bc9b737724026&result_version=2&halfShadowHeight=0.75&enable_half_screen=true&half_screen_height_ratio=0.7&half_screen_mask=true&add_to_history=true&source=dqa",
+         "underline_v2": "xhsdiscover://search/result?background_transparent_v2=true&halfShadowCorner=12&needNewRootNavigation=true&business_type=DQA&answer_id=ai-msg_b31bc9b737724026&result_version=2&halfShadowHeight=0.75&enable_half_screen=true&half_screen_height_ratio=0.7&half_screen_mask=true&add_to_history=true&source=dqa",
+         "recommend": "xhsdiscover://rn/diandian/source-panel?background_transparent_v2=true&statusbar_transparent=true&needNewRootNavigation=true&halfShadowHeight=0.75&halfShadowCorner=16&sourceType=0&search_id=ai-msg_b31bc9b737724026&tag=&size=10&page_from=0&page_source=onebox&quoted_text=",
+         "quote": "xhsdiscover://rn/diandian/source-panel?background_transparent_v2=true&statusbar_transparent=true&needNewRootNavigation=true&halfShadowHeight=0.75&halfShadowCorner=16&sourceType=2&search_id=ai-msg_b31bc9b737724026&query=&card_id=ai-msg_b31bc9b737724026&business_type=search_complex_onepage&tag=&size=10&page_from=0&extraInfo=%7B%7D"
+        },
+        "message_type": "ai_answer"
+       },
+       {
+        "content_type": 8,
+        "elements": [
+         {
+          "element_type": "spark",
+          "spark": {
+           "id": "dots_source_header",
+           "template_name": "dots_source_header",
+           "data": {
+            "sub_title": "参考小红书与全网83篇内容",
+            "queryTitle": "参考小红书与全网83篇内容",
+            "avatars": [
+             "https://img.example/x.jpg",
+             "https://img.example/x.jpg"
+            ],
+            "deeplink": "xhsdiscover://rn/diandian/source-panel?background_transparent_v2=true&statusbar_transparent=true&needNewRootNavigation=true&halfShadowHeight=0.75&halfShadowCorner=16&sourceType=2&search_id=ai-msg_b31bc9b737724026&query=&card_id=ai-msg_b31bc9b737724026&business_type=search_complex_onepage&tag=&size=10&page_from=0&extraInfo=%7B%7D"
+           }
+          }
+         },
+         {
+          "element_type": "markdown",
+          "markdown": {
+           "text": "​***​需要，每天梳一次是基本操作。​***​\n\n比熊是双层卷毛，软毛里混着硬的螺旋状卷毛，天生就容易打结。不梳的话后果挺严重的：\n\n- 1天不梳：毛塌贴脸，颜值直接掉\n\n- 3天不梳：耳后、腋下、腿根悄悄打结，表面看不出来\n\n- 1周不梳：全变成死结，只能剃光\n\n- 长期不梳：闷出<u>湿疹皮炎</u>、毛枯发黄、藏螨虫\n\n每次大概5-15分钟就够了，不算太花时间。::dqa:quote:{\"text_length\":21,\"params\":{\"text_source_param\":\"%7B%22id%22%3A%22000000000000000000000004%2C000000000000000000000002%22%2C%22itemType%22%3A%22note%22%2C%22entity_id%22%3A%22000000000000000000000004%2C000000000000000000000002%22%2C%22entity_type%22%3A%22note%22%2C%22source_content_type%22%3A%22note_text%22%2C%22source_content_label%22%3A%22%E6%96%87%E6%9C%AC%22%7D\"},\"avatar_url\":[\"https://img.example/x.jpg\"],\"source_count\":2,\"entity_id\":\"000000000000000000000004,000000000000000000000002\",\"entity_type\":\"note\",\"source_content_type\":\"note_text\",\"source_content_label\":\"文本\",\"items\":[{\"entity_type\":\"note\",\"title\":\"比熊梳毛教程｜手残党也能梳出网红棉花糖\",\"author_nickname\":\"作者甲\",\"author_avatar\":\"https://img.example/x.jpg\",\"content_summary\":\"养比熊的都懂！\\n狗狗颜值一半天生，一半全靠梳毛😭\\n不梳毛=流浪汉炸毛、打结剃光、毛黄又糙\\n梳对毛=网红小圆脸、蓬松棉花糖、出门被追着问造型\\n\\t\\n这篇保姆级教程，手残党、狗狗不配合都能学会！\\n\\t\\n一、\",\"publish_time\":1771243258000},{\"entity_type\":\"note\",\"title\":\"比熊日常护理全流程｜新手保姆级\",\"author_nickname\":\"作者甲\",\"author_avatar\":\"https://img.example/x.jpg\",\"content_summary\":\"养比熊真的不难！\\n照着这套做，白净蓬松不打结、泪痕少、皮肤病远离～\\n新手直接抄作业！\\n\\t\\n一、梳毛｜每天必做！防打结防皮肤病🪮\\n\\t\\n频率：每天1次，洗澡前必须先梳通\\n工具：针梳、排梳、开结喷雾/清水\",\"publish_time\":1771066681000}]}::\n\n#### 🪮 怎么梳才有效\n\n工具准备两样就够：​**​<u>针梳</u>​**​（开结、蓬松）+ ​**​<u>排梳</u>​**​（检查有没有漏掉的结）。\n\n梳之前先喷点<u>开结喷雾</u>或清水，把毛微微打湿，干梳容易扯痛皮肤。顺序是四肢→背→腹→耳朵→尾巴，一层一层拨开梳。遇到小结用手指撕开再梳，别硬扯。\n\n重点照顾这7个容易打结的位置：耳朵后、腋下、颈部、背部、大腿内侧、腹底、尾巴。\n\n#### 📅 不同情况频率微调\n\n- 成年比熊：每天1次\n\n- 换毛期：一天2次\n\n- 幼犬：从小养成习惯，长大才配合\n\n- 洗澡前：必须先梳通，湿水后打结就解不开了\n\n有个养了五年比熊的博主总结得挺到位——\"日常坚持比偶尔大护理更重要\"，每天几分钟比攒一周再梳省力得多。\n"
+          }
+         }
+        ],
+        "message_type": "ai_answer"
+       }
+      ],
+      "extra": {
+       "env": "prod",
+       "app_id": "xhs-pc",
+       "source": "home",
+       "user_id": "000000000000000000000001",
+       "platform": "browser",
+       "request_id": "t-0",
+       "app_version": "131.0.0.0",
+       "message_role": "main",
+       "message_type": "agent.message.send",
+       "finish_reason": "stop",
+       "xray_trace_id": "t-0",
+       "persist_policy": "on_complete",
+       "message_ordinal": "0",
+       "assistant_turn_id": "ai-msg_b31bc9b737724026",
+       "client_session_id": "t-0",
+       "langfuse_trace_id": "t-0",
+       "message_role_ordinal": "0",
+       "input_extra": {
+        "client_session_id": "t-0"
+       }
+      }
+     },
+     "status": 1,
+     "current_version": 1,
+     "max_version": 1
+    },
+    {
+     "session_id": "xhs_dots-000000000000000000000001",
+     "max_version": 1,
+     "reply_to": "msg_b31bc9b737724026",
+     "msg_id": "msg_b31bc9b737724026",
+     "timestamp": 1794968071805,
+     "sender_id": "000000000000000000000001",
+     "msg_info": {
+      "payloads": [
+       {
+        "content_type": 4,
+        "inputs": [
+         {
+          "type": "TEXT",
+          "info": {
+           "text": "比熊犬需要每天梳毛吗"
+          }
+         }
+        ],
+        "message_type": "user_input"
+       }
+      ],
+      "extra": {
+       "env": "prod",
+       "app_id": "xhs-pc",
+       "platform": "browser",
+       "request_id": "t-0",
+       "app_version": "131.0.0.0",
+       "xray_trace_id": "t-0",
+       "input_extra": {
+        "sync_app": "enable",
+        "client_session_id": "t-0",
+        "use_deepseek_model": "true",
+        "forbidden_travel_agent": "enable",
+        "is_first_message_in_page": "true"
+       }
+      }
+     },
+     "status": 1,
+     "current_version": 1
+    },
+    {
+     "session_id": "xhs_dots-000000000000000000000001",
+     "msg_info": {
+      "payloads": [
+       {
+        "content_type": 7,
+        "element": {
+         "element_type": "spark",
+         "spark": {
+          "id": "dots_continue_ask_card",
+          "template_name": "dots_continue_ask_card",
+          "data": {
+           "type": "recommend",
+           "entities": [
+            {
+             "word": "超出上下文窗口后你怎么处理的？"
+            },
+            {
+             "word": "你的长期记忆能记住哪些东西？"
+            }
+           ]
+          }
+         }
+        },
+        "message_type": "ai_suggest"
+       }
+      ]
+     },
+     "status": 1,
+     "current_version": 1,
+     "reply_to": "msg_66a21ade72b64a6f",
+     "msg_id": "ai-msg_66a21ade72b64a6f-post-1",
+     "timestamp": 1794965398772,
+     "sender_id": "diandian-agent",
+     "max_version": 1
+    },
+    {
+     "msg_info": {
+      "payloads": [
+       {
+        "content_type": 6,
+        "base_deeplink": {
+         "underline": "xhsdiscover://search/result?background_transparent_v2=true&halfShadowCorner=12&needNewRootNavigation=true&business_type=DQA&answer_id=ai-msg_66a21ade72b64a6f&result_version=2&halfShadowHeight=0.75&enable_half_screen=true&half_screen_height_ratio=0.7&half_screen_mask=true&add_to_history=true&source=dqa",
+         "underline_v2": "xhsdiscover://search/result?background_transparent_v2=true&halfShadowCorner=12&needNewRootNavigation=true&business_type=DQA&answer_id=ai-msg_66a21ade72b64a6f&result_version=2&halfShadowHeight=0.75&enable_half_screen=true&half_screen_height_ratio=0.7&half_screen_mask=true&add_to_history=true&source=dqa",
+         "recommend": "xhsdiscover://rn/diandian/source-panel?background_transparent_v2=true&statusbar_transparent=true&needNewRootNavigation=true&halfShadowHeight=0.75&halfShadowCorner=16&sourceType=0&search_id=ai-msg_66a21ade72b64a6f&tag=&size=10&page_from=0&page_source=onebox&quoted_text=",
+         "quote": "xhsdiscover://rn/diandian/source-panel?background_transparent_v2=true&statusbar_transparent=true&needNewRootNavigation=true&halfShadowHeight=0.75&halfShadowCorner=16&sourceType=2&search_id=ai-msg_66a21ade72b64a6f&query=&card_id=ai-msg_66a21ade72b64a6f&business_type=search_complex_onepage&tag=&size=10&page_from=0&extraInfo=%7B%7D"
+        },
+        "message_type": "ai_answer"
+       },
+       {
+        "content_type": 7,
+        "element": {
+         "element_type": "markdown",
+         "markdown": {
+          "text": "这个具体数字我没法给你一个精确值，官方没有公开披露过具体的 token 上限。\n\n不过从实际使用体感来说：\n\n- 咱们这个对话里聊了好几轮，前面的内容我都能接上，说明窗口不算小。\n\n- 如果单次对话特别长（比如几十轮深度问答），最早的部分我可能会开始\"模糊\"，但核心脉络一般还在。\n\n- 跨对话的话，我只有系统保留的长期记忆，不会自动记得上一个对话里聊了什么细节。\n\n如果你是想评估能不能一次性丢给我一大段内容让我处理，可以试试直接贴进来，超出窗口的话系统会提示或者我会表现出记不住前文。\n"
+         }
+        },
+        "message_type": "ai_answer"
+       }
+      ],
+      "extra": {
+       "env": "prod",
+       "app_id": "xhs-pc",
+       "source": "sidebar",
+       "user_id": "000000000000000000000001",
+       "platform": "browser",
+       "request_id": "t-0",
+       "app_version": "131.0.0.0",
+       "message_role": "main",
+       "message_type": "agent.message.send",
+       "finish_reason": "stop",
+       "xray_trace_id": "t-0",
+       "persist_policy": "on_complete",
+       "message_ordinal": "0",
+       "assistant_turn_id": "ai-msg_66a21ade72b64a6f",
+       "client_session_id": "t-0",
+       "langfuse_trace_id": "t-0",
+       "message_role_ordinal": "0",
+       "input_extra": {
+        "client_session_id": "t-0"
+       }
+      }
+     },
+     "current_version": 1,
+     "max_version": 1,
+     "reply_to": "msg_66a21ade72b64a6f",
+     "session_id": "xhs_dots-000000000000000000000001",
+     "msg_id": "ai-msg_66a21ade72b64a6f",
+     "status": 1,
+     "timestamp": 1794965398771,
+     "sender_id": "diandian-agent"
+    },
+    {
+     "msg_id": "msg_66a21ade72b64a6f",
+     "timestamp": 1794965398764,
+     "msg_info": {
+      "payloads": [
+       {
+        "content_type": 4,
+        "inputs": [
+         {
+          "type": "TEXT",
+          "info": {
+           "text": "你的上下文窗口有多大？"
+          }
+         }
+        ],
+        "message_type": "user_input"
+       }
+      ],
+      "extra": {
+       "env": "prod",
+       "app_id": "xhs-pc",
+       "platform": "browser",
+       "request_id": "t-0",
+       "app_version": "131.0.0.0",
+       "xray_trace_id": "t-0",
+       "input_extra": {
+        "sync_app": "enable",
+        "client_session_id": "t-0",
+        "use_deepseek_model": "true",
+        "forbidden_travel_agent": "enable",
+        "is_first_message_in_page": "false"
+       }
+      }
+     },
+     "current_version": 1,
+     "max_version": 1,
+     "reply_to": "msg_66a21ade72b64a6f",
+     "session_id": "xhs_dots-000000000000000000000001",
+     "sender_id": "000000000000000000000001",
+     "status": 1
+    }
+   ],
+   "cursor": "0",
+   "has_more": true,
+   "biz": "xhs_dots"
+  },
+  "code": 0,
+  "success": true
+ }
+}

@@ -170,9 +170,20 @@ SELECTOR_GROUPS: Mapping[str, tuple[SelectorCandidate, ...]] = MappingProxyType(
         _css("dots_answer_message", '[class*="message-content"], [class*="msg-content"]'),
         _css("dots_answer_reply", '[class*="reply"]'),
     ),
+    # 回答头部的「参考小红书与全网 N 篇内容」折叠条(老格式是英文「search and summarize N posts」),
+    # 点开后页面拉来源面板 complex/source。
     "dots.sources": (
-        _text("dots_sources_toggle", "参考小红书与全网"),
-        _text("dots_sources_toggle_short", "篇内容"),
+        _css("dots_sources_header", "button.xhs-spark-source-header"),
+        _text("dots_sources_text", "参考小红书与全网"),
+        _text("dots_sources_text_en", "search and summarize"),
+    ),
+    # 「新对话」:折叠侧栏里是 <button title/aria-label="新对话">(铅笔图标),
+    # 展开侧栏里是 .xhs-ai-history-new-chat 一行(2026-11 抓包 page.html)。
+    "dots.new_chat": (
+        _css("dots_new_chat_aria", 'button[aria-label="新对话"]'),
+        _css("dots_new_chat_title", '[title="新对话"]'),
+        _css("dots_new_chat_class", ".xhs-ai-history-new-chat"),
+        _text("dots_new_chat_text", "新对话", exact=True),
     ),
 })
 

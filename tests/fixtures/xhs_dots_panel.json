@@ -1,0 +1,86 @@
+{
+ "code": 0,
+ "success": true,
+ "msg": "成功",
+ "data": {
+  "total": 3,
+  "info": {
+   "card_id": "ai-msg_ad203013b7364ea4",
+   "title": "参考来源",
+   "sub_title": "共 3 条来源",
+   "tag_list": [
+    {
+     "content": "笔记",
+     "count": 3
+    }
+   ],
+   "sources": [
+    {
+     "id": "000000000000000000000003",
+     "type": "video",
+     "interact_info": {
+      "liked": false,
+      "like_count": 5
+     },
+     "note_info": {
+      "id": "000000000000000000000003",
+      "title": "比熊洗澡频率&在家洗澡避坑指南",
+      "paragraph_text": "第一段内容。\n\t\n很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。很长的正文。",
+      "publish_time": 1771219140000,
+      "xsec_token": "tok-fake",
+      "text_link": "xhsdiscover://item/000000000000000000000003?xsec_token=tok-fake"
+     },
+     "user": {
+      "user_id": "u-fake",
+      "nick_name": "作者甲",
+      "avatar": "https://img.example/x.jpg",
+      "xsec_token": "tok-fake"
+     }
+    },
+    {
+     "id": "000000000000000000000007",
+     "type": "video",
+     "interact_info": {
+      "liked": false,
+      "like_count": 5
+     },
+     "note_info": {
+      "id": "000000000000000000000007",
+      "title": "比熊洗澡用什么沐浴露",
+      "paragraph_text": "#比熊[话题]# #洗澡[话题]#",
+      "publish_time": 1771300000000,
+      "xsec_token": "tok-fake",
+      "text_link": "xhsdiscover://item/000000000000000000000007?xsec_token=tok-fake"
+     },
+     "user": {
+      "user_id": "u-fake",
+      "nick_name": "作者丙",
+      "avatar": "https://img.example/x.jpg",
+      "xsec_token": "tok-fake"
+     }
+    },
+    {
+     "id": "000000000000000000000009",
+     "type": "note",
+     "interact_info": {
+      "liked": false,
+      "like_count": 5
+     },
+     "note_info": {
+      "id": "000000000000000000000009",
+      "title": "比熊洗完怎么吹干",
+      "paragraph_text": "吹风机开低档\n边吹边梳",
+      "publish_time": 1771400000000,
+      "xsec_token": "tok-fake",
+      "text_link": "xhsdiscover://item/000000000000000000000009?xsec_token=tok-fake"
+     },
+     "user": {
+      "user_id": "u-fake",
+      "avatar": "https://img.example/x.jpg",
+      "xsec_token": "tok-fake"
+     }
+    }
+   ]
+  }
+ }
+}
