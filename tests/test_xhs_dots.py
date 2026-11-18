@@ -1,8 +1,9 @@
 import asyncio
+import gc
 import json
 import tempfile
 import unittest
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -22,7 +23,6 @@ from app.browser.xhs_dots import (
     _suggestions,
     build_dots_answer,
     clean_markdown,
-    dots_reply_failure,
     dots_session_id,
     dots_url_failure,
     fetch_xhs_dots_ask,
@@ -268,27 +268,50 @@ class MarkerAndTextTests(unittest.TestCase):
 
 class FailureClassificationTests(unittest.TestCase):
     def test_http_and_business_failures_use_explicit_prefixes(self):
+        failure = xhs_dots.dots_response_failure
         for status in (403, 429, 461, 471):
             with self.subTest(status=status):
-                error = dots_reply_failure(status, {})
+                error = failure(status, "")
                 self.assertTrue(error.startswith("captcha:"))
                 self.assertEqual(
                     classify_platform_error(error)[0], RiskCategory.RISK)
-        error = dots_reply_failure(401, {})
+        error = failure(401, "")
         self.assertTrue(error.startswith("logged_out:"))
         self.assertEqual(classify_platform_error(error)[0], RiskCategory.AUTH)
-        self.assertTrue(dots_reply_failure(
-            200, {"code": -100, "message": "请先登录", "messages": []}
-        ).startswith("logged_out:"))
-        self.assertTrue(dots_reply_failure(
-            200, {"code": -9, "message": "操作频繁", "messages": []}
-        ).startswith("captcha:"))
-        self.assertIn("code=5", dots_reply_failure(
-            200, {"code": 5, "message": "其他", "messages": []}))
-        self.assertEqual(dots_reply_failure(
-            200, {"code": 0, "message": "", "messages": [{"msg_id": "a"}]}), "")
-        self.assertEqual(dots_reply_failure(
-            200, {"code": 5, "message": "x", "messages": [{"msg_id": "a"}]}), "")
+        self.assertIn("HTTP 502", failure(502, ""))   # 平台故障不是风控
+        self.assertNotRegex(failure(502, ""), r"^(captcha|logged_out):")
+
+    def test_business_codes_reuse_the_shared_risk_classification(self):
+        failure = xhs_dots.dots_response_failure
+
+        def envelope(code, msg, **extra):
+            return json.dumps({"code": code, "success": False, "msg": msg,
+                               "data": {}, **extra}, ensure_ascii=False)
+
+        for code, msg in ((429, "请求失败"), (461, ""), (471, "x"), (403, "x"),
+                          (-9, "操作频繁")):
+            with self.subTest(code=code):
+                error = failure(200, envelope(code, msg))
+                self.assertTrue(error.startswith("captcha:"), error)
+                self.assertEqual(
+                    classify_platform_error(error)[0], RiskCategory.RISK)
+        for code, msg in ((-100, "请先登录"), (-101, "x"), (401, "x")):
+            with self.subTest(code=code):
+                self.assertTrue(failure(
+                    200, envelope(code, msg)).startswith("logged_out:"))
+        plain = failure(200, envelope(5, "其他"))
+        self.assertIn("code=5", plain)
+        self.assertNotRegex(plain, r"^(captcha|logged_out):")
+        ok = {"code": 0, "success": True, "data": {"messages": [{"msg_id": "a"}]}}
+        self.assertEqual(failure(200, json.dumps(ok)), "")
+        # 已经有消息时,普通业务错误不算失败;风控/登录失效照样算
+        with_messages = {"messages": [{"msg_id": "a"}]}
+        self.assertEqual(failure(
+            200, envelope(5, "x", data=with_messages)), "")
+        self.assertTrue(failure(
+            200, envelope(461, "x", data=with_messages)).startswith("captcha:"))
+        for body in ("", "not json", "[]"):   # 读不懂的 200 不凭空判成风控
+            self.assertEqual(failure(200, body), "")
 
     def test_url_failures(self):
         self.assertTrue(dots_url_failure(
@@ -343,6 +366,9 @@ class _Locator:
 
     async def click(self):
         self.page.clicked.append(self.key)
+        hook = self.page.click_hooks.get(self.key)
+        if hook:
+            hook()
         self.page._deliver(self.page.on_click.get(self.key, ()))
 
     async def wait_for(self, **_kwargs):
@@ -359,37 +385,67 @@ class _Locator:
 
 
 class _Response:
-    def __init__(self, status, body, url=REPLY_URL):
+    def __init__(self, status, body, url=REPLY_URL, *, gate=None, request=None):
         self.status = status
         self.url = url
+        self.gate = gate          # asyncio.Event:放行前 text() 一直读不完(模拟响应体慢)
+        self.request = request
+        self.text_started = False
+        self.text_cancelled = False
         self._body = body if isinstance(body, str) else json.dumps(
             body, ensure_ascii=False)
 
     async def text(self):
+        self.text_started = True
+        try:
+            if self.gate is not None:
+                await self.gate.wait()
+        except asyncio.CancelledError:
+            self.text_cancelled = True
+            raise
         return self._body
 
 
 class _Page:
     """Minimal stand-in for a Playwright page on /ai_chat。
-    goto 时先送出 pre(主会话的 detail),按 Enter 后送出 on_send 里的响应。"""
+    goto 时先送出 pre(主会话的 detail),按 Enter 后送出 on_send 里的响应。
+    DOM 用节点列表建模(kind=user/answer, md=文字):dom_before 一开始就在;第一次取 DOM
+    (发送前的基线)之后追加 dom_after_baseline(晚渲染的历史);按 Enter 后追加
+    dom_on_enter;dom_answer 是“发送成功后出现提问气泡和一条回答”的简写。"""
 
     def __init__(self, *, present=None, on_send=(), pre=(), dom_answer="",
-                 on_click=None, url="https://www.xiaohongshu.com/ai_chat"):
+                 on_click=None, url="https://www.xiaohongshu.com/ai_chat",
+                 dom_before=(), dom_after_baseline=(), dom_on_enter=(),
+                 pre_requests=()):
         self.present = set(present if present is not None else {INPUT, NEW_CHAT})
         self.on_send = list(on_send)
         self.pre = list(pre)
+        self.pre_requests = list(pre_requests)
         self.on_click = dict(on_click or {})
+        self.click_hooks = {}
         self.dom_answer = dom_answer
+        self.dom = list(dom_before)
+        self.dom_after_baseline = list(dom_after_baseline)
+        self.dom_on_enter = list(dom_on_enter)
         self.url = url
         self.redirected = url != "https://www.xiaohongshu.com/ai_chat"
-        self.listeners = []
+        self.handlers = {}
         self.enter_pressed = False
+        self.eval_calls = 0
         self.clicked = []
         self.order = []
+        self.question = ""
+
+    @property
+    def listeners(self):
+        return self.handlers.get("response", [])
 
     def on(self, event, listener):
-        if event == "response":
-            self.listeners.append(listener)
+        self.handlers.setdefault(event, []).append(listener)
+
+    def remove_listener(self, event, listener):
+        if listener in self.handlers.get(event, []):
+            self.handlers[event].remove(listener)
 
     def _deliver(self, responses):
         for response in responses:
@@ -400,10 +456,17 @@ class _Page:
         # 未登录时平台会把 /ai_chat 重定向走;假页面用初始 url 模拟落地页
         if not self.redirected:
             self.url = url
+        for request in self.pre_requests:
+            for listener in list(self.handlers.get("request", [])):
+                listener(request)
         self._deliver(self.pre)
 
     async def on_enter(self):
         self.order.append("enter")
+        self.dom.extend(self.dom_on_enter)
+        if self.dom_answer:
+            self.dom.append({"kind": "user", "md": self.question})
+            self.dom.append({"kind": "answer", "md": self.dom_answer})
         self._deliver(self.on_send)
 
     def locator(self, selector):
@@ -413,8 +476,12 @@ class _Page:
         return _Locator(self, text)
 
     async def evaluate(self, script, arg=None):
-        if script is xhs_dots._DOTS_ANSWER_JS:
-            return self.dom_answer if self.enter_pressed else ""
+        self.eval_calls += 1
+        snapshot = [dict(node) for node in self.dom]
+        if self.eval_calls == 1:
+            self.dom.extend(self.dom_after_baseline)
+        if script is xhs_dots._DOTS_NODES_JS:
+            return snapshot
         return ""
 
     def is_closed(self):
@@ -432,10 +499,12 @@ class _Interaction:
     async def type_short(self, _locator, text):
         self.page.order.append("type")
         self.typed = text
+        self.page.question = text
 
     async def insert_long(self, _locator, text, page=None):
         self.page.order.append("type")
         self.typed = text
+        self.page.question = text
 
     async def click_visible(self, locator, **_kwargs):
         if locator.key == NEW_CHAT:
@@ -470,13 +539,57 @@ async def _quick_wait(event, _seconds):
     return event.is_set()
 
 
-def _ask(page, question=QUESTION, timeout_s=30, **kwargs):
-    manager = _Manager(page)
-    with patch("app.browser.xhs_dots.asyncio.sleep", _fast_sleep), \
-            patch("app.browser.xhs_dots._wait_event", _quick_wait), \
-            patch("app.browser.xhs_dots.DETAIL_GRACE_S", 0):
-        result = asyncio.run(fetch_xhs_dots_ask(
-            manager, _identity(), question, timeout_s=timeout_s, **kwargs))
+class _VirtualLoop:
+    """loop.time() 走虚拟时钟,让“等满超时”的用例不必真等 10 秒。"""
+
+    def __init__(self, loop, clock):
+        self._loop = loop
+        self._clock = clock
+
+    def time(self):
+        return self._clock[0]
+
+    def __getattr__(self, name):
+        return getattr(self._loop, name)
+
+
+def _ask(page, question=QUESTION, timeout_s=30, *, virtual=False, manager=None,
+         settle_s=None, loop_errors=None, **kwargs):
+    manager = manager or _Manager(page)
+    clock = [0.0]
+    real_loop = asyncio.get_running_loop
+
+    async def virtual_sleep(delay, *_args):
+        clock[0] += delay
+        await _REAL_SLEEP(0)
+
+    patches = [
+        patch("app.browser.xhs_dots.asyncio.sleep",
+              virtual_sleep if virtual else _fast_sleep),
+        patch("app.browser.xhs_dots._wait_event", _quick_wait),
+        patch("app.browser.xhs_dots.DETAIL_GRACE_S", 0)]
+    if virtual:
+        patches.append(patch(
+            "app.browser.xhs_dots.asyncio.get_running_loop",
+            lambda: _VirtualLoop(real_loop(), clock)))
+    if settle_s is not None:   # 等发送前的接口读完的最长时间
+        patches.append(patch.object(xhs_dots, "HISTORY_SETTLE_S", settle_s))
+    async def run():
+        if loop_errors is not None:
+            asyncio.get_running_loop().set_exception_handler(
+                lambda _loop, context: loop_errors.append(context))
+        outcome = await fetch_xhs_dots_ask(
+            manager, _identity(), question, timeout_s=timeout_s, **kwargs)
+        for _ in range(3):      # 让还没来得及运行的残留任务有机会跑起来
+            await _REAL_SLEEP(0)
+        gc.collect()            # 没被取走异常的任务会在回收时报告
+        await _REAL_SLEEP(0)
+        return outcome
+
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        result = asyncio.run(run())
     return manager, result
 
 
@@ -599,18 +712,10 @@ class FetchDotsAskTests(unittest.TestCase):
         self.assertIn("没有给出回答", error)
 
     def test_answer_text_present_before_sending_is_not_taken_as_the_answer(self):
-        page = _Page()
-        original = page.evaluate
-
-        async def evaluate(script, arg=None):
-            if script is xhs_dots._DOTS_ANSWER_JS:
-                return "欢迎来到点点"
-            return await original(script, arg)
-
-        page.evaluate = evaluate
+        page = _Page(dom_before=[{"kind": "answer", "md": "欢迎来到点点"}])
         result, error = asyncio.run(_await_answer(
             _Manager(page), page, _DotsState(), "问题", 0, True,
-            baseline="欢迎来到点点"))
+            baseline_users=0))
         self.assertIsNone(result)
         self.assertIn("没有给出回答", error)
 
@@ -691,6 +796,14 @@ class FetchDotsAskTests(unittest.TestCase):
         self.assertIn("没有看到点点发出回答请求", error)
 
 
+def _source(**fields):
+    base = {"type": "note", "title": "", "author": "", "site": "",
+            "note_id": "", "url": "", "publish_time": "", "summary": "",
+            "xsec_token": "", "index": None, "origin": "panel"}
+    base.update(fields)
+    return base
+
+
 def _panel_page(panel_body=None, panel_url=PANEL_URL, **kwargs):
     responses = [] if panel_body is False else [
         _Response(200, PANEL if panel_body is None else panel_body, panel_url)]
@@ -753,6 +866,41 @@ class PanelSourcesTests(unittest.TestCase):
         self.assertEqual(len(merged), 3)
         self.assertEqual(merged[0]["note_id"], NOTE_A)   # 补齐了空字段
         self.assertEqual(merged[0]["origin"], "quote")
+
+    def test_same_title_with_different_ids_are_not_merged(self):
+        title = "同名笔记"
+        quote = [_source(note_id=NOTE_A, title=title, author="甲", index=1,
+                         origin="quote",
+                         url=f"https://www.xiaohongshu.com/explore/{NOTE_A}")]
+        panel = [_source(note_id=NOTE_B, title=title, author="乙",
+                         xsec_token="tok-b")]
+        merged = merge_panel_sources(quote, panel)
+        self.assertEqual([s["note_id"] for s in merged], [NOTE_A, NOTE_B])
+        self.assertEqual(merged[0]["url"],   # A 不能拿到 B 的 token
+                         f"https://www.xiaohongshu.com/explore/{NOTE_A}")
+        self.assertEqual(merged[0]["origin"], "quote")
+        self.assertIn(NOTE_B, merged[1]["url"])
+        self.assertIn("xsec_token=tok-b", merged[1]["url"])
+        self.assertNotIn(NOTE_A, merged[1]["url"])
+
+    def test_title_fallback_needs_same_type_compatible_author_and_one_match(self):
+        def run(quote, panel_source):
+            return merge_panel_sources(
+                [dict(q, index=i + 1, origin="quote")
+                 for i, q in enumerate(quote)], [panel_source])
+
+        a = _source(title="T", author="甲")
+        b = _source(title="T", author="乙")
+        # 作者对不上:不合并
+        self.assertEqual(len(run([a], _source(title="T", author="丙"))), 2)
+        # 类型不同:不合并
+        self.assertEqual(len(run([a], _source(title="T", type="web"))), 2)
+        # 标题相同的有两条、面板这条又没有作者可区分:归属不明,不合并
+        self.assertEqual(len(run([a, b], _source(title="T"))), 3)
+        # 唯一且兼容:合并并补齐空字段
+        merged = run([a], _source(title="T", author="甲", note_id=NOTE_A))
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["note_id"], NOTE_A)
 
     def test_new_session_opens_the_panel_and_merges_its_sources(self):
         page = _panel_page()
@@ -819,6 +967,260 @@ class PanelSourcesTests(unittest.TestCase):
         self.assertEqual(error, "")
         self.assertNotIn(SOURCES_HEADER, page.clicked)
         self.assertEqual(len(result["sources"]), 4)
+
+
+# ───────────────────────── 审查回归:时序、风控、归属、清理 ─────────────────────────
+
+CAPTCHA_URL = "https://www.xiaohongshu.com/website-login/captcha?x=1"
+
+
+def _failed(code, msg="", url=REPLY_URL, *, status=200):
+    return _Response(status, {"code": code, "success": False, "msg": msg,
+                              "data": {}}, url)
+
+
+class BaselineTimingTests(unittest.TestCase):
+    """发送前发出的历史请求,不管响应体什么时候读完,都只能算基线。"""
+
+    def test_history_body_read_after_sending_is_still_baseline(self):
+        gate = asyncio.Event()   # 历史 detail 的响应头早到了,响应体发送后才读完
+        history = _Response(200, _detail_body(), MAIN_DETAIL_URL, gate=gate)
+        page = _Page(pre=[history])
+        original = page.on_enter
+
+        async def on_enter():
+            await original()
+            gate.set()
+
+        page.on_enter = on_enter
+        _manager, (result, error) = _ask(
+            page, virtual=True, settle_s=0, new_session=False)
+        self.assertTrue(history.text_started)
+        # 历史里有同文的旧问题和已完成的旧回答;本次没有发出任何请求,不能把旧的认成本次
+        self.assertIsNone(result)
+        self.assertIn("没有看到点点发出回答请求", error)
+
+    def test_history_request_started_before_sending_is_baseline_even_if_it_answers_later(self):
+        request = object()      # 发送前发起的请求,响应头在按下发送之后才到
+        history = _Response(200, _detail_body(), MAIN_DETAIL_URL, request=request)
+        page = _Page(pre_requests=[request], on_send=[history])
+        _manager, (result, error) = _ask(
+            page, virtual=True, settle_s=0, new_session=False)
+        self.assertIsNone(result)
+        self.assertTrue(error)
+
+    def test_request_sent_after_arming_is_not_baseline(self):
+        page = _Page(pre_requests=[object()], on_send=_new_turn(reply=False))
+        for response in page.on_send:
+            response.request = object()   # 发送后才发起的请求
+        _manager, (result, error) = _ask(page, new_session=False)
+        self.assertEqual(error, "")
+        self.assertEqual(result["msg_id"], AI_MSG)
+
+
+class EarlyFailureTests(unittest.TestCase):
+    """发送前已经有风控/登录失效信号就别再发。"""
+
+    def test_risk_status_before_sending_blocks_the_send(self):
+        page = _Page(pre=[_Response(403, "", MAIN_DETAIL_URL)],
+                     on_send=_new_turn())
+        manager, (result, error) = _ask(page)
+        self.assertIsNone(result)
+        self.assertTrue(error.startswith("captcha:"))
+        self.assertEqual(page.order, [])
+        self.assertEqual(manager.xhs_interaction.typed, "")
+
+    def test_business_risk_code_in_history_detail_blocks_the_send(self):
+        for response, prefix in (
+                (_failed(461, "", MAIN_DETAIL_URL), "captcha:"),
+                (_failed(-101, "", MAIN_DETAIL_URL), "logged_out:")):
+            with self.subTest(prefix=prefix):
+                page = _Page(pre=[response], on_send=_new_turn())
+                _manager, (result, error) = _ask(page)
+                self.assertIsNone(result)
+                self.assertTrue(error.startswith(prefix), error)
+                self.assertEqual(page.order, [])
+
+    def test_captcha_or_login_redirect_with_visible_input_blocks_the_send(self):
+        for url, prefix in ((CAPTCHA_URL, "captcha:"),
+                            ("https://www.xiaohongshu.com/login", "logged_out:")):
+            with self.subTest(url=url):
+                page = _Page(url=url, on_send=_new_turn())
+                _manager, (result, error) = _ask(page)
+                self.assertIsNone(result)
+                self.assertTrue(error.startswith(prefix), error)
+                self.assertEqual(page.order, [])
+
+    def test_risk_signal_arriving_while_typing_stops_before_enter(self):
+        gate = asyncio.Event()
+        page = _Page(pre=[_Response(461, "", MAIN_DETAIL_URL, gate=gate)],
+                     on_send=_new_turn())
+        manager = _Manager(page)
+        typing = manager.xhs_interaction.type_short
+
+        async def type_short(locator, text):
+            await typing(locator, text)
+            gate.set()     # 输入的这段时间里,发送前的请求才读完
+
+        manager.xhs_interaction.type_short = type_short
+        _manager, (result, error) = _ask(
+            page, manager=manager, settle_s=0.05, new_session=False)
+        self.assertIsNone(result)
+        self.assertTrue(error.startswith("captcha:"))
+        self.assertNotIn("enter", page.order)
+
+
+class BusinessCodeTests(unittest.TestCase):
+    def test_reply_business_risk_code_is_reported_as_risk(self):
+        page = _Page(pre=_main_history(),
+                     on_send=[_failed(429, "请求失败")])
+        _manager, (result, error) = _ask(page)
+        self.assertIsNone(result)
+        self.assertTrue(error.startswith("captcha:"), error)
+        self.assertEqual(classify_platform_error(error)[0], RiskCategory.RISK)
+
+    def test_detail_login_code_after_sending_is_reported_as_logged_out(self):
+        page = _Page(pre=_main_history(),
+                     on_send=[_failed(-101, "", DETAIL_URL)])
+        _manager, (result, error) = _ask(page, virtual=True)
+        self.assertIsNone(result)
+        self.assertTrue(error.startswith("logged_out:"), error)
+
+    def test_detail_plain_business_error_is_not_a_failure(self):
+        page = _Page(pre=_main_history(),
+                     on_send=[_failed(5, "其他", DETAIL_URL)] + _new_turn())
+        _manager, (result, error) = _ask(page)
+        self.assertEqual(error, "")
+        self.assertEqual(result["msg_id"], AI_MSG)
+
+
+class PanelFailureTests(unittest.TestCase):
+    """来源补全阶段的风控/登录失效必须上报;普通缺失仍然静默。"""
+
+    def _page(self, response=None):
+        return _Page(
+            present={INPUT, NEW_CHAT, SOURCES_HEADER}, pre=_main_history(),
+            on_send=_new_turn(),
+            on_click={SOURCES_HEADER: [] if response is None else [response]})
+
+    def test_panel_http_and_business_failures_are_reported(self):
+        cases = (
+            (_Response(461, "", PANEL_URL), "captcha:"),
+            (_Response(403, "", PANEL_URL), "captcha:"),
+            (_Response(401, "", PANEL_URL), "logged_out:"),
+            (_failed(-101, "", PANEL_URL), "logged_out:"),
+            (_failed(461, "", PANEL_URL), "captcha:"))
+        for response, prefix in cases:
+            with self.subTest(status=response.status, body=response._body[:30]):
+                _manager, (result, error) = _ask(self._page(response))
+                self.assertIsNone(result)
+                self.assertTrue(error.startswith(prefix), error)
+
+    def test_captcha_redirect_while_opening_the_panel_is_reported(self):
+        page = self._page()
+        page.click_hooks[SOURCES_HEADER] = lambda: setattr(page, "url", CAPTCHA_URL)
+        _manager, (result, error) = _ask(page)
+        self.assertIsNone(result)
+        self.assertTrue(error.startswith("captcha:"))
+
+    def test_ordinary_panel_miss_stays_silent(self):
+        for response in (_Response(404, "", PANEL_URL),
+                         _Response(200, "not json", PANEL_URL),
+                         _failed(5, "其他", PANEL_URL)):
+            with self.subTest(status=response.status):
+                _manager, (result, error) = _ask(self._page(response))
+                self.assertEqual(error, "")
+                self.assertEqual(len(result["sources"]), 2)
+
+
+class DomAttributionTests(unittest.TestCase):
+    """DOM 兜底只采用本次提问气泡之后新出现的回答。"""
+
+    def test_history_rendered_after_the_baseline_is_not_the_answer(self):
+        # 基线取完之后主会话历史才渲染出来(别的问题的回答,页面上没有同文提问气泡);
+        # 本次发送没有任何回应
+        page = _Page(dom_after_baseline=[{"kind": "answer", "md": "旧回答"}])
+        _manager, (result, error) = _ask(page, virtual=True, new_session=False)
+        self.assertIsNone(result)
+        self.assertIn("没有看到点点发出回答请求", error)
+
+    def test_late_history_with_the_same_question_is_not_taken_for_this_send(self):
+        # 历史接口早就告诉我们主会话里有同文的旧问题;DOM 上多出来的同文气泡不能证明是本次发送
+        page = _Page(pre=[_Response(200, _detail_body(), MAIN_DETAIL_URL)],
+                     dom_after_baseline=[{"kind": "user", "md": QUESTION},
+                                         {"kind": "answer", "md": "旧回答"}])
+        _manager, (result, error) = _ask(page, virtual=True, new_session=False)
+        self.assertIsNone(result)
+
+    def test_same_question_in_history_is_not_mistaken_for_this_send(self):
+        page = _Page(dom_before=[{"kind": "user", "md": QUESTION},
+                                 {"kind": "answer", "md": "旧回答"}],
+                     dom_after_baseline=[{"kind": "answer", "md": "更旧的回答"}])
+        _manager, (result, error) = _ask(page, virtual=True, new_session=False)
+        self.assertIsNone(result)
+
+    def test_answer_after_the_new_user_bubble_is_taken(self):
+        page = _Page(dom_before=[{"kind": "user", "md": QUESTION},
+                                 {"kind": "answer", "md": "旧回答"}],
+                     dom_on_enter=[{"kind": "user", "md": QUESTION},
+                                   {"kind": "answer", "md": "新回答"}])
+        _manager, (result, error) = _ask(page, new_session=False)
+        self.assertEqual(error, "")
+        self.assertEqual(result["via"], "dom")
+        self.assertEqual(result["answer"], "新回答")
+
+    def test_new_bubble_without_a_following_answer_is_not_an_answer(self):
+        page = _Page(dom_before=[{"kind": "answer", "md": "旧回答"}],
+                     dom_on_enter=[{"kind": "user", "md": QUESTION}])
+        _manager, (result, error) = _ask(page, virtual=True, new_session=False)
+        self.assertIsNone(result)
+
+
+class CleanupTests(unittest.TestCase):
+    class _SlowExitManager(_Manager):
+        """退出时先做带 await 的清理(恢复窗口),这段时间里页面还在收响应。"""
+
+        def __init__(self, page, late):
+            super().__init__(page)
+            self.late = late
+
+        @asynccontextmanager
+        async def visible_page(self, _identity, **_kwargs):
+            yield self.page
+            await _REAL_SLEEP(0)
+            self.page._deliver([self.late])
+
+    def test_listener_is_removed_and_every_task_is_cancelled_and_awaited(self):
+        stuck = asyncio.Event()    # 永远读不完的响应
+        in_flight = _Response(200, _detail_body(), MAIN_DETAIL_URL, gate=stuck)
+        late = _Response(200, _detail_body(), MAIN_DETAIL_URL, gate=stuck)
+        page = _Page(pre=[in_flight], on_send=[_Response(461, "")])
+        manager = self._SlowExitManager(page, late)
+        _manager, (result, error) = _ask(page, manager=manager, settle_s=0)
+        self.assertIsNone(result)
+        self.assertTrue(error.startswith("captcha:"))
+        self.assertTrue(in_flight.text_started)
+        self.assertTrue(in_flight.text_cancelled)
+        self.assertFalse(late.text_started)       # 清理窗口里收到的响应不再处理
+        self.assertEqual(page.handlers.get("response"), [])
+
+    def test_a_failing_response_task_does_not_leak_an_unretrieved_exception(self):
+        class Broken(_Response):
+            @property
+            def status(self):
+                raise RuntimeError("boom")
+
+            @status.setter
+            def status(self, _value):
+                pass
+
+        problems = []
+        page = _Page(pre=[Broken(200, "", MAIN_DETAIL_URL)],
+                     on_send=_new_turn())
+        _manager, (result, error) = _ask(page, loop_errors=problems)
+        self.assertEqual(error, "")
+        self.assertEqual(result["msg_id"], AI_MSG)
+        self.assertEqual(problems, [])
 
 
 # ───────────────────────── HTTP 接口 ─────────────────────────
