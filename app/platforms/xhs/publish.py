@@ -15,7 +15,7 @@ from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
 from .browser_writes import XhsWriteOutcome, publish_xhs_browser
 from .client import XhsApiError, cookie_str_from_state, has_a1
-from .deadline import deadline_after, remaining_seconds, timeout_error
+from .deadline import PublishCancelEvent, deadline_after, remaining_seconds, timeout_error
 from .media import snapshot_publish_files, validate_publish_files
 from .responses import validate_payload
 
@@ -167,7 +167,7 @@ async def publish_xhs(mgr: BrowserManager, identity: Identity, storage_state_jso
         return False, "", "登录态缺少 a1,请重新扫码登录该小红书账号"
     # The worker must finish before account locks are released. Cancelling an
     # asyncio.to_thread await alone does not stop its underlying HTTP requests.
-    cancel_event = threading.Event()
+    cancel_event = PublishCancelEvent()
     loop = asyncio.get_running_loop()
     submit_future = None
 
@@ -197,7 +197,7 @@ async def publish_xhs(mgr: BrowserManager, identity: Identity, storage_state_jso
             raise
 
     def expire():
-        cancel_event.set()
+        cancel_event.expire()
         if submit_future is not None:
             submit_future.cancel()
 

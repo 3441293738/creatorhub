@@ -303,6 +303,29 @@ def test_timeout_cancels_stalled_submit_callback(creator, media_path, monkeypatc
     creator.cli.close.assert_called_once()
 
 
+def test_budget_timer_firing_early_still_reports_timeout(creator, media_path, monkeypatch):
+    """asyncio runs timers up to one clock tick early (15.6 ms with Windows GetTickCount64).
+
+    The worker then sees the cancel signal while the deadline is still ahead; that must
+    stay a budget timeout, not a caller cancellation. Exaggerate the early firing so the
+    race is deterministic instead of depending on runner load.
+    """
+    monkeypatch.setattr(creator_api, "XhsCreatorApi", lambda *_args, **_kwargs: creator)
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        call_later = loop.call_later
+        monkeypatch.setattr(loop, "call_later",
+                            lambda delay, *args: call_later(max(delay - .15, 0), *args))
+        async def stall():
+            await asyncio.Event().wait()
+        return await asyncio.wait_for(publish.publish_xhs(None, None, STATE,
+            "images", "", "", [str(media_path)], mode="api", timeout_seconds=.4,
+            on_submit=stall, preserve_error=True), 2)
+    result = asyncio.run(scenario())
+    assert result[0] is False and result[2].signal == "publish_timeout"
+    creator.cli.post.assert_not_called()
+
+
 def test_callback_own_timeout_is_not_misreported_as_budget_expiration(creator, media_path, monkeypatch):
     monkeypatch.setattr(creator_api, "XhsCreatorApi", lambda *_args, **_kwargs: creator)
     callback = AsyncMock(side_effect=TimeoutError("callback timeout"))
