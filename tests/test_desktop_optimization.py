@@ -136,8 +136,16 @@ def test_windows_and_mac_bundles_exclude_unused_heavy_dependencies():
             assert options[index - 1] == "--exclude-module"
         assert options[options.index("app") - 1] == "--collect-submodules"
         assert options[options.index("pywebview") - 1] == "--copy-metadata"
+        assert options[options.index("cryptography") - 1] == "--copy-metadata"
     mac = dependency_options("macos")
     assert mac[mac.index("pythonnet") - 1] == "--exclude-module"
+
+
+def test_runtime_requirements_declare_channels_proxy_and_bridge_dependencies():
+    root = Path(__file__).resolve().parents[1]
+    reqs = (root / "requirements.txt").read_text(encoding="utf-8")
+    assert "cryptography>=" in reqs
+    assert "websockets>=13" in reqs
 
 
 def test_update_restart_does_not_replay_tasks(tmp_path):

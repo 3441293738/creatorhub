@@ -129,6 +129,23 @@ class WindowsReleaseTests(unittest.TestCase):
             self.assertIn(f'tests/{test}', checks)
             self.assertTrue((ROOT / 'tests' / test).is_file())
 
+    def test_channels_and_agent_regressions_gate_packaging(self):
+        steps = self.jobs['windows']['steps']
+        names = [step.get('name', step.get('uses')) for step in steps]
+        gate = 'Test Channels protocol and AI assistant'
+        self.assertLess(names.index(gate), names.index('Package Python, application and offline guide'))
+        checks = next(step['run'] for step in steps if step.get('name') == gate)
+        self.assertIn('python -m pytest', checks)
+        for test in ('test_channels_capabilities.py', 'test_channels_proxy.py',
+                     'test_channels_protocol_ui.py', 'test_channels_login.py',
+                     'test_channels_repost.py', 'test_channels_sync.py',
+                     'test_agent_catalog.py', 'test_agent_channels.py',
+                     'test_agent_conversations.py', 'test_agent_provider_settings.py',
+                     'test_agent_response_formats.py', 'test_agent_streaming.py',
+                     'test_agent_telemetry.py'):
+            self.assertIn(f'tests/{test}', checks)
+            self.assertTrue((ROOT / 'tests' / test).is_file())
+
     def test_draft_upload_publish_and_rerun_guard(self):
         script = self.jobs['release']['steps'][-1]['run']
         self.assertLess(script.index('sha256sum --check'), script.index('gh release create'))

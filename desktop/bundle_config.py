@@ -20,7 +20,7 @@ def dependency_options(target):
     # collect-all used to copy distribution metadata implicitly. Preserve
     # version information and upstream license files when collecting precisely.
     for distribution in ("patchright", "xhshow", "imageio-ffmpeg", "tzdata", "pywebview",
-                         "Pillow", "pystray", "PyExecJS"):
+                         "Pillow", "pystray", "PyExecJS", "cryptography"):
         options += ["--copy-metadata", distribution]
     # CFFI/.NET loaders use native libraries resolved at runtime.
     for package in (("curl_cffi", "clr_loader", "pythonnet") if target == "windows" else ("curl_cffi",)):

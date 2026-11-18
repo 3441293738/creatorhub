@@ -66,7 +66,7 @@ def main():
             assert duplicate.returncode != 0, "A duplicate frozen service used the same data directory"
             web = source / "app" / "web"
             assets = ("app.js", "engine-settings.js", "workbench.js", "workbench.css",
-                      "appearance.js", "appearance.css")
+                      "appearance.js", "appearance.css", "agent.css", "submissions.js", "workspace-ui.js")
             for path in ("/", "/health", "/guide/", "/guide/xhs/", "/guide/douyin/", "/guide/guide.css",
                          *(f"/static/{name}" for name in assets)):
                 with opener.open(url + path, timeout=5) as response:

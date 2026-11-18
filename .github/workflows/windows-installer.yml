@@ -74,6 +74,23 @@ jobs:
           tests/test_signature_protocols.py
           tests/test_web_status_labels.py
           -q
+      - name: Test Channels protocol and AI assistant
+        run: >-
+          python -m pytest
+          tests/test_channels_capabilities.py
+          tests/test_channels_proxy.py
+          tests/test_channels_protocol_ui.py
+          tests/test_channels_login.py
+          tests/test_channels_repost.py
+          tests/test_channels_sync.py
+          tests/test_agent_catalog.py
+          tests/test_agent_channels.py
+          tests/test_agent_conversations.py
+          tests/test_agent_provider_settings.py
+          tests/test_agent_response_formats.py
+          tests/test_agent_streaming.py
+          tests/test_agent_telemetry.py
+          -q
       - name: Test release contract
         run: python -m unittest discover -s tests -p test_windows_release.py
       - name: Test lightweight media and runtime contracts

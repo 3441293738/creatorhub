@@ -220,13 +220,19 @@ def smoke_test() -> int:
         try:
             os.chdir(temp)
             os.environ["CREATORHUB_CONFIG_PATH"] = str(Path(temp) / "absent.yaml")
+            import app as app_pkg
             from app.main import app, WEB_DIR
+            from app.platforms.channels.local_ca import LocalCaManager
             from patchright._impl._driver import compute_driver_executable
             from imageio_ffmpeg import get_ffmpeg_exe
             from patchright.sync_api import sync_playwright
             import tkinter as tk
             import pystray
-            assert app and (WEB_DIR / "workbench.js").is_file()
+            channels_js = Path(app_pkg.__file__).parent / "platforms" / "channels" / "js"
+            assert app and LocalCaManager and (WEB_DIR / "workbench.js").is_file()
+            assert (channels_js / "finder_proxy_bridge.js").is_file()
+            assert (channels_js / "finder_native_protocol.js").is_file()
+            assert (channels_js / "finder_protocol_browser_bootstrap.js").is_file()
             assert (resources() / "config.example.yaml").is_file()
             assert (resources() / "desktop-guide" / "xhs" / "index.html").is_file()
             if os.name == "nt" and getattr(sys, "frozen", False):
@@ -264,14 +270,18 @@ def update_health_check() -> int:
         try:
             os.chdir(temp)
             os.environ["CREATORHUB_CONFIG_PATH"] = str(Path(temp) / "absent.yaml")
+            import app as app_pkg
             from app.main import app, WEB_DIR
+            from app.platforms.channels.local_ca import LocalCaManager
             from desktop.controller import Controller
             from desktop.web_shell import ShellServer
             from patchright._impl._driver import compute_driver_executable
             from imageio_ffmpeg import get_ffmpeg_exe
             import webview
-            assert app and Controller and ShellServer and webview
+            channels_js = Path(app_pkg.__file__).parent / "platforms" / "channels" / "js"
+            assert app and LocalCaManager and Controller and ShellServer and webview
             assert (WEB_DIR / "workbench.js").is_file()
+            assert (channels_js / "finder_proxy_bridge.js").is_file()
             for name in ("desktop/web/app.js", "desktop/web/index.html", "config.example.yaml"):
                 assert (resources() / name).is_file(), name
             assert all(Path(path).is_file() for path in compute_driver_executable())
