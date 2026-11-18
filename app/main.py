@@ -38,7 +38,7 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       interactive_tiktok_login,
                       fetch_self_profile, fetch_xhs_self_profile,
                       fetch_xhs_note_detail, fetch_xhs_comments,
-                       fetch_xhs_favorite_boards,
+                       fetch_xhs_favorite_boards, fetch_xhs_dots_ask,
                       fetch_ks_self_profile,
                       fetch_channels_self_profile,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
@@ -7467,6 +7467,59 @@ async def list_xhs_favorite_boards(account_id: int):
         "total": int(value.get("total") or value.get("note_count") or 0),
         "images": value.get("images") or [],
     } for value in boards if value.get("id") or value.get("board_id")]
+
+
+class XhsDotsAskIn(BaseModel):
+    account_id: int
+    question: str = PydanticField(min_length=1, max_length=800)
+    timeout_s: int = PydanticField(default=120, ge=10, le=300)
+    # 先点「新对话」再提问,避免主会话历史影响回答;入口没找到时退回主会话(session_mode 标出)
+    new_session: bool = True
+
+
+@app.post("/api/xhs/dots/ask")
+async def xhs_dots_ask(body: XhsDotsAskIn):
+    """向小红书「点点」AI 提一个问题,返回回答正文、引用来源和会话 id。
+
+    只用账号浏览器读取页面自己发出的接口响应,每次提问计一次 READ_HEAVY;
+    遇到验证/登录失效直接报错,不重试。"""
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(422, "问题不能为空")
+    if browser is None or engine is None:
+        raise HTTPException(503, "采集引擎未就绪")
+    with get_session() as session:
+        account = session.get(DouyinAccount, body.account_id)
+        if (not account or account.platform != "xhs" or account.status != "active"
+                or not _xhs_has_read_login_state(account.storage_state)):
+            raise HTTPException(400, "请选择有效的小红书登录账号")
+        identity = browser.identity_for(account)
+
+    async def _ask():
+        return await fetch_xhs_dots_ask(
+            browser, identity, question, timeout_s=body.timeout_s,
+            new_session=body.new_session)
+
+    payload, outcome = await _run_account_read(
+        body.account_id, OperationKind.READ_HEAVY,
+        f"xhs-dots:{body.account_id}", _ask,
+        empty_result=None)
+    if isinstance(outcome, dict):
+        raise HTTPException(429, outcome.get("reason") or "账号读取正在冷却，请稍后重试")
+    if outcome:
+        message = re.sub(r"^(captcha|logged_out):", "", outcome)
+        category, _signal = classify_platform_error(outcome)
+        if outcome.startswith("captcha:") or category == RiskCategory.RISK:
+            raise HTTPException(409, {
+                "code": "verification_required", "message": message})
+        if outcome.startswith("logged_out:") or category == RiskCategory.AUTH:
+            raise HTTPException(400, {
+                "code": "logged_out",
+                "message": "登录态已失效,请对该账号点「重新登录」"})
+        if "没有给出回答" in outcome:
+            raise HTTPException(504, {"code": "timeout", "message": message})
+        raise HTTPException(502, {"code": "read_failed", "message": message})
+    return {"question": question, **(payload or {})}
 
 
 @app.post("/api/collections")
