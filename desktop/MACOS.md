@@ -26,6 +26,8 @@ python desktop/build_macos.py --version 0.2.7 --arch arm64
 
 输出到 `dist/macos-架构/`。未完成签名和公证的文件命名为 `CreatorHub-UNTESTED-...dmg`，不作为正式下载资产，也不要求用户关闭 Gatekeeper。
 
+cryptography 从 49 起不再发布 macOS x86_64 wheel。若在 Intel 上从源码编译,它会动态链接 Homebrew OpenSSL,打包后与 Python 自带的旧版 `libssl.3.dylib` 同名冲突,启动时报 `Symbol not found: _SSL_get0_group_name`。因此 `desktop/requirements-macos.txt` 对 cryptography 只允许 wheel,并把 Intel 限制在 48.x;升级前先确认 PyPI 是否恢复了 x86_64/universal2 wheel。
+
 ## Developer ID 签名与公证
 
 本地先导入维护者自己的 Developer ID Application 证书，并使用 `notarytool store-credentials` 创建钥匙串 profile：

@@ -596,6 +596,8 @@ def test_proxy_api_routes_config_persistence_and_matrix_linkage(local_project, m
 def test_local_ca_decodes_cp936_and_falls_back_to_uac_on_impersonation_error(tmp_path, monkeypatch):
     from app.platforms.channels import local_ca as lca
 
+    # 解码按系统 OEM 代码页走;CI runner 是英文 Windows(cp437),这里固定模拟中文系统(cp936)。
+    monkeypatch.setattr(lca, "_windows_code_pages", lambda: ["cp936"])
     sample_cp936 = "CertUtil: -addstore 失败: 0x80070542 (WIN32: 1346 ERROR_BAD_IMPERSONATION_LEVEL)".encode("cp936")
     decoded = lca._decode_windows_output(sample_cp936)
     assert "失败" in decoded

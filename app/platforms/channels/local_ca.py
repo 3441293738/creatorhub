@@ -37,6 +37,23 @@ def _creation_flags() -> int:
     return 0
 
 
+def _windows_code_pages() -> list[str]:
+    """Return the system OEM then ANSI code page; piped console tools such as certutil write OEM."""
+    if sys.platform != "win32":
+        return []
+    pages: list[str] = []
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        for cp in (int(kernel32.GetOEMCP()), int(kernel32.GetACP())):
+            if cp and f"cp{cp}" not in pages:
+                pages.append(f"cp{cp}")
+    except Exception:
+        pass
+    return pages
+
+
 def _decode_windows_output(raw: bytes | str | None) -> str:
     """Decode `certutil` stdout/stderr cleanly across UTF-8 and Windows OEM/ACP (e.g. CP936)."""
     if raw is None:
@@ -49,19 +66,8 @@ def _decode_windows_output(raw: bytes | str | None) -> str:
         return raw.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
         pass
-    candidates: list[str] = []
+    candidates = _windows_code_pages()
     if sys.platform == "win32":
-        try:
-            import ctypes
-
-            oem_cp = int(ctypes.windll.kernel32.GetOEMCP())
-            acp = int(ctypes.windll.kernel32.GetACP())
-            if oem_cp:
-                candidates.append(f"cp{oem_cp}")
-            if acp and f"cp{acp}" not in candidates:
-                candidates.append(f"cp{acp}")
-        except Exception:
-            pass
         candidates.append("mbcs")
     preferred = locale.getpreferredencoding(False)
     if preferred:
