@@ -1771,6 +1771,7 @@ class MonitorEngine:
             monitor_since = int(target.created_at.timestamp())
             scan_since = _douyin_scan_since(monitor_since, known_create_times)
             backfill_count = target.initial_backfill_count
+            should_backfill = first_scan or (backfill_count != 0 and not known)
             auto_download = target.download_enabled
             media_filter = target.media_filter or "all"
             strategy = _monitor_strategy(
@@ -1781,11 +1782,11 @@ class MonitorEngine:
             max_scrolls=strategy["max_scrolls"],
             block_media=self.cfg.engine.block_media_resources,
             # 默认只监控订阅后的作品；显式首次回填时允许继续向历史翻页。
-            stop_before=(0 if first_scan and backfill_count != 0 else scan_since))
+            stop_before=(0 if should_backfill and backfill_count != 0 else scan_since))
 
         new_records = []
         selected = _select_douyin_awemes(
-            items, quality, first_scan, scan_since, backfill_count)
+            items, quality, should_backfill, scan_since, backfill_count)
         filtered_count = 0
         for aw in selected:
             if not _monitor_content_matches(aw, strategy):
@@ -1827,14 +1828,15 @@ class MonitorEngine:
             for rec, _, _ in new_records:
                 s.refresh(rec)
 
-        if new_records and not first_scan:
+        if new_records and not should_backfill:
             await self._notify_new(target_name, [aw for _, aw, _ in new_records])
 
         await asyncio.gather(*(self._download(rec.id, aw, base_dir, proxy)
                                for rec, aw, should_download in new_records
                                if should_download))
         return {"ok": not error, "new": len(new_records), "error": error,
-                "scanned": len(selected), "filtered": filtered_count}
+                "scanned": len(selected), "filtered": filtered_count,
+                "backfill_count": backfill_count}
 
     # ── 快手:创作者作品监控(浏览器拦截 GraphQL,与抖音同范式)──
     async def _scan_ks_target_locked(self, target_id: int) -> dict:
@@ -1865,6 +1867,7 @@ class MonitorEngine:
             monitor_since = int(target.created_at.timestamp())
             scan_since = _douyin_scan_since(monitor_since, known_create_times)
             backfill_count = target.initial_backfill_count
+            should_backfill = first_scan or (backfill_count != 0 and not known)
             auto_download = target.download_enabled
             media_filter = target.media_filter or "all"
             strategy = _monitor_strategy(
@@ -1875,10 +1878,10 @@ class MonitorEngine:
             max_scrolls=strategy["max_scrolls"],
             block_media=self.cfg.engine.block_media_resources,
             # 默认只监控订阅后的作品；显式首次回填时允许继续向历史翻页。
-            stop_before=(0 if first_scan and backfill_count != 0 else scan_since))
+            stop_before=(0 if should_backfill and backfill_count != 0 else scan_since))
 
         selected = _select_ks_awemes(
-            items, quality, first_scan, scan_since, backfill_count)
+            items, quality, should_backfill, scan_since, backfill_count)
         new_records = []
         filtered_count = 0
         for aw in selected:
@@ -1921,14 +1924,15 @@ class MonitorEngine:
             for rec, _, _ in new_records:
                 s.refresh(rec)
 
-        if new_records and not first_scan:
+        if new_records and not should_backfill:
             await self._notify_new(target_name, [aw for _, aw, _ in new_records])
 
         await asyncio.gather(*(self._download(rec.id, aw, base_dir, proxy)
                                for rec, aw, should_download in new_records
                                if should_download))
         return {"ok": not error, "new": len(new_records), "error": error,
-                "scanned": len(selected), "filtered": filtered_count}
+                "scanned": len(selected), "filtered": filtered_count,
+                "backfill_count": backfill_count}
 
     async def _scan_tiktok_target_locked(self, target_id: int) -> dict:
         with get_session() as s:
@@ -1961,6 +1965,7 @@ class MonitorEngine:
             monitor_since = int(target.created_at.timestamp())
             scan_since = _douyin_scan_since(monitor_since, known_create_times)
             backfill_count = target.initial_backfill_count
+            should_backfill = first_scan or (backfill_count != 0 and not known)
             auto_download = target.download_enabled
             media_filter = target.media_filter or "all"
             strategy = _monitor_strategy(target, default_scrolls=12, default_items=0)
@@ -1973,7 +1978,7 @@ class MonitorEngine:
             max_scrolls=strategy["max_scrolls"],
             block_media=self.cfg.engine.block_media_resources)
         selected = _select_tiktok_awemes(
-            items, quality, first_scan, scan_since, backfill_count)
+            items, quality, should_backfill, scan_since, backfill_count)
         new_records = []
         filtered_count = 0
         for aw in selected:
@@ -2024,7 +2029,7 @@ class MonitorEngine:
             for rec, _, _ in new_records:
                 s.refresh(rec)
 
-        if new_records and not first_scan:
+        if new_records and not should_backfill:
             await self._notify_new(target_name, [aw for _, aw, _ in new_records])
         await asyncio.gather(*(self._download(
             rec.id, aw, base_dir, proxy, user_agent=download_ua,
@@ -2032,7 +2037,8 @@ class MonitorEngine:
             referer=aw.source_url or tiktok_profile_url(unique_id))
             for rec, aw, should_download in new_records if should_download))
         return {"ok": not error, "new": len(new_records), "error": error,
-                "scanned": len(selected), "filtered": filtered_count}
+                "scanned": len(selected), "filtered": filtered_count,
+                "backfill_count": backfill_count}
 
     # ── 视频号:创作者主页作品监控(优先微信 Finder 本地 CDP 协议 + WxIsaac64 解密下载)──
     async def _scan_channels_target_locked(self, target_id: int) -> dict:

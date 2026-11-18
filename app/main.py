@@ -8620,10 +8620,17 @@ async def update_monitor(tid: int, body: TargetUpdate):
                 raise HTTPException(400, "监控间隔须为 1~86400 秒")
             t.interval_seconds = body.interval_seconds
         if body.initial_backfill_count is not None:
-            if t.last_scan_at is not None:
-                raise HTTPException(400, "首次历史回填仅能在第一次扫描前修改")
             if body.initial_backfill_count < -1 or body.initial_backfill_count > 1000:
                 raise HTTPException(400, "首次回填数须为 -1 或 0~1000")
+            if (body.initial_backfill_count != t.initial_backfill_count
+                    and t.last_scan_at is not None):
+                has_contents = s.exec(
+                    select(ContentRecord.id)
+                    .where(ContentRecord.target_id == t.id)
+                    .limit(1)
+                ).first() is not None
+                if has_contents:
+                    raise HTTPException(400, "首次历史回填仅能在抓到作品前修改")
             t.initial_backfill_count = body.initial_backfill_count
         if body.video_quality is not None:
             q = body.video_quality.strip()

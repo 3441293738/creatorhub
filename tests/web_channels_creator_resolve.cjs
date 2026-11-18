@@ -119,11 +119,25 @@ function testShipinhaoDefaultsAndNoAccountUi(f) {
   assert.match(sphRow, /通道：本机微信客户端/);
   assert.doesNotMatch(sphRow, /未绑定账号/);
 
+  // Kuaishou & TikTok also show #t-backfill-wrap with default "5"; XHS hides #t-backfill-wrap
+  f.run("PLATFORM = 'kuaishou'; applyMonitorForm();");
+  assert.equal(f.$('t-acc-wrap').style.display, '');
+  assert.equal(f.$('t-backfill-wrap').style.display, '');
+  assert.equal(f.$('t-backfill').value, '5');
+
+  f.run("PLATFORM = 'tiktok'; applyMonitorForm();");
+  assert.equal(f.$('t-backfill-wrap').style.display, '');
+  assert.equal(f.$('t-backfill').value, '5');
+
+  f.run("PLATFORM = 'xhs'; applyMonitorForm();");
+  assert.equal(f.$('t-backfill-wrap').style.display, 'none');
+
   // Non-shipinhao (douyin) still restores #t-acc-wrap and resets #t-backfill default to ""
   f.run("PLATFORM = 'douyin'; applyMonitorForm(); populateAccountSelect(); populateWatchAccount();");
   assert.equal(f.$('t-acc-wrap').style.display, '');
   assert.equal(f.$('t-acc').value, '1');
   assert.equal(f.$('w-acc-wrap').style.display, '');
+  assert.equal(f.$('t-backfill-wrap').style.display, '');
   assert.equal(f.$('t-backfill').value, '');
   const dyRow = f.run("monRow({ id: 9, platform: 'douyin', nickname: '抖音测试', account_id: null, interval_seconds: 300, max_scrolls: 10, max_items_per_scan: 5, video_quality: 'highest', enabled: true })");
   assert.match(dyRow, /未绑定账号/);

@@ -1549,10 +1549,10 @@ function applyMonitorForm() {
   const isSph = PLATFORM === "shipinhao";
   if ($("t-acc-wrap")) $("t-acc-wrap").style.display = isSph ? "none" : "";
   if (isSph && $("t-acc")) $("t-acc").value = "";
-  const supportsBackfill = PLATFORM === "douyin" || isSph;
+  const supportsBackfill = PLATFORM !== "xhs";
   if ($("t-backfill-wrap")) $("t-backfill-wrap").style.display = supportsBackfill ? "" : "none";
   if ($("t-backfill") && _LAST_MONITOR_PLATFORM !== PLATFORM) {
-    $("t-backfill").value = isSph ? "5" : "";
+    $("t-backfill").value = ["shipinhao", "kuaishou", "tiktok"].includes(PLATFORM) ? "5" : "";
     $("t-backfill")._csSync?.();
   }
   _LAST_MONITOR_PLATFORM = PLATFORM;
@@ -7026,7 +7026,7 @@ async function addMonitor() {
           url_or_secuid, platform: PLATFORM, target_kind,
           account_id: PLATFORM === "shipinhao" ? null : ($("t-acc").value ? +$("t-acc").value : null),
           interval_seconds: monitorIntervalSeconds("t-interval"),
-          initial_backfill_count: (PLATFORM === "douyin" || PLATFORM === "shipinhao")
+          initial_backfill_count: PLATFORM !== "xhs"
             ? ($("t-backfill").value === "" ? null : +$("t-backfill").value) : 0,
           download_dir: $("t-dir").value.trim(),
           video_quality: PLATFORM === "xhs" ? "" : $("t-quality").value,
@@ -7199,7 +7199,7 @@ async function editMonitor(id) {
             ? ""
             : `<div><label class="field" for="em-account">抓取账号</label><select id="em-account">${accountOptions}</select></div>`}
         </div>
-        ${(!item.last_scan_at || !(item.content_count > 0)) ? `<div><label class="field" for="em-backfill">首次历史回填</label>
+        ${(item.platform !== "xhs" && (!item.last_scan_at || !(item.content_count > 0))) ? `<div><label class="field" for="em-backfill">首次历史回填</label>
           <select id="em-backfill">${backfillOptions}</select></div>` : ""}
         <div class="form-grid cols-4">
           <div><label class="field" for="em-max-scrolls">抓取深度</label><select id="em-max-scrolls">${depthOptions}</select></div>
