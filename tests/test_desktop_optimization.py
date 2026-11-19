@@ -135,6 +135,7 @@ def test_windows_and_mac_bundles_exclude_unused_heavy_dependencies():
             index = options.index(name)
             assert options[index - 1] == "--exclude-module"
         assert options[options.index("app") - 1] == "--collect-submodules"
+        assert options[options.index("websockets") - 1] == "--collect-submodules"
         assert options[options.index("pywebview") - 1] == "--copy-metadata"
         assert options[options.index("cryptography") - 1] == "--copy-metadata"
     mac = dependency_options("macos")
