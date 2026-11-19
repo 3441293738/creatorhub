@@ -63,6 +63,9 @@ class EngineConfig:
     douyin_read_mode: str = "hybrid"         # 默认 API 优先/浏览器回退；api=仅 API；browser=仅浏览器
     # native=纯 Python 离线签名直连；browser=已授权页面；auto=直连优先/页面回退。
     tiktok_read_mode: str = "native"          # native | auto | browser
+    # B站读写通道: hybrid=WBI/Cookie直连优先、明确风控兼容失败时回退页面; api=仅直连; browser=仅页面
+    bilibili_read_mode: str = "hybrid"        # hybrid | api | browser
+    bilibili_write_mode: str = "hybrid"       # hybrid | api | browser
     # 视频号读取模式: auto=优先桌面微信原生 Finder CDP 协议、回退创作者助手页面;
     # protocol=仅原生 Finder 协议; browser=仅创作者助手页面。
     channels_read_mode: str = "auto"          # auto | protocol | browser

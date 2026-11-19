@@ -1043,7 +1043,7 @@ async function exportModuleReport(module, full = false, explicitBtn = null) {
 }
 
 let PLATFORM = "douyin";
-const PF_NAME = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok" };
+const PF_NAME = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩" };
 let CURRENT_TAB = "overview";
 const PAGE_META = {
   overview: {
@@ -1102,11 +1102,11 @@ function updatePageContext(name = CURRENT_TAB) {
   globalThis.CreatorHubWorkbench?.navigate?.();
 }
 // 是否支持「发布」面板
-function pfHasPublish(pf) { return ["xhs", "kuaishou", "douyin", "shipinhao", "tiktok"].includes(pf); }
+function pfHasPublish(pf) { return ["xhs", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili"].includes(pf); }
 // 视频号只有「本账号」数据(助手接口本账号),不支持监控他人作品/评论
 function pfIsChannels(pf) { return pf === "shipinhao"; }
 function switchPlatform(pf) {
-  if (!["douyin", "xhs", "kuaishou", "shipinhao", "tiktok"].includes(pf)) pf = "douyin";
+  if (!["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"].includes(pf)) pf = "douyin";
   globalThis.CreatorHubWorkbench?.platformChanging?.(pf);
   PLATFORM = pf;
   VIEW_REQUESTS.clear();
@@ -1149,9 +1149,10 @@ function applyPlatformUI() {
   document.body.classList.toggle("pf-kuaishou", PLATFORM === "kuaishou");
   document.body.classList.toggle("pf-shipinhao", PLATFORM === "shipinhao");
   document.body.classList.toggle("pf-tiktok", PLATFORM === "tiktok");
+  document.body.classList.toggle("pf-bilibili", PLATFORM === "bilibili");
   // 视频号:只有本账号数据,隐藏「监控他人作品/评论」相关入口(.notsh-only)
   document.body.classList.toggle("pf-channels", pfIsChannels(PLATFORM));
-  if (PLATFORM !== "douyin" && CURRENT_TAB === "danmaku") switchTab("overview");
+  if (!["douyin", "bilibili"].includes(PLATFORM) && CURRENT_TAB === "danmaku") switchTab("overview");
   document.querySelectorAll(".pswitch button").forEach(b => {
     const active = b.dataset.pf === PLATFORM;
     b.classList.toggle("active", active);
@@ -1164,6 +1165,9 @@ function applyPlatformUI() {
   document.querySelectorAll(".sh-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "shipinhao"));
   document.querySelectorAll(".tk-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "tiktok"));
   document.querySelectorAll(".tk-hide").forEach(e => e.classList.toggle("hidden", PLATFORM === "tiktok"));
+  document.querySelectorAll(".bili-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "bilibili"));
+  document.querySelectorAll(".bili-hide").forEach(e => e.classList.toggle("hidden", PLATFORM === "bilibili"));
+  document.querySelectorAll(".danmaku-only").forEach(e => e.classList.toggle("hidden", !["douyin", "bilibili"].includes(PLATFORM)));
   document.querySelectorAll(".notsh-only").forEach(e => {
     const allowOnChannels = pfIsChannels(PLATFORM) && (
       e.dataset?.tab === "monitors"
@@ -1173,14 +1177,14 @@ function applyPlatformUI() {
     e.classList.toggle("hidden", pfIsChannels(PLATFORM) && !allowOnChannels);
   });
   document.querySelectorAll(".collect-only").forEach(e => e.classList.toggle(
-    "hidden", !["douyin", "xhs", "kuaishou", "shipinhao", "tiktok"].includes(PLATFORM)));
+    "hidden", !["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"].includes(PLATFORM)));
   document.querySelectorAll(".meta-scope").forEach(e => {
     e.textContent = (PF_NAME[PLATFORM] || "当前平台") + "内独立";
   });
   // 发布面板入口
   document.querySelectorAll(".pub-only").forEach(e => e.classList.toggle("hidden", !pfHasPublish(PLATFORM)));
   // 发布面板文案随平台切换
-  const ks = PLATFORM === "kuaishou", dy = PLATFORM === "douyin", sph = PLATFORM === "shipinhao", tk = PLATFORM === "tiktok";
+  const ks = PLATFORM === "kuaishou", dy = PLATFORM === "douyin", sph = PLATFORM === "shipinhao", tk = PLATFORM === "tiktok", bili = PLATFORM === "bilibili";
   const pubType = $("pub-type");
   if (pubType) {
     const before = pubType.value;
@@ -1196,15 +1200,18 @@ function applyPlatformUI() {
   if (pubSub) pubSub.textContent = dy ? "上传图集 / 视频到抖音创作平台(实验性)"
     : ks ? "上传图集 / 视频到快手创作平台(实验性)"
     : sph ? "上传图集 / 视频到视频号助手(实验性)"
-    : tk ? "上传视频到 TikTok Studio(实验性)" : "上传图集 / 视频到小红书(实验性)";
-  if ($("pub-head-lead")) $("pub-head-lead").textContent = (ks || dy || sph || tk) ? "发布作品" : "发布笔记";
-  const titleCap = dy ? 30 : sph ? 16 : 20;
+    : tk ? "上传视频到 TikTok Studio(实验性)"
+    : bili ? "上传图文动态 / 视频稿件到哔哩哔哩创作中心"
+    : "上传图集 / 视频到小红书(实验性)";
+  if ($("pub-head-lead")) $("pub-head-lead").textContent = (ks || dy || sph || tk || bili) ? "发布作品" : "发布笔记";
+  const titleCap = bili ? 80 : dy ? 30 : sph ? 16 : 20;
   if ($("pub-title-label-text")) $("pub-title-label-text").textContent = `标题(≤${titleCap} 字)`;
   if ($("pub-title")) {
     $("pub-title").maxLength = titleCap;
-    $("pub-title").placeholder = tk ? "视频说明的首行标题" : (ks || dy || sph) ? "给作品起个标题" : "给笔记起个标题";
+    $("pub-title").placeholder = bili ? "填写视频稿件标题（图文动态可选）" : tk ? "视频说明的首行标题" : (ks || dy || sph) ? "给作品起个标题" : "给笔记起个标题";
   }
   if ($("pub-dy-opts")) $("pub-dy-opts").classList.toggle("hidden", !["douyin", "xhs", "kuaishou"].includes(PLATFORM));
+  if (bili) { onBiliCopyrightChange(); if ($("pub-acc")?.value) loadBiliPartitions($("pub-acc").value); }
   const pubHintText = dy
     ? "发布通过自动化抖音创作平台完成。首次登录或触发验证时，请在弹出窗口中完成短信验证或扫码；视频上传后还需等待转码。注意：定时发布可能因本人验证而暂停，建议发布时在场。"
     : ks
@@ -1213,6 +1220,8 @@ function applyPlatformUI() {
     ? "发布通过自动化视频号助手完成。视频需等待转码，发布前可能要求补充封面、实名或人脸验证，请在弹出窗口中处理。注意：平台页面改版后可能需要重新适配。"
     : tk
     ? "发布通过账号独立的可见 TikTok Studio 页面完成，目前支持单视频、话题、可见范围、评论、Duet 与 Stitch。提交只点击一次；若显示“结果待确认”，请先到 TikTok Studio 核对，系统不会自动重发。"
+    : bili
+    ? "视频稿件通过哔哩哔哩创作中心完成上传，并按所选分区、自制/转载、创作者声明及弹幕/评论权限提交；图文通过动态页发布。提交只执行一次；若显示“结果待确认”，请先到创作中心核对，系统不会自动重发。"
     : "发布通过账号独立的可见 Chrome 页面完成。提交只点击一次；若显示“结果待确认”，请先到小红书核对，系统不会自动重发。";
   const pubHint = $("pub-hint");
   if (pubHint) {
@@ -1234,25 +1243,30 @@ function applyPlatformUI() {
     ? "笔记 / 创作者主页 / 完整分享文案 / ID"
     : PLATFORM === "kuaishou" ? "作品 / 创作者主页 / 完整分享文案 / ID"
     : PLATFORM === "shipinhao" ? "分享链接 / 作品 objectId / 创作者 v2_...@finder"
+    : PLATFORM === "bilibili" ? "视频 BV/av / 图文动态 / 空间主页 / 完整分享文案"
     : "视频 / 账号主页 / 完整分享文案 / ID";
   if ($("w-url")) $("w-url").placeholder = PLATFORM === "xhs"
     ? "直接粘贴整段小红书分享文案，将自动提取笔记或主页链接"
     : PLATFORM === "kuaishou" ? "直接粘贴整段快手分享文案，将自动提取作品或主页链接"
     : PLATFORM === "shipinhao" ? "粘贴 weixin.qq.com/sph/... 分享链、视频号作品链接、objectId 或 v2_...@finder"
     : PLATFORM === "tiktok" ? "直接粘贴整段 TikTok 分享文案，将自动提取视频或主页链接"
+    : PLATFORM === "bilibili" ? "直接粘贴整段哔哩哔哩分享文案、BV/av 号、opus 动态链接或 space 主页"
     : "直接粘贴整段抖音分享文案，将自动提取视频或主页链接";
   resetWatchTargetState();
   const ckl = $("ck-label");
   if (ckl) ckl.textContent = PLATFORM === "xhs"
     ? "完整 Cookie(含 a1;发布需创作者会话)"
-    : PLATFORM === "kuaishou" ? "完整 Cookie(含 userId 与 web_st)" : "完整 Cookie(含 sessionid)";
+    : PLATFORM === "kuaishou" ? "完整 Cookie(含 userId 与 web_st)"
+    : PLATFORM === "bilibili" ? "完整 Cookie(含 SESSDATA 与 bili_jct)"
+    : "完整 Cookie(含 sessionid)";
   if ($("ck-val")) $("ck-val").placeholder = PLATFORM === "xhs"
     ? "从 creator.xiaohongshu.com 登录后复制完整 Cookie"
     : PLATFORM === "kuaishou" ? "从 www.kuaishou.com 登录后复制完整 Cookie"
+    : PLATFORM === "bilibili" ? "从 www.bilibili.com 或 member.bilibili.com 登录后复制完整 Cookie"
     : "从浏览器开发者工具复制完整 Cookie";
   applyMonitorForm();
   applyCollectionForm();
-  if (PLATFORM === "douyin") applyDanmakuForm();
+  if (["douyin", "bilibili"].includes(PLATFORM)) applyDanmakuForm();
   if ($("t-kind") && PLATFORM !== "xhs") $("t-kind").value = "creator";
   // 视频号不支持自动评论规则:若正停在自动评论面板,切回本账号管理
   if (pfIsChannels(PLATFORM)) {
@@ -1264,7 +1278,7 @@ function applyPlatformUI() {
   if (PLATFORM === "tiktok" && CURRENT_TAB === "autocomment") switchTab("hub");
   if (PLATFORM !== "tiktok" && CURRENT_TAB === "tiktok-tools") switchTab("accounts");
   if (PLATFORM === "tiktok" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
-  if (!["douyin", "xhs", "kuaishou", "shipinhao", "tiktok"].includes(PLATFORM) && CURRENT_TAB === "collections") switchTab("overview");
+  if (!["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"].includes(PLATFORM) && CURRENT_TAB === "collections") switchTab("overview");
   // 不支持发布的平台:若正停在该面板则回到总览(当前四平台均支持,兜底保留)
   if (!pfHasPublish(PLATFORM)) {
     const pub = document.querySelector('[data-panel="publish"]');
@@ -1519,13 +1533,15 @@ function handleWatchTargetKeydown(event) {
 function resetDanmakuTargetState() {
   resetSmartTargetState(
     "d-w-url", "d-w-url-feedback",
-    "支持完整抖音分享文案、视频链接、账号主页、短链或 ID",
+    PLATFORM === "bilibili"
+      ? "支持完整哔哩哔哩分享文案、BV/av 号、视频链接、空间主页或短链"
+      : "支持完整抖音分享文案、视频链接、账号主页、短链或 ID",
   );
 }
 
 function normalizeDanmakuTarget(button = null, options = {}) {
   return normalizePlatformShareTarget({
-    inputId: "d-w-url", feedbackId: "d-w-url-feedback", platform: "douyin",
+    inputId: "d-w-url", feedbackId: "d-w-url-feedback", platform: PLATFORM,
     button, quiet: !!options.quiet,
   });
 }
@@ -1552,14 +1568,15 @@ function applyMonitorForm() {
   const supportsBackfill = PLATFORM !== "xhs";
   if ($("t-backfill-wrap")) $("t-backfill-wrap").style.display = supportsBackfill ? "" : "none";
   if ($("t-backfill") && _LAST_MONITOR_PLATFORM !== PLATFORM) {
-    $("t-backfill").value = ["shipinhao", "kuaishou", "tiktok"].includes(PLATFORM) ? "5" : "";
+    $("t-backfill").value = ["shipinhao", "kuaishou", "tiktok", "bilibili"].includes(PLATFORM) ? "5" : "";
     $("t-backfill")._csSync?.();
   }
   _LAST_MONITOR_PLATFORM = PLATFORM;
-  if (PLATFORM === "douyin" || PLATFORM === "kuaishou" || PLATFORM === "shipinhao" || PLATFORM === "tiktok") {
+  if (PLATFORM === "douyin" || PLATFORM === "kuaishou" || PLATFORM === "shipinhao" || PLATFORM === "tiktok" || PLATFORM === "bilibili") {
     const isKs = PLATFORM === "kuaishou";
     const isTikTok = PLATFORM === "tiktok";
-    if (title) title.innerHTML = (isKs || isSph ? '添加创作者监控' : '添加作品监控')
+    const isBili = PLATFORM === "bilibili";
+    if (title) title.innerHTML = (isKs || isSph || isBili ? '添加创作者监控' : '添加作品监控')
       + ' <span class="sub">监控并下载新作品</span>';
     if (lbl) lbl.textContent = isTikTok
       ? "创作者主页 / 完整分享文案 / @username"
@@ -1567,6 +1584,8 @@ function applyMonitorForm() {
       ? "创作者主页 / v2_...@finder / 单条视频分享链接"
       : isKs
       ? "创作者主页 / 完整分享文案 / user_id"
+      : isBili
+      ? "UP 主空间主页 / 完整分享文案 / mid"
       : "创作者主页 / 完整分享文案 / sec_uid";
     $("t-url").placeholder = isTikTok
       ? "直接粘贴整段 TikTok 主页或作品分享文案，将自动提取 @username"
@@ -1574,6 +1593,8 @@ function applyMonitorForm() {
       ? "粘贴视频号主页链接、v2_...@finder、sph 标识或单条视频 weixin.qq.com/sph/... 链接"
       : isKs
       ? "直接粘贴整段快手主页分享文案，将自动提取有效链接"
+      : isBili
+      ? "直接粘贴整段哔哩哔哩空间或视频分享文案，或填写 UP 主 mid"
       : "直接粘贴整段抖音主页分享文案，将自动提取有效链接";
     if (parseButton) parseButton.classList.remove("hidden");
     resetMonitorTargetState();
@@ -2007,6 +2028,24 @@ async function startTikTokLogin() {
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>TikTok Web 窗口已打开</b>，请在该窗口完成登录。<br>登录成功后，此账号 Profile 会用于页面动态签名、批量采集、关注、私信和评论。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("TikTok 登录启动失败:" + e.message, "err"); }
+}
+
+// ─── 哔哩哔哩扫码登录（读取、创作中心与写操作共用） ───
+async function startBilibiliLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend({ platform: "bilibili" });
+  if (browserBackend === null) return;
+  const proxy = await choosePreLoginProxy({ platform: "bilibili" });
+  if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
+  $("cookiebox").style.display = "none";
+  $("qrbox").style.display = "block";
+  $("qrstatus").textContent = "正在打开哔哩哔哩窗口…";
+  try {
+    const res = await api(loginStartUrl("/api/login/bilibili/start", proxy, browserBackend), loginStartOptions(fingerprint));
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>哔哩哔哩窗口已打开</b>，请使用哔哩哔哩 App 扫码完成登录。<br>登录成功后会自动同步创作中心会话，可用于采集、弹幕、互动与投稿。`;
+    pollLogin(res.task_id);
+  } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("哔哩哔哩登录启动失败:" + e.message, "err"); }
 }
 
 // ─── Cookie 登录 ───
@@ -2593,8 +2632,9 @@ async function refreshAccounts() {
     const isKs = a.platform === "kuaishou";
     const isChannels = a.platform === "shipinhao";
     const isTikTok = a.platform === "tiktok";
-    const idName = isXhs ? "小红书号 " : isKs ? "快手号 " : isChannels ? "视频号 " : isTikTok ? "TikTok号 " : "抖音号 ";
-    const secName = isChannels ? "finder_id " : isKs ? "主页ID " : isXhs ? "user_id " : isTikTok ? "unique_id " : "sec_uid ";
+    const isBili = a.platform === "bilibili";
+    const idName = isXhs ? "小红书号 " : isKs ? "快手号 " : isChannels ? "视频号 " : isTikTok ? "TikTok号 " : isBili ? "UID " : "抖音号 ";
+    const secName = isChannels ? "finder_id " : isKs ? "主页ID " : isXhs ? "user_id " : isTikTok ? "unique_id " : isBili ? "mid " : "sec_uid ";
     const rawSecUid = String(a.sec_uid || "");
     const shortSecUid = rawSecUid.length > 18 ? rawSecUid.slice(0, 18) + "…" : rawSecUid;
     const idline = [
@@ -3396,6 +3436,13 @@ function workLink(platform, id) {
     return author ? `https://www.tiktok.com/@${encodeURIComponent(author)}/video/${id}`
       : `https://www.tiktok.com/search?q=${id}`;
   }
+  if (platform === "bilibili") {
+    const raw = decodeURIComponent(id);
+    if (/^BV[0-9A-Za-z]+$/i.test(raw)) return "https://www.bilibili.com/video/" + encodeURIComponent(raw);
+    if (/^av\d+$/i.test(raw)) return "https://www.bilibili.com/video/" + encodeURIComponent(raw.toLowerCase());
+    if (/^\d{15,}$/.test(raw)) return "https://www.bilibili.com/opus/" + encodeURIComponent(raw);
+    return "https://www.bilibili.com/video/av" + id;
+  }
   return "https://www.douyin.com/video/" + id;
 }
 function openWork(platform, id) { try { window.open(workLink(platform, id), "_blank", "noopener"); } catch (e) {} }
@@ -4046,15 +4093,22 @@ function populateWatchAccount() {
 }
 function populateDanmakuAccount() {
   const sel = $("d-w-acc"); if (!sel) return;
-  const creatorOnly = $("d-w-mode") && $("d-w-mode").value === "creator";
+  const pf = PLATFORM === "bilibili" ? "bilibili" : "douyin";
+  const creatorOnly = pf === "douyin" && $("d-w-mode") && $("d-w-mode").value === "creator";
   const list = creatorOnly
     ? ACCOUNTS.filter(a => a.platform === "douyin" && a.has_creator)
-    : ACCOUNTS.filter(a => a.platform === "douyin");
+    : ACCOUNTS.filter(a => a.platform === pf);
   const ph = creatorOnly && !list.length ? "无创作者账号,请先创作者登录" : "不指定账号";
   sel.innerHTML = accOptions(list, ph);
   if (creatorOnly && list.length) sel.value = String(list[0].id);
+  if (sel._csSync) sel._csSync();
 }
 function applyDanmakuForm() {
+  const isBili = PLATFORM === "bilibili";
+  if (isBili && $("d-w-mode") && $("d-w-mode").value === "creator") {
+    $("d-w-mode").value = "public";
+    $("d-w-mode")._csSync?.();
+  }
   const kind = $("d-w-kind") ? $("d-w-kind").value : "auto";
   const mode = $("d-w-mode") ? $("d-w-mode").value : "public";
   const isVideo = kind === "video";
@@ -4063,13 +4117,12 @@ function applyDanmakuForm() {
   if (recentWrap) recentWrap.hidden = isVideo;
   if (daysWrap) daysWrap.hidden = isVideo;
   const urlLabel = $("d-w-url-label");
-  if (urlLabel) urlLabel.textContent = isVideo
-    ? "视频 / 完整分享文案 / aweme_id"
-    : kind === "user" ? "账号主页 / 完整分享文案 / sec_uid" : "视频 / 账号主页 / 完整分享文案 / ID";
-  if ($("d-w-url")) $("d-w-url").placeholder = isVideo
-    ? "粘贴视频分享文案、作品链接或 aweme_id"
-    : kind === "user" ? "粘贴主页分享文案、账号主页或 sec_uid"
-    : "直接粘贴整段抖音分享文案，将自动识别视频或账号";
+  if (urlLabel) urlLabel.textContent = isBili
+    ? (isVideo ? "视频链接 / 完整分享文案 / BV 或 av 号" : kind === "user" ? "UP 主空间主页 / 完整分享文案 / mid" : "视频 BV/av / 空间主页 / 完整分享文案")
+    : (isVideo ? "视频 / 完整分享文案 / aweme_id" : kind === "user" ? "账号主页 / 完整分享文案 / sec_uid" : "视频 / 账号主页 / 完整分享文案 / ID");
+  if ($("d-w-url")) $("d-w-url").placeholder = isBili
+    ? (isVideo ? "粘贴哔哩哔哩视频分享文案、链接或 BV/av 号" : kind === "user" ? "粘贴空间主页链接或 UP 主 mid" : "直接粘贴整段哔哩哔哩分享文案，将自动识别视频或 UP 主")
+    : (isVideo ? "粘贴视频分享文案、作品链接或 aweme_id" : kind === "user" ? "粘贴主页分享文案、账号主页或 sec_uid" : "直接粘贴整段抖音分享文案，将自动识别视频或账号");
   resetDanmakuTargetState();
   const accLabel = $("d-w-acc-label");
   if (accLabel) accLabel.textContent = mode === "creator"
@@ -4078,7 +4131,7 @@ function applyDanmakuForm() {
   if (depthLabel) depthLabel.textContent = mode === "creator"
     ? "创作中心翻页深度" : "弹幕加载轮次";
   const probeWrap = $("d-w-probe-wrap");
-  if (probeWrap) probeWrap.hidden = mode === "creator";
+  if (probeWrap) probeWrap.hidden = mode === "creator" || isBili;
   populateDanmakuAccount();
 }
 async function refreshProfile(id) {
@@ -4097,7 +4150,9 @@ async function refreshProfile(id) {
       const refreshedPlatform = r.platform || PLATFORM;
       const idLbl = refreshedPlatform === "xhs" ? " · 小红书号 "
         : refreshedPlatform === "kuaishou" ? " · 快手号 "
-        : refreshedPlatform === "shipinhao" ? " · 视频号 " : " · 抖音号 ";
+        : refreshedPlatform === "shipinhao" ? " · 视频号 "
+        : refreshedPlatform === "tiktok" ? " · TikTok号 "
+        : refreshedPlatform === "bilibili" ? " · UID " : " · 抖音号 ";
       toast("\u8d44\u6599\u5df2\u66f4\u65b0\uff0c\u767b\u5f55\u72b6\u6001\u5df2\u6062\u590d:" + (r.nickname || "") + (r.douyin_id ? idLbl + r.douyin_id : ""), "ok");
     } catch (e) {
       toast("\u5237\u65b0\u5931\u8d25:" + e.message, "err");
@@ -4800,7 +4855,7 @@ function transportSourceSuffix(source) {
 function renderTransportMatrix(data) {
   const body = $("transport-matrix-body"), isolation = $("transport-isolation-body");
   if (!body || !isolation) return;
-  const platformNames = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号" };
+  const platformNames = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩" };
   const rows = Array.isArray(data?.rows) ? data.rows : [];
   body.innerHTML = rows.length ? rows.map(row => `<tr>
     <td><b>${esc(platformNames[row.platform] || row.platform)}</b></td>
@@ -5666,7 +5721,7 @@ function filterShareAccounts() {
   const old = sel.value;
   const platform = shareAccountPlatform();
   const hasDetectedLink = !!SHARE_LINKS.length;
-  const knownAccountPlatform = ["douyin", "xhs", "kuaishou", "shipinhao"].includes(platform);
+  const knownAccountPlatform = ["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"].includes(platform);
   const rows = knownAccountPlatform
     ? SHARE_ACCOUNTS.filter(a => a.platform === platform)
     : [];
@@ -6378,10 +6433,11 @@ function rebuildCollectionSources(xhs, channels, tiktok) {
   const sel = $("col-source");
   if (!sel) return;
   const current = sel.value;
+  const bilibili = PLATFORM === "bilibili";
   sel.innerHTML = "";
   for (const o of COL_SOURCE_DEFS) {
     let keep;
-    if (o.channels) keep = channels;
+    if (o.channels) keep = channels || bilibili;
     else if (o.xhs) keep = xhs;
     else keep = !(tiktok && o.value !== "keyword");
     if (!keep) continue;
@@ -6409,6 +6465,8 @@ function applyCollectionForm() {
   populateCollectionAccount();
   const source = collectionSourceValue();
   const channelsAccountOnly = channels && source === "account_works";
+  const biliAccountOnly = PLATFORM === "bilibili" && source === "account_works";
+  const accountWorksOnly = channelsAccountOnly || biliAccountOnly;
   const favorite = ["favorite_all", "favorite_board"].includes(source);
   const alternate = source !== "keyword";
   if ($("col-keywords-wrap")) $("col-keywords-wrap").style.display = alternate ? "none" : "";
@@ -6417,19 +6475,21 @@ function applyCollectionForm() {
   if ($("collection-create-title")) {
     $("collection-create-title").textContent = channelsAccountOnly
       ? "新建视频号本账号作品采集"
+      : biliAccountOnly
+      ? "新建哔哩哔哩本账号作品采集"
       : favorite
       ? `新建${platformName}收藏采集`
       : source === "creator"
         ? `新建${platformName}创作者采集`
         : `新建${platformName}关键词采集`;
   }
-  if ($("collection-create-sub")) $("collection-create-sub").textContent = channelsAccountOnly ? "同步当前登录账号的视频与图文，并按需采集评论与解密媒体" : channels ? "通过微信原生 Finder 协议采集作品、解密视频并拉取全量评论线程" : favorite ? "导入收藏笔记并继续抓取详情与评论" : source === "creator" ? "导入创作者公开作品并抓取评论" : xhs ? "批量搜索笔记并抓取评论" : tiktok ? "通过离线签名 API 批量搜索 TikTok 视频并抓取评论" : "批量搜索视频并抓取评论";
+  if ($("collection-create-sub")) $("collection-create-sub").textContent = channelsAccountOnly ? "同步当前登录账号的视频与图文，并按需采集评论与解密媒体" : biliAccountOnly ? "同步当前登录账号的投稿稿件，并按需采集评论与下载视频" : channels ? "通过微信原生 Finder 协议采集作品、解密视频并拉取全量评论线程" : favorite ? "导入收藏笔记并继续抓取详情与评论" : source === "creator" ? "导入创作者公开作品并抓取评论" : xhs ? "批量搜索笔记并抓取评论" : tiktok ? "通过离线签名 API 批量搜索 TikTok 视频并抓取评论" : PLATFORM === "bilibili" ? "通过离线 WBI 签名接口批量搜索视频并抓取评论" : "批量搜索视频并抓取评论";
   if ($("nav-collections-label")) $("nav-collections-label").textContent = channels ? "作品批量采集" : "关键词采集";
-  if ($("col-content-limit-label")) $("col-content-limit-label").textContent = channelsAccountOnly ? "作品上限" : "每词作品上限";
-  if ($("col-page-limit-label")) $("col-page-limit-label").innerHTML = channelsAccountOnly ? '作品页采集深度 <span class="field-scope">1–40 页</span>' : '每词采集深度 <span class="field-scope">1–40 页</span>';
-  if ($("col-sort-wrap")) $("col-sort-wrap").style.display = (channelsAccountOnly || source === "creator") ? "none" : "";
-  if ($("col-page-help")) $("col-page-help").textContent = channelsAccountOnly ? "依次读取视频与图文管理页(或复用微信原生 Finder 主页协议)。" : channels ? "一页对应一次微信原生 Finder 搜索或主页翻页请求。" : xhs ? "一页对应一次搜索结果下滑或接口翻页。" : "一页对应一次搜索结果下滑。";
-  if ($("col-source-ref")) $("col-source-ref").placeholder = PLATFORM === "douyin" ? "抖音 sec_uid" : PLATFORM === "xhs" ? "小红书 user_id" : PLATFORM === "shipinhao" ? "视频号 v2_...@finder / sph 标识 / 主页链接" : "快手 user_id / 主页链接 / 短链 / 分享文案";
+  if ($("col-content-limit-label")) $("col-content-limit-label").textContent = accountWorksOnly ? "作品上限" : "每词作品上限";
+  if ($("col-page-limit-label")) $("col-page-limit-label").innerHTML = accountWorksOnly ? '作品页采集深度 <span class="field-scope">1–40 页</span>' : '每词采集深度 <span class="field-scope">1–40 页</span>';
+  if ($("col-sort-wrap")) $("col-sort-wrap").style.display = (accountWorksOnly || source === "creator") ? "none" : "";
+  if ($("col-page-help")) $("col-page-help").textContent = channelsAccountOnly ? "依次读取视频与图文管理页(或复用微信原生 Finder 主页协议)。" : biliAccountOnly ? "依次读取创作中心稿件列表接口分页。" : channels ? "一页对应一次微信原生 Finder 搜索或主页翻页请求。" : xhs ? "一页对应一次搜索结果下滑或接口翻页。" : PLATFORM === "bilibili" ? "一页对应一次 WBI 搜索或 UP 主空间投稿接口翻页。" : "一页对应一次搜索结果下滑。";
+  if ($("col-source-ref")) $("col-source-ref").placeholder = PLATFORM === "douyin" ? "抖音 sec_uid" : PLATFORM === "xhs" ? "小红书 user_id" : PLATFORM === "shipinhao" ? "视频号 v2_...@finder / sph 标识 / 主页链接" : PLATFORM === "bilibili" ? "哔哩哔哩 UP 主 mid / space 主页链接 / 视频分享文案" : "快手 user_id / 主页链接 / 短链 / 分享文案";
   resetCollectionCreatorState();
   if ($("col-replies-help")) $("col-replies-help").textContent = `采集${platformName}当前可返回的回复`;
   if ($("collection-callout-title")) $("collection-callout-title").textContent = channelsAccountOnly ? "支持创作者助手本账号同步与微信原生 Finder 协议增强" : channels ? "连接本机已登录微信即可搜索、采主页、抓全量评论与解密下载（无需网页账号）" : "作品上限、采集深度和停止条件任一满足即结束";
@@ -6437,6 +6497,8 @@ function applyCollectionForm() {
     ? "视频号采用双通道架构：「关键词搜索 / 创作者主页」直接走「设置 → 视频号微信通道」一键连接的本机微信，无需登录创作者助手；「本账号作品」则读取创作者助手中已登录的本账号视频与图文。"
     : tiktok
     ? "TikTok 当前默认 native：关键词、评论和二级回复均由离线签名 API 直连，全程不打开浏览器；只有在设置中手动选择 auto/browser 才会使用页面。直播不在采集范围；视频发布请使用独立发布入口。"
+    : PLATFORM === "bilibili"
+    ? "哔哩哔哩默认使用离线 WBI 签名 API 直连搜索视频、读取 UP 主空间与本账号稿件、抓取主评论与楼中楼回复，并携带 Referer 下载渐进式 MP4 媒体；仅在普通接口兼容失败时按设置回退浏览器。"
     : xhs
     ? "小红书采集复用所选账号的可见浏览器或显式 API 读取模式；最新、类型、时间和数据门槛会在入库前复核；任务串行执行，可随时取消，已入库结果会保留。"
     : PLATFORM === "kuaishou"
@@ -6562,7 +6624,7 @@ function renderCollectionJobs() {
       (sourceValues.length > 5 ? `<span class="meta-chip more">+${sourceValues.length - 5}</span>` : "");
     const canCancel = ["pending", "running"].includes(job.status);
     const canRetry = ["done", "partial", "failed", "canceled"].includes(job.status);
-    const canEdit = canRetry && ["douyin", "xhs", "kuaishou", "shipinhao", "tiktok"].includes(job.platform);
+    const canEdit = canRetry && ["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"].includes(job.platform);
     const errorText = collectionLastError(job);
     const sortLabel = { general: "综合", latest: "最新", most_liked: "最多点赞" }[job.search_sort] || "综合";
     const timeLabel = { all: "不限时间", day: "一天内", week: "一周内", half_year: "半年内" }[job.publish_time] || "不限时间";
@@ -6587,7 +6649,7 @@ function renderCollectionJobs() {
 }
 async function refreshCollections() {
   const isCurrent = beginViewRequest("collections");
-  if (!$("collection-job-table") || !["douyin", "xhs", "kuaishou", "shipinhao", "tiktok"].includes(PLATFORM)) return;
+  if (!$("collection-job-table") || !["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"].includes(PLATFORM)) return;
   try {
     const requestedPlatform = PLATFORM;
     const jobs = await api("/api/collections?platform=" + encodeURIComponent(requestedPlatform));
@@ -7646,7 +7708,7 @@ async function refreshContents(resetPage = false) {
         <div class="content-status-row"><span class="pill ${r.download_status}">${contentStatusLabel(r.download_status)}</span>${r.error ? `<span class="warn-ic" data-tip="${esc(r.error)}">${ic("i-info")}</span>` : ""}</div>
         <div class="content-action-buttons">
           ${["failed", "skipped"].includes(r.download_status) ? `<button class="ghost sm" onclick="retryDl(${r.id})">${r.download_status === "skipped" ? "下载" : "重试"}</button>` : ""}
-          ${(PLATFORM === "douyin" && r.download_status === "done") ? `<button class="ghost sm content-action-primary" onclick="pickRepostTarget(${r.id})">${ic("i-send")}转发</button>` : ""}
+          ${(["douyin", "bilibili"].includes(PLATFORM) && r.download_status === "done") ? `<button class="ghost sm content-action-primary" onclick="pickRepostTarget(${r.id})">${ic("i-send")}转发</button>` : ""}
           ${(PLATFORM === "xhs" && r.download_status === "done") ? `<button class="ghost sm content-action-primary" onclick="repostDouyin(${r.id})">${ic("i-send")}发抖音</button>` : ""}
           <button class="ghost sm content-action-delete danger" onclick="delContent(${r.id})" data-tip="删除作品" aria-label="删除作品">${ic("i-trash")}</button>
         </div>
@@ -7751,7 +7813,7 @@ async function addDanmakuWatch() {
       await api("/api/danmaku-watches", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          url_or_id: url, platform: "douyin", kind: $("d-w-kind").value, mode: mode,
+          url_or_id: url, platform: PLATFORM, kind: $("d-w-kind").value, mode: PLATFORM === "douyin" ? mode : "public",
           account_id: $("d-w-acc").value ? +$("d-w-acc").value : null,
           interval_seconds: monitorIntervalSeconds("d-w-interval"),
           recent_works: +$("d-w-recent").value, recent_days: +$("d-w-days").value,
@@ -7787,8 +7849,8 @@ async function addDanmakuWatch() {
 }
 async function refreshDanmakuWatches() {
   const isCurrent = beginViewRequest("danmaku-watches");
-  if (PLATFORM !== "douyin") return;
-  const rows = await api("/api/danmaku-watches?platform=douyin");
+  if (!["douyin", "bilibili"].includes(PLATFORM)) return;
+  const rows = await api("/api/danmaku-watches?platform=" + encodeURIComponent(PLATFORM));
   if (!isCurrent()) return;
   DANMAKU_WATCHES = rows;
   populateDanmakuFacets();
@@ -7951,10 +8013,10 @@ function renderDanmakuPager(meta) {
 }
 async function refreshDanmaku(resetPage = false) {
   const isCurrent = beginViewRequest("danmaku");
-  if (PLATFORM !== "douyin" || !$("danmaku-table")) return;
+  if (!["douyin", "bilibili"].includes(PLATFORM) || !$("danmaku-table")) return;
   const load = prepareWatchRecordLoad("danmaku", resetPage); if (!load) return;
   const params = new URLSearchParams({
-    platform: "douyin", page: String(DANMAKU_PAGE),
+    platform: PLATFORM, page: String(DANMAKU_PAGE),
     page_size: String(DANMAKU_PAGE_SIZE), paginate: "true",
   });
   if (DANMAKU_SRC) params.set("watch_id", DANMAKU_SRC);
@@ -8038,7 +8100,7 @@ async function clearDanmaku() {
   if (!await uiConfirm({ title: "清空弹幕", message: "清空所有弹幕记录?",
                          okText: "清空", danger: true })) return;
   try {
-    const result = await api("/api/danmaku", { method: "DELETE" });
+    const result = await api("/api/danmaku?platform=" + encodeURIComponent(PLATFORM), { method: "DELETE" });
     toast("已清空 " + result.deleted + " 条弹幕", "ok");
     refreshDanmaku(); refreshDanmakuWatches();
   } catch (e) { toast("清空失败:" + e.message, "err"); }
@@ -8484,16 +8546,57 @@ document.addEventListener("keydown", e => {
 });
 
 // ─── 多平台发布 ───
+const BILI_PARTITION_CACHE = new Map();
+function onBiliCopyrightChange() {
+  const wrap = $("pub-bili-source-wrap");
+  if (wrap) wrap.style.display = $("pub-bili-copyright")?.value === "2" ? "" : "none";
+}
+async function loadBiliPartitions(accountId) {
+  const sel = $("pub-bili-tid");
+  if (!sel || !accountId || PLATFORM !== "bilibili") return;
+  const current = sel.value || "21";
+  let data = BILI_PARTITION_CACHE.get(Number(accountId));
+  if (!data) {
+    try {
+      data = await api("/api/accounts/" + Number(accountId) + "/bili/partitions");
+      if (data && Array.isArray(data.partitions) && data.partitions.length) {
+        BILI_PARTITION_CACHE.set(Number(accountId), data);
+      }
+    } catch (_) { return; }
+  }
+  const groups = Array.isArray(data?.partitions) ? data.partitions : [];
+  const opts = [];
+  for (const g of groups) {
+    const pName = String(g.name || "");
+    const children = Array.isArray(g.children) && g.children.length ? g.children : [g];
+    for (const c of children) {
+      const tid = Number(c.tid || c.id || 0);
+      if (!tid) continue;
+      const cName = String(c.name || "");
+      opts.push({ tid: String(tid), label: pName && pName !== cName ? `${pName} · ${cName}` : cName });
+    }
+  }
+  if (!opts.length) return;
+  sel.innerHTML = opts.map(o => `<option value="${esc(o.tid)}">${esc(o.label)}</option>`).join("");
+  sel.value = opts.some(o => o.tid === String(current)) ? String(current) : opts[0].tid;
+  sel._csSync?.();
+}
 function populatePubAcc() {
   const sel = $("pub-acc"); if (!sel) return;
-  // 小红书发布需创作者号;抖音 / 快手发布有登录态即可(走浏览器自动化)
+  // 小红书发布需创作者号;其余平台有登录态即可(走浏览器自动化)
   const list = PLATFORM === "xhs" ? ACCOUNTS.filter(a => a.has_creator) : ACCOUNTS;
   const ph = list.length ? "选择发布账号"
     : (PLATFORM === "kuaishou" ? "请先完成「快手扫码登录」"
       : PLATFORM === "douyin" ? "请先完成「抖音扫码/创作者登录」"
-      : PLATFORM === "tiktok" ? "请先完成「TikTok 登录」" : "请先完成「小红书创作者登录」");
+      : PLATFORM === "tiktok" ? "请先完成「TikTok 登录」"
+      : PLATFORM === "bilibili" ? "请先完成「哔哩哔哩扫码登录」" : "请先完成「小红书创作者登录」");
   sel.innerHTML = accOptions(list, ph);
   if (list.length) sel.value = String(list[0].id);
+  if (!sel._biliBound) {
+    sel._biliBound = true;
+    sel.addEventListener("change", () => { if (PLATFORM === "bilibili" && sel.value) loadBiliPartitions(sel.value); });
+  }
+  if (PLATFORM === "bilibili" && sel.value) loadBiliPartitions(sel.value);
 }
 let pubFilesDT = new DataTransfer();
 function onPubType() {
@@ -8544,16 +8647,39 @@ function bindPubFilePicker() {
 }
 let PUB_SUBMITTING = false, PUB_UPLOAD_CACHE = null;
 function publishFormPayload() {
-  const tiktok = PLATFORM === "tiktok";
-  return { account_id: +$("pub-acc").value, media_type: $("pub-type").value,
+  const tiktok = PLATFORM === "tiktok", bili = PLATFORM === "bilibili";
+  const mediaType = $("pub-type").value;
+  let biliOptions;
+  if (bili) {
+    const copyright = +($("pub-bili-copyright")?.value || 1);
+    const source = ($("pub-bili-source")?.value || "").trim();
+    if (mediaType === "video" && copyright === 2 && !source) {
+      throw new Error("转载稿件请填写转载来源");
+    }
+    const stmtVal = +($("pub-bili-statement")?.value || -1);
+    biliOptions = {
+      tid: +($("pub-bili-tid")?.value || 21),
+      copyright,
+      source,
+      creation_statement_id: stmtVal,
+      declaration_index: stmtVal,
+      recreate: +($("pub-bili-recreate")?.value || -1),
+      up_close_danmu: $("pub-bili-close-danmu")?.value === "1",
+      up_close_reply: $("pub-bili-close-reply")?.value === "1",
+      up_selection_reply: $("pub-bili-selection-reply")?.value === "1",
+      is_only_self: $("pub-bili-visibility")?.value === "private" ? 1 : 0,
+    };
+  }
+  return { account_id: +$("pub-acc").value, media_type: mediaType,
     title: $("pub-title").value.trim(), desc: $("pub-desc").value,
     topics: $("pub-topics").value.trim(), scheduled_at: scheduleToApi($("pub-when").value || null),
     location: $("pub-location") ? $("pub-location").value.trim() : "",
-    visibility: tiktok ? $("pub-tk-visibility").value : $("pub-visibility") ? $("pub-visibility").value : "public",
+    visibility: bili ? ($("pub-bili-visibility")?.value || "public") : (tiktok ? $("pub-tk-visibility").value : $("pub-visibility") ? $("pub-visibility").value : "public"),
     allow_save: $("pub-allowsave") ? $("pub-allowsave").value !== "0" : true,
-    allow_comment: tiktok ? $("pub-tk-comment").value !== "0" : true,
+    allow_comment: bili ? ($("pub-bili-close-reply")?.value !== "1") : (tiktok ? $("pub-tk-comment").value !== "0" : true),
     allow_duet: tiktok ? $("pub-tk-duet").value !== "0" : true,
-    allow_stitch: tiktok ? $("pub-tk-stitch").value !== "0" : true };
+    allow_stitch: tiktok ? $("pub-tk-stitch").value !== "0" : true,
+    ...(bili ? { bili_options: biliOptions } : {}) };
 }
 async function addPublish() {
   if (PUB_SUBMITTING) return;
@@ -8605,6 +8731,7 @@ async function editPublish(id) {
   ).join("");
   const value = await new Promise(res => {
     _uiResolve = res; _uiCancelVal = null;
+    const curBili = task.bili_options || {};
     _uiGetVal = () => ({
       account_id: +$("ep-account").value,
       title: $("ep-title").value.trim(),
@@ -8617,8 +8744,17 @@ async function editPublish(id) {
       allow_comment: $("ep-tk-comment") ? $("ep-tk-comment").value !== "0" : true,
       allow_duet: $("ep-tk-duet") ? $("ep-tk-duet").value !== "0" : true,
       allow_stitch: $("ep-tk-stitch") ? $("ep-tk-stitch").value !== "0" : true,
+      ...(task.platform === "bilibili" ? {
+        bili_options: {
+          ...curBili,
+          tid: +($("ep-bili-tid")?.value || curBili.tid || 21),
+          copyright: +($("ep-bili-copyright")?.value || curBili.copyright || 1),
+          source: ($("ep-bili-source")?.value ?? curBili.source ?? "").trim(),
+          is_only_self: ($("ep-visibility")?.value || "public") === "private" ? 1 : 0,
+        },
+      } : {}),
     });
-    const editCap = task.platform === "douyin" ? 30 : task.platform === "shipinhao" ? 16 : 20;
+    const editCap = task.platform === "bilibili" ? 80 : task.platform === "douyin" ? 30 : task.platform === "shipinhao" ? 16 : 20;
     const showVisOpts = ["douyin", "xhs", "kuaishou"].includes(task.platform);
     $("ui-body").innerHTML = `
       <div><label class="field" for="ep-account">发布账号</label>
@@ -8650,6 +8786,17 @@ async function editPublish(id) {
           <select id="ep-tk-duet"><option value="1">允许</option><option value="0">关闭</option></select></div>
         <div class="publish-permission"><label class="field" for="ep-tk-stitch">Stitch</label>
           <select id="ep-tk-stitch"><option value="1">允许</option><option value="0">关闭</option></select></div>
+      </fieldset>` : ""}
+      ${task.platform === "bilibili" ? `<fieldset class="publish-permissions">
+        <legend>哔哩哔哩投稿设置</legend>
+        <div class="publish-permission"><label class="field" for="ep-bili-tid">分区 tid</label>
+          <input id="ep-bili-tid" type="number" min="1" value="${Number(curBili.tid || 21)}"></div>
+        <div class="publish-permission"><label class="field" for="ep-bili-copyright">稿件类型</label>
+          <select id="ep-bili-copyright"><option value="1">自制</option><option value="2">转载</option></select></div>
+        <div class="publish-permission"><label class="field" for="ep-bili-source">转载来源</label>
+          <input id="ep-bili-source" value="${esc(curBili.source || "")}" placeholder="转载时填写出处"></div>
+        <div class="publish-permission"><label class="field" for="ep-visibility">可见范围</label>
+          <select id="ep-visibility"><option value="public">公开可见</option><option value="private">仅自己可见</option></select></div>
       </fieldset>` : ""}`;
     $("ep-account").value = task.account_id ? String(task.account_id) : "";
     $("ep-when").value = localDateTimeValue(task.scheduled_at);
@@ -8658,7 +8805,8 @@ async function editPublish(id) {
     if ($("ep-tk-comment")) $("ep-tk-comment").value = task.allow_comment === false ? "0" : "1";
     if ($("ep-tk-duet")) $("ep-tk-duet").value = task.allow_duet === false ? "0" : "1";
     if ($("ep-tk-stitch")) $("ep-tk-stitch").value = task.allow_stitch === false ? "0" : "1";
-    ["ep-account", "ep-visibility", "ep-allowsave", "ep-tk-comment", "ep-tk-duet", "ep-tk-stitch"].forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
+    if ($("ep-bili-copyright")) $("ep-bili-copyright").value = String(curBili.copyright || 1);
+    ["ep-account", "ep-visibility", "ep-allowsave", "ep-tk-comment", "ep-tk-duet", "ep-tk-stitch", "ep-bili-copyright"].forEach(key => { const el = $(key); if (el) enhanceSelect(el); });
     enhanceDateTime($("ep-when"));
     _uiOpen("编辑发布任务", `${task.media_count} 个附件保持不变。调整文案、账号、预约时间与权限。`, {
       okText: "保存修改", wide: true, icon: "i-send",
@@ -8687,7 +8835,7 @@ async function refreshPublish() {
     <td class="num">${t.media_count}</td>
     <td>${t.source_platform ? esc(t.source_platform) + " 转发" : "手动"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>
-    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? (["kuaishou", "shipinhao", "tiktok"].includes(t.platform) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeMediaUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}</td>
+    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ((["kuaishou", "shipinhao", "tiktok"].includes(t.platform) || (t.platform === "bilibili" && String(t.result_url).includes("member.bilibili.com"))) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeMediaUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}</td>
     <td class="acttd">
       ${["draft", "pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">${t.schedule_needs_confirmation ? "确认预约时间" : "编辑"}</button>` : ""}
       ${["pending", "failed"].includes(t.status) ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
@@ -8696,13 +8844,15 @@ async function refreshPublish() {
       PLATFORM === "kuaishou" ? "上传图集/视频加入队列(发布到快手创作平台)"
       : PLATFORM === "douyin" ? "上传图集/视频加入队列(发布到抖音创作平台)"
       : PLATFORM === "tiktok" ? "上传单个视频加入队列(发布到 TikTok Studio)"
+      : PLATFORM === "bilibili" ? "上传视频稿件或图文动态加入队列(发布到哔哩哔哩创作中心)"
       : "上传图集/视频加入队列,或在抖音作品上点「发小红书」转发过来");
 }
 // 创作平台管理页必须复用账号自己的登录态，不能交给系统浏览器。
 async function openPubInBrowser(accountId, url, platform = "shipinhao") {
   if (!accountId) { toast("缺少账号信息", "err"); return; }
   const pageName = platform === "kuaishou" ? "快手作品管理页"
-    : platform === "tiktok" ? "TikTok Studio 内容页" : "视频号管理页";
+    : platform === "tiktok" ? "TikTok Studio 内容页"
+    : platform === "bilibili" ? "哔哩哔哩稿件管理页" : "视频号管理页";
   toast("正在用该账号浏览器打开" + pageName + "…", "info", 5000);
   try {
     await api("/api/accounts/" + accountId + "/open-browser?url=" + encodeURIComponent(url || ""), { method: "POST" });
@@ -8791,6 +8941,7 @@ const repostDouyin = (id) => openRepost(id, "douyin");
 const repostChannels = (id) => openRepost(id, "shipinhao");
 const repostKuaishou = (id) => openRepost(id, "kuaishou");
 const repostTiktok = (id) => openRepost(id, "tiktok");
+const repostBilibili = (id) => openRepost(id, "bilibili");
 async function pickRepostTarget(id) {
   const rec = CONTENTS.find(r => r.id === id);
   const options = [
@@ -8798,6 +8949,7 @@ async function pickRepostTarget(id) {
     { value: "douyin", label: "抖音" },
     { value: "kuaishou", label: "快手" },
     { value: "shipinhao", label: "视频号" },
+    { value: "bilibili", label: "哔哩哔哩" },
   ];
   if (!rec || rec.media_type === "video") options.push({ value: "tiktok", label: "TikTok" });
   const target = await uiSelect({
@@ -8825,7 +8977,9 @@ async function openRepost(id, target) {
           ? "请先在快手账号页完成登录"
           : target === "tiktok"
             ? "请先在 TikTok 账号页完成登录"
-            : "请先在抖音账号页完成登录(扫码/创作者/Cookie)";
+            : target === "bilibili"
+              ? "请先在哔哩哔哩账号页完成登录"
+              : "请先在抖音账号页完成登录(扫码/创作者/Cookie)";
     toast(loginHint, "err");
     return;
   }
@@ -8834,8 +8988,9 @@ async function openRepost(id, target) {
   const isChannels = target === "shipinhao";
   const isKs = target === "kuaishou";
   const isTk = target === "tiktok";
-  const cap = isDy ? 30 : isChannels ? 16 : 20;
-  const pname = isDy ? "抖音" : isChannels ? "视频号" : isKs ? "快手" : isTk ? "TikTok" : "小红书";
+  const isBili = target === "bilibili";
+  const cap = isBili ? 80 : isDy ? 30 : isChannels ? 16 : 20;
+  const pname = isDy ? "抖音" : isChannels ? "视频号" : isKs ? "快手" : isTk ? "TikTok" : isBili ? "哔哩哔哩" : "小红书";
   $("rp-head").textContent = "发" + pname + " · 编辑后推送";
   $("rp-title-label").textContent = `标题(≤${cap} 字)`;
   $("rp-title").maxLength = cap;
@@ -8971,7 +9126,8 @@ async function submitRepost() {
   const pname = REPOST_TARGET === "douyin" ? "抖音"
     : REPOST_TARGET === "shipinhao" ? "视频号"
     : REPOST_TARGET === "kuaishou" ? "快手"
-    : REPOST_TARGET === "tiktok" ? "TikTok" : "小红书";
+    : REPOST_TARGET === "tiktok" ? "TikTok"
+    : REPOST_TARGET === "bilibili" ? "哔哩哔哩" : "小红书";
   try {
     body.scheduled_at = scheduleToApi(body.scheduled_at);
     const r = await withBusy(btn, "提交中", () => api("/api/contents/" + REPOST_ID + "/repost-" + REPOST_TARGET, {
@@ -9013,14 +9169,14 @@ function onAcMode() {
   onAcKind();
 }
 function onAcKind() {
-  const mode = $("ac-mode").value, kind = $("ac-kind").value, xhs = PLATFORM === "xhs";
+  const mode = $("ac-mode").value, kind = $("ac-kind").value, xhs = PLATFORM === "xhs", bili = PLATFORM === "bilibili";
   let show = true, label = "目标", ph = "";
   if (mode === "auto_reply") {
     if (kind === "self") show = false;
-    else { label = xhs ? "笔记链接 / id" : "作品链接 / id"; ph = xhs ? "explore 链接 / xhslink / note_id" : "作品链接 / 短链 / 数字 id"; }
+    else { label = xhs ? "笔记链接 / id" : "作品链接 / id"; ph = xhs ? "explore 链接 / xhslink / note_id" : bili ? "视频链接 / BV或av号 / opus链接" : "作品链接 / 短链 / 数字 id"; }
   } else {
     if (kind === "keyword") { label = "搜索关键词"; ph = "例如:露营装备 / 口红试色"; }
-    else { label = xhs ? "博主主页 / id" : "博主主页 / sec_uid"; ph = xhs ? "主页链接 / xhslink / user_id" : "主页链接 / 短链 / sec_uid"; }
+    else { label = xhs ? "博主主页 / id" : bili ? "UP 主空间主页 / mid" : "博主主页 / sec_uid"; ph = xhs ? "主页链接 / xhslink / user_id" : bili ? "space.bilibili.com 链接 / mid" : "主页链接 / 短链 / sec_uid"; }
   }
   $("ac-target-wrap").style.display = show ? "" : "none";
   $("ac-target-label").textContent = label; $("ac-target").placeholder = ph;
@@ -9029,8 +9185,7 @@ function onAcKind() {
 }
 function populateAcAccount() {
   const sel = $("ac-acc"); if (!sel) return;
-  const xhs = PLATFORM === "xhs";
-  sel.innerHTML = accOptions(ACCOUNTS, xhs ? "请选择小红书账号(必选)" : "请选择抖音账号(必选)");
+  sel.innerHTML = accOptions(ACCOUNTS, `请选择${PF_NAME[PLATFORM] || "当前平台"}账号(必选)`);
   if (ACCOUNTS.length) sel.value = String(ACCOUNTS[0].id);
   csSyncAll();
 }
@@ -9094,7 +9249,7 @@ function emOnKind() {
 function editRule(id) {
   const r = AC_RULES.find(x => x.id === id); if (!r) return;
   EM_PF = r.platform;
-  const accOpts = accOptions(ACCOUNTS.filter(a => a.platform === EM_PF), EM_PF === "xhs" ? "请选择小红书账号" : "请选择抖音账号");
+  const accOpts = accOptions(ACCOUNTS.filter(a => a.platform === EM_PF), `请选择${PF_NAME[EM_PF] || "对应平台"}账号`);
   new Promise(res => {
     _uiResolve = res; _uiCancelVal = null;
     _uiGetVal = () => ({
@@ -9616,7 +9771,7 @@ switchTab((() => {
 switchHubTab(HUB_TAB);   // 恢复上次停留的子标签(我的作品/关注/粉丝/私信)
 
 // restore last-selected platform (default: 抖音)
-PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "douyin", "kuaishou", "shipinhao", "tiktok"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
+PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
 applyPlatformUI();
 updateTaskQueuePlatformLabel();
 

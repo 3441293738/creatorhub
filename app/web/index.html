@@ -89,6 +89,7 @@
   .pswitch button.active[data-pf="kuaishou"] { background:rgba(255,121,2,.16); color:#ff7902; border-color:rgba(255,121,2,.4); }
   .pswitch button.active[data-pf="shipinhao"] { background:rgba(7,193,96,.16); color:#07c160; border-color:rgba(7,193,96,.4); }
   .pswitch button.active[data-pf="tiktok"] { background:rgba(37,244,238,.12); color:#00b8b2; border-color:rgba(254,44,85,.38); }
+  .pswitch button.active[data-pf="bilibili"] { background:rgba(0,174,236,.14); color:#00aeec; border-color:rgba(0,174,236,.42); }
   .hidden { display:none !important; }
 
   /* Platform accents and light/dark themes are independent: appearance.css. */
@@ -1853,6 +1854,7 @@
     <button role="tab" data-pf="kuaishou" onclick="switchPlatform('kuaishou')">快手</button>
     <button role="tab" data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
     <button role="tab" data-pf="tiktok" onclick="switchPlatform('tiktok')">TikTok</button>
+    <button role="tab" data-pf="bilibili" onclick="switchPlatform('bilibili')">哔哩哔哩</button>
   </div>
   <div class="header-actions">
     <button class="ghost command-trigger" id="command-trigger" type="button" aria-label="搜索功能" aria-haspopup="dialog" aria-controls="command-dialog" aria-keyshortcuts="Control+k Meta+k" title="搜索功能（Ctrl / ⌘ K）"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>搜索功能</span><kbd>Ctrl K</kbd></button>
@@ -1876,7 +1878,7 @@
     <button class="navitem notsh-only" data-tab="monitors" onclick="switchTab('monitors', true)"><svg><use href="#i-target"/></svg><span class="nav-label">作品监控</span><span class="nav-badge" id="tb-mon">0</span></button>
     <button class="navitem collect-only" data-tab="collections" onclick="switchTab('collections', true)"><svg><use href="#i-hash"/></svg><span class="nav-label" id="nav-collections-label">关键词采集</span><span class="nav-badge" id="tb-col">0</span></button>
     <button class="navitem notsh-only" data-tab="comments" onclick="switchTab('comments', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">评论监控</span><span class="nav-badge" id="tb-watch">0</span></button>
-    <button class="navitem dy-only" data-tab="danmaku" onclick="switchTab('danmaku', true)"><svg><use href="#i-captions"/></svg><span class="nav-label">弹幕监控</span><span class="nav-badge" id="tb-danmaku">0</span></button>
+    <button class="navitem danmaku-only" data-tab="danmaku" onclick="switchTab('danmaku', true)"><svg><use href="#i-captions"/></svg><span class="nav-label">弹幕监控</span><span class="nav-badge" id="tb-danmaku">0</span></button>
     <div class="nav-sep">本账号</div>
     <button class="navitem" data-tab="hub" onclick="switchTab('hub', true)"><svg><use href="#i-library"/></svg><span class="nav-label">本账号管理</span></button>
     <div class="nav-sep">工具</div>
@@ -1949,7 +1951,7 @@
   </div>
   <div class="platform-callout" role="note">
     <svg aria-hidden="true"><use href="#i-info"/></svg>
-    <div><b>平台数据彼此独立</b><p>切换平台后，账号、采集与任务数据会独立展示；通知和下载设置全局共用。TikTok 已提供登录、关键词采集、本账号作品与数据、单视频发布、用户搜索及受控写操作，暂不含直播。</p></div>
+    <div><b>平台数据彼此独立</b><p>切换平台后，账号、采集与任务数据会独立展示；通知和下载设置全局共用。TikTok 与哔哩哔哩均已提供登录、采集、本账号作品与数据、发布及受控写操作，暂不含直播。</p></div>
   </div>
   </section>
 
@@ -1972,6 +1974,8 @@
         <button class="ghost ks-only" onclick="toggleCookie()">Cookie 粘贴</button>
         <button class="sh-only" onclick="startChannelsLogin()"><svg><use href="#i-login"/></svg>视频号登录</button>
         <button class="tk-only" onclick="startTikTokLogin()"><svg><use href="#i-login"/></svg>TikTok 登录</button>
+        <button class="bili-only" onclick="startBilibiliLogin()"><svg><use href="#i-qr"/></svg>哔哩哔哩扫码登录</button>
+        <button class="ghost bili-only" onclick="toggleCookie()">Cookie 粘贴</button>
       </div>
       <div id="qrbox" style="display:none;margin-bottom:14px">
         <div class="mut" id="qrstatus">准备中…</div>
@@ -2777,6 +2781,13 @@
             <p class="field-help" id="engine-channels-read-help">配置本地微信 Finder CDP 端点后，支持关键词搜索、创作者主页、主评论与二级回复独立分页及 WxIsaac64 视频解密下载；未配置时本账号作品仍可通过创作者助手读取。<a class="channels-inline-jump" href="#channels-protocol-card" onclick="event.preventDefault();openChannelsProtocolSettings()">去配置微信通道 →</a></p>
           </div>
           <div class="form-field">
+            <label for="engine-bilibili_read_mode">哔哩哔哩读取方式</label>
+            <select id="engine-bilibili_read_mode" name="bilibili_read_mode" disabled aria-describedby="engine-bili-read-help">
+              <option value="hybrid">WBI API 优先，普通失败浏览器回退（推荐）</option><option value="api">仅 WBI API，不打开浏览器</option><option value="browser">仅浏览器页面</option>
+            </select>
+            <p class="field-help" id="engine-bili-read-help">关键词搜索、UP 主空间、视频与图文动态详情、评论及 XML 弹幕均优先走离线 WBI 签名接口；普通兼容失败才回退浏览器。</p>
+          </div>
+          <div class="form-field">
             <label for="engine-monitor_initial_backfill_count">抖音新监控的历史作品数量</label>
             <input id="engine-monitor_initial_backfill_count" name="monitor_initial_backfill_count" type="number" min="-1" max="1000" step="1" required disabled aria-describedby="engine-backfill-help">
             <p class="field-help" id="engine-backfill-help">0 = 只看新增，-1 = 尽可能读取全部历史。仅影响抖音新建时选择“跟随全局设置”的监控，已建监控不变。</p>
@@ -2839,6 +2850,7 @@
             <div class="form-field"><label for="engine-xhs_publish_mode">小红书发布方式</label><select id="engine-xhs_publish_mode" name="xhs_publish_mode" disabled><option value="browser">浏览器发布（推荐）</option><option value="api">API 直连（兼容模式）</option></select><p class="field-help">仅影响发布，不改变作品监控的获取方式；原生身份账号仍使用浏览器发布。</p></div>
             <div class="form-field"><label for="engine-xhs_comment_write_mode">小红书评论发送方式</label><select id="engine-xhs_comment_write_mode" name="xhs_comment_write_mode" disabled><option value="browser">浏览器发送（推荐）</option><option value="manual">只保存草稿</option><option value="api">API 直连（兼容模式）</option></select></div>
             <div class="form-field"><label for="engine-douyin_write_mode">抖音写入方式</label><select id="engine-douyin_write_mode" name="douyin_write_mode" disabled><option value="hybrid">API 优先，明确失败后浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">影响评论、回复、关注/取关和已有会话私信；发布作品仍使用创作中心浏览器流程。网络结果不确定时不会重复提交或回退。</p></div>
+            <div class="form-field"><label for="engine-bilibili_write_mode">哔哩哔哩写入方式</label><select id="engine-bilibili_write_mode" name="bilibili_write_mode" disabled><option value="hybrid">API 优先，明确失败后浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">影响评论、回复、关注/取关、稿件可见性与私信发送；发布视频和图文动态走创作中心浏览器流程。网络结果不确定时不会重复提交或回退。</p></div>
             <div class="form-field"><label class="switch-row" for="engine-comment_browser_headed"><input id="engine-comment_browser_headed" name="comment_browser_headed" type="checkbox" disabled><span class="switch-copy"><b>评论操作显示浏览器窗口</b><span>推荐开启，遇到登录或验证时可以直接处理；关闭后在后台运行。</span></span></label></div>
             <div class="form-field"><label class="switch-row" for="engine-xhs_comment_review_before_publish"><input id="engine-xhs_comment_review_before_publish" name="xhs_comment_review_before_publish" type="checkbox" disabled><span class="switch-copy"><b>小红书评论先审核</b><span>推荐开启。关闭后，新生成的评论可能直接进入发送队列。</span></span></label></div>
           </div>
@@ -3181,6 +3193,82 @@
             <label class="field" for="pub-tk-stitch">Stitch</label>
             <select id="pub-tk-stitch" aria-label="TikTok Stitch 权限">
               <option value="1">允许</option><option value="0">关闭</option>
+            </select>
+          </div>
+        </fieldset>
+        <fieldset class="publish-permissions bili-only" id="pub-bili-opts">
+          <legend>哔哩哔哩投稿与互动设置</legend>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-tid">投稿分区</label>
+            <select id="pub-bili-tid" aria-label="哔哩哔哩投稿分区">
+              <option value="21">生活 · 日常</option>
+              <option value="17">游戏 · 单机游戏</option>
+              <option value="95">科技 · 数码</option>
+              <option value="122">科技 · 野生技术协会</option>
+              <option value="208">知识 · 科学科普</option>
+              <option value="138">生活 · 搞笑</option>
+              <option value="161">生活 · 手工</option>
+              <option value="76">美食 · 美食制作</option>
+              <option value="183">影视 · 影视杂谈</option>
+              <option value="28">音乐 · 原创音乐</option>
+              <option value="27">动画 · 综合</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-copyright">稿件类型</label>
+            <select id="pub-bili-copyright" aria-label="哔哩哔哩稿件类型" onchange="onBiliCopyrightChange()">
+              <option value="1">自制</option>
+              <option value="2">转载</option>
+            </select>
+          </div>
+          <div class="publish-permission" id="pub-bili-source-wrap" style="display:none">
+            <label class="field" for="pub-bili-source">转载来源</label>
+            <input id="pub-bili-source" maxlength="200" placeholder="转载时必填原视频链接或出处">
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-statement">创作声明</label>
+            <select id="pub-bili-statement" aria-label="哔哩哔哩创作声明">
+              <option value="-1">内容无需标注</option>
+              <option value="1">含AI生成内容</option>
+              <option value="2">含虚构演绎内容</option>
+              <option value="3">内容含营销信息</option>
+              <option value="4">个人观点，仅供参考</option>
+              <option value="-2">内容为转载</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-recreate">二创权限</label>
+            <select id="pub-bili-recreate" aria-label="哔哩哔哩二创权限">
+              <option value="-1">默认（不开启二创）</option>
+              <option value="1">允许二创</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-visibility">可见范围</label>
+            <select id="pub-bili-visibility" aria-label="哔哩哔哩可见范围">
+              <option value="public">公开可见</option>
+              <option value="private">仅自己可见</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-close-danmu">弹幕权限</label>
+            <select id="pub-bili-close-danmu" aria-label="哔哩哔哩弹幕权限">
+              <option value="0">开启弹幕</option>
+              <option value="1">关闭弹幕</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-close-reply">评论权限</label>
+            <select id="pub-bili-close-reply" aria-label="哔哩哔哩评论权限">
+              <option value="0">开启评论</option>
+              <option value="1">关闭评论</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-selection-reply">评论精选</label>
+            <select id="pub-bili-selection-reply" aria-label="哔哩哔哩评论精选">
+              <option value="0">普通评论区</option>
+              <option value="1">精选评论后展示</option>
             </select>
           </div>
         </fieldset>
@@ -3630,21 +3718,21 @@
   </div>
   </section>
 
-  <section data-panel="danmaku" class="dy-only">
+  <section data-panel="danmaku" class="danmaku-only">
     <div class="card">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-msg"/></svg></span>
         <h2>添加弹幕监控 <span class="sub">监控视频内时间点弹幕，不是评论区评论</span></h2>
       </div>
       <div class="hint" style="margin-bottom:14px">
-        自己的视频选择「创作中心」并绑定创作者账号；别人的公开视频选择「播放页」。首次扫描会建立历史基线，后续只推送新增弹幕。
+        自己的抖音视频可选择「创作中心」并绑定创作者账号；抖音与哔哩哔哩公开视频选择「公开视频播放页」。首次扫描会建立历史基线，后续只推送新增弹幕。
       </div>
       <div class="stack">
         <div>
           <label class="field" for="d-w-url" id="d-w-url-label">视频 / 账号主页 / 完整分享文案 / ID</label>
           <div class="smart-target-input">
             <input id="d-w-url" maxlength="100000" autocomplete="off"
-              placeholder="直接粘贴整段抖音分享文案，将自动提取视频或主页链接"
+              placeholder="直接粘贴整段抖音或哔哩哔哩分享文案，将自动提取视频或主页链接"
               onpaste="handleDanmakuTargetPaste()" oninput="resetDanmakuTargetState()"
               onkeydown="handleDanmakuTargetKeydown(event)">
             <button type="button" class="smart-target-action" onclick="normalizeDanmakuTarget(this)"
@@ -3653,7 +3741,7 @@
             </button>
           </div>
           <div class="smart-target-feedback" id="d-w-url-feedback" role="status" aria-live="polite">
-            支持完整抖音分享文案、视频链接、账号主页、短链或 ID
+            支持完整抖音 / 哔哩哔哩分享文案、BV/av 号、视频链接、空间主页或短链
           </div>
         </div>
         <div class="form-grid cols-auto">
@@ -3661,7 +3749,7 @@
             <option value="auto">自动识别</option><option value="video">单条视频</option><option value="user">账号近期作品</option>
           </select></div>
           <div class="form-field"><label for="d-w-mode">弹幕来源</label><select id="d-w-mode" onchange="applyDanmakuForm()">
-            <option value="public">公开视频播放页</option><option value="creator">创作中心（自己的视频）</option>
+            <option value="public">公开视频播放页</option><option value="creator" class="dy-only">创作中心（自己的视频）</option>
           </select></div>
           <div class="form-field"><label for="d-w-acc" id="d-w-acc-label">播放页账号（可选）</label><select id="d-w-acc"></select></div>
           <div class="form-field"><label for="d-w-interval">检查频率</label><select id="d-w-interval" aria-describedby="d-w-interval-help">

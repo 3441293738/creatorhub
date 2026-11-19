@@ -880,6 +880,118 @@ async def interactive_channels_creator_login(mgr: BrowserManager, identity: Iden
         mgr, identity, timeout_seconds, force_reauth=force_reauth)
 
 
+_BILI_REQUIRED_COOKIES = {"SESSDATA", "bili_jct", "DedeUserID"}
+
+
+async def interactive_bilibili_login(
+    mgr: BrowserManager,
+    identity: Identity,
+    timeout_seconds: int = 240,
+    force_reauth: bool = False,
+) -> Tuple[bool, str, str]:
+    """哔哩哔哩扫码/网页登录。主站、创作中心与私信共享 `.bilibili.com` 顶域登录态。
+
+    判定登录：必须同时具备 `SESSDATA`、`bili_jct`、`DedeUserID` Cookie，且
+    `api.bilibili.com/x/web-interface/nav` 实测返回 `code == 0` 且 `data.isLogin == true`。
+    """
+    ctx = await mgr.open_headed(identity)
+    if force_reauth:
+        await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
+    page = await ctx.new_page()
+    await _focus(page)
+    logged, nickname, state_json = False, "", ""
+    nav_user: dict = {}
+
+    async def on_response(resp):
+        try:
+            if "/x/web-interface/nav" not in str(resp.url or ""):
+                return
+            payload = await resp.json()
+            if not isinstance(payload, dict) or payload.get("code") != 0:
+                return
+            data = payload.get("data")
+            if isinstance(data, dict) and data.get("isLogin"):
+                nav_user.update(data)
+        except Exception:
+            return
+
+    page.on("response", on_response)
+    try:
+        await page.goto(
+            "https://passport.bilibili.com/login",
+            wait_until="domcontentloaded",
+            timeout=40000,
+        )
+        await _focus(page)
+        waited = 0.0
+        verified_cookie_sig = ""
+        while waited < timeout_seconds:
+            if page.is_closed():
+                break
+            try:
+                cookies = await ctx.cookies()
+            except Exception:
+                break
+            cmap = {c.get("name"): c.get("value") for c in cookies if c.get("name")}
+            if all(cmap.get(k) for k in _BILI_REQUIRED_COOKIES):
+                sig = f"{cmap.get('DedeUserID')}:{cmap.get('bili_jct')}"
+                if not nav_user and sig != verified_cookie_sig:
+                    verified_cookie_sig = sig
+                    try:
+                        probe = await page.evaluate(
+                            """async () => {
+                                try {
+                                    const r = await fetch('https://api.bilibili.com/x/web-interface/nav?_t=' + Date.now(), {
+                                        credentials: 'include'
+                                    });
+                                    return await r.json();
+                                } catch (_) { return null; }
+                            }"""
+                        )
+                        if (
+                            isinstance(probe, dict)
+                            and probe.get("code") == 0
+                            and isinstance(probe.get("data"), dict)
+                            and probe["data"].get("isLogin")
+                        ):
+                            nav_user.update(probe["data"])
+                    except Exception:
+                        pass
+                if nav_user.get("isLogin"):
+                    logged = True
+                    nickname = str(nav_user.get("uname") or "").strip()[:40]
+                    break
+            await asyncio.sleep(1.0)
+            waited += 1.0
+
+        if logged:
+            await page.wait_for_timeout(1200)
+            state_json = json.dumps(await ctx.storage_state())
+    finally:
+        try:
+            page.remove_listener("response", on_response)
+        except Exception:
+            pass
+        try:
+            await ctx.close()
+        except Exception:
+            pass
+    return logged, state_json, nickname
+
+
+async def interactive_bilibili_creator_login(
+    mgr: BrowserManager,
+    identity: Identity,
+    timeout_seconds: int = 240,
+    force_reauth: bool = False,
+) -> Tuple[bool, str, str]:
+    """B 站创作中心 (`member.bilibili.com`) 复用 `.bilibili.com` 顶域登录态。"""
+    return await interactive_bilibili_login(
+        mgr, identity, timeout_seconds=timeout_seconds, force_reauth=force_reauth
+    )
+
+
 async def _read_ks_nickname(page) -> str:
     for sel in ('.profile-user-name', '[class*="user-name"]', '[class*="userName"]',
                 '.user-name', 'span.name'):

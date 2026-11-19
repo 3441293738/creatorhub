@@ -7,6 +7,8 @@ const platforms = {
   xhs: { name: "小红书", task: "下载第一篇笔记", target: "share-download", hint: "先完成主站扫码登录，复制有效的完整笔记链接。发布还需单独完成创作者登录。" },
   kuaishou: { name: "快手", task: "下载第一条作品", target: "share-download", hint: "选择快手账号，粘贴完整分享文案，下载完成后检查保存路径。" },
   shipinhao: { name: "视频号", task: "同步作品或解析分享链接", target: "hub", hint: "可在我的内容同步本账号作品；也可粘贴 weixin.qq.com/sph/... 分享链解析预览，或连接本地微信 Finder 协议采集搜索、主页、评论并离线解密视频。" },
+  tiktok: { name: "TikTok", task: "完成首次关键词视频采集", target: "collections", hint: "登录 TikTok 账号后，输入 1 个关键词做小规模视频与评论采集，再按需开启媒体下载。" },
+  bilibili: { name: "哔哩哔哩", task: "下载第一条视频或监控弹幕", target: "share-download", hint: "粘贴整段哔哩哔哩分享文案或 BV 号到链接下载，也可在弹幕监控中拉取视频时间轴弹幕。" },
 };
 function savedState() {
   try {

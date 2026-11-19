@@ -5,6 +5,7 @@
   const engineDefaults = {
     xhs_read_mode: "api", douyin_read_mode: "hybrid", douyin_write_mode: "browser",
     tiktok_read_mode: "native", channels_read_mode: "auto",
+    bilibili_read_mode: "hybrid", bilibili_write_mode: "hybrid",
     douyin_profile_mode: "hybrid", douyin_followers_mode: "hybrid",
     douyin_dm_sync_mode: "hybrid", douyin_creator_danmaku_mode: "hybrid",
     douyin_publish_mode: "browser",
@@ -112,11 +113,13 @@
     { id: 2, platform: "xhs", nickname: "小红书示例号", douyin_id: "red_demo", sec_uid: "DEMO_XHS_ACCOUNT", aweme_count: 24, follower_count: 860, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 3), has_proxy: true, proxy: "http://***:***@HOST:PORT", proxy_status: "ok" },
     { id: 3, platform: "kuaishou", nickname: "快手示例号", douyin_id: "ks_demo", sec_uid: "DEMO_KS_ACCOUNT", aweme_count: 38, follower_count: 620, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 4), has_proxy: false, proxy_status: "unknown" },
     { id: 4, platform: "shipinhao", nickname: "视频号示例号", douyin_id: "channels_demo", sec_uid: "DEMO_CHANNELS_ACCOUNT", aweme_count: 18, follower_count: 430, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 0, created_at: iso(86400 * 5), has_proxy: false, proxy_status: "unknown" },
+    { id: 5, platform: "tiktok", nickname: "TikTok 示例号", douyin_id: "tiktok_demo", sec_uid: "DEMO_TIKTOK_ACCOUNT", aweme_count: 15, follower_count: 920, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 3), has_proxy: true, proxy: "http://***:***@HOST:PORT", proxy_status: "ok" },
+    { id: 6, platform: "bilibili", nickname: "B站示例 UP 主", douyin_id: "1008601", sec_uid: "1008601", aweme_count: 42, follower_count: 3560, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: false, proxy_status: "unknown" },
   ];
 
   const platformAccount = (platform) => accounts.find((item) => item.platform === platform) || accounts[0];
-  const platformName = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号" };
-  const monitoredName = { douyin: "示例创作者", xhs: "城市生活研究所", kuaishou: "影像日记", shipinhao: "本账号内容" };
+  const platformName = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩" };
+  const monitoredName = { douyin: "示例创作者", xhs: "城市生活研究所", kuaishou: "影像日记", shipinhao: "本账号内容", tiktok: "GlobalCreator", bilibili: "科技美学示例 UP" };
 
   function monitor(platform) {
     const account = platformAccount(platform);
@@ -149,12 +152,12 @@
       watch_source:{id:21,module:"comments",platform,name:"重点评论区 · 示例账号近期作品",kind:"user",deleted:false,unassigned:false}}));
   }
 
-  function danmakuWatches() {
-    return [{id:31,platform:"douyin",kind:"video",title:"示例短视频弹幕",alias:"内容反馈",mode:"public",enabled:true,
+  function danmakuWatches(platform = "douyin") {
+    return [{id:31,platform,kind:"video",title:platform === "bilibili" ? "示例投稿视频弹幕" : "示例短视频弹幕",alias:"内容反馈",mode:"public",enabled:true,
       group_name:"互动观察",tags:[],interval_seconds:1800,danmaku_count:2,last_scan_at:iso(900)}];
   }
   function demoWatchSource(module,platform,watchId) {
-    const watch = (module === "comments" ? watches(platform) : danmakuWatches()).find(w=>String(w.id)===String(watchId));
+    const watch = (module === "comments" ? watches(platform) : danmakuWatches(platform)).find(w=>String(w.id)===String(watchId));
     return {id:Number(watchId),module,platform,deleted:!watch&&Number(watchId)>0,unassigned:Number(watchId)===0,kind:watch?.kind||"",
       name:watch?`${watch.alias} · ${watch.title}`:Number(watchId)>0?`已删除${module==="comments"?"评论":"弹幕"}任务 #${watchId}`:`未关联${module==="comments"?"评论":"弹幕"}监控`};
   }
@@ -249,6 +252,12 @@
       row("xhs", "publish", "发布作品", "xhs_publish_mode", true, true),
       row("kuaishou", "account_management", "作品/评论/关注/写入", "", false, true),
       row("shipinhao", "account_management", "作品/评论/发布", "", false, true),
+      row("bilibili", "public_monitor", "搜索/空间/评论/XML弹幕读取", "bilibili_read_mode", true, true),
+      row("bilibili", "account_works", "创作中心稿件/关注/粉丝读取", "bilibili_read_mode", true, true),
+      row("bilibili", "dm_sync", "私信会话与 Broadcast 实时流", "bilibili_read_mode", true, true),
+      row("bilibili", "comment_write", "评论/回复/点赞/关注/可见性", "bilibili_write_mode", true, true),
+      row("bilibili", "dm_send", "WBI 签名私信发送", "bilibili_write_mode", true, true),
+      row("bilibili", "publish", "创作中心视频投稿与图文动态", "", false, true),
     ], accounts: accounts.map(account => ({
       account_id: account.id, platform: account.platform, nickname: account.nickname,
       profile_isolated: true, credential_isolated: true, api_session_isolated: true,
@@ -286,10 +295,10 @@
     }
     if (path === "/api/comment-watches") return platform === "shipinhao" ? [] : watches(platform);
     if (path === "/api/comments") return watchRecordsPage(url, platform === "shipinhao" ? [] : comments(platform), "comments", platform);
-    if (path === "/api/danmaku-watches") return platform === "douyin" ? danmakuWatches() : [];
-    if (path === "/api/danmaku") return watchRecordsPage(url, platform === "douyin" ? [
-      {id:401,watch_id:31,aweme_id:"DEMO_WORK_001",text:"这个镜头很精彩",user_nickname:"示例用户",video_time_ms:12300,source:"public",create_time:now-1800},
-      {id:402,watch_id:31,aweme_id:"DEMO_WORK_001",text:"学到了新的剪辑思路",user_nickname:"示例观众",video_time_ms:26100,source:"creator",create_time:now-3200},
+    if (path === "/api/danmaku-watches") return ["douyin", "bilibili"].includes(platform) ? danmakuWatches(platform) : [];
+    if (path === "/api/danmaku") return watchRecordsPage(url, ["douyin", "bilibili"].includes(platform) ? [
+      {id:401,watch_id:31,aweme_id:"DEMO_WORK_001",text:"前方高能，这个镜头很精彩",user_nickname:"示例用户",video_time_ms:12300,source:"public",create_time:now-1800},
+      {id:402,watch_id:31,aweme_id:"DEMO_WORK_001",text:"学到了新的剪辑思路",user_nickname:"示例观众",video_time_ms:26100,source:platform === "bilibili" ? "public" : "creator",create_time:now-3200},
     ].map((row,index)=>({...row,platform,captured_at:iso(900+index*600)+"Z",watch_source:demoWatchSource("danmaku",platform,31)})) : [], "danmaku", platform);
     if (path === "/api/stats/series") return series();
     if (path === "/api/publish") return publishTasks(platform);

@@ -366,6 +366,7 @@ class PublishTask(SQLModel, table=True):
     allow_comment: bool = True                         # TikTok:允许评论
     allow_duet: bool = True                            # TikTok:允许 Duet
     allow_stitch: bool = True                          # TikTok:允许 Stitch
+    bili_options_json: str = "{}"                      # B站投稿扩展参数(tid/copyright/source/recreate/声明/互动开关等)
     scheduled_at: Optional[datetime] = None            # UTC；空=尽快发
     scheduled_at_is_utc: bool = True  # 存量无时区预约需要人工确认，不自动猜时区
     status: str = "pending"        # draft | pending | publishing | uncertain | done | failed | canceled

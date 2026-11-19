@@ -978,8 +978,21 @@ def build_keyword_collection_report(job: Any, contents: Sequence[Any],
     for row in contents:
         platform = _text(_value(row, "platform"))
         aweme_id = _text(_value(row, "aweme_id"))
-        url = (f"https://www.xiaohongshu.com/explore/{aweme_id}"
-               if platform == "xhs" else f"https://www.douyin.com/video/{aweme_id}")
+        explicit_url = _text(_value(row, "source_url")).strip()
+        if explicit_url.startswith(("http://", "https://")):
+            url = explicit_url
+        elif platform == "xhs":
+            url = f"https://www.xiaohongshu.com/explore/{aweme_id}"
+        elif platform == "kuaishou":
+            url = f"https://www.kuaishou.com/short-video/{aweme_id}"
+        elif platform == "bilibili":
+            url = (
+                f"https://www.bilibili.com/video/{aweme_id}"
+                if aweme_id.upper().startswith("BV1")
+                else f"https://www.bilibili.com/opus/{aweme_id}"
+            )
+        else:
+            url = f"https://www.douyin.com/video/{aweme_id}"
         content_rows.append((
             _value(row, "id"), _text(_value(row, "keyword")), platform,
             aweme_id, _text(_value(row, "desc")),

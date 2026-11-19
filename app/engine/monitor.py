@@ -27,6 +27,8 @@ from ..browser import (BrowserManager, fetch_videos, fetch_comments,
                        post_ks_comment,
                        fetch_channels_works, fetch_channels_comments,
                        fetch_channels_self_profile, post_channels_comment,
+                       fetch_bili_videos, fetch_bili_search, fetch_bili_comments,
+                       fetch_bili_self_profile, post_bili_comment,
                        fetch_account_works, fetch_douyin_account_works_api,
                        do_follow, send_dm, send_dm_api,
                        douyin_secure_post_api)
@@ -69,6 +71,12 @@ from ..platforms.channels import (
 from ..platforms.tiktok import (TikTokNativeClient, parse_tiktok_aweme,
                                 parse_tiktok_comment, publish_tiktok,
                                 tiktok_display_text)
+from ..platforms.bilibili import (
+    BilibiliClient,
+    cookie_map_from_state as bili_cookie_map,
+    parse_bili_aweme,
+    publish_bilibili,
+)
 from ..platforms.tiktok.urls import profile_url as tiktok_profile_url
 from ..platforms.tiktok.urls import video_url as tiktok_video_url
 from ..models import (ContentRecord, CommentRecord, CommentRule, CommentTask,
@@ -954,10 +962,57 @@ class MonitorEngine:
         task.add_done_callback(done)
         return True
 
+    async def cancel_collection_job(self, job_id: int, *, timeout: float = 2.0) -> bool:
+        """立即中断执行中的采集协程（或清理孤立 running 记录），落库为已取消并释放队列槽位。"""
+        task = self._collection_tasks.get(job_id)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait({task}, timeout=max(0.1, float(timeout)))
+            except Exception:
+                pass
+        self._collection_tasks.pop(job_id, None)
+        canceled_now = False
+        with get_session() as s:
+            job = s.get(KeywordCollectionJob, job_id)
+            if job and job.status in {"pending", "running"}:
+                job.cancel_requested = True
+                job.status = "canceled"
+                job.current_step = "已取消"
+                job.finished_at = job.finished_at or datetime.utcnow()
+                s.add(job)
+                s.commit()
+                self._log_collection_operation(job, "canceled", "canceled", "用户取消任务")
+                canceled_now = True
+            elif job and job.status == "canceled":
+                canceled_now = True
+        if self._running and not self._collection_tasks:
+            try:
+                asyncio.create_task(self._process_collection_jobs())
+            except RuntimeError:
+                pass
+        return canceled_now
+
     async def _process_collection_jobs(self) -> None:
         if self._collection_tasks:
             return
         with get_session() as s:
+            orphans = s.exec(
+                select(KeywordCollectionJob).where(KeywordCollectionJob.status == "running")
+            ).all()
+            if orphans:
+                now_utc = datetime.utcnow()
+                for orphan in orphans:
+                    if orphan.cancel_requested:
+                        orphan.status = "canceled"
+                        orphan.current_step = "已取消"
+                        orphan.finished_at = orphan.finished_at or now_utc
+                    else:
+                        orphan.status = "pending"
+                        orphan.current_step = "等待继续"
+                        orphan.finished_at = None
+                    s.add(orphan)
+                s.commit()
             jobs = s.exec(
                 select(KeywordCollectionJob)
                 .where(KeywordCollectionJob.status == "pending")
@@ -1389,6 +1444,21 @@ class MonitorEngine:
                     # falsely marks a valid TikTok profile as logged out.
                     u, err = await fetch_tiktok_self_profile(
                         self.browser, identity, block_media=True)
+                elif platform == "bilibili":
+                    bmode = str(getattr(
+                        self.cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid").lower()
+                    u, err = {}, ""
+                    if bmode in {"api", "hybrid"} and state:
+                        bcli = BilibiliClient(
+                            state, identity.ua or self.cfg.engine.user_agent,
+                            proxy=proxy, timeout=self.cfg.engine.request_timeout_seconds)
+                        async with bcli.session_scope():
+                            u, err = await bcli.fetch_self_profile()
+                    elif bmode == "api" and not state:
+                        u, err = {}, "logged_out:缺少 B 站登录态"
+                    auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
+                    if bmode == "browser" or (not u and bmode == "hybrid" and not auth_failed):
+                        u, err = await fetch_bili_self_profile(self.browser, identity)
                 else:
                     u, err = await fetch_self_profile(self.browser, identity)
                 if u:
@@ -1423,6 +1493,8 @@ class MonitorEngine:
                         "following_count": int(u.get("following_count") or 0),
                         "aweme_count": int(u.get("video_count") or 0),
                     }
+                elif platform == "bilibili":
+                    parsed = dict(u)
                 else:
                     parsed = parse_self_user(u)
                 account.status = "active"
@@ -1430,9 +1502,11 @@ class MonitorEngine:
                 if parsed.get("nickname"):
                     account.nickname = parsed["nickname"]
                 account.sec_uid = parsed.get("sec_uid") or account.sec_uid
+                if parsed.get("uid"):
+                    account.uid = str(parsed["uid"])
                 account.douyin_id = parsed.get("douyin_id") or account.douyin_id
                 account.avatar = parsed.get("avatar") or account.avatar
-                if platform in {"kuaishou", "tiktok"}:
+                if platform in {"kuaishou", "tiktok", "bilibili"}:
                     account.follower_count = int(parsed.get("follower_count") or 0)
                     account.following_count = int(parsed.get("following_count") or 0)
                     account.aweme_count = int(parsed.get("aweme_count") or 0)
@@ -1725,6 +1799,229 @@ class MonitorEngine:
         finally:
             self._inflight.discard(target_id)
 
+    async def _scan_bilibili_target_locked(self, target_id: int) -> dict:
+        with get_session() as s:
+            target = s.get(MonitorTarget, target_id)
+            if not target:
+                return {"ok": False, "error": "target not found"}
+            first_scan = target.last_scan_at is None
+            acc = s.get(DouyinAccount, target.account_id) if target.account_id else None
+            if target.account_id and (not acc or acc.platform != "bilibili" or acc.status != "active"):
+                return self._mark_target_skip(
+                    target_id, "绑定的哔哩哔哩账号不存在或登录态已失效，请重新绑定/登录"
+                )
+            if acc and self._proxy_bad(acc):
+                return self._mark_target_skip(
+                    target_id, "账号代理标记为不可用(proxy bad)，已跳过以免暴露真实 IP"
+                )
+            identity = (
+                self.browser.identity_for(acc)
+                if (acc is not None and callable(getattr(self.browser, "identity_for", None)))
+                else (
+                    self.browser.anon_identity()
+                    if callable(getattr(self.browser, "anon_identity", None))
+                    else None
+                )
+            )
+            proxy = (acc.proxy or "") if acc is not None else ""
+            state = (acc.storage_state or acc.cookie or "") if acc is not None else ""
+            ua = (acc.ua if acc and acc.ua else self.cfg.engine.user_agent)
+            known = set(
+                s.exec(select(ContentRecord.aweme_id).where(ContentRecord.target_id == target_id)).all()
+            )
+            known_create_times = list(
+                s.exec(select(ContentRecord.create_time).where(ContentRecord.target_id == target_id)).all()
+            )
+            target_kind = target.target_kind or "creator"
+            sec_uid = (target.sec_uid or "").strip()
+            keyword = (target.keyword or "").strip()
+            base_dir = target.download_dir or get_setting("download_dir", self.cfg.engine.media_dir)
+            quality = target.video_quality or get_setting("video_quality", "highest")
+            monitor_since = int(target.created_at.timestamp())
+            scan_since = _douyin_scan_since(monitor_since, known_create_times)
+            backfill_count = target.initial_backfill_count
+            should_backfill = first_scan or (backfill_count != 0 and not known)
+            auto_download = target.download_enabled
+            media_filter = target.media_filter or "all"
+            strategy = _monitor_strategy(target, default_scrolls=4, default_items=0)
+
+        mode = str(getattr(self.cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid").lower()
+        bcli = BilibiliClient(
+            state, ua, proxy=proxy, timeout=self.cfg.engine.request_timeout_seconds
+        )
+        raw_items: list[dict] = []
+        author_name = ""
+        author_avatar = ""
+        error = ""
+
+        async with bcli.session_scope():
+            if mode in {"api", "hybrid"}:
+                max_pages = max(1, min(6, strategy["max_scrolls"] or 2))
+                for pn in range(1, max_pages + 1):
+                    if target_kind == "keyword":
+                        batch, has_more, err = await bcli.search_videos(
+                            keyword, page=pn, page_size=20, order="pubdate"
+                        )
+                    else:
+                        batch, has_more, err = await bcli.fetch_user_videos(
+                            sec_uid, pn=pn, ps=30, order="pubdate"
+                        )
+                    if err:
+                        error = err
+                        break
+                    raw_items.extend(batch)
+                    if not has_more or (known and batch and all(str(r.get("bvid") or "") in known for r in batch)):
+                        break
+
+            if (mode == "browser" or (mode == "hybrid" and not raw_items and error)) and identity is not None:
+                if target_kind == "keyword":
+                    b_items, b_err = await fetch_bili_search(
+                        self.browser, identity, keyword, max_scrolls=max(1, min(4, strategy["max_scrolls"] or 2))
+                    )
+                    if b_items:
+                        raw_items, error = b_items, ""
+                    elif mode == "browser":
+                        error = b_err
+                else:
+                    b_items, b_author, b_err = await fetch_bili_videos(
+                        self.browser, identity, sec_uid, known,
+                        max_scrolls=max(1, min(4, strategy["max_scrolls"] or 2))
+                    )
+                    if b_items:
+                        raw_items, author_name, error = b_items, b_author, ""
+                    elif mode == "browser":
+                        error = b_err
+
+            candidates: list[Aweme] = []
+            seen_ids: set[str] = set()
+            for r in raw_items:
+                aw = parse_bili_aweme(r, require_media=False)
+                if aw is None or aw.aweme_id in known or aw.aweme_id in seen_ids:
+                    continue
+                seen_ids.add(aw.aweme_id)
+                if aw.author_name and not author_name and target_kind == "creator":
+                    author_name = aw.author_name
+                if aw.avatar and not author_avatar and target_kind == "creator":
+                    author_avatar = aw.avatar
+                candidates.append(aw)
+
+            candidates.sort(key=lambda a: int(a.create_time or 0), reverse=True)
+            if should_backfill:
+                if backfill_count == 0:
+                    candidates = [a for a in candidates if not a.create_time or a.create_time >= monitor_since]
+                elif backfill_count > 0:
+                    candidates = candidates[:backfill_count]
+            else:
+                candidates = [a for a in candidates if not a.create_time or a.create_time >= scan_since]
+
+            new_records = []
+            filtered_count = 0
+            for aw in candidates:
+                if not _monitor_content_matches(aw, strategy):
+                    filtered_count += 1
+                    continue
+                if strategy["max_items"] and len(new_records) >= strategy["max_items"]:
+                    break
+                should_download = auto_download and (
+                    media_filter == "all" or aw.media_type == media_filter
+                )
+                play_err = ""
+                if should_download and not aw.medias:
+                    full_aw, play_err = await bcli.fetch_aweme_by_work(
+                        aw.aweme_id, with_play_url=True, quality=quality
+                    )
+                    if full_aw is not None:
+                        aw = full_aw
+                media_json = json.dumps([
+                    {
+                        "url": m.url,
+                        "kind": m.kind,
+                        "ext": m.ext,
+                        "index": m.index,
+                        **(
+                            {"audio_url": m.audio_url}
+                            if getattr(m, "audio_url", "")
+                            else {}
+                        ),
+                    }
+                    for m in aw.medias
+                ])
+                rec = ContentRecord(
+                    platform="bilibili",
+                    target_id=target_id,
+                    aweme_id=aw.aweme_id,
+                    desc=aw.desc,
+                    media_type=aw.media_type,
+                    quality=aw.quality_label,
+                    create_time=aw.create_time,
+                    cover_url=aw.cover or "",
+                    like_count=aw.like_count,
+                    comment_count=aw.comment_count,
+                    duration=aw.duration,
+                    media_json=media_json,
+                    download_status="pending" if (should_download and aw.medias) else (
+                        "failed" if should_download else "skipped"
+                    ),
+                    error=(
+                        (play_err or "未获取到视频直链")
+                        if (should_download and not aw.medias)
+                        else ""
+                    ),
+                )
+                new_records.append((rec, aw, bool(should_download and aw.medias)))
+
+        target_name = ""
+        with get_session() as s:
+            for rec, _, _ in new_records:
+                s.add(rec)
+            t = s.get(MonitorTarget, target_id)
+            if t:
+                t.last_scan_at = datetime.utcnow()
+                t.last_error = error
+                if target_kind == "creator":
+                    if author_name and not t.nickname:
+                        t.nickname = author_name
+                    if author_avatar and not t.avatar:
+                        t.avatar = author_avatar
+                target_name = t.nickname or t.keyword or t.sec_uid
+                s.add(t)
+            s.commit()
+            for rec, _, _ in new_records:
+                s.refresh(rec)
+
+        dl_cookies = bili_cookie_map(state) if state else None
+        for rec, aw, should_download in new_records:
+            if not should_download:
+                continue
+            ok, path, dl_err = await self.downloader.download_aweme(
+                aw,
+                base_dir,
+                self._dl_proxy(proxy),
+                user_agent=ua,
+                cookies=dl_cookies,
+                referer=aw.source_url or "https://www.bilibili.com/",
+            )
+            with get_session() as s:
+                r = s.get(ContentRecord, rec.id)
+                if r:
+                    r.download_status = "done" if ok else "failed"
+                    r.local_path = path
+                    r.error = dl_err
+                    s.add(r)
+                    s.commit()
+
+        if not first_scan and new_records:
+            await self._notify_new_works(target_name, [aw for _, aw, _ in new_records])
+        return {
+            "ok": not error,
+            "new": len(new_records),
+            "new_works": len(new_records),
+            "scanned": len(candidates),
+            "filtered": filtered_count,
+            "backfill_count": backfill_count,
+            "error": error,
+        }
+
     async def _scan_target_locked(self, target_id: int) -> dict:
         with get_session() as s:
             t0 = s.get(MonitorTarget, target_id)
@@ -1739,6 +2036,8 @@ class MonitorEngine:
             return await self._scan_tiktok_target_locked(target_id)
         if platform == "shipinhao":
             return await self._scan_channels_target_locked(target_id)
+        if platform == "bilibili":
+            return await self._scan_bilibili_target_locked(target_id)
         with get_session() as s:
             target = s.get(MonitorTarget, target_id)
             if not target:
@@ -2517,25 +2816,68 @@ class MonitorEngine:
                     acc = s.get(DouyinAccount, account_id)
                     if not acc:
                         return {"ok": False, "error": "账号不存在"}
-                    if platform != "douyin":
-                        return {"ok": False, "error": "当前仅支持抖音短视频弹幕"}
-                    transport = resolve_transport(
-                        self.cfg, "douyin", "creator_danmaku", acc)
-                    if transport["effective_mode"] == "unavailable":
-                        return {"ok": False, "error": transport["reason"],
-                                "configured_mode": transport["configured_mode"]}
-                    mode = transport["effective_mode"]
-                    if mode == "browser" and not acc.creator_storage_state:
-                        return {"ok": False, "error": "需要先完成抖音创作者登录"}
-                    state = acc.storage_state or acc.creator_storage_state or ""
-                    identity = (None if mode == "api"
-                                else self.browser.identity_for(acc))
-                    ua = acc.ua or self.cfg.engine.user_agent
-                    proxy = acc.proxy or ""
-                    direct_environment = douyin_client_environment(acc)
-                    known = set(s.exec(select(DanmakuRecord.danmaku_id).where(
-                        DanmakuRecord.watch_id == 0,
-                        DanmakuRecord.aweme_id == item_id)).all())
+                    if platform == "bilibili":
+                        bstate = acc.storage_state or acc.cookie or ""
+                        bua = acc.ua or self.cfg.engine.user_agent
+                        bproxy = acc.proxy or ""
+                        known = set(s.exec(select(DanmakuRecord.danmaku_id).where(
+                            DanmakuRecord.watch_id == 0,
+                            DanmakuRecord.aweme_id == item_id)).all())
+                    elif platform != "douyin":
+                        return {"ok": False, "error": "当前仅支持抖音与哔哩哔哩弹幕"}
+                    else:
+                        transport = resolve_transport(
+                            self.cfg, "douyin", "creator_danmaku", acc)
+                        if transport["effective_mode"] == "unavailable":
+                            return {"ok": False, "error": transport["reason"],
+                                    "configured_mode": transport["configured_mode"]}
+                        mode = transport["effective_mode"]
+                        if mode == "browser" and not acc.creator_storage_state:
+                            return {"ok": False, "error": "需要先完成抖音创作者登录"}
+                        state = acc.storage_state or acc.creator_storage_state or ""
+                        identity = (None if mode == "api"
+                                    else self.browser.identity_for(acc))
+                        ua = acc.ua or self.cfg.engine.user_agent
+                        proxy = acc.proxy or ""
+                        direct_environment = douyin_client_environment(acc)
+                        known = set(s.exec(select(DanmakuRecord.danmaku_id).where(
+                            DanmakuRecord.watch_id == 0,
+                            DanmakuRecord.aweme_id == item_id)).all())
+                if platform == "bilibili":
+                    bcli = BilibiliClient(
+                        bstate, bua, proxy=bproxy, timeout=self.cfg.engine.request_timeout_seconds
+                    )
+                    async with bcli.session_scope():
+                        fresh, err = await bcli.fetch_danmaku(item_id)
+                    added = 0
+                    with get_session() as s:
+                        for item in fresh:
+                            did = item.get("danmaku_id") or ""
+                            if not did or did in known:
+                                continue
+                            known.add(did)
+                            s.add(DanmakuRecord(
+                                platform="bilibili",
+                                watch_id=0,
+                                aweme_id=item_id,
+                                source="public",
+                                **{k: v for k, v in item.items() if k != "aweme_id"},
+                            ))
+                            added += 1
+                        s.commit()
+                    result = {
+                        "ok": bool(added or not err),
+                        "fetched": len(fresh),
+                        "added": added,
+                        "error": err,
+                        "source": "api",
+                        "configured_mode": str(getattr(self.cfg.engine, "bilibili_read_mode", "hybrid")),
+                    }
+                    if result["ok"]:
+                        self.risk.record_success(account_id, OperationKind.READ_HEAVY)
+                    elif err:
+                        self.risk.record_failure(account_id, OperationKind.READ_HEAVY, err)
+                    return result
                 raw, err = [], ""
                 source = "api" if mode == "api" else "browser"
                 if mode in {"api", "hybrid"}:
@@ -2624,6 +2966,8 @@ class MonitorEngine:
             watch = s.get(DanmakuWatch, watch_id)
             if not watch:
                 return {"ok": False, "error": "watch not found"}
+            if watch.platform == "bilibili":
+                return await self._scan_bilibili_danmaku_watch_locked(watch_id)
             first_scan = watch.last_scan_at is None
             kind, mode = watch.kind, watch.mode
             aweme_id, sec_uid = watch.aweme_id, watch.sec_uid
@@ -2951,10 +3295,123 @@ class MonitorEngine:
         return {"ok": not error or total_new > 0,
                 "new_danmaku": total_new, "error": error}
 
+    async def _scan_bilibili_danmaku_watch_locked(self, watch_id: int) -> dict:
+        with get_session() as s:
+            watch = s.get(DanmakuWatch, watch_id)
+            if not watch:
+                return {"ok": False, "error": "watch not found"}
+            first_scan = watch.last_scan_at is None
+            kind = watch.kind
+            aweme_id, sec_uid = watch.aweme_id, watch.sec_uid
+            name = watch.title or aweme_id or (sec_uid[:12] if sec_uid else "watch")
+            state = ""
+            ua = self.cfg.engine.user_agent
+            proxy = ""
+            if watch.account_id:
+                acc = s.get(DouyinAccount, watch.account_id)
+                if acc:
+                    if self._proxy_bad(acc):
+                        msg = "账号代理标记为不可用(proxy bad),已跳过"
+                        watch.last_scan_at = datetime.utcnow()
+                        watch.last_error = msg
+                        s.add(watch)
+                        s.commit()
+                        return {"ok": False, "new_danmaku": 0, "error": msg, "skipped": True}
+                    state = acc.storage_state or acc.cookie or ""
+                    ua = acc.ua or self.cfg.engine.user_agent
+                    proxy = acc.proxy or ""
+            settings = {
+                "recent_works": watch.recent_works or self.cfg.engine.danmaku_recent_works,
+                "recent_days": watch.recent_days or self.cfg.engine.danmaku_recent_days,
+                "time_start_ms": max(0, watch.time_start_ms or 0),
+                "time_end_ms": max(0, watch.time_end_ms or 0),
+                "include_keywords": [str(x).strip() for x in _loads_list(watch.include_keywords) if str(x).strip()],
+                "exclude_keywords": [str(x).strip() for x in _loads_list(watch.exclude_keywords) if str(x).strip()],
+                "min_text_length": max(0, watch.min_text_length or 0),
+                "max_text_length": max(0, watch.max_text_length or 0),
+                "min_like_count": max(0, watch.min_like_count or 0),
+                "max_records_per_scan": watch.max_records_per_scan or self.cfg.engine.danmaku_max_records_per_scan,
+                "max_records_total": watch.max_records_total or self.cfg.engine.danmaku_max_records_total,
+            }
+
+        bcli = BilibiliClient(
+            state, ua, proxy=proxy, timeout=self.cfg.engine.request_timeout_seconds
+        )
+        total_new = 0
+        error = ""
+        remaining = settings["max_records_per_scan"] if settings["max_records_per_scan"] > 0 else None
+
+        try:
+            async with bcli.session_scope():
+                target_videos: list[tuple[str, str]] = []
+                if kind == "video":
+                    target_videos.append((aweme_id, name))
+                else:
+                    vlist, _, verr = await bcli.fetch_user_videos(sec_uid, pn=1, ps=30)
+                    if verr:
+                        error = verr
+                    cutoff = int(time.time()) - settings["recent_days"] * 86400
+                    for v in vlist:
+                        bv = str(v.get("bvid") or "")
+                        ct = int(v.get("created") or v.get("pubdate") or 0)
+                        if bv and (not cutoff or not ct or ct >= cutoff):
+                            target_videos.append((bv, str(v.get("title") or "")))
+                        if len(target_videos) >= settings["recent_works"]:
+                            break
+
+                for bv, vtitle in target_videos:
+                    if remaining is not None and remaining <= 0:
+                        break
+                    with get_session() as s:
+                        known = set(
+                            s.exec(
+                                select(DanmakuRecord.danmaku_id).where(
+                                    DanmakuRecord.watch_id == watch_id,
+                                    DanmakuRecord.aweme_id == bv,
+                                )
+                            ).all()
+                        )
+                    rows, derr = await bcli.fetch_danmaku(bv)
+                    if derr and not error:
+                        error = derr
+                    filtered = [
+                        r for r in rows
+                        if r.get("danmaku_id") not in known and _danmaku_matches(r, settings)
+                    ]
+                    if remaining is not None:
+                        filtered = filtered[:remaining]
+                        remaining -= len(filtered)
+                    total_new += await self._ingest_danmaku(
+                        watch_id,
+                        bv,
+                        filtered,
+                        name,
+                        vtitle or bv,
+                        first_scan,
+                        "public",
+                        max_records_total=settings["max_records_total"],
+                        platform="bilibili",
+                    )
+        except Exception as exc:
+            error = repr(exc)
+
+        with get_session() as s:
+            watch = s.get(DanmakuWatch, watch_id)
+            if watch:
+                watch.last_scan_at = datetime.utcnow()
+                watch.last_error = error
+                watch.danmaku_count = len(
+                    s.exec(select(DanmakuRecord.id).where(DanmakuRecord.watch_id == watch_id)).all()
+                )
+                s.add(watch)
+                s.commit()
+        return {"ok": not error or total_new > 0, "new_danmaku": total_new, "error": error}
+
     async def _ingest_danmaku(self, watch_id: int, aweme_id: str, fresh: list,
                               name: str, work_desc: str, first_scan: bool,
                               source: str = "public",
-                              max_records_total: int = 0) -> int:
+                              max_records_total: int = 0,
+                              platform: str = "douyin") -> int:
         if not fresh and max_records_total <= 0:
             return 0
         added = []
@@ -2972,7 +3429,7 @@ class MonitorEngine:
                     continue
                 row = dict(item)
                 row.pop("aweme_id", None)
-                s.add(DanmakuRecord(platform="douyin", watch_id=watch_id,
+                s.add(DanmakuRecord(platform=platform, watch_id=watch_id,
                                     aweme_id=aid, source=source, **row))
                 added.append(dict(item, aweme_id=aid))
             if max_records_total > 0:
@@ -3185,6 +3642,51 @@ class MonitorEngine:
                 error = err or ""
                 fresh = [c for c in (parse_tiktok_comment(rc) for rc in raw)
                          if c and c["comment_id"] not in known]
+            elif platform == "bilibili":
+                configured_mode = str(
+                    getattr(self.cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid"
+                ).lower()
+                bcli = BilibiliClient(
+                    state, ua, proxy=proxy, timeout=self.cfg.engine.request_timeout_seconds
+                )
+                collected: list[dict] = []
+                api_err = ""
+                if configured_mode in {"api", "hybrid"}:
+                    async with bcli.session_scope():
+                        up_rows, _, up_err = await bcli.fetch_up_fulllist_comments(
+                            bvid=item_id, pn=1, ps=50
+                        )
+                        for r in up_rows:
+                            row_copy = dict(r)
+                            row_copy.pop("aweme_id", None)
+                            collected.append(row_copy)
+                        pub_rows, pub_err = await bcli.fetch_comments(
+                            item_id, max_count=200, include_replies=True
+                        )
+                        collected.extend(pub_rows)
+                        api_err = pub_err if (not collected and pub_err) else (up_err if not collected else "")
+                    if not api_err or collected:
+                        source = "api"
+                if configured_mode == "browser" or (
+                    configured_mode == "hybrid" and not collected and api_err and identity is not None
+                ):
+                    b_rows, b_err = await fetch_bili_comments(
+                        self.browser, identity, item_id, max_count=200
+                    )
+                    source = "browser_fallback" if configured_mode == "hybrid" else "browser"
+                    if b_rows:
+                        collected = b_rows
+                        error = ""
+                    else:
+                        error = b_err or api_err
+                else:
+                    error = api_err
+                dedup: dict[str, dict] = {}
+                for c in collected:
+                    cid = c.get("comment_id")
+                    if cid and cid not in known and cid not in dedup:
+                        dedup[cid] = c
+                fresh = list(dedup.values())
             else:
                 return {"ok": False, "fetched": 0, "added": 0,
                         "error": f"不支持的平台:{platform}",
@@ -3409,6 +3911,12 @@ class MonitorEngine:
             elif platform == "shipinhao":
                 total_new, author = await self._cw_channels_video(
                     watch_id, identity, state, aweme_id, xsec_token, name, first_scan)
+            elif platform == "bilibili" and kind == "user":
+                total_new, author = await self._cw_bilibili_user(
+                    watch_id, identity, state, ua, proxy, sec_uid, name, first_scan)
+            elif platform == "bilibili":
+                total_new, author = await self._cw_bilibili_video(
+                    watch_id, identity, state, ua, proxy, aweme_id, name, first_scan)
             elif kind == "user" and mode == "creator":
                 total_new, author = await self._cw_creator(watch_id, identity, has_creator,
                                                            name, first_scan)
@@ -3998,6 +4506,96 @@ class MonitorEngine:
                         "avatar_thumb": {"url_list": [author_dict["avatar"]]}}
                        if author_dict else None)
 
+    async def _cw_bilibili_video(
+        self, watch_id: int, identity, state: str, ua: str, proxy: str,
+        work_id: str, name: str, first_scan: bool
+    ):
+        settings = self._comment_watch_settings(watch_id)
+        with get_session() as s:
+            known = set(
+                s.exec(
+                    select(CommentRecord.comment_id)
+                    .where(CommentRecord.watch_id == watch_id)
+                    .where(CommentRecord.aweme_id == work_id)
+                ).all()
+            )
+        mode = str(getattr(self.cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid").lower()
+        max_c = max(30, int(settings["max_scrolls"] or 4) * 20)
+        rows: list[dict] = []
+        err = ""
+        author_dict = None
+        bcli = BilibiliClient(
+            state, ua, proxy=proxy, timeout=self.cfg.engine.request_timeout_seconds
+        )
+        async with bcli.session_scope():
+            if mode in {"api", "hybrid"}:
+                detail, _ = await bcli.fetch_video_detail(work_id)
+                if isinstance(detail, dict):
+                    owner = detail.get("owner") if isinstance(detail.get("owner"), dict) else {}
+                    if owner.get("name"):
+                        author_dict = {
+                            "nickname": str(detail.get("title") or owner.get("name") or ""),
+                            "avatar_thumb": {"url_list": [str(owner.get("face") or "")]},
+                        }
+                rows, err = await bcli.fetch_comments(work_id, max_count=max_c, include_replies=True)
+            if (mode == "browser" or (mode == "hybrid" and not rows and err)) and identity is not None:
+                b_rows, b_err = await fetch_bili_comments(
+                    self.browser, identity, work_id, max_count=max_c
+                )
+                if b_rows:
+                    rows, err = b_rows, ""
+                elif mode == "browser":
+                    err = b_err
+        if err and not rows:
+            raise RuntimeError(err)
+        fresh = [c for c in rows if c and c.get("comment_id") and c["comment_id"] not in known]
+        total = await self._ingest(
+            watch_id, work_id, fresh, name, name, first_scan, platform="bilibili"
+        )
+        return total, author_dict
+
+    async def _cw_bilibili_user(
+        self, watch_id: int, identity, state: str, ua: str, proxy: str,
+        mid: str, name: str, first_scan: bool
+    ):
+        settings = self._comment_watch_settings(watch_id)
+        bcli = BilibiliClient(
+            state, ua, proxy=proxy, timeout=self.cfg.engine.request_timeout_seconds
+        )
+        total = 0
+        author_dict = None
+        async with bcli.session_scope():
+            vlist, _, err = await bcli.fetch_user_videos(mid, pn=1, ps=30)
+            if err and not vlist:
+                raise RuntimeError(err)
+            cutoff = int(time.time()) - settings["recent_days"] * 86400
+            selected: list[tuple[str, str]] = []
+            for v in vlist:
+                if not author_dict and v.get("author"):
+                    author_dict = {"nickname": str(v["author"]), "avatar_thumb": {"url_list": []}}
+                bv = str(v.get("bvid") or "")
+                ct = int(v.get("created") or v.get("pubdate") or 0)
+                if bv and (not cutoff or not ct or ct >= cutoff):
+                    selected.append((bv, str(v.get("title") or "")))
+                if len(selected) >= settings["recent_works"]:
+                    break
+            max_c = max(20, int(settings["max_scrolls"] or 4) * 20)
+            for bv, vtitle in selected:
+                with get_session() as s:
+                    known = set(
+                        s.exec(
+                            select(CommentRecord.comment_id)
+                            .where(CommentRecord.watch_id == watch_id)
+                            .where(CommentRecord.aweme_id == bv)
+                        ).all()
+                    )
+                rows, _ = await bcli.fetch_comments(bv, max_count=max_c, include_replies=True)
+                fresh = [c for c in rows if c and c.get("comment_id") and c["comment_id"] not in known]
+                total += await self._ingest(
+                    watch_id, bv, fresh, name, vtitle, first_scan, platform="bilibili"
+                )
+        return total, author_dict
+
     # ── 发布(小红书创作平台)+ 跨平台转发 ──
     def _content_files(self, rec: ContentRecord) -> list:
         """收集一条作品记录在本地的媒体文件路径。"""
@@ -4055,7 +4653,7 @@ class MonitorEngine:
                 from ..platforms.xhs.media import validate_publish_files
                 files = validate_publish_files(
                     "video" if rec.media_type == "video" else "images", files)
-            title_cap = {"douyin": 30, "shipinhao": 16}.get(target_platform, 20)
+            title_cap = {"douyin": 30, "shipinhao": 16, "bilibili": 80}.get(target_platform, 20)
             t_title = (title if title is not None else (rec.desc or ""))[:title_cap]
             t_desc = desc if desc is not None else (rec.desc or "")
             t_topics = topics if topics is not None else ""
@@ -4176,6 +4774,7 @@ class MonitorEngine:
             allow_comment = getattr(t, "allow_comment", True)
             allow_duet = getattr(t, "allow_duet", True)
             allow_stitch = getattr(t, "allow_stitch", True)
+            bili_options = _loads(getattr(t, "bili_options_json", "{}") or "{}")
             location = getattr(t, "location", "") or ""
             platform = t.platform
             files = _loads_list(t.media_json)
@@ -4239,6 +4838,18 @@ class MonitorEngine:
                 allow_comment=allow_comment, allow_duet=allow_duet,
                 allow_stitch=allow_stitch, headed=True)
 
+        if platform == "bilibili":
+            if not state:
+                return await self._finish_publish(
+                    task_id, False, "", "该账号未完成哔哩哔哩登录，请先在账号页扫码登录",
+                    platform="bilibili")
+            return await self._run_browser_publish(
+                task_id, "bilibili", publish_bilibili,
+                self.browser, identity, state, media_type, title, desc, files,
+                topics=topics, visibility=visibility,
+                allow_comment=allow_comment, bili_options=bili_options,
+                headed=True)
+
         if not state:
             return await self._finish_publish(
                 task_id, False, "", "该账号未完成小红书「创作者登录」,请先在账号页点「创作者登录」",
@@ -4274,6 +4885,7 @@ class MonitorEngine:
         """Execute one platform publisher with uniform submit-boundary & cancel protection."""
         pname = {"kuaishou": "快手", "douyin": "抖音",
                  "shipinhao": "视频号", "tiktok": "TikTok",
+                 "bilibili": "哔哩哔哩",
                  "xhs": "小红书"}.get(platform, platform)
         call_kwargs = dict(kwargs)
         try:
@@ -4355,7 +4967,8 @@ class MonitorEngine:
                     channels = [{"type": c.type, "config": _loads(c.config)} for c in chans]
                 if channels:
                     pname = {"kuaishou": "快手", "douyin": "抖音",
-                             "shipinhao": "视频号", "tiktok": "TikTok"}.get(
+                             "shipinhao": "视频号", "tiktok": "TikTok",
+                             "bilibili": "哔哩哔哩"}.get(
                                  platform, "小红书")
                     await notify_all(channels, f"{pname}发布成功", url or "已发布一条作品")
             except Exception:
@@ -4835,6 +5448,82 @@ class MonitorEngine:
                                   "ctx": {"nick": c.get("user_nickname", "")},
                                   "source_text": c.get("text", "")})
             return cands, ""
+        # ── 哔哩哔哩: WBI 搜索/空间 + 创作中心评论管理直连 ──
+        if platform == "bilibili":
+            bcli = BilibiliClient(
+                state,
+                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                proxy=proxy,
+                timeout=self.cfg.engine.request_timeout_seconds,
+            )
+            async with bcli.session_scope():
+                if mode == "auto_comment":
+                    if kind == "keyword":
+                        rows, _, err = await bcli.search_videos(
+                            rf["keyword"], page=1, page_size=20, order="pubdate"
+                        )
+                    else:
+                        rows, _, err = await bcli.fetch_user_videos(
+                            rf["sec_uid"], pn=1, ps=20, order="pubdate"
+                        )
+                    for r in rows[: self.cfg.engine.comment_recent_works]:
+                        aw = parse_bili_aweme(r, require_media=False)
+                        if aw:
+                            cands.append({
+                                "aweme_id": aw.aweme_id,
+                                "xsec_token": "",
+                                "target_comment_id": "",
+                                "target_nick": "",
+                                "ctx": {},
+                                "source_text": aw.desc,
+                            })
+                    return cands, err
+
+                # auto_reply: 回复自己稿件收到的评论
+                if rf["target_kind"] == "work" and rf["aweme_id"]:
+                    rows, err = await bcli.fetch_comments(
+                        rf["aweme_id"], max_count=40, include_replies=True
+                    )
+                    for c in rows:
+                        if not c.get("comment_id"):
+                            continue
+                        if (c.get("user_sec_uid") and c["user_sec_uid"] == acc_sec_uid) or (
+                            c.get("user_nickname") and c["user_nickname"] == acc_nick
+                        ):
+                            continue
+                        cands.append({
+                            "aweme_id": rf["aweme_id"],
+                            "xsec_token": "",
+                            "target_comment_id": c["comment_id"],
+                            "target_nick": c.get("user_nickname", ""),
+                            "ctx": {"nick": c.get("user_nickname", "")},
+                            "source_text": c.get("text", ""),
+                        })
+                    return cands, err
+
+                up_rows, _, up_err = await bcli.fetch_up_fulllist_comments(pn=1, ps=30)
+                comment_cutoff = int(time.time()) - max(0, self.cfg.engine.comment_recent_days) * 86400
+                for c in up_rows:
+                    bv = str(c.get("aweme_id") or "")
+                    cid = str(c.get("comment_id") or "")
+                    if not bv or not cid:
+                        continue
+                    ct = int(c.get("create_time") or 0)
+                    if comment_cutoff and ct and ct < comment_cutoff:
+                        continue
+                    if (c.get("user_sec_uid") and c["user_sec_uid"] == acc_sec_uid) or (
+                        c.get("user_nickname") and c["user_nickname"] == acc_nick
+                    ):
+                        continue
+                    cands.append({
+                        "aweme_id": bv,
+                        "xsec_token": "",
+                        "target_comment_id": cid,
+                        "target_nick": c.get("user_nickname", ""),
+                        "ctx": {"nick": c.get("user_nickname", "")},
+                        "source_text": c.get("text", ""),
+                    })
+                return cands, up_err
         # ── 抖音:浏览器自动化(发现仍用拦截抓取)──
         if mode == "auto_comment":
             if kind == "keyword":
@@ -5054,7 +5743,14 @@ class MonitorEngine:
             platform = t.platform
             dy_write_mode = (self._douyin_write_mode()
                              if platform == "douyin" else "browser")
-            api_only = platform == "douyin" and dy_write_mode == "api"
+            bili_write_mode = (
+                str(getattr(self.cfg.engine, "bilibili_write_mode", "hybrid") or "hybrid").lower()
+                if platform == "bilibili" else "browser"
+            )
+            api_only = (
+                (platform == "douyin" and dy_write_mode == "api")
+                or (platform == "bilibili" and bili_write_mode in {"api", "hybrid"})
+            )
             environment_error = ("" if api_only else
                                  self._native_write_environment_error(
                                      acc, headed=True, browser_mode=True))
@@ -5325,7 +6021,40 @@ class MonitorEngine:
 
         method = "browser"
         try:
-            if platform == "douyin" and dy_write_mode in {"api", "hybrid"}:
+            if platform == "bilibili" and bili_write_mode in {"api", "hybrid"}:
+                method = "api"
+                bcli = BilibiliClient(
+                    state, ua, proxy=proxy, timeout=self.cfg.engine.request_timeout_seconds
+                )
+                async with bcli.session_scope():
+                    if action == "follow":
+                        ok, err = await bcli.modify_follow(
+                            target_uid or target_sec_uid,
+                            follow=True,
+                            on_submit=lambda: self._mark_write_submit(
+                                AccountActionTask, task_id, channel="api"
+                            ),
+                        )
+                    elif action == "unfollow":
+                        ok, err = await bcli.modify_follow(
+                            target_uid or target_sec_uid,
+                            follow=False,
+                            on_submit=lambda: self._mark_write_submit(
+                                AccountActionTask, task_id, channel="api"
+                            ),
+                        )
+                    elif action == "send_dm":
+                        ok, err, _meta = await bcli.send_dm(
+                            target_uid or target_sec_uid or dm_conv_id,
+                            content,
+                            sender_uid=dm_self_uid,
+                            on_submit=lambda: self._mark_write_submit(
+                                AccountActionTask, task_id, channel="api"
+                            ),
+                        )
+                    else:
+                        ok, err = False, f"未知动作 {action}"
+            elif platform == "douyin" and dy_write_mode in {"api", "hybrid"}:
                 method = "api"
                 cookie = dy_cookie_from_state(state)
                 if not cookie:
@@ -5512,8 +6241,15 @@ class MonitorEngine:
                 return {"ok": False, "error": "proxy unavailable"}
             dy_write_mode = (self._douyin_write_mode()
                              if platform == "douyin" else "browser")
-            api_only = platform == "douyin" and dy_write_mode == "api"
-            environment_error = ("" if api_only else
+            bili_write_mode = (
+                str(getattr(self.cfg.engine, "bilibili_write_mode", "hybrid") or "hybrid").lower()
+                if platform == "bilibili" else "browser"
+            )
+            api_only = (
+                (platform == "douyin" and dy_write_mode == "api")
+                or (platform == "bilibili" and bili_write_mode == "api")
+            )
+            environment_error = ("" if (api_only or (platform == "bilibili" and bili_write_mode == "hybrid")) else
                                  self._native_write_environment_error(
                                      acc, headed=True, browser_mode=True))
             if environment_error:
@@ -5598,6 +6334,54 @@ class MonitorEngine:
                     require_reply=bool(target_cid),
                     on_submit=lambda: self._mark_write_submit(CommentTask, task_id),
                     headed=True, target_url=target_url)
+            elif platform == "bilibili":
+                if bili_write_mode in {"api", "hybrid"}:
+                    method = "api"
+                    bcli = BilibiliClient(
+                        state, ua, proxy=proxy, timeout=self.cfg.engine.request_timeout_seconds
+                    )
+                    async with bcli.session_scope():
+                        ok, err, cmeta = await bcli.post_comment(
+                            aweme_id,
+                            content,
+                            reply_to=target_cid,
+                            on_submit=lambda: self._mark_write_submit(
+                                CommentTask, task_id, channel="api"
+                            ),
+                        )
+                        result = str(cmeta.get("rpid") or "ok") if ok else ""
+                    if (
+                        not ok
+                        and bili_write_mode == "hybrid"
+                        and identity is not None
+                        and not target_cid
+                        and not str(err or "").startswith("write_uncertain:")
+                    ):
+                        category, _ = classify_platform_error(err)
+                        if category in {RiskCategory.BUSINESS, RiskCategory.RISK}:
+                            ok, err = await post_bili_comment(
+                                self.browser,
+                                identity,
+                                aweme_id,
+                                content,
+                                on_submit=lambda: self._mark_write_submit(
+                                    CommentTask, task_id, channel="browser"
+                                ),
+                            )
+                            method = "browser_fallback"
+                            result = "ok" if ok else ""
+                else:
+                    method = "browser"
+                    ok, err = await post_bili_comment(
+                        self.browser,
+                        identity,
+                        aweme_id,
+                        content,
+                        on_submit=lambda: self._mark_write_submit(
+                            CommentTask, task_id, channel="browser"
+                        ),
+                    )
+                    result = "ok" if ok else ""
             elif platform == "douyin" and dy_write_mode in {"api", "hybrid"}:
                 method = "api"
                 cookie = dy_cookie_from_state(state)
@@ -5802,6 +6586,7 @@ class MonitorEngine:
                 ext=m.get("ext", "mp4"),
                 index=m.get("index", 0),
                 decode_key=str(m.get("decode_key") or ""),
+                audio_url=str(m.get("audio_url") or ""),
             ))
         return aw
 
@@ -5841,10 +6626,53 @@ class MonitorEngine:
                 aw.source_url = tiktok_video_url(aw.aweme_id, t.sec_uid)
             needs_xhs_refetch = platform == "xhs" and (
                 not media_json or not aw.medias)
+            needs_bili_refetch = platform == "bilibili" and (
+                not media_json or not aw.medias)
             rec.download_status = "downloading"
-            if not needs_xhs_refetch:
+            if not needs_xhs_refetch and not needs_bili_refetch:
                 rec.retry_count = (rec.retry_count or 0) + 1
             s.add(rec); s.commit()
+
+        if platform == "bilibili" and (not media_json or not aw.medias):
+            bcli = BilibiliClient(
+                acc_state,
+                (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
+                proxy=acc_proxy,
+                timeout=self.cfg.engine.request_timeout_seconds,
+            )
+            async with bcli.session_scope():
+                aw2, berr = await bcli.fetch_aweme_by_work(note_id, with_play_url=True)
+            if aw2 and aw2.medias:
+                aw = aw2
+                media_json = json.dumps([
+                    {
+                        "url": m.url,
+                        "kind": m.kind,
+                        "ext": m.ext,
+                        "index": m.index,
+                        **(
+                            {"audio_url": m.audio_url}
+                            if getattr(m, "audio_url", "")
+                            else {}
+                        ),
+                    }
+                    for m in aw.medias
+                ])
+                with get_session() as s:
+                    rec = s.get(ContentRecord, record_id)
+                    if rec:
+                        rec.retry_count = (rec.retry_count or 0) + 1
+                        rec.media_json = media_json
+                        s.add(rec); s.commit()
+            else:
+                with get_session() as s:
+                    rec = s.get(ContentRecord, record_id)
+                    if rec:
+                        rec.retry_count = (rec.retry_count or 0) + 1
+                        rec.download_status = "failed"
+                        rec.error = berr or "重拉 B 站稿件详情仍无可用直链"
+                        s.add(rec); s.commit()
+                return {"ok": False, "error": berr or "重拉 B 站稿件详情仍无可用直链"}
 
         # 小红书:无媒体快照时,重新拉详情补齐媒体直链
         if platform == "xhs" and (not media_json or not aw.medias):
@@ -5927,9 +6755,29 @@ class MonitorEngine:
                 acc, identity, self.cfg.engine.user_agent)
             download_referer = aw.source_url or tiktok_profile_url(
                 t.sec_uid if t else "")
+        elif platform == "bilibili":
+            download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
+            if acc_state:
+                download_cookies = bili_cookie_map(acc_state)
+            download_referer = aw.source_url or f"https://www.bilibili.com/video/{note_id}"
         ok, path, err = await self.downloader.download_aweme(
             aw, base_dir, self._dl_proxy(acc_proxy), user_agent=download_ua,
             cookies=download_cookies, referer=download_referer)
+        if not ok and platform == "bilibili" and not needs_bili_refetch and "403" in str(err):
+            # B 站 CDN 防盗链签名过期时自动重拉一次最新直链重试下载
+            bcli_refresh = BilibiliClient(
+                acc_state,
+                download_ua or self.cfg.engine.user_agent,
+                proxy=acc_proxy,
+                timeout=self.cfg.engine.request_timeout_seconds,
+            )
+            async with bcli_refresh.session_scope():
+                aw_fresh, _ = await bcli_refresh.fetch_aweme_by_work(note_id, with_play_url=True)
+            if aw_fresh and aw_fresh.medias:
+                aw = aw_fresh
+                ok, path, err = await self.downloader.download_aweme(
+                    aw, base_dir, self._dl_proxy(acc_proxy), user_agent=download_ua,
+                    cookies=download_cookies, referer=download_referer)
         with get_session() as s:
             rec = s.get(ContentRecord, record_id)
             if rec:

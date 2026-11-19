@@ -1063,6 +1063,8 @@ kbd, .key-button {
 .pf-xhs { background: rgba(225, 29, 72, 0.12); color: #e11d48; }
 .pf-kuaishou { background: rgba(234, 88, 12, 0.12); color: #ea580c; }
 .pf-shipinhao { background: var(--success-bg); color: var(--success); }
+.pf-tiktok { background: rgba(13, 148, 136, 0.14); color: #0f766e; }
+.pf-bilibili { background: rgba(0, 174, 236, 0.14); color: #0077a8; }
 
 .guide-detail {
   min-width: 0;

@@ -77,6 +77,7 @@ jobs:
       - name: Test Channels protocol and AI assistant
         run: >-
           python -m pytest
+          tests/test_bilibili_capabilities.py
           tests/test_channels_capabilities.py
           tests/test_channels_proxy.py
           tests/test_channels_protocol_ui.py

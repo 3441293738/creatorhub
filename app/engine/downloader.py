@@ -52,6 +52,7 @@ class Downloader:
             "https://www.kuaishou.com/" if _pf == "kuaishou" else
             "https://www.tiktok.com/" if _pf == "tiktok" else
             "https://channels.weixin.qq.com/" if _pf == "shipinhao" else
+            "https://www.bilibili.com/" if _pf == "bilibili" else
             "https://www.douyin.com/"
         )
         headers = {
@@ -97,6 +98,30 @@ class Downloader:
                             finally:
                                 enc_path.unlink(missing_ok=True)
                             return str(fpath), ""
+                        audio_url = str(getattr(m, "audio_url", "") or "").strip()
+                        if audio_url and m.kind == "video":
+                            v_tmp = fpath.with_suffix(".video.m4s")
+                            a_tmp = fpath.with_suffix(".audio.m4s")
+                            mux_tmp = fpath.with_suffix(".mux.mp4")
+                            try:
+                                async with self._media_sem:
+                                    v_err, a_err = await asyncio.gather(
+                                        self._download_one(cli, m.url, v_tmp),
+                                        self._download_one(cli, audio_url, a_tmp),
+                                    )
+                                if v_err or a_err:
+                                    return "", v_err or a_err
+                                mux_err = await asyncio.to_thread(
+                                    self._mux_dash_streams, v_tmp, a_tmp, mux_tmp
+                                )
+                                if mux_err:
+                                    return "", mux_err
+                                mux_tmp.replace(fpath)
+                                return str(fpath), ""
+                            finally:
+                                v_tmp.unlink(missing_ok=True)
+                                a_tmp.unlink(missing_ok=True)
+                                mux_tmp.unlink(missing_ok=True)
                         async with self._media_sem:
                             err = await self._download_one(cli, m.url, fpath)
                         return (str(fpath), "") if not err else ("", err)
@@ -162,3 +187,40 @@ class Downloader:
             tail = cr.rsplit("/", 1)[-1] if "/" in cr else ""
             return int(tail) if tail.isdigit() else 0
         return int(r.headers.get("content-length") or 0)
+
+    @staticmethod
+    def _mux_dash_streams(video_path: Path, audio_path: Path, out_path: Path) -> str:
+        """用内置 FFmpeg 无损重封装 B 站 DASH 音视频分离流为单文件 MP4。"""
+        import os
+        import subprocess
+        from ..runtime_tools import find_ffmpeg
+
+        exe = find_ffmpeg()
+        if not exe:
+            return "缺少内置 FFmpeg 组件，无法合并 B 站 DASH 音视频流"
+        flags = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+        cmd = [
+            exe, "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-i", str(video_path),
+            "-i", str(audio_path),
+            "-c", "copy",
+            "-movflags", "+faststart",
+            "-y", str(out_path),
+        ]
+        try:
+            res = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=120,
+                **flags,
+            )
+        except subprocess.TimeoutExpired:
+            return "FFmpeg 合并 DASH 音视频流超时"
+        except Exception as exc:
+            return f"FFmpeg 合并异常({exc})"
+        if res.returncode != 0 or not out_path.is_file() or out_path.stat().st_size == 0:
+            detail = (res.stderr or b"").decode("utf-8", errors="replace").strip()[:160]
+            return f"FFmpeg 合并失败({detail or res.returncode})"
+        return ""

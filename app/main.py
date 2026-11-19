@@ -36,11 +36,13 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       interactive_ks_login, interactive_ks_creator_login,
                       interactive_channels_login, interactive_channels_creator_login,
                       interactive_tiktok_login,
+                      interactive_bilibili_login, interactive_bilibili_creator_login,
                       fetch_self_profile, fetch_xhs_self_profile,
                       fetch_xhs_note_detail, fetch_xhs_comments,
                        fetch_xhs_favorite_boards,
                       fetch_ks_self_profile,
                       fetch_channels_self_profile,
+                      fetch_bili_self_profile,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
                       fetch_dm_history, fetch_douyin_account_works_api)
 from .browser.tiktok_fetcher import (
@@ -111,6 +113,15 @@ from .platforms.tiktok import (
     tiktok_display_text,
 )
 from .platforms.tiktok.urls import parse_profile_reference, parse_video_reference
+from .platforms.bilibili import (
+    BilibiliClient,
+    CREATION_STATEMENT_OPTIONS as BILI_CREATION_STATEMENT_OPTIONS,
+    FALLBACK_PARTITIONS as BILI_FALLBACK_PARTITIONS,
+    VIDEO_MANAGE_URL as BILI_MANAGE_URL,
+    looks_like_bili_work,
+    resolve_bili_mid,
+    resolve_bili_work,
+)
 from .engine import Downloader, MonitorEngine
 from .engine.share_downloader import (
     clean_platform_share_target,
@@ -230,6 +241,8 @@ def _login_scope_label(platform: str, creator: bool) -> str:
         "xhs": "小红书",
         "kuaishou": "快手",
         "shipinhao": "视频号",
+        "tiktok": "TikTok",
+        "bilibili": "哔哩哔哩",
         "douyin": "抖音",
     }.get(platform, platform or "平台")
     return f"{label}创作者" if creator else label
@@ -912,6 +925,22 @@ async def _enrich_account_profile(account_id: int, state: str, *,
         elif platform == "tiktok":
             u, err = await fetch_tiktok_self_profile(
                 browser, identity, block_media=True)
+        elif platform == "bilibili":
+            bmode = str(getattr(cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid").lower()
+            u, err = None, ""
+            if bmode in {"api", "hybrid"} and state:
+                bcli = BilibiliClient(
+                    state, a0.ua or cfg.engine.user_agent,
+                    proxy=proxy, timeout=cfg.engine.request_timeout_seconds)
+                async with bcli.session_scope():
+                    u, err = await bcli.fetch_self_profile()
+            auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
+            if not u and bmode == "hybrid" and not auth_failed and browser is not None:
+                u, err = await fetch_bili_self_profile(browser, identity)
+            elif not u and bmode == "browser":
+                if browser is None:
+                    return _done("error", "browser_unavailable")
+                u, err = await fetch_bili_self_profile(browser, identity)
         else:
             mode = dy_transport["effective_mode"]
             u, err = None, ""
@@ -965,14 +994,18 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     "following_count": int(u.get("following_count") or 0),
                     "aweme_count": int(u.get("video_count") or 0),
                 }
+            elif platform == "bilibili":
+                p = dict(u)
             else:
                 p = parse_self_user(u)
             if p.get("nickname"):
                 acc.nickname = p["nickname"]
             acc.sec_uid = p.get("sec_uid") or acc.sec_uid
+            if p.get("uid"):
+                acc.uid = str(p["uid"])
             acc.douyin_id = p.get("douyin_id") or acc.douyin_id
             acc.avatar = p.get("avatar") or acc.avatar
-            if platform in {"kuaishou", "tiktok"}:
+            if platform in {"kuaishou", "tiktok", "bilibili"}:
                 # 快手资料接口会明确返回 0；不能用 ``or`` 保留旧值，否则
                 # 取消关注、删光作品等场景会让账号卡片一直显示过期数据。
                 acc.follower_count = int(p.get("follower_count") or 0)
@@ -1079,6 +1112,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
     nm = ("小红书账号" if platform == "xhs"
           else "快手账号" if platform == "kuaishou"
           else "视频号账号" if platform == "shipinhao"
+          else "哔哩哔哩账号" if platform == "bilibili"
+          else "TikTok账号" if platform == "tiktok"
           else "创作者账号" if creator else "扫码账号")
     try:
         # 1) 准备画像 + identity(新建账号此时不写库,只用临时 profile)
@@ -1235,6 +1270,10 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 reauth_options = {"force_reauth": True} if account_id else {}
                 ok, state_json, nickname = await interactive_tiktok_login(
                     browser, identity, **reauth_options)
+            elif platform == "bilibili":
+                reauth_options = {"force_reauth": True} if account_id else {}
+                ok, state_json, nickname = await interactive_bilibili_login(
+                    browser, identity, **reauth_options)
             elif creator:
                 reauth_options = {"force_reauth": True} if account_id else {}
                 ok, state_json, nickname = await interactive_creator_login(
@@ -1343,6 +1382,10 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     acc.creator_storage_state = state_json
                 elif platform == "shipinhao":
                     # 视频号一套登录态即读取又发布,两处都写
+                    acc.storage_state = state_json
+                    acc.creator_storage_state = state_json
+                elif platform == "bilibili":
+                    # B站 .bilibili.com 顶域登录态同时支持主站、创作中心与私信
                     acc.storage_state = state_json
                     acc.creator_storage_state = state_json
                 else:
@@ -1721,6 +1764,32 @@ async def login_tiktok_start(proxy: str = "auto", browser_backend: str = "defaul
             "hint": "已打开 TikTok 窗口，请完成登录"}
 
 
+@app.post("/api/login/bilibili/start")
+async def login_bilibili_start(proxy: str = "auto", browser_backend: str = "default",
+                               browser_runtime_id: str = "",
+                               fingerprint: dict[str, Any] | None = None):
+    """哔哩哔哩扫码/网页登录；主站、创作中心与私信共用同一 `.bilibili.com` 会话。"""
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("bilibili", False)
+    if reused is not None:
+        return reused
+    task_id = uuid.uuid4().hex
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="bilibili", creator=False, account_id=None)
+    asyncio.create_task(_run_login(
+        task_id, platform="bilibili", proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
+    return {"task_id": task_id, "status": "opening",
+            "hint": "已打开哔哩哔哩登录窗口，请使用 B 站 App 扫码或完成网页登录"}
+
+
 @app.get("/api/login/browser/poll")
 async def login_browser_poll(task_id: str):
     info = login_tasks.get(task_id)
@@ -1741,12 +1810,13 @@ class CookieIn(BaseModel):
 @app.post("/api/login/cookie")
 async def login_cookie(body: CookieIn):
     """Cookie 粘贴兜底登录:转成浏览器登录态。"""
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili") else "douyin"
     state = cookie_string_to_state(body.cookie, platform)
     with get_session() as s:
         acc = DouyinAccount(
             nickname=body.nickname or "Cookie账号", platform=platform,
-            identity_mode="native", cookie=body.cookie.strip(), storage_state=state)
+            identity_mode="native", cookie=body.cookie.strip(), storage_state=state,
+            creator_storage_state=(state if platform == "bilibili" else ""))
         s.add(acc); s.commit(); s.refresh(acc)
         # 分配画像(profile/UA/指纹/代理):Cookie 会在首次开持久 profile 时桥接注入
         ensure_identity(acc, cfg, session=s, assign_proxy=True)
@@ -1756,7 +1826,7 @@ async def login_cookie(body: CookieIn):
 
 @app.get("/api/overview/summary")
 async def overview_summary(platform: str = "douyin"):
-    if platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok"}:
+    if platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"}:
         raise HTTPException(422, "平台类型无效")
     with get_session() as session:
         def count(model, *conditions):
@@ -2165,7 +2235,7 @@ async def list_accounts(platform: str | None = None):
                     environment_check = None
             has_creator = (
                 bool(a.creator_storage_state)
-                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok")
+                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili")
                     and bool(a.storage_state))
                 or (a.platform == "xhs" and has_creator_cookies(a.storage_state))
             )
@@ -2697,12 +2767,14 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
         platform_account_id_label = {
             "douyin": "抖音号", "xhs": "小红书号",
             "kuaishou": "快手号", "shipinhao": "视频号",
+            "bilibili": "B站 UID", "tiktok": "TikTok",
         }.get(account.platform, "账号 ID")
     else:
         platform_account_id = account.sec_uid
         platform_account_id_label = {
             "douyin": "sec_uid", "xhs": "user_id",
             "kuaishou": "user_id", "shipinhao": "finder_id",
+            "bilibili": "UID",
         }.get(account.platform, "账号 ID")
     return {
         "account_id": account.id,
@@ -3787,7 +3859,7 @@ async def refresh_account_profile(account_id: int):
         )
         has_creator_login = bool(acc and (
             acc.creator_storage_state
-            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok")
+            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili")
                 and acc.storage_state)
             or (acc.platform == "xhs" and has_creator_cookies(acc.storage_state))
         ))
@@ -3886,18 +3958,32 @@ async def sync_account_works(account_id: int):
             raise HTTPException(400, "账号代理不可用")
         platform = acc.platform
         uid = (acc.douyin_id if platform == "tiktok" else acc.sec_uid) or ""
-        transport = (resolve_transport(cfg, "douyin", "account_works", acc)
-                     if platform == "douyin" else None)
+        transport = (
+            resolve_transport(cfg, platform, "account_works", acc)
+            if platform in {"douyin", "bilibili"}
+            else None
+        )
         effective_mode = transport["effective_mode"] if transport else "browser"
-        if browser is None and effective_mode in {"browser", "hybrid"}:
+        if browser is None and effective_mode in {"browser"}:
             raise HTTPException(503, "浏览器未就绪")
-        identity = (None if platform == "douyin" and effective_mode == "api"
-                    else browser.identity_for(acc))
+        if browser is None and effective_mode == "hybrid" and platform != "bilibili":
+            raise HTTPException(503, "浏览器未就绪")
+        identity = (
+            None
+            if platform in {"douyin", "bilibili"} and effective_mode == "api"
+            else (
+                browser.identity_for(acc)
+                if callable(getattr(browser, "identity_for", None))
+                else None
+            )
+        )
         direct_ua = (identity.ua if identity is not None
                      else (acc.ua or cfg.engine.user_agent))
         direct_environment = douyin_client_environment(
             identity if identity is not None else acc)
         source = "api" if effective_mode == "api" else "browser"
+        bili_state = (acc.storage_state or acc.cookie or "") if platform == "bilibili" else ""
+        bili_proxy = (acc.proxy or "") if platform == "bilibili" else ""
     async def _fetch():
         nonlocal source
         if platform == "douyin" and effective_mode in {"api", "hybrid"}:
@@ -3911,6 +3997,22 @@ async def sync_account_works(account_id: int):
                 return api_items, api_err
             print(f"[dy-account-works] API 空响应({api_err}),回退浏览器")
             source = "browser_fallback"
+        elif platform == "bilibili" and effective_mode in {"api", "hybrid"} and bili_state:
+            bcli = BilibiliClient(
+                bili_state,
+                direct_ua,
+                proxy=bili_proxy,
+                timeout=cfg.engine.request_timeout_seconds,
+            )
+            async with bcli.session_scope():
+                b_works, b_err = await bcli.fetch_all_creator_archives(max_pages=6)
+            if b_works or b_err == "":
+                source = "api"
+                return b_works, ("" if b_works else "empty_confirmed")
+            if effective_mode == "api" or b_err.startswith("logged_out"):
+                source = "api"
+                return [], b_err or "empty"
+            source = "browser_fallback"
         else:
             source = "browser"
         return await fetch_account_works(browser, identity, platform, uid)
@@ -3921,6 +4023,11 @@ async def sync_account_works(account_id: int):
     if err.startswith("risk_deferred:"):
         return {"ok": True, "fetched": 0, "added": 0, "skipped": True,
                 "reason": err.split(":", 1)[-1], "source": "deferred",
+                "configured_mode": (transport["configured_mode"]
+                                    if transport else "browser")}
+    if not items and err == "empty_confirmed":
+        return {"ok": True, "fetched": 0, "added": 0, "empty": True,
+                "source": source,
                 "configured_mode": (transport["configured_mode"]
                                     if transport else "browser")}
     if not items:
@@ -4161,21 +4268,37 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
         platform = acc.platform
         uid = acc.sec_uid or ""
         operation = "following_list" if direction == "following" else "followers_list"
-        transport = (resolve_transport(cfg, "douyin", operation, acc)
-                     if platform == "douyin" else None)
+        transport = (
+            resolve_transport(cfg, platform, operation, acc)
+            if platform in {"douyin", "bilibili"}
+            else None
+        )
         effective_mode = (transport["effective_mode"] if transport else "browser")
         if effective_mode == "unavailable":
             raise HTTPException(
                 409,
                 f"当前读取方式与{('关注' if direction == 'following' else '粉丝')}列表不兼容："
                 f"{transport.get('reason') or transport.get('note') or '该通道不可用'}")
-        if browser is None and effective_mode in {"browser", "hybrid"}:
+        if browser is None and effective_mode in {"browser"}:
+            raise HTTPException(503, "浏览器未就绪")
+        if browser is None and effective_mode == "hybrid" and platform != "bilibili":
             raise HTTPException(503, "浏览器未就绪")
         if platform == "douyin" and effective_mode in {"api", "hybrid"} \
                 and engine is None:
             raise HTTPException(503, "抖音 API 读取引擎未就绪")
-        identity = (None if platform == "douyin" and effective_mode == "api"
-                    else browser.identity_for(acc))
+        identity = (
+            None
+            if platform in {"douyin", "bilibili"} and effective_mode == "api"
+            else (
+                browser.identity_for(acc)
+                if callable(getattr(browser, "identity_for", None))
+                else None
+            )
+        )
+        bili_state = (acc.storage_state or acc.cookie or "") if platform == "bilibili" else ""
+        bili_ua = (acc.ua or cfg.engine.user_agent) if platform == "bilibili" else ""
+        bili_proxy = (acc.proxy or "") if platform == "bilibili" else ""
+        bili_mid = (acc.uid or acc.sec_uid or "") if platform == "bilibili" else ""
         known: set[str] = set()
     # API-only/browser-only are hard routing decisions. Hybrid's API attempt and
     # page fallback share one READ_HEAVY guard so the fallback is not blocked by
@@ -4210,6 +4333,47 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
                 source = "api"
                 return [], direct_err or "empty_response"
             print(f"[follow] douyin direct 空({direct_err}),回退浏览器拦截")
+        elif platform == "bilibili" and effective_mode in {"api", "hybrid"} and bili_state:
+            report(phase="fetching", source="api")
+            bcli = BilibiliClient(
+                bili_state,
+                bili_ua,
+                proxy=bili_proxy,
+                timeout=cfg.engine.request_timeout_seconds,
+            )
+            kind_b = "followers" if direction == "fan" else "following"
+            b_users: list[dict] = []
+            b_seen: set[str] = set()
+            async with bcli.session_scope():
+                t_mid = (bili_mid or bcli.self_mid or "").strip()
+                if not t_mid:
+                    prof, perr = await bcli.fetch_self_profile()
+                    if perr:
+                        return [], perr
+                    t_mid = str(prof.get("uid") or prof.get("sec_uid") or "")
+                if not t_mid:
+                    return [], "missing_uid:账号缺自身 uid,请先点账号「刷新资料」"
+                for pn in range(1, 11):
+                    batch, has_more, berr = await bcli.fetch_follows(
+                        t_mid, kind=kind_b, pn=pn, ps=50
+                    )
+                    if berr:
+                        direct_err = berr
+                        break
+                    for u in batch:
+                        u_id = str(u.get("uid") or "")
+                        if u_id and u_id not in b_seen:
+                            b_seen.add(u_id)
+                            b_users.append(u)
+                    report(phase="fetching", source="api", pages=pn, fetched=len(b_users))
+                    if not has_more:
+                        break
+            if b_users or not direct_err:
+                source = "api"
+                return b_users, ("" if b_users else "empty")
+            if effective_mode == "api" or direct_err.startswith("logged_out"):
+                source = "api"
+                return [], direct_err
 
         source = "browser_fallback" if effective_mode == "hybrid" else "browser"
         report(phase="fetching", source=source)
@@ -4661,7 +4825,7 @@ async def fetch_dm_conversation_history(account_id: int, conv_id: str,
             if not mid or mid in seen:
                 continue
             seen.add(mid)
-            direction = (str(m.get("direction") or "") if platform == "xhs" else
+            direction = (str(m.get("direction") or "") if platform in ("xhs", "bilibili") else
                          "out" if self_uid and m.get("sender_uid") == self_uid else "in")
             card = m.get("card")
             existing = s.exec(select(DmMessage).where(
@@ -5025,7 +5189,7 @@ async def cancel_account_action(task_id: int):
 
 _PLATFORM_HOST = {"douyin": "douyin.com", "xhs": "xiaohongshu.com",
                   "kuaishou": "kuaishou.com", "shipinhao": "weixin.qq.com",
-                  "tiktok": "tiktok.com"}
+                  "tiktok": "tiktok.com", "bilibili": "bilibili.com"}
 _XHS_USER_ME_API = "/api/sns/web/v2/user/me"
 
 
@@ -5175,6 +5339,7 @@ async def open_account_browser(
                      else "https://www.xiaohongshu.com/"),
             "kuaishou": "https://www.kuaishou.com/",
             "tiktok": "https://www.tiktok.com/",
+            "bilibili": "https://www.bilibili.com/",
             "shipinhao": "https://channels.weixin.qq.com/platform"}.get(
                 platform, "https://www.douyin.com/")
     # 传了 url 且属于本平台域名 -> 停在该地址(否则回首页,防被当跳转开任意站)
@@ -5549,6 +5714,7 @@ async def _probe_proxy(url: str, platform: str | None = None, timeout: float = 1
         "douyin": "https://www.douyin.com/", "xhs": "https://www.xiaohongshu.com/",
         "kuaishou": "https://www.kuaishou.com/", "tiktok": "https://www.tiktok.com/",
         "shipinhao": "https://channels.weixin.qq.com/",
+        "bilibili": "https://www.bilibili.com/",
     }
     if platform is not None and platform not in platform_urls:
         return False, "未配置该平台的检测地址"
@@ -6192,6 +6358,8 @@ def _write_account_cookie_file(account_id: int | None) -> tuple[str, str, str]:
             "xhs": ".xiaohongshu.com",
             "kuaishou": ".kuaishou.com",
             "shipinhao": ".weixin.qq.com",
+            "tiktok": ".tiktok.com",
+            "bilibili": ".bilibili.com",
         }.get(platform, ".douyin.com")
         for part in raw_cookie.split(";"):
             name, sep, value = part.strip().partition("=")
@@ -7467,15 +7635,15 @@ def _validated_collection_input(body: KeywordCollectionIn) \
         -> tuple[str, list[str], str, str, dict]:
     """校验创建/编辑共用的任务配置并返回规范化值。"""
     platform = body.platform.strip().lower()
-    if platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok"}:
-        raise HTTPException(400, "批量采集仅支持抖音、小红书、快手、视频号或 TikTok")
+    if platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"}:
+        raise HTTPException(400, "批量采集仅支持抖音、小红书、快手、视频号、TikTok 或哔哩哔哩")
     source_type = body.source_type.strip().lower() or "keyword"
     if source_type not in {
             "keyword", "favorite_all", "favorite_board", "creator",
             "account_works"}:
         raise HTTPException(400, "采集来源须为关键词、创作者主页、全部收藏、指定收藏夹或本账号作品")
-    if platform != "shipinhao" and source_type == "account_works":
-        raise HTTPException(400, "本账号作品来源仅支持视频号")
+    if platform not in {"shipinhao", "bilibili"} and source_type == "account_works":
+        raise HTTPException(400, "本账号作品来源仅支持视频号或哔哩哔哩")
     if platform == "tiktok" and source_type != "keyword":
         raise HTTPException(400, "TikTok 首版批量采集仅支持关键词视频搜索")
     if source_type in {"favorite_all", "favorite_board"} and platform != "xhs":
@@ -7599,6 +7767,23 @@ async def _resolve_channels_creator_source(body: KeywordCollectionIn) -> None:
                 if res.nickname
                 else f"创作者 {res.username}"
             )
+
+
+async def _resolve_bili_creator_source(body: KeywordCollectionIn) -> None:
+    """把哔哩哔哩创作者采集的 source_ref 解析为数字 mid。"""
+    if (body.platform.strip().lower() == "bilibili"
+            and body.source_type.strip().lower() == "creator"):
+        original_ref = body.source_ref.strip()
+        cleaned = _clean_platform_target_input(original_ref, "bilibili")
+        mid = await resolve_bili_mid(cleaned, cfg.engine.user_agent)
+        if not mid:
+            raise HTTPException(
+                400,
+                "无法解析哔哩哔哩 UP 主标识，请填写数字 mid、space.bilibili.com 主页链接或视频分享链接",
+            )
+        body.source_ref = mid
+        if not body.source_name or body.source_name == f"创作者 {original_ref}":
+            body.source_name = f"创作者 {mid}"
 
 
 def _collection_keywords(values: list[str]) -> list[str]:
@@ -7780,6 +7965,13 @@ def _collection_content_dict(row: KeywordCollectionContent) -> dict:
         url = row.source_url or "https://channels.weixin.qq.com/platform/post/list"
     elif row.platform == "tiktok":
         url = row.source_url or ""
+    elif row.platform == "bilibili":
+        aid_str = str(row.aweme_id or "")
+        url = row.source_url or (
+            f"https://www.bilibili.com/opus/{aid_str}"
+            if aid_str.isdigit() and len(aid_str) >= 15
+            else f"https://www.bilibili.com/video/{aid_str}"
+        )
     else:
         url = f"https://www.douyin.com/video/{row.aweme_id}"
     local_files = _collection_local_media_paths(row)
@@ -7922,6 +8114,136 @@ async def list_xhs_favorite_boards(account_id: int):
     } for value in boards if value.get("id") or value.get("board_id")]
 
 
+@app.get("/api/accounts/{account_id}/bili/partitions")
+async def list_bili_partitions(account_id: int):
+    """获取哔哩哔哩创作中心分区树与创作者声明列表（失败或浏览器模式时回退内置分区）。"""
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if not account or account.platform != "bilibili":
+            raise HTTPException(404, "哔哩哔哩账号不存在")
+        state = account.storage_state or account.creator_storage_state or ""
+        ua = account.ua or cfg.engine.user_agent
+        proxy = account.proxy or ""
+        active = account.status == "active" and bool(state)
+
+    if (
+        not active
+        or engine is None
+        or str(getattr(cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid") == "browser"
+    ):
+        return {
+            "partitions": list(BILI_FALLBACK_PARTITIONS),
+            "statements": list(BILI_CREATION_STATEMENT_OPTIONS),
+        }
+
+    async def read_partitions():
+        client = BilibiliClient(
+            state, ua, proxy=proxy, timeout=cfg.engine.request_timeout_seconds
+        )
+        async with client.session_scope():
+            return await client.fetch_human_type_list(), ""
+
+    partitions, error = await engine.guarded_interactive_read_pair(
+        account_id,
+        OperationKind.READ_LIGHT,
+        f"bili-partitions:{account_id}",
+        read_partitions,
+        empty_result=[],
+    )
+    if error and not partitions:
+        partitions = list(BILI_FALLBACK_PARTITIONS)
+    return {
+        "partitions": partitions or list(BILI_FALLBACK_PARTITIONS),
+        "statements": list(BILI_CREATION_STATEMENT_OPTIONS),
+    }
+
+
+@app.get("/api/accounts/{account_id}/bili/topics")
+async def list_bili_topics(
+    account_id: int,
+    q: str = "",
+    type_pid: str = "",
+    title: str = "",
+    pn: int = 0,
+    ps: int = 20,
+):
+    """检索或推荐哔哩哔哩创作中心投稿话题。"""
+    if engine is None:
+        raise HTTPException(503, "采集引擎未就绪")
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if not account or account.platform != "bilibili" or account.status != "active":
+            raise HTTPException(400, "请选择有效的哔哩哔哩登录账号")
+        state = account.storage_state or account.creator_storage_state or ""
+        if not state:
+            raise HTTPException(400, "缺少哔哩哔哩登录态")
+        ua = account.ua or cfg.engine.user_agent
+        proxy = account.proxy or ""
+
+    async def read_topics():
+        client = BilibiliClient(
+            state, ua, proxy=proxy, timeout=cfg.engine.request_timeout_seconds
+        )
+        async with client.session_scope():
+            if q.strip():
+                return await client.search_topics(q.strip(), pn=pn, ps=ps), ""
+            return await client.fetch_topic_types(
+                type_pid=type_pid, title=title, pn=pn, ps=ps
+            ), ""
+
+    topics, error = await engine.guarded_interactive_read_pair(
+        account_id,
+        OperationKind.READ_LIGHT,
+        f"bili-topics:{account_id}",
+        read_topics,
+        empty_result=[],
+    )
+    if error.startswith("risk_deferred:"):
+        raise HTTPException(429, error.split(":", 1)[-1])
+    if error and not topics:
+        raise HTTPException(400, error)
+    return {"topics": topics}
+
+
+@app.get("/api/accounts/{account_id}/bili/archive-stats")
+async def get_bili_archive_stats(account_id: int, bvid: str):
+    """获取单条哔哩哔哩稿件创作中心诊断统计与 5 维流量来源占比。"""
+    if engine is None:
+        raise HTTPException(503, "采集引擎未就绪")
+    bv = str(bvid or "").strip()
+    if not bv:
+        raise HTTPException(400, "请提供稿件 BV 号")
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if not account or account.platform != "bilibili" or account.status != "active":
+            raise HTTPException(400, "请选择有效的哔哩哔哩登录账号")
+        state = account.storage_state or account.creator_storage_state or ""
+        if not state:
+            raise HTTPException(400, "缺少哔哩哔哩登录态")
+        ua = account.ua or cfg.engine.user_agent
+        proxy = account.proxy or ""
+
+    async def read_stats():
+        client = BilibiliClient(
+            state, ua, proxy=proxy, timeout=cfg.engine.request_timeout_seconds
+        )
+        async with client.session_scope():
+            return await client.fetch_work_diagnose(bv)
+
+    stats, error = await engine.guarded_interactive_read_pair(
+        account_id,
+        OperationKind.READ_LIGHT,
+        f"bili-archive-stats:{account_id}:{bv}",
+        read_stats,
+        empty_result={},
+    )
+    if error.startswith("risk_deferred:"):
+        raise HTTPException(429, error.split(":", 1)[-1])
+    if error and not stats:
+        raise HTTPException(400, error)
+    return stats
+
+
 def _collection_requires_account(platform: str, source_type: str) -> bool:
     """视频号关键词/外部创作者采集走本机微信通道，无需网页创作者助手登录态。"""
     return not (platform == "shipinhao" and source_type in {"keyword", "creator"})
@@ -7948,6 +8270,7 @@ def _resolve_collection_account_id(
 async def create_keyword_collection(body: KeywordCollectionIn, request: Request = None):
     await _resolve_ks_creator_source(body)
     await _resolve_channels_creator_source(body)
+    await _resolve_bili_creator_source(body)
     with get_session() as session:
         def create():
             platform, keywords, quality, download_dir, options = _validated_collection_input(body)
@@ -7985,6 +8308,7 @@ async def update_keyword_collection(job_id: int, body: KeywordCollectionIn):
     """修改已结束任务的配置；历史作品/评论保留，续跑时按任务去重。"""
     await _resolve_ks_creator_source(body)
     await _resolve_channels_creator_source(body)
+    await _resolve_bili_creator_source(body)
     platform, keywords, quality, download_dir, options = _validated_collection_input(body)
     with get_session() as session:
         job = session.get(KeywordCollectionJob, job_id)
@@ -8032,7 +8356,7 @@ async def list_keyword_collections(platform: str | None = None, limit: int = 100
     limit = max(1, min(limit, 300))
     with get_session() as session:
         stmt = select(KeywordCollectionJob)
-        if platform in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok"}:
+        if platform in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"}:
             stmt = stmt.where(KeywordCollectionJob.platform == platform)
         rows = session.exec(
             stmt.order_by(KeywordCollectionJob.created_at.desc()).limit(limit)).all()
@@ -8118,6 +8442,12 @@ async def keyword_collection_content_media(job_id: int, content_id: int):
                            if row.platform == "shipinhao"
                            else f"https://www.kuaishou.com/short-video/{row.aweme_id}"
                            if row.platform == "kuaishou"
+                           else (row.source_url or (
+                               f"https://www.bilibili.com/opus/{row.aweme_id}"
+                               if str(row.aweme_id or "").isdigit() and len(str(row.aweme_id or "")) >= 15
+                               else f"https://www.bilibili.com/video/{row.aweme_id}"
+                           ))
+                           if row.platform == "bilibili"
                            else f"https://www.douyin.com/video/{row.aweme_id}"),
         }
 
@@ -8216,21 +8546,30 @@ async def list_keyword_collection_comments(job_id: int, content_id: int | None =
 
 @app.post("/api/collections/{job_id}/cancel")
 async def cancel_keyword_collection(job_id: int):
+    should_abort_worker = False
     with get_session() as session:
         job = session.get(KeywordCollectionJob, job_id)
         if not job:
             raise HTTPException(404, "采集任务不存在")
         if job.status in {"done", "partial", "failed", "canceled"}:
             return _collection_job_dict(job)
+        already_requested = bool(job.cancel_requested)
         job.cancel_requested = True
-        if job.status == "pending":
+        if job.status == "pending" or (engine is None and already_requested):
             job.status = "canceled"
             job.current_step = "已取消"
             job.finished_at = datetime.utcnow()
         else:
             job.current_step = "正在安全停止"
+            should_abort_worker = True
         session.add(job); session.commit(); session.refresh(job)
         payload = _collection_job_dict(job)
+    if should_abort_worker and engine is not None and hasattr(engine, "cancel_collection_job"):
+        await engine.cancel_collection_job(job_id)
+        with get_session() as session:
+            refreshed = session.get(KeywordCollectionJob, job_id)
+            if refreshed is not None:
+                payload = _collection_job_dict(refreshed)
     record_account_operation(
         platform=payload["platform"], account_id=payload["account_id"],
         task_type="collection", task_id=payload["id"], action="cancel_requested",
@@ -8420,11 +8759,11 @@ def _clean_platform_target_input(value: str, platform: str) -> str:
             item.platform == expected_share_platform for item in detected_links):
         platform_name = {
             "douyin": "抖音", "xhs": "小红书", "kuaishou": "快手",
-            "shipinhao": "视频号", "tiktok": "TikTok",
+            "shipinhao": "视频号", "tiktok": "TikTok", "bilibili": "哔哩哔哩",
         }.get(platform, platform)
         detected_names = {
             "douyin": "抖音", "xhs": "小红书", "kuaishou": "快手",
-            "wechat": "微信/视频号", "tiktok": "TikTok",
+            "wechat": "微信/视频号", "tiktok": "TikTok", "bilibili": "哔哩哔哩",
             "generic": "其他站点",
         }
         names = "、".join(dict.fromkeys(
@@ -8483,7 +8822,7 @@ async def add_monitor(body: TargetIn, request: Request = None):
         replay = replay_if_exists(session, request=request, scope="monitor", body=body)
         if replay is not None:
             return replay
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili") else "douyin"
     sec_uid = keyword = xsec_token = ""
     nickname = avatar = ""
     kind = "creator"
@@ -8515,6 +8854,10 @@ async def add_monitor(body: TargetIn, request: Request = None):
         sec_uid = profile_id or (video_ref.author_unique_id if video_ref else "")
         if not sec_uid:
             raise HTTPException(400, "无法解析 TikTok @username，请粘贴完整主页/作品链接、短链或 @username")
+    elif platform == "bilibili":
+        sec_uid = await resolve_bili_mid(target_input, cfg.engine.user_agent)
+        if not sec_uid:
+            raise HTTPException(400, "无法解析哔哩哔哩 UP 主 UID，请粘贴空间链接 space.bilibili.com/<mid>、b23.tv 短链或纯数字 UID")
     elif platform == "douyin":
         sec_uid = await resolve_sec_uid(target_input, cfg.engine.user_agent)
         if not sec_uid:
@@ -9787,7 +10130,7 @@ async def list_watches(platform: str | None = None):
 
 @app.post("/api/comment-watches")
 async def add_watch(body: WatchIn):
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili") else "douyin"
     aweme_id = sec_uid = xsec_token = ""
     title = ""
     target_input = _clean_platform_target_input(body.url_or_id, platform)
@@ -9890,6 +10233,32 @@ async def add_watch(body: WatchIn):
             if not sec_uid:
                 raise HTTPException(400, "无法解析 TikTok @username，请粘贴完整主页/作品链接、短链或 @username")
         mode = "public"
+    elif platform == "bilibili":
+        kind = body.kind if body.kind in {"auto", "video", "user"} else "auto"
+        if kind == "auto":
+            if looks_like_bili_work(target_input):
+                aweme_id = await resolve_bili_work(target_input, cfg.engine.user_agent) or ""
+                kind = "video" if aweme_id else "user"
+            else:
+                sec_uid = await resolve_bili_mid(target_input, cfg.engine.user_agent) or ""
+                if sec_uid:
+                    kind = "user"
+                else:
+                    aweme_id = await resolve_bili_work(target_input, cfg.engine.user_agent) or ""
+                    kind = "video" if aweme_id else "user"
+        if kind == "video":
+            if not aweme_id:
+                aweme_id = await resolve_bili_work(target_input, cfg.engine.user_agent) or ""
+            if not aweme_id:
+                raise HTTPException(400, "无法解析哔哩哔哩稿件，请粘贴 BV/av 号、视频/动态链接或 b23.tv 短链")
+            title = "B站稿件 " + aweme_id
+        else:
+            if not sec_uid:
+                sec_uid = await resolve_bili_mid(target_input, cfg.engine.user_agent) or ""
+            if not sec_uid:
+                raise HTTPException(400, "无法解析哔哩哔哩 UP 主 UID，请粘贴空间链接、b23.tv 短链或纯数字 UID")
+            title = "UP主 " + sec_uid
+        mode = body.mode if body.mode in ("public", "creator") else "public"
     else:
         kind = body.kind
         if kind == "auto":
@@ -10350,9 +10719,10 @@ async def list_danmaku_watches(platform: str | None = None):
 
 @app.post("/api/danmaku-watches")
 async def add_danmaku_watch(body: DanmakuWatchIn):
-    if body.platform != "douyin":
-        raise HTTPException(400, "短视频弹幕监控当前仅支持抖音")
-    target_input = _clean_platform_target_input(body.url_or_id, "douyin")
+    if body.platform not in ("douyin", "bilibili"):
+        raise HTTPException(400, "弹幕监控当前仅支持抖音与哔哩哔哩")
+    platform = body.platform
+    target_input = _clean_platform_target_input(body.url_or_id, platform)
     if body.interval_seconds != 0 and not 1 <= body.interval_seconds <= 86400:
         raise HTTPException(400, "监控间隔须为 1~86400 秒,或填 0 跟随全局")
     if not 0 <= body.recent_works <= 50:
@@ -10382,36 +10752,55 @@ async def add_danmaku_watch(body: DanmakuWatchIn):
 
     aweme_id = sec_uid = ""
     kind = body.kind
-    if kind == "auto":
-        aweme_id = await resolve_aweme_id(target_input, cfg.engine.user_agent) or ""
-        kind = "video" if aweme_id else "user"
-    if kind not in ("video", "user"):
-        raise HTTPException(400, "监控对象类型须为 video 或 user")
     mode = body.mode if body.mode in ("public", "creator") else "public"
     title = ""
-    if kind == "video":
-        if not aweme_id:
-            aweme_id = await resolve_aweme_id(target_input, cfg.engine.user_agent)
-        if not aweme_id:
-            raise HTTPException(400, "无法解析视频 id,请粘贴完整分享文案、作品链接、短链或数字 id")
-        title = "视频 " + aweme_id
+    if platform == "bilibili":
+        mode = "public"
+        if kind == "auto":
+            kind = "video" if looks_like_bili_work(target_input) else (
+                "video" if await resolve_bili_work(target_input, cfg.engine.user_agent) else "user"
+            )
+        if kind not in ("video", "user"):
+            raise HTTPException(400, "监控对象类型须为 video 或 user")
+        if kind == "video":
+            aweme_id = await resolve_bili_work(target_input, cfg.engine.user_agent) or ""
+            if not aweme_id or not aweme_id.upper().startswith("BV1"):
+                raise HTTPException(400, "无法解析 B 站视频，请粘贴 BV 号、av 号、视频链接或 b23.tv 短链")
+            title = "视频 " + aweme_id
+        else:
+            sec_uid = await resolve_bili_mid(target_input, cfg.engine.user_agent) or ""
+            if not sec_uid:
+                raise HTTPException(400, "无法解析 B 站 UP 主 UID，请粘贴空间链接、b23.tv 短链或数字 UID")
+            title = "UP主 " + sec_uid
     else:
-        sec_uid = await resolve_sec_uid(target_input, cfg.engine.user_agent)
-        if not sec_uid:
-            raise HTTPException(400, "无法解析 sec_uid,请粘贴完整分享文案、账号主页、短链或 sec_uid")
-        title = "账号 " + sec_uid[:12]
+        if kind == "auto":
+            aweme_id = await resolve_aweme_id(target_input, cfg.engine.user_agent) or ""
+            kind = "video" if aweme_id else "user"
+        if kind not in ("video", "user"):
+            raise HTTPException(400, "监控对象类型须为 video 或 user")
+        if kind == "video":
+            if not aweme_id:
+                aweme_id = await resolve_aweme_id(target_input, cfg.engine.user_agent)
+            if not aweme_id:
+                raise HTTPException(400, "无法解析视频 id,请粘贴完整分享文案、作品链接、短链或数字 id")
+            title = "视频 " + aweme_id
+        else:
+            sec_uid = await resolve_sec_uid(target_input, cfg.engine.user_agent)
+            if not sec_uid:
+                raise HTTPException(400, "无法解析 sec_uid,请粘贴完整分享文案、账号主页、短链或 sec_uid")
+            title = "账号 " + sec_uid[:12]
 
-    if mode == "creator":
-        with get_session() as s:
-            acc = s.get(DouyinAccount, body.account_id) if body.account_id else None
-            if not acc or acc.platform != "douyin" or not acc.creator_storage_state:
-                raise HTTPException(400, "创作中心弹幕模式需要选择已完成创作者登录的抖音账号")
-            if kind == "user" and acc.sec_uid and acc.sec_uid != sec_uid:
-                raise HTTPException(400, "创作中心账号与监控账号不一致")
+        if mode == "creator":
+            with get_session() as s:
+                acc = s.get(DouyinAccount, body.account_id) if body.account_id else None
+                if not acc or acc.platform != "douyin" or not acc.creator_storage_state:
+                    raise HTTPException(400, "创作中心弹幕模式需要选择已完成创作者登录的抖音账号")
+                if kind == "user" and acc.sec_uid and acc.sec_uid != sec_uid:
+                    raise HTTPException(400, "创作中心账号与监控账号不一致")
 
     with get_session() as s:
         q = select(DanmakuWatch).where(
-            DanmakuWatch.platform == "douyin",
+            DanmakuWatch.platform == platform,
             DanmakuWatch.kind == kind,
             DanmakuWatch.mode == mode)
         q = q.where(DanmakuWatch.aweme_id == aweme_id if kind == "video"
@@ -10419,7 +10808,7 @@ async def add_danmaku_watch(body: DanmakuWatchIn):
         if s.exec(q).first():
             raise HTTPException(409, "已存在相同的弹幕监控")
         watch = DanmakuWatch(
-            platform="douyin", kind=kind, aweme_id=aweme_id, sec_uid=sec_uid,
+            platform=platform, kind=kind, aweme_id=aweme_id, sec_uid=sec_uid,
             title=title, mode=mode, account_id=body.account_id,
             interval_seconds=body.interval_seconds,
             recent_works=body.recent_works, recent_days=body.recent_days,
@@ -10660,11 +11049,13 @@ async def batch_delete_danmaku(body: IdsIn):
 
 
 @app.delete("/api/danmaku")
-async def clear_danmaku(watch_id: int | None = None):
+async def clear_danmaku(watch_id: int | None = None, platform: str | None = None):
     with get_session() as s:
         q = select(DanmakuRecord)
         if watch_id is not None:
             q = q.where(DanmakuRecord.watch_id == watch_id)
+        if platform:
+            q = q.where(DanmakuRecord.platform == platform)
         rows = s.exec(q).all()
         for row in rows:
             s.delete(row)
@@ -10702,9 +11093,10 @@ class PublishIn(BaseModel):
     media_paths: list[str] = []
     visibility: str = "public"            # 抖音:public | friends | private
     allow_save: bool = True               # 抖音:是否允许他人保存
-    allow_comment: bool = True             # TikTok:允许评论
+    allow_comment: bool = True             # TikTok / B站:允许评论
     allow_duet: bool = True                # TikTok:允许 Duet
     allow_stitch: bool = True              # TikTok:允许 Stitch
+    bili_options: dict[str, Any] = PydanticField(default_factory=dict)  # B站投稿扩展参数
     scheduled_at: str | None = None       # ISO 带偏移；无偏移按账号时区，空=尽快发
 
 
@@ -10719,6 +11111,7 @@ class PublishUpdate(BaseModel):
     allow_comment: bool | None = None
     allow_duet: bool | None = None
     allow_stitch: bool | None = None
+    bili_options: dict[str, Any] | None = None
     scheduled_at: str | None = None
 
 
@@ -10733,6 +11126,12 @@ def _publish_dict(t: PublishTask) -> dict:
         # 无需重新发布即可打开真正的作品管理页。
         if not result_url or "/article/publish/" in result_path:
             result_url = KS_MANAGE_URL
+    elif t.platform == "bilibili" and t.status == "done" and not result_url:
+        result_url = BILI_MANAGE_URL
+    try:
+        bili_opts = json.loads(getattr(t, "bili_options_json", "{}") or "{}")
+    except Exception:
+        bili_opts = {}
     return {
         "id": t.id, "platform": t.platform, "account_id": t.account_id,
         "media_type": t.media_type, "title": t.title, "desc": t.desc,
@@ -10741,6 +11140,7 @@ def _publish_dict(t: PublishTask) -> dict:
         "visibility": t.visibility, "allow_save": t.allow_save,
         "allow_comment": t.allow_comment, "allow_duet": t.allow_duet,
         "allow_stitch": t.allow_stitch,
+        "bili_options": bili_opts if isinstance(bili_opts, dict) else {},
         "error": t.error, "live_stage": engine.get_publish_stage(t.id) if (engine and hasattr(engine, "get_publish_stage")) else "",
         "media_count": len(json.loads(t.media_json or "[]")),
         "source_platform": t.source_platform, "source_content_id": t.source_content_id,
@@ -10771,7 +11171,7 @@ async def list_publish(platform: str | None = None):
 
 
 def _publish_title_cap(platform: str) -> int:
-    return {"douyin": 30, "shipinhao": 16}.get(str(platform or "").lower(), 20)
+    return {"douyin": 30, "shipinhao": 16, "bilibili": 80}.get(str(platform or "").lower(), 20)
 
 
 def _validate_non_xhs_publish_files(platform: str, media_type: str,
@@ -10790,7 +11190,9 @@ def _validate_non_xhs_publish_files(platform: str, media_type: str,
         raise HTTPException(400, "没有可用的媒体文件,请先上传")
     if platform == "tiktok" and media_type != "video":
         raise HTTPException(422, "TikTok 网页发布当前仅支持视频")
-    if media_type == "video" and len(paths) != 1:
+    if media_type == "video" and not (
+        len(paths) == 1 or (platform == "bilibili" and len(paths) == 2)
+    ):
         label = "TikTok" if platform == "tiktok" else "视频发布"
         raise HTTPException(422, f"{label} 每个发布任务须选择一个视频")
     if media_type == "images" and len(paths) > 18:
@@ -10806,9 +11208,9 @@ async def add_publish(body: PublishIn, request: Request = None):
                 raise HTTPException(400, "media_type 须为 images 或 video")
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform not in (
-                    "xhs", "kuaishou", "douyin", "shipinhao", "tiktok"):
+                    "xhs", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili"):
                 raise HTTPException(
-                    400, "请选择一个已登录的抖音 / 小红书 / 快手 / 视频号 / TikTok 账号")
+                    400, "请选择一个已登录的抖音 / 小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩账号")
             if acc.platform == "xhs":
                 from .platforms.xhs.media import validate_publish_files
                 try:
@@ -10819,9 +11221,10 @@ async def add_publish(body: PublishIn, request: Request = None):
                 paths = _validate_non_xhs_publish_files(
                     acc.platform, body.media_type, body.media_paths)
             pname = {"kuaishou": "快手", "douyin": "抖音",
-                     "shipinhao": "视频号", "tiktok": "TikTok"}.get(
+                     "shipinhao": "视频号", "tiktok": "TikTok",
+                     "bilibili": "哔哩哔哩"}.get(
                          acc.platform, "小红书")
-            if acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok"):
+            if acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili"):
                 if not (acc.creator_storage_state or acc.storage_state):
                     raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
@@ -10836,6 +11239,7 @@ async def add_publish(body: PublishIn, request: Request = None):
                 allow_comment=bool(body.allow_comment),
                 allow_duet=bool(body.allow_duet),
                 allow_stitch=bool(body.allow_stitch),
+                bili_options_json=json.dumps(body.bili_options or {}, ensure_ascii=False),
                 media_json=json.dumps(paths),
                 scheduled_at=_parse_when(body.scheduled_at, acc.timezone_id),
             )
@@ -10880,6 +11284,8 @@ async def update_publish(tid: int, body: PublishUpdate):
             t.allow_duet = body.allow_duet
         if body.allow_stitch is not None:
             t.allow_stitch = body.allow_stitch
+        if body.bili_options is not None:
+            t.bili_options_json = json.dumps(body.bili_options, ensure_ascii=False)
         if "scheduled_at" in body.model_fields_set:
             account = s.get(DouyinAccount, t.account_id) if t.account_id else None
             t.scheduled_at = _parse_when(body.scheduled_at, account.timezone_id if account else "Asia/Shanghai")
@@ -11304,7 +11710,7 @@ async def _repost_content(cid: int, body: RepostIn, target_platform: str, reques
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != target_platform:
                 raise HTTPException(400, "请选择与目标平台匹配的已登录账号")
-            if target_platform in ("douyin", "shipinhao", "kuaishou", "tiktok"):
+            if target_platform in ("douyin", "shipinhao", "kuaishou", "tiktok", "bilibili"):
                 if not (acc.creator_storage_state or acc.storage_state):
                     raise HTTPException(400, "请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
@@ -11354,6 +11760,12 @@ async def repost_to_kuaishou(cid: int, body: RepostIn, request: Request = None):
 async def repost_to_tiktok(cid: int, body: RepostIn, request: Request = None):
     """把一条已下载视频作品转成 TikTok 发布任务。"""
     return await _repost_content(cid, body, "tiktok", request)
+
+
+@app.post("/api/contents/{cid}/repost-bilibili")
+async def repost_to_bilibili(cid: int, body: RepostIn, request: Request = None):
+    """把一条已下载作品转成哔哩哔哩发布任务。"""
+    return await _repost_content(cid, body, "bilibili", request)
 
 
 # ─────────── 自动评论(规则 + 任务)───────────
@@ -11434,6 +11846,10 @@ async def _resolve_rule_target(platform: str, mode: str, target_kind: str, targe
                 sec_uid = await resolve_ks_user_id(target, cfg.engine.user_agent)
                 if not sec_uid:
                     raise HTTPException(400, "无法解析快手创作者(主页链接 / 短链 / user_id)")
+            elif platform == "bilibili":
+                sec_uid = await resolve_bili_mid(target, cfg.engine.user_agent) or ""
+                if not sec_uid:
+                    raise HTTPException(400, "无法解析 B 站 UP 主 UID(空间链接 / b23.tv / 数字 UID)")
             else:
                 sec_uid = await resolve_sec_uid(target, cfg.engine.user_agent)
                 if not sec_uid:
@@ -11450,6 +11866,10 @@ async def _resolve_rule_target(platform: str, mode: str, target_kind: str, targe
                 aweme_id = await resolve_ks_photo_id(target, cfg.engine.user_agent)
                 if not aweme_id:
                     raise HTTPException(400, "无法解析快手作品 id(作品链接 / 短链 / photo_id)")
+            elif platform == "bilibili":
+                aweme_id = await resolve_bili_work(target, cfg.engine.user_agent) or ""
+                if not aweme_id:
+                    raise HTTPException(400, "无法解析 B 站稿件(BV 号 / 视频链接 / b23.tv)")
             else:
                 aweme_id = await resolve_aweme_id(target, cfg.engine.user_agent)
                 if not aweme_id:
@@ -11489,12 +11909,12 @@ async def add_comment_rule(body: CommentRuleIn, request: Request = None):
         previous = replay_if_exists(s, request=request, scope="comment-rule", body=body)
         if previous is not None:
             return previous
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "bilibili") else "douyin"
     mode = body.mode if body.mode in ("auto_reply", "auto_comment") else "auto_reply"
     templates = [t.strip() for t in body.templates if t.strip()]
     if not templates:
         raise HTTPException(400, "请至少配置一条文案模板(AI 生成失败时回退用)")
-    _pn = {"xhs": "小红书", "kuaishou": "快手"}.get(platform, "抖音")
+    _pn = {"xhs": "小红书", "kuaishou": "快手", "bilibili": "哔哩哔哩"}.get(platform, "抖音")
     with get_session() as s:
         acc = s.get(DouyinAccount, body.account_id)
         if not acc or acc.platform != platform:
@@ -11706,7 +12126,7 @@ class CommentBatchApproveIn(BaseModel):
 @app.post("/api/comment-tasks/batch-approve")
 async def batch_approve_comment_tasks(body: CommentBatchApproveIn):
     """Only approve an explicit, scope-checked selection, atomically."""
-    if body.platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok"}:
+    if body.platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"}:
         raise HTTPException(422, "平台类型无效")
     ids = list(dict.fromkeys(body.ids))
     if not ids or any(value <= 0 for value in ids):
@@ -12108,6 +12528,9 @@ async def batch_stop_tasks(body: BatchStopIn):
             if queue_type == "collections" and row.status == "running":
                 row.cancel_requested = True
                 row.current_step = "正在安全停止"
+                live_task = getattr(engine, "_collection_tasks", {}).get(row.id) if engine is not None else None
+                if live_task is not None and not live_task.done():
+                    live_task.cancel()
             elif row.status in {"pending", "draft", "failed", "partial"}:
                 row.status = "canceled"
                 if hasattr(row, "cancel_requested"):

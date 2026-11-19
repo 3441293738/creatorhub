@@ -15,6 +15,8 @@ engine:
   xhs_read_mode: api              # api=常驻Node签名直连（默认）;browser=复用账号浏览器
   douyin_read_mode: hybrid         # hybrid=API优先，普通兼容失败才回退浏览器；验证/风控直接冷却
   tiktok_read_mode: native         # native=全程离线直连、不打开浏览器;auto=失败页面回退;browser=仅页面
+  bilibili_read_mode: hybrid       # hybrid=WBI直连优先、兼容失败回退浏览器;api=仅直连;browser=仅页面
+  bilibili_write_mode: hybrid      # hybrid=CSRF/WBI直连优先(评论/私信/关注);api=仅直连;browser=仅页面
   douyin_profile_mode: hybrid      # 手动刷新资料:hybrid/API/browser
   douyin_followers_mode: hybrid    # 粉丝同步:hybrid/API/browser
   douyin_dm_sync_mode: hybrid      # 私信会话同步:hybrid/API/browser

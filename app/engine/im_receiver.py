@@ -1,21 +1,25 @@
 # -*- coding: utf-8 -*-
-"""抖音私信实时接收管理器。
+"""抖音与哔哩哔哩私信实时接收管理器。
 
-每个订阅中的账号维持一条 frontier-im WS 长连接:收到新消息即入库(DmMessage/更新
-DmConversation)并推给该账号的所有 SSE 订阅者。连接生命周期跟随订阅——有前端在看
-就连,最后一个订阅断开就停(避免常驻空跑;要"离线也收/做通知"再改成常驻)。
+每个订阅中的账号维持一条 WS 长连接:
+  - 抖音: frontier-im WS 长连接，收到新消息即入库并推给 SSE 订阅者；
+  - 哔哩哔哩: broadcast.chat.bilibili.com:7826/sub (8 类型 Typed Protobuf)，
+    收到 WatchNotify 时唤醒 HTTP new_sessions + fetch_session_msgs 增量同步。
+连接生命周期跟随订阅——有前端在看就连，最后一个订阅断开就停。
 """
 import asyncio
 import json
+import time
 from datetime import datetime
-from typing import Dict, Set
+from typing import Dict
 
 from sqlmodel import select
 
-from ..browser.account_hub import _douyin_cookie_str
+from ..browser.account_hub import _bili_cookie_str, _douyin_cookie_str
 from ..browser.douyin_im_ws import receive_messages
 from ..db import get_session
 from ..models import DmConversation, DmMessage, DouyinAccount
+from ..platforms.bilibili import BilibiliClient, cookie_str_from_state, receive_bili_broadcast
 
 # 非聊天正文的消息类型(已读回执等),不入库/不推
 _SKIP_MSG_TYPES = {50001, 50002}
@@ -40,6 +44,8 @@ class ImReceiverManager:
         # SSE subscribers only consume events; they never create another socket.
         if platform == "douyin" and (not st["task"] or st["task"].done()):
             st["task"] = asyncio.create_task(self._run(account_id))
+        elif platform == "bilibili" and (not st["task"] or st["task"].done()):
+            st["task"] = asyncio.create_task(self._run_bilibili(account_id))
         return q
 
     def unsubscribe(self, account_id: int, q: asyncio.Queue):
@@ -101,7 +107,7 @@ class ImReceiverManager:
             return
 
         def on_msg(m):
-            self._handle(account_id, m)
+            self._handle(account_id, m, platform="douyin")
 
         def should_stop():
             st = self._accts.get(account_id)
@@ -110,7 +116,103 @@ class ImReceiverManager:
         await receive_messages(cookie, uid, on_msg, self_uid=uid,
                                should_stop=should_stop)
 
-    def _handle(self, account_id: int, m: dict):
+    async def _run_bilibili(self, account_id: int):
+        with get_session() as s:
+            acc = s.get(DouyinAccount, account_id)
+            if not acc or acc.platform != "bilibili":
+                return
+            identity = self.browser.identity_for(acc)
+            ua = str(acc.ua or "")
+            proxy = str(acc.proxy or "")
+            self_uid = str(acc.uid or acc.sec_uid or "")
+            fallback_cookie = cookie_str_from_state(acc.storage_state or acc.cookie or "")
+        try:
+            cookie = await _bili_cookie_str(self.browser, identity)
+        except Exception:
+            cookie = fallback_cookie
+        if not cookie:
+            print(f"[bili-im-ws] account {account_id} 无有效 Cookie，跳过实时私信连接")
+            return
+
+        begin_ts = int(time.time() * 1_000_000)
+
+        def should_stop():
+            st = self._accts.get(account_id)
+            return not st or not st["queues"]
+
+        async def on_watch_notify():
+            nonlocal begin_ts, self_uid
+            client = BilibiliClient(cookie, ua, proxy=proxy)
+            async with client.session_scope():
+                if not self_uid and client.self_mid:
+                    self_uid = client.self_mid
+                sessions, max_ts, err = await client.fetch_new_dm_sessions(begin_ts)
+                if err:
+                    return
+                if max_ts > begin_ts:
+                    begin_ts = max_ts
+                for cdict in sessions:
+                    peer = str(cdict.get("peer_uid") or cdict.get("conv_id") or "")
+                    if not peer:
+                        continue
+                    try:
+                        with get_session() as s:
+                            conv = s.exec(
+                                select(DmConversation).where(
+                                    DmConversation.account_id == account_id,
+                                    DmConversation.conv_id == peer,
+                                )
+                            ).first()
+                            if not conv:
+                                conv = DmConversation(
+                                    platform="bilibili",
+                                    account_id=account_id,
+                                    conv_id=peer,
+                                    peer_uid=peer,
+                                    peer_sec_uid=peer,
+                                    peer_nickname=str(cdict.get("peer_nickname") or ""),
+                                    peer_avatar=str(cdict.get("peer_avatar") or ""),
+                                    last_text=str(cdict.get("last_text") or ""),
+                                    last_time=int(cdict.get("last_time") or 0),
+                                    unread_count=int(cdict.get("unread_count") or 0),
+                                    conv_short_id=peer,
+                                    raw_json=str(cdict.get("raw_json") or ""),
+                                    fetched_at=datetime.utcnow(),
+                                )
+                                s.add(conv)
+                                s.commit()
+                    except Exception:
+                        pass
+                    hist, herr = await client.fetch_dm_messages(
+                        peer, size=10, self_uid=self_uid
+                    )
+                    if herr:
+                        continue
+                    for msg in (hist.get("messages") or []):
+                        self._handle(
+                            account_id,
+                            {
+                                "conv_id": peer,
+                                "server_msg_id": str(msg.get("server_msg_id") or ""),
+                                "is_self": msg.get("direction") == "out",
+                                "text": str(msg.get("text") or ""),
+                                "msg_type": 1,
+                                "create_time": int(msg.get("create_time") or 0),
+                                "sender_uid": str(msg.get("sender_uid") or ""),
+                                "peer_uid": peer,
+                            },
+                            platform="bilibili",
+                        )
+
+        await receive_bili_broadcast(
+            cookie,
+            ua,
+            on_watch_notify,
+            should_stop=should_stop,
+            proxy=proxy,
+        )
+
+    def _handle(self, account_id: int, m: dict, *, platform: str = "douyin"):
         if m.get("msg_type") in _SKIP_MSG_TYPES or not m.get("text"):
             return
         conv_id = m.get("conv_id") or ""
@@ -133,7 +235,7 @@ class ImReceiverManager:
                     s.delete(ph)
                 card = m.get("card")
                 s.add(DmMessage(
-                    platform="douyin", account_id=account_id, conv_id=conv_id,
+                    platform=platform, account_id=account_id, conv_id=conv_id,
                     msg_id=mid or f"ws:{ts}:{m.get('sender_uid')}",
                     direction=direction, msg_type=("video" if card else "text"),
                     text=m.get("text") or "", create_time=ts,

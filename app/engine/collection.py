@@ -27,6 +27,11 @@ from ..browser import (
     fetch_xhs_search,
 )
 from ..browser.tiktok_fetcher import fetch_tiktok_comments, fetch_tiktok_search
+from ..browser.bili_fetcher import (
+    fetch_bili_comments,
+    fetch_bili_search,
+    fetch_bili_videos,
+)
 from ..db import get_session
 from ..models import (
     KeywordCollectionComment,
@@ -48,6 +53,12 @@ from ..platforms.kuaishou import (
 )
 from ..platforms.tiktok import parse_tiktok_aweme, parse_tiktok_comment
 from ..platforms.tiktok.client import TikTokNativeClient
+from ..platforms.bilibili import (
+    BilibiliClient,
+    cookie_map_from_state as bili_cookie_map,
+    parse_bili_aweme,
+    resolve_bili_mid,
+)
 from ..platforms.channels import (
     ChannelsProtocolClient,
     flatten_channels_comments,
@@ -87,6 +98,9 @@ def _media_json(aweme: Aweme) -> str:
         decode_key = str(getattr(media, "decode_key", "") or "")
         if decode_key:
             entry["decode_key"] = decode_key
+        audio_url = str(getattr(media, "audio_url", "") or "")
+        if audio_url:
+            entry["audio_url"] = audio_url
         rows.append(entry)
     return json.dumps(rows, ensure_ascii=False)
 
@@ -154,6 +168,9 @@ def _author_id(raw: dict, platform: str) -> str:
         author = item.get("author") or {}
         return str(author.get("secUid") or author.get("sec_uid")
                    or author.get("id") or author.get("uid") or "")
+    if platform == "bilibili":
+        owner = raw.get("owner") if isinstance(raw.get("owner"), dict) else {}
+        return str(owner.get("mid") or raw.get("mid") or "")
     return str((parse_note_brief(raw) or {}).get("author_id") or "")
 
 
@@ -357,7 +374,7 @@ class KeywordCollector:
                   current_item_total: int | None = None) -> None:
         with get_session() as session:
             job = session.get(KeywordCollectionJob, job_id)
-            if not job:
+            if not job or job.cancel_requested or job.status == "canceled":
                 return
             if keyword is not None:
                 job.current_keyword = keyword
@@ -911,6 +928,10 @@ class KeywordCollector:
             download_ua, download_cookies = _tiktok_download_session(
                 account, identity, self.cfg.engine.user_agent)
             download_referer = aweme.source_url or "https://www.tiktok.com/"
+        elif job.platform == "bilibili":
+            if account is not None:
+                download_cookies = bili_cookie_map(account.storage_state or account.cookie)
+            download_referer = aweme.source_url or "https://www.bilibili.com/"
         ok, local_path, error = await self.downloader.download_aweme(
             aweme, str(base_dir), routed_proxy,
             user_agent=download_ua,
@@ -1313,6 +1334,19 @@ class KeywordCollector:
             finally:
                 if channels_client is not None:
                     await channels_client.close()
+        if job.platform == "bilibili":
+            bili_state = (account.storage_state or account.cookie) if account is not None else ""
+            bili_client = BilibiliClient(
+                bili_state,
+                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                proxy=proxy,
+                timeout=self.cfg.engine.request_timeout_seconds,
+            )
+            self._progress(job_id, step="启动哔哩哔哩采集任务")
+            async with bili_client.session_scope():
+                return await self._run_keywords(
+                    job_id, job, account, keywords, proxy,
+                    identity=identity, bili_client=bili_client)
         if xhs_client is not None:
             async with xhs_client.session_scope():
                 return await self._run_keywords(
@@ -1322,11 +1356,170 @@ class KeywordCollector:
             job_id, job, account, keywords, proxy,
             xhs_client=xhs_client, identity=identity)
 
+    async def _discover_bilibili_keyword(
+        self,
+        keyword: str,
+        job: KeywordCollectionJob,
+        *,
+        bili_client: BilibiliClient | None,
+        identity=None,
+    ) -> tuple[list[dict], str]:
+        mode = str(getattr(self.cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid").lower()
+        order = (
+            "pubdate" if job.search_sort == "latest" else
+            "click" if job.search_sort == "most_liked" else
+            "totalrank"
+        )
+        items: list[dict] = []
+        err = ""
+        if mode in {"api", "hybrid"} and bili_client is not None:
+            seen: set[str] = set()
+            max_pages = max(1, min(10, int(job.max_pages_per_keyword or 3)))
+            for page_no in range(1, max_pages + 1):
+                batch, has_more, b_err = await bili_client.search_videos(
+                    keyword, page=page_no, page_size=20, order=order
+                )
+                if b_err:
+                    err = b_err
+                    break
+                for row in batch:
+                    bvid = str(row.get("bvid") or "")
+                    if bvid and bvid not in seen:
+                        seen.add(bvid)
+                        items.append(row)
+                if len(items) >= max(20, job.max_contents_per_keyword * 2) or not has_more:
+                    break
+        if (mode == "browser" or (mode == "hybrid" and not items)) and identity is not None:
+            b_items, b_err = await fetch_bili_search(
+                self.browser, identity, keyword,
+                max_scrolls=max(1, min(8, int(job.max_pages_per_keyword or 3))),
+            )
+            if b_items:
+                items, err = b_items, ""
+            elif mode == "browser":
+                err = b_err
+        return items, err
+
+    async def _discover_bilibili_creator(
+        self,
+        job: KeywordCollectionJob,
+        *,
+        bili_client: BilibiliClient | None,
+        identity=None,
+    ) -> tuple[list[dict], str]:
+        mode = str(getattr(self.cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid").lower()
+        ua = getattr(bili_client, "user_agent", "") or self.cfg.engine.user_agent
+        px = getattr(bili_client, "proxy", "") or ""
+        mid = await resolve_bili_mid(job.source_ref, ua, proxy=px) or str(job.source_ref or "").strip()
+        if not mid:
+            return [], "无法解析 B 站 UP 主 UID，请输入空间链接或纯数字 UID"
+        items: list[dict] = []
+        err = ""
+        if mode in {"api", "hybrid"} and bili_client is not None:
+            seen: set[str] = set()
+            max_pages = max(1, min(10, int(job.max_pages_per_keyword or 3)))
+            for pn in range(1, max_pages + 1):
+                batch, has_more, b_err = await bili_client.fetch_user_videos(
+                    mid, pn=pn, ps=30
+                )
+                if b_err:
+                    err = b_err
+                    break
+                for row in batch:
+                    bvid = str(row.get("bvid") or "")
+                    if bvid and bvid not in seen:
+                        seen.add(bvid)
+                        items.append(row)
+                if len(items) >= max(20, job.max_contents_per_keyword * 2) or not has_more:
+                    break
+        if (mode == "browser" or (mode == "hybrid" and not items)) and identity is not None:
+            b_items, _author, b_err = await fetch_bili_videos(
+                self.browser, identity, mid, set(),
+                max_scrolls=max(1, min(8, int(job.max_pages_per_keyword or 3))),
+            )
+            if b_items:
+                items, err = b_items, ""
+            elif mode == "browser":
+                err = b_err
+        return items, err
+
+    async def _discover_bilibili_account(
+        self,
+        account,
+        job: KeywordCollectionJob,
+        *,
+        bili_client: BilibiliClient | None,
+        identity=None,
+    ) -> tuple[list[dict], str]:
+        if bili_client is not None:
+            works, err = await bili_client.fetch_all_creator_archives(
+                max_pages=max(1, min(8, int(job.max_pages_per_keyword or 3)))
+            )
+            if works:
+                return [
+                    {
+                        "bvid": w["item_id"],
+                        "aid": w.get("aid", 0),
+                        "title": w.get("desc", ""),
+                        "pic": w.get("cover_url", ""),
+                        "pubdate": w.get("create_time", 0),
+                        "duration": w.get("duration", 0),
+                        "author": getattr(account, "nickname", "") or "",
+                        "mid": getattr(account, "uid", "") or getattr(account, "sec_uid", "") or "",
+                        "stat": {
+                            "like": w.get("like_count", 0),
+                            "reply": w.get("comment_count", 0),
+                            "view": w.get("play_count", 0),
+                        },
+                    }
+                    for w in works
+                ], ""
+            if err.startswith("logged_out"):
+                return [], err
+        mid = str(getattr(account, "uid", "") or getattr(account, "sec_uid", "") or "")
+        if mid and identity is not None:
+            b_items, _author, b_err = await fetch_bili_videos(
+                self.browser, identity, mid, set(), max_scrolls=3
+            )
+            return b_items, b_err
+        return [], "未获取到本账号 B 站稿件"
+
+    async def _bilibili_comments(
+        self,
+        identity,
+        work_id: str,
+        limit: int,
+        include_replies: bool,
+        *,
+        bili_client: BilibiliClient | None = None,
+    ) -> tuple[list[dict], str]:
+        if limit <= 0:
+            return [], ""
+        mode = str(getattr(self.cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid").lower()
+        comments: list[dict] = []
+        err = ""
+        if mode in {"api", "hybrid"} and bili_client is not None:
+            comments, err = await bili_client.fetch_comments(
+                work_id, max_count=limit, include_replies=include_replies
+            )
+        if (mode == "browser" or (mode == "hybrid" and not comments and err)) and identity is not None:
+            b_comments, b_err = await fetch_bili_comments(
+                self.browser, identity, work_id, max_count=limit
+            )
+            if b_comments:
+                comments, err = b_comments, ""
+            elif mode == "browser":
+                err = b_err
+        if not include_replies:
+            comments = [c for c in comments if not c.get("reply_to")]
+        return comments[:limit], err
+
     async def _run_keywords(self, job_id: int, job: KeywordCollectionJob,
                             account, keywords: list[str], proxy: str,
                              douyin_client: DouyinClient | None = None,
                              xhs_client: XhsApiClient | None = None,
                              channels_client: ChannelsProtocolClient | None = None,
+                             bili_client: BilibiliClient | None = None,
                              context=None, identity=None) -> dict:
 
         browser_reads = self._xhs_browser_reads_enabled()
@@ -1350,14 +1543,16 @@ class KeywordCollector:
                 await asyncio.sleep(0.8 * random.uniform(1.0, 1.35))
             elif job.platform == "tiktok" and keyword_index:
                 await asyncio.sleep(1.0 * random.uniform(1.0, 1.35))
+            elif job.platform == "bilibili" and keyword_index:
+                await asyncio.sleep(0.8 * random.uniform(1.0, 1.35))
             self._progress(
                 job_id,
                 keyword=keyword,
                 step=(
                     "同步本账号作品"
-                    if (job.platform == "shipinhao" and job.source_type == "account_works")
+                    if (job.platform in {"shipinhao", "bilibili"} and job.source_type == "account_works")
                     else "读取创作者作品"
-                    if (job.platform == "shipinhao" and job.source_type == "creator")
+                    if (job.platform in {"shipinhao", "bilibili"} and job.source_type == "creator")
                     else "搜索作品"
                 ),
                 processed_keyword_count=keyword_index,
@@ -1382,6 +1577,16 @@ class KeywordCollector:
             elif job.platform == "tiktok":
                 raw_items, search_error = await self._discover_tiktok(
                     account, identity, keyword, job)
+            elif job.platform == "bilibili":
+                if job.source_type == "creator":
+                    raw_items, search_error = await self._discover_bilibili_creator(
+                        job, bili_client=bili_client, identity=identity)
+                elif job.source_type == "account_works":
+                    raw_items, search_error = await self._discover_bilibili_account(
+                        account, job, bili_client=bili_client, identity=identity)
+                else:
+                    raw_items, search_error = await self._discover_bilibili_keyword(
+                        keyword, job, bili_client=bili_client, identity=identity)
             elif job.platform == "shipinhao":
                 if job.source_type == "creator":
                     raw_items, search_error = await self._discover_channels_creator(
@@ -1497,6 +1702,24 @@ class KeywordCollector:
                 elif job.platform == "tiktok":
                     aweme = parse_tiktok_aweme(raw, job.video_quality or "highest")
                     token = ""
+                elif job.platform == "bilibili":
+                    aweme = parse_bili_aweme(raw, require_media=False)
+                    if (
+                        aweme is not None
+                        and job.download_media
+                        and not aweme.medias
+                        and bili_client is not None
+                    ):
+                        full_aw, play_err = await bili_client.fetch_aweme_by_work(
+                            aweme.aweme_id,
+                            with_play_url=True,
+                            quality=job.video_quality or "highest",
+                        )
+                        if full_aw is not None:
+                            aweme = full_aw
+                        if play_err and not aweme.medias:
+                            detail_error = play_err
+                    token = ""
                 elif browser_reads:
                     aweme, parts, detail_error = \
                         await self._materialize_xhs_browser(identity, raw)
@@ -1529,7 +1752,7 @@ class KeywordCollector:
                 if aweme is None:
                     self._record_error(job_id, f"{keyword}: 无法解析一条搜索结果")
                     continue
-                if job.platform in {"xhs", "kuaishou", "shipinhao", "tiktok"} and not \
+                if job.platform in {"xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"} and not \
                         _collection_content_matches(aweme, job):
                     continue
 
@@ -1549,12 +1772,16 @@ class KeywordCollector:
                         job_id, f"{keyword}/{aweme.aweme_id}: {detail_error}")
                 self._refresh_counts(job_id)
 
+                if self._cancel_requested(job_id):
+                    return {"canceled": True, "errors": self._job(job_id).error_count}
                 if job.download_media:
                     self._progress(job_id, keyword=keyword, step=f"下载作品 {index}")
                     await self._download(
                         current, content, aweme, proxy,
                         account=account, identity=identity)
 
+                if self._cancel_requested(job_id):
+                    return {"canceled": True, "errors": self._job(job_id).error_count}
                 should_collect_comments = (
                     job.max_comments_per_content > 0
                     and (
@@ -1606,6 +1833,11 @@ class KeywordCollector:
                             job.max_comments_per_content, job.include_replies,
                             author_unique_id=aweme.author_unique_id,
                             target_url=aweme.source_url, account=account)
+                    elif job.platform == "bilibili":
+                        comments, comment_error = await self._bilibili_comments(
+                            identity, aweme.aweme_id,
+                            job.max_comments_per_content, job.include_replies,
+                            bili_client=bili_client)
                     elif browser_reads:
                         comments, comment_error = await self._xhs_comments_browser(
                             identity, aweme.aweme_id, token, source,
@@ -1630,7 +1862,7 @@ class KeywordCollector:
                     if comment_error:
                         self._record_error(
                             job_id, f"{keyword}/{aweme.aweme_id}: {comment_error}")
-                        if job.platform in {"xhs", "kuaishou", "shipinhao", "tiktok"} and classify_platform_error(
+                        if job.platform in {"xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"} and classify_platform_error(
                                 comment_error)[0] in {
                                 RiskCategory.RISK, RiskCategory.AUTH,
                                 RiskCategory.NETWORK}:

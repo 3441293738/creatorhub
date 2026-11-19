@@ -218,7 +218,7 @@ def test_tiktok_ui_exposes_supported_features_and_video_publish():
     assert 'id="pub-tk-duet"' in html
     assert 'id="pub-tk-stitch"' in html
     assert '上传视频到 TikTok Studio' in js
-    assert 'class="navitem dy-only" data-tab="danmaku"' in html
+    assert 'class="navitem danmaku-only" data-tab="danmaku"' in html
     assert 'class="navitem pub-only" data-tab="publish"' in html
     for tab in ("monitors", "comments"):
         assert f'class="navitem notsh-only" data-tab="{tab}"' in html

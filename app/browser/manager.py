@@ -1921,6 +1921,8 @@ _COOKIE_DOMAIN = {
     "xhs": ".xiaohongshu.com",
     "kuaishou": ".kuaishou.com",
     "shipinhao": ".weixin.qq.com",   # 视频号:finder 登录态(_finder_auth/sessionid)挂在 .weixin.qq.com
+    "tiktok": ".tiktok.com",
+    "bilibili": ".bilibili.com",
 }
 
 
