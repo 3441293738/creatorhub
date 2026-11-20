@@ -19,8 +19,7 @@ from .._submit import notify_stage as _notify_stage, notify_submit as _notify_su
 
 log = logging.getLogger("creatorhub.channels")
 
-# 视频号发布入口(实测):就是 create 页;视频/图文靠点左侧「视频」「图文」导航切换
-# (逆向 server.jsc 里还有 finderNewLifeCreateg,但实测会 302 回 create,故不直接跳它)。
+# 视频号发布入口(实测):统一进入 create 页，视频/图文通过点击左侧「视频」「图文」导航切换。
 CREATE_URL_VIDEO = "https://channels.weixin.qq.com/platform/post/create"
 CREATE_URL = CREATE_URL_VIDEO   # 兼容旧引用
 

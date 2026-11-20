@@ -1,4 +1,4 @@
-"""msToken 生成。对应逆向符号 signing.GenMsToken / genRealMsToken / genFalseMsToken。
+"""抖音 `msToken` 请求令牌生成与在线申请。
 
 - gen_false_ms_token: 本地随机串(读取公开作品列表通常够用)
 - gen_real_ms_token: 向抖音 mssdk 申请真实 token(写操作/风控严时需要)
@@ -25,13 +25,13 @@ class _SessionToken(str):
 
 
 def gen_false_ms_token(length: int = 126) -> str:
-    """对应 genFalseMsToken:本地伪造,长度 126。"""
+    """生成指定长度的本地随机 `msToken`（默认 126 位）。"""
     return "".join(random.choice(_CHARSET) for _ in range(length))
 
 
 async def gen_real_ms_token(user_agent: str, timeout: float = 10.0,
                             cookie: str = "", proxy: str = "") -> str:
-    """对应 genRealMsToken:失败时回退到伪造 token。"""
+    """向服务端申请真实 `msToken`，失败时回退本地随机串。"""
     payload = {
         "magic": 538969122,
         "version": 1,

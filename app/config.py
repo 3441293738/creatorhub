@@ -1,4 +1,4 @@
-"""配置加载。对应逆向 internal/config。"""
+"""全局配置模型与 YAML 加载校验。"""
 from __future__ import annotations
 
 import os
@@ -66,6 +66,9 @@ class EngineConfig:
     # B站读写通道: hybrid=WBI/Cookie直连优先、明确风控兼容失败时回退页面; api=仅直连; browser=仅页面
     bilibili_read_mode: str = "hybrid"        # hybrid | api | browser
     bilibili_write_mode: str = "hybrid"       # hybrid | api | browser
+    # Instagram 读写通道: hybrid=双栈协议直连优先、兼容失败回退页面; api=仅直连; browser=仅页面
+    instagram_read_mode: str = "hybrid"       # hybrid | api | browser
+    instagram_write_mode: str = "hybrid"      # hybrid | api | browser
     # 视频号读取模式: auto=优先桌面微信原生 Finder CDP 协议、回退创作者助手页面;
     # protocol=仅原生 Finder 协议; browser=仅创作者助手页面。
     channels_read_mode: str = "auto"          # auto | protocol | browser
@@ -237,7 +240,11 @@ def load_config(path: str | None = None) -> Config:
                 ("douyin_dm_sync_mode", "hybrid"),
                 ("douyin_creator_danmaku_mode", "hybrid"),
                 ("douyin_publish_mode", "browser"),
-                ("douyin_write_mode", "hybrid")):
+                ("douyin_write_mode", "hybrid"),
+                ("bilibili_read_mode", "hybrid"),
+                ("bilibili_write_mode", "hybrid"),
+                ("instagram_read_mode", "hybrid"),
+                ("instagram_write_mode", "hybrid")):
             mode = str(getattr(cfg.engine, name, default) or default).strip().lower()
             setattr(cfg.engine, name, mode if mode in {"hybrid", "api", "browser"}
                     else default)

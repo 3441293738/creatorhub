@@ -1,4 +1,4 @@
-"""FastAPI 入口。对应逆向 cmd/server/main.go + internal/router。"""
+"""CreatorHub FastAPI 服务入口与 HTTP 路由定义。"""
 from __future__ import annotations
 
 import asyncio
@@ -37,12 +37,14 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       interactive_channels_login, interactive_channels_creator_login,
                       interactive_tiktok_login,
                       interactive_bilibili_login, interactive_bilibili_creator_login,
+                      interactive_instagram_login, interactive_instagram_creator_login,
                       fetch_self_profile, fetch_xhs_self_profile,
                       fetch_xhs_note_detail, fetch_xhs_comments,
                        fetch_xhs_favorite_boards,
                       fetch_ks_self_profile,
                       fetch_channels_self_profile,
                       fetch_bili_self_profile,
+                      fetch_ig_self_profile,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
                       fetch_dm_history, fetch_douyin_account_works_api)
 from .browser.tiktok_fetcher import (
@@ -121,6 +123,16 @@ from .platforms.bilibili import (
     looks_like_bili_work,
     resolve_bili_mid,
     resolve_bili_work,
+)
+from .platforms.instagram import (
+    InstagramClient,
+    clean_ig_username,
+    cookie_map_from_state as ig_cookie_map,
+    has_ig_login_cookies,
+    looks_like_ig_work,
+    resolve_ig_user_target,
+    resolve_ig_work,
+    resolve_ig_work_ref,
 )
 from .engine import Downloader, MonitorEngine
 from .engine.share_downloader import (
@@ -243,6 +255,7 @@ def _login_scope_label(platform: str, creator: bool) -> str:
         "shipinhao": "视频号",
         "tiktok": "TikTok",
         "bilibili": "哔哩哔哩",
+        "instagram": "Instagram",
         "douyin": "抖音",
     }.get(platform, platform or "平台")
     return f"{label}创作者" if creator else label
@@ -840,11 +853,14 @@ async def _enrich_account_profile(account_id: int, state: str, *,
         proxy = (a0.proxy or "") if a0 else ""
         dy_transport = (resolve_transport(cfg, "douyin", "account_profile", a0)
                         if platform == "douyin" else None)
-        identity = (None if dy_transport and
-                    dy_transport["effective_mode"] == "api"
-                    else browser.identity_for(a0) if browser is not None else None)
+        identity = (None if (dy_transport and dy_transport["effective_mode"] == "api")
+                    or (platform == "bilibili" and str(getattr(cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid").lower() == "api")
+                    or (platform == "instagram" and str(getattr(cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower() == "api")
+                    else (browser.identity_for(a0)
+                          if callable(getattr(browser, "identity_for", None))
+                          else None))
 
-    if platform != "douyin" and browser is None:
+    if platform not in {"douyin", "bilibili", "instagram"} and browser is None:
         return _done("error", "browser_unavailable")
 
     # XHS 创作者号:用创作平台「我的信息」拿资料 + 判活(www 接口对创作态拿不到)
@@ -941,6 +957,27 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 if browser is None:
                     return _done("error", "browser_unavailable")
                 u, err = await fetch_bili_self_profile(browser, identity)
+        elif platform == "instagram":
+            imode = str(getattr(cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower()
+            u, err = None, ""
+            if imode in {"api", "hybrid"} and state:
+                icli = InstagramClient(
+                    state,
+                    a0.ua or cfg.engine.user_agent,
+                    proxy=proxy,
+                    timeout=cfg.engine.request_timeout_seconds,
+                    account_seed=a0.fp_seed or a0.profile_dir or "",
+                    timezone_id=a0.timezone_id or "Asia/Shanghai",
+                )
+                async with icli.session_scope():
+                    u, err = await icli.fetch_self_profile()
+            auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
+            if not u and imode == "hybrid" and not auth_failed and browser is not None:
+                u, err = await fetch_ig_self_profile(browser, identity)
+            elif not u and imode == "browser":
+                if browser is None:
+                    return _done("error", "browser_unavailable")
+                u, err = await fetch_ig_self_profile(browser, identity)
         else:
             mode = dy_transport["effective_mode"]
             u, err = None, ""
@@ -994,7 +1031,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     "following_count": int(u.get("following_count") or 0),
                     "aweme_count": int(u.get("video_count") or 0),
                 }
-            elif platform == "bilibili":
+            elif platform in {"bilibili", "instagram"}:
                 p = dict(u)
             else:
                 p = parse_self_user(u)
@@ -1005,7 +1042,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 acc.uid = str(p["uid"])
             acc.douyin_id = p.get("douyin_id") or acc.douyin_id
             acc.avatar = p.get("avatar") or acc.avatar
-            if platform in {"kuaishou", "tiktok", "bilibili"}:
+            if platform in {"kuaishou", "tiktok", "bilibili", "instagram"}:
                 # 快手资料接口会明确返回 0；不能用 ``or`` 保留旧值，否则
                 # 取消关注、删光作品等场景会让账号卡片一直显示过期数据。
                 acc.follower_count = int(p.get("follower_count") or 0)
@@ -1113,6 +1150,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
           else "快手账号" if platform == "kuaishou"
           else "视频号账号" if platform == "shipinhao"
           else "哔哩哔哩账号" if platform == "bilibili"
+          else "Instagram账号" if platform == "instagram"
           else "TikTok账号" if platform == "tiktok"
           else "创作者账号" if creator else "扫码账号")
     try:
@@ -1274,6 +1312,10 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 reauth_options = {"force_reauth": True} if account_id else {}
                 ok, state_json, nickname = await interactive_bilibili_login(
                     browser, identity, **reauth_options)
+            elif platform == "instagram":
+                reauth_options = {"force_reauth": True} if account_id else {}
+                ok, state_json, nickname = await interactive_instagram_login(
+                    browser, identity, **reauth_options)
             elif creator:
                 reauth_options = {"force_reauth": True} if account_id else {}
                 ok, state_json, nickname = await interactive_creator_login(
@@ -1384,8 +1426,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     # 视频号一套登录态即读取又发布,两处都写
                     acc.storage_state = state_json
                     acc.creator_storage_state = state_json
-                elif platform == "bilibili":
-                    # B站 .bilibili.com 顶域登录态同时支持主站、创作中心与私信
+                elif platform in {"bilibili", "instagram"}:
+                    # B站 / Instagram 顶域登录态同时支持读取、发布与私信
                     acc.storage_state = state_json
                     acc.creator_storage_state = state_json
                 else:
@@ -1412,7 +1454,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 acc.status = "active"
                 s.add(acc); s.commit()
 
-            if fresh_account and platform in {"xhs", "tiktok"}:
+            if fresh_account and platform in {"xhs", "tiktok", "instagram"}:
                 # Promote the successful temporary login session to the new
                 # durable account id without closing/reopening Chromium.
                 rebound = getattr(browser, "rebind_context", None)
@@ -1790,6 +1832,32 @@ async def login_bilibili_start(proxy: str = "auto", browser_backend: str = "defa
             "hint": "已打开哔哩哔哩登录窗口，请使用 B 站 App 扫码或完成网页登录"}
 
 
+@app.post("/api/login/instagram/start")
+async def login_instagram_start(proxy: str = "auto", browser_backend: str = "default",
+                                browser_runtime_id: str = "",
+                                fingerprint: dict[str, Any] | None = None):
+    """Instagram 独立浏览器登录；`.instagram.com` 会话同时用于 Mobile API 与 Web 端。"""
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("instagram", False)
+    if reused is not None:
+        return reused
+    task_id = uuid.uuid4().hex
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="instagram", creator=False, account_id=None)
+    asyncio.create_task(_run_login(
+        task_id, platform="instagram", proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
+    return {"task_id": task_id, "status": "opening",
+            "hint": "已打开 Instagram 登录窗口，请完成登录及双重验证(如有)"}
+
+
 @app.get("/api/login/browser/poll")
 async def login_browser_poll(task_id: str):
     info = login_tasks.get(task_id)
@@ -1810,13 +1878,13 @@ class CookieIn(BaseModel):
 @app.post("/api/login/cookie")
 async def login_cookie(body: CookieIn):
     """Cookie 粘贴兜底登录:转成浏览器登录态。"""
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram") else "douyin"
     state = cookie_string_to_state(body.cookie, platform)
     with get_session() as s:
         acc = DouyinAccount(
             nickname=body.nickname or "Cookie账号", platform=platform,
             identity_mode="native", cookie=body.cookie.strip(), storage_state=state,
-            creator_storage_state=(state if platform == "bilibili" else ""))
+            creator_storage_state=(state if platform in {"bilibili", "instagram"} else ""))
         s.add(acc); s.commit(); s.refresh(acc)
         # 分配画像(profile/UA/指纹/代理):Cookie 会在首次开持久 profile 时桥接注入
         ensure_identity(acc, cfg, session=s, assign_proxy=True)
@@ -1824,9 +1892,81 @@ async def login_cookie(body: CookieIn):
         return {"account_id": acc.id, "nickname": acc.nickname}
 
 
+@app.get("/api/ig-media-thumb")
+async def instagram_media_thumb_proxy(url: str):
+    """本地只读代理 Instagram CDN 头像与封面，规避 Cross-Origin-Resource-Policy: same-origin 拦截并自动复用代理。"""
+    import httpx
+    from .browser.manager import normalize_proxy
+
+    raw = str(url or "").strip()
+    if not raw or len(raw) > 4096:
+        raise HTTPException(400, "无效的媒体地址")
+    parsed = urlsplit(raw)
+    host = (parsed.hostname or "").lower().strip(".")
+    if (
+        parsed.scheme != "https"
+        or parsed.username
+        or parsed.password
+        or not host
+        or not (host.endswith(".cdninstagram.com") or host.endswith(".fbcdn.net"))
+    ):
+        raise HTTPException(400, "仅允许 Instagram 官方图片 CDN 域名")
+
+    proxy_url = ""
+    ua_str = cfg.engine.user_agent
+    with get_session() as s:
+        ig_acc = s.exec(
+            select(DouyinAccount)
+            .where(DouyinAccount.platform == "instagram")
+            .order_by(DouyinAccount.id.desc())
+        ).first()
+        if ig_acc:
+            if ig_acc.proxy:
+                proxy_url = normalize_proxy(ig_acc.proxy)
+            if ig_acc.ua:
+                ua_str = ig_acc.ua
+    if not proxy_url and cfg.engine.route_download_via_proxy and cfg.proxies:
+        proxy_url = normalize_proxy(cfg.proxies[0])
+
+    headers = {
+        "User-Agent": ua_str,
+        "Referer": "https://www.instagram.com/",
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+            follow_redirects=False,
+            headers=headers,
+            proxy=proxy_url or None,
+        ) as http:
+            async with http.stream("GET", raw) as resp:
+                if resp.status_code != 200:
+                    raise HTTPException(resp.status_code if 400 <= resp.status_code < 600 else 502, "上游图片不可用")
+                ctype = (resp.headers.get("content-type") or "image/jpeg").split(";", 1)[0].strip().lower()
+                if not ctype.startswith("image/"):
+                    raise HTTPException(415, "上游响应不是图片")
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes(65536):
+                    total += len(chunk)
+                    if total > 8 * 1024 * 1024:
+                        raise HTTPException(413, "图片体积超出预览上限")
+                    chunks.append(chunk)
+                return Response(
+                    content=b"".join(chunks),
+                    media_type=ctype,
+                    headers={"Cache-Control": "private, max-age=3600"},
+                )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Instagram 图片代理拉取失败: {type(exc).__name__}") from exc
+
+
 @app.get("/api/overview/summary")
 async def overview_summary(platform: str = "douyin"):
-    if platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"}:
+    if platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
         raise HTTPException(422, "平台类型无效")
     with get_session() as session:
         def count(model, *conditions):
@@ -2235,7 +2375,7 @@ async def list_accounts(platform: str | None = None):
                     environment_check = None
             has_creator = (
                 bool(a.creator_storage_state)
-                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili")
+                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram")
                     and bool(a.storage_state))
                 or (a.platform == "xhs" and has_creator_cookies(a.storage_state))
             )
@@ -2768,13 +2908,14 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
             "douyin": "抖音号", "xhs": "小红书号",
             "kuaishou": "快手号", "shipinhao": "视频号",
             "bilibili": "B站 UID", "tiktok": "TikTok",
+            "instagram": "Instagram",
         }.get(account.platform, "账号 ID")
     else:
         platform_account_id = account.sec_uid
         platform_account_id_label = {
             "douyin": "sec_uid", "xhs": "user_id",
             "kuaishou": "user_id", "shipinhao": "finder_id",
-            "bilibili": "UID",
+            "bilibili": "UID", "instagram": "pk",
         }.get(account.platform, "账号 ID")
     return {
         "account_id": account.id,
@@ -3847,6 +3988,7 @@ async def refresh_account_profile(account_id: int):
     if res != "ok":
         tag = ("[xhs_self_profile]" if platform == "xhs"
                else "[ks_self_profile]" if platform == "kuaishou"
+               else "[ig_self_profile]" if platform == "instagram"
                else "[self_profile]")
         raise HTTPException(400, f"未能获取账号资料:请看服务端控制台 {tag} 那行日志"
                                  "(含它实际看到的请求),把它发我即可定位")
@@ -3859,7 +4001,7 @@ async def refresh_account_profile(account_id: int):
         )
         has_creator_login = bool(acc and (
             acc.creator_storage_state
-            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili")
+            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram")
                 and acc.storage_state)
             or (acc.platform == "xhs" and has_creator_cookies(acc.storage_state))
         ))
@@ -3957,20 +4099,24 @@ async def sync_account_works(account_id: int):
         if engine._proxy_bad(acc):
             raise HTTPException(400, "账号代理不可用")
         platform = acc.platform
-        uid = (acc.douyin_id if platform == "tiktok" else acc.sec_uid) or ""
+        uid = (
+            acc.douyin_id if platform == "tiktok"
+            else (acc.sec_uid or acc.uid or acc.douyin_id) if platform == "instagram"
+            else acc.sec_uid
+        ) or ""
         transport = (
             resolve_transport(cfg, platform, "account_works", acc)
-            if platform in {"douyin", "bilibili"}
+            if platform in {"douyin", "bilibili", "instagram"}
             else None
         )
         effective_mode = transport["effective_mode"] if transport else "browser"
         if browser is None and effective_mode in {"browser"}:
             raise HTTPException(503, "浏览器未就绪")
-        if browser is None and effective_mode == "hybrid" and platform != "bilibili":
+        if browser is None and effective_mode == "hybrid" and platform not in {"bilibili", "instagram"}:
             raise HTTPException(503, "浏览器未就绪")
         identity = (
             None
-            if platform in {"douyin", "bilibili"} and effective_mode == "api"
+            if platform in {"douyin", "bilibili", "instagram"} and effective_mode == "api"
             else (
                 browser.identity_for(acc)
                 if callable(getattr(browser, "identity_for", None))
@@ -3984,6 +4130,10 @@ async def sync_account_works(account_id: int):
         source = "api" if effective_mode == "api" else "browser"
         bili_state = (acc.storage_state or acc.cookie or "") if platform == "bilibili" else ""
         bili_proxy = (acc.proxy or "") if platform == "bilibili" else ""
+        ig_state = (acc.storage_state or acc.creator_storage_state or acc.cookie or "") if platform == "instagram" else ""
+        ig_proxy = (acc.proxy or "") if platform == "instagram" else ""
+        ig_seed = (acc.fp_seed or acc.profile_dir or "") if platform == "instagram" else ""
+        ig_tz = (acc.timezone_id or "Asia/Shanghai") if platform == "instagram" else "Asia/Shanghai"
     async def _fetch():
         nonlocal source
         if platform == "douyin" and effective_mode in {"api", "hybrid"}:
@@ -4012,6 +4162,30 @@ async def sync_account_works(account_id: int):
             if effective_mode == "api" or b_err.startswith("logged_out"):
                 source = "api"
                 return [], b_err or "empty"
+            source = "browser_fallback"
+        elif platform == "instagram" and effective_mode in {"api", "hybrid"} and ig_state:
+            icli = InstagramClient(
+                ig_state,
+                direct_ua,
+                proxy=ig_proxy,
+                timeout=cfg.engine.request_timeout_seconds,
+                account_seed=ig_seed,
+                timezone_id=ig_tz,
+            )
+            async with icli.session_scope():
+                target_u = uid or icli.self_uid
+                if not target_u:
+                    prof, perr = await icli.fetch_self_profile()
+                    if perr:
+                        return [], perr
+                    target_u = str(prof.get("uid") or prof.get("unique_id") or "")
+                ig_works, ig_err = await icli.fetch_all_creator_works(target_u, max_pages=6)
+            if ig_works or ig_err == "":
+                source = "api"
+                return ig_works, ("" if ig_works else "empty_confirmed")
+            if effective_mode == "api" or ig_err.startswith(("logged_out", "verification_required")) or browser is None:
+                source = "api"
+                return [], ig_err or "empty"
             source = "browser_fallback"
         else:
             source = "browser"
@@ -4270,7 +4444,7 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
         operation = "following_list" if direction == "following" else "followers_list"
         transport = (
             resolve_transport(cfg, platform, operation, acc)
-            if platform in {"douyin", "bilibili"}
+            if platform in {"douyin", "bilibili", "instagram"}
             else None
         )
         effective_mode = (transport["effective_mode"] if transport else "browser")
@@ -4281,14 +4455,14 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
                 f"{transport.get('reason') or transport.get('note') or '该通道不可用'}")
         if browser is None and effective_mode in {"browser"}:
             raise HTTPException(503, "浏览器未就绪")
-        if browser is None and effective_mode == "hybrid" and platform != "bilibili":
+        if browser is None and effective_mode == "hybrid" and platform not in {"bilibili", "instagram"}:
             raise HTTPException(503, "浏览器未就绪")
         if platform == "douyin" and effective_mode in {"api", "hybrid"} \
                 and engine is None:
             raise HTTPException(503, "抖音 API 读取引擎未就绪")
         identity = (
             None
-            if platform in {"douyin", "bilibili"} and effective_mode == "api"
+            if platform in {"douyin", "bilibili", "instagram"} and effective_mode == "api"
             else (
                 browser.identity_for(acc)
                 if callable(getattr(browser, "identity_for", None))
@@ -4299,6 +4473,12 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
         bili_ua = (acc.ua or cfg.engine.user_agent) if platform == "bilibili" else ""
         bili_proxy = (acc.proxy or "") if platform == "bilibili" else ""
         bili_mid = (acc.uid or acc.sec_uid or "") if platform == "bilibili" else ""
+        ig_state = (acc.storage_state or acc.creator_storage_state or acc.cookie or "") if platform == "instagram" else ""
+        ig_ua = (acc.ua or cfg.engine.user_agent) if platform == "instagram" else ""
+        ig_proxy = (acc.proxy or "") if platform == "instagram" else ""
+        ig_uid = (acc.uid or acc.sec_uid or acc.douyin_id or "") if platform == "instagram" else ""
+        ig_seed = (acc.fp_seed or acc.profile_dir or "") if platform == "instagram" else ""
+        ig_tz = (acc.timezone_id or "Asia/Shanghai") if platform == "instagram" else "Asia/Shanghai"
         known: set[str] = set()
     # API-only/browser-only are hard routing decisions. Hybrid's API attempt and
     # page fallback share one READ_HEAVY guard so the fallback is not blocked by
@@ -4374,6 +4554,35 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
                 source = "api"
                 return b_users, ("" if b_users else "empty")
             if effective_mode == "api" or direct_err.startswith("logged_out"):
+                source = "api"
+                return [], direct_err
+        elif platform == "instagram" and effective_mode in {"api", "hybrid"} and ig_state:
+            report(phase="fetching", source="api")
+            icli = InstagramClient(
+                ig_state,
+                ig_ua,
+                proxy=ig_proxy,
+                timeout=cfg.engine.request_timeout_seconds,
+                account_seed=ig_seed,
+                timezone_id=ig_tz,
+            )
+            async with icli.session_scope():
+                target_u = (ig_uid or icli.self_uid or "").strip()
+                if not target_u:
+                    prof, perr = await icli.fetch_self_profile()
+                    if perr:
+                        return [], perr
+                    target_u = str(prof.get("uid") or prof.get("unique_id") or "")
+                if not target_u:
+                    return [], "missing_uid:账号缺自身 uid,请先点账号「刷新资料」"
+                if direction == "fan":
+                    ig_users, direct_err = await icli.fetch_followers(target_u, max_count=200)
+                else:
+                    ig_users, direct_err = await icli.fetch_following(target_u, max_count=200)
+            if ig_users or not direct_err:
+                source = "api"
+                return ig_users, ("" if ig_users else "empty")
+            if effective_mode == "api" or direct_err.startswith(("logged_out", "verification_required")) or browser is None:
                 source = "api"
                 return [], direct_err
 
@@ -4600,8 +4809,8 @@ async def sync_dm(account_id: int):
         if not acc:
             raise HTTPException(404, "账号不存在")
         platform = acc.platform
-        dm_transport = (resolve_transport(cfg, "douyin", "dm_sync", acc)
-                        if platform == "douyin" else None)
+        dm_transport = (resolve_transport(cfg, platform, "dm_sync", acc)
+                        if platform in {"douyin", "instagram"} else None)
         if dm_transport and dm_transport["effective_mode"] == "unavailable":
             raise HTTPException(409, dm_transport["reason"] or "当前私信同步通道不可用")
         effective_mode = (dm_transport["effective_mode"]
@@ -4613,6 +4822,8 @@ async def sync_dm(account_id: int):
         state = acc.storage_state or acc.creator_storage_state or ""
         ua = acc.ua or cfg.engine.user_agent
         proxy = acc.proxy or ""
+        ig_seed = acc.fp_seed or acc.profile_dir or ""
+        ig_tz = acc.timezone_id or "Asia/Shanghai"
         direct_environment = douyin_client_environment(acc)
     if engine is None:
         raise HTTPException(503, "引擎未就绪")
@@ -4656,6 +4867,26 @@ async def sync_dm(account_id: int):
                     source = "api"
                     return direct, ""
             if effective_mode == "api":
+                source = "api"
+                return [], api_error or "empty_response"
+        elif platform == "instagram" and effective_mode in {"api", "hybrid"}:
+            if not state:
+                api_error = "logged_out:缺少 Instagram 登录态"
+            else:
+                icli = InstagramClient(
+                    state,
+                    ua,
+                    proxy=proxy,
+                    timeout=cfg.engine.request_timeout_seconds,
+                    account_seed=ig_seed,
+                    timezone_id=ig_tz,
+                )
+                async with icli.session_scope():
+                    direct_ig, api_error = await icli.fetch_dm_conversations()
+                if direct_ig or not api_error:
+                    source = "api"
+                    return direct_ig, ""
+            if effective_mode == "api" or api_error.startswith(("logged_out:", "verification_required:")):
                 source = "api"
                 return [], api_error or "empty_response"
         if browser is None or identity is None:
@@ -4773,14 +5004,20 @@ async def mark_dm_read(account_id: int, conv_id: str):
 async def fetch_dm_conversation_history(account_id: int, conv_id: str,
                                         cursor: int = 0, debug: bool = False):
     """无头抓单个会话历史消息(imapi get_by_conversation,纯 cookie),落库 DmMessage。"""
-    if browser is None:
-        raise HTTPException(503, "浏览器未就绪")
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if not acc:
             raise HTTPException(404, "账号不存在")
         platform = acc.platform
-        identity = browser.identity_for(acc)
+        ig_mode = str(getattr(cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower()
+        if browser is None and not (platform == "instagram" and ig_mode in {"api", "hybrid"}):
+            raise HTTPException(503, "浏览器未就绪")
+        identity = browser.identity_for(acc) if browser is not None else None
+        acc_state = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
+        acc_ua = acc.ua or cfg.engine.user_agent
+        acc_proxy = acc.proxy or ""
+        acc_seed = acc.fp_seed or acc.profile_dir or ""
+        acc_tz = acc.timezone_id or "Asia/Shanghai"
         conv = s.exec(select(DmConversation).where(
             DmConversation.account_id == account_id,
             DmConversation.conv_id == conv_id)).first()
@@ -4796,6 +5033,19 @@ async def fetch_dm_conversation_history(account_id: int, conv_id: str,
     if engine is None:
         raise HTTPException(503, "引擎未就绪")
     async def _fetch_history():
+        if platform == "instagram" and ig_mode in {"api", "hybrid"} and acc_state:
+            icli = InstagramClient(
+                acc_state,
+                acc_ua,
+                proxy=acc_proxy,
+                timeout=cfg.engine.request_timeout_seconds,
+                account_seed=acc_seed,
+                timezone_id=acc_tz,
+            )
+            async with icli.session_scope():
+                msgs_ig, err_ig = await icli.fetch_dm_history(conv_id)
+            if msgs_ig or not err_ig or ig_mode == "api" or browser is None:
+                return {"messages": msgs_ig, "next_cursor": "", "has_more": False}, err_ig
         return await fetch_dm_history(
             browser, identity, platform, conv_id, short_id,
             conv_type=1, cursor=cursor, debug=debug,
@@ -4827,7 +5077,7 @@ async def fetch_dm_conversation_history(account_id: int, conv_id: str,
             if not mid or mid in seen:
                 continue
             seen.add(mid)
-            direction = (str(m.get("direction") or "") if platform in ("xhs", "bilibili") else
+            direction = (str(m.get("direction") or "") if platform in ("xhs", "bilibili", "instagram") else
                          "out" if self_uid and m.get("sender_uid") == self_uid else "in")
             card = m.get("card")
             existing = s.exec(select(DmMessage).where(
@@ -5191,7 +5441,8 @@ async def cancel_account_action(task_id: int):
 
 _PLATFORM_HOST = {"douyin": "douyin.com", "xhs": "xiaohongshu.com",
                   "kuaishou": "kuaishou.com", "shipinhao": "weixin.qq.com",
-                  "tiktok": "tiktok.com", "bilibili": "bilibili.com"}
+                  "tiktok": "tiktok.com", "bilibili": "bilibili.com",
+                  "instagram": "instagram.com"}
 _XHS_USER_ME_API = "/api/sns/web/v2/user/me"
 
 
@@ -5258,6 +5509,16 @@ async def _opened_page_login_state(page, platform: str,
         user = context.get("user") if isinstance(context, dict) else None
         return "authenticated" if isinstance(user, dict) and (
             user.get("uniqueId") or user.get("uid")) else "unconfirmed"
+    if platform == "instagram":
+        if "/accounts/login" in current_url or "/challenge/" in current_url or "/checkpoint/" in current_url:
+            return "verification" if ("/challenge/" in current_url or "/checkpoint/" in current_url) else "logged_out"
+        try:
+            cookies = await page.context.cookies("https://www.instagram.com")
+            if any(c.get("name") == "sessionid" and c.get("value") for c in cookies):
+                return "authenticated"
+        except Exception:
+            pass
+        return "unconfirmed"
     if platform == "xhs_creator":
         if "passport" in current_url:
             return "logged_out"
@@ -5342,6 +5603,7 @@ async def open_account_browser(
             "kuaishou": "https://www.kuaishou.com/",
             "tiktok": "https://www.tiktok.com/",
             "bilibili": "https://www.bilibili.com/",
+            "instagram": "https://www.instagram.com/",
             "shipinhao": "https://channels.weixin.qq.com/platform"}.get(
                 platform, "https://www.douyin.com/")
     # 传了 url 且属于本平台域名 -> 停在该地址(否则回首页,防被当跳转开任意站)
@@ -5717,6 +5979,7 @@ async def _probe_proxy(url: str, platform: str | None = None, timeout: float = 1
         "kuaishou": "https://www.kuaishou.com/", "tiktok": "https://www.tiktok.com/",
         "shipinhao": "https://channels.weixin.qq.com/",
         "bilibili": "https://www.bilibili.com/",
+        "instagram": "https://www.instagram.com/",
     }
     if platform is not None and platform not in platform_urls:
         return False, "未配置该平台的检测地址"
@@ -6362,6 +6625,7 @@ def _write_account_cookie_file(account_id: int | None) -> tuple[str, str, str]:
             "shipinhao": ".weixin.qq.com",
             "tiktok": ".tiktok.com",
             "bilibili": ".bilibili.com",
+            "instagram": ".instagram.com",
         }.get(platform, ".douyin.com")
         for part in raw_cookie.split(";"):
             name, sep, value = part.strip().partition("=")
@@ -6906,6 +7170,157 @@ async def _douyin_native_share(
     }
 
 
+async def _instagram_native_share(
+    source_url: str,
+    *,
+    account_id: int | None,
+    output_root: Path,
+    quality: str = "highest",
+    should_download: bool,
+    save_metadata: bool,
+    save_thumbnail: bool,
+    proxy: str,
+    user_agent: str,
+) -> dict | None:
+    """使用 InstagramClient 直连解析单图 / 轮播 / Reels 并下载无水印原片。"""
+    state_text = ""
+    acc_proxy = proxy
+    acc_ua = user_agent
+    acc_seed = ""
+    acc_tz = "Asia/Shanghai"
+    with get_session() as session:
+        acc = session.get(DouyinAccount, account_id) if account_id else None
+        if acc is None or acc.platform != "instagram":
+            acc = session.exec(
+                select(DouyinAccount)
+                .where(DouyinAccount.platform == "instagram")
+                .where(DouyinAccount.status == "active")
+            ).first()
+        if acc is not None:
+            state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
+            acc_proxy = acc_proxy or acc.proxy or ""
+            acc_ua = acc.ua or acc_ua
+            acc_seed = acc.fp_seed or acc.profile_dir or ""
+            acc_tz = acc.timezone_id or "Asia/Shanghai"
+
+    if not state_text:
+        raise ShareDownloadFallback("未找到已登录的 Instagram 账号，回退通用下载器")
+
+    icli = InstagramClient(
+        state_text,
+        acc_ua,
+        proxy=acc_proxy,
+        timeout=cfg.engine.request_timeout_seconds,
+        account_seed=acc_seed,
+        timezone_id=acc_tz,
+    )
+    async with icli.session_scope():
+        aweme, raw_item, err = await icli.fetch_media_info(source_url)
+    if aweme is None or not aweme.medias:
+        if str(err or "").startswith(("logged_out:", "verification_required:")):
+            raise ShareDownloadError(f"Instagram 账号登录态异常: {err}")
+        raise ShareDownloadFallback(err or "Instagram 媒体详情为空")
+
+    # 仅音频提取交给通用提取器 (yt-dlp + ffmpeg)
+    if quality == "audio" and aweme.media_type == "video":
+        return None
+
+    metadata = _native_aweme_metadata(aweme, aweme.source_url or source_url)
+    metadata["uploader"] = aweme.author_name or aweme.author_unique_id
+    metadata["uploader_id"] = aweme.author_unique_id
+    if not should_download:
+        return {
+            "ok": True,
+            "job_id": f"instagram_{aweme.aweme_id}",
+            "url": source_url,
+            "output_dir": str(output_root.resolve()),
+            "metadata": metadata,
+            "files": [],
+            "progress": {"status": "inspected"},
+            "warnings": [],
+        }
+
+    target_root = output_root / "instagram"
+    dl_ua = acc_ua or cfg.engine.user_agent
+    dl_timeout = max(30.0, float(cfg.engine.download_timeout_seconds))
+    downloader = Downloader(
+        str(target_root),
+        dl_ua,
+        timeout=dl_timeout,
+    )
+    ok, saved_path, dl_err = await downloader.download_aweme(
+        aweme,
+        base_dir=str(target_root),
+        proxy=acc_proxy,
+        user_agent=dl_ua,
+        referer="https://www.instagram.com/",
+    )
+    if not ok:
+        raise ShareDownloadError(f"Instagram 媒体下载失败: {dl_err}")
+
+    saved = Path(saved_path)
+    target_dir = saved if saved.is_dir() else saved.parent
+    title = safe_title(aweme.desc) if str(aweme.desc or "").strip() else aweme.aweme_id
+    if save_metadata:
+        info_path = target_dir / f"{aweme.aweme_id}_{title}.info.json"
+        info_path.write_text(
+            json.dumps(
+                {
+                    **metadata,
+                    "media": [
+                        {"url": m.url, "kind": m.kind, "ext": m.ext, "index": m.index}
+                        for m in aweme.medias
+                    ],
+                    "raw": raw_item,
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+    if save_thumbnail and aweme.media_type == "video" and aweme.cover:
+        import httpx
+        from .browser.manager import normalize_proxy
+
+        cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
+        headers = {"User-Agent": dl_ua, "Referer": "https://www.instagram.com/"}
+        try:
+            async with httpx.AsyncClient(
+                timeout=dl_timeout,
+                follow_redirects=True,
+                headers=headers,
+                proxy=normalize_proxy(acc_proxy) or None,
+            ) as http:
+                await downloader._download_one(http, aweme.cover, cover_path)
+        except Exception:
+            pass
+
+    files = []
+    for path in sorted(target_dir.glob(f"{aweme.aweme_id}_*")):
+        if not path.is_file() or path.suffix.lower() in {".part", ".ytdl"}:
+            continue
+        files.append({
+            "name": path.name,
+            "path": str(path.resolve()),
+            "relative_path": path.relative_to(output_root).as_posix(),
+            "size": path.stat().st_size,
+            "role": _share_file_role(path),
+        })
+    if not any(item["role"] == "media" for item in files):
+        raise ShareDownloadError("Instagram 作品解析成功，但本地未生成媒体文件")
+    return {
+        "ok": True,
+        "job_id": f"instagram_{aweme.aweme_id}",
+        "url": source_url,
+        "output_dir": str(target_dir.resolve()),
+        "metadata": metadata,
+        "files": files,
+        "progress": {"status": "finished"},
+        "warnings": [],
+    }
+
+
 async def _xhs_native_share(
     source_url: str,
     *,
@@ -7152,6 +7567,21 @@ async def share_download(body: ShareDownloadIn):
                             save_thumbnail=body.save_thumbnail,
                             proxy=proxy,
                         )
+                    elif link.platform == "instagram":
+                        try:
+                            item = await _instagram_native_share(
+                                link.url,
+                                account_id=body.account_id,
+                                output_root=output_root,
+                                quality=body.quality,
+                                should_download=body.download,
+                                save_metadata=body.save_metadata,
+                                save_thumbnail=body.save_thumbnail,
+                                proxy=proxy,
+                                user_agent=user_agent,
+                            )
+                        except ShareDownloadFallback as exc:
+                            fallback_error = str(exc)
                     elif link.platform == "wechat":
                         account_state = ""
                         if body.account_id:
@@ -7637,15 +8067,15 @@ def _validated_collection_input(body: KeywordCollectionIn) \
         -> tuple[str, list[str], str, str, dict]:
     """校验创建/编辑共用的任务配置并返回规范化值。"""
     platform = body.platform.strip().lower()
-    if platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"}:
-        raise HTTPException(400, "批量采集仅支持抖音、小红书、快手、视频号、TikTok 或哔哩哔哩")
+    if platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
+        raise HTTPException(400, "批量采集仅支持抖音、小红书、快手、视频号、TikTok、哔哩哔哩或 Instagram")
     source_type = body.source_type.strip().lower() or "keyword"
     if source_type not in {
             "keyword", "favorite_all", "favorite_board", "creator",
             "account_works"}:
         raise HTTPException(400, "采集来源须为关键词、创作者主页、全部收藏、指定收藏夹或本账号作品")
-    if platform not in {"shipinhao", "bilibili"} and source_type == "account_works":
-        raise HTTPException(400, "本账号作品来源仅支持视频号或哔哩哔哩")
+    if platform not in {"shipinhao", "bilibili", "instagram"} and source_type == "account_works":
+        raise HTTPException(400, "本账号作品来源仅支持视频号、哔哩哔哩或 Instagram")
     if platform == "tiktok" and source_type != "keyword":
         raise HTTPException(400, "TikTok 首版批量采集仅支持关键词视频搜索")
     if source_type in {"favorite_all", "favorite_board"} and platform != "xhs":
@@ -7786,6 +8216,28 @@ async def _resolve_bili_creator_source(body: KeywordCollectionIn) -> None:
         body.source_ref = mid
         if not body.source_name or body.source_name == f"创作者 {original_ref}":
             body.source_name = f"创作者 {mid}"
+
+
+async def _resolve_ig_creator_source(body: KeywordCollectionIn) -> None:
+    """把 Instagram 创作者采集的 source_ref 规范化为 @username 或数字 pk。"""
+    if (body.platform.strip().lower() == "instagram"
+            and body.source_type.strip().lower() == "creator"):
+        original_ref = body.source_ref.strip()
+        cleaned = _clean_platform_target_input(original_ref, "instagram")
+        if looks_like_ig_work(cleaned):
+            raise HTTPException(
+                400,
+                "检测到 Instagram 单帖/Reels 链接；创作者采集请填写 @username、主页链接或数字 UID",
+            )
+        target = resolve_ig_user_target(cleaned)
+        if not target:
+            raise HTTPException(
+                400,
+                "无法解析 Instagram 创作者标识，请填写 @username、instagram.com/<username> 主页链接或数字 UID",
+            )
+        body.source_ref = target
+        if not body.source_name or body.source_name == f"创作者 {original_ref}":
+            body.source_name = f"创作者 @{target}" if not target.isdigit() else f"创作者 {target}"
 
 
 def _collection_keywords(values: list[str]) -> list[str]:
@@ -7974,6 +8426,8 @@ def _collection_content_dict(row: KeywordCollectionContent) -> dict:
             if aid_str.isdigit() and len(aid_str) >= 15
             else f"https://www.bilibili.com/video/{aid_str}"
         )
+    elif row.platform == "instagram":
+        url = row.source_url or f"https://www.instagram.com/p/{row.aweme_id}/"
     else:
         url = f"https://www.douyin.com/video/{row.aweme_id}"
     local_files = _collection_local_media_paths(row)
@@ -8273,6 +8727,7 @@ async def create_keyword_collection(body: KeywordCollectionIn, request: Request 
     await _resolve_ks_creator_source(body)
     await _resolve_channels_creator_source(body)
     await _resolve_bili_creator_source(body)
+    await _resolve_ig_creator_source(body)
     with get_session() as session:
         def create():
             platform, keywords, quality, download_dir, options = _validated_collection_input(body)
@@ -8311,6 +8766,7 @@ async def update_keyword_collection(job_id: int, body: KeywordCollectionIn):
     await _resolve_ks_creator_source(body)
     await _resolve_channels_creator_source(body)
     await _resolve_bili_creator_source(body)
+    await _resolve_ig_creator_source(body)
     platform, keywords, quality, download_dir, options = _validated_collection_input(body)
     with get_session() as session:
         job = session.get(KeywordCollectionJob, job_id)
@@ -8358,7 +8814,7 @@ async def list_keyword_collections(platform: str | None = None, limit: int = 100
     limit = max(1, min(limit, 300))
     with get_session() as session:
         stmt = select(KeywordCollectionJob)
-        if platform in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"}:
+        if platform in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
             stmt = stmt.where(KeywordCollectionJob.platform == platform)
         rows = session.exec(
             stmt.order_by(KeywordCollectionJob.created_at.desc()).limit(limit)).all()
@@ -8450,6 +8906,8 @@ async def keyword_collection_content_media(job_id: int, content_id: int):
                                else f"https://www.bilibili.com/video/{row.aweme_id}"
                            ))
                            if row.platform == "bilibili"
+                           else (row.source_url or f"https://www.instagram.com/p/{row.aweme_id}/")
+                           if row.platform == "instagram"
                            else f"https://www.douyin.com/video/{row.aweme_id}"),
         }
 
@@ -8762,10 +9220,12 @@ def _clean_platform_target_input(value: str, platform: str) -> str:
         platform_name = {
             "douyin": "抖音", "xhs": "小红书", "kuaishou": "快手",
             "shipinhao": "视频号", "tiktok": "TikTok", "bilibili": "哔哩哔哩",
+            "instagram": "Instagram",
         }.get(platform, platform)
         detected_names = {
             "douyin": "抖音", "xhs": "小红书", "kuaishou": "快手",
             "wechat": "微信/视频号", "tiktok": "TikTok", "bilibili": "哔哩哔哩",
+            "instagram": "Instagram",
             "generic": "其他站点",
         }
         names = "、".join(dict.fromkeys(
@@ -8824,12 +9284,12 @@ async def add_monitor(body: TargetIn, request: Request = None):
         replay = replay_if_exists(session, request=request, scope="monitor", body=body)
         if replay is not None:
             return replay
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram") else "douyin"
     sec_uid = keyword = xsec_token = ""
     nickname = avatar = ""
     kind = "creator"
 
-    if platform == "xhs" and body.target_kind == "keyword":
+    if platform in ("xhs", "instagram") and body.target_kind == "keyword":
         kind = "keyword"
         keyword = body.url_or_secuid.strip()
         if not keyword:
@@ -8860,6 +9320,14 @@ async def add_monitor(body: TargetIn, request: Request = None):
         sec_uid = await resolve_bili_mid(target_input, cfg.engine.user_agent)
         if not sec_uid:
             raise HTTPException(400, "无法解析哔哩哔哩 UP 主 UID，请粘贴空间链接 space.bilibili.com/<mid>、b23.tv 短链或纯数字 UID")
+    elif platform == "instagram" and kind != "keyword":
+        if looks_like_ig_work(target_input):
+            raise HTTPException(400, "检测到 Instagram 单帖/Reels 链接；作品监控请填写创作者 @username、主页链接或切换为关键词监控")
+        sec_uid = resolve_ig_user_target(target_input)
+        if not sec_uid:
+            raise HTTPException(400, "无法解析 Instagram 创作者，请粘贴 instagram.com/<username> 主页链接、@username 或数字 UID")
+        if not sec_uid.isdigit():
+            nickname = f"@{sec_uid}"
     elif platform == "douyin":
         sec_uid = await resolve_sec_uid(target_input, cfg.engine.user_agent)
         if not sec_uid:
@@ -8884,8 +9352,12 @@ async def add_monitor(body: TargetIn, request: Request = None):
             raise HTTPException(400, f"下载目录不可用: {e}")
     with get_session() as s:
         def create():
-            if platform in {"douyin", "tiktok"}:
-                platform_name = "TikTok" if platform == "tiktok" else "抖音"
+            if platform in {"douyin", "tiktok", "instagram"}:
+                platform_name = (
+                    "TikTok" if platform == "tiktok"
+                    else "Instagram" if platform == "instagram"
+                    else "抖音"
+                )
                 if not body.account_id:
                     raise HTTPException(
                         400, f"{platform_name}作品监控必须选择已登录账号")
@@ -8893,10 +9365,11 @@ async def add_monitor(body: TargetIn, request: Request = None):
                 if (not monitor_acc or monitor_acc.platform != platform
                         or monitor_acc.status != "active"):
                     raise HTTPException(400, f"所选{platform_name}账号不存在或登录态已失效")
-                if (platform == "tiktok"
+                if (platform in {"tiktok", "instagram"}
                         and not (monitor_acc.storage_state
-                                 or monitor_acc.creator_storage_state)):
-                    raise HTTPException(400, "所选 TikTok 账号缺少登录会话，请重新登录")
+                                 or monitor_acc.creator_storage_state
+                                 or monitor_acc.cookie)):
+                    raise HTTPException(400, f"所选 {platform_name} 账号缺少登录会话，请重新登录")
             elif body.account_id:
                 monitor_acc = s.get(DouyinAccount, body.account_id)
                 if not monitor_acc or monitor_acc.platform != platform:
@@ -9015,9 +9488,9 @@ async def update_monitor(tid: int, body: TargetUpdate):
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != t.platform or acc.status != "active":
                 raise HTTPException(400, "账号不存在、登录态失效或与监控平台不匹配")
-            if (t.platform == "tiktok"
-                    and not (acc.storage_state or acc.creator_storage_state)):
-                raise HTTPException(400, "所选 TikTok 账号缺少登录会话，请重新登录")
+            if (t.platform in {"tiktok", "instagram"}
+                    and not (acc.storage_state or acc.creator_storage_state or acc.cookie)):
+                raise HTTPException(400, f"所选 {('Instagram' if t.platform == 'instagram' else 'TikTok')} 账号缺少登录会话，请重新登录")
             if t.target_kind != "keyword":
                 _ensure_creator_monitor_available(
                     s, platform=t.platform, sec_uid=t.sec_uid,
@@ -9836,7 +10309,7 @@ async def export_danmaku_report(
 def _target_dict(t: MonitorTarget) -> dict:
     nickname = (tiktok_display_text(t.nickname)
                 if t.platform == "tiktok" else t.nickname)
-    if t.platform == "tiktok" and not nickname and t.sec_uid:
+    if t.platform in {"tiktok", "instagram"} and not nickname and t.sec_uid and not t.sec_uid.isdigit():
         nickname = f"@{t.sec_uid}"
     return {
         "id": t.id, "platform": t.platform, "target_kind": t.target_kind,
@@ -9871,7 +10344,7 @@ def _content_source(target_id: int, platform: str, target: MonitorTarget | None 
                 "group_name": "", "tags": []}
     nickname = (tiktok_display_text(target.nickname)
                 if platform == "tiktok" else target.nickname)
-    if platform == "tiktok" and not nickname and target.sec_uid:
+    if platform in {"tiktok", "instagram"} and not nickname and target.sec_uid and not target.sec_uid.isdigit():
         nickname = f"@{target.sec_uid}"
     base = ("#" + target.keyword if target.target_kind == "keyword"
             else nickname or target.sec_uid[:12] or f"任务 #{target.id}")
@@ -10132,7 +10605,7 @@ async def list_watches(platform: str | None = None):
 
 @app.post("/api/comment-watches")
 async def add_watch(body: WatchIn):
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram") else "douyin"
     aweme_id = sec_uid = xsec_token = ""
     title = ""
     target_input = _clean_platform_target_input(body.url_or_id, platform)
@@ -10261,6 +10734,26 @@ async def add_watch(body: WatchIn):
                 raise HTTPException(400, "无法解析哔哩哔哩 UP 主 UID，请粘贴空间链接、b23.tv 短链或纯数字 UID")
             title = "UP主 " + sec_uid
         mode = body.mode if body.mode in ("public", "creator") else "public"
+    elif platform == "instagram":
+        kind = body.kind if body.kind in {"auto", "video", "user"} else "auto"
+        work_ref = resolve_ig_work_ref(target_input) if looks_like_ig_work(target_input) else None
+        if kind == "auto":
+            kind = "video" if work_ref else "user"
+        if kind == "video":
+            if work_ref is None:
+                work_ref = resolve_ig_work_ref(target_input)
+            if work_ref is None or not work_ref.shortcode:
+                raise HTTPException(400, "无法解析 Instagram 帖子/Reels，请粘贴包含 /p/<code>/ 或 /reel/<code>/ 的链接或数字 media_id")
+            aweme_id = work_ref.shortcode
+            title = f"IG {work_ref.kind} {aweme_id}"
+        else:
+            if looks_like_ig_work(target_input):
+                raise HTTPException(400, "检测到 Instagram 帖子/Reels 链接；创作者评论监控请粘贴 @username 或主页链接")
+            sec_uid = resolve_ig_user_target(target_input)
+            if not sec_uid:
+                raise HTTPException(400, "无法解析 Instagram 创作者 @username，请粘贴主页链接、@username 或数字 UID")
+            title = f"@{sec_uid}" if not sec_uid.isdigit() else f"IG 用户 {sec_uid}"
+        mode = "public"
     else:
         kind = body.kind
         if kind == "auto":
@@ -10287,12 +10780,13 @@ async def add_watch(body: WatchIn):
                 raise HTTPException(400, "创作中心模式需要选择一个已“创作者登录”的账号")
 
     with get_session() as s:
-        if platform == "tiktok":
+        if platform in {"tiktok", "instagram"}:
+            pname = "Instagram" if platform == "instagram" else "TikTok"
             account = s.get(DouyinAccount, body.account_id) if body.account_id else None
-            if not account or account.platform != "tiktok" or account.status != "active":
-                raise HTTPException(400, "TikTok 评论监控必须选择一个登录有效的 TikTok 账号")
-            if not (account.storage_state or account.creator_storage_state):
-                raise HTTPException(400, "所选 TikTok 账号缺少登录会话，请重新登录")
+            if not account or account.platform != platform or account.status != "active":
+                raise HTTPException(400, f"{pname} 评论监控必须选择一个登录有效的 {pname} 账号")
+            if not (account.storage_state or account.creator_storage_state or account.cookie):
+                raise HTTPException(400, f"所选 {pname} 账号缺少登录会话，请重新登录")
         if kind == "video":
             dup = s.exec(select(CommentWatch).where(CommentWatch.platform == platform)
                          .where(CommentWatch.aweme_id == aweme_id)).first()
@@ -10347,9 +10841,9 @@ async def update_watch(wid: int, body: WatchUpdate):
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != w.platform or acc.status != "active":
                 raise HTTPException(400, "账号不存在、登录态失效或与评论监控平台不匹配")
-            if (w.platform == "tiktok"
-                    and not (acc.storage_state or acc.creator_storage_state)):
-                raise HTTPException(400, "所选 TikTok 账号缺少登录会话，请重新登录")
+            if (w.platform in {"tiktok", "instagram"}
+                    and not (acc.storage_state or acc.creator_storage_state or acc.cookie)):
+                raise HTTPException(400, f"所选 {('Instagram' if w.platform == 'instagram' else 'TikTok')} 账号缺少登录会话，请重新登录")
             w.account_id = body.account_id
         if new_mode == "creator":
             if w.platform != "douyin" or w.kind != "user":
@@ -11099,6 +11593,7 @@ class PublishIn(BaseModel):
     allow_duet: bool = True                # TikTok:允许 Duet
     allow_stitch: bool = True              # TikTok:允许 Stitch
     bili_options: dict[str, Any] = PydanticField(default_factory=dict)  # B站投稿扩展参数
+    ig_options: dict[str, Any] = PydanticField(default_factory=dict)    # Instagram 发布扩展参数(post_kind/share_to_feed 等)
     scheduled_at: str | None = None       # ISO 带偏移；无偏移按账号时区，空=尽快发
 
 
@@ -11114,6 +11609,7 @@ class PublishUpdate(BaseModel):
     allow_duet: bool | None = None
     allow_stitch: bool | None = None
     bili_options: dict[str, Any] | None = None
+    ig_options: dict[str, Any] | None = None
     scheduled_at: str | None = None
 
 
@@ -11134,6 +11630,10 @@ def _publish_dict(t: PublishTask) -> dict:
         bili_opts = json.loads(getattr(t, "bili_options_json", "{}") or "{}")
     except Exception:
         bili_opts = {}
+    try:
+        ig_opts = json.loads(getattr(t, "ig_options_json", "{}") or "{}")
+    except Exception:
+        ig_opts = {}
     return {
         "id": t.id, "platform": t.platform, "account_id": t.account_id,
         "media_type": t.media_type, "title": t.title, "desc": t.desc,
@@ -11143,6 +11643,7 @@ def _publish_dict(t: PublishTask) -> dict:
         "allow_comment": t.allow_comment, "allow_duet": t.allow_duet,
         "allow_stitch": t.allow_stitch,
         "bili_options": bili_opts if isinstance(bili_opts, dict) else {},
+        "ig_options": ig_opts if isinstance(ig_opts, dict) else {},
         "error": t.error, "live_stage": engine.get_publish_stage(t.id) if (engine and hasattr(engine, "get_publish_stage")) else "",
         "media_count": len(json.loads(t.media_json or "[]")),
         "source_platform": t.source_platform, "source_content_id": t.source_content_id,
@@ -11173,7 +11674,7 @@ async def list_publish(platform: str | None = None):
 
 
 def _publish_title_cap(platform: str) -> int:
-    return {"douyin": 30, "shipinhao": 16, "bilibili": 80}.get(str(platform or "").lower(), 20)
+    return {"douyin": 30, "shipinhao": 16, "bilibili": 80, "instagram": 2200}.get(str(platform or "").lower(), 20)
 
 
 def _validate_non_xhs_publish_files(platform: str, media_type: str,
@@ -11192,6 +11693,10 @@ def _validate_non_xhs_publish_files(platform: str, media_type: str,
         raise HTTPException(400, "没有可用的媒体文件,请先上传")
     if platform == "tiktok" and media_type != "video":
         raise HTTPException(422, "TikTok 网页发布当前仅支持视频")
+    if platform == "instagram":
+        if len(paths) > 10:
+            raise HTTPException(422, "Instagram 单次发布最多支持 10 个媒体文件")
+        return paths
     if media_type == "video" and not (
         len(paths) == 1 or (platform == "bilibili" and len(paths) == 2)
     ):
@@ -11210,9 +11715,9 @@ async def add_publish(body: PublishIn, request: Request = None):
                 raise HTTPException(400, "media_type 须为 images 或 video")
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform not in (
-                    "xhs", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili"):
+                    "xhs", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram"):
                 raise HTTPException(
-                    400, "请选择一个已登录的抖音 / 小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩账号")
+                    400, "请选择一个已登录的抖音 / 小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩 / Instagram 账号")
             if acc.platform == "xhs":
                 from .platforms.xhs.media import validate_publish_files
                 try:
@@ -11224,10 +11729,10 @@ async def add_publish(body: PublishIn, request: Request = None):
                     acc.platform, body.media_type, body.media_paths)
             pname = {"kuaishou": "快手", "douyin": "抖音",
                      "shipinhao": "视频号", "tiktok": "TikTok",
-                     "bilibili": "哔哩哔哩"}.get(
+                     "bilibili": "哔哩哔哩", "instagram": "Instagram"}.get(
                          acc.platform, "小红书")
-            if acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili"):
-                if not (acc.creator_storage_state or acc.storage_state):
+            if acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram"):
+                if not (acc.creator_storage_state or acc.storage_state or acc.cookie):
                     raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
                 raise HTTPException(400, "该账号不可发布:请对该号完成「小红书扫码登录」或「创作者登录」")
@@ -11242,6 +11747,7 @@ async def add_publish(body: PublishIn, request: Request = None):
                 allow_duet=bool(body.allow_duet),
                 allow_stitch=bool(body.allow_stitch),
                 bili_options_json=json.dumps(body.bili_options or {}, ensure_ascii=False),
+                ig_options_json=json.dumps(body.ig_options or {}, ensure_ascii=False),
                 media_json=json.dumps(paths),
                 scheduled_at=_parse_when(body.scheduled_at, acc.timezone_id),
             )
@@ -11288,6 +11794,8 @@ async def update_publish(tid: int, body: PublishUpdate):
             t.allow_stitch = body.allow_stitch
         if body.bili_options is not None:
             t.bili_options_json = json.dumps(body.bili_options, ensure_ascii=False)
+        if body.ig_options is not None:
+            t.ig_options_json = json.dumps(body.ig_options, ensure_ascii=False)
         if "scheduled_at" in body.model_fields_set:
             account = s.get(DouyinAccount, t.account_id) if t.account_id else None
             t.scheduled_at = _parse_when(body.scheduled_at, account.timezone_id if account else "Asia/Shanghai")
@@ -11712,8 +12220,8 @@ async def _repost_content(cid: int, body: RepostIn, target_platform: str, reques
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != target_platform:
                 raise HTTPException(400, "请选择与目标平台匹配的已登录账号")
-            if target_platform in ("douyin", "shipinhao", "kuaishou", "tiktok", "bilibili"):
-                if not (acc.creator_storage_state or acc.storage_state):
+            if target_platform in ("douyin", "shipinhao", "kuaishou", "tiktok", "bilibili", "instagram"):
+                if not (acc.creator_storage_state or acc.storage_state or acc.cookie):
                     raise HTTPException(400, "请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
                 raise HTTPException(400, "请先完成小红书扫码登录或创作者登录")
@@ -11768,6 +12276,12 @@ async def repost_to_tiktok(cid: int, body: RepostIn, request: Request = None):
 async def repost_to_bilibili(cid: int, body: RepostIn, request: Request = None):
     """把一条已下载作品转成哔哩哔哩发布任务。"""
     return await _repost_content(cid, body, "bilibili", request)
+
+
+@app.post("/api/contents/{cid}/repost-instagram")
+async def repost_to_instagram(cid: int, body: RepostIn, request: Request = None):
+    """把一条已下载作品转成 Instagram 发布任务。"""
+    return await _repost_content(cid, body, "instagram", request)
 
 
 # ─────────── 自动评论(规则 + 任务)───────────
@@ -11852,6 +12366,12 @@ async def _resolve_rule_target(platform: str, mode: str, target_kind: str, targe
                 sec_uid = await resolve_bili_mid(target, cfg.engine.user_agent) or ""
                 if not sec_uid:
                     raise HTTPException(400, "无法解析 B 站 UP 主 UID(空间链接 / b23.tv / 数字 UID)")
+            elif platform == "instagram":
+                if looks_like_ig_work(target):
+                    raise HTTPException(400, "创作者模式请填写 Instagram @username 或主页链接，不要填写单帖链接")
+                sec_uid = resolve_ig_user_target(target)
+                if not sec_uid:
+                    raise HTTPException(400, "无法解析 Instagram 创作者(@username / 主页链接 / 数字 UID)")
             else:
                 sec_uid = await resolve_sec_uid(target, cfg.engine.user_agent)
                 if not sec_uid:
@@ -11872,6 +12392,11 @@ async def _resolve_rule_target(platform: str, mode: str, target_kind: str, targe
                 aweme_id = await resolve_bili_work(target, cfg.engine.user_agent) or ""
                 if not aweme_id:
                     raise HTTPException(400, "无法解析 B 站稿件(BV 号 / 视频链接 / b23.tv)")
+            elif platform == "instagram":
+                wref = resolve_ig_work_ref(target)
+                aweme_id = wref.shortcode if wref else ""
+                if not aweme_id:
+                    raise HTTPException(400, "无法解析 Instagram 作品(/p/<code>/ 或 /reel/<code>/ 链接或 shortcode)")
             else:
                 aweme_id = await resolve_aweme_id(target, cfg.engine.user_agent)
                 if not aweme_id:
@@ -11911,17 +12436,17 @@ async def add_comment_rule(body: CommentRuleIn, request: Request = None):
         previous = replay_if_exists(s, request=request, scope="comment-rule", body=body)
         if previous is not None:
             return previous
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "bilibili") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "bilibili", "instagram") else "douyin"
     mode = body.mode if body.mode in ("auto_reply", "auto_comment") else "auto_reply"
     templates = [t.strip() for t in body.templates if t.strip()]
     if not templates:
         raise HTTPException(400, "请至少配置一条文案模板(AI 生成失败时回退用)")
-    _pn = {"xhs": "小红书", "kuaishou": "快手", "bilibili": "哔哩哔哩"}.get(platform, "抖音")
+    _pn = {"xhs": "小红书", "kuaishou": "快手", "bilibili": "哔哩哔哩", "instagram": "Instagram"}.get(platform, "抖音")
     with get_session() as s:
         acc = s.get(DouyinAccount, body.account_id)
         if not acc or acc.platform != platform:
             raise HTTPException(400, f"请选择一个已登录的{_pn}账号")
-        if not (acc.storage_state or acc.creator_storage_state):
+        if not (acc.storage_state or acc.creator_storage_state or acc.cookie):
             raise HTTPException(400, "该账号未登录,发评论需要登录态")
 
     kind, sec_uid, aweme_id, keyword, xsec_token = await _resolve_rule_target(
@@ -12128,7 +12653,7 @@ class CommentBatchApproveIn(BaseModel):
 @app.post("/api/comment-tasks/batch-approve")
 async def batch_approve_comment_tasks(body: CommentBatchApproveIn):
     """Only approve an explicit, scope-checked selection, atomically."""
-    if body.platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili"}:
+    if body.platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
         raise HTTPException(422, "平台类型无效")
     ids = list(dict.fromkeys(body.ids))
     if not ids or any(value <= 0 for value in ids):

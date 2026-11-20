@@ -1,4 +1,4 @@
-"""RC4 流加密. 对应逆向符号 signing.RC4EncryptString。
+"""纯 Python RC4 流加密工具。
 a_bogus 用它加密中间字节串。返回 list[int] (0-255)。"""
 from __future__ import annotations
 from typing import List, Union

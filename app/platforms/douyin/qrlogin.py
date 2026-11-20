@@ -1,4 +1,4 @@
-"""抖音扫码登录(API 方式)。对应逆向 internal/douyin.APIQRLoginManager。
+"""抖音 SSO 二维码扫码登录客户端（API 轮询方式）。
 
 流程:
   1. get_qrcode  -> 拿到二维码图片 + token

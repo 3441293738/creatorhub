@@ -1,11 +1,11 @@
-"""小红书创作平台签名(参考 Spider_XHS)。
+"""小红书创作平台请求头与 COS 上传签名工具。
 - x-s / x-t / x-s-common:用 static/xhs_creator_260411.js(execjs + Node + crypto-js)
 - x-rap-param:用 static/xhs_rap.js
-- 上传文件的 COS 签名(getSignature):纯 Python 复刻(HMAC-SHA1),不走 JS
+- 上传文件的 COS 签名(getSignature):纯 Python 实现(HMAC-SHA1),不走 JS
 - traceid 等:Python 随机生成
 
 依赖:Node.js(PATH 里)+ 本项目 node_modules 里的 crypto-js(npm install crypto-js)。
-平台改版时应对照参考项目一起复核签名、会话状态与请求字段，保留版本记录。
+平台改版时应一并复核签名、会话状态与请求字段，保留版本记录。
 """
 from __future__ import annotations
 
@@ -205,7 +205,7 @@ def generate_xs_xs_common(a1: str, api: str, data="") -> tuple:
 
 def generate_xsc_main(a1: str, api: str, data="", method: str = "GET") -> dict:
     """网页主签名(xhs_main_260411.js,带 method)。用于 www/edith 的带参 GET 等。
-    api 传"路径?query"(splice_str 结果),data='',method='GET'(对齐 Spider_XHS)。"""
+    api 传"路径?query"(splice_str 结果),data='',method='GET'。"""
     ret = _worker("xhs_main_260411.js").call(
         "get_request_headers_params", api, data, a1, method)
     return {

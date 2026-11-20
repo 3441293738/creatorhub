@@ -300,6 +300,11 @@ def _norm_bili_work(it: dict) -> Optional[dict]:
     }
 
 
+def _norm_ig_work(it: dict) -> Optional[dict]:
+    from ..platforms.instagram import parse_ig_creator_work
+    return parse_ig_creator_work(it)
+
+
 async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid: str,
                               max_scrolls: int = 14) -> Tuple[List[dict], str]:
     """抓取登录账号自己发布的作品(复用各平台已有的主页拦截抓取)。
@@ -323,8 +328,8 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                 uid = self3x
         except Exception as e:
             print(f"[hub-self] kuaishou self-resolve failed: {e!r}")
-    # 视频号 / B站创作中心:助手或创作中心接口直接按本账号 Cookie 读取,不需要预先有 uid
-    if not uid and not open_url and platform not in ("shipinhao", "bilibili"):
+    # 视频号 / B站 / Instagram: 可直接按本账号 Cookie 读取自身资料与作品
+    if not uid and not open_url and platform not in ("shipinhao", "bilibili", "instagram"):
         return [], "missing_uid:账号缺自身 uid,请先点账号「刷新资料」再同步作品"
 
     known: Set[str] = set()
@@ -355,6 +360,38 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                 mgr, identity, uid, known, max_scrolls=max_scrolls
             )
             norm = _norm_bili_work
+        elif platform == "instagram":
+            from ..platforms.instagram import InstagramClient
+            from .ig_fetcher import fetch_ig_posts
+            cookie_s = await _ig_cookie_str(mgr, identity)
+            target_ref = uid
+            if cookie_s:
+                client = InstagramClient(
+                    cookie_s,
+                    getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
+                    proxy=getattr(identity, "proxy", ""),
+                    account_seed=getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""),
+                    timezone_id=getattr(identity, "timezone_id", "Asia/Shanghai"),
+                )
+                async with client.session_scope():
+                    if not target_ref:
+                        prof, perr = await client.fetch_self_profile()
+                        if perr.startswith(("logged_out:", "verification_required:")):
+                            return [], perr
+                        target_ref = str(prof.get("uid") or prof.get("unique_id") or client.self_uid)
+                    if target_ref:
+                        works, cerr = await client.fetch_all_creator_works(
+                            target_ref,
+                            max_pages=max(1, min(8, max_scrolls // 2 or 3)),
+                        )
+                        if works or cerr.startswith(("logged_out:", "verification_required:")):
+                            return works, ("" if works else cerr)
+            if not target_ref:
+                return [], "missing_uid:账号缺自身用户名或 uid,请先点账号「刷新资料」再同步作品"
+            items, _author, err = await fetch_ig_posts(
+                mgr, identity, target_ref, known, max_scrolls=max_scrolls
+            )
+            norm = _norm_ig_work
         elif platform == "tiktok":
             from .tiktok_fetcher import fetch_tiktok_profile_works
             items, err = await fetch_tiktok_profile_works(
@@ -701,6 +738,31 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
     """打开账号自己主页,切到「关注 / 粉丝」并滚动,拦截该页所有同域 XHR/GraphQL,
     启发式抽出用户对象。无公开接口,首版用于标定(日志打 api_seen)。
     返回 (归一后的用户 dict 列表, error)。"""
+    if platform == "instagram":
+        from ..platforms.instagram import InstagramClient
+        cookie_s = await _ig_cookie_str(mgr, identity)
+        if not cookie_s:
+            return [], "logged_out:缺少 Instagram 登录 Cookie"
+        client = InstagramClient(
+            cookie_s,
+            getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
+            proxy=getattr(identity, "proxy", ""),
+            account_seed=getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""),
+            timezone_id=getattr(identity, "timezone_id", "Asia/Shanghai"),
+        )
+        async with client.session_scope():
+            target_uid = (uid or client.self_uid or "").strip()
+            if not target_uid:
+                prof, perr = await client.fetch_self_profile()
+                if perr:
+                    return [], perr
+                target_uid = str(prof.get("uid") or prof.get("unique_id") or "")
+            if not target_uid:
+                return [], "missing_uid:账号缺自身 uid,请先点账号「刷新资料」"
+            cap = max(50, min(400, max_scrolls * 10))
+            if direction == "fan":
+                return await client.fetch_followers(target_uid, max_count=cap)
+            return await client.fetch_following(target_uid, max_count=cap)
     if platform == "bilibili":
         from ..platforms.bilibili import BilibiliClient
         cookie_s = await _bili_cookie_str(mgr, identity)
@@ -1280,6 +1342,21 @@ async def _bili_cookie_str(mgr: BrowserManager, identity) -> str:
     return cookie_str_from_state(getattr(identity, "storage_state", "") or "")
 
 
+async def _ig_cookie_str(mgr: BrowserManager, identity) -> str:
+    """从账号专属 context 或 storage_state 提取 instagram.com 完整 Cookie 串。"""
+    from ..platforms.instagram import cookie_str_from_state
+    try:
+        ctx = await mgr.context_for(identity)
+        cks = await ctx.cookies(["https://www.instagram.com", "https://i.instagram.com"])
+        if cks:
+            merged = {c["name"]: c["value"] for c in cks if c.get("name")}
+            if merged.get("sessionid"):
+                return "; ".join(f"{k}={v}" for k, v in merged.items())
+    except Exception:
+        pass
+    return cookie_str_from_state(getattr(identity, "storage_state", "") or "")
+
+
 async def _fetch_im_user_info(page, sec_ids: list) -> Dict[str, dict]:
     """在 douyin 页面内批量 POST /aweme/v1/web/im/user/info/(body sec_user_ids=[...]),
     抖音自己的 fetch 拦截器会补 a_bogus 签名。返回 sec_uid -> {nickname, avatar, sec_uid}。"""
@@ -1325,6 +1402,20 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                                  *, _xhs_visible: bool = False
                                  ) -> Tuple[List[dict], str]:
     """打开私信页,拦截会话列表 XHR,启发式抽会话。无公开接口,首版用于标定。"""
+    if platform == "instagram":
+        from ..platforms.instagram import InstagramClient
+        cookie_s = await _ig_cookie_str(mgr, identity)
+        if not cookie_s:
+            return [], "logged_out:缺少 Instagram 登录 Cookie"
+        client = InstagramClient(
+            cookie_s,
+            getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
+            proxy=getattr(identity, "proxy", ""),
+            account_seed=getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""),
+            timezone_id=getattr(identity, "timezone_id", "Asia/Shanghai"),
+        )
+        async with client.session_scope():
+            return await client.fetch_dm_conversations()
     if platform == "bilibili":
         from ..platforms.bilibili import BilibiliClient
         cookie_s = await _bili_cookie_str(mgr, identity)
@@ -1796,6 +1887,25 @@ async def fetch_dm_history(mgr: BrowserManager, identity, platform: str,
     """无头抓单个会话的历史消息:imapi/v1/message/get_by_conversation(cmd 301)。
     该接口纯 cookie 鉴权、无 a_bogus/签名,用账号常驻 context 的 request 直接 POST。
     返回 (parse_messages 结果, error)。debug=True 时额外打印原始响应 b64(标定用)。"""
+    if platform == "instagram":
+        from ..platforms.instagram import InstagramClient
+        cookie_s = await _ig_cookie_str(mgr, identity)
+        if not cookie_s:
+            return {}, "logged_out:缺少 Instagram 登录 Cookie"
+        client = InstagramClient(
+            cookie_s,
+            getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
+            proxy=getattr(identity, "proxy", ""),
+            account_seed=getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""),
+            timezone_id=getattr(identity, "timezone_id", "Asia/Shanghai"),
+        )
+        async with client.session_scope():
+            msgs, err = await client.fetch_dm_history(
+                conv_id, max_pages=max(1, min(5, (count // 20) + 1))
+            )
+            if err:
+                return {}, err
+            return {"messages": msgs, "next_cursor": "", "has_more": False}, ""
     if platform == "bilibili":
         from ..platforms.bilibili import BilibiliClient
         cookie_s = await _bili_cookie_str(mgr, identity)
@@ -1868,6 +1978,7 @@ _PROFILE_URL = {
     "xhs": "https://www.xiaohongshu.com/user/profile/{uid}",
     "kuaishou": "https://www.kuaishou.com/profile/{uid}",
     "bilibili": "https://space.bilibili.com/{uid}",
+    "instagram": "https://www.instagram.com/{sec}/",
 }
 
 
@@ -1991,6 +2102,22 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
     首次点击常常打空:按钮已渲染但 React handler 还没绑上(和粉丝/作品/私信
     入口同一个 hydrate 病)。所以点不动就重点,而不是直接判失败。
     """
+    if platform == "instagram":
+        from ..platforms.instagram import InstagramClient
+        cookie_s = await _ig_cookie_str(mgr, identity)
+        if not cookie_s:
+            return False, "logged_out:账号未登录"
+        client = InstagramClient(
+            cookie_s,
+            getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
+            proxy=getattr(identity, "proxy", ""),
+            account_seed=getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""),
+            timezone_id=getattr(identity, "timezone_id", "Asia/Shanghai"),
+        )
+        async with client.session_scope():
+            return await client.modify_follow(
+                target_uid or target_sec_uid, follow=not unfollow
+            )
     if platform == "bilibili":
         from ..platforms.bilibili import BilibiliClient
         cookie_s = await _bili_cookie_str(mgr, identity)
@@ -2086,6 +2213,7 @@ _DM_ENTRY_URL = {
     "xhs": "https://www.xiaohongshu.com/chat/{uid}",
     "kuaishou": "https://www.kuaishou.com/profile/{uid}",
     "bilibili": "https://message.bilibili.com/#/whisper/mid{uid}",
+    "instagram": "https://www.instagram.com/direct/inbox/",
 }
 
 
@@ -2141,6 +2269,23 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
     sec = target_sec_uid or target_uid
     url = _DM_ENTRY_URL.get(platform, _DM_ENTRY_URL["douyin"]).format(
         sec=sec, uid=target_uid or sec)
+    if platform == "instagram":
+        from ..platforms.instagram import InstagramClient
+        cookie_s = await _ig_cookie_str(mgr, identity)
+        if not cookie_s:
+            return False, "logged_out:缺少 Instagram 登录 Cookie"
+        client = InstagramClient(
+            cookie_s,
+            getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
+            proxy=getattr(identity, "proxy", ""),
+            account_seed=getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""),
+            timezone_id=getattr(identity, "timezone_id", "Asia/Shanghai"),
+        )
+        async with client.session_scope():
+            ok, err, _meta = await client.send_dm(
+                target_uid or target_sec_uid, text, on_submit=on_submit
+            )
+            return ok, err
     if platform == "bilibili":
         from ..platforms.bilibili import BilibiliClient
         cookie_s = await _bili_cookie_str(mgr, identity)

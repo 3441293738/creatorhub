@@ -1,4 +1,4 @@
-"""抖音 Web 客户端。对应逆向 internal/douyin.NativeClient。
+"""抖音 Web API 异步直连客户端。
 负责:拼接公共参数 + a_bogus 签名 + 携带 Cookie 请求 douyin.com Web API。
 """
 from __future__ import annotations
@@ -1080,7 +1080,7 @@ class DouyinClient:
             cursor = nxt
         return out
 
-    # ── 用户资料(对应 NativeClient.FetchProfile)──
+    # ── 用户资料 ──
     async def fetch_self_profile(self) -> Optional[dict]:
         """读取当前 Cookie 对应账号，不依赖已知 sec_uid。"""
         data = await self._get_json(
@@ -1189,7 +1189,7 @@ class DouyinClient:
             "nickname": str(user.get("nickname") or ""),
         }
 
-    # ── 作品列表(对应 NativeClient.FetchVideoList)──
+    # ── 作品列表 ──
     async def fetch_video_list(self, sec_uid: str, max_cursor: int = 0,
                                count: int = 20) -> Dict[str, Any]:
         data = await self._get_json(
@@ -1212,7 +1212,7 @@ class DouyinClient:
 
     async def fetch_all_new_videos(self, sec_uid: str, known_ids: set,
                                    max_pages: int = 5) -> List[dict]:
-        """对应 NativeClient.FetchAllNewVideos:翻页直到遇到已知作品。"""
+        """按游标翻页抓取新增作品，遇到已知作品即停止。"""
         new_items: List[dict] = []
         cursor = 0
         for _ in range(max_pages):
@@ -1231,7 +1231,7 @@ class DouyinClient:
             cursor = page["max_cursor"]
         return new_items
 
-    # ── 作品详情(对应 NativeClient.FetchVideoDetail)──
+    # ── 作品详情 ──
     async def fetch_video_detail(self, aweme_id: str) -> Optional[dict]:
         data = await self._get_json(
             "/aweme/v1/web/aweme/detail/",
@@ -1244,7 +1244,7 @@ class DouyinClient:
         item, self.last_error = parse_detail_response(data, aweme_id)
         return item
 
-    # ── 评论(直连 comment/list + reply,分页拉全量;参考 CommentAll)──
+    # ── 评论(直连 comment/list + reply 分页拉取)──
     async def fetch_comments_page(self, aweme_id: str, cursor: int = 0,
                                   count: int = 20) -> dict:
         data = await self._get_json(

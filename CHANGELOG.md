@@ -4,6 +4,13 @@
 
 ## [未发布]
 
+### Instagram 平台支持
+
+- 新增 **Instagram** 完整工作台支持，支持独立浏览器窗口登录与 Cookie 导入，按账号确定性派生独立 Android 设备指纹与各场景 UUID，自动桥接 `.instagram.com` 会话与响应头鉴权令牌（`Bearer IGT:2:`、`X-IG-WWW-Claim`、`rur`）。
+- 新增双栈读取与采集引擎（Mobile API v1 + Web API，支持 `hybrid` / `api` / `browser` 模式切换）：支持关键词与 `#hashtag` 话题分区搜索、创作者主页动态与 Reels 分块流（NDJSON）、本账号作品同步，以及基于 `stream_comments` 游标的评论与二级回复抓取、链接下载（含最多 10 项混合轮播图集按序保存）。
+- 新增创作者主页监控、帖子 / 近期作品评论监控、自动评论与回复规则（附带 UTF-16 代理对感知 `user_breadcrumb` HMAC 签名）、关注 / 取关（支持年龄门限自动确认与幂等容错）及 Direct v2 私信会话同步与文本 / 链接发送。
+- 新增单图、最多 10 项图文视频混合轮播（Sidecar）、Reels 短视频、动态视频与 Story 快拍发布：支持 `rupload_igphoto` / `rupload_igvideo` 直连分阶段上传配置（含服务端转码等待重试且不重复上传字节流）与网页 Create 弹窗回退，支持可选首条评论与跨平台转发，并对非幂等写操作实施提交前 `write_uncertain:` 防重发保护。
+
 ## [0.2.9]
 
 ### 哔哩哔哩平台支持

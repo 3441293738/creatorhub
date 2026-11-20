@@ -1,4 +1,4 @@
-"""通知推送。对应逆向 internal/notifier(bark / dingding / telegram)。
+"""消息通知推送模块（支持 Bark / 钉钉 / Telegram）。
 
 每个渠道 config 字段:
   bark:     {"key": "设备key", "server": "https://api.day.app"(可选)}

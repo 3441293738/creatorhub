@@ -1,4 +1,4 @@
-"""从分享链接/主页 URL 解析 sec_uid。对应逆向 internal/douyin.ResolveSecUID / extractSecUIDFromPath。"""
+"""从抖音分享链接或主页 URL 解析 `sec_uid` 与作品标识。"""
 from __future__ import annotations
 
 import re

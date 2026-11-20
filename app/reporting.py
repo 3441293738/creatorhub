@@ -991,6 +991,8 @@ def build_keyword_collection_report(job: Any, contents: Sequence[Any],
                 if aweme_id.upper().startswith("BV1")
                 else f"https://www.bilibili.com/opus/{aweme_id}"
             )
+        elif platform == "instagram":
+            url = f"https://www.instagram.com/p/{aweme_id}/"
         else:
             url = f"https://www.douyin.com/video/{aweme_id}"
         content_rows.append((

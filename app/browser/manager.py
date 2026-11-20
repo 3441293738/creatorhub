@@ -5,7 +5,6 @@
   - 独立代理 / UA / 视口 / 时区 / 指纹
 常驻这些 context 并按 LRU 控制同时存活数量(省内存)。
 登录/发布用同一 profile 的**有头** context(headless=False)。
-对应原项目用 chromedp 的角色。
 """
 from __future__ import annotations
 
@@ -1923,6 +1922,7 @@ _COOKIE_DOMAIN = {
     "shipinhao": ".weixin.qq.com",   # 视频号:finder 登录态(_finder_auth/sessionid)挂在 .weixin.qq.com
     "tiktok": ".tiktok.com",
     "bilibili": ".bilibili.com",
+    "instagram": ".instagram.com",
 }
 
 

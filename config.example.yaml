@@ -17,6 +17,8 @@ engine:
   tiktok_read_mode: native         # native=全程离线直连、不打开浏览器;auto=失败页面回退;browser=仅页面
   bilibili_read_mode: hybrid       # hybrid=WBI直连优先、兼容失败回退浏览器;api=仅直连;browser=仅页面
   bilibili_write_mode: hybrid      # hybrid=CSRF/WBI直连优先(评论/私信/关注);api=仅直连;browser=仅页面
+  instagram_read_mode: hybrid      # hybrid=Instagram双栈直连优先、兼容失败回退浏览器;api=仅直连;browser=仅页面
+  instagram_write_mode: hybrid     # hybrid=SIGNATURE./Direct直连优先(评论/私信/关注/发布);api=仅直连;browser=仅页面
   douyin_profile_mode: hybrid      # 手动刷新资料:hybrid/API/browser
   douyin_followers_mode: hybrid    # 粉丝同步:hybrid/API/browser
   douyin_dm_sync_mode: hybrid      # 私信会话同步:hybrid/API/browser

@@ -1,10 +1,8 @@
 """Pure-Python generator for Douyin's current ``a_bogus`` query signature.
 
-The wire format follows the 1.0.1.19 algorithm used by the current web client.
-It keeps the public ``ABogus``/``sign_url`` API stable for the rest of CreatorHub.
-
-Algorithm structure derived from Johnserf-Seed/f2 ``f2.utils.abogus``
-(Apache-2.0), with the repository's existing pure-Python SM3 and RC4 helpers.
+The wire format follows the 1.0.1.19 algorithm used by the current web client,
+built on top of the repository's pure-Python SM3 and RC4 helpers while keeping
+the public ``ABogus`` / ``sign_url`` API stable for the rest of CreatorHub.
 """
 from __future__ import annotations
 

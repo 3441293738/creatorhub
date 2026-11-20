@@ -90,6 +90,7 @@
   .pswitch button.active[data-pf="shipinhao"] { background:rgba(7,193,96,.16); color:#07c160; border-color:rgba(7,193,96,.4); }
   .pswitch button.active[data-pf="tiktok"] { background:rgba(37,244,238,.12); color:#00b8b2; border-color:rgba(254,44,85,.38); }
   .pswitch button.active[data-pf="bilibili"] { background:rgba(0,174,236,.14); color:#00aeec; border-color:rgba(0,174,236,.42); }
+  .pswitch button.active[data-pf="instagram"] { background:rgba(225,48,108,.14); color:#e1306c; border-color:rgba(225,48,108,.42); }
   .hidden { display:none !important; }
 
   /* Platform accents and light/dark themes are independent: appearance.css. */
@@ -1855,6 +1856,7 @@
     <button role="tab" data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
     <button role="tab" data-pf="tiktok" onclick="switchPlatform('tiktok')">TikTok</button>
     <button role="tab" data-pf="bilibili" onclick="switchPlatform('bilibili')">哔哩哔哩</button>
+    <button role="tab" data-pf="instagram" onclick="switchPlatform('instagram')">Instagram</button>
   </div>
   <div class="header-actions">
     <button class="ghost command-trigger" id="command-trigger" type="button" aria-label="搜索功能" aria-haspopup="dialog" aria-controls="command-dialog" aria-keyshortcuts="Control+k Meta+k" title="搜索功能（Ctrl / ⌘ K）"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>搜索功能</span><kbd>Ctrl K</kbd></button>
@@ -1951,7 +1953,7 @@
   </div>
   <div class="platform-callout" role="note">
     <svg aria-hidden="true"><use href="#i-info"/></svg>
-    <div><b>平台数据彼此独立</b><p>切换平台后，账号、采集与任务数据会独立展示；通知和下载设置全局共用。TikTok 与哔哩哔哩均已提供登录、采集、本账号作品与数据、发布及受控写操作，暂不含直播。</p></div>
+    <div><b>平台数据彼此独立</b><p>切换平台后，账号、采集与任务数据会独立展示；通知和下载设置全局共用。TikTok、哔哩哔哩与 Instagram 均已提供登录、采集、本账号作品与数据、发布及受控写操作，暂不含直播。</p></div>
   </div>
   </section>
 
@@ -1976,6 +1978,8 @@
         <button class="tk-only" onclick="startTikTokLogin()"><svg><use href="#i-login"/></svg>TikTok 登录</button>
         <button class="bili-only" onclick="startBilibiliLogin()"><svg><use href="#i-qr"/></svg>哔哩哔哩扫码登录</button>
         <button class="ghost bili-only" onclick="toggleCookie()">Cookie 粘贴</button>
+        <button class="ig-only" onclick="startInstagramLogin()"><svg><use href="#i-login"/></svg>Instagram 登录</button>
+        <button class="ghost ig-only" onclick="toggleCookie()">Cookie 粘贴</button>
       </div>
       <div id="qrbox" style="display:none;margin-bottom:14px">
         <div class="mut" id="qrstatus">准备中…</div>
@@ -2788,6 +2792,13 @@
             <p class="field-help" id="engine-bili-read-help">关键词搜索、UP 主空间、视频与图文动态详情、评论及 XML 弹幕均优先走离线 WBI 签名接口；普通兼容失败才回退浏览器。</p>
           </div>
           <div class="form-field">
+            <label for="engine-instagram_read_mode">Instagram 读取方式</label>
+            <select id="engine-instagram_read_mode" name="instagram_read_mode" disabled aria-describedby="engine-ig-read-help">
+              <option value="hybrid">API 直连优先，普通失败浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器页面</option>
+            </select>
+            <p class="field-help" id="engine-ig-read-help">使用当前账号会话直连 Instagram Mobile v1 / Web API 获取主页、Reels、标签搜索、stream_comments 评论、关注/粉丝与 Direct v2 私信。</p>
+          </div>
+          <div class="form-field">
             <label for="engine-monitor_initial_backfill_count">抖音新监控的历史作品数量</label>
             <input id="engine-monitor_initial_backfill_count" name="monitor_initial_backfill_count" type="number" min="-1" max="1000" step="1" required disabled aria-describedby="engine-backfill-help">
             <p class="field-help" id="engine-backfill-help">0 = 只看新增，-1 = 尽可能读取全部历史。仅影响抖音新建时选择“跟随全局设置”的监控，已建监控不变。</p>
@@ -2851,6 +2862,7 @@
             <div class="form-field"><label for="engine-xhs_comment_write_mode">小红书评论发送方式</label><select id="engine-xhs_comment_write_mode" name="xhs_comment_write_mode" disabled><option value="browser">浏览器发送（推荐）</option><option value="manual">只保存草稿</option><option value="api">API 直连（兼容模式）</option></select></div>
             <div class="form-field"><label for="engine-douyin_write_mode">抖音写入方式</label><select id="engine-douyin_write_mode" name="douyin_write_mode" disabled><option value="hybrid">API 优先，明确失败后浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">影响评论、回复、关注/取关和已有会话私信；发布作品仍使用创作中心浏览器流程。网络结果不确定时不会重复提交或回退。</p></div>
             <div class="form-field"><label for="engine-bilibili_write_mode">哔哩哔哩写入方式</label><select id="engine-bilibili_write_mode" name="bilibili_write_mode" disabled><option value="hybrid">API 优先，明确失败后浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">影响评论、回复、关注/取关、稿件可见性与私信发送；发布视频和图文动态走创作中心浏览器流程。网络结果不确定时不会重复提交或回退。</p></div>
+            <div class="form-field"><label for="engine-instagram_write_mode">Instagram 写入与发布方式</label><select id="engine-instagram_write_mode" name="instagram_write_mode" disabled><option value="hybrid">API 优先，明确失败后浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">支持 Photo / Reels / Story / Carousel 两阶段 rupload + configure 直连发布、user_breadcrumb 评论与回复、关注/取关及 Direct v2 私信；网络结果不确定时不会重复提交或回退。</p></div>
             <div class="form-field"><label class="switch-row" for="engine-comment_browser_headed"><input id="engine-comment_browser_headed" name="comment_browser_headed" type="checkbox" disabled><span class="switch-copy"><b>评论操作显示浏览器窗口</b><span>推荐开启，遇到登录或验证时可以直接处理；关闭后在后台运行。</span></span></label></div>
             <div class="form-field"><label class="switch-row" for="engine-xhs_comment_review_before_publish"><input id="engine-xhs_comment_review_before_publish" name="xhs_comment_review_before_publish" type="checkbox" disabled><span class="switch-copy"><b>小红书评论先审核</b><span>推荐开启。关闭后，新生成的评论可能直接进入发送队列。</span></span></label></div>
           </div>
@@ -3269,6 +3281,32 @@
             <select id="pub-bili-selection-reply" aria-label="哔哩哔哩评论精选">
               <option value="0">普通评论区</option>
               <option value="1">精选评论后展示</option>
+            </select>
+          </div>
+        </fieldset>
+        <fieldset class="publish-permissions ig-only" id="pub-ig-opts">
+          <legend>Instagram 发布形态与互动设置</legend>
+          <div class="publish-permission">
+            <label class="field" for="pub-ig-kind">发布形态</label>
+            <select id="pub-ig-kind" aria-label="Instagram 发布形态">
+              <option value="auto">动态帖子 / Reels / 多图轮播（自动识别）</option>
+              <option value="reels">Reels 短视频（configure_to_clips）</option>
+              <option value="feed">普通视频动态（configure）</option>
+              <option value="story">Story 快拍（configure_to_story）</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-ig-share-feed">Reels 同步主页</label>
+            <select id="pub-ig-share-feed" aria-label="Instagram Reels 同步主页">
+              <option value="1">同步展示到个人主页网格</option>
+              <option value="0">仅展示在 Reels 标签页</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-ig-comment">评论权限</label>
+            <select id="pub-ig-comment" aria-label="Instagram 评论权限">
+              <option value="1">开启评论</option>
+              <option value="0">关闭评论</option>
             </select>
           </div>
         </fieldset>

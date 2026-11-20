@@ -23,6 +23,8 @@ class EngineSettingsPatch(BaseModel):
     channels_read_mode: Literal["auto", "protocol", "browser"] | None = None
     bilibili_read_mode: Literal["hybrid", "api", "browser"] | None = None
     bilibili_write_mode: Literal["hybrid", "api", "browser"] | None = None
+    instagram_read_mode: Literal["hybrid", "api", "browser"] | None = None
+    instagram_write_mode: Literal["hybrid", "api", "browser"] | None = None
     douyin_profile_mode: Literal["hybrid", "api", "browser"] | None = None
     douyin_followers_mode: Literal["hybrid", "api", "browser"] | None = None
     douyin_dm_sync_mode: Literal["hybrid", "api", "browser"] | None = None

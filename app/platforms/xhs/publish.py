@@ -44,9 +44,8 @@ def _creator_response_error(response):
 def _api_privacy_type(visibility: str) -> int:
     """Creator's privacy_info.type: 0=public, 1=private.
 
-    Keep an explicit map instead of inheriting an upstream demo's default.
-    See ReaJason/xhs core.py create_note(is_private) and Spider_XHS's payload
-    builders. Additional scopes need their own verified API contract first.
+    Keep an explicit visibility map so unsupported scopes fail fast unless
+    their dedicated API contract has been verified.
     """
     values = {"public": 0, "private": 1}
     key = str(visibility or "").strip().lower()

@@ -102,6 +102,18 @@ def test_default_douyin_write_mode_is_labeled_api_first():
     assert '<option value="api">仅 API，不打开浏览器</option>' in control
 
 
+def test_default_instagram_modes_are_hybrid():
+    assert EngineConfig().instagram_read_mode == "hybrid"
+    assert EngineConfig().instagram_write_mode == "hybrid"
+    html = (Path(__file__).parents[1] / "app" / "web" / "index.html").read_text(encoding="utf-8")
+    read_ctrl = html.split('id="engine-instagram_read_mode"', 1)[1].split("</select>", 1)[0]
+    write_ctrl = html.split('id="engine-instagram_write_mode"', 1)[1].split("</select>", 1)[0]
+    assert '<option value="hybrid">' in read_ctrl
+    assert '<option value="api">' in read_ctrl
+    assert '<option value="browser">' in read_ctrl
+    assert '<option value="hybrid">' in write_ctrl
+
+
 def test_partial_save_persists_without_changing_the_base_file(local_project):
     cfg = local_project.cfg
     config_file = local_project.root / "base.yaml"
@@ -135,6 +147,7 @@ def test_all_supported_values_and_live_downloader(local_project, monkeypatch):
         "xhs_read_mode": "api", "monitor_initial_backfill_count": -1,
         "douyin_read_mode": "hybrid", "tiktok_read_mode": "native",
         "channels_read_mode": "protocol", "bilibili_read_mode": "api", "bilibili_write_mode": "browser",
+        "instagram_read_mode": "api", "instagram_write_mode": "browser",
         "douyin_profile_mode": "api", "douyin_followers_mode": "hybrid",
         "douyin_dm_sync_mode": "browser", "douyin_creator_danmaku_mode": "browser",
         "douyin_publish_mode": "browser",
@@ -178,7 +191,7 @@ def test_all_supported_values_and_live_downloader(local_project, monkeypatch):
 
 INVALID = [
     {"host": "0.0.0.0"}, {"profiles_dir": "arbitrary-directory"}, {"ai_api_key": "do-not-echo-fixture"},
-    {"xhs_read_mode": "unknown"}, {"douyin_read_mode": "invalid"}, {"tiktok_read_mode": "invalid"}, {"channels_read_mode": "invalid"}, {"bilibili_read_mode": "invalid"}, {"bilibili_write_mode": "invalid"}, {"douyin_write_mode": "invalid"},
+    {"xhs_read_mode": "unknown"}, {"douyin_read_mode": "invalid"}, {"tiktok_read_mode": "invalid"}, {"channels_read_mode": "invalid"}, {"bilibili_read_mode": "invalid"}, {"bilibili_write_mode": "invalid"}, {"instagram_read_mode": "invalid"}, {"instagram_write_mode": "invalid"}, {"douyin_write_mode": "invalid"},
     {"douyin_profile_mode": "invalid"}, {"douyin_followers_mode": "invalid"},
     {"douyin_dm_sync_mode": "invalid"}, {"douyin_creator_danmaku_mode": "invalid"},
     {"douyin_publish_mode": "invalid"},

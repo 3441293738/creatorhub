@@ -1,6 +1,4 @@
-"""交互式扫码登录:打开真实浏览器窗口,用户扫码,落地登录态。
-对应原项目 internal/douyin.QRLoginManager(chromedp 版)。
-"""
+"""交互式浏览器登录：打开账号隔离窗口，完成扫码或网页验证并持久化登录态。"""
 from __future__ import annotations
 
 import asyncio
@@ -988,6 +986,107 @@ async def interactive_bilibili_creator_login(
 ) -> Tuple[bool, str, str]:
     """B 站创作中心 (`member.bilibili.com`) 复用 `.bilibili.com` 顶域登录态。"""
     return await interactive_bilibili_login(
+        mgr, identity, timeout_seconds=timeout_seconds, force_reauth=force_reauth
+    )
+
+
+_IG_AUTH_BLOCKED_PATHS = ("/accounts/login", "/challenge/", "/checkpoint/", "/two_factor", "/suspended")
+
+
+async def interactive_instagram_login(
+    mgr: BrowserManager,
+    identity: Identity,
+    timeout_seconds: int = 240,
+    force_reauth: bool = False,
+) -> Tuple[bool, str, str]:
+    """Instagram 网页端登录（在账号专属隔离 Profile 内完成密码 / 2FA / 安全挑战验证）。
+
+    判定成功：同时具备 `sessionid` 与 `ds_user_id` Cookie，且当前 URL 已离开登录/挑战/2FA 页。
+    随后提取保存的 `storage_state` 供移动端 `Bearer IGT:2:` 与 Web 会话双栈复用。
+    """
+    ctx = await mgr.open_headed(identity)
+    if force_reauth:
+        await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
+    page = await ctx.new_page()
+    await _focus(page)
+    logged, nickname, state_json = False, "", ""
+
+    try:
+        await page.goto(
+            "https://www.instagram.com/accounts/login/",
+            wait_until="domcontentloaded",
+            timeout=45000,
+        )
+        await _focus(page)
+        waited = 0.0
+        stable_hits = 0
+        while waited < timeout_seconds:
+            if page.is_closed():
+                break
+            try:
+                cookies = await ctx.cookies(["https://www.instagram.com", "https://i.instagram.com"])
+            except Exception:
+                break
+            cmap = {c.get("name"): c.get("value") for c in cookies if c.get("name")}
+            cur_url = str(page.url or "").lower()
+            on_blocked = any(p in cur_url for p in _IG_AUTH_BLOCKED_PATHS)
+            if cmap.get("sessionid") and cmap.get("ds_user_id") and "instagram.com" in cur_url and not on_blocked:
+                stable_hits += 1
+                if stable_hits >= 2:
+                    logged = True
+                    break
+            else:
+                stable_hits = 0
+            await asyncio.sleep(1.5)
+            waited += 1.5
+
+        if logged:
+            await page.wait_for_timeout(1500)
+            cur_url = str(page.url or "").lower()
+            cookies = await ctx.cookies(["https://www.instagram.com", "https://i.instagram.com"])
+            cmap = {c.get("name"): c.get("value") for c in cookies if c.get("name")}
+            if cmap.get("sessionid") and not any(p in cur_url for p in _IG_AUTH_BLOCKED_PATHS):
+                try:
+                    probe = await page.evaluate(
+                        """async () => {
+                            try {
+                                const r = await fetch('https://www.instagram.com/api/v1/accounts/edit/web_form_data/', {
+                                    credentials: 'include',
+                                    headers: {
+                                        'X-IG-App-ID': '936619743392459',
+                                        'X-Requested-With': 'XMLHttpRequest'
+                                    }
+                                });
+                                if (!r.ok) return null;
+                                return await r.json();
+                            } catch (_) { return null; }
+                        }"""
+                    )
+                    if isinstance(probe, dict) and isinstance(probe.get("form_data"), dict):
+                        fd = probe["form_data"]
+                        nickname = str(fd.get("first_name") or fd.get("username") or "").strip()[:40]
+                except Exception:
+                    pass
+                state_json = json.dumps(await ctx.storage_state())
+            else:
+                logged = False
+    finally:
+        try:
+            await ctx.close()
+        except Exception:
+            pass
+    return logged, state_json, nickname
+
+
+async def interactive_instagram_creator_login(
+    mgr: BrowserManager,
+    identity: Identity,
+    timeout_seconds: int = 240,
+    force_reauth: bool = False,
+) -> Tuple[bool, str, str]:
+    """Instagram 发布与主站共用 `.instagram.com` 会话。"""
+    return await interactive_instagram_login(
         mgr, identity, timeout_seconds=timeout_seconds, force_reauth=force_reauth
     )
 

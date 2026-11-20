@@ -1,4 +1,4 @@
-"""媒体下载器。对应逆向 engine.MediaDownloader。
+"""媒体并发下载器。
 优化:同一作品多个媒体并发下载、按 Content-Length 校验完整性、失败退避重试。
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ class Downloader:
         return d
 
     def _filename(self, aweme: Aweme, m, title: str) -> str:
-        if aweme.media_type == "images":
+        if aweme.media_type == "images" or len(getattr(aweme, "medias", ()) or ()) > 1:
             return f"{aweme.aweme_id}_{title}_{m.index}.{m.ext}"
         return f"{aweme.aweme_id}_{title}.{m.ext}"
 
@@ -53,6 +53,7 @@ class Downloader:
             "https://www.tiktok.com/" if _pf == "tiktok" else
             "https://channels.weixin.qq.com/" if _pf == "shipinhao" else
             "https://www.bilibili.com/" if _pf == "bilibili" else
+            "https://www.instagram.com/" if _pf == "instagram" else
             "https://www.douyin.com/"
         )
         headers = {

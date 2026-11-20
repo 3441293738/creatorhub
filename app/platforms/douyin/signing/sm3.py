@@ -1,4 +1,4 @@
-"""纯 Python SM3 (国密哈希). 对应逆向符号 signing.SM3ToArray / SM3ToIntArray。
+"""纯 Python SM3 国密哈希实现。
 返回 32 字节摘要 (list[int])，a_bogus 内部多处调用。"""
 from __future__ import annotations
 from typing import List

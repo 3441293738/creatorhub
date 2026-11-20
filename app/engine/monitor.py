@@ -1,5 +1,5 @@
-"""监控引擎。对应逆向 engine.MonitorEngine + ContentChecker。
-后台循环:到点的目标 -> 真实浏览器抓新作品 -> 入库 -> 下载。
+"""多平台监控、发布与社交互动调度引擎。
+后台循环:到点的目标 -> 抓取新作品与评论 -> 入库 -> 下载与通知。
 """
 from __future__ import annotations
 
@@ -29,6 +29,8 @@ from ..browser import (BrowserManager, fetch_videos, fetch_comments,
                        fetch_channels_self_profile, post_channels_comment,
                        fetch_bili_videos, fetch_bili_search, fetch_bili_comments,
                        fetch_bili_self_profile, post_bili_comment,
+                       fetch_ig_posts, fetch_ig_search, fetch_ig_comments,
+                       fetch_ig_self_profile, post_ig_comment,
                        fetch_account_works, fetch_douyin_account_works_api,
                        do_follow, send_dm, send_dm_api,
                        douyin_secure_post_api)
@@ -76,6 +78,12 @@ from ..platforms.bilibili import (
     cookie_map_from_state as bili_cookie_map,
     parse_bili_aweme,
     publish_bilibili,
+)
+from ..platforms.instagram import (
+    InstagramClient,
+    cookie_map_from_state as ig_cookie_map,
+    parse_ig_aweme,
+    publish_instagram,
 )
 from ..platforms.tiktok.urls import profile_url as tiktok_profile_url
 from ..platforms.tiktok.urls import video_url as tiktok_video_url
@@ -1459,6 +1467,26 @@ class MonitorEngine:
                     auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
                     if bmode == "browser" or (not u and bmode == "hybrid" and not auth_failed):
                         u, err = await fetch_bili_self_profile(self.browser, identity)
+                elif platform == "instagram":
+                    imode = str(getattr(
+                        self.cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower()
+                    u, err = {}, ""
+                    if imode in {"api", "hybrid"} and state:
+                        icli = InstagramClient(
+                            state,
+                            identity.ua or self.cfg.engine.user_agent,
+                            proxy=proxy,
+                            timeout=self.cfg.engine.request_timeout_seconds,
+                            account_seed=getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""),
+                            timezone_id=getattr(identity, "timezone_id", "Asia/Shanghai"),
+                        )
+                        async with icli.session_scope():
+                            u, err = await icli.fetch_self_profile()
+                    elif imode == "api" and not state:
+                        u, err = {}, "logged_out:缺少 Instagram 登录态"
+                    auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
+                    if imode == "browser" or (not u and imode == "hybrid" and not auth_failed):
+                        u, err = await fetch_ig_self_profile(self.browser, identity)
                 else:
                     u, err = await fetch_self_profile(self.browser, identity)
                 if u:
@@ -1493,7 +1521,7 @@ class MonitorEngine:
                         "following_count": int(u.get("following_count") or 0),
                         "aweme_count": int(u.get("video_count") or 0),
                     }
-                elif platform == "bilibili":
+                elif platform in {"bilibili", "instagram"}:
                     parsed = dict(u)
                 else:
                     parsed = parse_self_user(u)
@@ -1506,7 +1534,7 @@ class MonitorEngine:
                     account.uid = str(parsed["uid"])
                 account.douyin_id = parsed.get("douyin_id") or account.douyin_id
                 account.avatar = parsed.get("avatar") or account.avatar
-                if platform in {"kuaishou", "tiktok", "bilibili"}:
+                if platform in {"kuaishou", "tiktok", "bilibili", "instagram"}:
                     account.follower_count = int(parsed.get("follower_count") or 0)
                     account.following_count = int(parsed.get("following_count") or 0)
                     account.aweme_count = int(parsed.get("aweme_count") or 0)
@@ -1606,7 +1634,9 @@ class MonitorEngine:
             return
         self._last_work_health = now
         with get_session() as s:
-            accs = [(a.id, a.platform, a.sec_uid or "", self.browser.identity_for(a))
+            accs = [(a.id, a.platform,
+                     (a.sec_uid or a.uid or a.douyin_id or "") if a.platform == "instagram" else (a.sec_uid or ""),
+                     self.browser.identity_for(a))
                     for a in s.exec(select(DouyinAccount)).all()
                     if a.status != "invalid" and (a.storage_state or a.creator_storage_state)]
         for aid, platform, uid, identity in accs:
@@ -2022,6 +2052,254 @@ class MonitorEngine:
             "error": error,
         }
 
+    async def _scan_instagram_target_locked(self, target_id: int) -> dict:
+        with get_session() as s:
+            target = s.get(MonitorTarget, target_id)
+            if not target:
+                return {"ok": False, "error": "target not found"}
+            first_scan = target.last_scan_at is None
+            if not target.account_id:
+                return self._mark_target_skip(
+                    target_id, "Instagram 作品监控必须绑定已登录的 Instagram 账号"
+                )
+            acc = s.get(DouyinAccount, target.account_id)
+            if not acc or acc.platform != "instagram" or acc.status != "active":
+                return self._mark_target_skip(
+                    target_id, "绑定的 Instagram 账号不存在或登录态已失效，请重新绑定/登录"
+                )
+            if self._proxy_bad(acc):
+                return self._mark_target_skip(
+                    target_id, "账号代理标记为不可用(proxy bad)，已跳过以免暴露真实 IP"
+                )
+            identity = (
+                self.browser.identity_for(acc)
+                if callable(getattr(self.browser, "identity_for", None))
+                else None
+            )
+            proxy = acc.proxy or ""
+            state = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
+            ua = acc.ua or self.cfg.engine.user_agent
+            account_seed = (
+                (getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""))
+                if identity is not None
+                else (acc.fp_seed or acc.profile_dir or "")
+            )
+            tz_id = (
+                getattr(identity, "timezone_id", "Asia/Shanghai")
+                if identity is not None
+                else (acc.timezone_id or "Asia/Shanghai")
+            )
+            known = set(
+                s.exec(select(ContentRecord.aweme_id).where(ContentRecord.target_id == target_id)).all()
+            )
+            known_create_times = list(
+                s.exec(select(ContentRecord.create_time).where(ContentRecord.target_id == target_id)).all()
+            )
+            target_kind = target.target_kind or "creator"
+            sec_uid = (target.sec_uid or "").strip()
+            keyword = (target.keyword or "").strip()
+            base_dir = target.download_dir or get_setting("download_dir", self.cfg.engine.media_dir)
+            monitor_since = int(target.created_at.timestamp())
+            scan_since = _douyin_scan_since(monitor_since, known_create_times)
+            backfill_count = target.initial_backfill_count
+            should_backfill = first_scan or (backfill_count != 0 and not known)
+            auto_download = target.download_enabled
+            media_filter = target.media_filter or "all"
+            strategy = _monitor_strategy(target, default_scrolls=4, default_items=0)
+
+        mode = str(getattr(self.cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower()
+        icli = InstagramClient(
+            state,
+            ua,
+            proxy=proxy,
+            timeout=self.cfg.engine.request_timeout_seconds,
+            account_seed=account_seed,
+            timezone_id=tz_id,
+        )
+        raw_items: list[dict] = []
+        author_name = ""
+        author_avatar = ""
+        error = ""
+
+        async with icli.session_scope():
+            if mode in {"api", "hybrid"}:
+                max_pages = max(1, min(6, strategy["max_scrolls"] or 2))
+                if target_kind == "keyword":
+                    raw_items, error = await icli.search_posts(keyword, max_pages=max_pages)
+                else:
+                    cursor = ""
+                    for _ in range(max_pages):
+                        batch, next_cursor, more, err = await icli.fetch_user_feed(
+                            sec_uid, max_id=cursor
+                        )
+                        if err:
+                            error = err
+                            break
+                        raw_items.extend(batch)
+                        if (
+                            not more
+                            or not next_cursor
+                            or next_cursor == cursor
+                            or (
+                                known
+                                and batch
+                                and all(
+                                    (parse_ig_aweme(r, require_media=False) is not None)
+                                    and parse_ig_aweme(r, require_media=False).aweme_id in known  # type: ignore[union-attr]
+                                    for r in batch
+                                )
+                            )
+                        ):
+                            break
+                        cursor = next_cursor
+
+            auth_failed = classify_platform_error(error)[0] == RiskCategory.AUTH
+            if (
+                mode == "browser"
+                or (mode == "hybrid" and not raw_items and error and not auth_failed)
+            ) and identity is not None:
+                scrolls = max(1, min(4, strategy["max_scrolls"] or 2))
+                if target_kind == "keyword":
+                    b_items, b_err = await fetch_ig_search(
+                        self.browser, identity, keyword, max_scrolls=scrolls
+                    )
+                    if b_items:
+                        raw_items, error = b_items, ""
+                    elif mode == "browser":
+                        error = b_err
+                else:
+                    b_items, b_author, b_err = await fetch_ig_posts(
+                        self.browser, identity, sec_uid, known, max_scrolls=scrolls
+                    )
+                    if b_items:
+                        raw_items, error = b_items, ""
+                        if isinstance(b_author, dict):
+                            author_name = str(b_author.get("nickname") or author_name)
+                            author_avatar = str(b_author.get("avatar") or author_avatar)
+                    elif mode == "browser":
+                        error = b_err
+
+            candidates: list[Aweme] = []
+            seen_ids: set[str] = set()
+            for r in raw_items:
+                aw = parse_ig_aweme(r, require_media=False)
+                if aw is None or aw.aweme_id in known or aw.aweme_id in seen_ids:
+                    continue
+                seen_ids.add(aw.aweme_id)
+                if aw.author_name and not author_name and target_kind == "creator":
+                    author_name = aw.author_name
+                if aw.avatar and not author_avatar and target_kind == "creator":
+                    author_avatar = aw.avatar
+                candidates.append(aw)
+
+            candidates.sort(key=lambda a: int(a.create_time or 0), reverse=True)
+            if should_backfill:
+                if backfill_count == 0:
+                    candidates = [a for a in candidates if not a.create_time or a.create_time >= monitor_since]
+                elif backfill_count > 0:
+                    candidates = candidates[:backfill_count]
+            else:
+                candidates = [a for a in candidates if not a.create_time or a.create_time >= scan_since]
+
+            new_records = []
+            filtered_count = 0
+            for aw in candidates:
+                if not _monitor_content_matches(aw, strategy):
+                    filtered_count += 1
+                    continue
+                if strategy["max_items"] and len(new_records) >= strategy["max_items"]:
+                    break
+                should_download = auto_download and (
+                    media_filter == "all" or aw.media_type == media_filter
+                )
+                media_err = ""
+                if should_download and not aw.medias:
+                    full_aw, _raw_m, media_err = await icli.fetch_media_info(aw.aweme_id)
+                    if full_aw is not None and full_aw.medias:
+                        aw = full_aw
+                media_json = json.dumps([
+                    {
+                        "url": m.url,
+                        "kind": m.kind,
+                        "ext": m.ext,
+                        "index": m.index,
+                    }
+                    for m in aw.medias
+                ])
+                rec = ContentRecord(
+                    platform="instagram",
+                    target_id=target_id,
+                    aweme_id=aw.aweme_id,
+                    desc=aw.desc,
+                    media_type=aw.media_type,
+                    quality=aw.quality_label,
+                    create_time=aw.create_time,
+                    cover_url=aw.cover or "",
+                    like_count=aw.like_count,
+                    comment_count=aw.comment_count,
+                    duration=aw.duration,
+                    media_json=media_json,
+                    download_status="pending" if (should_download and aw.medias) else (
+                        "failed" if should_download else "skipped"
+                    ),
+                    error=(
+                        (media_err or "未获取到 Instagram 媒体直链")
+                        if (should_download and not aw.medias)
+                        else ""
+                    ),
+                )
+                new_records.append((rec, aw, bool(should_download and aw.medias)))
+
+        target_name = ""
+        with get_session() as s:
+            for rec, _, _ in new_records:
+                s.add(rec)
+            t = s.get(MonitorTarget, target_id)
+            if t:
+                t.last_scan_at = datetime.utcnow()
+                t.last_error = error
+                if target_kind == "creator":
+                    if author_name and not t.nickname:
+                        t.nickname = author_name
+                    if author_avatar and not t.avatar:
+                        t.avatar = author_avatar
+                target_name = t.nickname or t.keyword or t.sec_uid
+                s.add(t)
+            s.commit()
+            for rec, _, _ in new_records:
+                s.refresh(rec)
+
+        for rec, aw, should_download in new_records:
+            if not should_download:
+                continue
+            ok, path, dl_err = await self.downloader.download_aweme(
+                aw,
+                base_dir,
+                self._dl_proxy(proxy),
+                user_agent=ua,
+                referer="https://www.instagram.com/",
+            )
+            with get_session() as s:
+                r = s.get(ContentRecord, rec.id)
+                if r:
+                    r.download_status = "done" if ok else "failed"
+                    r.local_path = path
+                    r.error = dl_err
+                    s.add(r)
+                    s.commit()
+
+        if not first_scan and new_records:
+            await self._notify_new_works(target_name, [aw for _, aw, _ in new_records])
+        return {
+            "ok": not error,
+            "new": len(new_records),
+            "new_works": len(new_records),
+            "scanned": len(candidates),
+            "filtered": filtered_count,
+            "backfill_count": backfill_count,
+            "error": error,
+        }
+
     async def _scan_target_locked(self, target_id: int) -> dict:
         with get_session() as s:
             t0 = s.get(MonitorTarget, target_id)
@@ -2038,6 +2316,8 @@ class MonitorEngine:
             return await self._scan_channels_target_locked(target_id)
         if platform == "bilibili":
             return await self._scan_bilibili_target_locked(target_id)
+        if platform == "instagram":
+            return await self._scan_instagram_target_locked(target_id)
         with get_session() as s:
             target = s.get(MonitorTarget, target_id)
             if not target:
@@ -2144,7 +2424,11 @@ class MonitorEngine:
             if not target:
                 return {"ok": False, "error": "target not found"}
             first_scan = target.last_scan_at is None
-            identity = self.browser.anon_identity()
+            identity = (
+                self.browser.anon_identity()
+                if callable(getattr(self.browser, "anon_identity", None))
+                else None
+            )
             proxy = ""
             if target.account_id:
                 acc = s.get(DouyinAccount, target.account_id)
@@ -2346,7 +2630,11 @@ class MonitorEngine:
             if not target:
                 return {"ok": False, "error": "target not found"}
             is_first_scan = target.last_scan_at is None
-            identity = self.browser.anon_identity()
+            identity = (
+                self.browser.anon_identity()
+                if callable(getattr(self.browser, "anon_identity", None))
+                else None
+            )
             proxy = ""
             acc_sec_uid = ""
             has_active_account = False
@@ -2513,7 +2801,11 @@ class MonitorEngine:
             xsec_token = target.xsec_token or ""
             state = ""
             proxy = ""
-            identity = self.browser.anon_identity()
+            identity = (
+                self.browser.anon_identity()
+                if callable(getattr(self.browser, "anon_identity", None))
+                else None
+            )
             if target.account_id:
                 acc = s.get(DouyinAccount, target.account_id)
                 if acc:
@@ -2522,7 +2814,11 @@ class MonitorEngine:
                             target_id, "账号代理标记为不可用(proxy bad),已跳过以免暴露真实 IP")
                     state = acc.storage_state or ""
                     proxy = acc.proxy or ""
-                    identity = self.browser.identity_for(acc)
+                    identity = (
+                        self.browser.identity_for(acc)
+                        if callable(getattr(self.browser, "identity_for", None))
+                        else None
+                    )
             known = set(s.exec(
                 select(ContentRecord.aweme_id)
                 .where(ContentRecord.target_id == target_id)).all())
@@ -2998,9 +3294,17 @@ class MonitorEngine:
                         self.cfg, "douyin", "creator_danmaku", acc)["effective_mode"]
                         if mode == "creator" else self.cfg.engine.douyin_read_mode)
                     if account_mode != "api":
-                        identity = self.browser.identity_for(acc)
+                        identity = (
+                        self.browser.identity_for(acc)
+                        if callable(getattr(self.browser, "identity_for", None))
+                        else None
+                    )
             if identity is None and not watch.account_id:
-                identity = self.browser.anon_identity()
+                identity = (
+                self.browser.anon_identity()
+                if callable(getattr(self.browser, "anon_identity", None))
+                else None
+            )
 
         if mode == "creator" and watch.account_id:
             creator_transport = resolve_transport(
@@ -3460,7 +3764,7 @@ class MonitorEngine:
     async def sync_work_comments(self, account_id: int, platform: str, item_id: str,
                                  xsec_token: str = "") -> dict:
         """抓「本账号某作品」的评论并落库(watch_id=0 标记本账号来源)。
-        抖音直连(comment/list 分页 + 回复,参考 CommentAll),小红书走签名直连客户端,
+        抖音直连(comment/list 分页 + 回复),小红书走签名直连客户端,
         快手走浏览器拦截。返回 {ok, fetched, added, error}。"""
         key = f"wc:{account_id}:{item_id}"
         if key in self._inflight:
@@ -3687,6 +3991,56 @@ class MonitorEngine:
                     if cid and cid not in known and cid not in dedup:
                         dedup[cid] = c
                 fresh = list(dedup.values())
+            elif platform == "instagram":
+                configured_mode = str(
+                    getattr(self.cfg.engine, "instagram_read_mode", "hybrid") or "hybrid"
+                ).lower()
+                icli = InstagramClient(
+                    state,
+                    ua,
+                    proxy=proxy,
+                    timeout=self.cfg.engine.request_timeout_seconds,
+                    account_seed=(
+                        (getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""))
+                        if identity is not None
+                        else ""
+                    ),
+                    timezone_id=(
+                        getattr(identity, "timezone_id", "Asia/Shanghai")
+                        if identity is not None
+                        else "Asia/Shanghai"
+                    ),
+                )
+                collected_ig: list[dict] = []
+                api_err = ""
+                if configured_mode in {"api", "hybrid"}:
+                    async with icli.session_scope():
+                        collected_ig, api_err = await icli.fetch_comments(
+                            item_id, max_count=200, include_replies=True
+                        )
+                    if not api_err or collected_ig:
+                        source = "api"
+                auth_failed = classify_platform_error(api_err)[0] == RiskCategory.AUTH
+                if configured_mode == "browser" or (
+                    configured_mode == "hybrid" and not collected_ig and api_err and not auth_failed and identity is not None
+                ):
+                    ig_rows, ig_err = await fetch_ig_comments(
+                        self.browser, identity, item_id, max_count=200
+                    )
+                    source = "browser_fallback" if configured_mode == "hybrid" else "browser"
+                    if ig_rows:
+                        collected_ig = ig_rows
+                        error = ""
+                    else:
+                        error = ig_err or api_err
+                else:
+                    error = api_err
+                dedup_ig: dict[str, dict] = {}
+                for c in collected_ig:
+                    cid = c.get("comment_id")
+                    if cid and cid not in known and cid not in dedup_ig:
+                        dedup_ig[cid] = c
+                fresh = list(dedup_ig.values())
             else:
                 return {"ok": False, "fetched": 0, "added": 0,
                         "error": f"不支持的平台:{platform}",
@@ -3811,7 +4165,11 @@ class MonitorEngine:
             name = w.title or aweme_id or (sec_uid[:12] if sec_uid else "watch")
             state = creator_state = proxy = ""
             ua = self.cfg.engine.user_agent
-            identity = self.browser.anon_identity()
+            identity = (
+                self.browser.anon_identity()
+                if callable(getattr(self.browser, "anon_identity", None))
+                else None
+            )
             has_creator = False
             if w.account_id:
                 acc = s.get(DouyinAccount, w.account_id)
@@ -3844,7 +4202,11 @@ class MonitorEngine:
                     ua = acc.ua or self.cfg.engine.user_agent
                     proxy = acc.proxy or ""
                     has_creator = bool(creator_state)
-                    identity = self.browser.identity_for(acc)
+                    identity = (
+                        self.browser.identity_for(acc)
+                        if callable(getattr(self.browser, "identity_for", None))
+                        else None
+                    )
                 elif platform == "tiktok":
                     msg = "绑定的 TikTok 账号不存在或登录态已失效"
                     w.last_scan_at = datetime.utcnow()
@@ -3857,6 +4219,14 @@ class MonitorEngine:
                 w.last_error = msg
                 s.add(w); s.commit()
                 return {"ok": False, "new_comments": 0, "error": msg}
+            if platform == "instagram":
+                acc_ig = s.get(DouyinAccount, w.account_id) if w.account_id else None
+                if not w.account_id or not acc_ig or acc_ig.platform != "instagram" or acc_ig.status != "active" or not state:
+                    msg = "Instagram 评论监控必须绑定已登录且状态正常的 Instagram 账号"
+                    w.last_scan_at = datetime.utcnow()
+                    w.last_error = msg
+                    s.add(w); s.commit()
+                    return {"ok": False, "new_comments": 0, "error": msg}
 
         # 公开抖音读取可复用一个带 Cookie 的 Web API 会话；创作中心仍由
         # 浏览器处理。没有登录态时 hybrid 继续允许匿名浏览器回退。
@@ -3917,6 +4287,12 @@ class MonitorEngine:
             elif platform == "bilibili":
                 total_new, author = await self._cw_bilibili_video(
                     watch_id, identity, state, ua, proxy, aweme_id, name, first_scan)
+            elif platform == "instagram" and kind == "user":
+                total_new, author = await self._cw_instagram_user(
+                    watch_id, identity, state, ua, proxy, sec_uid, name, first_scan)
+            elif platform == "instagram":
+                total_new, author = await self._cw_instagram_video(
+                    watch_id, identity, state, ua, proxy, aweme_id, name, first_scan)
             elif kind == "user" and mode == "creator":
                 total_new, author = await self._cw_creator(watch_id, identity, has_creator,
                                                            name, first_scan)
@@ -3943,11 +4319,14 @@ class MonitorEngine:
                 w.last_scan_at = datetime.utcnow()
                 w.last_error = str(error or "")
                 if author:
-                    if not w.title:
+                    if (
+                        not w.title
+                        or (w.platform == "instagram" and w.title.startswith("IG "))
+                    ):
                         w.title = author.get("nickname") or w.title
-                    if not w.avatar:
-                        ava = (author.get("avatar_thumb") or {}).get("url_list") or []
-                        w.avatar = ava[0] if ava else w.avatar
+                    ava = (author.get("avatar_thumb") or {}).get("url_list") or []
+                    if ava and ava[0] and (not w.avatar or w.platform == "instagram"):
+                        w.avatar = ava[0]
                 w.comment_count = len(s.exec(select(CommentRecord.id)
                                              .where(CommentRecord.watch_id == watch_id)).all())
                 s.add(w); s.commit()
@@ -4596,6 +4975,168 @@ class MonitorEngine:
                 )
         return total, author_dict
 
+    async def _cw_instagram_video(
+        self, watch_id: int, identity, state: str, ua: str, proxy: str,
+        work_id: str, name: str, first_scan: bool, work_desc: str = ""
+    ):
+        settings = self._comment_watch_settings(watch_id)
+        with get_session() as s:
+            known = set(
+                s.exec(
+                    select(CommentRecord.comment_id)
+                    .where(CommentRecord.watch_id == watch_id)
+                    .where(CommentRecord.aweme_id == work_id)
+                ).all()
+            )
+        mode = str(getattr(self.cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower()
+        max_c = max(30, int(settings["max_scrolls"] or 4) * 20)
+        rows: list[dict] = []
+        err = ""
+        author_dict = None
+        icli = InstagramClient(
+            state,
+            ua,
+            proxy=proxy,
+            timeout=self.cfg.engine.request_timeout_seconds,
+            account_seed=(
+                (getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""))
+                if identity is not None
+                else ""
+            ),
+            timezone_id=(
+                getattr(identity, "timezone_id", "Asia/Shanghai")
+                if identity is not None
+                else "Asia/Shanghai"
+            ),
+        )
+        async with icli.session_scope():
+            if mode in {"api", "hybrid"}:
+                aw_info, _raw_m, _ = await icli.fetch_media_info(work_id)
+                if aw_info is not None and (aw_info.author_name or aw_info.desc):
+                    clean_desc = " ".join(str(aw_info.desc or "").split())[:36]
+                    if aw_info.author_name and clean_desc:
+                        display_title = f"{aw_info.author_name} · {clean_desc}"
+                    else:
+                        display_title = clean_desc or aw_info.author_name
+                    if not work_desc and aw_info.desc:
+                        work_desc = aw_info.desc[:80]
+                    author_dict = {
+                        "nickname": display_title,
+                        "avatar_thumb": {"url_list": [str(aw_info.avatar or aw_info.cover or "")]},
+                    }
+                rows, err = await icli.fetch_comments(work_id, max_count=max_c, include_replies=True)
+            auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
+            if (
+                mode == "browser"
+                or (mode == "hybrid" and not rows and err and not auth_failed)
+            ) and identity is not None:
+                ig_rows, ig_err = await fetch_ig_comments(
+                    self.browser, identity, work_id, max_count=max_c
+                )
+                if ig_rows:
+                    rows, err = ig_rows, ""
+                elif mode == "browser":
+                    err = ig_err
+        if err and not rows:
+            raise RuntimeError(err)
+        fresh = [c for c in rows if c and c.get("comment_id") and c["comment_id"] not in known]
+        total = await self._ingest(
+            watch_id, work_id, fresh, name, work_desc or name, first_scan, platform="instagram"
+        )
+        return total, author_dict
+
+    async def _cw_instagram_user(
+        self, watch_id: int, identity, state: str, ua: str, proxy: str,
+        user_ref: str, name: str, first_scan: bool
+    ):
+        settings = self._comment_watch_settings(watch_id)
+        mode = str(getattr(self.cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower()
+        icli = InstagramClient(
+            state,
+            ua,
+            proxy=proxy,
+            timeout=self.cfg.engine.request_timeout_seconds,
+            account_seed=(
+                (getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""))
+                if identity is not None
+                else ""
+            ),
+            timezone_id=(
+                getattr(identity, "timezone_id", "Asia/Shanghai")
+                if identity is not None
+                else "Asia/Shanghai"
+            ),
+        )
+        total = 0
+        author_dict = None
+        raw_feed: list[dict] = []
+        err = ""
+        async with icli.session_scope():
+            if mode in {"api", "hybrid"}:
+                raw_feed, _next, _more, err = await icli.fetch_user_feed(user_ref)
+            auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
+            if (
+                mode == "browser"
+                or (mode == "hybrid" and not raw_feed and err and not auth_failed)
+            ) and identity is not None:
+                b_items, b_author, b_err = await fetch_ig_posts(
+                    self.browser, identity, user_ref, set(), max_scrolls=3
+                )
+                if b_items:
+                    raw_feed, err = b_items, ""
+                    if isinstance(b_author, dict) and b_author.get("nickname"):
+                        author_dict = {
+                            "nickname": str(b_author["nickname"]),
+                            "avatar_thumb": {"url_list": [str(b_author.get("avatar") or "")]},
+                        }
+                elif mode == "browser":
+                    err = b_err
+            if err and not raw_feed:
+                raise RuntimeError(err)
+            cutoff = int(time.time()) - settings["recent_days"] * 86400
+            selected: list[tuple[str, str]] = []
+            for raw in raw_feed:
+                aw = parse_ig_aweme(raw, require_media=False)
+                if aw is None:
+                    continue
+                if not author_dict and aw.author_name:
+                    author_dict = {
+                        "nickname": str(aw.author_name),
+                        "avatar_thumb": {"url_list": [str(aw.avatar or "")]},
+                    }
+                if not cutoff or not aw.create_time or aw.create_time >= cutoff:
+                    selected.append((aw.aweme_id, aw.desc))
+                if len(selected) >= settings["recent_works"]:
+                    break
+            max_c = max(20, int(settings["max_scrolls"] or 4) * 20)
+            for code, desc in selected:
+                with get_session() as s:
+                    known = set(
+                        s.exec(
+                            select(CommentRecord.comment_id)
+                            .where(CommentRecord.watch_id == watch_id)
+                            .where(CommentRecord.aweme_id == code)
+                        ).all()
+                    )
+                rows: list[dict] = []
+                c_err = ""
+                if mode in {"api", "hybrid"}:
+                    rows, c_err = await icli.fetch_comments(code, max_count=max_c, include_replies=True)
+                if (
+                    mode == "browser"
+                    or (mode == "hybrid" and not rows and c_err)
+                ) and identity is not None:
+                    b_rows, _ = await fetch_ig_comments(
+                        self.browser, identity, code, max_count=max_c
+                    )
+                    if b_rows:
+                        rows = b_rows
+                fresh = [c for c in rows if c and c.get("comment_id") and c["comment_id"] not in known]
+                total += await self._ingest(
+                    watch_id, code, fresh, name, desc, first_scan, platform="instagram"
+                )
+        return total, author_dict
+
     # ── 发布(小红书创作平台)+ 跨平台转发 ──
     def _content_files(self, rec: ContentRecord) -> list:
         """收集一条作品记录在本地的媒体文件路径。"""
@@ -4649,11 +5190,13 @@ class MonitorEngine:
                 files = [files[i] for i in media_order]
             if target_platform == "tiktok" and rec.media_type != "video":
                 raise ValueError("TikTok 网页发布当前仅支持视频")
+            if target_platform == "instagram" and len(files) > 10:
+                raise ValueError("Instagram 轮播发布最多支持 10 个媒体文件")
             if target_platform == "xhs":
                 from ..platforms.xhs.media import validate_publish_files
                 files = validate_publish_files(
                     "video" if rec.media_type == "video" else "images", files)
-            title_cap = {"douyin": 30, "shipinhao": 16, "bilibili": 80}.get(target_platform, 20)
+            title_cap = {"douyin": 30, "shipinhao": 16, "bilibili": 80, "instagram": 2200}.get(target_platform, 20)
             t_title = (title if title is not None else (rec.desc or ""))[:title_cap]
             t_desc = desc if desc is not None else (rec.desc or "")
             t_topics = topics if topics is not None else ""
@@ -4738,10 +5281,21 @@ class MonitorEngine:
             dy_publish_transport = (resolve_transport(
                 self.cfg, "douyin", "publish", acc)
                 if platform == "douyin" else None)
-            api_only = bool(dy_publish_transport and
-                            dy_publish_transport["configured_mode"] == "api")
-            environment_error = self._native_write_environment_error(
-                acc, headed=not api_only, browser_mode=not api_only)
+            ig_publish_transport = (resolve_transport(
+                self.cfg, "instagram", "publish", acc)
+                if platform == "instagram" else None)
+            api_only = bool(
+                (dy_publish_transport and dy_publish_transport["configured_mode"] == "api")
+                or (ig_publish_transport and ig_publish_transport["effective_mode"] == "api")
+            )
+            skip_env_check = api_only or bool(
+                ig_publish_transport and ig_publish_transport["configured_mode"] == "hybrid"
+            )
+            environment_error = (
+                "" if skip_env_check else self._native_write_environment_error(
+                    acc, headed=not api_only, browser_mode=not api_only
+                )
+            )
             if environment_error:
                 self._defer_row(t, environment_error, fallback_seconds=300)
                 s.add(t); s.commit()
@@ -4768,13 +5322,16 @@ class MonitorEngine:
             native_mode = acc.identity_mode == "native"
             identity = (None if dy_publish_transport and
                         dy_publish_transport["effective_mode"] == "unavailable"
-                        else self.browser.identity_for(acc))
+                        else (self.browser.identity_for(acc)
+                              if callable(getattr(self.browser, "identity_for", None))
+                              else None))
             media_type, title, desc, topics = t.media_type, t.title, t.desc, t.topics
             visibility, allow_save = t.visibility, t.allow_save
             allow_comment = getattr(t, "allow_comment", True)
             allow_duet = getattr(t, "allow_duet", True)
             allow_stitch = getattr(t, "allow_stitch", True)
             bili_options = _loads(getattr(t, "bili_options_json", "{}") or "{}")
+            ig_options = _loads(getattr(t, "ig_options_json", "{}") or "{}")
             location = getattr(t, "location", "") or ""
             platform = t.platform
             files = _loads_list(t.media_json)
@@ -4850,6 +5407,24 @@ class MonitorEngine:
                 allow_comment=allow_comment, bili_options=bili_options,
                 headed=True)
 
+        if platform == "instagram":
+            if not state:
+                return await self._finish_publish(
+                    task_id, False, "", "该账号未完成 Instagram 登录，请先在账号页登录或导入 Cookie",
+                    platform="instagram")
+            ig_write_mode = str(
+                getattr(self.cfg.engine, "instagram_write_mode", "hybrid") or "hybrid"
+            ).strip().lower()
+            if ig_write_mode not in {"hybrid", "api", "browser"}:
+                ig_write_mode = "hybrid"
+            ig_channel = "api" if ig_write_mode in {"api", "hybrid"} else "browser"
+            return await self._run_browser_publish(
+                task_id, "instagram", publish_instagram,
+                self.browser, identity, state, media_type, title, desc, files,
+                topics=topics, visibility=visibility,
+                allow_comment=allow_comment, ig_options=ig_options,
+                mode=ig_write_mode, headed=True, channel=ig_channel)
+
         if not state:
             return await self._finish_publish(
                 task_id, False, "", "该账号未完成小红书「创作者登录」,请先在账号页点「创作者登录」",
@@ -4885,7 +5460,7 @@ class MonitorEngine:
         """Execute one platform publisher with uniform submit-boundary & cancel protection."""
         pname = {"kuaishou": "快手", "douyin": "抖音",
                  "shipinhao": "视频号", "tiktok": "TikTok",
-                 "bilibili": "哔哩哔哩",
+                 "bilibili": "哔哩哔哩", "instagram": "Instagram",
                  "xhs": "小红书"}.get(platform, platform)
         call_kwargs = dict(kwargs)
         try:
@@ -4896,11 +5471,15 @@ class MonitorEngine:
                 call_kwargs["on_stage"] = lambda msg: self._set_publish_stage(task_id, msg)
         except Exception:
             pass
+        default_channel = "api" if channel in {"api", "hybrid"} else "browser"
         try:
             ok, url, err = await publish_fn(
                 *args,
-                on_submit=(lambda: self._mark_write_submit(
-                    PublishTask, task_id, channel=channel)),
+                on_submit=(lambda ch=default_channel: self._mark_write_submit(
+                    PublishTask,
+                    task_id,
+                    channel=(ch if ch in {"api", "browser"} else default_channel),
+                )),
                 **call_kwargs,
             )
         except asyncio.CancelledError:
@@ -4968,7 +5547,7 @@ class MonitorEngine:
                 if channels:
                     pname = {"kuaishou": "快手", "douyin": "抖音",
                              "shipinhao": "视频号", "tiktok": "TikTok",
-                             "bilibili": "哔哩哔哩"}.get(
+                             "bilibili": "哔哩哔哩", "instagram": "Instagram"}.get(
                                  platform, "小红书")
                     await notify_all(channels, f"{pname}发布成功", url or "已发布一条作品")
             except Exception:
@@ -5524,6 +6103,137 @@ class MonitorEngine:
                         "source_text": c.get("text", ""),
                     })
                 return cands, up_err
+        # ── Instagram: Mobile/Web API 搜索/时间线 + stream_comments 直连 + 浏览器回退 ──
+        if platform == "instagram":
+            imode = str(getattr(self.cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower()
+            icli = InstagramClient(
+                state,
+                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                proxy=proxy,
+                timeout=self.cfg.engine.request_timeout_seconds,
+                account_seed=(
+                    (getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""))
+                    if identity is not None
+                    else ""
+                ),
+                timezone_id=(
+                    getattr(identity, "timezone_id", "Asia/Shanghai")
+                    if identity is not None
+                    else "Asia/Shanghai"
+                ),
+            )
+            async with icli.session_scope():
+                if mode == "auto_comment":
+                    rows: list[dict] = []
+                    err = ""
+                    if imode in {"api", "hybrid"}:
+                        if kind == "keyword":
+                            rows, err = await icli.search_posts(rf["keyword"], max_pages=2)
+                        else:
+                            rows, _next, _more, err = await icli.fetch_user_feed(rf["sec_uid"])
+                    if (
+                        imode == "browser"
+                        or (imode == "hybrid" and not rows and err)
+                    ) and identity is not None:
+                        if kind == "keyword":
+                            b_rows, b_err = await fetch_ig_search(
+                                self.browser, identity, rf["keyword"], max_scrolls=2
+                            )
+                        else:
+                            b_rows, _a, b_err = await fetch_ig_posts(
+                                self.browser, identity, rf["sec_uid"], set(), max_scrolls=2
+                            )
+                        if b_rows:
+                            rows, err = b_rows, ""
+                        elif imode == "browser":
+                            err = b_err
+                    for r in rows[: self.cfg.engine.comment_recent_works]:
+                        aw = parse_ig_aweme(r, require_media=False)
+                        if aw:
+                            cands.append({
+                                "aweme_id": aw.aweme_id,
+                                "xsec_token": "",
+                                "target_comment_id": "",
+                                "target_nick": "",
+                                "ctx": {"kw": rf["keyword"]} if kind == "keyword" else {},
+                                "source_text": aw.desc,
+                            })
+                    return cands, err
+
+                # auto_reply: 回复自己帖子/Reels 收到的评论
+                self_uid_str = str(icli.self_uid or acc_sec_uid or "")
+                works_to_check: list[str] = []
+                err = ""
+                if rf["target_kind"] == "work" and rf["aweme_id"]:
+                    works_to_check = [rf["aweme_id"]]
+                else:
+                    target_self = acc_sec_uid or icli.self_uid
+                    feed_rows: list[dict] = []
+                    if imode in {"api", "hybrid"} and target_self:
+                        feed_rows, _next, _more, err = await icli.fetch_user_feed(target_self)
+                    if (
+                        imode == "browser"
+                        or (imode == "hybrid" and not feed_rows and err)
+                    ) and identity is not None and target_self:
+                        b_rows, _a, b_err = await fetch_ig_posts(
+                            self.browser, identity, target_self, set(), max_scrolls=2
+                        )
+                        if b_rows:
+                            feed_rows, err = b_rows, ""
+                        elif imode == "browser":
+                            err = b_err
+                    cutoff = int(time.time()) - max(0, self.cfg.engine.comment_recent_days) * 86400
+                    for r in feed_rows:
+                        aw = parse_ig_aweme(r, require_media=False)
+                        if aw and (not cutoff or not aw.create_time or aw.create_time >= cutoff):
+                            works_to_check.append(aw.aweme_id)
+                        if len(works_to_check) >= self.cfg.engine.comment_recent_works:
+                            break
+
+                comment_cutoff = int(time.time()) - max(0, self.cfg.engine.comment_recent_days) * 86400
+                for work_code in works_to_check:
+                    c_rows: list[dict] = []
+                    c_err = ""
+                    if imode in {"api", "hybrid"}:
+                        c_rows, c_err = await icli.fetch_comments(
+                            work_code, max_count=40, include_replies=True
+                        )
+                    if (
+                        imode == "browser"
+                        or (imode == "hybrid" and not c_rows and c_err)
+                    ) and identity is not None:
+                        b_c_rows, b_c_err = await fetch_ig_comments(
+                            self.browser, identity, work_code, max_count=40
+                        )
+                        if b_c_rows:
+                            c_rows, c_err = b_c_rows, ""
+                        elif imode == "browser":
+                            c_err = b_c_err
+                    if c_err and not c_rows:
+                        err = err or c_err
+                        continue
+                    for c in c_rows:
+                        cid = str(c.get("comment_id") or "")
+                        if not cid:
+                            continue
+                        ct = int(c.get("create_time") or 0)
+                        if comment_cutoff and ct and ct < comment_cutoff:
+                            continue
+                        if (
+                            (self_uid_str and str(c.get("user_uid") or "") == self_uid_str)
+                            or (acc_sec_uid and str(c.get("user_sec_uid") or "") == acc_sec_uid)
+                            or (acc_nick and c.get("user_nickname") == acc_nick)
+                        ):
+                            continue
+                        cands.append({
+                            "aweme_id": work_code,
+                            "xsec_token": "",
+                            "target_comment_id": cid,
+                            "target_nick": c.get("user_nickname", ""),
+                            "ctx": {"nick": c.get("user_nickname", "")},
+                            "source_text": c.get("text", ""),
+                        })
+                return cands, ("" if cands else err)
         # ── 抖音:浏览器自动化(发现仍用拦截抓取)──
         if mode == "auto_comment":
             if kind == "keyword":
@@ -5747,13 +6457,20 @@ class MonitorEngine:
                 str(getattr(self.cfg.engine, "bilibili_write_mode", "hybrid") or "hybrid").lower()
                 if platform == "bilibili" else "browser"
             )
+            ig_write_mode = (
+                str(getattr(self.cfg.engine, "instagram_write_mode", "hybrid") or "hybrid").lower()
+                if platform == "instagram" else "browser"
+            )
             api_only = (
                 (platform == "douyin" and dy_write_mode == "api")
                 or (platform == "bilibili" and bili_write_mode in {"api", "hybrid"})
+                or (platform == "instagram" and ig_write_mode == "api")
             )
-            environment_error = ("" if api_only else
-                                 self._native_write_environment_error(
-                                     acc, headed=True, browser_mode=True))
+            environment_error = (
+                ""
+                if (api_only or (platform == "instagram" and ig_write_mode == "hybrid"))
+                else self._native_write_environment_error(acc, headed=True, browser_mode=True)
+            )
             if environment_error:
                 self._defer_row(t, environment_error, fallback_seconds=300)
                 s.add(t); s.commit()
@@ -6054,6 +6771,68 @@ class MonitorEngine:
                         )
                     else:
                         ok, err = False, f"未知动作 {action}"
+            elif platform == "instagram" and ig_write_mode in {"api", "hybrid"}:
+                method = "api"
+                icli = InstagramClient(
+                    state,
+                    ua,
+                    proxy=proxy,
+                    timeout=self.cfg.engine.request_timeout_seconds,
+                    account_seed=(
+                        (getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""))
+                        if identity is not None
+                        else ""
+                    ),
+                    timezone_id=(
+                        getattr(identity, "timezone_id", "Asia/Shanghai")
+                        if identity is not None
+                        else "Asia/Shanghai"
+                    ),
+                )
+                async with icli.session_scope():
+                    if action == "follow":
+                        ok, err = await icli.modify_follow(
+                            target_uid or target_sec_uid,
+                            follow=True,
+                            on_submit=lambda: self._mark_write_submit(
+                                AccountActionTask, task_id, channel="api"
+                            ),
+                        )
+                    elif action == "unfollow":
+                        ok, err = await icli.modify_follow(
+                            target_uid or target_sec_uid,
+                            follow=False,
+                            on_submit=lambda: self._mark_write_submit(
+                                AccountActionTask, task_id, channel="api"
+                            ),
+                        )
+                    elif action == "send_dm":
+                        dm_target = dm_conv_id or target_uid or target_sec_uid
+                        ok, err, _meta = await icli.send_dm(
+                            dm_target,
+                            content,
+                            is_thread=bool(dm_conv_id and dm_target == dm_conv_id),
+                            on_submit=lambda: self._mark_write_submit(
+                                AccountActionTask, task_id, channel="api"
+                            ),
+                        )
+                    else:
+                        ok, err = False, f"未知动作 {action}"
+                if (
+                    not ok
+                    and ig_write_mode == "hybrid"
+                    and identity is not None
+                    and not str(err or "").startswith((
+                        "write_uncertain:",
+                        "target_resolution_failed:",
+                        "logged_out:",
+                        "verification_required:",
+                    ))
+                ):
+                    category, _signal = classify_platform_error(err)
+                    if category in {RiskCategory.BUSINESS, RiskCategory.RISK}:
+                        ok, err, method = await _browser_action()
+                        method = "browser_fallback" if method == "browser" else method
             elif platform == "douyin" and dy_write_mode in {"api", "hybrid"}:
                 method = "api"
                 cookie = dy_cookie_from_state(state)
@@ -6245,13 +7024,24 @@ class MonitorEngine:
                 str(getattr(self.cfg.engine, "bilibili_write_mode", "hybrid") or "hybrid").lower()
                 if platform == "bilibili" else "browser"
             )
+            ig_write_mode = (
+                str(getattr(self.cfg.engine, "instagram_write_mode", "hybrid") or "hybrid").lower()
+                if platform == "instagram" else "browser"
+            )
             api_only = (
                 (platform == "douyin" and dy_write_mode == "api")
                 or (platform == "bilibili" and bili_write_mode == "api")
+                or (platform == "instagram" and ig_write_mode == "api")
             )
-            environment_error = ("" if (api_only or (platform == "bilibili" and bili_write_mode == "hybrid")) else
-                                 self._native_write_environment_error(
-                                     acc, headed=True, browser_mode=True))
+            environment_error = (
+                ""
+                if (
+                    api_only
+                    or (platform == "bilibili" and bili_write_mode == "hybrid")
+                    or (platform == "instagram" and ig_write_mode == "hybrid")
+                )
+                else self._native_write_environment_error(acc, headed=True, browser_mode=True)
+            )
             if environment_error:
                 self._defer_row(t, environment_error, fallback_seconds=300)
                 s.add(t); s.commit()
@@ -6273,7 +7063,12 @@ class MonitorEngine:
             direct_environment = douyin_client_environment(acc)
             native_mode = acc.identity_mode == "native"
             # API-only 评论不启动账号浏览器；hybrid/browser 保留页面回退所需身份。
-            identity = None if api_only else self.browser.identity_for(acc)
+            identity = (
+                None if api_only
+                else (self.browser.identity_for(acc)
+                      if callable(getattr(self.browser, "identity_for", None))
+                      else None)
+            )
             t.status = "doing"; t.error = ""
             self._clear_row_block(t)
             s.add(t); s.commit()
@@ -6373,6 +7168,71 @@ class MonitorEngine:
                 else:
                     method = "browser"
                     ok, err = await post_bili_comment(
+                        self.browser,
+                        identity,
+                        aweme_id,
+                        content,
+                        on_submit=lambda: self._mark_write_submit(
+                            CommentTask, task_id, channel="browser"
+                        ),
+                    )
+                    result = "ok" if ok else ""
+            elif platform == "instagram":
+                if ig_write_mode in {"api", "hybrid"}:
+                    method = "api"
+                    icli = InstagramClient(
+                        state,
+                        ua,
+                        proxy=proxy,
+                        timeout=self.cfg.engine.request_timeout_seconds,
+                        account_seed=(
+                            (getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""))
+                            if identity is not None
+                            else ""
+                        ),
+                        timezone_id=(
+                            getattr(identity, "timezone_id", "Asia/Shanghai")
+                            if identity is not None
+                            else "Asia/Shanghai"
+                        ),
+                    )
+                    async with icli.session_scope():
+                        ok, err, cmeta = await icli.post_comment(
+                            aweme_id,
+                            content,
+                            reply_to=target_cid,
+                            on_submit=lambda: self._mark_write_submit(
+                                CommentTask, task_id, channel="api"
+                            ),
+                        )
+                        result = str(cmeta.get("comment_id") or "ok") if ok else ""
+                    if (
+                        not ok
+                        and ig_write_mode == "hybrid"
+                        and identity is not None
+                        and not target_cid
+                        and not str(err or "").startswith((
+                            "write_uncertain:",
+                            "logged_out:",
+                            "verification_required:",
+                        ))
+                    ):
+                        category, _ = classify_platform_error(err)
+                        if category in {RiskCategory.BUSINESS, RiskCategory.RISK}:
+                            ok, err = await post_ig_comment(
+                                self.browser,
+                                identity,
+                                aweme_id,
+                                content,
+                                on_submit=lambda: self._mark_write_submit(
+                                    CommentTask, task_id, channel="browser"
+                                ),
+                            )
+                            method = "browser_fallback"
+                            result = "ok" if ok else ""
+                else:
+                    method = "browser"
+                    ok, err = await post_ig_comment(
                         self.browser,
                         identity,
                         aweme_id,
@@ -6628,10 +7488,58 @@ class MonitorEngine:
                 not media_json or not aw.medias)
             needs_bili_refetch = platform == "bilibili" and (
                 not media_json or not aw.medias)
+            needs_ig_refetch = platform == "instagram" and (
+                not media_json or not aw.medias)
             rec.download_status = "downloading"
-            if not needs_xhs_refetch and not needs_bili_refetch:
+            if not needs_xhs_refetch and not needs_bili_refetch and not needs_ig_refetch:
                 rec.retry_count = (rec.retry_count or 0) + 1
             s.add(rec); s.commit()
+
+        if platform == "instagram" and (not media_json or not aw.medias):
+            icli = InstagramClient(
+                acc_state,
+                (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
+                proxy=acc_proxy,
+                timeout=self.cfg.engine.request_timeout_seconds,
+                account_seed=(
+                    (getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""))
+                    if identity is not None
+                    else (acc.fp_seed or acc.profile_dir or "" if acc else "")
+                ),
+                timezone_id=(
+                    getattr(identity, "timezone_id", "Asia/Shanghai")
+                    if identity is not None
+                    else (acc.timezone_id or "Asia/Shanghai" if acc else "Asia/Shanghai")
+                ),
+            )
+            async with icli.session_scope():
+                aw2, _raw_m, ig_err = await icli.fetch_media_info(note_id)
+            if aw2 and aw2.medias:
+                aw = aw2
+                media_json = json.dumps([
+                    {
+                        "url": m.url,
+                        "kind": m.kind,
+                        "ext": m.ext,
+                        "index": m.index,
+                    }
+                    for m in aw.medias
+                ])
+                with get_session() as s:
+                    rec = s.get(ContentRecord, record_id)
+                    if rec:
+                        rec.retry_count = (rec.retry_count or 0) + 1
+                        rec.media_json = media_json
+                        s.add(rec); s.commit()
+            else:
+                with get_session() as s:
+                    rec = s.get(ContentRecord, record_id)
+                    if rec:
+                        rec.retry_count = (rec.retry_count or 0) + 1
+                        rec.download_status = "failed"
+                        rec.error = ig_err or "重拉 Instagram 作品详情仍无可用媒体直链"
+                        s.add(rec); s.commit()
+                return {"ok": False, "error": ig_err or "重拉 Instagram 作品详情仍无可用媒体直链"}
 
         if platform == "bilibili" and (not media_json or not aw.medias):
             bcli = BilibiliClient(
@@ -6760,6 +7668,9 @@ class MonitorEngine:
             if acc_state:
                 download_cookies = bili_cookie_map(acc_state)
             download_referer = aw.source_url or f"https://www.bilibili.com/video/{note_id}"
+        elif platform == "instagram":
+            download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
+            download_referer = "https://www.instagram.com/"
         ok, path, err = await self.downloader.download_aweme(
             aw, base_dir, self._dl_proxy(acc_proxy), user_agent=download_ua,
             cookies=download_cookies, referer=download_referer)
@@ -6773,6 +7684,20 @@ class MonitorEngine:
             )
             async with bcli_refresh.session_scope():
                 aw_fresh, _ = await bcli_refresh.fetch_aweme_by_work(note_id, with_play_url=True)
+            if aw_fresh and aw_fresh.medias:
+                aw = aw_fresh
+                ok, path, err = await self.downloader.download_aweme(
+                    aw, base_dir, self._dl_proxy(acc_proxy), user_agent=download_ua,
+                    cookies=download_cookies, referer=download_referer)
+        elif not ok and platform == "instagram" and not needs_ig_refetch and "403" in str(err):
+            icli_refresh = InstagramClient(
+                acc_state,
+                download_ua or self.cfg.engine.user_agent,
+                proxy=acc_proxy,
+                timeout=self.cfg.engine.request_timeout_seconds,
+            )
+            async with icli_refresh.session_scope():
+                aw_fresh, _raw_m, _ = await icli_refresh.fetch_media_info(note_id)
             if aw_fresh and aw_fresh.medias:
                 aw = aw_fresh
                 ok, path, err = await self.downloader.download_aweme(

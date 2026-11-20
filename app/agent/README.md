@@ -53,8 +53,6 @@ Windows 安装包的 AI 助手无新增 Python 依赖。MCP SDK 放在独立环�
 - 旧版记录可查看；缺少范围指纹的旧记录会开启新对话，不隐式转发旧历史。启动时现有 SQLite 迁移补充会话列与索引，保留旧消息。
 - Markdown 仅支持标题、列表、粗体、行内代码和代码块；内容按 React 文本渲染，不解析 HTML、不加载外部图片、不执行代码。回复和代码复制只由用户点击触发。
 
-交互参考 [Hermes Desktop 的聊天 / 会话布局](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/desktop.md) 与 [会话恢复说明](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/sessions.md)。本项目独立实现这些交互，不引入 Hermes 后端或其终端执行能力。
-
 ## 仅流式请求
 
 - 三种推理协议及连通测试统一发送 `stream=true`，只接受 SSE；没有非流式开关、JSON 推理回退或错误后重新生成。模型目录、配置、历史和创建运行回执仍是普通 JSON API，不是推理回退。
@@ -128,7 +126,7 @@ Windows 安装包的 AI 助手无新增 Python 依赖。MCP SDK 放在独立环�
 
 更新代码后若模型目录提示本地 `404 / Not Found`，先重启后端，再强制刷新网页：旧进程可能没有加载 `POST /api/agent/models`，仅刷新静态前端不会注册新路由。上游目录在路径兼容尝试后仍为 404，则由本地接口返回 502 并显示「上游返回 404」；这时检查自定义路径及上游是否开放目录，而非直接判断密钥无效。
 
-实现对照：[Sub2API 网关路由](https://github.com/Wei-Shaw/sub2api/blob/main/backend/internal/server/routes/gateway.go) 同时开放根路径与 `/v1` 模型目录；[鉴权中间件](https://github.com/Wei-Shaw/sub2api/blob/main/backend/internal/server/middleware/api_key_auth.go) 接受 Bearer 与 `x-api-key`。[Hermes 提供商基础类](https://github.com/NousResearch/hermes-agent/blob/main/providers/base.py) 按提供商获取目录，[Anthropic 实现](https://github.com/NousResearch/hermes-agent/blob/main/plugins/model-providers/anthropic/__init__.py) 使用原生鉴权与独立路径处理。本项目借鉴其协议分离思路，不按模型名称前缀擅自过滤目录，继续保留响应大小、限时和不跨域转发密钥的边界。
+网关路由兼容根路径与 `/v1` 模型目录，鉴权同时支持 Bearer 与 `x-api-key`；Anthropic 渠道使用原生鉴权头与独立路径处理，不按模型名称前缀擅自过滤目录，保留响应大小、限时和不跨域转发密钥的安全边界。
 
 协议参考：[OpenAI 模型列表](https://developers.openai.com/api/reference/python/resources/models/methods/list)、[OpenAI 鉴权](https://developers.openai.com/api/reference/overview)、[Anthropic 模型列表](https://platform.claude.com/docs/en/api/models/list)。
 

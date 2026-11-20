@@ -3,7 +3,7 @@
 登录态(含 a1 / web_session 等 Cookie)来自浏览器扫码登录后的 storage_state。
 
 这是显式启用的兼容通道，默认读取仍复用账号浏览器。
-接口适配参考 Spider_XHS；签名、请求字段与会话约定需要一起验证，
+签名、请求字段与会话约定需要一起验证，
 本地签名函数可运行并不代表平台当前接受该请求。
 
 ⚠️ TLS 指纹:走 curl_cffi 的 impersonate,复刻真实 Chrome 的 JA3/HTTP2 指纹。
@@ -137,7 +137,7 @@ class XhsApiClient:
             use_execjs = False
         if use_execjs:
             from . import creator_sign
-            # 网页主签名(xhs_main_260411.js)+ method=GET,对"路径?query"签名(对齐 Spider_XHS)
+            # 网页主签名(xhs_main_260411.js)+ method=GET,对"路径?query"签名
             spliced = creator_sign.splice_str(uri, params)
             a1 = creator_sign.trans_cookies(self.cookie_str).get("a1", "")
             headers = {**self.base_headers,

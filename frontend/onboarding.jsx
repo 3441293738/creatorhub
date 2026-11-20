@@ -9,6 +9,7 @@ const platforms = {
   shipinhao: { name: "视频号", task: "同步作品或解析分享链接", target: "hub", hint: "可在我的内容同步本账号作品；也可粘贴 weixin.qq.com/sph/... 分享链解析预览，或连接本地微信 Finder 协议采集搜索、主页、评论并离线解密视频。" },
   tiktok: { name: "TikTok", task: "完成首次关键词视频采集", target: "collections", hint: "登录 TikTok 账号后，输入 1 个关键词做小规模视频与评论采集，再按需开启媒体下载。" },
   bilibili: { name: "哔哩哔哩", task: "下载第一条视频或监控弹幕", target: "share-download", hint: "粘贴整段哔哩哔哩分享文案或 BV 号到链接下载，也可在弹幕监控中拉取视频时间轴弹幕。" },
+  instagram: { name: "Instagram", task: "下载第一条帖子或采集话题", target: "share-download", hint: "登录 Instagram 账号后，粘贴 /p/ 或 /reel/ 链接到链接下载保存原图、轮播或视频，也可在关键词采集中搜索 #话题。" },
 };
 function savedState() {
   try {

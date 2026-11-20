@@ -1,4 +1,4 @@
-"""数据模型 (SQLModel)。精简自逆向的 DouyinAccount / MonitorTarget / ContentRecord。"""
+"""SQLModel 持久化数据模型定义。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -279,7 +279,7 @@ class RiskAdminAudit(SQLModel, table=True):
 
 
 class NotificationChannel(SQLModel, table=True):
-    """通知渠道。对应逆向 model.NotificationChannel。"""
+    """外部消息通知渠道配置表。"""
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = ""
     type: str = "bark"             # bark | dingtalk | telegram
@@ -367,6 +367,7 @@ class PublishTask(SQLModel, table=True):
     allow_duet: bool = True                            # TikTok:允许 Duet
     allow_stitch: bool = True                          # TikTok:允许 Stitch
     bili_options_json: str = "{}"                      # B站投稿扩展参数(tid/copyright/source/recreate/声明/互动开关等)
+    ig_options_json: str = "{}"                        # Instagram发布扩展参数(post_kind=auto|reel|post|story, share_to_feed等)
     scheduled_at: Optional[datetime] = None            # UTC；空=尽快发
     scheduled_at_is_utc: bool = True  # 存量无时区预约需要人工确认，不自动猜时区
     status: str = "pending"        # draft | pending | publishing | uncertain | done | failed | canceled

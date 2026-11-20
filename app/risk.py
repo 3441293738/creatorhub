@@ -142,7 +142,7 @@ def classify_platform_error(
         return RiskCategory.BUSINESS, "ambiguous_browser_result"
     auth_markers = (
         "登录态已失效", "登录已失效", "未登录", "logged_out", "login expired",
-        "session expired", "cookie expired",
+        "session expired", "cookie expired", "login_required",
     )
     if any(marker in text for marker in auth_markers):
         return RiskCategory.AUTH, "auth_expired"
@@ -150,7 +150,7 @@ def classify_platform_error(
     network_markers = (
         "proxyerror", "proxy error", "proxy_auth", "connection timeout",
         "connecttimeout", "readtimeout", "timed out", "dns", "tls",
-        "connection reset", "connection refused", "networkerror",
+        "connection reset", "connection refused", "networkerror", "network_error:",
     )
     if any(marker in text for marker in network_markers):
         return RiskCategory.NETWORK, "network_failure"
@@ -159,8 +159,9 @@ def classify_platform_error(
         "风控", "频控", "访问频繁", "操作频繁", "环境异常", "验证码", "验证",
         "限流", "安全验证", "设备异常", "账号异常", "滑块", "人机验证",
         "risk", "captcha", "security verification", "human verification", "verifycenter",
-        "website-login/captcha", "rate limit", "too frequent", "http 429",
-        "http 403", "status_code=8", "verification_required",
+        "website-login/captcha", "rate limit", "rate_limit", "too frequent", "http 429",
+        "http 403", "status_code=8", "verification_required", "checkpoint_required",
+        "challenge_required", "feedback_required",
     )
     if any(marker in text for marker in risk_markers):
         return RiskCategory.RISK, ("verification_required"

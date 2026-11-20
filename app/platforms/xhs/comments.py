@@ -1,4 +1,4 @@
-"""Bounded comment traversal, adapted from Spider_XHS's root/reply split.
+"""Bounded root-and-reply comment traversal for explicit API mode.
 
 Only the explicit API path uses this module. It never changes login state,
 switches transports or retries a rejected request. Both levels consume the

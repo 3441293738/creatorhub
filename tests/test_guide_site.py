@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlsplit
 
 from preview.build_preview import ROOT, GUIDE, GUIDE_IMAGES, build, build_guide
 
-PLATFORMS = ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili")
+PLATFORMS = ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram")
 
 
 class Links(HTMLParser):
@@ -76,10 +76,10 @@ class GuideSiteTests(unittest.TestCase):
 
     def test_readme_is_concise_entrypoint_with_resolvable_guide_links(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        for text in ("## 平台能力", "## 快速开始", "## 使用文档", "在线预览", "TikTok", "哔哩哔哩"):
+        for text in ("## 平台能力", "## 快速开始", "## 使用文档", "在线预览", "TikTok", "哔哩哔哩", "Instagram"):
             self.assertIn(text, readme)
         for removed in ("## 界面预览", "## 常见问题", "## 基本使用",
-                        "assets/screenshots/", "Spider_XHS"):
+                        "assets/screenshots/"):
             self.assertNotIn(removed, readme)
         with TemporaryDirectory() as tmp:
             target = Path(tmp)
@@ -122,6 +122,18 @@ class GuideSiteTests(unittest.TestCase):
                              "publish", "my-content", "autocomment"}.issubset(parsed.ids))
             content = page.read_text(encoding="utf-8")
             for text in ("哔哩哔哩", "WBI", "BV", "弹幕监控", "创作中心", "结果待确认"):
+                self.assertIn(text, content)
+
+    def test_instagram_page_covers_supported_workflows(self):
+        with TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            build_guide(target)
+            page = target / "instagram" / "index.html"
+            parsed = self.parse(page)
+            self.assertTrue({"download", "monitor", "collection", "comments",
+                             "publish", "my-content", "autocomment"}.issubset(parsed.ids))
+            content = page.read_text(encoding="utf-8")
+            for text in ("Instagram", "Reels", "Sidecar", "Direct", "#hashtag", "结果待确认"):
                 self.assertIn(text, content)
 
     def test_readme_community_uses_direct_qr_images(self):
