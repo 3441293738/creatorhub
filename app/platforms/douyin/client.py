@@ -1372,6 +1372,69 @@ class DouyinClient:
         )
         return data or {}
 
+    @staticmethod
+    def _pos_int(value: Any) -> int:
+        if value is None or isinstance(value, bool):
+            return 0
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return parsed if parsed > 0 else 0
+
+    @staticmethod
+    def _non_neg_int(value: Any) -> Optional[int]:
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+    @classmethod
+    def _next_follow_cursor(cls, page: dict, current_max_time: int,
+                            current_offset: int, count: int,
+                            batch_size: int, *, first_page: bool = False
+                            ) -> tuple[int, int, bool]:
+        # following/list 与 follower/list 按关注时间倒序分页：
+        # 响应里的 max_time 是本页上界，min_time 才是下一页继续向下翻页的上界游标；
+        # 若错取 max_time 搭配服务端返回的同秒 tie-breaker offset=1，会导致每页仅滑动 1 条
+        # 并在遇到同秒记录或边界时陷入重复死循环(pagination_stalled)。
+        min_t = cls._pos_int(page.get("min_time"))
+        max_t = cls._pos_int(page.get("max_time"))
+        if min_t > 0 and max_t > 0:
+            candidate_time = min(min_t, max_t)
+        elif min_t > 0:
+            candidate_time = min_t
+        elif max_t > 0:
+            candidate_time = max_t
+        else:
+            candidate_time = current_max_time
+
+        if not first_page and current_max_time > 0 and candidate_time > current_max_time:
+            next_max_time = current_max_time
+        else:
+            next_max_time = candidate_time
+
+        time_moved = (
+            next_max_time > 0
+            and (
+                current_max_time == 0
+                or next_max_time < current_max_time
+                or (first_page and next_max_time != current_max_time)
+            )
+        )
+        resp_offset = cls._non_neg_int(page.get("offset"))
+        if time_moved:
+            next_offset = resp_offset if resp_offset is not None else 0
+            return next_max_time, next_offset, True
+        if resp_offset is not None and resp_offset > current_offset:
+            return next_max_time, resp_offset, True
+        if resp_offset is None:
+            return next_max_time, current_offset + count, False
+        return next_max_time, current_offset + max(1, batch_size or count), False
+
     async def fetch_all_follows(
             self, user_id: str, sec_uid: str, direction: str,
             max_pages: int = FOLLOW_MAX_PAGES, count: int = 20,
@@ -1396,13 +1459,27 @@ class DouyinClient:
             "pages": 0, "fetched": 0, "has_more": False,
             "complete": False, "stop_reason": "starting",
         }
-        # The fan endpoint expects the first page's upper time cursor. The web
-        # client uses the current Unix timestamp; zero yields HTTP 200 + empty
-        # body even with a valid current signature.
-        max_time = int(time.time()) if not following else 0
+        # Both endpoints paginate backward in time under source_type=1 and
+        # expect the first page's upper time cursor as the current Unix timestamp.
+        max_time = int(time.time())
+        reported_total = 0
+        stagnant_pages = 0
         for page_index in range(page_limit):
             page = await self._follow_page(path, user_id, sec_uid, offset, max_time,
                                            count, source_type=1)
+            if not page and self.last_error:
+                self.last_follow_meta.update(
+                    complete=False, stop_reason=self.last_error)
+                break
+            status_code = page.get("status_code")
+            if status_code not in (None, 0, "0"):
+                self.last_error = f"api_status_{status_code}"
+                self.last_follow_meta.update(
+                    complete=False, stop_reason=self.last_error)
+                break
+            page_total = self._pos_int(page.get("total"))
+            if page_total > 0:
+                reported_total = page_total
             users = page.get(list_key) or []
             new = 0
             fresh: List[dict] = []
@@ -1415,6 +1492,12 @@ class DouyinClient:
                         out.append(u)
                     new += 1
             has_more = bool(page.get("has_more"))
+            reached_reported_total = (
+                has_more and (not users or new == 0)
+                and reported_total > 0 and len(seen) >= reported_total
+            )
+            if reached_reported_total:
+                has_more = False
             meta = {
                 "pages": page_index + 1,
                 "fetched": len(seen),
@@ -1429,13 +1512,21 @@ class DouyinClient:
                     await callback_result
             if not has_more:
                 break
+            next_max_time, next_offset, cursor_advanced = self._next_follow_cursor(
+                page, max_time, offset, count, len(users),
+                first_page=(page_index == 0),
+            )
             if not users or new == 0:
-                self.last_error = "pagination_stalled"
-                self.last_follow_meta.update(
-                    complete=False, stop_reason="pagination_stalled")
-                break
-            offset = page.get("offset") or (offset + count)
-            max_time = page.get("max_time") or max_time
+                stagnant_pages += 1
+                if not cursor_advanced or stagnant_pages >= 3:
+                    self.last_error = "pagination_stalled"
+                    self.last_follow_meta.update(
+                        complete=False, stop_reason="pagination_stalled")
+                    break
+            else:
+                stagnant_pages = 0
+            offset = next_offset
+            max_time = next_max_time
             if page_delay > 0:
                 await asyncio.sleep(page_delay)
         else:

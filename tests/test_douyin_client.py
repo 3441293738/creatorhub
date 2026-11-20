@@ -167,6 +167,108 @@ class DouyinClientSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(client.last_follow_meta["complete"])
         self.assertEqual(client.last_follow_meta["stop_reason"], "page_limit")
 
+    async def test_following_list_uses_min_time_cursor_without_sliding_one_by_one(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client.fetch_profile = AsyncMock(return_value={"uid": "uid-self"})
+        # Simulate real Douyin following/list keyset pagination:
+        # max_time is the newest item on the page, min_time is the oldest item,
+        # and offset is the tie-breaker count at min_time (e.g. 1, or 2 when two
+        # accounts were followed in the exact same second).
+        # Place a same-second timestamp tie right across the page-1/page-2
+        # boundary (index 19 and 20) and inside page 3 (index 40 and 41).
+        all_items = [
+            (f"follow-{i}",
+             1_700_001_000 - (19 if i == 20 else 40 if i == 41 else i))
+            for i in range(185)
+        ]
+
+        async def fake_follow_page(path, user_id, sec_uid, offset, max_time,
+                                   count, source_type):
+            self.assertEqual(path, "/aweme/v1/web/user/following/list/")
+            eligible = [item for item in all_items if item[1] <= max_time]
+            window = eligible[offset:offset + count]
+            has_more = int(offset + len(window) < len(eligible))
+            if not window:
+                return {"status_code": 0, "followings": [], "has_more": 0,
+                        "min_time": 0, "max_time": 0, "offset": 0, "total": 185}
+            bottom_ts = window[-1][1]
+            ties_in_window = sum(1 for _, ts in window if ts == bottom_ts)
+            prior_ties = sum(1 for _, ts in eligible[:offset] if ts == bottom_ts)
+            return {
+                "status_code": 0,
+                "followings": [{"uid": uid} for uid, _ in window],
+                "has_more": has_more,
+                "max_time": window[0][1],
+                "min_time": bottom_ts,
+                "offset": prior_ties + ties_in_window,
+                "total": 185,
+            }
+
+        client._follow_page = AsyncMock(side_effect=fake_follow_page)
+        with patch("app.platforms.douyin.client.time.time",
+                   return_value=1_700_002_000):
+            rows = await client.fetch_all_follows(
+                "", "sec-self", "following", page_delay=0)
+
+        self.assertEqual([row["uid"] for row in rows],
+                         [f"follow-{i}" for i in range(185)])
+        self.assertEqual(client._follow_page.await_count, 10)
+        self.assertEqual(client.last_error, "")
+        self.assertTrue(client.last_follow_meta["complete"])
+        self.assertEqual(client.last_follow_meta["pages"], 10)
+
+    async def test_following_list_completes_when_total_reached_with_stale_has_more(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client.fetch_profile = AsyncMock(return_value={"uid": "uid-self"})
+        client._follow_page = AsyncMock(side_effect=[
+            {"status_code": 0,
+             "followings": [{"uid": f"f-{i}"} for i in range(20)],
+             "has_more": 1, "max_time": 2000, "min_time": 1900,
+             "offset": 0, "total": 20},
+            {"status_code": 0,
+             "followings": [],
+             "has_more": 1, "max_time": 1900, "min_time": 1900,
+             "offset": 0, "total": 20},
+        ])
+
+        rows = await client.fetch_all_follows(
+            "", "sec-self", "following", page_delay=0)
+
+        self.assertEqual(len(rows), 20)
+        self.assertEqual(client.last_error, "")
+        self.assertTrue(client.last_follow_meta["complete"])
+
+    async def test_following_list_skips_sparse_empty_bucket_when_cursor_moves(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client.fetch_profile = AsyncMock(return_value={"uid": "uid-self"})
+        client._follow_page = AsyncMock(side_effect=[
+            {"status_code": 0, "followings": [{"uid": "f-1"}],
+             "has_more": 1, "max_time": 2000, "min_time": 1900, "offset": 0},
+            {"status_code": 0, "followings": [],
+             "has_more": 1, "max_time": 1900, "min_time": 1800, "offset": 0},
+            {"status_code": 0, "followings": [{"uid": "f-2"}],
+             "has_more": 0, "max_time": 1800, "min_time": 1700, "offset": 0},
+        ])
+
+        rows = await client.fetch_all_follows(
+            "", "sec-self", "following", page_delay=0)
+
+        self.assertEqual([row["uid"] for row in rows], ["f-1", "f-2"])
+        self.assertEqual(client.last_error, "")
+        self.assertTrue(client.last_follow_meta["complete"])
+
+    async def test_following_list_reports_business_status_error(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client.fetch_profile = AsyncMock(return_value={"uid": "uid-self"})
+        client._follow_page = AsyncMock(return_value={"status_code": 2096})
+
+        rows = await client.fetch_all_follows(
+            "", "sec-self", "following", page_delay=0)
+
+        self.assertEqual(rows, [])
+        self.assertEqual(client.last_error, "api_status_2096")
+        self.assertFalse(client.last_follow_meta["complete"])
+
     async def test_current_abogus_wire_format_is_used(self):
         signature = ABogus(
             user_agent="Mozilla/5.0 Chrome/152.0.0.0",

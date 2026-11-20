@@ -169,6 +169,50 @@ class FollowSyncTests(unittest.TestCase):
         engine.locked_direct.assert_awaited_once_with(self.account_id, "following")
         browser_fetch.assert_awaited_once()
 
+    def test_hybrid_following_stalled_partial_falls_back_to_browser(self):
+        engine = _Engine()
+        engine.locked_direct = AsyncMock(return_value=(
+            [_user(f"partial-{i}") for i in range(185)],
+            "pagination_stalled",
+        ))
+        engine._fetch_douyin_follows_direct_locked = engine.locked_direct
+        main.engine = engine
+        browser_users = [_user(f"full-{i}", f"关注 {i}") for i in range(220)]
+        browser_fetch = AsyncMock(return_value=(browser_users, ""))
+
+        with patch("app.main.fetch_follows", browser_fetch):
+            result = asyncio.run(main.sync_follows(self.account_id, "following"))
+
+        self.assertEqual(result["fetched"], 220)
+        self.assertEqual(result["stored"], 220)
+        self.assertEqual(result["source"], "browser_fallback")
+        browser_fetch.assert_awaited_once()
+
+    def test_hybrid_stalled_partial_preserves_existing_rows_when_browser_also_fails(self):
+        with db.get_session() as session:
+            session.add(FollowEdge(
+                platform="douyin", account_id=self.account_id,
+                direction="following", uid="old-follow", nickname="原关注"))
+            session.commit()
+        engine = _Engine()
+        engine.locked_direct = AsyncMock(return_value=(
+            [_user("partial-1")], "pagination_stalled"))
+        engine._fetch_douyin_follows_direct_locked = engine.locked_direct
+        main.engine = engine
+        browser_fetch = AsyncMock(return_value=([], ""))
+
+        with patch("app.main.fetch_follows", browser_fetch):
+            with self.assertRaises(HTTPException) as caught:
+                asyncio.run(main.sync_follows(self.account_id, "following"))
+
+        self.assertEqual(caught.exception.status_code, 502)
+        self.assertIn("pagination_stalled", str(caught.exception.detail))
+        with db.get_session() as session:
+            rows = session.exec(select(FollowEdge).where(
+                FollowEdge.account_id == self.account_id,
+                FollowEdge.direction == "following")).all()
+        self.assertEqual([row.uid for row in rows], ["old-follow"])
+
     def test_ambiguous_empty_preserves_existing_snapshot_and_reports_failure(self):
         engine = _Engine()
         main.engine = engine
@@ -371,6 +415,21 @@ class FollowDirectErrorTests(unittest.TestCase):
 
         self.assertEqual(users, [])
         self.assertEqual(error, "empty_body")
+
+    def test_norm_follow_user_preserves_reset_account_with_sec_uid(self):
+        from app.browser.account_hub import _norm_follow_user
+
+        user = _norm_follow_user(
+            {"uid": "0", "sec_uid": "MS4wLjABreset", "nickname": "",
+             "unique_id": "dy_reset_01"},
+            "following",
+        )
+        self.assertIsNotNone(user)
+        self.assertEqual(user["uid"], "MS4wLjABreset")
+        self.assertEqual(user["nickname"], "dy_reset_01")
+        self.assertTrue(user["is_following"])
+        # Non-user module entries without sec_uid and without nickname stay rejected.
+        self.assertIsNone(_norm_follow_user({"id": "42"}, "following"))
 
 
 class FollowSyncUiTests(unittest.TestCase):

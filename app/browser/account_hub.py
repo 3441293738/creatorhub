@@ -474,10 +474,15 @@ def _norm_follow_user(d: dict, direction: str) -> Optional[dict]:
     for k in _ID_KEYS:
         if d.get(k):
             uid = str(d[k]); break
+    sec_uid = str(d.get("sec_uid") or d.get("secUid") or "")
+    if not uid or uid == "0":
+        uid = sec_uid
     nickname = ""
     for k in _NAME_KEYS:
         if d.get(k):
             nickname = str(d[k]); break
+    if not nickname and sec_uid:
+        nickname = str(d.get("unique_id") or d.get("short_id") or "已重置用户")
     if not uid or not nickname:
         return None
     # 关系判定:多平台字段兜底
@@ -774,6 +779,7 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
     error = ""
     precise_response_seen = False
     precise_empty_confirmed = False
+    douyin_has_more: Optional[bool] = None
     precise_response_event = asyncio.Event()
     page = await mgr.new_page(identity, block_media=platform != "xhs")
     if platform == "xhs":
@@ -805,7 +811,7 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         return False
 
     async def on_response(resp):
-        nonlocal precise_response_seen, precise_empty_confirmed
+        nonlocal precise_response_seen, precise_empty_confirmed, douyin_has_more
         u = resp.url
         if host not in u or resp.request.resource_type not in ("xhr", "fetch"):
             return
@@ -843,6 +849,8 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
             expected_key = "followers" if direction == "fan" else "followings"
             if platform == "douyin" and isinstance(data.get(expected_key), list):
                 precise_empty_confirmed = len(data[expected_key]) == 0
+                if "has_more" in data:
+                    douyin_has_more = bool(data.get("has_more"))
             elif platform == "kuaishou" and isinstance(data.get("fols"), list):
                 precise_empty_confirmed = len(data["fols"]) == 0
         found: List[dict] = []
@@ -957,7 +965,12 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                     }
 
         stagnant = 0
-        for _ in range(max_scrolls):
+        scroll_limit = (max(max_scrolls, 300)
+                        if platform == "douyin" and max_scrolls == 40
+                        else max_scrolls)
+        for _ in range(scroll_limit):
+            if platform == "douyin" and douyin_has_more is False:
+                break
             before = len(collected) + len(broad) + len(scraped)
             try:
                 if platform == "xhs":

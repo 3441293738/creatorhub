@@ -4325,14 +4325,16 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
                             account_id, direction, progress=direct_progress))
             except Exception as e:
                 direct_users, direct_err = [], repr(e)
-            # “empty”表示结构有效的空列表；empty_body/网络/解析错误不是有效快照。
-            if direct_users or direct_err == "empty":
+            # “empty”表示结构有效的空列表；empty_body/网络/半途停滞等错误不是有效快照。
+            # Hybrid 模式下若直连半途报 pagination_stalled 等错误，允许继续回退浏览器拦截；
+            # 仅当明确触及单次分页硬上限(page_limit)或处于纯 API 模式时直接返回由上层报错保旧数据。
+            if (direct_users and not direct_err) or direct_err == "empty":
                 source = "api"
                 return direct_users, direct_err
-            if effective_mode == "api":
+            if effective_mode == "api" or direct_err.startswith("page_limit:"):
                 source = "api"
-                return [], direct_err or "empty_response"
-            print(f"[follow] douyin direct 空({direct_err}),回退浏览器拦截")
+                return direct_users, direct_err or "empty_response"
+            print(f"[follow] douyin direct 未完成({direct_err}, got={len(direct_users)}),回退浏览器拦截")
         elif platform == "bilibili" and effective_mode in {"api", "hybrid"} and bili_state:
             report(phase="fetching", source="api")
             bcli = BilibiliClient(
