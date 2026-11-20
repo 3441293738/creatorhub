@@ -1395,6 +1395,18 @@ kbd, .key-button {
   flex: 1;
   word-break: break-all;
 }
+.directory-section {
+  padding-bottom: 20px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.directory-note {
+  margin-top: 10px;
+}
+.update-target-dir code {
+  font: 11.5px/1.6 "SF Mono", Consolas, monospace;
+  word-break: break-all;
+}
 .data-list { margin: 24px 0; }
 .data-list dt { font: 600 12px "SF Mono", Consolas, monospace; margin-top: 16px; }
 .data-list dd { margin: 5px 0; color: var(--muted); font-size: 12px; line-height: 1.75; }

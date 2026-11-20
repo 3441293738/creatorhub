@@ -263,6 +263,62 @@ class WindowsReleaseTests(unittest.TestCase):
         self.assertIn('MIT License', license_path.read_text(encoding='utf-8'))
         self.assertIn('ChineseSimplified-LICENSE.txt', (ROOT / 'desktop/build_windows.py').read_text(encoding='utf-8'))
 
+    def test_installer_supports_custom_directory_selection_and_safeguards(self):
+        installer = (ROOT / 'desktop/installer.iss').read_text(encoding='utf-8')
+        for directive in ('DisableWelcomePage=no', 'DisableDirPage=no', 'AppendDefaultDirName=yes',
+                          'UsePreviousAppDir=yes', 'DirExistsWarning=no',
+                          'EnableDirDoesntExistWarning=no', 'AllowUNCPath=no',
+                          'WizardStyle=modern', 'WizardSizePercent=118,118'):
+            with self.subTest(directive=directive):
+                self.assertIn(directive, installer)
+        self.assertNotIn('DisableDirPage=yes', installer)
+        tasks = installer.split('[Tasks]', 1)[1].split('[Icons]', 1)[0]
+        self.assertIn('Name: "desktopicon"', tasks)
+        self.assertNotIn('checkedonce', tasks)
+        for hook in ('procedure InitializeWizard()', 'function NextButtonClick(',
+                     'function UpdateReadyMemo(', 'procedure CurPageChanged(',
+                     'procedure CurStepChanged(', 'GetSpaceOnDisk64(',
+                     'CanWriteTargetDir(', 'HasForeignEntries(', 'IsCreatorHubRunning(',
+                     'CleanupRelocatedOldInstall()'):
+            with self.subTest(hook=hook):
+                self.assertIn(hook, installer)
+        # Every CustomMessage('Key') in [Code] must exist in [CustomMessages] with Chinese text.
+        custom_block = installer.split('[CustomMessages]', 1)[1].split('[Files]', 1)[0]
+        defined = dict(re.findall(r'^([A-Za-z0-9_]+)=(.+)$', custom_block, re.M))
+        referenced = set(re.findall(r"CustomMessage\('([A-Za-z0-9_]+)'\)", installer))
+        self.assertTrue(referenced.issubset(defined), referenced - set(defined))
+        for key in referenced:
+            with self.subTest(custom_message=key):
+                self.assertRegex(defined[key], r'[\u4e00-\u9fff]')
+                # Guard against unescaped %ENV% tokens in Inno [CustomMessages].
+                invalid_tokens = re.findall(r'%(?![1-9n%])', defined[key])
+                self.assertEqual(invalid_tokens, [], f'Unescaped % in {key}: {defined[key]}')
+
+    def test_installer_brand_assets_generate_multi_dpi_wizard_graphics(self):
+        import tempfile
+        from PIL import Image
+        from desktop.installer_assets import write_installer_assets
+        installer = (ROOT / 'desktop/installer.iss').read_text(encoding='utf-8')
+        builder = (ROOT / 'desktop/build_windows.py').read_text(encoding='utf-8')
+        compile_step = next(s for s in self.jobs['windows']['steps'] if s.get('name') == 'Compile installer')
+        self.assertIn('write_installer_assets(staging)', builder)
+        self.assertIn('python desktop/installer_assets.py', compile_step['run'])
+        for directive in ('SetupIconFile={#IconPath}',
+                          'WizardSmallImageFile={#Small100},{#Small150},{#Small200}',
+                          'WizardImageFile={#Banner100},{#Banner150},{#Banner200}'):
+            self.assertIn(directive, installer)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = write_installer_assets(Path(tmp))
+            self.assertTrue(paths['icon'].is_file())
+            with Image.open(paths['small_100']) as img:
+                self.assertEqual((img.format, img.size, img.mode), ('BMP', (58, 58), 'RGB'))
+            with Image.open(paths['small_200']) as img:
+                self.assertEqual((img.format, img.size, img.mode), ('BMP', (124, 124), 'RGB'))
+            with Image.open(paths['banner_100']) as img:
+                self.assertEqual((img.format, img.size, img.mode), ('BMP', (164, 314), 'RGB'))
+            with Image.open(paths['banner_200']) as img:
+                self.assertEqual((img.format, img.size, img.mode), ('BMP', (328, 628), 'RGB'))
+
 
 if __name__ == '__main__':
     unittest.main()

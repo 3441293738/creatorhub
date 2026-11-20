@@ -4,7 +4,7 @@
 
 ## 普通用户
 
-安装向导默认使用简体中文，默认安装到当前用户目录，跳过路径和开始菜单目录选择，保留快捷方式、安装/卸载按钮与 WebView2 错误提示。语言资源随仓库固定保存，不依赖构建机是否装有中文语言包。
+安装向导默认使用简体中文，配备多倍清品牌图标与横幅，默认安装到当前用户目录，并支持自定义选择任意可写的本地磁盘目录（提供非系统盘快捷切换、实时可用空间提示、读写权限与用户数据目录冲突预检，以及更换安装目录后可选清理旧程序文件）。语言资源随仓库固定保存，不依赖构建机是否装有中文语言包。
 
 1. 安装已发布的 `CreatorHub-Setup-版本-windows-x64.exe`，通过桌面快捷方式启动。
 2. 无需自行安装 Python 或 Node。安装器检测 Microsoft Edge WebView2 Runtime，缺少时自动通过随包附带的微软引导程序联网安装。浏览器自动化优先复用已验证可启动的系统 Chrome；仅在需要默认浏览器的操作中补齐缺失的 Patchright Chromium。小红书仍使用系统稳定版 Chrome/CDP，不以 Chromium 替代该要求。
@@ -48,6 +48,7 @@ python desktop/smoke_windows.py dist/windows/CreatorHub/CreatorHub.exe
 
 ```powershell
 & ./desktop/prepare_webview2.ps1
+python desktop/installer_assets.py
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.2.0 desktop/installer.iss
 ```
 

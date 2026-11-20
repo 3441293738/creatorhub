@@ -60,6 +60,7 @@ def read_request(filename):
     if (stage.parent != (data["home"] / "runtime" / "updates").resolve()
             or not re.fullmatch(r"update-[a-f0-9]{32}", stage.name)
             or data["home"].is_relative_to(data["install_dir"])
+            or data["install_dir"].is_relative_to(data["home"])
             or stage.is_relative_to(data["install_dir"])):
         raise ValueError("Update staging must be outside the application")
     target = numeric_version(data.get("version"))

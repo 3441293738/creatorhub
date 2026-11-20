@@ -73,7 +73,7 @@
 
     <section id="install">
       <div class="eyebrow">01 / SETUP</div><h2>安装与启动</h2>
-      <div class="note"><strong>Windows 10/11 x64 用户推荐安装版：</strong>到 <a href="https://github.com/3441293738/creatorhub/releases/latest">最新正式版下载页</a>，在 Assets 下载 <code>CreatorHub-Setup-版本-windows-x64.exe</code>，双击安装后使用桌面快捷方式启动。无需手动安装 Python 或构建源码；缺少 WebView2 时安装器自动联网安装。新版会直接准备工作台，优先复用系统 Chrome，仅在需要时补齐浏览器组件；旧版请点击“启动本地服务”。组件下载时请保持联网，启动中心可查看进度和取消；<code>Source code (zip)</code> 是源码，不是安装程序。后续更新见<a href="#backup">更新与备份</a>。</div>
+      <div class="note"><strong>Windows 10/11 x64 用户推荐安装版：</strong>到 <a href="https://github.com/3441293738/creatorhub/releases/latest">最新正式版下载页</a>，在 Assets 下载 <code>CreatorHub-Setup-版本-windows-x64.exe</code>，双击运行安装向导（支持自定义选择安装目录，如 D 盘等非系统盘；账号与配置数据独立保存），完成后使用快捷方式启动。无需手动安装 Python 或构建源码；缺少 WebView2 时安装器自动联网安装。新版会直接准备工作台，优先复用系统 Chrome，仅在需要时补齐浏览器组件；旧版请点击“启动本地服务”。组件下载时请保持联网，启动中心可查看进度和取消；<code>Source code (zip)</code> 是源码，不是安装程序。后续更新见<a href="#backup">更新与备份</a>。</div>
       <details><summary>源码安装：开发者 / macOS / Linux（Windows 安装版用户跳过）</summary>
       <h3>准备什么？</h3>
       <ul><li>一台带桌面环境的 Windows、macOS 或 Linux 电脑，以及能正常访问对应平台的网络。</li><li>Python 3.10 或以上。Windows 安装 Python 时勾选 <code>Add Python to PATH</code>，安装后重新打开终端。</li><li>小红书用户建议准备本机稳定版 Google Chrome。首次安装会下载 Python 依赖和浏览器，请预留时间和磁盘空间。</li></ul>
@@ -356,7 +356,7 @@ proxies: []</code></pre>
       <h2>更新、备份与恢复</h2>
       <h3>Windows 安装版</h3>
       <p>从 v0.2.0 起，默认每天后台检查一次版本，只提醒、不自动下载。看到提醒后点击“一键更新”，下载完成再确认“安装并重启”；也可在“偏好设置 → 版本与更新”关闭自动检查或手动检查。下载支持增量优先、完整包兜底和断点续传，更新保留用户数据。没有一键更新入口的旧版先“停止并退出”，再运行新版安装包。</p>
-      <p>安装版默认用户目录是 <code>%LOCALAPPDATA%/CreatorHub/user-data/</code>，配置与 <code>data/</code> 在此，不在安装程序目录中。设置过 <code>CREATORHUB_DESKTOP_HOME</code> 时按实际位置备份；自定义媒体或 Profile 路径也需单独保留。</p>
+      <p>安装版默认用户目录是 <code>%LOCALAPPDATA%/CreatorHub/user-data/</code>，配置与 <code>data/</code> 在此，不在程序安装目录中；即使安装时自定义选择了其他磁盘目录（或重新运行安装包迁移程序位置），原有用户数据也完整保留，一键更新会原地更新当前程序安装目录。可在启动中心「文件与数据」同时查看程序安装目录与用户数据目录；设置过 <code>CREATORHUB_DESKTOP_HOME</code> 时按实际位置备份，自定义媒体或 Profile 路径也需单独保留。</p>
       <h3>源码版：先备份，再更新</h3><ol><li>暂停重要任务并停止本地服务，避免复制正在写入的数据库。</li><li>将 <code>config.yaml</code> 和整个 <code>data/</code> 复制到项目之外的私人备份目录。若自定义了数据库、媒体或 Profile 路径，也要备份这些实际目录。</li><li>记录当前版本或提交号。Git 安装用户在工作区无待处理修改时执行 <code>git pull --ff-only</code>；有冲突先处理，不要强行覆盖。</li><li>ZIP 安装用户将新版本解压到新目录，再把备份的配置与数据复制进去；不复用旧的 <code>.venv</code>。</li><li>运行安装命令更新依赖，然后正常启动，检查账号、配置和历史记录。</li></ol>
       <pre><code># Windows
 .\start.cmd install

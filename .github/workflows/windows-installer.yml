@@ -148,6 +148,8 @@ jobs:
           if (!(Test-Path $compiler)) { throw "Inno Setup 6 compiler is required on the build runner" }
           python desktop/check_installer_language.py --compiler "$compiler"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python desktop/installer_assets.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $compiler "/DAppVersion=$env:APP_VERSION" desktop/installer.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $file = Get-Item "dist/installer/CreatorHub-Setup-$env:APP_VERSION-windows-x64.exe"

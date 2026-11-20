@@ -50,6 +50,13 @@ class HelperTests(unittest.TestCase):
         helper.atomic_json(self.request, {**self.manifest, "install_dir": str(self.root)})
         with self.assertRaises(ValueError):
             helper.read_request(self.request)
+        nested_in_home = self.home / "custom-app"
+        (nested_in_home / "_internal").mkdir(parents=True)
+        (nested_in_home / "_internal" / "desktop-version.txt").write_text("0.2.0", encoding="utf-8")
+        (nested_in_home / "CreatorHub.exe").write_bytes(b"app")
+        helper.atomic_json(self.request, {**self.manifest, "install_dir": str(nested_in_home)})
+        with self.assertRaises(ValueError):
+            helper.read_request(self.request)
 
     def test_install_arguments_are_literal_and_never_close_other_apps_or_reboot(self):
         data = helper.read_request(self.request)

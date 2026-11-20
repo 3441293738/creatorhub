@@ -119,9 +119,12 @@ def read_journal(home):
         if data[name].is_symlink() or (data[name].exists() and getattr(data[name].lstat(), "st_file_attributes", 0) & 0x400):
             raise ValueError("Recovery does not follow links")
     app = data["install_dir"]
+    resolved_home = Path(home).resolve()
+    resolved_app = app.resolve()
     if (data["candidate"] != app.parent / (".CreatorHub-next-" + attempt)
             or data["previous"] != app.parent / (".CreatorHub-previous-" + attempt)
-            or Path(home).resolve().is_relative_to(app.resolve())):
+            or resolved_home.is_relative_to(resolved_app)
+            or resolved_app.is_relative_to(resolved_home)):
         raise ValueError("Recovery paths are outside the installation transaction")
     return data
 

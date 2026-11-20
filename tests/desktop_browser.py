@@ -88,9 +88,21 @@ def main():
                 expect(page.locator(".activity-row").first).to_be_focused()
                 done("activity filtering, empty results, detail and Escape")
                 page.get_by_role("link", name="工作空间", exact=True).click()
-                page.get_by_role("button", name="文件与数据", exact=False).click()
-                expect(page.get_by_role("heading", name="用户数据目录")).to_be_visible()
-                page.keyboard.press("Escape")
+                custom_install = home.parent / "CreatorHub-Custom-Dir"
+                custom_install.mkdir(exist_ok=True)
+                controller.install_dir = custom_install
+                try:
+                    page.get_by_role("button", name="文件与数据", exact=False).click()
+                    expect(page.get_by_role("heading", name="程序安装目录")).to_be_visible()
+                    expect(page.get_by_role("heading", name="用户数据目录")).to_be_visible()
+                    expect(page.get_by_role("dialog")).to_contain_text(str(custom_install))
+                    with patch("desktop.controller.open_folder") as opened:
+                        with page.expect_response("**/api/action"):
+                            page.get_by_role("button", name="打开安装目录", exact=True).click()
+                        opened.assert_called_once_with(custom_install)
+                    page.keyboard.press("Escape")
+                finally:
+                    controller.install_dir = None
                 page.get_by_role("button", name="诊断与帮助", exact=False).click()
                 with page.expect_download() as download:
                     page.get_by_role("button", name="导出诊断摘要", exact=True).click()

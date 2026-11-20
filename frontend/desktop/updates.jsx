@@ -74,6 +74,7 @@ export default function Updates({ state, disabled, act, Modal, Button, Icon, sho
       {dialog === "install" ? <div className="update-detail">
         <div className="update-warning"><Icon name="triangle-alert" /><p>{state.can_stop ? "本地服务正在运行。继续会停止服务，并中断正在进行的采集、发布等任务。" : "启动中心将退出以替换程序文件，安装完成后重新打开。"}</p></div>
         <ol className="update-steps"><li>再次校验安装包，停止服务。</li><li>备份配置与数据库，保留账号和媒体。</li><li>安装新版并重新打开启动中心，不自动重放任务。</li></ol>
+        {state.install_dir && <p className="subtle update-target-dir">目标安装目录：<code>{state.install_dir}</code></p>}
         {delta && <p className="subtle">增量安装先组装并检查完整新版，再切换程序目录；切换或启动检查失败时恢复旧版。需要额外磁盘空间保留旧版。</p>}
         <p className="subtle">安装期间请保持电源连接。重要资料可提前完整备份。</p>
         <div className="update-actions"><Button disabled={disabled} onClick={close}>暂不安装</Button><Button variant="primary" disabled={disabled || !ready || stale || !state.update_install_supported} icon="refresh-cw" onClick={async () => { if (await act("install_update", { confirmed: true, tag: selectedTag })) close(); }}>确认安装并重启</Button></div>

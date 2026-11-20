@@ -36,8 +36,8 @@
 ### Windows 安装版（推荐）
 
 1. 在 [Releases](https://github.com/3441293738/creatorhub/releases/latest) 的 Assets 中下载 `CreatorHub-Setup-版本-windows-x64.exe`。
-2. 双击安装，通过桌面快捷方式启动。
-3. 点击「启动本地服务」，等待浏览器组件准备完成，打开工作台并登录账号。
+2. 双击运行安装向导，可保持默认位置或自由选择其他磁盘目录（如 `D:\CreatorHub`）安装，完成后通过快捷方式启动。
+3. 新版启动后自动准备工作台，打开面板并登录账号即可使用。
 
 适用于 Windows 10/11 x64，无需手动安装 Python；安装与首次启动请保持联网。版本更新见[更新与备份](https://3441293738.github.io/creatorhub/guide/#backup)。
 

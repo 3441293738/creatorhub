@@ -283,6 +283,7 @@ def update_health_check() -> int:
             from app.platforms.instagram import InstagramClient, publish_instagram
             from app.platforms.channels.local_ca import LocalCaManager
             from desktop.controller import Controller
+            from desktop.installer_assets import render_brand_icon
             from desktop.web_shell import ShellServer
             import websockets.asyncio.client
             from patchright._impl._driver import compute_driver_executable
@@ -292,6 +293,7 @@ def update_health_check() -> int:
             assert app and LocalCaManager and BilibiliClient and receive_bili_broadcast and publish_bilibili
             assert InstagramClient and publish_instagram
             assert websockets.asyncio.client and Controller and ShellServer and webview
+            assert render_brand_icon(32).size == (32, 32)
             assert (WEB_DIR / "workbench.js").is_file()
             assert (channels_js / "finder_proxy_bridge.js").is_file()
             for name in ("desktop/web/app.js", "desktop/web/index.html", "config.example.yaml"):

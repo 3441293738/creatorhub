@@ -5,6 +5,8 @@ No server, file access or task execution here; lifecycle remains in launcher.py.
 import tkinter as tk
 from tkinter import ttk
 
+from desktop.installer_assets import render_brand_icon
+
 COLORS = {
     "bg": "#f4f5f8", "surface": "#ffffff", "fg": "#2c313c",
     "strong": "#14161c", "muted": "#525866", "line": "#dcdfe6",
@@ -15,16 +17,8 @@ COLORS = {
 
 
 def brand_image(size=64):
-    """Rasterize the existing magnifier mark for native titlebar/tray/EXE icons."""
-    from PIL import Image, ImageDraw
-    image = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((2, 2, 254, 254), radius=54, fill="#ffffff")
-    draw.ellipse((38, 34, 190, 186), outline="#25c9ce", width=14)
-    draw.ellipse((54, 34, 206, 186), outline=COLORS["accent"], width=14)
-    draw.ellipse((102, 82, 157, 137), outline=COLORS["accent"], width=12)
-    draw.line((183, 174, 223, 220), fill=COLORS["accent"], width=16)
-    return image.resize((size, size), Image.Resampling.LANCZOS)
+    """Rasterize the CreatorHub prism-play brand mark for titlebar/tray/EXE icons."""
+    return render_brand_icon(size, dark=False)
 
 
 class Card(tk.Frame):

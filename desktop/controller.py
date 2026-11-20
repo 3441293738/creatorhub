@@ -51,8 +51,8 @@ class Controller:
         self.exit_window = None
         self.export_file = None
         self.exiting = False
-        install_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else None
-        self.updates = UpdateChecker(version(), home / "runtime" / "updates", install_dir)
+        self.install_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else None
+        self.updates = UpdateChecker(version(), home / "runtime" / "updates", self.install_dir)
         self.installing_update = False
         self.install_worker = None
         self._consume_update_result()
@@ -104,7 +104,9 @@ class Controller:
     def state(self):
         with self.lock:
             return {"phase": self.phase, "detail": self.detail, "url": self.url,
-                    "version": version(), "home": str(self.home), "events": list(self.events),
+                    "version": version(), "home": str(self.home),
+                    "install_dir": str(self.install_dir) if self.install_dir else None,
+                    "events": list(self.events),
                     "updates": self.updates.state(),
                     "update_install_supported": self.update_install_supported(),
                     "installing_update": self.installing_update,
@@ -413,6 +415,10 @@ class Controller:
             webbrowser.open(url)
         elif name in {"open_data", "open_logs"}:
             open_folder(self.home if name == "open_data" else self.home / "logs")
+        elif name == "open_install":
+            if not self.install_dir or not self.install_dir.is_dir():
+                raise ValueError("当前为源码运行模式，请在打包安装版中打开程序安装目录。")
+            open_folder(self.install_dir)
         elif name == "cancel_browser_download":
             (self.home / "runtime" / "browser-component.cancel").touch()
         elif name == "open_guide":

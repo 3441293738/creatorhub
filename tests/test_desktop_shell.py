@@ -89,9 +89,23 @@ class DesktopShellTests(unittest.TestCase):
         self.assertIsNone(self.controller.process)
 
     def test_diagnostics_exclude_private_details(self):
+        custom_install = self.home.parent / "custom-install-dir"
+        custom_install.mkdir(exist_ok=True)
+        self.controller.install_dir = custom_install
+        state = self.controller.state()
+        self.assertEqual(state["install_dir"], str(custom_install))
+        with patch("desktop.controller.open_folder") as opened:
+            self.controller.action("open_install", {})
+            opened.assert_called_once_with(custom_install)
+        self.controller.install_dir = None
+        with self.assertRaises(ValueError):
+            self.controller.action("open_install", {})
+        self.controller.install_dir = custom_install
         data = self.controller.action("export", {})["download"]
         self.assertEqual(set(data), {"app_version", "os", "os_release", "python", "service_state", "exit_code"})
         self.assertNotIn(str(self.home), json.dumps(data))
+        self.assertNotIn(str(custom_install), json.dumps(data))
+        self.controller.install_dir = None
 
     def test_update_reminders_and_preferences_require_same_origin_and_valid_state(self):
         for name, data in (("update_preferences", {"auto_check": False}), ("skip_update", {"tag": "v0.3.0"}),
