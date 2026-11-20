@@ -4480,14 +4480,19 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
         ig_seed = (acc.fp_seed or acc.profile_dir or "") if platform == "instagram" else ""
         ig_tz = (acc.timezone_id or "Asia/Shanghai") if platform == "instagram" else "Asia/Shanghai"
         known: set[str] = set()
+        existing_count = int(s.exec(select(func.count(FollowEdge.id)).where(
+            FollowEdge.account_id == account_id,
+            FollowEdge.direction == direction)).one() or 0)
     # API-only/browser-only are hard routing decisions. Hybrid's API attempt and
     # page fallback share one READ_HEAVY guard so the fallback is not blocked by
     # the API attempt's own minimum interval.
     users, err = [], ""
     source = "api" if effective_mode == "api" else "browser"
+    capped = False
 
     async def _fetch_follow_snapshot():
-        nonlocal source
+        nonlocal source, capped
+        direct_users: list[dict] = []
         direct_err = ""
         if platform == "douyin" and effective_mode in {"api", "hybrid"}:
             report(phase="fetching", source="api")
@@ -4506,11 +4511,15 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
             except Exception as e:
                 direct_users, direct_err = [], repr(e)
             # “empty”表示结构有效的空列表；empty_body/网络/半途停滞等错误不是有效快照。
-            # Hybrid 模式下若直连半途报 pagination_stalled 等错误，允许继续回退浏览器拦截；
-            # 仅当明确触及单次分页硬上限(page_limit)或处于纯 API 模式时直接返回由上层报错保旧数据。
+            # 若大粉丝量翻过深水区触及平台可见上限(platform_cap)，且不少于库内已有条数，直接采纳。
             if (direct_users and not direct_err) or direct_err == "empty":
                 source = "api"
                 return direct_users, direct_err
+            if (direct_err.startswith("platform_cap:") and direct_users
+                    and len(direct_users) >= existing_count):
+                source = "api"
+                capped = True
+                return direct_users, ""
             if effective_mode == "api" or direct_err.startswith("page_limit:"):
                 source = "api"
                 return direct_users, direct_err or "empty_response"
@@ -4587,12 +4596,25 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
                 return [], direct_err
 
         source = "browser_fallback" if effective_mode == "hybrid" else "browser"
-        report(phase="fetching", source=source)
-        browser_users, browser_err = await fetch_follows(
-            browser, identity, platform, uid, direction, known)
-        if browser_users:
+        report(phase="fetching", source=source, pages=0, fetched=0)
+        if progress is None:
+            browser_users, browser_err = await fetch_follows(
+                browser, identity, platform, uid, direction, known)
+        else:
+            def browser_progress(update):
+                report(phase="fetching", source=source, **update)
+
+            browser_users, browser_err = await fetch_follows(
+                browser, identity, platform, uid, direction, known,
+                progress=browser_progress)
+        if browser_users and not browser_err:
+            if direct_users and len(browser_users) < len(direct_users):
+                return [], (
+                    direct_err
+                    or f"browser_truncated:got={len(browser_users)},direct={len(direct_users)}"
+                )
             return browser_users, ""
-        return browser_users, (browser_err or direct_err)
+        return [], (browser_err or direct_err)
 
     if engine is not None:
         users, err = await engine.guarded_read_pair(
@@ -4623,7 +4645,7 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
         _replace_follow_snapshot, account_id, platform, direction,
         users, now, progress)
     return {"ok": True, "fetched": len(users), "stored": stored,
-            "added": added, "complete": True,
+            "added": added, "complete": True, "capped": capped,
             "source": source,
             "configured_mode": (transport["configured_mode"]
                                  if transport else "browser")}
@@ -4671,6 +4693,7 @@ async def _run_follow_sync_job(job_id: str):
                 "fetched": int(result.get("fetched") or 0),
                 "saved": int(result.get("stored") or 0),
                 "added": int(result.get("added") or 0),
+                "capped": bool(result.get("capped")),
                 "source": result.get("source") or "",
                 "result": result, "completed_at": datetime.utcnow().isoformat()})
     except asyncio.CancelledError:

@@ -213,6 +213,67 @@ class FollowSyncTests(unittest.TestCase):
                 FollowEdge.direction == "following")).all()
         self.assertEqual([row.uid for row in rows], ["old-follow"])
 
+    def test_hybrid_fan_platform_cap_saves_large_direct_snapshot_without_browser(self):
+        with db.get_session() as session:
+            for index in range(17):
+                session.add(FollowEdge(
+                    platform="douyin", account_id=self.account_id,
+                    direction="fan", uid=f"truncated-{index}",
+                    nickname=f"旧残缺粉丝 {index}"))
+            session.commit()
+        direct_users = [_user(f"fan-{index}", f"粉丝 {index}")
+                        for index in range(5000)]
+        engine = _Engine()
+        engine.locked_direct = AsyncMock(
+            return_value=(direct_users, "platform_cap:pagination_stalled"))
+        engine._fetch_douyin_follows_direct_locked = engine.locked_direct
+        main.engine = engine
+        browser_fetch = AsyncMock(side_effect=AssertionError(
+            "platform-capped large direct snapshot must not fall back to browser"))
+
+        with patch("app.main.fetch_follows", browser_fetch):
+            result = asyncio.run(main.sync_follows(self.account_id, "fan"))
+
+        self.assertEqual(result["fetched"], 5000)
+        self.assertEqual(result["stored"], 5000)
+        self.assertTrue(result["capped"])
+        self.assertEqual(result["source"], "api")
+        browser_fetch.assert_not_awaited()
+        paged = asyncio.run(main.list_follows(
+            self.account_id, "fan", page=1, page_size=50))
+        self.assertEqual(paged["total"], 5000)
+        self.assertEqual(paged["pages"], 100)
+        self.assertEqual(len(paged["items"]), 50)
+
+    def test_hybrid_rejects_truncated_browser_fallback_smaller_than_direct_partial(self):
+        with db.get_session() as session:
+            session.add(FollowEdge(
+                platform="douyin", account_id=self.account_id,
+                direction="fan", uid="old-fan", nickname="原粉丝"))
+            session.commit()
+        engine = _Engine()
+        engine.locked_direct = AsyncMock(return_value=(
+            [_user(f"direct-{index}") for index in range(300)],
+            "pagination_stalled",
+        ))
+        engine._fetch_douyin_follows_direct_locked = engine.locked_direct
+        main.engine = engine
+        browser_fetch = AsyncMock(return_value=(
+            [_user(f"modal-{index}") for index in range(17)],
+            "",
+        ))
+
+        with patch("app.main.fetch_follows", browser_fetch):
+            with self.assertRaises(HTTPException) as caught:
+                asyncio.run(main.sync_follows(self.account_id, "fan"))
+
+        self.assertEqual(caught.exception.status_code, 502)
+        with db.get_session() as session:
+            rows = session.exec(select(FollowEdge).where(
+                FollowEdge.account_id == self.account_id,
+                FollowEdge.direction == "fan")).all()
+        self.assertEqual([row.uid for row in rows], ["old-fan"])
+
     def test_ambiguous_empty_preserves_existing_snapshot_and_reports_failure(self):
         engine = _Engine()
         main.engine = engine
@@ -456,6 +517,77 @@ class FollowSyncUiTests(unittest.TestCase):
         self.assertIn("const list = payload.items || []", source)
         self.assertIn("renderFollowSyncStatus", source)
         self.assertIn("cancelFollowSync", source)
+        self.assertIn("pager.hidden = state.total <= 0;", source)
+        self.assertIn("平台仅返回可见用户", source)
+
+    def test_douyin_browser_modal_first_screen_stall_is_reported_as_incomplete(self):
+        from app.browser import account_hub
+
+        listeners = {}
+
+        class FakeMouse:
+            async def move(self, _x, _y):
+                return None
+
+            async def wheel(self, _dx, _dy):
+                return None
+
+        class FakePage:
+            url = "https://www.douyin.com/user/self"
+            mouse = FakeMouse()
+
+            def on(self, event, callback):
+                listeners[event] = callback
+
+            async def goto(self, *_args, **_kwargs):
+                return None
+
+            async def wait_for_load_state(self, *_args, **_kwargs):
+                return None
+
+            async def wait_for_timeout(self, _ms):
+                return None
+
+            async def evaluate(self, script, arg=None):
+                if arg == "粉丝":
+                    resp = SimpleNamespace(
+                        url="https://www.douyin.com/aweme/v1/web/user/follower/list/?count=20",
+                        status=200,
+                        request=SimpleNamespace(resource_type="xhr", post_data=""),
+                        json=AsyncMock(return_value={
+                            "status_code": 0,
+                            "followers": [
+                                {"uid": f"fan-{i}", "sec_uid": f"sec-{i}",
+                                 "nickname": f"粉丝{i}"}
+                                for i in range(17)
+                            ],
+                            "has_more": 1,
+                            "total": 7253,
+                        }),
+                    )
+                    await listeners["response"](resp)
+                    return "DIV:粉丝7253"
+                if "_DOUYIN_STAT_PROBE_JS" in str(script):
+                    return []
+                return {"inModal": True, "scrolled": True, "x": 500, "y": 400}
+
+            async def close(self):
+                return None
+
+        async def _fast_wait(aw, timeout=None):
+            if hasattr(aw, "close"):
+                aw.close()
+            return None
+
+        fake_mgr = SimpleNamespace(new_page=AsyncMock(return_value=FakePage()))
+        with patch("app.browser.account_hub.asyncio.wait_for",
+                   side_effect=_fast_wait):
+            users, err = asyncio.run(account_hub.fetch_follows(
+                fake_mgr, SimpleNamespace(), "douyin", "sec-self",
+                "fan", set(), settle_ms=10, max_scrolls=8))
+
+        self.assertEqual(len(users), 17)
+        self.assertTrue(err.startswith("browser_pagination_incomplete:"))
 
 
 if __name__ == "__main__":

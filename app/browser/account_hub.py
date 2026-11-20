@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import re
@@ -731,10 +732,103 @@ _FOLLOW_PRECISE = {
 }
 
 
+_SCROLL_FOLLOW_LIST_JS = """() => {
+  const isScrollable = (el) => {
+    const s = getComputedStyle(el);
+    return (s.overflowY === 'auto' || s.overflowY === 'scroll' || s.overflowY === 'overlay')
+      && el.scrollHeight > el.clientHeight + 12;
+  };
+  const visibleRect = (el) => {
+    const r = el.getBoundingClientRect();
+    return (r.width > 120 && r.height > 120 && r.bottom > 0 && r.right > 0
+            && r.top < window.innerHeight && r.left < window.innerWidth) ? r : null;
+  };
+  const modalSelectors = [
+    '[data-e2e="user-fans-container"]',
+    '[data-e2e="user-following-container"]',
+    '[data-e2e*="fans-container"]',
+    '[data-e2e*="follow-container"]',
+    '[role="dialog"]',
+    '[aria-modal="true"]',
+    '.semi-modal-content',
+    '[class*="modal"]',
+    '[class*="Dialog"]',
+    '[class*="drawer"]',
+  ];
+  const modals = [];
+  const seenModal = new Set();
+  for (const sel of modalSelectors) {
+    for (const m of document.querySelectorAll(sel)) {
+      if (seenModal.has(m)) continue;
+      seenModal.add(m);
+      const r = visibleRect(m);
+      if (!r) continue;
+      if (r.width >= window.innerWidth * 0.98 && r.height >= window.innerHeight * 0.98
+          && m.getAttribute('role') !== 'dialog' && m.getAttribute('aria-modal') !== 'true') {
+        continue;
+      }
+      const links = m.querySelectorAll('a[href*="/user/"], a[href*="/profile/"]').length;
+      const imgs = m.querySelectorAll('img').length;
+      if (links > 0 || imgs >= 2 || m.getAttribute('role') === 'dialog') {
+        modals.push({ el: m, rect: r, score: links * 10 + imgs });
+      }
+    }
+  }
+  modals.sort((a, b) => b.score - a.score);
+  if (modals.length) {
+    const root = modals[0].el;
+    let best = null, bh = 0;
+    const candidates = [root, ...root.querySelectorAll('div,ul,section')];
+    for (const el of candidates) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 100 || r.height < 80) continue;
+      if (isScrollable(el) && el.scrollHeight > bh) {
+        best = el;
+        bh = el.scrollHeight;
+      }
+    }
+    const target = best || root;
+    const tr = target.getBoundingClientRect();
+    if (best) {
+      best.scrollTop = best.scrollHeight;
+      best.dispatchEvent(new Event('scroll', { bubbles: true }));
+      const items = best.querySelectorAll('a[href*="/user/"], li, [class*="item"], [class*="Item"]');
+      if (items.length) {
+        try { items[items.length - 1].scrollIntoView({ block: 'end' }); } catch (_) {}
+      }
+    }
+    return {
+      inModal: true,
+      scrolled: !!best,
+      x: Math.max(10, Math.min(window.innerWidth - 10, Math.round(tr.left + tr.width / 2))),
+      y: Math.max(10, Math.min(window.innerHeight - 10, Math.round(tr.top + tr.height / 2))),
+    };
+  }
+  let best = null, bh = 0;
+  document.querySelectorAll('div,ul,section,main').forEach(el => {
+    if (isScrollable(el) && el.scrollHeight > el.clientHeight + 40 && el.scrollHeight > bh) {
+      best = el;
+      bh = el.scrollHeight;
+    }
+  });
+  if (best) {
+    best.scrollTop = best.scrollHeight;
+    best.dispatchEvent(new Event('scroll', { bubbles: true }));
+  }
+  window.scrollBy(0, 3000);
+  return {
+    inModal: false,
+    scrolled: !!best,
+    x: Math.round(window.innerWidth / 2),
+    y: Math.round(window.innerHeight / 2),
+  };
+}"""
+
+
 async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                         direction: str, known_uids: Set[str], settle_ms: int = 2000,
-                        max_scrolls: int = 40, *, _xhs_visible: bool = False
-                        ) -> Tuple[List[dict], str]:
+                        max_scrolls: int = 40, *, _xhs_visible: bool = False,
+                        progress=None) -> Tuple[List[dict], str]:
     """打开账号自己主页,切到「关注 / 粉丝」并滚动,拦截该页所有同域 XHR/GraphQL,
     启发式抽出用户对象。无公开接口,首版用于标定(日志打 api_seen)。
     返回 (归一后的用户 dict 列表, error)。"""
@@ -807,7 +901,7 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         async with mgr.visible_action(identity):
             return await fetch_follows(
                 mgr, identity, platform, uid, direction, known_uids,
-                settle_ms, max_scrolls, _xhs_visible=True)
+                settle_ms, max_scrolls, _xhs_visible=True, progress=progress)
     nav = _FOLLOW_NAV.get(platform, _FOLLOW_NAV["douyin"])
     uid = (uid or "").strip()
     self_url = ""
@@ -841,7 +935,10 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
     error = ""
     precise_response_seen = False
     precise_empty_confirmed = False
+    precise_pages = 0
     douyin_has_more: Optional[bool] = None
+    douyin_last_batch_empty = False
+    douyin_reported_total = 0
     precise_response_event = asyncio.Event()
     page = await mgr.new_page(identity, block_media=platform != "xhs")
     if platform == "xhs":
@@ -873,7 +970,8 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         return False
 
     async def on_response(resp):
-        nonlocal precise_response_seen, precise_empty_confirmed, douyin_has_more
+        nonlocal precise_response_seen, precise_empty_confirmed, precise_pages
+        nonlocal douyin_has_more, douyin_last_batch_empty, douyin_reported_total
         u = resp.url
         if host not in u or resp.request.resource_type not in ("xhr", "fetch"):
             return
@@ -905,12 +1003,21 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         precise = _is_follow_api(path.lower(), data)
         if precise and isinstance(data, dict) and data.get("status_code") in (None, 0, "0"):
             precise_response_seen = True
+            precise_pages += 1
             precise_response_event.set()
             # 抖音列表位于顶层 followers/followings；只有看到了明确的空数组，
             # 才能确认账号确实为 0，而不是解析器没对上新结构。
             expected_key = "followers" if direction == "fan" else "followings"
             if platform == "douyin" and isinstance(data.get(expected_key), list):
-                precise_empty_confirmed = len(data[expected_key]) == 0
+                batch_rows = data[expected_key]
+                precise_empty_confirmed = len(batch_rows) == 0 and len(collected) == 0
+                douyin_last_batch_empty = len(batch_rows) == 0
+                if data.get("total"):
+                    try:
+                        douyin_reported_total = max(
+                            douyin_reported_total, int(data.get("total") or 0))
+                    except (TypeError, ValueError):
+                        pass
                 if "has_more" in data:
                     douyin_has_more = bool(data.get("has_more"))
             elif platform == "kuaishou" and isinstance(data.get("fols"), list):
@@ -918,6 +1025,13 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         found: List[dict] = []
         _harvest_user_lists(data, found)
         if not found:
+            if precise and progress is not None:
+                try:
+                    cb = progress({"pages": precise_pages, "fetched": len(collected)})
+                    if inspect.isawaitable(cb):
+                        await cb
+                except Exception:
+                    pass
             return
         sink = collected if precise else broad
         added = 0
@@ -928,6 +1042,13 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                 added += 1
         if added and path not in hit_urls:
             hit_urls.append(("exact:" if precise else "candidate:") + path)
+        if precise and progress is not None:
+            try:
+                cb = progress({"pages": precise_pages, "fetched": len(collected)})
+                if inspect.isawaitable(cb):
+                    await cb
+            except Exception:
+                pass
 
     page.on("response", on_response)
     try:
@@ -1027,13 +1148,15 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                     }
 
         stagnant = 0
-        scroll_limit = (max(max_scrolls, 300)
+        stagnant_limit = 6 if platform == "douyin" else 4
+        scroll_limit = (max(max_scrolls, 500)
                         if platform == "douyin" and max_scrolls == 40
                         else max_scrolls)
         for _ in range(scroll_limit):
             if platform == "douyin" and douyin_has_more is False:
                 break
             before = len(collected) + len(broad) + len(scraped)
+            precise_response_event.clear()
             try:
                 if platform == "xhs":
                     drawer = page.locator(
@@ -1043,23 +1166,27 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                         await drawer.hover()
                     await mgr.xhs_interaction.scroll_step(page)
                 else:
-                    # 其余平台保留原有列表容器滚动行为。
-                    await page.evaluate(
-                        "() => { let best=null,bh=0;"
-                        " document.querySelectorAll('div,ul,section,main').forEach(el=>{"
-                        "  const s=getComputedStyle(el);"
-                        "  if((s.overflowY==='auto'||s.overflowY==='scroll')"
-                        "     && el.scrollHeight>el.clientHeight+40 && el.scrollHeight>bh){best=el;bh=el.scrollHeight;}});"
-                        " if(best){best.scrollTop=best.scrollHeight;} window.scrollBy(0,3000); }")
-                    await page.mouse.wheel(0, 3000)
+                    # 优先定位关注/粉丝弹窗容器并在弹窗中心触发滚轮，避免主页作品区高度更大而滚错底层页面。
+                    pos = await page.evaluate(_SCROLL_FOLLOW_LIST_JS)
+                    if isinstance(pos, dict) and pos.get("x") and pos.get("y"):
+                        await page.mouse.move(int(pos["x"]), int(pos["y"]))
+                    await page.mouse.wheel(0, 2600)
             except Exception:
                 pass
-            if platform != "xhs":
+            if platform == "douyin":
+                try:
+                    await asyncio.wait_for(
+                        precise_response_event.wait(),
+                        timeout=max(1.5, settle_ms / 1000.0))
+                    await page.wait_for_timeout(180)
+                except Exception:
+                    pass
+            elif platform != "xhs":
                 await page.wait_for_timeout(settle_ms)
             await _xhs_scrape()
             if (len(collected) + len(broad) + len(scraped)) == before:
                 stagnant += 1
-                if stagnant >= 4:
+                if stagnant >= stagnant_limit:
                     break
             else:
                 stagnant = 0
@@ -1102,7 +1229,18 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         else:
             error = error or (f"未拦截到{'关注' if direction=='following' else '粉丝'}列表"
                               "(没等到该方向专属接口,可能入口未点开/接口待标定)")
-    return list(result.values()), ("" if result else error)
+        return [], error
+    if (platform == "douyin" and douyin_has_more is True
+            and not douyin_last_batch_empty):
+        reached_total = (douyin_reported_total > 0
+                         and len(result) >= douyin_reported_total)
+        reached_fan_cap = (direction == "fan" and len(result) >= 4500)
+        if not reached_total and not reached_fan_cap:
+            return (
+                list(result.values()),
+                f"browser_pagination_incomplete:got={len(result)},pages={precise_pages}",
+            )
+    return list(result.values()), ""
 
 
 # ═══════════ 私信(无公开接口:拦截私信页 XHR;发送走 UI 自动化) ═══════════

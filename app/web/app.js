@@ -3621,7 +3621,7 @@ function renderFollowPager(direction, payload) {
   if (buttons[1]) buttons[1].disabled = state.page >= state.pages;
   const synced = $(`${prefix}-synced-at`);
   if (synced) synced.textContent = payload.synced_at ? `同步于 ${fmtTime(payload.synced_at)}` : "";
-  pager.hidden = state.total <= FOLLOW_PAGE_SIZE;
+  pager.hidden = state.total <= 0;
 }
 function changeFollowPage(direction, delta) {
   const state = FOLLOW_STATE[direction];
@@ -3642,9 +3642,11 @@ function renderFollowSyncStatus(direction, job) {
   const fetched = Math.max(0, Number(job.fetched || 0));
   const expected = Math.max(0, Number(job.expected_total || 0));
   const saved = Math.max(0, Number(job.saved || 0));
+  const cappedNote = job.status === "completed" && (job.capped || (expected > fetched && fetched > 0))
+    ? "（平台仅返回可见用户）" : "";
   const detail = job.phase === "saving"
     ? `已写入 ${fmtNum(saved)} / ${fmtNum(fetched)} 条`
-    : expected ? `已获取 ${fmtNum(fetched)} / 约 ${fmtNum(expected)} 条 · ${fmtNum(job.pages || 0)} 页`
+    : expected ? `已获取 ${fmtNum(fetched)} / 约 ${fmtNum(expected)} 条${cappedNote} · ${fmtNum(job.pages || 0)} 页`
       : `已获取 ${fmtNum(fetched)} 条 · ${fmtNum(job.pages || 0)} 页`;
   const percent = job.percent == null ? 0 : Math.max(0, Math.min(100, Number(job.percent)));
   const error = job.error ? `<div class="mut" style="margin-top:6px;color:var(--danger)">${esc(job.error)}</div>` : "";

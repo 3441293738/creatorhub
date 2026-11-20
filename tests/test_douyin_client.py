@@ -269,6 +269,100 @@ class DouyinClientSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.last_error, "api_status_2096")
         self.assertFalse(client.last_follow_meta["complete"])
 
+    async def test_follower_list_completes_when_filtered_tail_is_below_reported_total(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client.fetch_profile = AsyncMock(return_value={"uid": "uid-self"})
+        client._follow_page = AsyncMock(side_effect=[
+            {"status_code": 0,
+             "followers": [{"uid": f"fan-{i}"} for i in range(20)],
+             "has_more": 1, "max_time": 2000, "min_time": 1900,
+             "offset": 1, "total": 7253},
+            {"status_code": 0,
+             "followers": [],
+             "has_more": 1, "max_time": 0, "min_time": 0,
+             "offset": 0, "total": 7253},
+            {"status_code": 0,
+             "followers": [],
+             "has_more": 1, "max_time": 0, "min_time": 0,
+             "offset": 0, "total": 7253},
+        ])
+
+        rows = await client.fetch_all_follows(
+            "", "sec-self", "fan", page_delay=0)
+
+        self.assertEqual(len(rows), 20)
+        self.assertEqual(client.last_error, "")
+        self.assertTrue(client.last_follow_meta["complete"])
+        self.assertTrue(client.last_follow_meta["capped"])
+
+    async def test_follower_list_preserves_multiple_reset_accounts_with_zero_uid(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client.fetch_profile = AsyncMock(return_value={"uid": "uid-self"})
+        client._follow_page = AsyncMock(side_effect=[
+            {"status_code": 0,
+             "followers": [{"uid": "0", "sec_uid": f"sec-reset-{i}"} for i in range(5)],
+             "has_more": 1, "max_time": 2000, "min_time": 1900, "offset": 1},
+            {"status_code": 0,
+             "followers": [{"uid": "0", "sec_uid": f"sec-reset-{i}"} for i in range(5, 10)],
+             "has_more": 0, "max_time": 1900, "min_time": 1800, "offset": 0},
+        ])
+
+        rows = await client.fetch_all_follows(
+            "", "sec-self", "fan", page_delay=0)
+
+        self.assertEqual(len(rows), 10)
+        self.assertEqual(client.last_error, "")
+        self.assertTrue(client.last_follow_meta["complete"])
+
+    async def test_follower_list_retries_transient_empty_body_after_first_page(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client.fetch_profile = AsyncMock(return_value={"uid": "uid-self"})
+        calls = 0
+
+        async def flaky_follow_page(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                client.last_error = ""
+                return {"status_code": 0, "followers": [{"uid": "fan-1"}],
+                        "has_more": 1, "max_time": 2000, "min_time": 1900, "offset": 1}
+            if calls == 2:
+                client.last_error = "empty_body"
+                return {}
+            client.last_error = ""
+            return {"status_code": 0, "followers": [{"uid": "fan-2"}],
+                    "has_more": 0, "max_time": 1900, "min_time": 1800, "offset": 0}
+
+        client._follow_page = AsyncMock(side_effect=flaky_follow_page)
+        rows = await client.fetch_all_follows(
+            "", "sec-self", "fan", page_delay=0)
+
+        self.assertEqual([r["uid"] for r in rows], ["fan-1", "fan-2"])
+        self.assertEqual(client.last_error, "")
+        self.assertEqual(calls, 3)
+
+    async def test_deep_follower_list_classifies_server_cap_cutoff(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client.fetch_profile = AsyncMock(return_value={"uid": "uid-self"})
+        pages = [
+            {"status_code": 0,
+             "followers": [{"uid": f"fan-{p}-{i}"} for i in range(20)],
+             "has_more": 1,
+             "max_time": 1_700_000_000 - p * 10,
+             "min_time": 1_700_000_000 - (p + 1) * 10,
+             "offset": 0,
+             "total": 7253}
+            for p in range(205)
+        ]
+        pages.append({"status_code": 2096})
+        client._follow_page = AsyncMock(side_effect=pages)
+
+        rows = await client.fetch_all_follows(
+            "", "sec-self", "fan", page_delay=0)
+
+        self.assertEqual(len(rows), 4100)
+        self.assertEqual(client.last_error, "platform_cap:api_status_2096")
+
     async def test_current_abogus_wire_format_is_used(self):
         signature = ABogus(
             user_agent="Mozilla/5.0 Chrome/152.0.0.0",
