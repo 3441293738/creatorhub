@@ -21,13 +21,16 @@ def test_keyword_collection_supports_tiktok_and_channels_multi_source():
     html = INDEX_HTML.read_text(encoding="utf-8")
     workbench = WORKBENCH_JSX.read_text(encoding="utf-8")
 
-    assert '!["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(PLATFORM) && CURRENT_TAB === "collections"' in source
+    assert '!["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(PLATFORM) && CURRENT_TAB === "collections"' in source
+    assert 'if (!$("collection-job-table") || !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(PLATFORM)) return;' in source
+    assert '["xhs", "rednote", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(p)' in source
+    assert 'e.classList.contains("rn-hide") && PLATFORM === "rednote"' in source
     assert 'platform: PLATFORM, account_id: accountId' in source
     assert 'a.platform === PLATFORM' in source
     assert 'platform: job.platform, keywords' in source
     assert '.filter(job => job.platform === requestedPlatform)' in source
     assert 'onclick="editCollection(${job.id})"' in source
-    assert 'canRetry && ["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(job.platform)' in source
+    assert 'canRetry && ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(job.platform)' in source
     assert 'canRetry && job.platform === "douyin"' not in source
     assert '@app.put' not in html
     assert 'id="collection-create-title"' in html

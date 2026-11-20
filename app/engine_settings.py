@@ -18,6 +18,7 @@ class EngineSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 
     xhs_read_mode: Literal["browser", "api"] | None = None
+    rednote_read_mode: Literal["browser", "hybrid", "api"] | None = None
     douyin_read_mode: Literal["hybrid", "api", "browser"] | None = None
     tiktok_read_mode: Literal["auto", "native", "browser"] | None = None
     channels_read_mode: Literal["auto", "protocol", "browser"] | None = None
@@ -48,6 +49,7 @@ class EngineSettingsPatch(BaseModel):
     xhs_item_gap_seconds: float | None = Field(None, ge=0, le=120)
     xhs_request_jitter: float | None = Field(None, ge=0, le=1)
     xhs_publish_mode: Literal["browser", "api"] | None = None
+    rednote_publish_mode: Literal["browser", "api"] | None = None
     xhs_comment_write_mode: Literal["browser", "api", "manual"] | None = None
     xhs_comment_review_before_publish: bool | None = None
     work_health_enabled: bool | None = None

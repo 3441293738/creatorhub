@@ -59,6 +59,7 @@ class ShareURL:
 _PLATFORM_DOMAINS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("douyin", ("douyin.com", "iesdouyin.com")),
     ("xhs", ("xiaohongshu.com", "xhslink.com")),
+    ("rednote", ("rednote.com",)),
     ("kuaishou", ("kuaishou.com", "kwai.com", "gifshow.com")),
     ("bilibili", ("bilibili.com", "b23.tv")),
     ("weibo", ("weibo.com", "weibo.cn")),

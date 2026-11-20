@@ -29,7 +29,7 @@ def build_guide(destination: Path) -> None:
         shutil.copy2(ROOT / "assets" / "screenshots" / name, images / name)
     platforms = json.loads((GUIDE / "platforms.json").read_text(encoding="utf-8"))
     for slug, platform in platforms.items():
-        if slug not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
+        if slug not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
             raise ValueError(f"Unknown documentation platform: {slug}")
         chapters = []
         for feature in platform["features"]:

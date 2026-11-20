@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlsplit
 
 from preview.build_preview import ROOT, GUIDE, GUIDE_IMAGES, build, build_guide
 
-PLATFORMS = ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram")
+PLATFORMS = ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram")
 
 
 class Links(HTMLParser):
@@ -134,6 +134,19 @@ class GuideSiteTests(unittest.TestCase):
                              "publish", "my-content", "autocomment"}.issubset(parsed.ids))
             content = page.read_text(encoding="utf-8")
             for text in ("Instagram", "Reels", "Sidecar", "Direct", "#hashtag", "结果待确认"):
+                self.assertIn(text, content)
+
+    def test_rednote_page_covers_supported_workflows(self):
+        with TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            build_guide(target)
+            page = target / "rednote" / "index.html"
+            parsed = self.parse(page)
+            self.assertTrue({"monitor", "collection", "comments", "download",
+                             "publish", "my-content"}.issubset(parsed.ids))
+            self.assertNotIn("autocomment", parsed.ids)
+            content = page.read_text(encoding="utf-8")
+            for text in ("海外小红书", "rednote.com", "creator.rednote.com", "900", "结果待确认"):
                 self.assertIn(text, content)
 
     def test_readme_community_uses_direct_qr_images(self):

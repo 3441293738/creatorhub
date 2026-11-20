@@ -77,6 +77,30 @@ TRANSPORT_SPECS: tuple[dict[str, Any], ...] = (
     {"platform": "xhs", "operation": "follows", "label": "关注/粉丝列表",
      "setting": "", "fixed": "unavailable", "api": False, "browser": False,
      "note": "网页端未提供该列表"},
+    # Rednote (海外小红书): strictly isolated rednote.com 4-domain boundary + XYS/XYW+b1 API & RPA.
+    {"platform": "rednote", "operation": "public_monitor", "label": "作品/关键词/收藏与公开评论读取",
+     "setting": "rednote_read_mode", "default": "hybrid", "api": True, "browser": True,
+     "hybrid_order": "api_first",
+     "auth_protocol": "rednote.com Cookie + XYS / XYW + b1 / dsllt + a1",
+     "wire_protocol": "HTTPS JSON + SSR __INITIAL_STATE__"},
+    {"platform": "rednote", "operation": "account_works", "label": "本账号资料/作品同步与可见性删除管理",
+     "setting": "rednote_read_mode", "default": "hybrid", "api": True, "browser": True,
+     "hybrid_order": "api_first",
+     "auth_protocol": "webapi.rednote.com + creator.rednote.com XYS/XYW + b1",
+     "wire_protocol": "HTTPS JSON"},
+    {"platform": "rednote", "operation": "publish", "label": "图文与视频笔记发布",
+     "setting": "rednote_publish_mode", "default": "browser", "api": True, "browser": True,
+     "auth_protocol": "creator.rednote.com RPA / 实验性 XYS + b1 + x-rap-param (//webapi.rednote.com)",
+     "wire_protocol": "COS upload + HTTPS JSON"},
+    {"platform": "rednote", "operation": "comment_write", "label": "评论写入与自动计划",
+     "setting": "", "fixed": "unavailable", "api": False, "browser": False,
+     "note": "海外小红书暂未开放评论写入与自动计划"},
+    {"platform": "rednote", "operation": "dm_sync", "label": "私信会话/自动回复",
+     "setting": "", "fixed": "unavailable", "api": False, "browser": False,
+     "note": "海外小红书暂未开放国内 RWP 私信协议通道"},
+    {"platform": "rednote", "operation": "follows", "label": "关注/粉丝列表",
+     "setting": "", "fixed": "unavailable", "api": False, "browser": False,
+     "note": "网页端未提供该列表"},
     # Platforms without a supported direct transport remain explicit rather
     # than being silently grouped under a global API selector.
     {"platform": "kuaishou", "operation": "account_management", "label": "作品/评论/关注/写入",
@@ -258,8 +282,9 @@ def resolve_transport(cfg: Any, platform: str, operation: str,
     """Return configured and effective transport for one operation."""
     spec = transport_spec(platform, operation)
     setting = str(spec.get("setting") or "")
+    fallback_default = str(spec.get("default") or "browser")
     configured = str(spec.get("fixed") or (
-        _setting_value(cfg, setting) if setting else "browser"))
+        _setting_value(cfg, setting, fallback_default) if setting else fallback_default))
     effective = configured
     reason = ""
 
@@ -427,6 +452,8 @@ def build_transport_matrix(cfg: Any, accounts: Iterable[Any]) -> dict[str, Any]:
             "douyin_publish_mode": _setting_value(cfg, "douyin_publish_mode", "browser"),
             "douyin_write_mode": _setting_value(cfg, "douyin_write_mode", "hybrid"),
             "xhs_read_mode": _setting_value(cfg, "xhs_read_mode", "api"),
+            "rednote_read_mode": _setting_value(cfg, "rednote_read_mode", "hybrid"),
+            "rednote_publish_mode": _setting_value(cfg, "rednote_publish_mode", "browser"),
             "xhs_publish_mode": _setting_value(cfg, "xhs_publish_mode", "browser"),
             "xhs_comment_write_mode": _setting_value(
                 cfg, "xhs_comment_write_mode", "browser"),

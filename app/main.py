@@ -33,6 +33,7 @@ from sqlmodel import select
 from .browser import (BrowserManager, cookie_string_to_state,
                       interactive_login, interactive_creator_login,
                       interactive_xhs_login, interactive_xhs_creator_login,
+                      interactive_rednote_login, interactive_rednote_creator_login,
                       interactive_ks_login, interactive_ks_creator_login,
                       interactive_channels_login, interactive_channels_creator_login,
                       interactive_tiktok_login,
@@ -41,6 +42,9 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       fetch_self_profile, fetch_xhs_self_profile,
                       fetch_xhs_note_detail, fetch_xhs_comments,
                        fetch_xhs_favorite_boards,
+                      fetch_rednote_self_profile, fetch_rednote_note_detail,
+                      fetch_rednote_comments, fetch_rednote_favorite_boards,
+                      fetch_rednote_notes, fetch_rednote_creator_published,
                       fetch_ks_self_profile,
                       fetch_channels_self_profile,
                       fetch_bili_self_profile,
@@ -87,6 +91,28 @@ from .platforms.xhs import (resolve_note as xhs_resolve_note,
                   parse_self_user as parse_xhs_self_user,
                   XhsApiClient, XhsApiError, cookie_str_from_state, has_a1,
                   has_creator_cookies)
+from .platforms.rednote import (
+    RednoteApiClient,
+    RednoteApiError,
+    build_rednote_note_url,
+    cookie_str_from_state as rednote_cookie_str_from_state,
+    delete_rednote_work,
+    flatten_rednote_comments,
+    has_a1 as rednote_has_a1,
+    has_creator_cookies as rednote_has_creator_cookies,
+    has_web_session as rednote_has_web_session,
+    looks_like_rednote_note,
+    parse_rednote_brief,
+    parse_rednote_comment,
+    parse_rednote_detail,
+    parse_rednote_self_user,
+    rednote_creator_check,
+    rednote_creator_profile,
+    resolve_rednote_note,
+    resolve_rednote_user,
+    update_rednote_visibility,
+    weighted_truncate,
+)
 from .platforms.kuaishou import (resolve_ks_user_id, resolve_ks_photo_id,
                   looks_like_photo as ks_looks_like_photo,
                   parse_self_user as parse_ks_self_user,
@@ -251,6 +277,7 @@ def _active_open_browser_account_ids() -> list[int]:
 def _login_scope_label(platform: str, creator: bool) -> str:
     label = {
         "xhs": "小红书",
+        "rednote": "海外小红书",
         "kuaishou": "快手",
         "shipinhao": "视频号",
         "tiktok": "TikTok",
@@ -957,6 +984,51 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 if browser is None:
                     return _done("error", "browser_unavailable")
                 u, err = await fetch_bili_self_profile(browser, identity)
+        elif platform == "rednote":
+            rmode = str(getattr(cfg.engine, "rednote_read_mode", "hybrid") or "hybrid").lower()
+            u, err = None, ""
+            rn_state = state or creator_state
+            rn_cookie = rednote_cookie_str_from_state(rn_state)
+            if rmode in {"api", "hybrid"} and rn_cookie and rednote_has_a1(rn_cookie):
+                rcli = RednoteApiClient(
+                    rn_cookie,
+                    _direct_request_ua(identity),
+                    timeout=cfg.engine.request_timeout_seconds,
+                    proxy=proxy,
+                    storage_state=rn_state,
+                )
+                try:
+                    async with rcli.session_scope():
+                        me = await rcli.self_info()
+                    if me and not me.get("guest"):
+                        u = me
+                except Exception as exc:
+                    err = exc
+            if not u and creator_state and rmode in {"api", "hybrid"}:
+                prof, perr = await rednote_creator_profile(
+                    creator_state, proxy=proxy, preserve_error=True
+                )
+                if prof and (prof.get("nickname") or prof.get("douyin_id")):
+                    with get_session() as s:
+                        acc = s.get(DouyinAccount, account_id)
+                        if acc:
+                            if prof.get("nickname"):
+                                acc.nickname = prof["nickname"]
+                            acc.sec_uid = prof.get("sec_uid") or acc.sec_uid
+                            acc.douyin_id = prof.get("douyin_id") or acc.douyin_id
+                            acc.avatar = prof.get("avatar") or acc.avatar
+                            acc.follower_count = prof.get("follower_count") or acc.follower_count
+                            acc.aweme_count = prof.get("aweme_count") or acc.aweme_count
+                            acc.status = "active"
+                            s.add(acc); s.commit()
+                    return _done("ok")
+                if perr and not err:
+                    err = perr
+            auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
+            if not u and (rmode == "browser" or (rmode == "hybrid" and not auth_failed)):
+                if browser is None:
+                    return _done("error", "browser_unavailable")
+                u, err = await fetch_rednote_self_profile(browser, identity)
         elif platform == "instagram":
             imode = str(getattr(cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower()
             u, err = None, ""
@@ -1017,6 +1089,8 @@ async def _enrich_account_profile(account_id: int, state: str, *,
         if u:
             if platform == "xhs":
                 p = parse_xhs_self_user(u)
+            elif platform == "rednote":
+                p = parse_rednote_self_user(u)
             elif platform == "kuaishou":
                 p = parse_ks_self_user(u)
             elif platform == "shipinhao":
@@ -1147,6 +1221,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
     is_fingerprint_environment = False
     login_environment = {}
     nm = ("小红书账号" if platform == "xhs"
+          else "海外小红书账号" if platform == "rednote"
           else "快手账号" if platform == "kuaishou"
           else "视频号账号" if platform == "shipinhao"
           else "哔哩哔哩账号" if platform == "bilibili"
@@ -1312,6 +1387,31 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 reauth_options = {"force_reauth": True} if account_id else {}
                 ok, state_json, nickname = await interactive_bilibili_login(
                     browser, identity, **reauth_options)
+            elif platform == "rednote":
+                reauth_options = {"force_reauth": True} if account_id else {}
+                if creator:
+                    ok, state_json, nickname = await interactive_rednote_creator_login(
+                        browser, identity, **reauth_options)
+                else:
+                    async def _rn_verification_status(url: str) -> None:
+                        verification = (
+                            "/website-login/captcha" in str(url).lower()
+                            or "error_code=300012" in str(url).lower()
+                        )
+                        login_tasks[task_id] = _login_task_state(
+                            status=("verification" if verification else "waiting"),
+                            platform=platform,
+                            creator=creator, account_id=account_id,
+                            hint=(("当前账号收到海外小红书设备安全验证；"
+                                   "请在可见窗口按页面提示完成人工验证，系统不会自动绕过验证页")
+                                  if verification else
+                                  "安全验证已解除，请在当前海外小红书页面完成登录"),
+                            environment=login_environment,
+                        )
+                    reauth_options["status_callback"] = _rn_verification_status
+                    ok, state_json, nickname = await interactive_rednote_login(
+                        browser, identity, timeout_seconds=300,
+                        **reauth_options)
             elif platform == "instagram":
                 reauth_options = {"force_reauth": True} if account_id else {}
                 ok, state_json, nickname = await interactive_instagram_login(
@@ -1332,13 +1432,18 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
         # 3) 仅在成功时落库
         if ok and state_json:
             is_xhs = platform == "xhs"
+            is_rednote = platform == "rednote"
             is_tiktok = platform == "tiktok"
             observed_profile = {}
-            if is_xhs and not creator:
+            if (is_xhs or is_rednote) and not creator:
                 raw_observed = getattr(
                     identity, "observed_login_profile", {}) or {}
                 if isinstance(raw_observed, dict):
-                    observed_profile = parse_xhs_self_user(raw_observed)
+                    observed_profile = (
+                        parse_rednote_self_user(raw_observed)
+                        if is_rednote
+                        else parse_xhs_self_user(raw_observed)
+                    )
             elif is_tiktok:
                 raw_observed = getattr(
                     identity, "observed_login_profile", {}) or {}
@@ -1430,6 +1535,11 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     # B站 / Instagram 顶域登录态同时支持读取、发布与私信
                     acc.storage_state = state_json
                     acc.creator_storage_state = state_json
+                elif platform == "rednote":
+                    # 海外小红书 .rednote.com 顶域会话在主站与创作中心间共享兜底，同时保留独立创作者登录覆盖
+                    acc.storage_state = state_json
+                    if not acc.creator_storage_state:
+                        acc.creator_storage_state = state_json
                 else:
                     acc.storage_state = state_json
                 if nickname:
@@ -1454,7 +1564,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 acc.status = "active"
                 s.add(acc); s.commit()
 
-            if fresh_account and platform in {"xhs", "tiktok", "instagram"}:
+            if fresh_account and platform in {"xhs", "rednote", "tiktok", "instagram"}:
                 # Promote the successful temporary login session to the new
                 # durable account id without closing/reopening Chromium.
                 rebound = getattr(browser, "rebind_context", None)
@@ -1832,6 +1942,58 @@ async def login_bilibili_start(proxy: str = "auto", browser_backend: str = "defa
             "hint": "已打开哔哩哔哩登录窗口，请使用 B 站 App 扫码或完成网页登录"}
 
 
+@app.post("/api/login/rednote/start")
+async def login_rednote_start(proxy: str = "auto", browser_backend: str = "default",
+                              browser_runtime_id: str = "",
+                              fingerprint: dict[str, Any] | None = None):
+    """海外小红书（Rednote）主站扫码/网页登录（www.rednote.com/zh）。"""
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id, platform="rednote")
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("rednote", False)
+    if reused is not None:
+        return reused
+    task_id = uuid.uuid4().hex
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="rednote", creator=False, account_id=None)
+    asyncio.create_task(_run_login(
+        task_id, platform="rednote", proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
+    return {"task_id": task_id, "status": "opening",
+            "hint": "已打开海外小红书（www.rednote.com）窗口，请扫码或完成登录"}
+
+
+@app.post("/api/login/rednote-creator/start")
+async def login_rednote_creator_start(proxy: str = "auto", browser_backend: str = "default",
+                                      browser_runtime_id: str = "",
+                                      fingerprint: dict[str, Any] | None = None):
+    """海外小红书创作服务平台登录（creator.rednote.com/login，发布与笔记管理用）。"""
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id, platform="rednote")
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("rednote", True)
+    if reused is not None:
+        return reused
+    task_id = uuid.uuid4().hex
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="rednote", creator=True, account_id=None)
+    asyncio.create_task(_run_login(
+        task_id, creator=True, platform="rednote", proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
+    return {"task_id": task_id, "status": "opening",
+            "hint": "已打开海外小红书创作服务平台（creator.rednote.com）窗口，请扫码登录"}
+
+
 @app.post("/api/login/instagram/start")
 async def login_instagram_start(proxy: str = "auto", browser_backend: str = "default",
                                 browser_runtime_id: str = "",
@@ -1878,13 +2040,13 @@ class CookieIn(BaseModel):
 @app.post("/api/login/cookie")
 async def login_cookie(body: CookieIn):
     """Cookie 粘贴兜底登录:转成浏览器登录态。"""
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram") else "douyin"
     state = cookie_string_to_state(body.cookie, platform)
     with get_session() as s:
         acc = DouyinAccount(
             nickname=body.nickname or "Cookie账号", platform=platform,
             identity_mode="native", cookie=body.cookie.strip(), storage_state=state,
-            creator_storage_state=(state if platform in {"bilibili", "instagram"} else ""))
+            creator_storage_state=(state if platform in {"bilibili", "rednote", "instagram"} else ""))
         s.add(acc); s.commit(); s.refresh(acc)
         # 分配画像(profile/UA/指纹/代理):Cookie 会在首次开持久 profile 时桥接注入
         ensure_identity(acc, cfg, session=s, assign_proxy=True)
@@ -1966,7 +2128,7 @@ async def instagram_media_thumb_proxy(url: str):
 
 @app.get("/api/overview/summary")
 async def overview_summary(platform: str = "douyin"):
-    if platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
+    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
         raise HTTPException(422, "平台类型无效")
     with get_session() as session:
         def count(model, *conditions):
@@ -2375,13 +2537,16 @@ async def list_accounts(platform: str | None = None):
                     environment_check = None
             has_creator = (
                 bool(a.creator_storage_state)
-                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram")
+                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram")
                     and bool(a.storage_state))
                 or (a.platform == "xhs" and has_creator_cookies(a.storage_state))
             )
             has_read_login = (
                 _xhs_has_read_login_state(a.storage_state)
-                if a.platform == "xhs" else bool(a.storage_state)
+                if a.platform == "xhs"
+                else rednote_has_web_session(a.storage_state)
+                if a.platform == "rednote"
+                else bool(a.storage_state)
             )
             out.append({
                 "id": a.id, "platform": a.platform, "nickname": a.nickname, "status": a.status,
@@ -2905,7 +3070,7 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
     if account.douyin_id:
         platform_account_id = account.douyin_id
         platform_account_id_label = {
-            "douyin": "抖音号", "xhs": "小红书号",
+            "douyin": "抖音号", "xhs": "小红书号", "rednote": "Rednote ID",
             "kuaishou": "快手号", "shipinhao": "视频号",
             "bilibili": "B站 UID", "tiktok": "TikTok",
             "instagram": "Instagram",
@@ -2913,7 +3078,7 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
     else:
         platform_account_id = account.sec_uid
         platform_account_id_label = {
-            "douyin": "sec_uid", "xhs": "user_id",
+            "douyin": "sec_uid", "xhs": "user_id", "rednote": "user_id",
             "kuaishou": "user_id", "shipinhao": "finder_id",
             "bilibili": "UID", "instagram": "pk",
         }.get(account.platform, "账号 ID")
@@ -3987,6 +4152,7 @@ async def refresh_account_profile(account_id: int):
         raise HTTPException(400, "登录态已失效,请点「重新登录」")
     if res != "ok":
         tag = ("[xhs_self_profile]" if platform == "xhs"
+               else "[rednote_self_profile]" if platform == "rednote"
                else "[ks_self_profile]" if platform == "kuaishou"
                else "[ig_self_profile]" if platform == "instagram"
                else "[self_profile]")
@@ -3997,18 +4163,20 @@ async def refresh_account_profile(account_id: int):
         has_read_login = (
             _xhs_has_read_login_state(acc.storage_state)
             if acc and acc.platform == "xhs"
+            else rednote_has_web_session(acc.storage_state)
+            if acc and acc.platform == "rednote"
             else bool(acc and acc.storage_state)
         )
         has_creator_login = bool(acc and (
             acc.creator_storage_state
-            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram")
+            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram")
                 and acc.storage_state)
             or (acc.platform == "xhs" and has_creator_cookies(acc.storage_state))
         ))
         return {"ok": True, "nickname": acc.nickname, "platform": acc.platform,
                 "douyin_id": acc.douyin_id, "sec_uid": acc.sec_uid,
                 "status": acc.status,
-                "login_scope": ("creator" if platform == "xhs" and creator_state
+                "login_scope": ("creator" if platform in ("xhs", "rednote") and creator_state and not has_read_login
                                   else "read"),
                 "has_read_login": has_read_login,
                 "has_creator": has_creator_login}
@@ -4027,10 +4195,10 @@ async def relogin_start(account_id: int, scope: str = "auto"):
         requested_scope = str(scope or "auto").strip().lower()
         if requested_scope not in {"auto", "read", "creator"}:
             raise HTTPException(400, "登录范围取值无效")
-        if platform == "xhs" and requested_scope != "auto":
+        if platform in ("xhs", "rednote") and requested_scope != "auto":
             is_creator = requested_scope == "creator"
         else:
-            is_creator = bool(acc.creator_storage_state)
+            is_creator = bool(acc.creator_storage_state) and not bool(acc.storage_state) if platform == "rednote" else bool(acc.creator_storage_state)
 
     reused = await _reuse_or_reject_interactive_login(
         platform, is_creator, account_id)
@@ -4106,17 +4274,17 @@ async def sync_account_works(account_id: int):
         ) or ""
         transport = (
             resolve_transport(cfg, platform, "account_works", acc)
-            if platform in {"douyin", "bilibili", "instagram"}
+            if platform in {"douyin", "bilibili", "rednote", "instagram"}
             else None
         )
         effective_mode = transport["effective_mode"] if transport else "browser"
         if browser is None and effective_mode in {"browser"}:
             raise HTTPException(503, "浏览器未就绪")
-        if browser is None and effective_mode == "hybrid" and platform not in {"bilibili", "instagram"}:
+        if browser is None and effective_mode == "hybrid" and platform not in {"bilibili", "rednote", "instagram"}:
             raise HTTPException(503, "浏览器未就绪")
         identity = (
             None
-            if platform in {"douyin", "bilibili", "instagram"} and effective_mode == "api"
+            if platform in {"douyin", "bilibili", "rednote", "instagram"} and effective_mode == "api"
             else (
                 browser.identity_for(acc)
                 if callable(getattr(browser, "identity_for", None))
@@ -5463,6 +5631,7 @@ async def cancel_account_action(task_id: int):
 
 
 _PLATFORM_HOST = {"douyin": "douyin.com", "xhs": "xiaohongshu.com",
+                  "rednote": "rednote.com",
                   "kuaishou": "kuaishou.com", "shipinhao": "weixin.qq.com",
                   "tiktok": "tiktok.com", "bilibili": "bilibili.com",
                   "instagram": "instagram.com"}
@@ -5610,11 +5779,14 @@ async def open_account_browser(
         identity = browser.identity_for(acc)
         has_read_login = (
             _xhs_has_read_login_state(acc.storage_state)
-            if platform == "xhs" else bool(acc.storage_state)
+            if platform == "xhs"
+            else rednote_has_web_session(acc.storage_state or "")
+            if platform == "rednote"
+            else bool(acc.storage_state)
         )
         has_creator_login = bool(acc.creator_storage_state)
         open_scope = (
-            "creator" if platform == "xhs" and not has_read_login
+            "creator" if platform in {"xhs", "rednote"} and not has_read_login
             and has_creator_login else "read"
         )
         states = [acc.storage_state or "", acc.creator_storage_state or ""]
@@ -5624,6 +5796,9 @@ async def open_account_browser(
                      # 显示成“未确认”。首页会加载权威的当前用户接口。
                      else "https://www.xiaohongshu.com/"),
             "kuaishou": "https://www.kuaishou.com/",
+            "rednote": ("https://creator.rednote.com/new/note-manager"
+                        if open_scope == "creator"
+                        else "https://www.rednote.com/zh"),
             "tiktok": "https://www.tiktok.com/",
             "bilibili": "https://www.bilibili.com/",
             "instagram": "https://www.instagram.com/",
@@ -5999,6 +6174,7 @@ async def _probe_proxy(url: str, platform: str | None = None, timeout: float = 1
         return False, "未配置代理"
     platform_urls = {
         "douyin": "https://www.douyin.com/", "xhs": "https://www.xiaohongshu.com/",
+        "rednote": "https://www.rednote.com/zh",
         "kuaishou": "https://www.kuaishou.com/", "tiktok": "https://www.tiktok.com/",
         "shipinhao": "https://channels.weixin.qq.com/",
         "bilibili": "https://www.bilibili.com/",
@@ -6644,6 +6820,7 @@ def _write_account_cookie_file(account_id: int | None) -> tuple[str, str, str]:
     if not cookies and raw_cookie:
         default_domain = {
             "xhs": ".xiaohongshu.com",
+            "rednote": ".rednote.com",
             "kuaishou": ".kuaishou.com",
             "shipinhao": ".weixin.qq.com",
             "tiktok": ".tiktok.com",
@@ -7504,6 +7681,181 @@ async def _xhs_native_share(
     }
 
 
+async def _rednote_native_share(
+    source_url: str,
+    *,
+    account_id: int | None,
+    output_root: Path,
+    quality: str,
+    should_download: bool,
+    save_metadata: bool,
+    save_thumbnail: bool,
+    proxy: str,
+) -> dict | None:
+    """Read Rednote (海外小红书) note metadata in the selected account session, then fetch CDN media."""
+    if account_id is None:
+        return None
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if not account or account.platform != "rednote":
+            return None
+        state = account.storage_state or account.creator_storage_state or ""
+        identity = browser.identity_for(account) if browser is not None else None
+
+    from .browser.manager import normalize_proxy
+    acc_proxy = identity.proxy if identity is not None else (account.proxy or "")
+    if normalize_proxy(proxy) != normalize_proxy(acc_proxy):
+        raise ShareDownloadError(
+            "海外小红书链接下载必须复用账号已绑定代理；请先在账号环境中配置代理，"
+            "不要在下载页临时切换出口"
+        )
+
+    actual_ua = (
+        _direct_request_ua(identity)
+        if browser is not None and identity is not None
+        else (account.ua or cfg.engine.user_agent)
+    )
+    rmode = str(getattr(cfg.engine, "rednote_read_mode", "hybrid") or "hybrid").lower()
+    rn_cookie = rednote_cookie_str_from_state(state)
+
+    async def _read_note():
+        ref = await resolve_rednote_note(source_url, actual_ua)
+        if ref is None:
+            return None, "没有从链接识别到海外小红书笔记 ID"
+        if rmode in {"api", "hybrid"} and rn_cookie and rednote_has_a1(rn_cookie):
+            rcli = RednoteApiClient(
+                rn_cookie, actual_ua,
+                timeout=cfg.engine.request_timeout_seconds, proxy=acc_proxy,
+                storage_state=state,
+            )
+            try:
+                async with rcli.session_scope():
+                    card = await rcli.note_detail(
+                        ref.note_id,
+                        xsec_token=ref.xsec_token,
+                        xsec_source=ref.xsec_source or "pc_feed",
+                    )
+                if card:
+                    return {"card": card, "note_id": ref.note_id, "final_url": source_url}, ""
+            except Exception as exc:
+                if rmode == "api":
+                    return None, str(exc)
+        if browser is None or identity is None:
+            return None, "浏览器读取不可用"
+        card, read_error = await fetch_rednote_note_detail(
+            browser,
+            identity,
+            ref.note_id,
+            xsec_token=ref.xsec_token,
+            xsec_source=ref.xsec_source or "pc_feed",
+            block_media=cfg.engine.block_media_resources,
+        )
+        return {
+            "card": card or {},
+            "note_id": ref.note_id,
+            "final_url": source_url,
+        }, read_error
+
+    payload, outcome = await _run_account_read(
+        account_id,
+        OperationKind.READ_HEAVY,
+        f"share-rednote:{account_id}",
+        _read_note,
+        empty_result={"card": {}, "note_id": "", "final_url": source_url},
+    )
+    if isinstance(outcome, dict):
+        raise ShareDownloadError(
+            f"海外小红书账号读取正在冷却: {outcome.get('reason') or '稍后重试'}")
+    if outcome:
+        raise ShareDownloadError(f"海外小红书笔记读取失败: {outcome}")
+
+    note_id = str(payload.get("note_id") or "")
+    card = payload.get("card") or {}
+    aweme = parse_rednote_detail(card, {"note_id": note_id})
+    if not aweme or not aweme.medias:
+        raise ShareDownloadError("海外小红书笔记已打开，但没有取得可下载的图片或视频")
+    if quality == "audio" and aweme.media_type == "video":
+        raise ShareDownloadError("海外小红书模式暂不执行音频提取，请选择视频画质下载")
+
+    metadata = _native_aweme_metadata(
+        aweme, str(payload.get("final_url") or source_url))
+    if not should_download:
+        return {
+            "ok": True,
+            "url": source_url,
+            "metadata": metadata,
+            "warnings": [],
+        }
+
+    downloader = Downloader(
+        str(output_root), actual_ua,
+        timeout=max(30.0, cfg.engine.download_timeout_seconds),
+    )
+    ok, _local_path, error = await downloader.download_aweme(
+        aweme, base_dir=str(output_root), proxy=acc_proxy or "",
+        referer="https://www.rednote.com/",
+    )
+    if not ok:
+        raise ShareDownloadError(error or "海外小红书媒体下载失败")
+
+    target_dir = output_root / safe_title(aweme.author_name or "unknown")
+    title = safe_title(aweme.desc) or aweme.aweme_id
+    if save_metadata:
+        info_path = target_dir / f"{aweme.aweme_id}_{title}.info.json"
+        info_path.write_text(
+            json.dumps({
+                **metadata,
+                "media": [
+                    {"url": media.url, "kind": media.kind,
+                     "ext": media.ext, "index": media.index}
+                    for media in aweme.medias
+                ],
+                "raw": card,
+            }, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+
+    if save_thumbnail and aweme.media_type == "video" and aweme.cover:
+        import httpx
+        cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
+        try:
+            async with httpx.AsyncClient(
+                    timeout=max(30.0, cfg.engine.download_timeout_seconds),
+                    follow_redirects=True,
+                    headers={
+                        "User-Agent": actual_ua,
+                        "Referer": "https://www.rednote.com/",
+                    },
+                    proxy=normalize_proxy(acc_proxy) or None) as http:
+                await downloader._download_one(http, aweme.cover, cover_path)
+        except Exception:
+            pass
+
+    files = []
+    for path in sorted(target_dir.glob(f"{aweme.aweme_id}_*")):
+        if not path.is_file() or path.suffix.lower() in {".part", ".ytdl"}:
+            continue
+        files.append({
+            "name": path.name,
+            "path": str(path.resolve()),
+            "relative_path": path.relative_to(output_root).as_posix(),
+            "size": path.stat().st_size,
+            "role": _share_file_role(path),
+        })
+    if not any(item["role"] == "media" for item in files):
+        raise ShareDownloadError("海外小红书笔记解析成功，但本地没有生成媒体文件")
+    return {
+        "ok": True,
+        "job_id": f"rednote_{aweme.aweme_id}",
+        "url": source_url,
+        "output_dir": str(target_dir.resolve()),
+        "metadata": metadata,
+        "files": files,
+        "progress": {"status": "finished"},
+        "warnings": [],
+    }
+
+
 @app.post("/api/share-download/links")
 async def parse_share_links(body: ShareLinksIn):
     """只做本地文本清洗和链接提取，不访问分享站点。"""
@@ -7581,6 +7933,17 @@ async def share_download(body: ShareDownloadIn):
                             fallback_error = str(exc)
                     elif link.platform == "xhs":
                         item = await _xhs_native_share(
+                            link.url,
+                            account_id=body.account_id,
+                            output_root=output_root,
+                            quality=body.quality,
+                            should_download=body.download,
+                            save_metadata=body.save_metadata,
+                            save_thumbnail=body.save_thumbnail,
+                            proxy=proxy,
+                        )
+                    elif link.platform == "rednote":
+                        item = await _rednote_native_share(
                             link.url,
                             account_id=body.account_id,
                             output_root=output_root,
@@ -8090,8 +8453,8 @@ def _validated_collection_input(body: KeywordCollectionIn) \
         -> tuple[str, list[str], str, str, dict]:
     """校验创建/编辑共用的任务配置并返回规范化值。"""
     platform = body.platform.strip().lower()
-    if platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
-        raise HTTPException(400, "批量采集仅支持抖音、小红书、快手、视频号、TikTok、哔哩哔哩或 Instagram")
+    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
+        raise HTTPException(400, "批量采集仅支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩或 Instagram")
     source_type = body.source_type.strip().lower() or "keyword"
     if source_type not in {
             "keyword", "favorite_all", "favorite_board", "creator",
@@ -8101,8 +8464,8 @@ def _validated_collection_input(body: KeywordCollectionIn) \
         raise HTTPException(400, "本账号作品来源仅支持视频号、哔哩哔哩或 Instagram")
     if platform == "tiktok" and source_type != "keyword":
         raise HTTPException(400, "TikTok 首版批量采集仅支持关键词视频搜索")
-    if source_type in {"favorite_all", "favorite_board"} and platform != "xhs":
-        raise HTTPException(400, "收藏来源仅支持小红书")
+    if source_type in {"favorite_all", "favorite_board"} and platform not in {"xhs", "rednote"}:
+        raise HTTPException(400, "收藏来源仅支持小红书或海外小红书")
     source_ref = body.source_ref.strip()
     source_name = body.source_name.strip()
     if source_type == "account_works":
@@ -8239,6 +8602,23 @@ async def _resolve_bili_creator_source(body: KeywordCollectionIn) -> None:
         body.source_ref = mid
         if not body.source_name or body.source_name == f"创作者 {original_ref}":
             body.source_name = f"创作者 {mid}"
+
+
+async def _resolve_rednote_creator_source(body: KeywordCollectionIn) -> None:
+    """把海外小红书创作者采集的 source_ref 解析为 24 位 user_id。"""
+    if (body.platform.strip().lower() == "rednote"
+            and body.source_type.strip().lower() == "creator"):
+        original_ref = body.source_ref.strip()
+        cleaned = _clean_platform_target_input(original_ref, "rednote")
+        ref = await resolve_rednote_user(cleaned, cfg.engine.user_agent)
+        if not ref or not ref.user_id:
+            raise HTTPException(
+                400,
+                "无法解析海外小红书创作者 user_id，请填写 www.rednote.com/zh/user/profile/... 主页链接或 24 位 user_id",
+            )
+        body.source_ref = ref.user_id
+        if not body.source_name or body.source_name == f"创作者 {original_ref}":
+            body.source_name = f"创作者 {ref.user_id}"
 
 
 async def _resolve_ig_creator_source(body: KeywordCollectionIn) -> None:
@@ -8436,6 +8816,12 @@ def _collection_content_dict(row: KeywordCollectionContent) -> dict:
         url = f"https://www.xiaohongshu.com/explore/{row.aweme_id}"
         if query:
             url += "?" + query
+    elif row.platform == "rednote":
+        url = row.source_url or build_rednote_note_url(
+            row.aweme_id,
+            xsec_token=row.xsec_token or "",
+            xsec_source=row.xsec_source or "pc_search",
+        )
     elif row.platform == "kuaishou":
         url = f"https://www.kuaishou.com/short-video/{row.aweme_id}"
     elif row.platform == "shipinhao":
@@ -8581,6 +8967,61 @@ async def list_xhs_favorite_boards(account_id: int):
     boards, error = await engine.guarded_interactive_read_pair(
         account_id, OperationKind.READ_HEAVY,
         f"favorite-boards:{account_id}", read_boards, empty_result=[])
+    if error.startswith("risk_deferred:"):
+        raise HTTPException(429, error.split(":", 1)[-1])
+    if error and not boards:
+        raise HTTPException(400, error)
+    return [{
+        "id": str(value.get("id") or value.get("board_id") or ""),
+        "name": str(value.get("name") or value.get("title") or "未命名收藏夹"),
+        "total": int(value.get("total") or value.get("note_count") or 0),
+        "images": value.get("images") or [],
+    } for value in boards if value.get("id") or value.get("board_id")]
+
+
+@app.get("/api/accounts/{account_id}/rednote/favorite-boards")
+async def list_rednote_favorite_boards(account_id: int):
+    """List the signed-in account's Rednote (海外小红书) favorite boards without exposing cookies."""
+    if browser is None or engine is None:
+        raise HTTPException(503, "采集引擎未就绪")
+    with get_session() as session:
+        account = session.get(DouyinAccount, account_id)
+        if (not account or account.platform != "rednote" or account.status != "active"
+                or not (account.storage_state or account.creator_storage_state)):
+            raise HTTPException(400, "请选择有效的海外小红书登录账号")
+        identity = browser.identity_for(account)
+        user_id = account.sec_uid
+        rn_state = account.storage_state or account.creator_storage_state or ""
+        cookie = rednote_cookie_str_from_state(rn_state)
+        proxy = account.proxy or ""
+
+    async def read_boards():
+        rmode = str(getattr(cfg.engine, "rednote_read_mode", "hybrid") or "hybrid").lower()
+        if rmode in {"api", "hybrid"} and cookie and rednote_has_a1(cookie):
+            client = RednoteApiClient(
+                cookie,
+                (browser.direct_request_user_agent(identity)
+                 if callable(getattr(browser, "direct_request_user_agent", None))
+                 else identity.ua),
+                timeout=cfg.engine.request_timeout_seconds,
+                proxy=proxy,
+                storage_state=rn_state,
+            )
+            try:
+                async with client.session_scope():
+                    boards_api = await client.favorite_boards(user_id)
+                if boards_api or rmode == "api":
+                    return boards_api, ""
+            except Exception as exc:
+                if rmode == "api":
+                    return [], str(exc)
+        elif rmode == "api":
+            return [], "海外小红书登录态缺少 a1，请重新扫码登录或切换为浏览器读取"
+        return await fetch_rednote_favorite_boards(browser, identity, user_id)
+
+    boards, error = await engine.guarded_interactive_read_pair(
+        account_id, OperationKind.READ_HEAVY,
+        f"rednote-favorite-boards:{account_id}", read_boards, empty_result=[])
     if error.startswith("risk_deferred:"):
         raise HTTPException(429, error.split(":", 1)[-1])
     if error and not boards:
@@ -8750,6 +9191,7 @@ async def create_keyword_collection(body: KeywordCollectionIn, request: Request 
     await _resolve_ks_creator_source(body)
     await _resolve_channels_creator_source(body)
     await _resolve_bili_creator_source(body)
+    await _resolve_rednote_creator_source(body)
     await _resolve_ig_creator_source(body)
     with get_session() as session:
         def create():
@@ -8789,6 +9231,7 @@ async def update_keyword_collection(job_id: int, body: KeywordCollectionIn):
     await _resolve_ks_creator_source(body)
     await _resolve_channels_creator_source(body)
     await _resolve_bili_creator_source(body)
+    await _resolve_rednote_creator_source(body)
     await _resolve_ig_creator_source(body)
     platform, keywords, quality, download_dir, options = _validated_collection_input(body)
     with get_session() as session:
@@ -8837,7 +9280,7 @@ async def list_keyword_collections(platform: str | None = None, limit: int = 100
     limit = max(1, min(limit, 300))
     with get_session() as session:
         stmt = select(KeywordCollectionJob)
-        if platform in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
+        if platform in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
             stmt = stmt.where(KeywordCollectionJob.platform == platform)
         rows = session.exec(
             stmt.order_by(KeywordCollectionJob.created_at.desc()).limit(limit)).all()
@@ -8917,6 +9360,8 @@ async def keyword_collection_content_media(job_id: int, content_id: int):
             "local_url": local_video["url"] if local_video else "",
             "source_url": (f"https://www.xiaohongshu.com/explore/{row.aweme_id}"
                            if row.platform == "xhs"
+                           else (row.source_url or f"https://www.rednote.com/zh/discovery/item/{row.aweme_id}")
+                           if row.platform == "rednote"
                            else row.source_url
                            if row.platform == "tiktok"
                            else (row.source_url or "https://channels.weixin.qq.com/platform/post/list")
@@ -9241,12 +9686,12 @@ def _clean_platform_target_input(value: str, platform: str) -> str:
     if detected_links and not any(
             item.platform == expected_share_platform for item in detected_links):
         platform_name = {
-            "douyin": "抖音", "xhs": "小红书", "kuaishou": "快手",
+            "douyin": "抖音", "xhs": "小红书", "rednote": "海外小红书", "kuaishou": "快手",
             "shipinhao": "视频号", "tiktok": "TikTok", "bilibili": "哔哩哔哩",
             "instagram": "Instagram",
         }.get(platform, platform)
         detected_names = {
-            "douyin": "抖音", "xhs": "小红书", "kuaishou": "快手",
+            "douyin": "抖音", "xhs": "小红书", "rednote": "海外小红书", "kuaishou": "快手",
             "wechat": "微信/视频号", "tiktok": "TikTok", "bilibili": "哔哩哔哩",
             "instagram": "Instagram",
             "generic": "其他站点",
@@ -9307,12 +9752,12 @@ async def add_monitor(body: TargetIn, request: Request = None):
         replay = replay_if_exists(session, request=request, scope="monitor", body=body)
         if replay is not None:
             return replay
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram") else "douyin"
     sec_uid = keyword = xsec_token = ""
     nickname = avatar = ""
     kind = "creator"
 
-    if platform in ("xhs", "instagram") and body.target_kind == "keyword":
+    if platform in ("xhs", "rednote", "instagram") and body.target_kind == "keyword":
         kind = "keyword"
         keyword = body.url_or_secuid.strip()
         if not keyword:
@@ -9324,6 +9769,11 @@ async def add_monitor(body: TargetIn, request: Request = None):
         ref = await xhs_resolve_user(target_input, cfg.engine.user_agent)
         if not ref:
             raise HTTPException(400, "无法解析小红书 user_id,请粘贴完整分享文案、创作者主页链接 / xhslink 短链 / 24 位 user_id")
+        sec_uid, xsec_token = ref.user_id, ref.xsec_token
+    elif platform == "rednote" and kind != "keyword":
+        ref = await resolve_rednote_user(target_input, cfg.engine.user_agent)
+        if not ref:
+            raise HTTPException(400, "无法解析海外小红书 user_id,请粘贴 www.rednote.com/zh/user/profile/... 主页链接或 24 位 user_id")
         sec_uid, xsec_token = ref.user_id, ref.xsec_token
     elif platform == "kuaishou":
         sec_uid = await resolve_ks_user_id(target_input, cfg.engine.user_agent)
@@ -10628,7 +11078,7 @@ async def list_watches(platform: str | None = None):
 
 @app.post("/api/comment-watches")
 async def add_watch(body: WatchIn):
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram") else "douyin"
     aweme_id = sec_uid = xsec_token = ""
     title = ""
     target_input = _clean_platform_target_input(body.url_or_id, platform)
@@ -10663,6 +11113,30 @@ async def add_watch(body: WatchIn):
             ref = await xhs_resolve_user(target_input, cfg.engine.user_agent)
             if not ref:
                 raise HTTPException(400, "无法解析小红书创作者,请粘贴完整分享文案、主页链接 / xhslink 短链 / 24 位 user_id")
+            sec_uid, xsec_token = ref.user_id, ref.xsec_token
+        mode = "public"
+    elif platform == "rednote":
+        kind = body.kind
+        if kind == "auto":
+            note_ref = None
+            if looks_like_rednote_note(target_input) or "://" in target_input:
+                note_ref = await resolve_rednote_note(target_input, cfg.engine.user_agent)
+            if note_ref:
+                kind = "video"
+                aweme_id, xsec_token = note_ref.note_id, note_ref.xsec_token
+            else:
+                kind = "user"
+        if kind == "video":
+            if not aweme_id:
+                ref = await resolve_rednote_note(target_input, cfg.engine.user_agent)
+                if not ref:
+                    raise HTTPException(400, "无法解析海外小红书笔记,请粘贴 www.rednote.com/zh/discovery/item/... 笔记链接或 24 位 note_id")
+                aweme_id, xsec_token = ref.note_id, ref.xsec_token
+            title = "笔记 " + aweme_id
+        else:
+            ref = await resolve_rednote_user(target_input, cfg.engine.user_agent)
+            if not ref:
+                raise HTTPException(400, "无法解析海外小红书创作者,请粘贴 www.rednote.com/zh/user/profile/... 主页链接或 24 位 user_id")
             sec_uid, xsec_token = ref.user_id, ref.xsec_token
         mode = "public"
     elif platform == "kuaishou":
@@ -11738,10 +12212,10 @@ async def add_publish(body: PublishIn, request: Request = None):
                 raise HTTPException(400, "media_type 须为 images 或 video")
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform not in (
-                    "xhs", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram"):
+                    "xhs", "rednote", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram"):
                 raise HTTPException(
-                    400, "请选择一个已登录的抖音 / 小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩 / Instagram 账号")
-            if acc.platform == "xhs":
+                    400, "请选择一个已登录的抖音 / 小红书 / 海外小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩 / Instagram 账号")
+            if acc.platform in ("xhs", "rednote"):
                 from .platforms.xhs.media import validate_publish_files
                 try:
                     paths = validate_publish_files(body.media_type, body.media_paths)
@@ -11752,18 +12226,26 @@ async def add_publish(body: PublishIn, request: Request = None):
                     acc.platform, body.media_type, body.media_paths)
             pname = {"kuaishou": "快手", "douyin": "抖音",
                      "shipinhao": "视频号", "tiktok": "TikTok",
-                     "bilibili": "哔哩哔哩", "instagram": "Instagram"}.get(
+                     "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram"}.get(
                          acc.platform, "小红书")
-            if acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram"):
+            if acc.platform == "rednote":
+                if not (acc.creator_storage_state or acc.storage_state):
+                    raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成登录")
+            elif acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram"):
                 if not (acc.creator_storage_state or acc.storage_state or acc.cookie):
                     raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
                 raise HTTPException(400, "该账号不可发布:请对该号完成「小红书扫码登录」或「创作者登录」")
             vis = body.visibility if body.visibility in ("public", "friends", "private") else "public"
             title_cap = _publish_title_cap(acc.platform)
+            norm_title = (
+                weighted_truncate(body.title.strip(), 20)
+                if acc.platform == "rednote"
+                else body.title.strip()[:title_cap]
+            )
             t = PublishTask(
                 platform=acc.platform, account_id=body.account_id, media_type=body.media_type,
-                title=body.title.strip()[:title_cap], desc=body.desc, topics=body.topics,
+                title=norm_title, desc=body.desc, topics=body.topics,
                 location=(body.location or "").strip()[:60],
                 visibility=vis, allow_save=bool(body.allow_save),
                 allow_comment=bool(body.allow_comment),
@@ -11796,7 +12278,11 @@ async def update_publish(tid: int, body: PublishUpdate):
                 raise HTTPException(400, "发布账号不存在、登录态失效或与任务平台不匹配")
             t.account_id = body.account_id
         if body.title is not None:
-            t.title = body.title.strip()[:_publish_title_cap(t.platform)]
+            t.title = (
+                weighted_truncate(body.title.strip(), 20)
+                if t.platform == "rednote"
+                else body.title.strip()[:_publish_title_cap(t.platform)]
+            )
         if body.desc is not None:
             t.desc = body.desc
         if body.topics is not None:
@@ -11902,16 +12388,19 @@ def _imgs_of(n: dict) -> list:
 
 
 @app.get("/api/publish/published")
-async def list_published_notes(account_id: int):
-    """拉取「已发布作品列表」。
+async def list_published_notes(account_id: int, platform: str | None = None):
+    """拉取「已发布作品列表」（支持小红书与海外小红书 Rednote）。
     优先用「读取登录态」打开自己的 www 主页(token 对预览/评论有效);
     没有读取态时回退创作平台「笔记管理」(能显示,但视频预览/评论可能不可用)。"""
     if browser is None:
         raise HTTPException(503, "浏览器未就绪")
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
-        if not acc or acc.platform != "xhs":
-            raise HTTPException(400, "请选择一个已登录的小红书账号")
+        if not acc or acc.platform not in ("xhs", "rednote"):
+            raise HTTPException(400, "请选择一个已登录的小红书或海外小红书账号")
+        if platform and platform in ("xhs", "rednote") and acc.platform != platform:
+            raise HTTPException(400, "所选账号与当前平台不匹配")
+        acc_platform = acc.platform
         read_state = acc.storage_state or ""
         creator_state = acc.creator_storage_state or ""
         proxy = acc.proxy or ""
@@ -11939,6 +12428,97 @@ async def list_published_notes(account_id: int):
             current = s.get(DouyinAccount, account_id)
             identity = browser.identity_for(current)
         out, good = [], False
+        if acc_platform == "rednote":
+            uid = str(current.sec_uid or "") if current else ""
+            rmode = str(getattr(cfg.engine, "rednote_read_mode", "hybrid") or "hybrid").lower()
+            rn_state = read_state or creator_state
+            rn_cookie = rednote_cookie_str_from_state(rn_state)
+            if rmode in {"api", "hybrid"} and rn_cookie and rednote_has_a1(rn_cookie):
+                rcli = RednoteApiClient(
+                    rn_cookie,
+                    _direct_request_ua(identity),
+                    timeout=cfg.engine.request_timeout_seconds,
+                    proxy=proxy,
+                    storage_state=rn_state,
+                )
+                try:
+                    async with rcli.session_scope():
+                        notes_api = await rcli.published_notes(max_pages=5)
+                    for n in (notes_api or [])[:80]:
+                        imgs = _imgs_of(n)
+                        vi = n.get("video_info") or {}
+                        cover = imgs[0] if imgs else (vi.get("cover") if isinstance(vi, dict) else "")
+                        out.append({
+                            "note_id": str(_first_val(n, "id", "noteId", "note_id")),
+                            "title": _first_val(n, "display_title", "title", "desc", default="(无标题)"),
+                            "type": _first_val(n, "type", "noteType", default="normal"),
+                            "cover": cover or "",
+                            "images": imgs,
+                            "like": _first_val(n, "likes", "likeCount", default=0),
+                            "time": _first_val(n, "time", "postTime", default=0),
+                            "xsec_token": _first_val(n, "xsec_token", default=""),
+                            "xsec_source": _first_val(n, "xsec_source", default="pc_note_detail"),
+                        })
+                    if out:
+                        return _payload(out, False), ""
+                except Exception as exc:
+                    if rmode == "api":
+                        return _failure(exc)
+            if read_state:
+                if not uid:
+                    profile, uid_error = await fetch_rednote_self_profile(browser, identity)
+                    if uid_error and classify_platform_error(uid_error)[0] in {
+                            RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                        return _failure(uid_error)
+                    if profile:
+                        uid = str((parse_rednote_self_user(profile) or {}).get("sec_uid") or "")
+                if uid:
+                    items, _a, read_error = await fetch_rednote_notes(
+                        browser, identity, uid, set(), ssr_fallback=True
+                    )
+                    if read_error and classify_platform_error(read_error)[0] in {
+                            RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                        return _failure(read_error)
+                    for raw in items[:80]:
+                        b = parse_rednote_brief(raw)
+                        if not b:
+                            continue
+                        card = raw.get("note_card") or raw
+                        interact = card.get("interact_info") or {}
+                        out.append({
+                            "note_id": b["note_id"],
+                            "title": b.get("title") or "(无标题)",
+                            "type": b.get("type") or "normal",
+                            "cover": b.get("cover") or "",
+                            "images": [],
+                            "like": interact.get("liked_count") or 0,
+                            "time": card.get("time") or 0,
+                            "xsec_token": b.get("xsec_token") or "",
+                            "xsec_source": "pc_feed",
+                        })
+                    good = bool(out)
+            error = ""
+            if not out:
+                notes, error = await fetch_rednote_creator_published(browser, identity)
+                for n in notes[:80]:
+                    imgs = _imgs_of(n)
+                    vi = n.get("video_info") or {}
+                    cover = imgs[0] if imgs else (vi.get("cover") if isinstance(vi, dict) else "")
+                    out.append({
+                        "note_id": str(_first_val(n, "id", "noteId", "note_id")),
+                        "title": _first_val(n, "display_title", "title", "desc", default="(无标题)"),
+                        "type": _first_val(n, "type", "noteType", default="normal"),
+                        "cover": cover or "", "images": imgs,
+                        "like": _first_val(n, "likes", "likeCount", default=0),
+                        "time": _first_val(n, "time", "postTime", default=0),
+                        "xsec_token": _first_val(n, "xsec_token", default=""),
+                        "xsec_source": _first_val(n, "xsec_source", default="pc_note_detail"),
+                    })
+            if error:
+                category, _signal = classify_platform_error(error)
+                return _payload(out, good, error_category=category.value), error
+            return _payload(out, good), ""
+
         if read_state:
             uid = str(current.sec_uid or "") if current else ""
             uid_error = ""
@@ -12046,23 +12626,59 @@ async def list_published_notes(account_id: int):
 @app.get("/api/publish/note-media")
 async def publish_note_media(account_id: int, note_id: str,
                              xsec_token: str = "", xsec_source: str = "pc_note_detail"):
-    """取一条小红书笔记的完整媒体(图集/视频),供「已发布作品」预览。"""
+    """取一条小红书或海外小红书笔记的完整媒体(图集/视频),供「已发布作品」预览。"""
     from .platforms.xhs import XhsApiClient, XhsApiError, cookie_str_from_state, has_a1, parse_note_detail
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
-        if not acc or acc.platform != "xhs":
+        if not acc or acc.platform not in ("xhs", "rednote"):
             raise HTTPException(400, "账号无效")
+        acc_platform = acc.platform
         state = acc.storage_state or acc.creator_storage_state or ""
         proxy = acc.proxy or ""
         identity = browser.identity_for(acc) if browser is not None else None
-    cookie = cookie_str_from_state(state)
-    if not has_a1(cookie):
+    cookie = (
+        rednote_cookie_str_from_state(state)
+        if acc_platform == "rednote"
+        else cookie_str_from_state(state)
+    )
+    rmode = str(getattr(cfg.engine, "rednote_read_mode", "hybrid") or "hybrid").lower()
+    if acc_platform == "xhs" and not has_a1(cookie):
         raise HTTPException(400, "登录态缺少 a1")
+    if acc_platform == "rednote" and rmode == "api" and not rednote_has_a1(cookie):
+        raise HTTPException(400, "海外小红书登录态缺少 a1")
 
     no_media = "拿不到该笔记的媒体(xsec_token 对 feed 接口无效)"
 
     async def _fetch_note_media():
-        if _xhs_browser_reads_enabled() and identity is not None:
+        if acc_platform == "rednote":
+            card = None
+            if rmode in {"api", "hybrid"} and cookie and rednote_has_a1(cookie):
+                rcli = RednoteApiClient(
+                    cookie,
+                    (_direct_request_ua(identity)
+                     if browser is not None and identity is not None
+                     else cfg.engine.user_agent),
+                    timeout=cfg.engine.request_timeout_seconds,
+                    proxy=proxy,
+                    storage_state=state,
+                )
+                try:
+                    async with rcli.session_scope():
+                        card = await rcli.note_detail(
+                            note_id, xsec_token=xsec_token, xsec_source=xsec_source
+                        )
+                except Exception as exc:
+                    if rmode == "api":
+                        return None, exc
+            if not card and rmode in {"browser", "hybrid"} and browser is not None and identity is not None:
+                card, read_error = await fetch_rednote_note_detail(
+                    browser, identity, note_id,
+                    xsec_token=xsec_token, xsec_source=xsec_source,
+                    block_media=cfg.engine.block_media_resources)
+                if read_error and not card:
+                    return None, read_error
+            aw = parse_rednote_detail(card or {}, {"note_id": note_id})
+        elif _xhs_browser_reads_enabled() and identity is not None:
             card, read_error = await fetch_xhs_note_detail(
                 browser, identity, note_id,
                 xsec_token=xsec_token, xsec_source=xsec_source,
@@ -12085,7 +12701,9 @@ async def publish_note_media(account_id: int, note_id: str,
                     note_id, xsec_token=xsec_token, xsec_source=xsec_source)
             except XhsApiError as exc:
                 return None, exc
-        aw = parse_note_detail(card or {}, {"note_id": note_id})
+            aw = parse_note_detail(card or {}, {"note_id": note_id})
+        if acc_platform == "xhs" and _xhs_browser_reads_enabled() and identity is not None:
+            aw = parse_note_detail(card or {}, {"note_id": note_id})
         if not aw or not aw.medias:
             return None, no_media
         return {
@@ -12118,21 +12736,80 @@ async def publish_note_media(account_id: int, note_id: str,
 @app.get("/api/publish/note-comments")
 async def publish_note_comments(account_id: int, note_id: str,
                                 xsec_token: str = "", xsec_source: str = "pc_note_detail"):
-    """拉取一条小红书笔记的评论(一级 + 子评论拍平)。"""
+    """拉取一条小红书或海外小红书笔记的评论(一级 + 子评论拍平)。"""
     from .platforms.xhs import (XhsApiClient, XhsApiError, cookie_str_from_state, has_a1,
                       parse_comment as parse_xhs_comment, flatten_comments)
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
-        if not acc or acc.platform != "xhs":
+        if not acc or acc.platform not in ("xhs", "rednote"):
             raise HTTPException(400, "账号无效")
+        acc_platform = acc.platform
         state = acc.storage_state or acc.creator_storage_state or ""
         proxy = acc.proxy or ""
         identity = browser.identity_for(acc) if browser is not None else None
-    cookie = cookie_str_from_state(state)
-    if not has_a1(cookie):
+    cookie = (
+        rednote_cookie_str_from_state(state)
+        if acc_platform == "rednote"
+        else cookie_str_from_state(state)
+    )
+    rmode = str(getattr(cfg.engine, "rednote_read_mode", "hybrid") or "hybrid").lower()
+    if acc_platform == "xhs" and not has_a1(cookie):
         raise HTTPException(400, "登录态缺少 a1")
+    if acc_platform == "rednote" and rmode == "api" and not rednote_has_a1(cookie):
+        raise HTTPException(400, "海外小红书登录态缺少 a1")
 
     async def _fetch_note_comments():
+        if acc_platform == "rednote":
+            if rmode in {"api", "hybrid"} and cookie and rednote_has_a1(cookie):
+                rcli = RednoteApiClient(
+                    cookie,
+                    (_direct_request_ua(identity)
+                     if browser is not None and identity is not None
+                     else cfg.engine.user_agent),
+                    timeout=cfg.engine.request_timeout_seconds,
+                    proxy=proxy,
+                    storage_state=state,
+                )
+                try:
+                    async with rcli.session_scope():
+                        data = await rcli.collect_note_comments(
+                            note_id,
+                            xsec_token=xsec_token,
+                            xsec_source=xsec_source,
+                            max_comments=200,
+                            max_requests=max(1, min(20, cfg.engine.comment_max_scrolls)),
+                            include_replies=True,
+                            request_interval=max(0.5, cfg.engine.xhs_item_gap_seconds),
+                        )
+                    raw_rn = data.get("comments") or []
+                    comments_rn = [
+                        c for c in (parse_rednote_comment(it) for it in flatten_rednote_comments(raw_rn))
+                        if c
+                    ]
+                    comments_rn.sort(key=lambda c: c.get("create_time") or 0, reverse=True)
+                    return {
+                        "comments": comments_rn,
+                        "total": len(comments_rn),
+                        "has_more": bool(data.get("has_more")),
+                    }, ""
+                except Exception as exc:
+                    if rmode == "api":
+                        return None, exc
+            if browser is not None and identity is not None:
+                raw, read_error = await fetch_rednote_comments(
+                    browser, identity, note_id, set(),
+                    xsec_token=xsec_token, xsec_source=xsec_source,
+                    max_scrolls=cfg.engine.comment_max_scrolls,
+                    block_media=cfg.engine.block_media_resources)
+                if read_error and not raw:
+                    return None, read_error
+                parsed = [
+                    item for item in (parse_rednote_comment(v) for v in flatten_rednote_comments(raw))
+                    if item
+                ]
+                parsed.sort(key=lambda c: c.get("create_time") or 0, reverse=True)
+                return {"comments": parsed, "total": len(parsed), "has_more": False}, ""
+            return None, "浏览器读取不可用"
         if _xhs_browser_reads_enabled() and identity is not None:
             raw, read_error = await fetch_xhs_comments(
                 browser, identity, note_id, set(),
@@ -12217,6 +12894,77 @@ async def publish_note_comments(account_id: int, note_id: str,
     return payload
 
 
+class RednoteVisibilityIn(BaseModel):
+    visibility: Literal["public", "private"] = "public"
+
+
+@app.post("/api/account-works/{work_id}/rednote-visibility")
+async def set_rednote_work_visibility(work_id: int, body: RednoteVisibilityIn):
+    """修改海外小红书已发布作品的可见范围（public / private）。"""
+    with get_session() as s:
+        work = s.get(AccountWork, work_id)
+        if not work:
+            raise HTTPException(404, "作品不存在")
+        if work.platform != "rednote":
+            raise HTTPException(400, "该接口仅支持海外小红书作品")
+        acc = s.get(DouyinAccount, work.account_id)
+        if not acc or acc.platform != "rednote":
+            raise HTTPException(400, "绑定账号不存在或非海外小红书账号")
+        state = acc.creator_storage_state or acc.storage_state or ""
+        proxy = acc.proxy or ""
+        ua = acc.ua or cfg.engine.user_agent
+        item_id = work.item_id
+    if not state:
+        raise HTTPException(400, "该海外小红书账号尚未登录")
+    ok, err = await update_rednote_visibility(
+        state,
+        item_id,
+        body.visibility,
+        proxy=proxy,
+        user_agent=ua,
+    )
+    if not ok:
+        raise HTTPException(400, err or "修改海外小红书作品可见性失败")
+    with get_session() as s:
+        work = s.get(AccountWork, work_id)
+        if work:
+            work.status = "仅自己可见" if body.visibility == "private" else ""
+            s.add(work)
+            s.commit()
+    return {"ok": True, "work_id": work_id, "item_id": item_id, "visibility": body.visibility}
+
+
+@app.api_route("/api/account-works/{work_id}/rednote-delete", methods=["POST", "DELETE"])
+async def remove_rednote_work(work_id: int):
+    """删除海外小红书已发布作品（调用 webapi.rednote.com/web_api/sns/capa/postgw/note/delete）。"""
+    with get_session() as s:
+        work = s.get(AccountWork, work_id)
+        if not work:
+            raise HTTPException(404, "作品不存在")
+        if work.platform != "rednote":
+            raise HTTPException(400, "该接口仅支持海外小红书作品")
+        acc = s.get(DouyinAccount, work.account_id)
+        if not acc or acc.platform != "rednote":
+            raise HTTPException(400, "绑定账号不存在或非海外小红书账号")
+        state = acc.creator_storage_state or acc.storage_state or ""
+        proxy = acc.proxy or ""
+        ua = acc.ua or cfg.engine.user_agent
+        item_id = work.item_id
+    if not state:
+        raise HTTPException(400, "该海外小红书账号尚未登录")
+    ok, err = await delete_rednote_work(
+        state, item_id, proxy=proxy, user_agent=ua
+    )
+    if not ok:
+        raise HTTPException(400, err or "删除海外小红书作品失败")
+    with get_session() as s:
+        work = s.get(AccountWork, work_id)
+        if work:
+            s.delete(work)
+            s.commit()
+    return {"ok": True, "work_id": work_id, "item_id": item_id}
+
+
 class RepostIn(BaseModel):
     account_id: int
     scheduled_at: str | None = None
@@ -12243,7 +12991,10 @@ async def _repost_content(cid: int, body: RepostIn, target_platform: str, reques
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != target_platform:
                 raise HTTPException(400, "请选择与目标平台匹配的已登录账号")
-            if target_platform in ("douyin", "shipinhao", "kuaishou", "tiktok", "bilibili", "instagram"):
+            if target_platform == "rednote":
+                if not (acc.creator_storage_state or acc.storage_state):
+                    raise HTTPException(400, "请先在账号页完成登录")
+            elif target_platform in ("douyin", "shipinhao", "kuaishou", "tiktok", "bilibili", "instagram"):
                 if not (acc.creator_storage_state or acc.storage_state or acc.cookie):
                     raise HTTPException(400, "请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
@@ -12299,6 +13050,12 @@ async def repost_to_tiktok(cid: int, body: RepostIn, request: Request = None):
 async def repost_to_bilibili(cid: int, body: RepostIn, request: Request = None):
     """把一条已下载作品转成哔哩哔哩发布任务。"""
     return await _repost_content(cid, body, "bilibili", request)
+
+
+@app.post("/api/contents/{cid}/repost-rednote")
+async def repost_to_rednote(cid: int, body: RepostIn, request: Request = None):
+    """把一条已下载作品转成海外小红书（Rednote）发布任务。"""
+    return await _repost_content(cid, body, "rednote", request)
 
 
 @app.post("/api/contents/{cid}/repost-instagram")
@@ -12455,6 +13212,8 @@ async def list_comment_rules(platform: str | None = None):
 
 @app.post("/api/comment-rules")
 async def add_comment_rule(body: CommentRuleIn, request: Request = None):
+    if str(body.platform or "").strip().lower() in ("rednote", "tiktok"):
+        raise HTTPException(400, "该平台暂未开放自动评论与回复计划")
     with get_session() as s:
         previous = replay_if_exists(s, request=request, scope="comment-rule", body=body)
         if previous is not None:

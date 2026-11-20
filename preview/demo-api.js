@@ -3,7 +3,7 @@
 
   const realFetch = window.fetch.bind(window);
   const engineDefaults = {
-    xhs_read_mode: "api", douyin_read_mode: "hybrid", douyin_write_mode: "browser",
+    xhs_read_mode: "api", rednote_read_mode: "hybrid", douyin_read_mode: "hybrid", douyin_write_mode: "browser",
     tiktok_read_mode: "native", channels_read_mode: "auto",
     bilibili_read_mode: "hybrid", bilibili_write_mode: "hybrid",
     instagram_read_mode: "hybrid", instagram_write_mode: "hybrid",
@@ -17,7 +17,7 @@
     danmaku_recent_works: 5, danmaku_recent_days: 7, danmaku_max_scrolls: 6,
     request_timeout_seconds: 20,
     download_timeout_seconds: 120, xhs_item_gap_seconds: 2.5, xhs_request_jitter: .35,
-    xhs_publish_mode: "browser", xhs_comment_write_mode: "browser", xhs_comment_review_before_publish: true,
+    xhs_publish_mode: "browser", rednote_publish_mode: "browser", xhs_comment_write_mode: "browser", xhs_comment_review_before_publish: true,
     work_health_enabled: false, work_health_interval_seconds: 3600, work_health_zero_play_hours: 6,
     work_health_recent_days: 7, work_health_stat_snapshots: true,
     scan_interval_seconds: 300, idle_keepalive_hours: 6,
@@ -116,12 +116,13 @@
     { id: 4, platform: "shipinhao", nickname: "视频号示例号", douyin_id: "channels_demo", sec_uid: "DEMO_CHANNELS_ACCOUNT", aweme_count: 18, follower_count: 430, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 0, created_at: iso(86400 * 5), has_proxy: false, proxy_status: "unknown" },
     { id: 5, platform: "tiktok", nickname: "TikTok 示例号", douyin_id: "tiktok_demo", sec_uid: "DEMO_TIKTOK_ACCOUNT", aweme_count: 15, follower_count: 920, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 3), has_proxy: true, proxy: "http://***:***@HOST:PORT", proxy_status: "ok" },
     { id: 6, platform: "bilibili", nickname: "B站示例 UP 主", douyin_id: "1008601", sec_uid: "1008601", aweme_count: 42, follower_count: 3560, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: false, proxy_status: "unknown" },
-    { id: 7, platform: "instagram", nickname: "Instagram 示例号", douyin_id: "ig_creator_demo", sec_uid: "900100200", aweme_count: 31, follower_count: 2150, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: true, proxy: "http://***:***@HOST:PORT", proxy_status: "ok" },
+    { id: 7, platform: "rednote", nickname: "Rednote 示例号", douyin_id: "rn_demo", sec_uid: "DEMO_REDNOTE_ACCOUNT", aweme_count: 19, follower_count: 540, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: true, proxy: "socks5://***:***@HOST:PORT", proxy_status: "ok" },
+    { id: 8, platform: "instagram", nickname: "Instagram 示例号", douyin_id: "ig_creator_demo", sec_uid: "900100200", aweme_count: 31, follower_count: 2150, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: true, proxy: "http://***:***@HOST:PORT", proxy_status: "ok" },
   ];
 
   const platformAccount = (platform) => accounts.find((item) => item.platform === platform) || accounts[0];
-  const platformName = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram" };
-  const monitoredName = { douyin: "示例创作者", xhs: "城市生活研究所", kuaishou: "影像日记", shipinhao: "本账号内容", tiktok: "GlobalCreator", bilibili: "科技美学示例 UP", instagram: "StudioVisuals" };
+  const platformName = { douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram" };
+  const monitoredName = { douyin: "示例创作者", xhs: "城市生活研究所", rednote: "Studio Nomad", kuaishou: "影像日记", shipinhao: "本账号内容", tiktok: "GlobalCreator", bilibili: "科技美学示例 UP", instagram: "StudioVisuals" };
 
   function monitor(platform) {
     const account = platformAccount(platform);
@@ -252,6 +253,12 @@
       row("xhs", "public_monitor", "作品/关键词/公开评论读取", "xhs_read_mode", true, true),
       row("xhs", "comment_write", "评论/回复发送", "xhs_comment_write_mode", true, true),
       row("xhs", "publish", "发布作品", "xhs_publish_mode", true, true),
+      row("rednote", "public_monitor", "作品/关键词/收藏/只读评论读取", "rednote_read_mode", true, true),
+      row("rednote", "account_works", "本账号作品同步与可见性/删除管理", "rednote_read_mode", true, true),
+      row("rednote", "publish", "图文与视频笔记发布", "rednote_publish_mode", true, true, "支持 creator.rednote.com 页面流或实验性 XYS + b1 纯协议直发"),
+      row("rednote", "comment_write", "自动评论/回复规则", "", false, false, "海外版暂未开放自动评论与互动写入"),
+      row("rednote", "dm_sync", "私信会话同步与发送", "", false, false, "海外版无国内 RWP 私信长连接与网页私信接口"),
+      row("rednote", "follows", "关注/粉丝列表同步", "", false, false, "海外版暂未验证独立关注/粉丝列表读取通道"),
       row("kuaishou", "account_management", "作品/评论/关注/写入", "", false, true),
       row("shipinhao", "account_management", "作品/评论/发布", "", false, true),
       row("bilibili", "public_monitor", "搜索/空间/评论/XML弹幕读取", "bilibili_read_mode", true, true),
@@ -311,8 +318,8 @@
     if (path === "/api/stats/series") return series();
     if (path === "/api/publish") return publishTasks(platform);
     if (path === "/api/publish/published") return [];
-    if (path === "/api/comment-rules") return platform === "shipinhao" ? [] : commentRules(platform);
-    if (path === "/api/comment-tasks") return platform === "shipinhao" ? [] : commentTasks(platform);
+    if (path === "/api/comment-rules") return ["shipinhao", "rednote", "tiktok"].includes(platform) ? [] : commentRules(platform);
+    if (path === "/api/comment-tasks") return ["shipinhao", "rednote", "tiktok"].includes(platform) ? [] : commentTasks(platform);
     if (path === "/api/share-download/history") return shareHistory;
     if (/^\/api\/share-download\/history\/\d+\/preview$/.test(path)) return { media_type: "video", cover_url: "", medias: [] };
     if (path === "/api/notifications") return [{ id: 91, name: "演示通知渠道", type: "bark", enabled: true, config: {} }];

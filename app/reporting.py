@@ -983,6 +983,8 @@ def build_keyword_collection_report(job: Any, contents: Sequence[Any],
             url = explicit_url
         elif platform == "xhs":
             url = f"https://www.xiaohongshu.com/explore/{aweme_id}"
+        elif platform == "rednote":
+            url = f"https://www.rednote.com/zh/discovery/item/{aweme_id}"
         elif platform == "kuaishou":
             url = f"https://www.kuaishou.com/short-video/{aweme_id}"
         elif platform == "bilibili":

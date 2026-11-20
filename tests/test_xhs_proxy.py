@@ -270,5 +270,60 @@ def test_authenticated_http_relay_injects_proxy_authorization():
     asyncio.run(_authenticated_http_relay_injects_proxy_authorization())
 
 
+async def _browser_manager_uses_socks5_relay_for_persistent_context(tmp_path):
+    from types import SimpleNamespace
+    from app.browser.identity import Identity
+    from app.browser.manager import BrowserManager
+
+    captured = {}
+
+    class FakeContext:
+        pages = []
+
+        def on(self, *_args, **_kw):
+            return None
+
+        async def new_page(self):
+            return SimpleNamespace(
+                evaluate=lambda _script: asyncio.sleep(0, result="Mozilla/5.0 Chrome/138.0.0.0"),
+                close=lambda: asyncio.sleep(0),
+            )
+
+        async def cookies(self):
+            return []
+
+        async def close(self):
+            return None
+
+    async def fake_launch_persistent_context(**kwargs):
+        captured.update(kwargs)
+        return FakeContext()
+
+    mgr = BrowserManager("Mozilla/5.0 Chrome/138.0.0.0", profiles_root=tmp_path / "profiles")
+    mgr._pw = SimpleNamespace(
+        chromium=SimpleNamespace(launch_persistent_context=fake_launch_persistent_context)
+    )
+    ident = Identity(
+        account_id=42,
+        platform="rednote",
+        profile_dir=tmp_path / "profiles" / "rn_42",
+        proxy="socks5://user1:pass1@203.0.113.9:1080",
+    )
+    ctx = await mgr.context_for(ident)
+    assert ctx is not None
+    assert "proxy" in captured
+    assert captured["proxy"]["server"].startswith("socks5://127.0.0.1:")
+    assert "username" not in captured["proxy"]
+    assert "password" not in captured["proxy"]
+    assert ident.key in mgr._proxy_relays
+    assert isinstance(mgr._proxy_relays[ident.key], Socks5AuthRelay)
+    await mgr._close_key_unlocked(ident.key)
+    assert ident.key not in mgr._proxy_relays
+
+
+def test_browser_manager_uses_socks5_relay_for_persistent_context(tmp_path):
+    asyncio.run(_browser_manager_uses_socks5_relay_for_persistent_context(tmp_path))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -36,13 +36,62 @@ from .identity import Identity, fingerprint_script
 from .cdp import (CdpLaunchError, CdpProfileConflictError, CdpProxyError,
                   CdpProxyAuthController, XhsCdpBackend, profile_is_locked)
 from .proxy import (HttpProxyAuthRelay, ProxyConfigError, ProxyPlan,
-                    try_proxy_plan)
+                    Socks5AuthRelay, try_proxy_plan)
 from .xhs_interaction import XhsInteractionPolicy, XhsVisibleActionGate
 
 _PROXY_WEBRTC_ARGS = [
     "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
     "--webrtc-ip-handling-policy=disable_non_proxied_udp",
 ]
+
+# Unprefixed www.rednote.com/explore & /login 302-redirect via EdgeOne to
+# domestic www.xiaohongshu.com. Intercept both domestic xiaohongshu.com hosts
+# and those unprefixed 302 entrypoints before Chromium follows the redirect.
+_REDNOTE_DOMESTIC_GUARD_RE = re.compile(
+    r"^https?://(?:"
+    r"(?:[a-z0-9-]+\.)*xiaohongshu\.com(?::\d+)?(?:/|$)"
+    r"|(?:www\.)?rednote\.com/(?:explore|login)(?:[/?#]|$)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+async def install_rednote_domain_guard(ctx: Any) -> None:
+    """Block domestic ``xiaohongshu.com`` leakage inside a Rednote BrowserContext."""
+    if ctx is None or getattr(ctx, "_rednote_domain_guard_installed", False):
+        return
+    route_fn = getattr(ctx, "route", None)
+    if not callable(route_fn):
+        return
+    from ..platforms.rednote.domains import FRONT_HOME_PAGE_URL
+
+    async def _guard(route):
+        req = route.request
+        is_main_nav = False
+        try:
+            is_main_nav = (
+                bool(req.is_navigation_request())
+                and req.frame == req.frame.page.main_frame
+            )
+        except Exception:
+            is_main_nav = getattr(req, "resource_type", "") == "document"
+        if is_main_nav:
+            body = (
+                '<!doctype html><meta charset="utf-8">'
+                f'<meta http-equiv="refresh" content="0;url={FRONT_HOME_PAGE_URL}">'
+                f"<script>location.replace({json.dumps(FRONT_HOME_PAGE_URL)});</script>"
+            )
+            await route.fulfill(
+                status=200,
+                content_type="text/html; charset=utf-8",
+                body=body,
+            )
+            return
+        await route.abort()
+
+    with suppress(Exception):
+        await route_fn(_REDNOTE_DOMESTIC_GUARD_RE, _guard)
+        setattr(ctx, "_rednote_domain_guard_installed", True)
 
 # 存量 legacy 账号必须保持原来的启动参数，避免已建立的浏览器画像突然漂移。
 _LEGACY_ARGS = [
@@ -290,7 +339,7 @@ class BrowserManager:
         self._runtime_by_key: Dict[Any, str] = {}
         self._fallback_reason_by_key: Dict[Any, str] = {}
         self._proxy_signature_by_key: Dict[Any, str] = {}
-        self._proxy_relays: Dict[Any, HttpProxyAuthRelay] = {}
+        self._proxy_relays: Dict[Any, HttpProxyAuthRelay | Socks5AuthRelay] = {}
         self._profile_process_locks: Dict[Any, _ProfileProcessLock] = {}
         self._cdp_backend = None
         self.xhs_interaction = XhsInteractionPolicy()
@@ -1061,11 +1110,15 @@ class BrowserManager:
         proxy_plan = try_proxy_plan(identity.proxy)
         proxy = proxy_plan.playwright() if proxy_plan else None
         relay = None
-        if (proxy_plan is not None and proxy_plan.scheme in {"http", "https"}
-                and proxy_plan.authenticated):
-            relay = HttpProxyAuthRelay(proxy_plan)
-            await relay.start()
-            proxy = {"server": relay.chrome_server}
+        if proxy_plan is not None and proxy_plan.authenticated:
+            if proxy_plan.scheme in {"http", "https"}:
+                relay = HttpProxyAuthRelay(proxy_plan)
+                await relay.start()
+                proxy = {"server": relay.chrome_server}
+            elif proxy_plan.scheme == "socks5":
+                relay = Socks5AuthRelay(proxy_plan)
+                await relay.start()
+                proxy = {"server": relay.chrome_server}
         if fingerprint_plan is not None:
             args = list(fingerprint_plan.args)
             args.append(
@@ -1140,6 +1193,8 @@ class BrowserManager:
         #    正好会经过这条路径。只补缺失项，不覆盖 profile 中更新过的 Cookie。
         await self._bridge_identity_cookies(
             ctx, identity, assume_empty=was_empty)
+        if identity.platform == "rednote":
+            await install_rednote_domain_guard(ctx)
         if (identity.platform == "douyin" and identity.account_id is not None
                 and self._douyin_read_session_callback is not None):
             from .douyin_api_session import observe_douyin_api_session
@@ -1348,7 +1403,7 @@ class BrowserManager:
                         self._backend_by_key[key] = "cdp"
                 else:
                     ctx = await self._launch_persistent(
-                        identity, headless=(identity.platform != "xhs"))
+                        identity, headless=(identity.platform not in {"xhs", "rednote"}))
                     self._backend_by_key[key] = (
                         FINGERPRINT_CHROMIUM_BACKEND
                         if effective_backend == FINGERPRINT_CHROMIUM_BACKEND
@@ -1472,7 +1527,7 @@ class BrowserManager:
         controller = getattr(session, "auth_controller", None)
         if controller is not None:
             await controller.install(page)
-        if block_media and identity.platform != "xhs":
+        if block_media and identity.platform not in {"xhs", "rednote"}:
             async def _route(route):
                 if route.request.resource_type in ("image", "media", "font"):
                     await route.abort()
@@ -1635,7 +1690,7 @@ class BrowserManager:
         one-shot escape hatch for probes and cleanup-sensitive callers.
         """
         retain = (
-            self.resident_sessions and identity.platform == "xhs"
+            self.resident_sessions and identity.platform in {"xhs", "rednote"}
             if keep_context is None else bool(keep_context)
         )
         nested = self._xhs_visible_gate.owned_by_current_task
@@ -1666,7 +1721,7 @@ class BrowserManager:
         retain the foreground default.
         """
         retain = (
-            self.resident_sessions and identity.platform == "xhs"
+            self.resident_sessions and identity.platform in {"xhs", "rednote"}
             if keep_context is None else bool(keep_context)
         )
         async with self.visible_action(
@@ -1838,7 +1893,7 @@ class BrowserManager:
         context makes reads, account management and manual windows share the
         already-authenticated session instead of failing with a Profile conflict.
         """
-        if identity.platform == "xhs":
+        if identity.platform in {"xhs", "rednote"}:
             snapshot = capture_window_snapshot(CHROMIUM_WINDOW_CLASSES)
             ctx = await self.context_for(identity)
             await asyncio.to_thread(bring_window_to_front, snapshot,
@@ -1918,6 +1973,7 @@ class BrowserManager:
 _COOKIE_DOMAIN = {
     "douyin": ".douyin.com",
     "xhs": ".xiaohongshu.com",
+    "rednote": ".rednote.com",
     "kuaishou": ".kuaishou.com",
     "shipinhao": ".weixin.qq.com",   # 视频号:finder 登录态(_finder_auth/sessionid)挂在 .weixin.qq.com
     "tiktok": ".tiktok.com",

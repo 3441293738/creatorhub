@@ -13,6 +13,7 @@ engine:
   resident_browser_sessions: true # reuse one account browser process/Profile/task page
   browser_session_idle_seconds: 1800 # idle recycle; 0=LRU/explicit close/shutdown only
   xhs_read_mode: api              # api=常驻Node签名直连（默认）;browser=复用账号浏览器
+  rednote_read_mode: hybrid       # 海外小红书:hybrid=XYS/XYW+b1直连优先失败回退页面(默认推荐);api=仅直连;browser=仅页面
   douyin_read_mode: hybrid         # hybrid=API优先，普通兼容失败才回退浏览器；验证/风控直接冷却
   tiktok_read_mode: native         # native=全程离线直连、不打开浏览器;auto=失败页面回退;browser=仅页面
   bilibili_read_mode: hybrid       # hybrid=WBI直连优先、兼容失败回退浏览器;api=仅直连;browser=仅页面
@@ -29,6 +30,7 @@ engine:
   xhs_item_gap_seconds: 2.5       # 相邻详情/评论读取的最小停顿
   xhs_request_jitter: 0.35        # 小红书读取停顿的正向随机抖动比例
   xhs_publish_mode: browser       # browser=页面发布;api=显式 API 兼容模式
+  rednote_publish_mode: browser   # browser=创作者中心页面发布(默认);api=实验性 XYS+b1 纯协议直发通道
   xhs_dm_monitor_enabled: false   # 低频检查 Web 私信；首次只建立基线
   xhs_dm_poll_interval_seconds: 120
   xhs_dm_realtime_enabled: true   # 监听页面原生 WebSocket；推送只用于唤醒

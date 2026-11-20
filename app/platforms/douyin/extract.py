@@ -16,6 +16,7 @@ class MediaItem:
     index: int = 0
     decode_key: str = ""  # 视频号加密 CDN 的 uint64 十进制解码密钥(非空且非 "0" 时下载后离线解密)
     audio_url: str = ""   # B站 DASH 音视频分离流时的独立音频轨地址(非空时下载后无损封装 MP4)
+    backup_urls: List[str] = field(default_factory=list)  # 同媒体的备用 CDN 直链(主链 502/503/504 时回退)
 
 
 @dataclass

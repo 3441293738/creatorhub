@@ -111,6 +111,12 @@ body.pf-bilibili {
   --brand-shadow:0 4px 14px -4px rgba(0,174,236,.38);
   --acc:#006a99; --acc-solid:#006a99; --acc-hover:#005880;
 }
+body.pf-rednote {
+  --brand:#e11d48; --brand-secondary:#fb7185;
+  --brand-mark:linear-gradient(135deg,#e11d48,#fb7185);
+  --brand-shadow:0 4px 14px -4px rgba(225,29,72,.38);
+  --acc:#b91038; --acc-solid:#b91038; --acc-hover:#9f0d30;
+}
 body.pf-instagram {
   --brand:#e1306c; --brand-secondary:#f77737;
   --brand-mark:linear-gradient(135deg,#833ab4,#fd1d1d 52%,#fcb045);
@@ -130,6 +136,7 @@ body.pf-instagram {
 :root[data-theme="dark"] body.pf-kuaishou { --acc:#ffb478; }
 :root[data-theme="dark"] body.pf-shipinhao { --acc:#64dca1; }
 :root[data-theme="dark"] body.pf-bilibili { --acc:#5cd1ff; }
+:root[data-theme="dark"] body.pf-rednote { --acc:#ff7a96; }
 :root[data-theme="dark"] body.pf-instagram { --acc:#ff7ab8; }
 /* Resolve derived colors where platform tokens live, not at the root default. */
 body {

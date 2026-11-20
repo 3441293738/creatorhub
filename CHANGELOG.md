@@ -4,6 +4,15 @@
 
 ## [未发布]
 
+### 海外小红书（Rednote）平台支持
+
+- 新增 **海外小红书（Rednote，`rednote.com`）** 独立平台支持，严格遵循 `creator.rednote.com`、`webapi.rednote.com`、`www.rednote.com`、`rednote.com` 四域名与 Cookie 隔离边界，绝不与国内版 `xiaohongshu.com` 混用登录态。
+- 新增海外平台代理地区隔离：登录前代理选择器与代理池自动分配自动跳过已验证的中国大陆（`CN`）节点并给出显式提示；同时支持系统 Chrome/Patchright 与指纹浏览器内核。
+- 新增主站扫码登录（`www.rednote.com/zh`，带防 `xiaohongshu.com` 302 跳转隔离保护）、创作者中心登录（`creator.rednote.com`）与 `.rednote.com` Cookie 粘贴导入，内置二维码状态监听、安全验证识别与账号资料同步。
+- 新增关键词搜索、创作者主页、全部收藏与指定收藏夹批量采集，支持创作者与关键词持续作品监控、单篇笔记及创作者近期作品只读评论监控、原生分享链接无水印下载及 Excel 报表导出；读取通道默认启用 **`hybrid`（纯 Python `XYS` / `XYW` + `rednote.com` 专属 `b1` 环境提取直连优先、普通兼容失败自动回退浏览器）**，并支持 `api` / `browser` 切换。
+- 新增海外版 `ePc` 格式化校验、创作者中心页面流（RPA）与实验性纯协议发帖双通道（`rednote_publish_mode: browser | api`）：严格执行 `exV` 加权标题截断（上限 20 权重：最多 20 汉字或 40 英文字符）、图文模式 900 UTF-16 编码单元与 18 张图片上限、最多 10 个话题标签及 `@提及` 索引规则；支持 `creator.rednote.com` 页面流拦截与 `XYS + b1 + //webapi.rednote.com` `x-rap-param` 纯协议 COS 上传直发，坚持单次提交防重发保护，同时支持跨平台一键转发至海外小红书。
+- 新增本账号已发布作品同步、媒体与评论预览、单篇笔记公开/仅自己可见切换及作品删除管理；对国内版专属能力（RWP 私信长连接、私信收发、自动评论规则、关注/粉丝列表、弹幕与电商订单）在传输矩阵、引擎与界面层做显式不可用收敛。
+
 ## [0.3.0]
 
 ### Instagram 平台支持

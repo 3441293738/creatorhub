@@ -21,6 +21,7 @@ from .models import DouyinAccount, ProxyPool
 _proxy_reservation_lock = threading.RLock()
 _proxy_reservations: dict[str, str] = {}
 DOMESTIC_PLATFORMS = {"douyin", "xhs", "kuaishou", "shipinhao", "bilibili"}
+OVERSEAS_PLATFORMS = {"tiktok", "rednote"}
 
 
 def is_mainland_geo(country: str, region: str = "", city: str = "") -> bool:
@@ -53,13 +54,18 @@ def _pool_urls(session, cfg, *, platform: str = "") -> list:
     """Return normalized, unique proxies eligible for automatic assignment."""
     rows = session.exec(select(ProxyPool)).all()
     if rows:
-        domestic = str(platform or "").strip().lower() in DOMESTIC_PLATFORMS
+        pf = str(platform or "").strip().lower()
+        domestic = pf in DOMESTIC_PLATFORMS
+        overseas = pf in OVERSEAS_PLATFORMS
         sources = []
         for p in rows:
             if not p.enabled or p.status in {"bad", "auth_error", "blocked"}:
                 continue
             geo_known = bool((p.exit_ip or "").strip() or (p.country or "").strip())
             if domestic and geo_known and not is_mainland_geo(
+                    p.country, p.region, p.city):
+                continue
+            if overseas and geo_known and is_mainland_geo(
                     p.country, p.region, p.city):
                 continue
             sources.append(p.url)

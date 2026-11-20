@@ -157,6 +157,11 @@ function fixture() {
   assert.equal(selectCalls.at(-1).value, 'auto');
   assert(!selectCalls.at(-1).options.some(o => o.label.includes('⚠️非大陆')));
 
+  const chosenRednoteUs = await vm.runInContext('choosePreLoginProxy({ platform: "rednote" })', preCtx);
+  assert.equal(chosenRednoteUs, 'auto');
+  assert.equal(selectCalls.at(-1).value, 'auto');
+  assert(!selectCalls.at(-1).options.some(o => o.label.includes('⚠️非大陆')));
+
   proxyOptionsPayload = [
     {
       id: 2, label: 'cn-node', url: 'http://cn.example:8080',
@@ -168,6 +173,11 @@ function fixture() {
   const chosenXhsMainland = await vm.runInContext('choosePreLoginProxy({ platform: "xhs" })', preCtx);
   assert.equal(chosenXhsMainland, 'auto');
   assert.equal(selectCalls.at(-1).value, 'auto');
+
+  const chosenRednoteMainland = await vm.runInContext('choosePreLoginProxy({ platform: "rednote" })', preCtx);
+  assert.equal(chosenRednoteMainland, '');
+  assert.equal(selectCalls.at(-1).value, '');
+  assert(selectCalls.at(-1).options.some(o => o.label.includes('⚠️大陆节点')));
 
   console.log('proxy input UI regressions passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

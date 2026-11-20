@@ -120,7 +120,7 @@ class DesktopShellTests(unittest.TestCase):
 
     def test_guide_destinations_are_allowlisted(self):
         with patch("desktop.controller.webbrowser.open") as opened:
-            for platform in ("douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"):
+            for platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"):
                 self.controller.action("open_guide", {"platform": platform})
                 self.assertTrue(opened.call_args.args[0].endswith(f"/guide/{platform}/"))
             with self.assertRaises(ValueError):

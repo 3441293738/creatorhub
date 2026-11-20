@@ -86,6 +86,7 @@
   .pswitch button:hover { color:var(--fg); background:var(--surface-2); }
   .pswitch button.active[data-pf="douyin"] { background:var(--acc-soft); color:var(--acc); border-color:var(--acc-ring); }
   .pswitch button.active[data-pf="xhs"] { background:var(--xhs-soft); color:var(--xhs); border-color:var(--xhs-ring); }
+  .pswitch button.active[data-pf="rednote"] { background:rgba(225,29,72,.14); color:#e11d48; border-color:rgba(225,29,72,.42); }
   .pswitch button.active[data-pf="kuaishou"] { background:rgba(255,121,2,.16); color:#ff7902; border-color:rgba(255,121,2,.4); }
   .pswitch button.active[data-pf="shipinhao"] { background:rgba(7,193,96,.16); color:#07c160; border-color:rgba(7,193,96,.4); }
   .pswitch button.active[data-pf="tiktok"] { background:rgba(37,244,238,.12); color:#00b8b2; border-color:rgba(254,44,85,.38); }
@@ -1852,6 +1853,7 @@
   <div class="pswitch" role="tablist" aria-label="平台切换">
     <button role="tab" data-pf="douyin" onclick="switchPlatform('douyin')">抖音</button>
     <button role="tab" data-pf="xhs" onclick="switchPlatform('xhs')">小红书</button>
+    <button role="tab" data-pf="rednote" onclick="switchPlatform('rednote')">海外小红书</button>
     <button role="tab" data-pf="kuaishou" onclick="switchPlatform('kuaishou')">快手</button>
     <button role="tab" data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
     <button role="tab" data-pf="tiktok" onclick="switchPlatform('tiktok')">TikTok</button>
@@ -1887,7 +1889,7 @@
     <button class="navitem" data-tab="queue" onclick="switchTab('queue', true)"><svg><use href="#i-list"/></svg><span class="nav-label">任务队列</span><span class="nav-badge" id="tb-queue">0</span></button>
     <button class="navitem tk-only" data-tab="tiktok-tools" onclick="switchTab('tiktok-tools', true)"><svg><use href="#i-user"/></svg><span class="nav-label">用户互动</span></button>
     <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish', true)"><svg><use href="#i-send"/></svg><span class="nav-label">发布</span><span class="nav-badge" id="tb-pub">0</span></button>
-    <button class="navitem notsh-only tk-hide" data-tab="autocomment" onclick="switchTab('autocomment', true)"><svg><use href="#i-automation"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
+    <button class="navitem notsh-only tk-hide rn-hide" data-tab="autocomment" onclick="switchTab('autocomment', true)"><svg><use href="#i-automation"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
     <button class="navitem" data-tab="share-download" onclick="switchTab('share-download', true)"><svg><use href="#i-download"/></svg><span class="nav-label">链接下载</span></button>
     <button class="navitem" data-tab="notifications" onclick="switchTab('notifications', true)"><svg><use href="#i-bell"/></svg><span class="nav-label">通知</span></button>
     <button class="navitem" data-tab="settings" onclick="switchTab('settings', true)"><svg><use href="#i-settings"/></svg><span class="nav-label">设置</span></button>
@@ -1971,6 +1973,9 @@
         <button class="xhs-only" onclick="startXhsLogin()"><svg><use href="#i-qr"/></svg>小红书扫码登录</button>
         <button class="ghost xhs-only" onclick="startXhsCreatorLogin()"><svg><use href="#i-send"/></svg>小红书创作者登录</button>
         <button class="ghost xhs-only" onclick="toggleCookie()">Cookie 粘贴</button>
+        <button class="rn-only" onclick="startRednoteLogin()"><svg><use href="#i-qr"/></svg>海外小红书扫码登录</button>
+        <button class="ghost rn-only" onclick="startRednoteCreatorLogin()"><svg><use href="#i-send"/></svg>海外小红书创作者登录</button>
+        <button class="ghost rn-only" onclick="toggleCookie()">Cookie 粘贴</button>
         <button class="ks-only" onclick="startKsLogin()"><svg><use href="#i-qr"/></svg>快手扫码登录</button>
         <button class="ghost ks-only" onclick="startKsCreatorLogin()" title="普通快手扫码登录已可用于发布；仅在创作平台仍提示登录时使用"><svg><use href="#i-send"/></svg>创作平台登录（备用）</button>
         <button class="ghost ks-only" onclick="toggleCookie()">Cookie 粘贴</button>
@@ -2391,7 +2396,7 @@
         <h2 id="mon-add-title">添加作品监控 <span class="sub">监控并下载新作品</span></h2>
       </div>
       <div class="stack">
-        <div class="xhs-only">
+        <div class="xhs-rn-only">
           <label class="field" for="t-kind">监控类型</label>
           <select id="t-kind" aria-label="监控类型" onchange="applyMonitorForm()">
             <option value="creator">创作者笔记(盯一个博主)</option>
@@ -2764,6 +2769,13 @@
             <p class="field-help" id="engine-xhs-read-help">默认使用 API 直连且不会打开页面；需要页面兼容时可切换为浏览器获取。</p>
           </div>
           <div class="form-field">
+            <label for="engine-rednote_read_mode">海外小红书读取方式</label>
+            <select id="engine-rednote_read_mode" name="rednote_read_mode" disabled aria-describedby="engine-rednote-read-help">
+              <option value="hybrid">API 优先，普通失败浏览器回退（推荐）</option><option value="api">仅 API 直连（XYS/XYW + b1）</option><option value="browser">仅浏览器获取</option>
+            </select>
+            <p class="field-help" id="engine-rednote-read-help">默认优先走 rednote.com 独立四域 XYS/XYW + b1 签名协议直连，普通兼容或验证失败时自动回退已登录浏览器，绝不混用国内小红书 Cookie。</p>
+          </div>
+          <div class="form-field">
             <label for="engine-douyin_read_mode">抖音读取方式</label>
             <select id="engine-douyin_read_mode" name="douyin_read_mode" disabled aria-describedby="engine-douyin-read-help">
               <option value="hybrid">API 优先，普通失败浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option>
@@ -2859,6 +2871,7 @@
             <div class="form-field"><label for="engine-xhs_request_jitter">读取间隔随机延长比例</label><input id="engine-xhs_request_jitter" name="xhs_request_jitter" type="number" min="0" max="1" step="0.01" required disabled><p class="field-help">0.35 表示最多额外等待 35%，不会缩短原有间隔。</p></div>
             <div class="form-field"><label for="engine-comment_max_scrolls">评论区默认翻页次数</label><input id="engine-comment_max_scrolls" name="comment_max_scrolls" type="number" min="1" max="30" step="1" required disabled><p class="field-help">更多翻页会增加耗时；单个监控可单独调整。</p></div>
             <div class="form-field"><label for="engine-xhs_publish_mode">小红书发布方式</label><select id="engine-xhs_publish_mode" name="xhs_publish_mode" disabled><option value="browser">浏览器发布（推荐）</option><option value="api">API 直连（兼容模式）</option></select><p class="field-help">仅影响发布，不改变作品监控的获取方式；原生身份账号仍使用浏览器发布。</p></div>
+            <div class="form-field"><label for="engine-rednote_publish_mode">海外小红书发布方式</label><select id="engine-rednote_publish_mode" name="rednote_publish_mode" disabled><option value="browser">创作者中心页面发布（推荐）</option><option value="api">API 纯协议直发（实验通道 · XYS + b1）</option></select><p class="field-help">实验通道自动提取或合成 rednote.com 专属 b1 环境并走 COS + webapi.rednote.com/web_api/sns/v2/note 单次提交，失败不自动重发。</p></div>
             <div class="form-field"><label for="engine-xhs_comment_write_mode">小红书评论发送方式</label><select id="engine-xhs_comment_write_mode" name="xhs_comment_write_mode" disabled><option value="browser">浏览器发送（推荐）</option><option value="manual">只保存草稿</option><option value="api">API 直连（兼容模式）</option></select></div>
             <div class="form-field"><label for="engine-douyin_write_mode">抖音写入方式</label><select id="engine-douyin_write_mode" name="douyin_write_mode" disabled><option value="hybrid">API 优先，明确失败后浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">影响评论、回复、关注/取关和已有会话私信；发布作品仍使用创作中心浏览器流程。网络结果不确定时不会重复提交或回退。</p></div>
             <div class="form-field"><label for="engine-bilibili_write_mode">哔哩哔哩写入方式</label><select id="engine-bilibili_write_mode" name="bilibili_write_mode" disabled><option value="hybrid">API 优先，明确失败后浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">影响评论、回复、关注/取关、稿件可见性与私信发送；发布视频和图文动态走创作中心浏览器流程。网络结果不确定时不会重复提交或回退。</p></div>
@@ -3330,7 +3343,7 @@
     </div>
 
     <!-- 已发布作品(创作平台)· 仅小红书 -->
-    <div class="card xhs-only" data-section="published">
+    <div class="card xhs-rn-only" data-section="published">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-film"/></svg></span>
         <h2>已发布作品 <span class="sub">小红书创作平台</span></h2>
@@ -3936,9 +3949,9 @@
       </div>
       <div class="tabbar" style="position:static;margin-bottom:14px">
         <button class="tab active" data-hubtab="myworks" onclick="switchHubTab('myworks')"><svg><use href="#i-film"/></svg>我的作品 <span class="tab-badge" id="hb-myworks">0</span></button>
-        <button class="tab notsh-only tk-hide" data-hubtab="following" onclick="switchHubTab('following')"><svg><use href="#i-user"/></svg>关注 <span class="tab-badge" id="hb-following">0</span></button>
-        <button class="tab notsh-only tk-hide" data-hubtab="fans" onclick="switchHubTab('fans')"><svg><use href="#i-heart"/></svg>粉丝 <span class="tab-badge" id="hb-fans">0</span></button>
-        <button class="tab notsh-only tk-hide" data-hubtab="dm" onclick="switchHubTab('dm')"><svg><use href="#i-send"/></svg>私信 <span class="tab-badge" id="hb-dm">0</span></button>
+        <button class="tab notsh-only tk-hide rn-hide" data-hubtab="following" onclick="switchHubTab('following')"><svg><use href="#i-user"/></svg>关注 <span class="tab-badge" id="hb-following">0</span></button>
+        <button class="tab notsh-only tk-hide rn-hide" data-hubtab="fans" onclick="switchHubTab('fans')"><svg><use href="#i-heart"/></svg>粉丝 <span class="tab-badge" id="hb-fans">0</span></button>
+        <button class="tab notsh-only tk-hide rn-hide" data-hubtab="dm" onclick="switchHubTab('dm')"><svg><use href="#i-send"/></svg>私信 <span class="tab-badge" id="hb-dm">0</span></button>
         <button class="tab" data-hubtab="stats" onclick="switchHubTab('stats')"><svg><use href="#i-eye"/></svg>数据 <span class="tab-badge" id="hb-stats">0</span></button>
       </div>
 

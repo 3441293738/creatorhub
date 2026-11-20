@@ -14,7 +14,7 @@ vm.runInNewContext(fs.readFileSync('preview/demo-api.js', 'utf8'), {
 const get = async path => (await window.fetch(path)).json();
 
 (async () => {
-  for (const platform of ['douyin', 'xhs', 'kuaishou', 'shipinhao', 'tiktok', 'bilibili', 'instagram']) {
+  for (const platform of ['douyin', 'xhs', 'rednote', 'kuaishou', 'shipinhao', 'tiktok', 'bilibili', 'instagram']) {
     const query = `?platform=${platform}`;
     const summary = await get('/api/overview/summary' + query);
     assert.deepEqual(summary, {
@@ -38,13 +38,13 @@ const get = async path => (await window.fetch(path)).json();
   }
 
   const all = await get('/api/task-queue?platform=all&page_size=1&page=2');
-  assert.equal(all.total, 7);
-  assert.equal(all.summary.total, 7);
-  assert.equal(all.pages, 7);
+  assert.equal(all.total, 8);
+  assert.equal(all.summary.total, 8);
+  assert.equal(all.pages, 8);
   assert.equal(all.page, 2);
   assert.equal(all.items.length, 1);
   assert.equal(all.items[0].platform, 'xhs');
-  assert.equal((await get('/api/task-queue?platform=all&page_size=1&page=99')).page, 7);
+  assert.equal((await get('/api/task-queue?platform=all&page_size=1&page=99')).page, 8);
   const failed = await get('/api/task-queue?platform=douyin&state=failed');
   assert.equal(failed.total, 0);
   assert.equal(failed.items.length, 0);

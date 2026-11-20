@@ -67,7 +67,7 @@ def main():
             web = source / "app" / "web"
             assets = ("app.js", "engine-settings.js", "workbench.js", "workbench.css",
                       "appearance.js", "appearance.css", "agent.css", "submissions.js", "workspace-ui.js")
-            for path in ("/", "/health", "/guide/", "/guide/xhs/", "/guide/douyin/", "/guide/bilibili/", "/guide/instagram/", "/guide/guide.css",
+            for path in ("/", "/health", "/guide/", "/guide/xhs/", "/guide/rednote/", "/guide/douyin/", "/guide/bilibili/", "/guide/instagram/", "/guide/guide.css",
                          *(f"/static/{name}" for name in assets)):
                 with opener.open(url + path, timeout=5) as response:
                     assert response.status == 200, path

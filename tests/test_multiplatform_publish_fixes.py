@@ -799,8 +799,8 @@ def test_xhs_api_unmatched_topic_and_ui_publish_parity(tmp_path):
     assert '<fieldset class="publish-permissions" id="pub-dy-opts">' in html
     assert '<div class="publish-permission dy-only">' in html
     assert '上传图集 / 视频到视频号助手(实验性)' in js
-    assert 'const titleCap = bili ? 80 : dy ? 30 : sph ? 16 : 20;' in js
-    assert '["douyin", "xhs", "kuaishou"].includes(PLATFORM)' in js
+    assert 'const titleCap = ig ? 2200 : bili ? 80 : rn ? 40 : dy ? 30 : sph ? 16 : 20;' in js
+    assert '["douyin", "xhs", "rednote", "kuaishou"].includes(PLATFORM)' in js
 
 
 def test_douyin_rejects_false_positive_keywords_disabled_button_and_blocked_toast(tmp_path):

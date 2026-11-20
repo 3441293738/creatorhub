@@ -1,6 +1,6 @@
 # CreatorHub
 
-本地运行的多平台内容管理工作台，支持 **抖音 / 小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩 / Instagram**。
+本地运行的多平台内容管理工作台，支持 **抖音 / 小红书 / 海外小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩 / Instagram**。
 
 [在线预览](https://3441293738.github.io/creatorhub/) · [平台能力](#平台能力) · [使用指南](https://3441293738.github.io/creatorhub/guide/) · [下载安装](https://github.com/3441293738/creatorhub/releases/latest) · [问题反馈](https://github.com/3441293738/creatorhub/issues) · [赞赏与交流](#赞赏与交流)
 
@@ -23,6 +23,7 @@
 |---|---|
 | 抖音 | 作品 / 评论 / 弹幕监控、批量采集、下载、发布与私信管理 |
 | 小红书 | 笔记 / 评论监控、关键词与收藏采集、下载、发布与私信管理 |
+| 海外小红书 | 四域名隔离（`rednote.com`）、关键词 / 创作者 / 收藏采集、作品与只读评论监控、下载、本账号作品管理与图文视频发布 |
 | 快手 | 作品 / 评论监控、批量采集、下载与发布 |
 | 视频号 | 本账号作品、数据与发布；连接本机微信后支持关键词 / 创作者采集、作品 / 评论监控与加密视频下载 |
 | TikTok | 关键词视频采集、作品 / 评论监控、下载、视频发布与用户互动 |
@@ -69,7 +70,7 @@ chmod +x start.sh
 
 详细功能、平台差异、操作步骤和配置统一维护在 **[使用指南](https://3441293738.github.io/creatorhub/guide/)**：
 
-- 按平台上手：[抖音](https://3441293738.github.io/creatorhub/guide/douyin/) · [小红书](https://3441293738.github.io/creatorhub/guide/xhs/) · [快手](https://3441293738.github.io/creatorhub/guide/kuaishou/) · [视频号](https://3441293738.github.io/creatorhub/guide/shipinhao/) · [TikTok](https://3441293738.github.io/creatorhub/guide/tiktok/) · [哔哩哔哩](https://3441293738.github.io/creatorhub/guide/bilibili/) · [Instagram](https://3441293738.github.io/creatorhub/guide/instagram/)
+- 按平台上手：[抖音](https://3441293738.github.io/creatorhub/guide/douyin/) · [小红书](https://3441293738.github.io/creatorhub/guide/xhs/) · [海外小红书](https://3441293738.github.io/creatorhub/guide/rednote/) · [快手](https://3441293738.github.io/creatorhub/guide/kuaishou/) · [视频号](https://3441293738.github.io/creatorhub/guide/shipinhao/) · [TikTok](https://3441293738.github.io/creatorhub/guide/tiktok/) · [哔哩哔哩](https://3441293738.github.io/creatorhub/guide/bilibili/) · [Instagram](https://3441293738.github.io/creatorhub/guide/instagram/)
 - 日常使用：[功能手册](https://3441293738.github.io/creatorhub/guide/#monitor) · [配置与账号环境](https://3441293738.github.io/creatorhub/guide/#settings) · [更新与备份](https://3441293738.github.io/creatorhub/guide/#backup)
 - 开发参考：[配置示例](config.example.yaml) · [更新日志](CHANGELOG.md) · [文档维护](guide/README.md)
 

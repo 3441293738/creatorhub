@@ -49,6 +49,7 @@ class Downloader:
         _pf = getattr(aweme, "platform", "douyin")
         platform_referer = (
             "https://www.xiaohongshu.com/" if _pf == "xhs" else
+            "https://www.rednote.com/" if _pf == "rednote" else
             "https://www.kuaishou.com/" if _pf == "kuaishou" else
             "https://www.tiktok.com/" if _pf == "tiktok" else
             "https://channels.weixin.qq.com/" if _pf == "shipinhao" else
@@ -124,7 +125,12 @@ class Downloader:
                                 a_tmp.unlink(missing_ok=True)
                                 mux_tmp.unlink(missing_ok=True)
                         async with self._media_sem:
-                            err = await self._download_one(cli, m.url, fpath)
+                            err = await self._download_one(
+                                cli,
+                                m.url,
+                                fpath,
+                                backup_urls=list(getattr(m, "backup_urls", None) or ()),
+                            )
                         return (str(fpath), "") if not err else ("", err)
 
                 results = await asyncio.gather(*(fetch(m) for m in aweme.medias))
@@ -139,47 +145,91 @@ class Downloader:
             return False, "", "无可下载媒体"
         return True, saved[0] if len(saved) == 1 else str(out_dir), ""
 
-    async def _download_one(self, cli: httpx.AsyncClient, url: str, fpath: Path) -> str:
-        """带断点续传的下载。成功返回空串,失败返回错误信息。
-        .part 临时文件在多次尝试间保留,用 HTTP Range 续传。
+    @staticmethod
+    def _upgrade_cdn_https(url: str) -> str:
+        raw = str(url or "").strip()
+        if not raw.lower().startswith("http://"):
+            return raw
+        from urllib.parse import urlsplit, urlunsplit
+
+        try:
+            parts = urlsplit(raw)
+            host = (parts.hostname or "").lower()
+            if host.endswith((".rednotecdn.com", ".xhscdn.com")):
+                netloc = host if parts.port in (None, 80) else f"{host}:{parts.port}"
+                return urlunsplit(("https", netloc, parts.path, parts.query, parts.fragment))
+        except ValueError:
+            pass
+        return raw
+
+    async def _download_one(
+        self,
+        cli: httpx.AsyncClient,
+        url: str,
+        fpath: Path,
+        *,
+        backup_urls: List[str] | None = None,
+    ) -> str:
+        """带断点续传与备用 CDN 回退的下载。成功返回空串,失败返回错误信息。
+        .part 临时文件在多次尝试间保留,用 HTTP Range 续传;遇 502/503/504 强制新连接并尝试备用直链。
         """
+        candidates: List[str] = []
+        for raw_u in [url, *(backup_urls or [])]:
+            upgraded = self._upgrade_cdn_https(raw_u)
+            if upgraded and upgraded not in candidates:
+                candidates.append(upgraded)
+        if not candidates:
+            return "下载失败(空链接)"
+
         tmp = fpath.with_suffix(fpath.suffix + ".part")
         last = "未知错误"
-        for attempt in range(3):
-            try:
-                resume = tmp.stat().st_size if tmp.exists() else 0
-                headers = {"Range": f"bytes={resume}-"} if resume else {}
-                async with cli.stream("GET", url, headers=headers) as r:
-                    if r.status_code == 416:           # 已下完(范围越界)
-                        if tmp.exists() and tmp.stat().st_size > 0:
-                            tmp.replace(fpath)
-                            return ""
-                        tmp.unlink(missing_ok=True)
-                        last = "HTTP 416"
-                        continue
-                    if r.status_code not in (200, 206):
-                        last = f"HTTP {r.status_code}"
-                        await asyncio.sleep(attempt + 1)
-                        continue
+        force_fresh_conn = False
+        for cand_idx, target_url in enumerate(candidates):
+            if cand_idx > 0:
+                # Switching to a backup rendition/CDN URL starts cleanly rather than mixing byte ranges.
+                tmp.unlink(missing_ok=True)
+            for attempt in range(3):
+                try:
+                    resume = tmp.stat().st_size if tmp.exists() else 0
+                    headers = {"Range": f"bytes={resume}-"} if resume else {}
+                    if force_fresh_conn:
+                        headers["Connection"] = "close"
+                    async with cli.stream("GET", target_url, headers=headers) as r:
+                        if r.status_code == 416:           # 已下完(范围越界)
+                            if tmp.exists() and tmp.stat().st_size > 0:
+                                tmp.replace(fpath)
+                                return ""
+                            tmp.unlink(missing_ok=True)
+                            last = "HTTP 416"
+                            continue
+                        if r.status_code not in (200, 206):
+                            last = f"HTTP {r.status_code}"
+                            if r.status_code in (502, 503, 504):
+                                force_fresh_conn = True
+                            await asyncio.sleep(attempt + 1)
+                            continue
 
-                    resuming = (r.status_code == 206 and resume > 0)
-                    mode = "ab" if resuming else "wb"
-                    written = resume if resuming else 0
-                    total = self._expected_total(r, resuming)
-                    with open(tmp, mode) as f:
-                        async for chunk in r.aiter_bytes(64 * 1024):
-                            f.write(chunk)
-                            written += len(chunk)
-                    if total and written < total:      # 仍不完整,保留 .part 续传
-                        last = f"不完整 {written}/{total}"
-                        await asyncio.sleep(attempt + 1)
-                        continue
-                    tmp.replace(fpath)
-                    return ""
-            except Exception as e:
-                last = repr(e)                          # 网络中断也保留 .part,下次续传
-                await asyncio.sleep(attempt + 1)
-        return f"下载失败({last}): {url[:80]}"
+                        force_fresh_conn = False
+                        resuming = (r.status_code == 206 and resume > 0)
+                        mode = "ab" if resuming else "wb"
+                        written = resume if resuming else 0
+                        total = self._expected_total(r, resuming)
+                        with open(tmp, mode) as f:
+                            async for chunk in r.aiter_bytes(64 * 1024):
+                                f.write(chunk)
+                                written += len(chunk)
+                        if total and written < total:      # 仍不完整,保留 .part 续传
+                            last = f"不完整 {written}/{total}"
+                            force_fresh_conn = True
+                            await asyncio.sleep(attempt + 1)
+                            continue
+                        tmp.replace(fpath)
+                        return ""
+                except Exception as e:
+                    last = repr(e)                          # 网络中断也保留 .part,下次续传
+                    force_fresh_conn = True
+                    await asyncio.sleep(attempt + 1)
+        return f"下载失败({last}): {candidates[0][:80]}"
 
     @staticmethod
     def _expected_total(r, resuming: bool) -> int:

@@ -34,7 +34,7 @@ const composerSpecs = {
 };
 const composerTitle = (key, platform) => key === "collections"
   ? platform === "shipinhao" ? "新建视频号作品采集"
-    : `新建${({ douyin: "抖音", xhs: "小红书", kuaishou: "快手", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram" })[platform] || "平台"}关键词采集`
+    : `新建${({ douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram" })[platform] || "平台"}关键词采集`
   : composerSpecs[key]?.[1] || "新建任务";
 // Notifications previously mixed configuration and saved objects in one card.
 const notificationCard = $("n-name").closest(".card");
@@ -72,7 +72,7 @@ const groupSpecs = {
   comments: [["targets", "监控目标"], ["records", "评论记录"]],
   danmaku: [["targets", "监控目标"], ["records", "弹幕记录"]],
   autocomment: [["rules", "评论规则"], ["tasks", "任务与审核"]],
-  publish: [["editor", "撰写内容"], ["records", "发布记录"], ["published", "已发布作品", ["xhs"]]],
+  publish: [["editor", "撰写内容"], ["records", "发布记录"], ["published", "已发布作品", ["xhs", "rednote"]]],
   "risk-control": [["status", "账号状态"], ["rules", "风控规则"]],
 };
 const groups = Object.entries(groupSpecs).map(([key, spec]) => {

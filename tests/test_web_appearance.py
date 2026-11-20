@@ -40,7 +40,7 @@ def platform_palette(theme, platform):
 
 
 @pytest.mark.parametrize("theme", ["light", "dark"])
-@pytest.mark.parametrize("platform", ["douyin", "xhs", "kuaishou", "shipinhao", "bilibili", "instagram"])
+@pytest.mark.parametrize("platform", ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "bilibili", "instagram"])
 def test_palette_readability(theme, platform):
     palette = platform_palette(theme, platform)
     for foreground in ("fg", "fg-strong", "mut", "mut-2", "acc", "info", "success", "warn", "danger", "chart-secondary"):

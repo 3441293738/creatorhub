@@ -27,6 +27,7 @@ from .channels_fetcher import fetch_channels_works
 from .manager import BrowserManager
 from .xhs_dm import send_xhs_dm_page
 from .xhs_fetcher import fetch_xhs_notes
+from .rednote_fetcher import fetch_rednote_notes
 from ..platforms.kuaishou import parse_self_user as parse_ks_self_user
 
 
@@ -60,6 +61,7 @@ def _first(d: dict, *keys, default=""):
 # user_posted 常拿不到),从站内「我」入口解析真实主页链接最稳,顺带可补缺失的 uid。
 _SELF_HOME = {
     "xhs": "https://www.xiaohongshu.com/explore",
+    "rednote": "https://www.rednote.com/zh",
     "kuaishou": "https://www.kuaishou.com/",
 }
 _SELF_LINK_JS = {
@@ -82,10 +84,11 @@ async def _self_profile_link(mgr: BrowserManager, identity, platform: str
     返回 (绝对 URL, uid);拿不到返回 ("", "")。"""
     home = _SELF_HOME.get(platform)
     js = _SELF_LINK_JS.get(platform)
-    if not home or (platform != "xhs" and not js):
+    if not home or (platform not in ("xhs", "rednote") and not js):
         return "", ""
     href = ""
-    if platform == "xhs":
+    if platform in ("xhs", "rednote"):
+        self_labels = {"我"} if platform == "xhs" else {"我", "Me", "Profile"}
         try:
             try:
                 lease = mgr.visible_page(identity, foreground=False)
@@ -107,7 +110,7 @@ async def _self_profile_link(mgr: BrowserManager, identity, platform: str
                         if count == 1:
                             sole = candidate
                         text = (await anchor.inner_text()).strip()
-                        if text == "我":
+                        if text in self_labels:
                             href = candidate
                             break
                     href = href or sole
@@ -301,6 +304,40 @@ def _norm_bili_work(it: dict) -> Optional[dict]:
     }
 
 
+def _norm_rednote_work(it: dict) -> Optional[dict]:
+    """海外小红书个人主页笔记或创作者中心已发布笔记 -> AccountWork dict。"""
+    base = _norm_xhs_work(it)
+    if not base:
+        return None
+    card = it.get("note_card") or it
+    inter = card.get("interact_info") or {}
+    base["like_count"] = base["like_count"] or _num(
+        _first(card, "likes", "liked_count", default=0)
+    )
+    base["comment_count"] = base["comment_count"] or _num(
+        _first(card, "comments_count", "comment_count", default=0)
+    )
+    base["collect_count"] = base["collect_count"] or _num(
+        _first(card, "collected_count", "collect_count", default=0)
+    )
+    base["share_count"] = base["share_count"] or _num(
+        _first(card, "shared_count", "share_count", default=0)
+    )
+    base["play_count"] = _num(
+        _first(card, "view_count", "play_count", default=0)
+        or _first(inter, "view_count", default=0)
+    )
+    perm_msg = str(_first(card, "permission_msg", "status_desc", default="") or "").strip()
+    perm_code = card.get("permission_code")
+    if not perm_msg and perm_code is not None:
+        try:
+            perm_msg = "仅自己可见" if int(perm_code) == 1 else ""
+        except (TypeError, ValueError):
+            perm_msg = ""
+    base["status"] = perm_msg
+    return base
+
+
 def _norm_ig_work(it: dict) -> Optional[dict]:
     from ..platforms.instagram import parse_ig_creator_work
     return parse_ig_creator_work(it)
@@ -329,8 +366,8 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                 uid = self3x
         except Exception as e:
             print(f"[hub-self] kuaishou self-resolve failed: {e!r}")
-    # 视频号 / B站 / Instagram: 可直接按本账号 Cookie 读取自身资料与作品
-    if not uid and not open_url and platform not in ("shipinhao", "bilibili", "instagram"):
+    # 视频号 / B站 / 海外小红书创作中心 / Instagram: 可先按本账号 Cookie 读取自身资料与作品
+    if not uid and not open_url and platform not in ("shipinhao", "bilibili", "rednote", "instagram"):
         return [], "missing_uid:账号缺自身 uid,请先点账号「刷新资料」再同步作品"
 
     known: Set[str] = set()
@@ -339,6 +376,55 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
             items, _author, err = await fetch_channels_works(mgr, identity, known,
                                                              max_scrolls=max_scrolls)
             norm = _norm_channels_work
+        elif platform == "rednote":
+            from ..platforms.rednote import RednoteApiClient, RednoteApiError, has_a1
+            cookie_s = await _rednote_cookie_str(mgr, identity)
+            if cookie_s and has_a1(cookie_s):
+                client = RednoteApiClient(
+                    cookie_s,
+                    mgr.direct_request_user_agent(identity)
+                    if hasattr(mgr, "direct_request_user_agent")
+                    else getattr(identity, "ua", ""),
+                    proxy=getattr(identity, "proxy", ""),
+                )
+                try:
+                    async with client.session_scope():
+                        try:
+                            pub_items = await client.published_notes(max_pages=5)
+                            if pub_items:
+                                out_rn = [w for w in (_norm_rednote_work(it) for it in pub_items) if w]
+                                if out_rn:
+                                    return out_rn, ""
+                        except RednoteApiError:
+                            pass
+                        if not uid:
+                            me = await client.self_info()
+                            uid = str(me.get("user_id") or me.get("userId") or "").strip()
+                        if uid:
+                            posted_res = await client.notes_by_creator(
+                                uid, page_size=min(30, max(20, max_scrolls * 10))
+                            )
+                            api_notes = posted_res.get("notes") or []
+                            out_rn = [w for w in (_norm_rednote_work(it) for it in api_notes) if w]
+                            if out_rn:
+                                return out_rn, ""
+                except Exception:
+                    pass
+            open_url, self_uid = await _self_profile_link(mgr, identity, "rednote")
+            uid = uid or self_uid
+            if not uid and not open_url:
+                return [], "missing_uid:账号缺自身 uid,请先点账号「刷新资料」再同步作品"
+            items, _author, err = await fetch_rednote_notes(
+                mgr,
+                identity,
+                uid,
+                known,
+                xsec_token="",
+                max_scrolls=max_scrolls,
+                open_url=open_url,
+                ssr_fallback=True,
+            )
+            norm = _norm_rednote_work
         elif platform == "bilibili":
             from ..platforms.bilibili import BilibiliClient
             from .bili_fetcher import fetch_bili_videos
@@ -832,6 +918,8 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
     """打开账号自己主页,切到「关注 / 粉丝」并滚动,拦截该页所有同域 XHR/GraphQL,
     启发式抽出用户对象。无公开接口,首版用于标定(日志打 api_seen)。
     返回 (归一后的用户 dict 列表, error)。"""
+    if platform == "rednote":
+        return [], "unavailable:海外小红书网页端未开放关注/粉丝列表"
     if platform == "instagram":
         from ..platforms.instagram import InstagramClient
         cookie_s = await _ig_cookie_str(mgr, identity)
@@ -1461,6 +1549,40 @@ async def _douyin_cookie_str(mgr: BrowserManager, identity) -> str:
     return "; ".join(f"{c['name']}={c['value']}" for c in cks)
 
 
+async def _rednote_cookie_str(mgr: BrowserManager, identity) -> str:
+    """从账号专属 context 或 storage_state 提取严格归属 rednote.com 的 Cookie 串。"""
+    from ..platforms.rednote import cookie_str_from_state
+    from ..platforms.rednote.domains import is_rednote_host
+
+    try:
+        ctx = await mgr.context_for(identity)
+        cks = await ctx.cookies([
+            "https://www.rednote.com",
+            "https://webapi.rednote.com",
+            "https://creator.rednote.com",
+        ])
+        if cks:
+            merged = {
+                c["name"]: c["value"]
+                for c in cks
+                if c.get("name")
+                and c.get("value")
+                and is_rednote_host(str(c.get("domain") or "").lstrip("."))
+            }
+            if merged:
+                return "; ".join(f"{k}={v}" for k, v in merged.items())
+    except Exception:
+        pass
+    for raw in (
+        getattr(identity, "creator_storage_state", "") or "",
+        getattr(identity, "storage_state", "") or "",
+    ):
+        s = cookie_str_from_state(raw)
+        if s:
+            return s
+    return ""
+
+
 async def _bili_cookie_str(mgr: BrowserManager, identity) -> str:
     """从账号专属 context 或 storage_state 提取 bilibili.com 完整 Cookie 串。"""
     from ..platforms.bilibili import cookie_str_from_state
@@ -1540,6 +1662,8 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                                  *, _xhs_visible: bool = False
                                  ) -> Tuple[List[dict], str]:
     """打开私信页,拦截会话列表 XHR,启发式抽会话。无公开接口,首版用于标定。"""
+    if platform == "rednote":
+        return [], "unavailable:海外小红书暂未开放私信协议通道"
     if platform == "instagram":
         from ..platforms.instagram import InstagramClient
         cookie_s = await _ig_cookie_str(mgr, identity)
@@ -2025,6 +2149,8 @@ async def fetch_dm_history(mgr: BrowserManager, identity, platform: str,
     """无头抓单个会话的历史消息:imapi/v1/message/get_by_conversation(cmd 301)。
     该接口纯 cookie 鉴权、无 a_bogus/签名,用账号常驻 context 的 request 直接 POST。
     返回 (parse_messages 结果, error)。debug=True 时额外打印原始响应 b64(标定用)。"""
+    if platform == "rednote":
+        return {}, "unavailable:海外小红书暂未开放私信协议通道"
     if platform == "instagram":
         from ..platforms.instagram import InstagramClient
         cookie_s = await _ig_cookie_str(mgr, identity)
@@ -2240,6 +2366,8 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
     首次点击常常打空:按钮已渲染但 React handler 还没绑上(和粉丝/作品/私信
     入口同一个 hydrate 病)。所以点不动就重点,而不是直接判失败。
     """
+    if platform == "rednote":
+        return False, "unavailable:海外小红书暂未开放自动关注/取关"
     if platform == "instagram":
         from ..platforms.instagram import InstagramClient
         cookie_s = await _ig_cookie_str(mgr, identity)
@@ -2405,6 +2533,8 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
     if not text:
         return False, "空内容"
     sec = target_sec_uid or target_uid
+    if platform == "rednote":
+        return False, "unavailable:海外小红书暂未开放自动私信发送"
     url = _DM_ENTRY_URL.get(platform, _DM_ENTRY_URL["douyin"]).format(
         sec=sec, uid=target_uid or sec)
     if platform == "instagram":

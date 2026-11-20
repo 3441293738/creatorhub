@@ -137,6 +137,7 @@ class WindowsReleaseTests(unittest.TestCase):
         checks = next(step['run'] for step in steps if step.get('name') == gate)
         self.assertIn('python -m pytest', checks)
         for test in ('test_bilibili_capabilities.py',
+                     'test_rednote_capabilities.py',
                      'test_instagram_capabilities.py',
                      'test_channels_capabilities.py', 'test_channels_proxy.py',
                      'test_channels_protocol_ui.py', 'test_channels_login.py',

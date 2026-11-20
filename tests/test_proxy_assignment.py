@@ -120,6 +120,38 @@ class ProxyAssignmentTests(unittest.TestCase):
                 assign_proxy_from_pool(session, self.cfg, platform="tiktok"),
                 overseas,
             )
+            self.assertEqual(
+                assign_proxy_from_pool(session, self.cfg, platform="rednote"),
+                overseas,
+            )
+
+    def test_overseas_auto_assignment_skips_verified_mainland_proxy(self):
+        mainland = "http://user:pass@cn-proxy.example:8080"
+        with db.get_session() as session:
+            session.add(ProxyPool(
+                url=mainland,
+                status="ok",
+                enabled=True,
+                exit_ip="113.100.20.10",
+                country="CN",
+                region="Guangdong",
+                city="Shenzhen",
+            ))
+            session.commit()
+
+            self.assertEqual(
+                assign_proxy_from_pool(session, self.cfg, platform="rednote"),
+                "",
+            )
+            self.assertEqual(
+                reserve_proxy_from_pool(
+                    session, self.cfg, "login-rednote", platform="rednote"),
+                "",
+            )
+            self.assertEqual(
+                assign_proxy_from_pool(session, self.cfg, platform="xhs"),
+                mainland,
+            )
 
     def test_is_mainland_geo_distinguishes_overseas_and_special_regions(self):
         self.assertTrue(is_mainland_geo("CN", "Guangdong", "Shenzhen"))

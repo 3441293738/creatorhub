@@ -146,9 +146,31 @@ th {
 td { padding:var(--row-padding) 13px; font-size:13px; line-height:1.65; }
 tbody tr:hover { background:var(--control-bg-hover); }
 th:first-child, td:first-child { padding-left:14px; }
-.acttd { white-space:normal; }
-.acttd button { margin:4px 0 4px 8px; }
+.acttd { white-space:nowrap; }
+.acttd button { white-space:nowrap; margin:2px 0 2px 6px; }
 .acttd button:first-child { margin-left:0; }
+#mon-table .user-cell,
+#watch-table .user-cell,
+#danmaku-watch-table .user-cell {
+  min-width:0;
+  max-width:clamp(180px, 22vw, 300px);
+}
+#mon-table .user-cell > div,
+#watch-table .user-cell > div,
+#danmaku-watch-table .user-cell > div {
+  min-width:0;
+}
+#mon-table .user-cell > div > span:first-child,
+#watch-table .user-cell > div > span:first-child,
+#danmaku-watch-table .user-cell > div > span:first-child,
+#mon-table .alias-line,
+#watch-table .alias-line,
+#danmaku-watch-table .alias-line {
+  display:block;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
 .wb-tablist {
   display:flex;
   align-items:center;
@@ -695,8 +717,9 @@ main .publish-permissions { grid-template-columns:repeat(2,minmax(0,1fr)); }
   table[data-object-table] td:first-child, table[data-object-table] td:last-child, table[data-object-table] td[colspan] { grid-column:1/-1; }
   table[data-object-table] td[data-label]::before { content:attr(data-label); display:block; font-size:11px; line-height:1.5; color:var(--mut); margin-bottom:5px; }
   table[data-object-table] td.acttd::before { display:none; }
-  table[data-object-table] .acttd { text-align:left; padding-top:4px; }
+  table[data-object-table] .acttd { text-align:left; padding-top:4px; white-space:normal; }
   table[data-object-table] .acttd button { margin:4px 4px 0 0; }
+  table[data-object-table] .user-cell { max-width:none; }
   table[data-object-table] .queue-copy, table[data-object-table] .queue-reason, table[data-object-table] .queue-time { min-width:0; max-width:none; }
   table[data-object-table] .queue-copy b { white-space:normal; }
   .wb-connection { flex-wrap:wrap; }

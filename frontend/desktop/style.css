@@ -1061,6 +1061,8 @@ kbd, .key-button {
 }
 .pf-douyin { background: #26252b; color: #fff; }
 .pf-xhs { background: rgba(225, 29, 72, 0.12); color: #e11d48; }
+.pf-rednote { background: rgba(185, 16, 56, 0.13); color: #b91038; }
+:root[data-theme=dark] .pf-rednote { background: rgba(255, 122, 150, 0.16); color: #ff7a96; }
 .pf-kuaishou { background: rgba(234, 88, 12, 0.12); color: #ea580c; }
 .pf-shipinhao { background: var(--success-bg); color: var(--success); }
 .pf-tiktok { background: rgba(13, 148, 136, 0.14); color: #0f766e; }

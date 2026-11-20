@@ -78,6 +78,7 @@ jobs:
         run: >-
           python -m pytest
           tests/test_bilibili_capabilities.py
+          tests/test_rednote_capabilities.py
           tests/test_instagram_capabilities.py
           tests/test_channels_capabilities.py
           tests/test_channels_proxy.py

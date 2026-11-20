@@ -7,7 +7,7 @@ import { ChatMessages, ConversationUsage } from "./agent-chat";
 import { watchRun } from "./agent-stream";
 
 const statusText = { queued: "等待分析", running: "分析中", completed: "分析完成", failed: "未完成", canceled: "已停止", interrupted: "服务中断", draft: "待确认", applying: "创建中", applied: "已创建", partial: "部分完成" };
-const platformText = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", tiktok: "TikTok", shipinhao: "视频号", bilibili: "哔哩哔哩", instagram: "Instagram" };
+const platformText = { douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", tiktok: "TikTok", shipinhao: "视频号", bilibili: "哔哩哔哩", instagram: "Instagram" };
 const taskText = { collections: "采集", publishes: "发布", comments: "评论", actions: "账号操作", monitors: "监控" };
 const running = run => run && ["queued", "running"].includes(run.status);
 const editableSettings = data => { const { id, ...values } = data; return { display_name: "", models: [], api_path_mode: "auto", reasoning_mode: "default", thinking_budget: 1024, ...values, api_key: "", clear_api_key: false }; };

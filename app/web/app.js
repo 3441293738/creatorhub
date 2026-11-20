@@ -1049,7 +1049,7 @@ async function exportModuleReport(module, full = false, explicitBtn = null) {
 }
 
 let PLATFORM = "douyin";
-const PF_NAME = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram" };
+const PF_NAME = { douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram" };
 let CURRENT_TAB = "overview";
 const PAGE_META = {
   overview: {
@@ -1108,15 +1108,16 @@ function updatePageContext(name = CURRENT_TAB) {
   globalThis.CreatorHubWorkbench?.navigate?.();
 }
 // 是否支持「发布」面板
-function pfHasPublish(pf) { return ["xhs", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram"].includes(pf); }
+function pfHasPublish(pf) { return ["xhs", "rednote", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram"].includes(pf); }
 // 视频号只有「本账号」数据(助手接口本账号),不支持监控他人作品/评论
 function pfIsChannels(pf) { return pf === "shipinhao"; }
 function switchPlatform(pf) {
-  if (!["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(pf)) pf = "douyin";
+  if (!["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(pf)) pf = "douyin";
   globalThis.CreatorHubWorkbench?.platformChanging?.(pf);
   PLATFORM = pf;
   VIEW_REQUESTS.clear();
   CONTENT_PAGE = COMMENT_PAGE = 1;
+  COLLECTION_JOBS = []; closeCollectionResults(); renderCollectionJobs(); if ($("tb-col")) $("tb-col").textContent = "0";
   selContent.clear(); selComment.clear();
   CONTENT_SRC = CONTENT_GROUP = CONTENT_TAG = "";
   CONTENT_SOURCE_CACHE.clear();
@@ -1156,6 +1157,7 @@ function applyPlatformUI() {
   document.body.classList.toggle("pf-shipinhao", PLATFORM === "shipinhao");
   document.body.classList.toggle("pf-tiktok", PLATFORM === "tiktok");
   document.body.classList.toggle("pf-bilibili", PLATFORM === "bilibili");
+  document.body.classList.toggle("pf-rednote", PLATFORM === "rednote");
   document.body.classList.toggle("pf-instagram", PLATFORM === "instagram");
   // 视频号:只有本账号数据,隐藏「监控他人作品/评论」相关入口(.notsh-only)
   document.body.classList.toggle("pf-channels", pfIsChannels(PLATFORM));
@@ -1174,6 +1176,9 @@ function applyPlatformUI() {
   document.querySelectorAll(".tk-hide").forEach(e => e.classList.toggle("hidden", PLATFORM === "tiktok"));
   document.querySelectorAll(".bili-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "bilibili"));
   document.querySelectorAll(".bili-hide").forEach(e => e.classList.toggle("hidden", PLATFORM === "bilibili"));
+  document.querySelectorAll(".rn-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "rednote"));
+  document.querySelectorAll(".rn-hide").forEach(e => e.classList.toggle("hidden", PLATFORM === "rednote"));
+  document.querySelectorAll(".xhs-rn-only").forEach(e => e.classList.toggle("hidden", !["xhs", "rednote"].includes(PLATFORM)));
   document.querySelectorAll(".ig-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "instagram"));
   document.querySelectorAll(".ig-hide").forEach(e => e.classList.toggle("hidden", PLATFORM === "instagram"));
   document.querySelectorAll(".danmaku-only").forEach(e => e.classList.toggle("hidden", !["douyin", "bilibili"].includes(PLATFORM)));
@@ -1183,17 +1188,18 @@ function applyPlatformUI() {
       || e.dataset?.tab === "comments"
       || (e.classList.contains("quick-action") && (e.getAttribute("onclick") || "").includes("'monitors'"))
     );
-    e.classList.toggle("hidden", pfIsChannels(PLATFORM) && !allowOnChannels);
+    const hideByPlatform = (e.classList.contains("tk-hide") && PLATFORM === "tiktok") || (e.classList.contains("bili-hide") && PLATFORM === "bilibili") || (e.classList.contains("rn-hide") && PLATFORM === "rednote");
+    e.classList.toggle("hidden", hideByPlatform || (pfIsChannels(PLATFORM) && !allowOnChannels));
   });
   document.querySelectorAll(".collect-only").forEach(e => e.classList.toggle(
-    "hidden", !["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(PLATFORM)));
+    "hidden", !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(PLATFORM)));
   document.querySelectorAll(".meta-scope").forEach(e => {
     e.textContent = (PF_NAME[PLATFORM] || "当前平台") + "内独立";
   });
   // 发布面板入口
   document.querySelectorAll(".pub-only").forEach(e => e.classList.toggle("hidden", !pfHasPublish(PLATFORM)));
   // 发布面板文案随平台切换
-  const ks = PLATFORM === "kuaishou", dy = PLATFORM === "douyin", sph = PLATFORM === "shipinhao", tk = PLATFORM === "tiktok", bili = PLATFORM === "bilibili", ig = PLATFORM === "instagram";
+  const ks = PLATFORM === "kuaishou", dy = PLATFORM === "douyin", sph = PLATFORM === "shipinhao", tk = PLATFORM === "tiktok", bili = PLATFORM === "bilibili", rn = PLATFORM === "rednote", ig = PLATFORM === "instagram";
   const pubType = $("pub-type");
   if (pubType) {
     const before = pubType.value;
@@ -1212,15 +1218,16 @@ function applyPlatformUI() {
     : tk ? "上传视频到 TikTok Studio(实验性)"
     : bili ? "上传图文动态 / 视频稿件到哔哩哔哩创作中心"
     : ig ? "上传单图 / 轮播 / Reels / Story 到 Instagram"
+    : rn ? "上传图集 / 视频到海外小红书 creator.rednote.com"
     : "上传图集 / 视频到小红书(实验性)";
   if ($("pub-head-lead")) $("pub-head-lead").textContent = (ks || dy || sph || tk || bili || ig) ? "发布作品" : "发布笔记";
-  const titleCap = ig ? 2200 : bili ? 80 : dy ? 30 : sph ? 16 : 20;
-  if ($("pub-title-label-text")) $("pub-title-label-text").textContent = `标题(≤${titleCap} 字)`;
+  const titleCap = ig ? 2200 : bili ? 80 : rn ? 40 : dy ? 30 : sph ? 16 : 20;
+  if ($("pub-title-label-text")) $("pub-title-label-text").textContent = rn ? "标题(≤20 汉字 / 40 英文字符)" : `标题(≤${titleCap} 字)`;
   if ($("pub-title")) {
     $("pub-title").maxLength = titleCap;
     $("pub-title").placeholder = ig ? "Caption 首行标题（可选，正文与话题自动合并）" : bili ? "填写视频稿件标题（图文动态可选）" : tk ? "视频说明的首行标题" : (ks || dy || sph) ? "给作品起个标题" : "给笔记起个标题";
   }
-  if ($("pub-dy-opts")) $("pub-dy-opts").classList.toggle("hidden", !["douyin", "xhs", "kuaishou"].includes(PLATFORM));
+  if ($("pub-dy-opts")) $("pub-dy-opts").classList.toggle("hidden", !["douyin", "xhs", "rednote", "kuaishou"].includes(PLATFORM));
   if (bili) { onBiliCopyrightChange(); if ($("pub-acc")?.value) loadBiliPartitions($("pub-acc").value); }
   const pubHintText = dy
     ? "发布通过自动化抖音创作平台完成。首次登录或触发验证时，请在弹出窗口中完成短信验证或扫码；视频上传后还需等待转码。注意：定时发布可能因本人验证而暂停，建议发布时在场。"
@@ -1234,6 +1241,8 @@ function applyPlatformUI() {
     ? "视频稿件通过哔哩哔哩创作中心完成上传，并按所选分区、自制/转载、创作者声明及弹幕/评论权限提交；图文通过动态页发布。提交只执行一次；若显示“结果待确认”，请先到创作中心核对，系统不会自动重发。"
     : ig
     ? "支持单图、混合多图轮播（最多 10 项）、Reels 短视频与 Story 快拍。默认优先走两阶段 rupload + configure 直连协议，并在普通兼容失败时回退独立浏览器 Create 弹窗；若显示“结果待确认”，请先到 Instagram 主页核对。"
+    : rn
+    ? "发布通过海外小红书 creator.rednote.com 独立可见浏览器窗口完成（拦截 webapi.rednote.com/web_api/sns/v2/note 确认），不混用国内小红书会话。提交只点击一次；若显示“结果待确认”，请先到平台核对。"
     : "发布通过账号独立的可见 Chrome 页面完成。提交只点击一次；若显示“结果待确认”，请先到小红书核对，系统不会自动重发。";
   const pubHint = $("pub-hint");
   if (pubHint) {
@@ -1245,13 +1254,13 @@ function applyPlatformUI() {
   const wk = $("w-kind");
   if (wk) {
     const cur = wk.value;
-    wk.innerHTML = PLATFORM === "xhs"
+    wk.innerHTML = (PLATFORM === "xhs" || PLATFORM === "rednote")
       ? '<option value="auto">类型:自动识别</option><option value="video">单条笔记</option><option value="user">创作者近期笔记</option>'
       : '<option value="auto">类型:自动识别</option><option value="video">单条视频</option><option value="user">账号近期作品</option>';
     if ([...wk.options].some(o => o.value === cur)) wk.value = cur;
   }
   const wl = $("w-url-label");
-  if (wl) wl.textContent = PLATFORM === "xhs"
+  if (wl) wl.textContent = (PLATFORM === "xhs" || PLATFORM === "rednote")
     ? "笔记 / 创作者主页 / 完整分享文案 / ID"
     : PLATFORM === "kuaishou" ? "作品 / 创作者主页 / 完整分享文案 / ID"
     : PLATFORM === "shipinhao" ? "分享链接 / 作品 objectId / 创作者 v2_...@finder"
@@ -1263,6 +1272,7 @@ function applyPlatformUI() {
     : PLATFORM === "kuaishou" ? "直接粘贴整段快手分享文案，将自动提取作品或主页链接"
     : PLATFORM === "shipinhao" ? "粘贴 weixin.qq.com/sph/... 分享链、视频号作品链接、objectId 或 v2_...@finder"
     : PLATFORM === "tiktok" ? "直接粘贴整段 TikTok 分享文案，将自动提取视频或主页链接"
+    : PLATFORM === "rednote" ? "粘贴 www.rednote.com/zh/discovery/item/... 笔记链接、user/profile/... 主页链接或 24 位 ID"
     : PLATFORM === "bilibili" ? "直接粘贴整段哔哩哔哩分享文案、BV/av 号、opus 动态链接或 space 主页"
     : PLATFORM === "instagram" ? "粘贴 instagram.com/p/...、/reel/...、创作者主页链接或 @username"
     : "直接粘贴整段抖音分享文案，将自动提取视频或主页链接";
@@ -1271,19 +1281,21 @@ function applyPlatformUI() {
   if (ckl) ckl.textContent = PLATFORM === "xhs"
     ? "完整 Cookie(含 a1;发布需创作者会话)"
     : PLATFORM === "kuaishou" ? "完整 Cookie(含 userId 与 web_st)"
+    : PLATFORM === "rednote" ? "完整 rednote.com Cookie(含 web_session / a1;禁混用 xiaohongshu.com)"
     : PLATFORM === "bilibili" ? "完整 Cookie(含 SESSDATA 与 bili_jct)"
     : PLATFORM === "instagram" ? "完整 Cookie(含 sessionid、ds_user_id 与 csrftoken)"
     : "完整 Cookie(含 sessionid)";
   if ($("ck-val")) $("ck-val").placeholder = PLATFORM === "xhs"
     ? "从 creator.xiaohongshu.com 登录后复制完整 Cookie"
     : PLATFORM === "kuaishou" ? "从 www.kuaishou.com 登录后复制完整 Cookie"
+    : PLATFORM === "rednote" ? "从 www.rednote.com 或 creator.rednote.com 登录后复制完整 Cookie"
     : PLATFORM === "bilibili" ? "从 www.bilibili.com 或 member.bilibili.com 登录后复制完整 Cookie"
     : PLATFORM === "instagram" ? "从 www.instagram.com 登录后复制完整 Cookie(含 sessionid)"
     : "从浏览器开发者工具复制完整 Cookie";
   applyMonitorForm();
   applyCollectionForm();
   if (["douyin", "bilibili"].includes(PLATFORM)) applyDanmakuForm();
-  if ($("t-kind") && PLATFORM !== "xhs") $("t-kind").value = "creator";
+  if ($("t-kind") && !["xhs", "rednote"].includes(PLATFORM)) $("t-kind").value = "creator";
   // 视频号不支持自动评论规则:若正停在自动评论面板,切回本账号管理
   if (pfIsChannels(PLATFORM)) {
     const cur = (document.querySelector('.navitem.active') || {}).dataset;
@@ -1294,7 +1306,9 @@ function applyPlatformUI() {
   if (PLATFORM === "tiktok" && CURRENT_TAB === "autocomment") switchTab("hub");
   if (PLATFORM !== "tiktok" && CURRENT_TAB === "tiktok-tools") switchTab("accounts");
   if (PLATFORM === "tiktok" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
-  if (!["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(PLATFORM) && CURRENT_TAB === "collections") switchTab("overview");
+  if (PLATFORM === "rednote" && CURRENT_TAB === "autocomment") switchTab("hub");
+  if (PLATFORM === "rednote" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
+  if (!["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(PLATFORM) && CURRENT_TAB === "collections") switchTab("overview");
   // 不支持发布的平台:若正停在该面板则回到总览(当前四平台均支持,兜底保留)
   if (!pfHasPublish(PLATFORM)) {
     const pub = document.querySelector('[data-panel="publish"]');
@@ -1470,7 +1484,7 @@ async function normalizePlatformShareTarget({
 }
 
 function resetMonitorTargetState() {
-  const keywordMode = PLATFORM === "xhs" && $("t-kind") && $("t-kind").value === "keyword";
+  const keywordMode = ["xhs", "rednote"].includes(PLATFORM) && $("t-kind") && $("t-kind").value === "keyword";
   resetSmartTargetState("t-url", "t-url-feedback", keywordMode
     ? "输入要持续监控的搜索关键词"
     : PLATFORM === "shipinhao"
@@ -1479,7 +1493,7 @@ function resetMonitorTargetState() {
 }
 
 async function normalizeMonitorTarget(button = null, { quiet = false } = {}) {
-  const keywordMode = PLATFORM === "xhs" && $("t-kind") && $("t-kind").value === "keyword";
+  const keywordMode = ["xhs", "rednote"].includes(PLATFORM) && $("t-kind") && $("t-kind").value === "keyword";
   if (keywordMode) return $("t-url").value.trim();
   return normalizePlatformShareTarget({
     inputId: "t-url", feedbackId: "t-url-feedback", platform: PLATFORM, button, quiet,
@@ -1581,7 +1595,7 @@ function applyMonitorForm() {
   const isSph = PLATFORM === "shipinhao";
   if ($("t-acc-wrap")) $("t-acc-wrap").style.display = isSph ? "none" : "";
   if (isSph && $("t-acc")) $("t-acc").value = "";
-  const supportsBackfill = PLATFORM !== "xhs";
+  const supportsBackfill = !["xhs", "rednote"].includes(PLATFORM);
   if ($("t-backfill-wrap")) $("t-backfill-wrap").style.display = supportsBackfill ? "" : "none";
   if ($("t-backfill") && _LAST_MONITOR_PLATFORM !== PLATFORM) {
     $("t-backfill").value = ["shipinhao", "kuaishou", "tiktok", "bilibili", "instagram"].includes(PLATFORM) ? "5" : "";
@@ -1630,7 +1644,7 @@ function applyMonitorForm() {
   } else {
     if (title) title.innerHTML = '添加创作者监控 <span class="sub">监控并下载新笔记</span>';
     if (lbl) lbl.textContent = "创作者主页 / 完整分享文案 / user_id";
-    $("t-url").placeholder = "直接粘贴整段小红书主页分享文案，将自动提取有效链接";
+    $("t-url").placeholder = PLATFORM === "rednote" ? "粘贴 www.rednote.com/zh/user/profile/... 主页链接或 24 位 user_id" : "直接粘贴整段小红书主页分享文案，将自动提取有效链接";
     if (parseButton) parseButton.classList.remove("hidden");
   }
   resetMonitorTargetState();
@@ -1751,25 +1765,25 @@ async function choosePreLoginBrowserBackend({ platform = "" } = {}) {
   return selected;
 }
 function formatProxyOptionLabel(p, platform = PLATFORM) {
-  const domestic = !["tiktok", "instagram"].includes(platform || "douyin");
+  const domestic = !["tiktok", "rednote", "instagram"].includes(platform || "douyin");
   const geo = p.geo_loc ? ` · ${p.geo_loc}` : "";
-  const overseasWarn = domestic && p.geo_checked && !p.is_mainland ? " · ⚠️非大陆(慢/高风控)" : "";
+  const overseasWarn = domestic && p.geo_checked && !p.is_mainland ? " · ⚠️非大陆(慢/高风控)" : (!domestic && p.geo_checked && p.is_mainland ? " · ⚠️大陆节点(海外平台高风控)" : "");
   return `${p.label}${geo}${overseasWarn} · ${p.status} · 占用${p.used_by} · ${p.masked}${p.enabled ? "" : " · 已停用"}`;
 }
 // 登录前选代理:返回 "" (不用) | "auto" | 具体url | null(取消)
 async function choosePreLoginProxy({ platform = PLATFORM } = {}) {
   let opts = [];
   try { opts = await api("/api/proxies/options"); } catch (e) { }
-  const domestic = !["tiktok", "instagram"].includes(platform || "douyin");
+  const domestic = !["tiktok", "rednote", "instagram"].includes(platform || "douyin");
   const usablePool = opts.filter(p => (
     p.enabled && !["bad", "auth_error", "blocked"].includes(p.status)
-    && Number(p.used_by || 0) === 0 && (!domestic || !p.geo_checked || p.is_mainland)
+    && Number(p.used_by || 0) === 0 && (domestic ? (!p.geo_checked || p.is_mainland) : (!p.geo_checked || !p.is_mainland))
   ));
-  const preferDirect = domestic && opts.length > 0 && usablePool.length === 0;
+  const preferDirect = opts.length > 0 && usablePool.length === 0;
   const autoLabel = !opts.length
     ? "自动分配（池为空时不用代理）"
     : preferDirect
-      ? "自动分配（仅大陆/未标注节点；当前池内无可用节点）"
+      ? (domestic ? "自动分配（仅大陆/未标注节点；当前池内无可用节点）" : "自动分配（仅海外/未标注节点；当前池内无可用节点）")
       : "自动分配（占用最少）";
   const options = [
     { value: "auto", label: autoLabel },
@@ -1780,7 +1794,7 @@ async function choosePreLoginProxy({ platform = PLATFORM } = {}) {
   const v = await uiSelect({
     title: "选择本次登录使用的代理",
     hint: preferDirect
-      ? "当前代理池无可用大陆节点；默认改用本机网络，避免境外代理导致国内平台加载慢或白屏。"
+      ? (domestic ? "当前代理池无可用大陆节点；默认改用本机网络，避免境外代理导致国内平台加载慢或白屏。" : "当前代理池仅有大陆节点；请改选境外代理或手动输入，避免大陆节点导致海外平台连接失败或风控。")
       : "整个登录/扫码过程都走它,从一开始就绑定这条 IP(最稳)。",
     options, value: preferDirect ? "" : "auto",
   });
@@ -2067,6 +2081,41 @@ async function startBilibiliLogin() {
     $("qrstatus").innerHTML = `${ic("i-eye")} <b>哔哩哔哩窗口已打开</b>，请使用哔哩哔哩 App 扫码完成登录。<br>登录成功后会自动同步创作中心会话，可用于采集、弹幕、互动与投稿。`;
     pollLogin(res.task_id);
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("哔哩哔哩登录启动失败:" + e.message, "err"); }
+}
+
+// ─── 海外小红书（Rednote）登录 ───
+async function startRednoteLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend({ platform: "rednote" });
+  if (browserBackend === null) return;
+  const proxy = await choosePreLoginProxy({ platform: "rednote" });
+  if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
+  $("cookiebox").style.display = "none";
+  $("qrbox").style.display = "block";
+  $("qrstatus").textContent = "正在打开海外小红书（www.rednote.com）窗口…";
+  try {
+    const res = await api(loginStartUrl("/api/login/rednote/start", proxy, browserBackend), loginStartOptions(fingerprint));
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>海外小红书（www.rednote.com）窗口已打开</b>，请使用 Rednote / 小红书海外版扫码或网页登录。<br>会话严格隔离在 <code>.rednote.com</code> 域，绝不混用国内小红书 Cookie。`;
+    pollLogin(res.task_id);
+  } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("海外小红书登录启动失败:" + e.message, "err"); }
+}
+
+async function startRednoteCreatorLogin() {
+  const browserBackend = await choosePreLoginBrowserBackend({ platform: "rednote" });
+  if (browserBackend === null) return;
+  const proxy = await choosePreLoginProxy({ platform: "rednote" });
+  if (proxy === null) return;
+  const fingerprint = await configurePreLoginFingerprint(browserBackend);
+  if (fingerprint === null) return;
+  $("cookiebox").style.display = "none";
+  $("qrbox").style.display = "block";
+  $("qrstatus").textContent = "正在打开海外小红书创作服务平台（creator.rednote.com）窗口…";
+  try {
+    const res = await api(loginStartUrl("/api/login/rednote-creator/start", proxy, browserBackend), loginStartOptions(fingerprint));
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>海外小红书创作平台（creator.rednote.com）窗口已打开</b>，请完成创作者扫码登录，用于图文/视频笔记发布与作品管理。`;
+    pollLogin(res.task_id);
+  } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("创作者登录启动失败:" + e.message, "err"); }
 }
 
 // ─── Instagram 独立浏览器登录（Mobile API 与 Web 端共用会话） ───
@@ -3468,6 +3517,7 @@ async function refreshMyWorks() {
 function workLink(platform, id) {
   id = encodeURIComponent(id);
   if (platform === "xhs") return "https://www.xiaohongshu.com/explore/" + id;
+  if (platform === "rednote") return "https://www.rednote.com/zh/discovery/item/" + id;
   if (platform === "kuaishou") return "https://www.kuaishou.com/short-video/" + id;
   if (platform === "shipinhao") return "https://channels.weixin.qq.com/platform/post/list";
   if (platform === "tiktok") {
@@ -3511,6 +3561,7 @@ function workCard(w) {
       <div class="ncard-actions">
         ${w.platform === "douyin" ? `<button class="ghost sm" onclick="monitorOwnWorkDanmaku(${jsArg(w.item_id)},${Number(w.account_id) || "null"})">${ic("i-msg")}弹幕</button>` : ""}
         <button class="ghost sm" onclick="openWorkComments(${Number(w.id)},${jsArg(w.platform)},${jsArg(w.desc || "无描述")})">${ic("i-msg")}评论</button>
+        ${w.platform === "rednote" ? `<button class="ghost sm" onclick="toggleRednoteWorkVisibility(${Number(w.id)},${jsArg(w.status || "")})">${w.status === "仅自己可见" ? "设为公开" : "设为私密"}</button><button class="ghost sm danger" onclick="deleteRednoteWork(${Number(w.id)})">${ic("i-trash")}</button>` : ""}
       </div>
     </div>
   </div>`;
@@ -3524,6 +3575,25 @@ function monitorOwnWorkDanmaku(itemId, accountId) {
   applyDanmakuForm();
   if ($("d-w-acc") && accountId) $("d-w-acc").value = String(accountId);
   toast("已填入作品 ID，请确认后开始弹幕监控", "info", 5000);
+}
+async function toggleRednoteWorkVisibility(workId, currentStatus) {
+  const nextVis = currentStatus === "仅自己可见" ? "public" : "private";
+  try {
+    await api(`/api/account-works/${workId}/rednote-visibility`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ visibility: nextVis }),
+    });
+    toast(nextVis === "private" ? "已设为仅自己可见" : "已设为公开可见", "ok");
+    refreshMyWorks();
+  } catch (e) { toast("修改可见性失败:" + e.message, "err"); }
+}
+async function deleteRednoteWork(workId) {
+  if (!await uiConfirm({ title: "删除海外小红书笔记", message: "确定从海外小红书平台删除这条已发布笔记吗？删除后不可恢复。", okText: "删除笔记", danger: true })) return;
+  try {
+    await api(`/api/account-works/${workId}/rednote-delete`, { method: "DELETE" });
+    toast("已从海外小红书删除该笔记", "ok");
+    refreshMyWorks();
+  } catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 async function syncMyWorks() {
   if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
@@ -4123,7 +4193,7 @@ function populateWatchAccount() {
   const xhs = PLATFORM === "xhs";
   const tiktok = PLATFORM === "tiktok";
   const channels = PLATFORM === "shipinhao";
-  const required = xhs || tiktok;
+  const required = xhs || PLATFORM === "rednote" || tiktok;
   const creatorOnly = PLATFORM === "douyin" && $("w-mode") && $("w-mode").value === "creator";
   const list = tiktok
     ? ACCOUNTS.filter(a => a.status === "active" && a.has_storage)
@@ -4188,7 +4258,7 @@ async function refreshProfile(id) {
         toast("\u672c\u6b21\u672a\u6267\u884c\u8d44\u6599\u5237\u65b0:" + (r.reason || "\u8d26\u53f7\u5f53\u524d\u4e0d\u53ef\u63a2\u6d4b"), "info");
         return;
       }
-      if ((r.platform || PLATFORM) === "xhs" && r.login_scope === "creator" && !r.has_read_login) {
+      if (["xhs", "rednote"].includes(r.platform || PLATFORM) && r.login_scope === "creator" && !r.has_read_login) {
         toast("创作平台登录有效，资料已更新；主站读取登录尚未配置", "info", 8000);
         return;
       }
@@ -4197,7 +4267,7 @@ async function refreshProfile(id) {
         : refreshedPlatform === "kuaishou" ? " · 快手号 "
         : refreshedPlatform === "shipinhao" ? " · 视频号 "
         : refreshedPlatform === "tiktok" ? " · TikTok号 "
-        : refreshedPlatform === "bilibili" ? " · UID " : " · 抖音号 ";
+        : refreshedPlatform === "rednote" ? " · Rednote号 " : refreshedPlatform === "bilibili" ? " · UID " : " · 抖音号 ";
       toast("\u8d44\u6599\u5df2\u66f4\u65b0\uff0c\u767b\u5f55\u72b6\u6001\u5df2\u6062\u590d:" + (r.nickname || "") + (r.douyin_id ? idLbl + r.douyin_id : ""), "ok");
     } catch (e) {
       toast("\u5237\u65b0\u5931\u8d25:" + e.message, "err");
@@ -4900,7 +4970,7 @@ function transportSourceSuffix(source) {
 function renderTransportMatrix(data) {
   const body = $("transport-matrix-body"), isolation = $("transport-isolation-body");
   if (!body || !isolation) return;
-  const platformNames = { douyin: "抖音", xhs: "小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram" };
+  const platformNames = { douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram" };
   const rows = Array.isArray(data?.rows) ? data.rows : [];
   body.innerHTML = rows.length ? rows.map(row => `<tr>
     <td><b>${esc(platformNames[row.platform] || row.platform)}</b></td>
@@ -5766,7 +5836,7 @@ function filterShareAccounts() {
   const old = sel.value;
   const platform = shareAccountPlatform();
   const hasDetectedLink = !!SHARE_LINKS.length;
-  const knownAccountPlatform = ["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(platform);
+  const knownAccountPlatform = ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(platform);
   const rows = knownAccountPlatform
     ? SHARE_ACCOUNTS.filter(a => a.platform === platform)
     : [];
@@ -6437,13 +6507,13 @@ function collectionSourceValue() {
 async function loadCollectionFavoriteBoards() {
   const accountId = Number($("col-account")?.value || 0);
   const select = $("col-board");
-  if (!select || !accountId || PLATFORM !== "xhs") return;
+  if (!select || !accountId || !["xhs", "rednote"].includes(PLATFORM)) return;
   const requestedAccount = accountId;
   select.disabled = true;
   select.innerHTML = '<option value="">正在加载收藏夹…</option>';
   $("col-board-help").textContent = "";
   try {
-    const boards = await api(`/api/accounts/${accountId}/xhs/favorite-boards`);
+    const boards = await api(`/api/accounts/${accountId}/${PLATFORM === "rednote" ? "rednote" : "xhs"}/favorite-boards`);
     if (Number($("col-account")?.value || 0) !== requestedAccount) return;
     COLLECTION_FAVORITE_BOARDS = boards || [];
     select.innerHTML = '<option value="">请选择收藏夹</option>' + COLLECTION_FAVORITE_BOARDS.map(board =>
@@ -6479,12 +6549,13 @@ function rebuildCollectionSources(xhs, channels, tiktok) {
   if (!sel) return;
   const current = sel.value;
   const bilibili = PLATFORM === "bilibili";
+  const rednote = PLATFORM === "rednote";
   const instagram = PLATFORM === "instagram";
   sel.innerHTML = "";
   for (const o of COL_SOURCE_DEFS) {
     let keep;
     if (o.channels) keep = channels || bilibili || instagram;
-    else if (o.xhs) keep = xhs;
+    else if (o.xhs) keep = xhs || rednote;
     else keep = !(tiktok && o.value !== "keyword");
     if (!keep) continue;
     const opt = document.createElement("option");
@@ -6537,8 +6608,8 @@ function applyCollectionForm() {
   if ($("col-content-limit-label")) $("col-content-limit-label").textContent = accountWorksOnly ? "作品上限" : "每词作品上限";
   if ($("col-page-limit-label")) $("col-page-limit-label").innerHTML = accountWorksOnly ? '作品页采集深度 <span class="field-scope">1–40 页</span>' : '每词采集深度 <span class="field-scope">1–40 页</span>';
   if ($("col-sort-wrap")) $("col-sort-wrap").style.display = (accountWorksOnly || source === "creator") ? "none" : "";
-  if ($("col-page-help")) $("col-page-help").textContent = channelsAccountOnly ? "依次读取视频与图文管理页(或复用微信原生 Finder 主页协议)。" : biliAccountOnly ? "依次读取创作中心稿件列表接口分页。" : igAccountOnly ? "依次读取 Instagram 用户时间线 feed/user 分页。" : channels ? "一页对应一次微信原生 Finder 搜索或主页翻页请求。" : xhs ? "一页对应一次搜索结果下滑或接口翻页。" : PLATFORM === "bilibili" ? "一页对应一次 WBI 搜索或 UP 主空间投稿接口翻页。" : PLATFORM === "instagram" ? "一页对应一次 tags/sections 或 feed/user 接口翻页。" : "一页对应一次搜索结果下滑。";
-  if ($("col-source-ref")) $("col-source-ref").placeholder = PLATFORM === "douyin" ? "抖音 sec_uid" : PLATFORM === "xhs" ? "小红书 user_id" : PLATFORM === "shipinhao" ? "视频号 v2_...@finder / sph 标识 / 主页链接" : PLATFORM === "bilibili" ? "哔哩哔哩 UP 主 mid / space 主页链接 / 视频分享文案" : PLATFORM === "instagram" ? "Instagram @username / 主页链接 / 数字 UID" : "快手 user_id / 主页链接 / 短链 / 分享文案";
+  if ($("col-page-help")) $("col-page-help").textContent = channelsAccountOnly ? "依次读取视频与图文管理页(或复用微信原生 Finder 主页协议)。" : biliAccountOnly ? "依次读取创作中心稿件列表接口分页。" : igAccountOnly ? "依次读取 Instagram 用户时间线 feed/user 分页。" : channels ? "一页对应一次微信原生 Finder 搜索或主页翻页请求。" : (xhs || PLATFORM === "rednote") ? "一页对应一次搜索结果下滑或接口翻页。" : PLATFORM === "bilibili" ? "一页对应一次 WBI 搜索或 UP 主空间投稿接口翻页。" : PLATFORM === "instagram" ? "一页对应一次 tags/sections 或 feed/user 接口翻页。" : "一页对应一次搜索结果下滑。";
+  if ($("col-source-ref")) $("col-source-ref").placeholder = PLATFORM === "douyin" ? "抖音 sec_uid" : PLATFORM === "xhs" ? "小红书 user_id" : PLATFORM === "rednote" ? "海外小红书 user_id / www.rednote.com 主页链接" : PLATFORM === "shipinhao" ? "视频号 v2_...@finder / sph 标识 / 主页链接" : PLATFORM === "bilibili" ? "哔哩哔哩 UP 主 mid / space 主页链接 / 视频分享文案" : PLATFORM === "instagram" ? "Instagram @username / 主页链接 / 数字 UID" : "快手 user_id / 主页链接 / 短链 / 分享文案";
   resetCollectionCreatorState();
   if ($("col-replies-help")) $("col-replies-help").textContent = `采集${platformName}当前可返回的回复`;
   if ($("collection-callout-title")) $("collection-callout-title").textContent = channelsAccountOnly ? "支持创作者助手本账号同步与微信原生 Finder 协议增强" : channels ? "连接本机已登录微信即可搜索、采主页、抓全量评论与解密下载（无需网页账号）" : "作品上限、采集深度和停止条件任一满足即结束";
@@ -6675,7 +6746,7 @@ function renderCollectionJobs() {
       (sourceValues.length > 5 ? `<span class="meta-chip more">+${sourceValues.length - 5}</span>` : "");
     const canCancel = ["pending", "running"].includes(job.status);
     const canRetry = ["done", "partial", "failed", "canceled"].includes(job.status);
-    const canEdit = canRetry && ["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(job.platform);
+    const canEdit = canRetry && ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(job.platform);
     const errorText = collectionLastError(job);
     const sortLabel = { general: "综合", latest: "最新", most_liked: "最多点赞" }[job.search_sort] || "综合";
     const timeLabel = { all: "不限时间", day: "一天内", week: "一周内", half_year: "半年内" }[job.publish_time] || "不限时间";
@@ -6700,7 +6771,7 @@ function renderCollectionJobs() {
 }
 async function refreshCollections() {
   const isCurrent = beginViewRequest("collections");
-  if (!$("collection-job-table") || !["douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(PLATFORM)) return;
+  if (!$("collection-job-table") || !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(PLATFORM)) return;
   try {
     const requestedPlatform = PLATFORM;
     const jobs = await api("/api/collections?platform=" + encodeURIComponent(requestedPlatform));
@@ -7114,14 +7185,14 @@ async function addMonitor() {
   const btn = evtBtn() || document.querySelector('button[onclick="addMonitor()"]');
   if (btn?.disabled) return;
   await withBusy(btn, "识别中", async () => {
-  const target_kind = (PLATFORM === "xhs" && $("t-kind")) ? $("t-kind").value : "creator";
+  const target_kind = (["xhs", "rednote"].includes(PLATFORM) && $("t-kind")) ? $("t-kind").value : "creator";
   const normalizedTarget = target_kind === "keyword"
     ? $("t-url").value.trim()
     : await normalizeMonitorTarget(null, { quiet: true });
   if (normalizedTarget === null) return;
   const url_or_secuid = $("t-url").value.trim();
   if (!url_or_secuid) { toast(target_kind === "keyword" ? "请输入搜索关键词" : "请输入主页链接 / 短链 / id", "err"); return; }
-  if (["xhs", "douyin", "tiktok"].includes(PLATFORM) && !$("t-acc").value) {
+  if (["xhs", "rednote", "douyin", "tiktok"].includes(PLATFORM) && !$("t-acc").value) {
     const platformName = PF_NAME[PLATFORM] || "当前平台";
     const available = PLATFORM === "tiktok"
       ? ACCOUNTS.filter(a => a.status === "active" && a.has_storage)
@@ -7139,10 +7210,10 @@ async function addMonitor() {
           url_or_secuid, platform: PLATFORM, target_kind,
           account_id: PLATFORM === "shipinhao" ? null : ($("t-acc").value ? +$("t-acc").value : null),
           interval_seconds: monitorIntervalSeconds("t-interval"),
-          initial_backfill_count: PLATFORM !== "xhs"
+          initial_backfill_count: !["xhs", "rednote"].includes(PLATFORM)
             ? ($("t-backfill").value === "" ? null : +$("t-backfill").value) : 0,
           download_dir: $("t-dir").value.trim(),
-          video_quality: PLATFORM === "xhs" ? "" : $("t-quality").value,
+          video_quality: ["xhs", "rednote"].includes(PLATFORM) ? "" : $("t-quality").value,
           download_enabled: downloadMode !== "none",
           media_filter: downloadMode === "none" ? "all" : downloadMode,
           max_scrolls: +$("t-max-scrolls").value,
@@ -7393,14 +7464,14 @@ function monRow(t) {
   const downloadLabel = t.download_enabled === false ? "仅记录"
     : ({ all: "全部下载", video: "仅视频", images: "仅图集" }[t.media_filter] || "全部下载");
   return `<tr>
-    <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(t.avatar))}" alt="" referrerpolicy="no-referrer">` : ""}<div><span>${label}</span>${t.alias ? `<div class="alias-line">${esc(t.alias)}</div>` : ""}${accTag}</div></div></td>
+    <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(t.avatar))}" alt="" referrerpolicy="no-referrer">` : ""}<div><span title="${label}">${label}</span>${t.alias ? `<div class="alias-line" title="${esc(t.alias)}">${esc(t.alias)}</div>` : ""}${accTag}</div></div></td>
     <td>${metaChips(t)}</td>
     <td class="num"><button type="button" class="ghost sm monitor-record-link" data-monitor-records="${t.id}" onclick="showMonitorRecords(${t.id})">查看记录 <span>${t.content_count || 0}</span></button></td>
     <td class="num">${monitorIntervalText(t.interval_seconds)}</td>
     <td class="wrap" style="max-width:230px">
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px"><span class="pill q bare">${downloadLabel}</span></div>
       ${monitorStrategySummary(t)}
-      ${t.platform === "xhs" ? "" : `<span class="pill q bare">${QMAP[t.video_quality] || "默认画质"}</span> `}
+      ${(t.platform === "xhs" || t.platform === "rednote") ? "" : `<span class="pill q bare">${QMAP[t.video_quality] || "默认画质"}</span> `}
       <span class="mut" title="${esc(t.download_dir || "默认目录")}" style="display:inline-block;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${esc(t.download_dir || "默认")}</span></td>
     <td class="mut">${t.last_scan_at ? new Date(t.last_scan_at + "Z").toLocaleString() : "—"}${t.last_error ? ` <span class="warn-ic" title="${esc(t.last_error)}">${ic("i-info")}</span>` : ""}${autoRunHint(t.next_auto_run_at)}</td>
     <td><span class="pill ${t.enabled ? "active" : "paused"}">${t.enabled ? "监控中" : "已暂停"}</span></td>
@@ -8204,11 +8275,12 @@ async function addWatch() {
 }
 function watchRow(w) {
   const base = esc(watchBaseName(w));
+  const isNotePlatform = w.platform === "xhs" || w.platform === "rednote";
   return `<tr>
-    <td><div class="user-cell">${w.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(w.avatar))}" referrerpolicy="no-referrer">` : ""}<div><span>${base}</span>${w.alias ? `<div class="alias-line">${esc(w.alias)}</div>` : ""}</div></div></td>
+    <td><div class="user-cell">${w.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(w.avatar))}" referrerpolicy="no-referrer">` : ""}<div><span title="${base}">${base}</span>${w.alias ? `<div class="alias-line" title="${esc(w.alias)}">${esc(w.alias)}</div>` : ""}</div></div></td>
     <td>${metaChips(w)}</td>
-    <td>${w.kind === "video" ? (w.platform === "xhs" ? "笔记" : "视频") : (w.platform === "xhs" ? "创作者" : "账号")}</td>
-    <td>${w.platform === "xhs" ? "公开" : (SRC[w.mode] || w.mode)}</td>
+    <td>${w.kind === "video" ? (isNotePlatform ? "笔记" : "视频") : (isNotePlatform ? "创作者" : "账号")}</td>
+    <td>${isNotePlatform ? "公开" : (SRC[w.mode] || w.mode)}</td>
     <td class="num"><button type="button" class="ghost sm monitor-record-link" data-comment-records="${w.id}" onclick="showWatchRecords('comment',${w.id})">查看记录 <span>${fmtNum(w.comment_count || 0)}</span></button></td>
     <td class="num">${monitorIntervalText(w.interval_seconds)}
       ${w.kind === "user" && (w.recent_works || w.recent_days) ? `<div class="mut" style="font-size:11px">${w.recent_works ? `近 ${w.recent_works} 个` : "全局作品数"} · ${w.recent_days ? `${w.recent_days} 天` : "全局天数"}</div>` : ""}</td>
@@ -8642,6 +8714,7 @@ function populatePubAcc() {
       : PLATFORM === "tiktok" ? "请先完成「TikTok 登录」"
       : PLATFORM === "bilibili" ? "请先完成「哔哩哔哩扫码登录」"
       : PLATFORM === "instagram" ? "请先完成「Instagram 登录」"
+      : PLATFORM === "rednote" ? "请先完成「海外小红书创作者登录」"
       : "请先完成「小红书创作者登录」");
   sel.innerHTML = accOptions(list, ph);
   if (list.length) sel.value = String(list[0].id);
@@ -8824,8 +8897,8 @@ async function editPublish(id) {
         },
       } : {}),
     });
-    const editCap = task.platform === "instagram" ? 2200 : task.platform === "bilibili" ? 80 : task.platform === "douyin" ? 30 : task.platform === "shipinhao" ? 16 : 20;
-    const showVisOpts = ["douyin", "xhs", "kuaishou"].includes(task.platform);
+    const editCap = task.platform === "instagram" ? 2200 : task.platform === "bilibili" ? 80 : task.platform === "rednote" ? 40 : task.platform === "douyin" ? 30 : task.platform === "shipinhao" ? 16 : 20;
+    const showVisOpts = ["douyin", "xhs", "rednote", "kuaishou"].includes(task.platform);
     $("ui-body").innerHTML = `
       <div><label class="field" for="ep-account">发布账号</label>
         <select id="ep-account">${accountOptions}</select></div>
@@ -8968,7 +9041,7 @@ async function delPublish(id) {
 let PUB_NOTES = [], PUB_ACC = "", PUB_GOOD = false;
 async function loadPublished() {
   const acc = $("pub-acc").value;
-  if (!acc) { toast("请先选择小红书账号", "err"); return; }
+  if (!acc) { toast("请先选择" + (PF_NAME[PLATFORM] || "小红书") + "账号", "err"); return; }
   PUB_ACC = acc;
   const btn = evtBtn();
   $("published-msg").textContent = "拉取中…(走创作平台,可能需几秒)";
@@ -9013,11 +9086,13 @@ const repostChannels = (id) => openRepost(id, "shipinhao");
 const repostKuaishou = (id) => openRepost(id, "kuaishou");
 const repostTiktok = (id) => openRepost(id, "tiktok");
 const repostBilibili = (id) => openRepost(id, "bilibili");
+const repostRednote = (id) => openRepost(id, "rednote");
 const repostInstagram = (id) => openRepost(id, "instagram");
 async function pickRepostTarget(id) {
   const rec = CONTENTS.find(r => r.id === id);
   const options = [
     { value: "xhs", label: "小红书" },
+    { value: "rednote", label: "海外小红书" },
     { value: "douyin", label: "抖音" },
     { value: "kuaishou", label: "快手" },
     { value: "shipinhao", label: "视频号" },
@@ -9044,7 +9119,9 @@ async function openRepost(id, target) {
   if (!accs.length) {
     const loginHint = target === "xhs"
       ? "请先在小红书账号页完成「创作者登录」(发布用)"
-      : target === "shipinhao"
+      : target === "rednote"
+        ? "请先在海外小红书账号页完成登录"
+        : target === "shipinhao"
         ? "请先在视频号账号页完成「视频号登录」"
         : target === "kuaishou"
           ? "请先在快手账号页完成登录"
@@ -9064,9 +9141,10 @@ async function openRepost(id, target) {
   const isKs = target === "kuaishou";
   const isTk = target === "tiktok";
   const isBili = target === "bilibili";
+  const isRn = target === "rednote";
   const isIg = target === "instagram";
-  const cap = isIg ? 2200 : isBili ? 80 : isDy ? 30 : isChannels ? 16 : 20;
-  const pname = isDy ? "抖音" : isChannels ? "视频号" : isKs ? "快手" : isTk ? "TikTok" : isBili ? "哔哩哔哩" : isIg ? "Instagram" : "小红书";
+  const cap = isIg ? 2200 : isBili ? 80 : isRn ? 40 : isDy ? 30 : isChannels ? 16 : 20;
+  const pname = isDy ? "抖音" : isChannels ? "视频号" : isKs ? "快手" : isTk ? "TikTok" : isBili ? "哔哩哔哩" : isIg ? "Instagram" : isRn ? "海外小红书" : "小红书";
   $("rp-head").textContent = "发" + pname + " · 编辑后推送";
   $("rp-title-label").textContent = `标题(≤${cap} 字)`;
   $("rp-title").maxLength = cap;
@@ -9204,7 +9282,8 @@ async function submitRepost() {
     : REPOST_TARGET === "kuaishou" ? "快手"
     : REPOST_TARGET === "tiktok" ? "TikTok"
     : REPOST_TARGET === "bilibili" ? "哔哩哔哩"
-    : REPOST_TARGET === "instagram" ? "Instagram" : "小红书";
+    : REPOST_TARGET === "instagram" ? "Instagram"
+    : REPOST_TARGET === "rednote" ? "海外小红书" : "小红书";
   try {
     body.scheduled_at = scheduleToApi(body.scheduled_at);
     const r = await withBusy(btn, "提交中", () => api("/api/contents/" + REPOST_ID + "/repost-" + REPOST_TARGET, {
@@ -9848,7 +9927,7 @@ switchTab((() => {
 switchHubTab(HUB_TAB);   // 恢复上次停留的子标签(我的作品/关注/粉丝/私信)
 
 // restore last-selected platform (default: 抖音)
-PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
+PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "rednote", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
 applyPlatformUI();
 updateTaskQueuePlatformLabel();
 

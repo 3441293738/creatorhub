@@ -223,6 +223,7 @@ def smoke_test() -> int:
             import app as app_pkg
             from app.main import app, WEB_DIR
             from app.platforms.bilibili import BilibiliClient, publish_bilibili, receive_bili_broadcast
+            from app.platforms.rednote import RednoteApiClient, publish_rednote_browser
             from app.platforms.instagram import InstagramClient, publish_instagram
             from app.platforms.channels.local_ca import LocalCaManager
             import websockets.asyncio.client
@@ -232,7 +233,7 @@ def smoke_test() -> int:
             import tkinter as tk
             import pystray
             channels_js = Path(app_pkg.__file__).parent / "platforms" / "channels" / "js"
-            assert app and LocalCaManager and BilibiliClient and receive_bili_broadcast and publish_bilibili
+            assert app and LocalCaManager and BilibiliClient and receive_bili_broadcast and publish_bilibili and RednoteApiClient and publish_rednote_browser
             assert InstagramClient and publish_instagram
             assert websockets.asyncio.client and (WEB_DIR / "workbench.js").is_file()
             assert (channels_js / "finder_proxy_bridge.js").is_file()
@@ -241,6 +242,7 @@ def smoke_test() -> int:
             assert (resources() / "config.example.yaml").is_file()
             assert (resources() / "desktop-guide" / "xhs" / "index.html").is_file()
             assert (resources() / "desktop-guide" / "bilibili" / "index.html").is_file()
+            assert (resources() / "desktop-guide" / "rednote" / "index.html").is_file()
             assert (resources() / "desktop-guide" / "instagram" / "index.html").is_file()
             if os.name == "nt" and getattr(sys, "frozen", False):
                 updater = resources() / "desktop" / "CreatorHubUpdater.exe"
@@ -280,6 +282,7 @@ def update_health_check() -> int:
             import app as app_pkg
             from app.main import app, WEB_DIR
             from app.platforms.bilibili import BilibiliClient, publish_bilibili, receive_bili_broadcast
+            from app.platforms.rednote import RednoteApiClient, publish_rednote_browser
             from app.platforms.instagram import InstagramClient, publish_instagram
             from app.platforms.channels.local_ca import LocalCaManager
             from desktop.controller import Controller
@@ -290,7 +293,7 @@ def update_health_check() -> int:
             from imageio_ffmpeg import get_ffmpeg_exe
             import webview
             channels_js = Path(app_pkg.__file__).parent / "platforms" / "channels" / "js"
-            assert app and LocalCaManager and BilibiliClient and receive_bili_broadcast and publish_bilibili
+            assert app and LocalCaManager and BilibiliClient and receive_bili_broadcast and publish_bilibili and RednoteApiClient and publish_rednote_browser
             assert InstagramClient and publish_instagram
             assert websockets.asyncio.client and Controller and ShellServer and webview
             assert render_brand_icon(32).size == (32, 32)

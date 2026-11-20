@@ -71,7 +71,7 @@ function fixture(initial = {}) {
 
 (async () => {
   const f = fixture();
-  assert.equal(f.fields.length, 62);
+  assert.equal(f.fields.length, 64);
   assert(f.fields.every(el => el.disabled));
   await f.api.save(); assert.equal(f.calls.length, 0);
   await f.api.load();
@@ -89,6 +89,10 @@ function fixture(initial = {}) {
   assert.equal(f.byName.instagram_read_mode.value, 'hybrid');
   assert.deepEqual(f.byName.instagram_write_mode.options.map(option => option.value), ['hybrid', 'api', 'browser']);
   assert.equal(f.byName.instagram_write_mode.value, 'hybrid');
+  assert.deepEqual(f.byName.rednote_read_mode.options.map(option => option.value), ['hybrid', 'api', 'browser']);
+  assert.equal(f.byName.rednote_read_mode.value, 'hybrid');
+  assert.deepEqual(f.byName.rednote_publish_mode.options.map(option => option.value), ['browser', 'api']);
+  assert.equal(f.byName.rednote_publish_mode.value, 'browser');
   assert.deepEqual(f.byName.douyin_profile_mode.options.map(option => option.value), ['hybrid', 'api', 'browser']);
   assert.deepEqual(f.byName.douyin_followers_mode.options.map(option => option.value), ['hybrid', 'api', 'browser']);
   assert.deepEqual(f.byName.douyin_dm_sync_mode.options.map(option => option.value), ['hybrid', 'api', 'browser']);

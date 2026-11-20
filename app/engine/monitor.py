@@ -22,6 +22,8 @@ from ..browser import (BrowserManager, fetch_videos, fetch_comments,
                        fetch_self_profile,
                        fetch_xhs_notes, fetch_xhs_search, fetch_xhs_note_detail,
                        fetch_xhs_comments, fetch_xhs_self_profile,
+                       fetch_rednote_notes, fetch_rednote_search, fetch_rednote_note_detail,
+                       fetch_rednote_comments, fetch_rednote_self_profile,
                        post_comment_browser,
                        fetch_ks_videos, fetch_ks_comments, fetch_ks_self_profile,
                        post_ks_comment,
@@ -59,6 +61,20 @@ from ..platforms.xhs import (parse_note_brief, parse_note_detail,
                    parse_self_user as parse_xhs_self_user,
                    XhsApiClient, XhsApiError, cookie_str_from_state, has_a1,
                    publish_xhs, creator_check, comment_xhs_browser)
+from ..platforms.rednote import (
+    RednoteApiClient,
+    RednoteApiError,
+    cookie_str_from_state as rednote_cookie_str_from_state,
+    flatten_rednote_comments,
+    has_a1 as rednote_has_a1,
+    parse_rednote_brief,
+    parse_rednote_comment,
+    parse_rednote_detail,
+    parse_rednote_self_user,
+    publish_rednote,
+    rednote_creator_check,
+    weighted_truncate,
+)
 from ..platforms.kuaishou import (parse_ks_feed, parse_ks_comment,
                    flatten_ks_comments, parse_self_user as parse_ks_self_user,
                    publish_kuaishou)
@@ -773,6 +789,12 @@ class MonitorEngine:
                    or "browser").strip().lower()
         return mode if mode in {"browser", "api"} else "browser"
 
+    def _rednote_publish_mode(self) -> str:
+        """Use creator RPA unless experimental pure-API Rednote publishing is explicit."""
+        mode = str(getattr(self.cfg.engine, "rednote_publish_mode", "browser")
+                   or "browser").strip().lower()
+        return mode if mode in {"browser", "api"} else "browser"
+
     def _douyin_write_mode(self) -> str:
         """Return the selected Douyin write transport.
 
@@ -1467,6 +1489,43 @@ class MonitorEngine:
                     auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
                     if bmode == "browser" or (not u and bmode == "hybrid" and not auth_failed):
                         u, err = await fetch_bili_self_profile(self.browser, identity)
+                elif platform == "rednote":
+                    rmode = self._rednote_read_mode()
+                    u, err = {}, ""
+                    rn_state = state or creator_state
+                    if rmode in {"api", "hybrid"} and rn_state:
+                        rcli = self._rednote_client(identity, rn_state, proxy)
+                        if rcli is not None:
+                            try:
+                                async with rcli.session_scope():
+                                    data = await rcli.self_info()
+                                u, err = (
+                                    (data, "")
+                                    if data and not data.get("guest")
+                                    else ({}, "logged_out")
+                                )
+                            except RednoteApiError as exc:
+                                if exc.category == "auth":
+                                    u, err = {}, "logged_out"
+                                elif rmode == "api":
+                                    self.risk.record_failure(
+                                        aid, OperationKind.READ_LIGHT, exc)
+                                    return {"ok": False, "error": str(exc)}
+                                else:
+                                    err = str(exc)
+                        elif creator_state:
+                            chk = await rednote_creator_check(creator_state, proxy=proxy)
+                            if chk:
+                                u, err = {"ok": 1}, ""
+                            elif chk is False and rmode == "api":
+                                u, err = {}, "logged_out"
+                        elif rmode == "api":
+                            u, err = {}, "logged_out"
+                    elif rmode == "api":
+                        u, err = {}, "logged_out"
+                    auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
+                    if rmode == "browser" or (not u and rmode == "hybrid" and not auth_failed):
+                        u, err = await fetch_rednote_self_profile(self.browser, identity)
                 elif platform == "instagram":
                     imode = str(getattr(
                         self.cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower()
@@ -1507,6 +1566,8 @@ class MonitorEngine:
             if u:
                 if platform == "xhs":
                     parsed = parse_xhs_self_user(u)
+                elif platform == "rednote":
+                    parsed = parse_rednote_self_user(u)
                 elif platform == "kuaishou":
                     parsed = parse_ks_self_user(u)
                 elif platform == "shipinhao":
@@ -2308,6 +2369,8 @@ class MonitorEngine:
             platform = t0.platform
         if platform == "xhs":
             return await self._scan_xhs_target_locked(target_id)
+        if platform == "rednote":
+            return await self._scan_rednote_target_locked(target_id)
         if platform == "kuaishou":
             return await self._scan_ks_target_locked(target_id)
         if platform == "tiktok":
@@ -3003,8 +3066,16 @@ class MonitorEngine:
                 continue
             should_download = bool(aw.medias) and auto_download and (
                 media_filter == "all" or aw.media_type == media_filter)
-            media_json = json.dumps([{"url": m.url, "kind": m.kind, "ext": m.ext,
-                                      "index": m.index} for m in aw.medias]) if aw.medias else ""
+            media_json = json.dumps([
+                {
+                    "url": m.url,
+                    "kind": m.kind,
+                    "ext": m.ext,
+                    "index": m.index,
+                    **({"backup_urls": m.backup_urls} if getattr(m, "backup_urls", None) else {}),
+                }
+                for m in aw.medias
+            ]) if aw.medias else ""
             rec = ContentRecord(
                 platform="xhs", target_id=target_id, aweme_id=aw.aweme_id, desc=aw.desc,
                 media_type=aw.media_type, quality=aw.quality_label,
@@ -3069,6 +3140,309 @@ class MonitorEngine:
         await asyncio.gather(*(self._download(rec.id, aw, base_dir, proxy)
                                for rec, aw, should_download in new_records
                                if should_download))
+        return {"ok": not error, "new": len(new_records), "error": error,
+                "scanned": detail_attempts, "filtered": filtered_count,
+                "captured": len(captured), "failed": detail_failures,
+                "partial": bool(captured and error), "refreshed": refreshed_access}
+
+    # ── 海外小红书(Rednote):创作者笔记 / 关键词 监控 ──
+    async def _scan_rednote_target_locked(self, target_id: int) -> dict:
+        with get_session() as s:
+            target = s.get(MonitorTarget, target_id)
+            if not target:
+                return {"ok": False, "error": "target not found"}
+            first_scan = target.last_scan_at is None
+            kind = target.target_kind
+            user_id, keyword = target.sec_uid, target.keyword
+            xsec_token = target.xsec_token or ""
+            state = ""
+            proxy = ""
+            identity = (
+                self.browser.anon_identity()
+                if callable(getattr(self.browser, "anon_identity", None))
+                else None
+            )
+            if target.account_id:
+                acc = s.get(DouyinAccount, target.account_id)
+                if acc:
+                    if self._proxy_bad(acc):
+                        return self._mark_target_skip(
+                            target_id, "账号代理标记为不可用(proxy bad),已跳过以免暴露真实 IP")
+                    state = acc.storage_state or acc.creator_storage_state or ""
+                    proxy = acc.proxy or ""
+                    if callable(getattr(self.browser, "identity_for", None)):
+                        identity = self.browser.identity_for(acc)
+            known = set(s.exec(
+                select(ContentRecord.aweme_id)
+                .where(ContentRecord.target_id == target_id)).all())
+            failed_access = {
+                row.aweme_id: (row.id, row.xsec_token, row.xsec_source)
+                for row in s.exec(select(ContentRecord).where(
+                    ContentRecord.target_id == target_id,
+                    ContentRecord.download_status == "failed")).all()
+                if not _loads(row.media_json)
+            }
+            base_dir = target.download_dir or get_setting(
+                "download_dir", self.cfg.engine.media_dir)
+            auto_download = target.download_enabled
+            media_filter = target.media_filter or "all"
+            strategy = _monitor_strategy(
+                target, default_scrolls=6, default_items=12)
+            configured_max_items = max(0, int(target.max_items_per_scan or 0))
+
+        detail_budget = int(strategy["max_items"] or 0)
+        if detail_budget > 4 and not configured_max_items:
+            detail_budget = random.randint(4, min(8, detail_budget))
+
+        rmode = self._rednote_read_mode()
+        cookie_str = rednote_cookie_str_from_state(state)
+        if not state:
+            msg = "海外小红书监控需要绑定一个已登录的海外小红书账号"
+            with get_session() as s:
+                t = s.get(MonitorTarget, target_id)
+                if t:
+                    t.last_scan_at = datetime.utcnow()
+                    t.last_error = msg
+                    s.add(t); s.commit()
+            return {"ok": False, "new": 0, "error": msg}
+
+        client = self._rednote_client(identity, state, proxy) if rmode in {"api", "hybrid"} else None
+        if rmode == "api" and client is None:
+            msg = "海外小红书直连模式需要登录态包含 a1 Cookie，请重新扫码登录或切换浏览器读取"
+            with get_session() as s:
+                t = s.get(MonitorTarget, target_id)
+                if t:
+                    t.last_scan_at = datetime.utcnow()
+                    t.last_error = msg
+                    s.add(t); s.commit()
+            return {"ok": False, "new": 0, "error": msg}
+
+        use_browser = rmode == "browser" or client is None
+        error: object = ""
+        author = None
+        briefs_raw: list = []
+        try:
+            if not use_browser and client is not None:
+                async with client.session_scope():
+                    if kind == "keyword":
+                        briefs_raw = await client.search_notes(keyword, sort="time_descending")
+                    else:
+                        d = await client.notes_by_creator(user_id, xsec_token=xsec_token)
+                        briefs_raw = d.get("notes") or []
+                        try:
+                            author = await client.user_info(user_id)
+                        except Exception:
+                            author = None
+            if use_browser or (rmode == "hybrid" and not briefs_raw):
+                use_browser = True
+                if kind == "keyword":
+                    briefs_raw, browser_error = await fetch_rednote_search(
+                        self.browser, identity, keyword, known,
+                        max_scrolls=strategy["max_scrolls"],
+                        search_sort="latest",
+                        block_media=self.cfg.engine.block_media_resources,
+                        keep_context=True)
+                else:
+                    briefs_raw, author, browser_error = await fetch_rednote_notes(
+                        self.browser, identity, user_id, known,
+                        xsec_token=xsec_token, xsec_source="pc_feed",
+                        max_scrolls=strategy["max_scrolls"],
+                        block_media=self.cfg.engine.block_media_resources,
+                        ssr_fallback=True,
+                        keep_context=True)
+                if browser_error:
+                    error = browser_error
+        except RednoteApiError as e:
+            if rmode == "hybrid" and e.category != "auth":
+                use_browser = True
+                if kind == "keyword":
+                    briefs_raw, browser_error = await fetch_rednote_search(
+                        self.browser, identity, keyword, known,
+                        max_scrolls=strategy["max_scrolls"],
+                        search_sort="latest",
+                        block_media=self.cfg.engine.block_media_resources,
+                        keep_context=True)
+                else:
+                    briefs_raw, author, browser_error = await fetch_rednote_notes(
+                        self.browser, identity, user_id, known,
+                        xsec_token=xsec_token, xsec_source="pc_feed",
+                        max_scrolls=strategy["max_scrolls"],
+                        block_media=self.cfg.engine.block_media_resources,
+                        ssr_fallback=True,
+                        keep_context=True)
+                if browser_error:
+                    error = browser_error
+            else:
+                error = e
+        except Exception as e:
+            category, _signal = classify_platform_error(e)
+            error = (e if category in {
+                RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK
+            } else f"海外小红书请求失败: {e!r}")
+
+        new_records = []
+        seen = set()
+        detail_attempts = 0
+        filtered_count = 0
+        detail_failures = 0
+        consecutive_detail_failures = 0
+        first_detail_error = None
+        access_updates = {}
+        default_note_source = "pc_search" if kind == "keyword" else ("pc_feed" if use_browser else "pc_user")
+        next_long_pause = random.randint(3, 5)
+        for raw in briefs_raw:
+            if error and classify_platform_error(error)[0] in {
+                    RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                break
+            brief = parse_rednote_brief(raw)
+            if not brief or brief["note_id"] in seen:
+                continue
+            if brief["note_id"] in known:
+                previous = failed_access.get(brief["note_id"])
+                token = brief.get("xsec_token") or ""
+                source = brief.get("xsec_source") or default_note_source
+                if previous and token and (token, source) != previous[1:]:
+                    access_updates[previous[0]] = (token, source)
+                continue
+            seen.add(brief["note_id"])
+            if detail_budget and detail_attempts >= detail_budget:
+                break
+            detail_attempts += 1
+            if len(seen) > 1:
+                if detail_attempts >= next_long_pause:
+                    await self._xhs_gap(random.uniform(6.0, 11.0))
+                    next_long_pause += random.randint(3, 6)
+                else:
+                    await self._xhs_gap()
+            note_tok = brief.get("xsec_token", "")
+            note_source = brief.get("xsec_source") or default_note_source
+            derr = ""
+            card = {}
+            try:
+                if rmode in {"api", "hybrid"} and client is not None:
+                    try:
+                        async with client.session_scope():
+                            card = await client.note_detail(
+                                brief["note_id"], xsec_token=note_tok,
+                                xsec_source=note_source)
+                    except RednoteApiError as api_det_err:
+                        if rmode == "api" or api_det_err.category == "auth":
+                            raise
+                        if api_det_err.category == "business" and (
+                            api_det_err.code == -510000
+                            or api_det_err.signal in {"note_unavailable", "api_code_-510000"}
+                        ):
+                            raise
+                        card = {}
+                if not card and rmode in {"browser", "hybrid"}:
+                    card, derr = await fetch_rednote_note_detail(
+                        self.browser, identity, brief["note_id"],
+                        xsec_token=note_tok,
+                        xsec_source=note_source,
+                        block_media=self.cfg.engine.block_media_resources,
+                        keep_context=True)
+                    card = card or {}
+                    if derr and classify_platform_error(derr)[0] in {
+                            RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                        error = derr
+                        break
+            except RednoteApiError as e:
+                if e.category != "business" or not (
+                        e.code == -510000 or e.signal in {"note_unavailable", "api_code_-510000"}):
+                    error = e
+                    break
+                derr = str(e)
+                first_detail_error = first_detail_error or e
+            except Exception as e:
+                category, _signal = classify_platform_error(e)
+                if category in {RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                    error = e
+                    break
+                derr = str(e)
+            aw = parse_rednote_detail(card or {}, brief) if card else None
+            if not aw:
+                detail_failures += 1
+                consecutive_detail_failures += 1
+                first_detail_error = first_detail_error or RednoteApiError(
+                    derr or "海外小红书笔记详情未取到媒体直链", signal="note_detail_unavailable")
+                aw = Aweme(aweme_id=brief["note_id"], desc=brief.get("title", ""),
+                           create_time=int(brief.get("create_time") or 0), author_name="",
+                           media_type="video" if brief.get("type") == "video" else "images")
+                aw.platform = "rednote"
+                aw.cover = brief.get("cover", "")
+            else:
+                consecutive_detail_failures = 0
+            if aw.medias and not _monitor_content_matches(aw, strategy):
+                filtered_count += 1
+                continue
+            should_download = bool(aw.medias) and auto_download and (
+                media_filter == "all" or aw.media_type == media_filter)
+            media_json = json.dumps([
+                {
+                    "url": m.url,
+                    "kind": m.kind,
+                    "ext": m.ext,
+                    "index": m.index,
+                    **({"backup_urls": m.backup_urls} if getattr(m, "backup_urls", None) else {}),
+                }
+                for m in aw.medias
+            ]) if aw.medias else ""
+            rec = ContentRecord(
+                platform="rednote", target_id=target_id, aweme_id=aw.aweme_id, desc=aw.desc,
+                media_type=aw.media_type, quality=aw.quality_label,
+                create_time=aw.create_time, cover_url=aw.cover or "",
+                like_count=aw.like_count, comment_count=aw.comment_count,
+                duration=aw.duration, media_json=media_json, xsec_token=note_tok,
+                xsec_source=note_source,
+                download_status=("pending" if should_download
+                                 else ("skipped" if aw.medias else "failed")),
+                error="" if aw.medias else (derr or "未取到媒体直链"),
+            )
+            new_records.append((rec, aw, should_download))
+            if consecutive_detail_failures >= 3:
+                error = RednoteApiError(
+                    f"连续 3 条海外小红书笔记详情未返回，已停止本轮请求。{first_detail_error}",
+                    signal="note_detail_batch_unavailable")
+                break
+
+        if not error and first_detail_error:
+            error = first_detail_error
+
+        target_name = ""
+        refreshed_access = 0
+        with get_session() as s:
+            for rec, _, _ in new_records:
+                s.add(rec)
+            for record_id, (token, source) in access_updates.items():
+                rec = s.get(ContentRecord, record_id)
+                if rec and rec.download_status == "failed" and not _loads(rec.media_json):
+                    rec.xsec_token, rec.xsec_source = token, source
+                    s.add(rec)
+                    refreshed_access += 1
+            t = s.get(MonitorTarget, target_id)
+            if t:
+                t.last_scan_at = datetime.utcnow()
+                t.last_error = str(error or "")
+                if author:
+                    p = parse_rednote_self_user(author)
+                    if not t.nickname:
+                        t.nickname = p.get("nickname") or t.nickname
+                    if not t.avatar:
+                        t.avatar = p.get("avatar") or t.avatar
+                s.add(t)
+                target_name = t.nickname or (("#" + keyword) if kind == "keyword"
+                                             else (user_id[:12] if user_id else "rednote"))
+            s.commit()
+            for rec, _, _ in new_records:
+                s.refresh(rec)
+
+        captured = [aw for _, aw, _ in new_records if aw.medias]
+        if captured and not first_scan:
+            await self._notify_new(target_name, captured)
+
+        await asyncio.gather(*(self._download(
+            rec.id, aw, base_dir, proxy, referer="https://www.rednote.com/"
+        ) for rec, aw, should_download in new_records if should_download))
         return {"ok": not error, "new": len(new_records), "error": error,
                 "scanned": detail_attempts, "filtered": filtered_count,
                 "captured": len(captured), "failed": detail_failures,
@@ -3991,6 +4365,43 @@ class MonitorEngine:
                     if cid and cid not in known and cid not in dedup:
                         dedup[cid] = c
                 fresh = list(dedup.values())
+            elif platform == "rednote":
+                configured_mode = self._rednote_read_mode()
+                rcli = (
+                    self._rednote_client(identity, state, proxy)
+                    if configured_mode in {"api", "hybrid"}
+                    else None
+                )
+                if configured_mode == "api" and rcli is None:
+                    return {
+                        "ok": False, "fetched": 0, "added": 0,
+                        "error": "海外小红书账号缺 a1 Cookie,无法直连抓评论",
+                        "source": "api", "configured_mode": configured_mode,
+                    }
+                if rcli is not None and configured_mode in {"api", "hybrid"}:
+                    try:
+                        async with rcli.session_scope():
+                            fresh = await self._rednote_fetch_comments(
+                                rcli, item_id, xsec_token, known
+                            )
+                        source = "api"
+                    except Exception as exc:
+                        if configured_mode == "api":
+                            raise
+                        error = str(exc)
+                if configured_mode == "browser" or (configured_mode == "hybrid" and not fresh and (rcli is None or error)):
+                    raw, b_err = await fetch_rednote_comments(
+                        self.browser, identity, item_id, known,
+                        xsec_token=xsec_token, xsec_source="pc_feed",
+                        max_scrolls=self.cfg.engine.comment_max_scrolls,
+                        block_media=self.cfg.engine.block_media_resources,
+                    )
+                    source = "browser_fallback" if (configured_mode == "hybrid" and rcli is not None) else "browser"
+                    error = b_err or ""
+                    fresh = [
+                        c for c in (parse_rednote_comment(rc) for rc in flatten_rednote_comments(raw))
+                        if c and c["comment_id"] not in known
+                    ]
             elif platform == "instagram":
                 configured_mode = str(
                     getattr(self.cfg.engine, "instagram_read_mode", "hybrid") or "hybrid"
@@ -4045,7 +4456,7 @@ class MonitorEngine:
                 return {"ok": False, "fetched": 0, "added": 0,
                         "error": f"不支持的平台:{platform}",
                         "source": "unavailable", "configured_mode": "unavailable"}
-        except XhsApiError as e:
+        except (XhsApiError, RednoteApiError) as e:
             error = e
         except Exception as e:
             log.warning("本账号作品评论抓取失败 %s/%s: %s", platform, item_id, e)
@@ -4253,6 +4664,15 @@ class MonitorEngine:
                     w.last_error = msg
                     s.add(w); s.commit()
             return {"ok": False, "new_comments": 0, "error": msg}
+        if platform == "rednote" and not state:
+            msg = "海外小红书评论监控需要绑定一个已登录的海外小红书账号(笔记页需登录)"
+            with get_session() as s:
+                w = s.get(CommentWatch, watch_id)
+                if w:
+                    w.last_scan_at = datetime.utcnow()
+                    w.last_error = msg
+                    s.add(w); s.commit()
+            return {"ok": False, "new_comments": 0, "error": msg}
         try:
             if platform == "xhs" and kind == "user":
                 total_new, author = await self._cw_xhs_creator(
@@ -4260,6 +4680,14 @@ class MonitorEngine:
                     xsec_token, name, first_scan, proxy)
             elif platform == "xhs":   # 单条笔记
                 total_new, author = await self._cw_xhs_note(
+                    watch_id, identity, state, aweme_id,
+                    xsec_token, name, first_scan, proxy)
+            elif platform == "rednote" and kind == "user":
+                total_new, author = await self._cw_rednote_creator(
+                    watch_id, identity, state, sec_uid,
+                    xsec_token, name, first_scan, proxy)
+            elif platform == "rednote":
+                total_new, author = await self._cw_rednote_note(
                     watch_id, identity, state, aweme_id,
                     xsec_token, name, first_scan, proxy)
             elif platform == "kuaishou" and kind == "user":
@@ -4304,7 +4732,7 @@ class MonitorEngine:
                 total_new, author = await self._cw_video(
                     watch_id, identity, aweme_id, name, first_scan,
                     api_client=api_client)
-        except XhsApiError as e:
+        except (XhsApiError, RednoteApiError) as e:
             error = e
         except Exception as e:
             category, _signal = classify_platform_error(e)
@@ -4885,6 +5313,183 @@ class MonitorEngine:
                         "avatar_thumb": {"url_list": [author_dict["avatar"]]}}
                        if author_dict else None)
 
+    def _rednote_read_mode(self) -> str:
+        mode = str(getattr(self.cfg.engine, "rednote_read_mode", "hybrid") or "hybrid").lower()
+        return mode if mode in {"browser", "hybrid", "api"} else "hybrid"
+
+    def _rednote_client(self, identity, state: str, proxy: str = "") -> Optional[RednoteApiClient]:
+        cookie_str = rednote_cookie_str_from_state(state)
+        if not rednote_has_a1(cookie_str):
+            return None
+        return RednoteApiClient(
+            cookie_str,
+            self._direct_request_ua(identity),
+            timeout=self.cfg.engine.request_timeout_seconds,
+            proxy=proxy,
+            storage_state=state,
+        )
+
+    async def _rednote_fetch_comments(self, client: RednoteApiClient, note_id, xsec_token, known) -> list:
+        try:
+            d = await client.note_comments(note_id, xsec_token=xsec_token)
+            raw = d.get("comments") or []
+        except RednoteApiError:
+            raise
+        except Exception as e:
+            category, _signal = classify_platform_error(e)
+            if category in {RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
+                raise
+            log.info("评论监控(海外小红书)%s: %s", note_id, e)
+            return []
+        fresh = [c for c in (parse_rednote_comment(rc) for rc in flatten_rednote_comments(raw)) if c]
+        return [c for c in fresh if c["comment_id"] not in known]
+
+    async def _cw_rednote_note(
+        self, watch_id, identity, state, note_id, xsec_token, name,
+        first_scan, proxy=""
+    ):
+        with get_session() as s:
+            known = set(s.exec(select(CommentRecord.comment_id)
+                               .where(CommentRecord.watch_id == watch_id)
+                               .where(CommentRecord.aweme_id == note_id)).all())
+        rmode = self._rednote_read_mode()
+        client = self._rednote_client(identity, state, proxy) if rmode in {"api", "hybrid"} else None
+        fresh: list = []
+        api_failed = False
+        work_desc = name
+        author_meta = None
+        if client is not None and rmode in {"api", "hybrid"}:
+            try:
+                async with client.session_scope():
+                    try:
+                        card = await client.note_detail(
+                            note_id, xsec_token=xsec_token, xsec_source="pc_feed"
+                        )
+                        aw_det = parse_rednote_detail(card or {}, {"note_id": note_id}) if card else None
+                        raw_title = (
+                            (aw_det.desc if aw_det and aw_det.desc else "")
+                            or str((card or {}).get("title") or (card or {}).get("display_title") or (card or {}).get("desc") or "").strip()
+                        )
+                        if raw_title:
+                            work_desc = raw_title[:60]
+                            with get_session() as s:
+                                w = s.get(CommentWatch, watch_id)
+                                if w and (not w.title or w.title == f"笔记 {note_id}"):
+                                    w.title = raw_title[:40]
+                                    s.add(w)
+                                    s.commit()
+                        u_obj = (card or {}).get("user") if isinstance((card or {}).get("user"), dict) else {}
+                        nick = (aw_det.author_name if aw_det else "") or str(u_obj.get("nickname") or "")
+                        ava = (aw_det.avatar if aw_det else "") or str(u_obj.get("avatar") or "")
+                        if nick or ava:
+                            author_meta = {
+                                "nickname": nick,
+                                "avatar_thumb": {"url_list": [ava] if ava else []},
+                            }
+                    except Exception:
+                        pass
+                    fresh = await self._rednote_fetch_comments(
+                        client, note_id, xsec_token, known)
+            except Exception as e:
+                if rmode == "api" or classify_platform_error(e)[0] == RiskCategory.AUTH:
+                    raise
+                api_failed = True
+        if rmode == "browser" or (rmode == "hybrid" and (client is None or api_failed)):
+            raw, error = await fetch_rednote_comments(
+                self.browser, identity, note_id, known,
+                xsec_token=xsec_token, xsec_source="pc_feed",
+                max_scrolls=self._comment_watch_settings(watch_id)["max_scrolls"],
+                block_media=self.cfg.engine.block_media_resources)
+            if error:
+                log.info("评论监控(海外小红书)%s: %s", note_id, error)
+                self._raise_severe_xhs_read_error(error)
+            fresh = [
+                c for c in (parse_rednote_comment(rc) for rc in flatten_rednote_comments(raw))
+                if c and c["comment_id"] not in known
+            ]
+        n = await self._ingest(watch_id, note_id, fresh, name, work_desc, first_scan,
+                               platform="rednote")
+        return n, author_meta
+
+    async def _cw_rednote_creator(
+        self, watch_id, identity, state, user_id, xsec_token, name,
+        first_scan, proxy=""
+    ):
+        settings = self._comment_watch_settings(watch_id)
+        rmode = self._rednote_read_mode()
+        client = self._rednote_client(identity, state, proxy) if rmode in {"api", "hybrid"} else None
+        use_browser = rmode == "browser" or client is None
+        briefs_raw: list = []
+        author = None
+        if not use_browser and client is not None:
+            try:
+                async with client.session_scope():
+                    d = await client.notes_by_creator(user_id, xsec_token=xsec_token)
+                    briefs_raw = d.get("notes") or []
+                    author = await client.user_info(user_id)
+            except RednoteApiError as e:
+                if rmode == "api" or e.category == "auth":
+                    raise
+                use_browser = True
+            except Exception as e:
+                if rmode == "api" or classify_platform_error(e)[0] in {
+                        RiskCategory.AUTH, RiskCategory.NETWORK}:
+                    raise
+                use_browser = True
+        if use_browser:
+            briefs_raw, author, error = await fetch_rednote_notes(
+                self.browser, identity, user_id, set(),
+                xsec_token=xsec_token, xsec_source="pc_feed",
+                max_scrolls=4,
+                block_media=self.cfg.engine.block_media_resources)
+            if error:
+                log.info("评论监控(海外小红书创作者)%s: %s", user_id, error)
+                self._raise_severe_xhs_read_error(error)
+        briefs = [b for b in (parse_rednote_brief(r) for r in briefs_raw) if b]
+        cutoff = int(time.time()) - settings["recent_days"] * 86400
+        briefs = [b for b in briefs if not b.get("create_time") or b["create_time"] >= cutoff]
+        briefs = briefs[:settings["recent_works"]]
+        total = 0
+        for index, b in enumerate(briefs):
+            nid = b["note_id"]
+            with get_session() as s:
+                known = set(s.exec(select(CommentRecord.comment_id)
+                                   .where(CommentRecord.watch_id == watch_id)
+                                   .where(CommentRecord.aweme_id == nid)).all())
+            if index:
+                await self._xhs_gap()
+            need_browser_comments = use_browser or client is None
+            fresh = []
+            if not need_browser_comments:
+                try:
+                    async with client.session_scope():
+                        fresh = await self._rednote_fetch_comments(
+                            client, nid, b.get("xsec_token", ""), known)
+                except Exception as e:
+                    if rmode == "api" or classify_platform_error(e)[0] == RiskCategory.AUTH:
+                        raise
+                    need_browser_comments = True
+            if need_browser_comments:
+                raw, read_error = await fetch_rednote_comments(
+                    self.browser, identity, nid, known,
+                    xsec_token=b.get("xsec_token", ""),
+                    xsec_source="pc_feed",
+                    max_scrolls=settings["max_scrolls"],
+                    block_media=self.cfg.engine.block_media_resources)
+                if read_error:
+                    log.info("评论监控(海外小红书)%s: %s", nid, read_error)
+                    self._raise_severe_xhs_read_error(read_error)
+                fresh = [
+                    c for c in (parse_rednote_comment(rc) for rc in flatten_rednote_comments(raw))
+                    if c and c["comment_id"] not in known
+                ]
+            total += await self._ingest(watch_id, nid, fresh, name, b.get("title", ""),
+                                        first_scan, platform="rednote")
+        author_dict = parse_rednote_self_user(author) if author else None
+        return total, ({"nickname": author_dict["nickname"],
+                        "avatar_thumb": {"url_list": [author_dict["avatar"]]}}
+                       if author_dict else None)
+
     async def _cw_bilibili_video(
         self, watch_id: int, identity, state: str, ua: str, proxy: str,
         work_id: str, name: str, first_scan: bool
@@ -5192,12 +5797,16 @@ class MonitorEngine:
                 raise ValueError("TikTok 网页发布当前仅支持视频")
             if target_platform == "instagram" and len(files) > 10:
                 raise ValueError("Instagram 轮播发布最多支持 10 个媒体文件")
-            if target_platform == "xhs":
+            if target_platform in {"xhs", "rednote"}:
                 from ..platforms.xhs.media import validate_publish_files
                 files = validate_publish_files(
                     "video" if rec.media_type == "video" else "images", files)
-            title_cap = {"douyin": 30, "shipinhao": 16, "bilibili": 80, "instagram": 2200}.get(target_platform, 20)
-            t_title = (title if title is not None else (rec.desc or ""))[:title_cap]
+            raw_title = title if title is not None else (rec.desc or "")
+            if target_platform == "rednote":
+                t_title = weighted_truncate(raw_title.strip(), 20)
+            else:
+                title_cap = {"douyin": 30, "shipinhao": 16, "bilibili": 80, "instagram": 2200}.get(target_platform, 20)
+                t_title = raw_title[:title_cap]
             t_desc = desc if desc is not None else (rec.desc or "")
             t_topics = topics if topics is not None else ""
             task = PublishTask(
@@ -5284,12 +5893,17 @@ class MonitorEngine:
             ig_publish_transport = (resolve_transport(
                 self.cfg, "instagram", "publish", acc)
                 if platform == "instagram" else None)
+            rn_api_publish = (
+                platform == "rednote" and self._rednote_publish_mode() == "api"
+            )
             api_only = bool(
                 (dy_publish_transport and dy_publish_transport["configured_mode"] == "api")
                 or (ig_publish_transport and ig_publish_transport["effective_mode"] == "api")
+                or rn_api_publish
             )
-            skip_env_check = api_only or bool(
-                ig_publish_transport and ig_publish_transport["configured_mode"] == "hybrid"
+            skip_env_check = (
+                (api_only and not rn_api_publish)
+                or bool(ig_publish_transport and ig_publish_transport["configured_mode"] == "hybrid")
             )
             environment_error = (
                 "" if skip_env_check else self._native_write_environment_error(
@@ -5407,6 +6021,20 @@ class MonitorEngine:
                 allow_comment=allow_comment, bili_options=bili_options,
                 headed=True)
 
+        if platform == "rednote":
+            if not state:
+                return await self._finish_publish(
+                    task_id, False, "", "该账号未完成海外小红书登录，请先在账号页扫码或创作者登录",
+                    platform="rednote")
+            rn_mode = self._rednote_publish_mode()
+            return await self._run_browser_publish(
+                task_id, "rednote", publish_rednote,
+                self.browser, identity, state, media_type, title, desc, files,
+                topics=topics, headed=(rn_mode != "api"), mode=rn_mode,
+                visibility=visibility,
+                preserve_error=True, channel=rn_mode,
+                cancel_message="write_uncertain:海外小红书发布已中断，结果需到平台核对")
+
         if platform == "instagram":
             if not state:
                 return await self._finish_publish(
@@ -5460,7 +6088,7 @@ class MonitorEngine:
         """Execute one platform publisher with uniform submit-boundary & cancel protection."""
         pname = {"kuaishou": "快手", "douyin": "抖音",
                  "shipinhao": "视频号", "tiktok": "TikTok",
-                 "bilibili": "哔哩哔哩", "instagram": "Instagram",
+                 "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram",
                  "xhs": "小红书"}.get(platform, platform)
         call_kwargs = dict(kwargs)
         try:
@@ -5547,7 +6175,7 @@ class MonitorEngine:
                 if channels:
                     pname = {"kuaishou": "快手", "douyin": "抖音",
                              "shipinhao": "视频号", "tiktok": "TikTok",
-                             "bilibili": "哔哩哔哩", "instagram": "Instagram"}.get(
+                             "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram"}.get(
                                  platform, "小红书")
                     await notify_all(channels, f"{pname}发布成功", url or "已发布一条作品")
             except Exception:
@@ -7129,6 +7757,9 @@ class MonitorEngine:
                     require_reply=bool(target_cid),
                     on_submit=lambda: self._mark_write_submit(CommentTask, task_id),
                     headed=True, target_url=target_url)
+            elif platform == "rednote":
+                method = "unavailable"
+                err = "unavailable:海外小红书暂未开放评论写入与自动计划"
             elif platform == "bilibili":
                 if bili_write_mode in {"api", "hybrid"}:
                     method = "api"
@@ -7484,7 +8115,7 @@ class MonitorEngine:
             if platform == "tiktok" and t and t.sec_uid:
                 aw.author_unique_id = t.sec_uid
                 aw.source_url = tiktok_video_url(aw.aweme_id, t.sec_uid)
-            needs_xhs_refetch = platform == "xhs" and (
+            needs_xhs_refetch = platform in {"xhs", "rednote"} and (
                 not media_json or not aw.medias)
             needs_bili_refetch = platform == "bilibili" and (
                 not media_json or not aw.medias)
@@ -7582,8 +8213,75 @@ class MonitorEngine:
                         s.add(rec); s.commit()
                 return {"ok": False, "error": berr or "重拉 B 站稿件详情仍无可用直链"}
 
-        # 小红书:无媒体快照时,重新拉详情补齐媒体直链
-        if platform == "xhs" and (not media_json or not aw.medias):
+        # 小红书 / 海外小红书:无媒体快照时,重新拉详情补齐媒体直链
+        if platform == "rednote" and (not media_json or not aw.medias):
+            rmode = self._rednote_read_mode()
+            rcli = (
+                self._rednote_client(identity, acc_state, acc_proxy)
+                if rmode in {"api", "hybrid"}
+                else None
+            )
+            use_browser = rmode == "browser" or rcli is None
+            if not account_id:
+                derr = "监控目标未绑定海外小红书账号,请先编辑监控并选择账号"
+            else:
+                async def _refetch_rn_detail():
+                    try:
+                        if not use_browser and rcli is not None:
+                            try:
+                                async with rcli.session_scope():
+                                    detail = await rcli.note_detail(
+                                        note_id, xsec_token=note_tok,
+                                        xsec_source=note_source or ("pc_search" if kind == "keyword" else "pc_user"))
+                                if detail or rmode == "api":
+                                    return detail, ""
+                            except Exception as api_exc:
+                                if rmode == "api":
+                                    return {}, str(api_exc)
+                        if identity is None:
+                            return {}, "缺少浏览器身份"
+                        return await fetch_rednote_note_detail(
+                            self.browser, identity, note_id,
+                            xsec_token=note_tok,
+                            xsec_source=note_source or ("pc_search" if kind == "keyword" else "pc_feed"),
+                            block_media=self.cfg.engine.block_media_resources)
+                    except Exception as exc:
+                        return {}, str(exc)
+
+                card, derr = await self.guarded_read_pair(
+                    account_id, OperationKind.READ_HEAVY,
+                    f"retry-download:{record_id}", _refetch_rn_detail,
+                    empty_result={})
+                if not str(derr or "").startswith("risk_deferred:"):
+                    with get_session() as s:
+                        rec = s.get(ContentRecord, record_id)
+                        if rec:
+                            rec.retry_count = (rec.retry_count or 0) + 1
+                            s.add(rec); s.commit()
+            aw2 = parse_rednote_detail(card or {}, {"note_id": note_id}) if (account_id and card) else None
+            if aw2 and aw2.medias:
+                aw = aw2
+                with get_session() as s:
+                    rec = s.get(ContentRecord, record_id)
+                    if rec:
+                        rec.media_type = aw.media_type
+                        rec.create_time = aw.create_time or rec.create_time
+                        rec.like_count = aw.like_count or rec.like_count
+                        rec.comment_count = aw.comment_count or rec.comment_count
+                        rec.cover_url = aw.cover or rec.cover_url
+                        rec.media_json = json.dumps([{"url": m.url, "kind": m.kind,
+                                                      "ext": m.ext, "index": m.index}
+                                                     for m in aw.medias])
+                        s.add(rec); s.commit()
+            else:
+                with get_session() as s:
+                    rec = s.get(ContentRecord, record_id)
+                    if rec:
+                        rec.download_status = "failed"
+                        rec.error = derr or "重拉海外小红书详情仍无媒体(笔记可能已删/私密)"
+                        s.add(rec); s.commit()
+                return {"ok": False, "error": derr or "重拉海外小红书详情仍无媒体"}
+        elif platform == "xhs" and (not media_json or not aw.medias):
             browser_reads = bool(identity is not None and self._xhs_browser_reads_enabled())
             client = None if browser_reads else self._xhs_client(
                 identity, acc_state, acc_proxy)
@@ -7729,7 +8427,7 @@ class MonitorEngine:
                 record = s.get(ContentRecord, rid)
                 if record is None:
                     continue
-                if record.platform == "xhs":
+                if record.platform in {"xhs", "rednote"}:
                     media = _loads(record.media_json)
                     if not isinstance(media, list) or not any(
                             isinstance(item, dict) and isinstance(item.get("url"), str)
