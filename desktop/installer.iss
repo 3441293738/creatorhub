@@ -412,14 +412,14 @@ begin
   begin
     if FreeBytes >= MinRecommendedBytes then
     begin
-      DriveSpaceLabel.Caption := FmtMessage(CustomMessage('DiskSpaceSufficient'),
-        [DriveName, FormatBytes(FreeBytes)]);
+      DriveSpaceLabel.Caption := FmtMessage(
+        CustomMessage('DiskSpaceSufficient'), [DriveName, FormatBytes(FreeBytes)]);
       DriveSpaceLabel.Font.Color := $004E8A0D;
     end
     else
     begin
-      DriveSpaceLabel.Caption := FmtMessage(CustomMessage('DiskSpaceLow'),
-        [DriveName, FormatBytes(FreeBytes)]);
+      DriveSpaceLabel.Caption := FmtMessage(
+        CustomMessage('DiskSpaceLow'), [DriveName, FormatBytes(FreeBytes)]);
       DriveSpaceLabel.Font.Color := $000953B4;
     end;
   end
@@ -460,11 +460,11 @@ begin
     RuntimeLine := CustomMessage('WebView2StatusMissing');
 
   if PreviousInstallDir <> '' then
-    WizardForm.WelcomeLabel2.Caption := FmtMessage(CustomMessage('WelcomeSubtitleUpgrade'),
-      [PreviousInstallDir, RuntimeLine])
+    WizardForm.WelcomeLabel2.Caption := FmtMessage(
+      CustomMessage('WelcomeSubtitleUpgrade'), [PreviousInstallDir, RuntimeLine])
   else
-    WizardForm.WelcomeLabel2.Caption := FmtMessage(CustomMessage('WelcomeSubtitleFresh'),
-      [RuntimeLine]);
+    WizardForm.WelcomeLabel2.Caption := FmtMessage(
+      CustomMessage('WelcomeSubtitleFresh'), [RuntimeLine]);
 end;
 
 procedure InitializeWizard();
@@ -548,8 +548,8 @@ begin
   else if CurPageID = wpSelectDir then
     UpdateDirectoryControls()
   else if CurPageID = wpFinished then
-    WizardForm.FinishedLabel.Caption := FmtMessage(CustomMessage('FinishedSummary'),
-      [ExpandConstant('{app}'), UserDataDir()]);
+    WizardForm.FinishedLabel.Caption := FmtMessage(
+      CustomMessage('FinishedSummary'), [ExpandConstant('{app}'), UserDataDir()]);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;

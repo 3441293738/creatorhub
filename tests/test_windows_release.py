@@ -282,6 +282,14 @@ class WindowsReleaseTests(unittest.TestCase):
                      'CleanupRelocatedOldInstall()'):
             with self.subTest(hook=hook):
                 self.assertIn(hook, installer)
+        # Inno Setup treats ANY line whose first non-whitespace character is '['
+        # as an INI section header, even inside [Code] (e.g. wrapped array args).
+        bracket_lines = [line.strip() for line in installer.splitlines() if re.match(r'^\s*\[', line)]
+        self.assertEqual(bracket_lines, [
+            '[Setup]', '[Languages]', '[LangOptions]', '[CustomMessages]',
+            '[Files]', '[InstallDelete]', '[Tasks]', '[Icons]', '[Run]',
+            '[UninstallDelete]', '[Code]',
+        ])
         # Every CustomMessage('Key') in [Code] must exist in [CustomMessages] with Chinese text.
         custom_block = installer.split('[CustomMessages]', 1)[1].split('[Files]', 1)[0]
         defined = dict(re.findall(r'^([A-Za-z0-9_]+)=(.+)$', custom_block, re.M))
