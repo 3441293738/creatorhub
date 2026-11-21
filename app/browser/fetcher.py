@@ -182,8 +182,8 @@ def douyin_search_empty_error(page_title: str, page_text: str,
     if any(token in diagnostic for token in (
             "验证码", "安全验证", "访问频繁", "环境异常",
             "captcha", "verify")):
-        return ("抖音触发验证码/安全验证；请在账号页点击“打开浏览器”，"
-                "完成验证并关窗保存登录态后再续跑")
+        return ("抖音触发验证码/安全验证；请在账号页点击“打开浏览器”完成验证并关窗保存登录态，"
+                "再到「风控中心」点击“解除”后即可恢复续跑")
     if api_seen:
         return "抖音搜索接口有响应，但没有可解析的作品（关键词可能无结果或接口结构已变化）"
     return "抖音搜索页没有发出作品搜索接口（页面可能未完整加载或平台页面已变化）"

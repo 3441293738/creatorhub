@@ -3256,7 +3256,9 @@ async function probeRiskAccount(accountId) {
 }
 
 async function clearRiskAccount(accountId) {
-  const nickname = RISK_ACCOUNTS.find(account => account.account_id === accountId)?.nickname || `账号 ${accountId}`;
+  const nickname = RISK_ACCOUNTS.find(account => account.account_id === accountId)?.nickname
+    || ACCOUNTS.find(account => account.id === accountId)?.nickname
+    || `账号 ${accountId}`;
   const reason = await uiPrompt({
     title: "填写解除原因",
     hint: `请说明已对「${nickname}」完成的人工检查。该内容会进入审计记录。`,
@@ -3270,7 +3272,9 @@ async function clearRiskAccount(accountId) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ confirmed: true, reason: reason.trim() }),
     });
-    toast(`账号风控状态已解除${result.woken_tasks ? `，已唤醒 ${result.woken_tasks} 条任务` : ""}`, "ok"); await refreshRiskCenter();
+    toast(`账号风控状态已解除${result.woken_tasks ? `，已唤醒 ${result.woken_tasks} 条任务` : ""}`, "ok");
+    await refreshRiskCenter();
+    if (CURRENT_TAB === "collections") await refreshCollections();
   } catch (e) { toast("解除失败：" + e.message, "err"); }
 }
 
@@ -3327,10 +3331,11 @@ function loadHubAcc() { try { HUB_ACC = localStorage.getItem(hubAccKey()) || "";
 function setHubAcc(id) { HUB_ACC = String(id || ""); try { localStorage.setItem(hubAccKey(), HUB_ACC); } catch (e) {} if (HUB_TAB === "dm") startDmStream(); }
 
 // 用该账号登录态弹出真实浏览器窗口,留给用户手动操作(收发私信 / 维护 / F12 抓接口)
-async function openAccountBrowser(id) {
+async function openAccountBrowser(id, url = "") {
   await withBusy(evtBtn(), "打开中", async () => {
     try {
-      const result = await api("/api/accounts/" + id + "/open-browser", { method: "POST" });
+      const qs = url ? "?url=" + encodeURIComponent(url) : "";
+      const result = await api("/api/accounts/" + id + "/open-browser" + qs, { method: "POST" });
       const checkHint = result.environment_check_opened
         ? " 已同时打开 BrowserScan 环境体检标签。" : "";
       if (result.logged_out) {
@@ -6748,6 +6753,16 @@ function collectionProgress(job) {
   const currentFraction = itemTotal && processedKeywords < totalKeywords ? itemIndex / itemTotal : 0;
   return Math.min(100, Math.round((processedKeywords + currentFraction) * 100 / totalKeywords));
 }
+function openCollectionVerifyBrowser(jobId) {
+  const job = COLLECTION_JOBS.find(item => item.id === Number(jobId));
+  if (!job || !job.account_id) return;
+  let targetUrl = "";
+  if (job.platform === "douyin" && job.source_type === "keyword") {
+    const kw = String(job.current_keyword || (job.keywords && job.keywords[0]) || "").trim();
+    if (kw) targetUrl = "https://www.douyin.com/search/" + encodeURIComponent(kw);
+  }
+  openAccountBrowser(job.account_id, targetUrl);
+}
 function renderCollectionJobs() {
   const body = $("collection-job-table"); if (!body) return;
   body.innerHTML = COLLECTION_JOBS.map(job => {
@@ -6763,6 +6778,7 @@ function renderCollectionJobs() {
     const canCancel = ["pending", "running"].includes(job.status);
     const canRetry = ["done", "partial", "failed", "canceled"].includes(job.status);
     const canEdit = canRetry && ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"].includes(job.platform);
+    const needsManualClear = !!(job.manual_review_required && Number(job.account_id) > 0);
     const errorText = collectionLastError(job);
     const sortLabel = { general: "综合", latest: "最新", most_liked: "最多点赞" }[job.search_sort] || "综合";
     const timeLabel = { all: "不限时间", day: "一天内", week: "一周内", half_year: "半年内" }[job.publish_time] || "不限时间";
@@ -6776,6 +6792,7 @@ function renderCollectionJobs() {
       ${job.error_count ? `<button type="button" class="collection-task-error" onclick="openCollectionResults(${job.id})" title="${esc(errorText)}">${ic("i-info")}<span class="collection-task-error-text">${job.error_count} 条异常 · ${esc(errorText)}</span><span class="collection-task-error-link">查看详情</span></button>` : ""}
       <div class="collection-task-actions" aria-label="任务 ${job.id} 操作">
         <button type="button" class="sm collection-task-primary" onclick="openCollectionResults(${job.id})">${ic("i-eye")}查看结果</button>
+        ${needsManualClear ? `<button type="button" class="ghost sm" onclick="openCollectionVerifyBrowser(${job.id})" title="直接打开对应搜索/站点页面检查并完成验证">打开验证页</button><button type="button" class="ghost sm" onclick="clearRiskAccount(${job.account_id})" title="确认验证已完成或无需验证后，解除风控并立即恢复任务">解除风控继续</button>` : ""}
         ${canEdit ? `<button type="button" class="ghost sm" onclick="editCollection(${job.id})">${ic("i-settings")}编辑</button>` : ""}
         <button type="button" class="ghost sm" onclick="exportCollection(${job.id})"${job.content_count ? "" : " disabled"}>${ic("i-download")}导出</button>
         ${canCancel ? `<button type="button" class="ghost sm" onclick="cancelCollection(${job.id})">${ic("i-x")}取消任务</button>` : ""}

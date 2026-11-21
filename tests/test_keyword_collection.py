@@ -551,6 +551,41 @@ class KeywordCollectionPipelineTests(unittest.IsolatedAsyncioTestCase):
         client.search_awemes.assert_awaited_once()
         browser_fetch.assert_awaited_once()
 
+    async def test_hybrid_compatibility_fallback_leases_headed_context_instead_of_headless(self):
+        headed_ctx = SimpleNamespace(name="headed-search-ctx")
+        leased = []
+
+        @asynccontextmanager
+        async def temporary_headed_context(identity):
+            leased.append(identity)
+            yield headed_ctx
+
+        identity = SimpleNamespace(ua="fixture-agent", account_id=self.account.id)
+        browser = SimpleNamespace(
+            identity_for=lambda _account: identity,
+            temporary_headed_context=temporary_headed_context,
+        )
+        cfg = Config()
+        cfg.engine.douyin_read_mode = "hybrid"
+        collector = KeywordCollector(cfg, browser, SimpleNamespace())
+        client = SimpleNamespace(search_awemes=AsyncMock(
+            return_value=([], "empty_body")))
+        job = SimpleNamespace(
+            max_contents_per_keyword=50, max_pages_per_keyword=12, stagnant_pages=3,
+            search_sort="latest", publish_time="week", content_type="all",
+            min_likes=0, min_comments=0)
+        browser_rows = [{"aweme_id": "headed-fallback-item"}]
+        browser_fetch = AsyncMock(return_value=(browser_rows, ""))
+
+        with patch("app.engine.collection.fetch_douyin_search", browser_fetch):
+            values, error = await collector._discover_douyin(
+                self.account, "AI获客", job, client, context=None)
+
+        self.assertEqual(values, browser_rows)
+        self.assertEqual(error, "")
+        self.assertEqual(leased, [identity])
+        self.assertIs(browser_fetch.await_args.kwargs["context"], headed_ctx)
+
     async def test_hybrid_compatibility_exception_can_fall_back_to_browser(self):
         browser = SimpleNamespace(
             identity_for=lambda _account: SimpleNamespace(ua="fixture-agent"))

@@ -518,6 +518,28 @@ class KeywordCollector:
         elif mode == "api":
             return [], "抖音搜索接口异常: API 客户端不可用"
         identity = self.browser.identity_for(account)
+        # 抖音搜索在后台无头上下文中极易直落“验证码中间页”；hybrid 模式仅在真正需要
+        # 回退页面搜索时按需申请临时有头窗口，避免正常 API 请求时弹窗或无头回退锁死。
+        headed_factory = (
+            getattr(self.browser, "temporary_headed_context", None)
+            if context is None else None
+        )
+        if callable(headed_factory):
+            async with headed_factory(identity) as fallback_context:
+                return await fetch_douyin_search(
+                    self.browser, identity, keyword,
+                    max_results=job.max_contents_per_keyword,
+                    max_scrolls=job.max_pages_per_keyword,
+                    stagnant_limit=job.stagnant_pages,
+                    search_sort=job.search_sort,
+                    publish_time=job.publish_time,
+                    content_type=job.content_type,
+                    min_likes=job.min_likes,
+                    min_comments=job.min_comments,
+                    captcha_wait_seconds=self.cfg.engine.douyin_captcha_wait_seconds,
+                    block_media=self.cfg.engine.block_media_resources,
+                    context=fallback_context,
+                )
         return await fetch_douyin_search(
             self.browser, identity, keyword,
             max_results=job.max_contents_per_keyword,

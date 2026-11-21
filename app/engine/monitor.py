@@ -1108,7 +1108,11 @@ class MonitorEngine:
             with get_session() as s:
                 job = s.get(KeywordCollectionJob, job_id)
                 if job and job.status == "pending":
-                    job.current_step = "等待账号读取冷却"
+                    job.current_step = (
+                        "等待人工验证（请前往风控中心解除）"
+                        if decision.signal == "manual_review_required"
+                        else "等待账号读取冷却"
+                    )
                     job.blocked_reason = decision.reason
                     job.blocked_signal = decision.signal or self._blocked_signal(
                         decision.reason)
@@ -1131,7 +1135,11 @@ class MonitorEngine:
                     with get_session() as s:
                         job = s.get(KeywordCollectionJob, job_id)
                         if job and job.status == "pending":
-                            job.current_step = "等待账号读取冷却"
+                            job.current_step = (
+                                "等待人工验证（请前往风控中心解除）"
+                                if decision.signal == "manual_review_required"
+                                else "等待账号读取冷却"
+                            )
                             job.blocked_reason = decision.reason
                             job.blocked_signal = decision.signal or self._blocked_signal(
                                 decision.reason)
@@ -1194,11 +1202,18 @@ class MonitorEngine:
                 failure = self.risk.record_failure(
                     account_id, OperationKind.READ_HEAVY, job_error)
                 if category == RiskCategory.RISK:
+                    manual_hold = bool(
+                        self.risk.policy.enabled
+                        and self.risk._needs_manual_review(job_error, signal)
+                    )
                     with get_session() as s:
                         deferred_job = s.get(KeywordCollectionJob, job_id)
                         if deferred_job and deferred_job.status not in {"canceled", "done"}:
                             deferred_job.status = "pending"
-                            deferred_job.current_step = "API 风控冷却，等待重试"
+                            deferred_job.current_step = (
+                                "等待人工验证（请前往风控中心解除）"
+                                if manual_hold else "API 风控冷却，等待重试"
+                            )
                             deferred_job.blocked_reason = job_error
                             deferred_job.blocked_signal = signal
                             deferred_job.blocked_operation = OperationKind.READ_HEAVY.value
@@ -1366,12 +1381,18 @@ class MonitorEngine:
             )).all()
             for job in jobs:
                 job.current_step = "账号已恢复，等待继续"
+                job.error_count = 0
                 job.error = ""
                 self._clear_row_block(job)
                 session.add(job)
                 woken += 1
             if woken:
                 session.commit()
+        if woken and self._running and not self._collection_tasks:
+            try:
+                asyncio.create_task(self._process_collection_jobs())
+            except RuntimeError:
+                pass
         return woken
 
     async def _probe_account_health(self, probe) -> dict:

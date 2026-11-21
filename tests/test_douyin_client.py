@@ -583,6 +583,73 @@ class DouyinClientSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(items, [])
         self.assertEqual(error, "api_rejected:status_code=12345")
 
+    async def test_search_awemes_caps_page_count_at_20_and_paces_pagination_for_50_results(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        pages = [
+            {
+                "data": [
+                    {"aweme_info": {
+                        "aweme_id": f"w-{page_idx}-{idx}",
+                        "video": {"play_addr": {"url_list": ["https://m/v.mp4"]}},
+                    }}
+                    for idx in range(20)
+                ],
+                "has_more": 1,
+                "offset": (page_idx + 1) * 20,
+            }
+            for page_idx in range(3)
+        ]
+        client._get_payloads = AsyncMock(side_effect=[[p] for p in pages])
+        sleep_mock = AsyncMock()
+        with patch("app.platforms.douyin.client.asyncio.sleep", sleep_mock):
+            items, error = await client.search_awemes(
+                "AI获客", max_results=50, max_pages=12, page_delay_seconds=0.5)
+
+        self.assertEqual(error, "")
+        self.assertEqual(len(items), 50)
+        self.assertEqual(client._get_payloads.await_count, 3)
+        for call in client._get_payloads.await_args_list:
+            self.assertEqual(call.args[1]["count"], 20)
+        # First page sends immediately; subsequent pages are paced.
+        self.assertEqual(sleep_mock.await_count, 2)
+
+    async def test_search_awemes_filtered_out_candidates_do_not_report_empty_response(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client._get_payloads = AsyncMock(return_value=[{
+            "data": [{"aweme_info": {
+                "aweme_id": "old-1",
+                "create_time": 1_600_000_000,
+                "video": {"play_addr": {"url_list": ["https://m/v.mp4"]}},
+            }}],
+            "has_more": 0,
+            "offset": 15,
+        }])
+        items, error = await client.search_awemes(
+            "AI获客", max_results=50, max_pages=3, publish_time="week", page_delay_seconds=0)
+        self.assertEqual(items, [])
+        self.assertEqual(error, "")
+
+    async def test_search_awemes_keeps_collected_items_when_later_page_returns_empty_body(self):
+        client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
+        client.search_awemes_page = AsyncMock(side_effect=[
+            {
+                "items": [{"aweme_id": "keep-1", "video": {"play_addr": {"url_list": ["u"]}}}],
+                "has_more": True,
+                "offset": 20,
+                "error": "",
+            },
+            {
+                "items": [],
+                "has_more": False,
+                "offset": 20,
+                "error": "empty_body",
+            },
+        ])
+        items, error = await client.search_awemes(
+            "AI获客", max_results=50, max_pages=3, page_delay_seconds=0)
+        self.assertEqual([x["aweme_id"] for x in items], ["keep-1"])
+        self.assertEqual(error, "")
+
     async def test_session_scope_reuses_ms_token(self):
         client = DouyinClient("sid_tt=x", "Mozilla/5.0 Chrome/130.0.0.0")
 

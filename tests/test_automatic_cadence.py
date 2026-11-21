@@ -232,6 +232,50 @@ def test_collection_verification_is_deferred_instead_of_failed(local_project, mo
         assert job.blocked_signal == "verification_required"
         assert job.next_allowed_at is not None
         assert job.finished_at is None
+        assert not main._collection_job_dict(job)["manual_review_required"]
+
+
+def test_collection_job_manual_captcha_hold_exposes_clear_hint_and_resets_error_count_on_wake(local_project, monkeypatch):
+    account_id = store(DouyinAccount(
+        status="active", platform="douyin",
+        storage_state=json.dumps({"cookies": [{
+            "name": "sessionid", "value": "fixture",
+            "domain": ".douyin.com", "path": "/",
+        }], "origins": []})))
+    job_id = store(KeywordCollectionJob(
+        account_id=account_id, platform="douyin", status="pending",
+        keywords=json.dumps(["AI获客"], ensure_ascii=False)))
+    engine = MonitorEngine(local_project.cfg, local_project.browser)
+
+    async def captcha_result(row_id, _account):
+        with db.get_session() as session:
+            job = session.get(KeywordCollectionJob, row_id)
+            job.error_count = 1
+            job.error = ("AI获客: 抖音触发验证码/安全验证；请在账号页点击“打开浏览器”完成验证并关窗保存登录态，"
+                         "再到「风控中心」点击“解除”后即可恢复续跑")
+            session.add(job); session.commit()
+        return {"canceled": False, "errors": 1, "contents": 1, "comments": 0}
+
+    monkeypatch.setattr(engine.keyword_collector, "run", captcha_result)
+
+    result = asyncio.run(engine.run_collection_job(job_id))
+    assert result["ok"] and result["deferred"]
+    with db.get_session() as session:
+        job = session.get(KeywordCollectionJob, job_id)
+        assert job.status == "pending"
+        assert "风控中心" in job.current_step
+        serialized = main._collection_job_dict(job)
+        assert serialized["manual_review_required"] is True
+
+    engine.risk.clear_account(account_id, reason="已在浏览器确认无验证码")
+    woken = engine._wake_deferred_tasks(account_id)
+    assert woken == 1
+    with db.get_session() as session:
+        job = session.get(KeywordCollectionJob, job_id)
+        assert job.error_count == 0
+        assert job.error == ""
+        assert job.current_step == "账号已恢复，等待继续"
+        assert main._collection_job_dict(job)["manual_review_required"] is False
 
 
 def test_network_jitter_only_extends_persisted_deadline(local_project):

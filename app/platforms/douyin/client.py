@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import random
 import time
 import urllib.parse
 import uuid
@@ -49,6 +50,8 @@ SECURE_SDK_WRITE_PATHS = frozenset({
 SEARCH_STREAM_PATH = "/aweme/v1/web/general/search/stream/"
 SEARCH_SINGLE_PATH = "/aweme/v1/web/general/search/single/"
 SEARCH_PATHS = frozenset({SEARCH_SINGLE_PATH, SEARCH_STREAM_PATH})
+SEARCH_MAX_PAGE_SIZE = 20
+SEARCH_PAGE_DELAY_RANGE = (0.45, 0.85)
 
 
 def cookie_from_state(storage_state_json: str) -> str:
@@ -932,7 +935,7 @@ class DouyinClient:
             "query_correct_type": "1",
             "is_filter_search": "0",
             "offset": max(0, int(offset or 0)),
-            "count": max(1, min(50, int(count or 15))),
+            "count": max(1, min(SEARCH_MAX_PAGE_SIZE, int(count or 15))),
             "list_type": "multi",
             "search_id": self._search_id,
             "need_filter_settings": "1",
@@ -1011,21 +1014,35 @@ class DouyinClient:
     async def search_awemes(self, keyword: str, *, max_results: int = 20,
                             max_pages: int = 3, search_sort: str = "general",
                             publish_time: str = "all", content_type: str = "all",
-                            min_likes: int = 0, min_comments: int = 0) -> tuple[List[dict], str]:
+                            min_likes: int = 0, min_comments: int = 0,
+                            page_delay_seconds: float | None = None) -> tuple[List[dict], str]:
         """分页搜索并做本地筛选；返回 (作品列表, 可回退原因)。"""
-        import time
         # search_id belongs to one keyword pagination chain, not the account.
         self._search_id = ""
         found: Dict[str, dict] = {}
         offset = 0
-        for _ in range(max(1, min(10, int(max_pages or 1)))):
+        raw_candidates_seen = 0
+        # 抖音网页端搜索单页 count 超过 20 会触发网关参数异常/验证码风控；
+        # 大上限（如 50/100）必须按网页端正常每页 <=20 条配合分页间隔逐步拉取。
+        page_size = min(SEARCH_MAX_PAGE_SIZE, max(1, int(max_results or SEARCH_MAX_PAGE_SIZE)))
+        for page_index in range(max(1, min(40, int(max_pages or 1)))):
+            if page_index > 0:
+                delay = (random.uniform(*SEARCH_PAGE_DELAY_RANGE)
+                         if page_delay_seconds is None
+                         else max(0.0, float(page_delay_seconds)))
+                if delay > 0:
+                    await asyncio.sleep(delay)
             page = await self.search_awemes_page(
-                keyword, offset=offset, count=min(50, max_results),
+                keyword, offset=offset, count=page_size,
                 search_sort=search_sort, publish_time=publish_time,
                 content_type=content_type)
             if page.get("error"):
-                return list(found.values())[:max_results], str(page["error"])
+                page_error = str(page["error"])
+                if found and page_error in {"empty_body", "empty_response"}:
+                    break
+                return list(found.values())[:max_results], page_error
             for item in page.get("items") or []:
+                raw_candidates_seen += 1
                 stats = item.get("statistics") or {}
                 if content_type == "video" and not item.get("video"):
                     continue
@@ -1054,7 +1071,7 @@ class DouyinClient:
             items.sort(key=lambda x: int(x.get("create_time") or 0), reverse=True)
         elif search_sort == "most_liked":
             items.sort(key=lambda x: int((x.get("statistics") or {}).get("digg_count") or 0), reverse=True)
-        return items, ("empty_response" if not items else "")
+        return items, ("" if (items or raw_candidates_seen > 0) else "empty_response")
 
     async def fetch_all_video_list(self, sec_uid: str, max_pages: int = 10,
                                    count: int = 20) -> List[dict]:

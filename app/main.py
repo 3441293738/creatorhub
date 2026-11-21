@@ -8731,6 +8731,20 @@ def _collection_job_dict(job: KeywordCollectionJob) -> dict:
         "planned_content_count": planned, "error_count": job.error_count,
         "error": _collection_error_for_display(job.error),
         "error_detail": job.error,
+        "blocked_signal": job.blocked_signal or "",
+        "manual_review_required": bool(
+            job.status == "pending"
+            and (
+                job.blocked_signal == "manual_review_required"
+                or "风控中心" in str(job.current_step or "")
+                or (
+                    job.blocked_reason
+                    and RiskController._needs_manual_review(
+                        job.blocked_reason, job.blocked_signal or ""
+                    )
+                )
+            )
+        ),
         "cancel_requested": job.cancel_requested,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
