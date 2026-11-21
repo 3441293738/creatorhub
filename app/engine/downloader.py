@@ -125,12 +125,13 @@ class Downloader:
                                 a_tmp.unlink(missing_ok=True)
                                 mux_tmp.unlink(missing_ok=True)
                         async with self._media_sem:
-                            err = await self._download_one(
-                                cli,
-                                m.url,
-                                fpath,
-                                backup_urls=list(getattr(m, "backup_urls", None) or ()),
-                            )
+                            backup_urls = list(getattr(m, "backup_urls", None) or ())
+                            if backup_urls:
+                                err = await self._download_one(
+                                    cli, m.url, fpath, backup_urls=backup_urls,
+                                )
+                            else:
+                                err = await self._download_one(cli, m.url, fpath)
                         return (str(fpath), "") if not err else ("", err)
 
                 results = await asyncio.gather(*(fetch(m) for m in aweme.medias))

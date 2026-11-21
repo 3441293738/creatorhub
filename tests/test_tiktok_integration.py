@@ -223,7 +223,10 @@ def test_tiktok_ui_exposes_supported_features_and_video_publish():
     for tab in ("monitors", "comments"):
         assert f'class="navitem notsh-only" data-tab="{tab}"' in html
         assert f'class="navitem notsh-only tk-hide" data-tab="{tab}"' not in html
-    assert 'class="navitem notsh-only tk-hide" data-tab="autocomment"' in html
+    import re
+    autocomment_btn = re.search(r'<button\s+class="([^"]+)"\s+data-tab="autocomment"', html)
+    assert autocomment_btn is not None
+    assert {"navitem", "notsh-only", "tk-hide"}.issubset(autocomment_btn.group(1).split())
     assert 'class="navitem tk-hide" data-tab="hub"' not in html
     assert 'TikTok 用户搜索与互动' in html
     assert 'TikTok 手动评论任务' in html
