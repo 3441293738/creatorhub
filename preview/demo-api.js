@@ -96,8 +96,8 @@
         pages: [],
         wechat_traffic_seen: false,
         liteapp_detected: false,
-        bridge_entry_url: "https://channels.weixin.qq.com/web/pages/bridge",
-        alt_bridge_entry_url: "https://channels.weixin.qq.com/platform/bridge",
+        bridge_entry_url: "https://channels.weixin.qq.com/platform/bridge",
+        alt_bridge_entry_url: "https://channels.weixin.qq.com/web/pages/bridge",
         commands_forwarded: 0,
         commands_succeeded: 0,
       },
@@ -347,14 +347,23 @@
   function actionData(path) {
     if (path === "/api/channels/protocol/probe") return { ok: false, ready: false, configured: false, error: "在线演示模式不连接本机微信进程" };
     if (path === "/api/channels/protocol/proxy/start") {
+      channelsProto.ca_trusted = true;
       channelsProto.proxy_running = true;
       channelsProto.proxy_enabled = true;
       channelsProto.connection_mode = "proxy";
-      return { ok: true, ...getData(new URL("/api/channels/protocol/status", window.location.href)) };
+      return { ok: true, cert_installed_now: false, ...getData(new URL("/api/channels/protocol/status", window.location.href)) };
     }
     if (path === "/api/channels/protocol/proxy/stop") {
       channelsProto.proxy_running = false;
+      channelsProto.proxy_enabled = false;
+      channelsProto.connection_mode = "none";
       return { ok: true, ...getData(new URL("/api/channels/protocol/status", window.location.href)) };
+    }
+    if (path === "/api/channels/protocol/wechat/open") {
+      return { ok: true, message: "在线演示模式：真实桌面环境会自动唤起电脑微信", proxy: channelsProtoPayload().proxy };
+    }
+    if (path === "/api/channels/protocol/wechat/restart") {
+      return { ok: true, message: "在线演示模式：真实桌面环境会自动重启电脑微信以应用代理", proxy: channelsProtoPayload().proxy };
     }
     if (path === "/api/channels/protocol/proxy/cert/install") {
       channelsProto.ca_trusted = true;

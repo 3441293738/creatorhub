@@ -214,7 +214,7 @@
     if (closed || reconnectTimer !== null) {
       return;
     }
-    const delayMs = Math.min(8000, 1200 * Math.max(1, reconnectAttempts));
+    const delayMs = Math.min(3500, 900 * Math.max(1, reconnectAttempts));
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       connectSocket();

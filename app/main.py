@@ -124,14 +124,17 @@ from .platforms.channels import (
     ChannelsProxyManager,
     discover_local_cdp_endpoints,
     discover_wechat_processes,
+    get_system_proxy_state,
     inspect_or_download_channels_share,
     looks_like_photo as channels_looks_like_photo,
+    open_or_focus_wechat,
     parse_channels_url,
     parse_self_user as parse_channels_self_user,
     recover_stale_system_proxy,
     resolve_channels_creator,
     resolve_channels_photo_id,
     resolve_channels_user_id,
+    restart_wechat,
     set_active_proxy_manager,
 )
 from .platforms.tiktok import (
@@ -638,6 +641,13 @@ async def lifespan(app: FastAPI):
         print(f"[startup] 清理残留系统代理失败（不影响启动）: {e!r}")
     if load_persisted_channels_settings(cfg):
         print("[startup] 已加载视频号微信通道配置")
+    try:
+        auto_proxy = await auto_start_persisted_channels_proxy(cfg, channels_proxy)
+        if auto_proxy.get("started"):
+            bound = auto_proxy.get("proxy", {}).get("proxy_port") or cfg.engine.channels_proxy_port
+            print(f"[startup] 已自动恢复视频号微信本地代理 (127.0.0.1:{bound})")
+    except Exception as e:
+        print(f"[startup] 自动恢复视频号微信代理跳过（不影响启动）: {e!r}")
     try:
         repaired = _backfill_danmaku_records()
         if repaired:
@@ -2160,6 +2170,44 @@ class ChannelsProxyStartIn(BaseModel):
     proxy_port: int = 2023
     enable_system_proxy: bool = True
     apply_to_config: bool = True
+    auto_install_cert: bool = True
+
+
+class ChannelsProxyStopIn(BaseModel):
+    disable_auto_start: bool = False
+
+
+async def auto_start_persisted_channels_proxy(
+    target_cfg: Config,
+    proxy_mgr: ChannelsProxyManager,
+) -> dict[str, Any]:
+    """在 CreatorHub 启动时静默恢复上次开启的内置视频号代理（仅在根证书已受信任时启用系统代理）。"""
+    if not bool(getattr(target_cfg.engine, "channels_proxy_enabled", False)):
+        return {"started": False, "reason": "disabled"}
+    if proxy_mgr.running:
+        return {"started": True, "reason": "already_running", "proxy": proxy_mgr.status()}
+
+    data_dir = Path(target_cfg.db_path).resolve().parent
+    proxy_mgr.configure_data_dir(data_dir)
+    manage_sysproxy = bool(getattr(target_cfg.engine, "channels_proxy_manage_sysproxy", True))
+    raw_port = getattr(target_cfg.engine, "channels_proxy_port", None)
+    port = 2023 if raw_port is None else int(raw_port)
+
+    if manage_sysproxy:
+        ca_status = await asyncio.to_thread(proxy_mgr.ca.trust_status)
+        if not ca_status.get("trusted"):
+            return {"started": False, "reason": "ca_untrusted"}
+        sys_state = await asyncio.to_thread(
+            get_system_proxy_state, data_dir=data_dir, backend=proxy_mgr._proxy_backend
+        )
+        if sys_state.get("low_integrity"):
+            return {"started": False, "reason": "low_integrity"}
+
+    state = await proxy_mgr.start(
+        proxy_port=port,
+        enable_system_proxy_flag=manage_sysproxy,
+    )
+    return {"started": bool(state.get("running")), "proxy": state}
 
 
 def _channels_status_payload() -> dict[str, Any]:
@@ -2323,13 +2371,16 @@ async def probe_channels_protocol(body: ChannelsProbeIn = Body(default_factory=C
         timeout=timeout,
     )
     probe_result = await client.probe()
-    return {
+    resp_payload: dict[str, Any] = {
         "ok": bool(probe_result.get("ok")),
         "ready": bool(probe_result.get("ready")),
         "configured": True,
         "probe": probe_result,
         "error": str(probe_result.get("error") or ""),
     }
+    if use_proxy:
+        resp_payload["proxy"] = channels_proxy.status()
+    return resp_payload
 
 
 @app.get("/api/channels/protocol/discover")
@@ -2406,8 +2457,22 @@ async def stop_channels_protocol_bridge():
 async def start_channels_protocol_proxy(
     body: ChannelsProxyStartIn = Body(default_factory=ChannelsProxyStartIn),
 ):
-    """启动内置选择性本地视频号 HTTPS 代理（仅拦截 channels.weixin.qq.com）并按需接管本机 WinINet 代理。"""
+    """一键检查/安装根证书、启动内置选择性本地视频号 HTTPS 代理并持久化下次自动恢复配置。"""
     channels_proxy.configure_data_dir(Path(cfg.db_path).resolve().parent)
+    cert_installed_now = False
+    if body.auto_install_cert and body.enable_system_proxy:
+        ca_before = await asyncio.to_thread(channels_proxy.ca.trust_status)
+        if not ca_before.get("trusted") and (
+            sys.platform == "win32" or hasattr(channels_proxy.ca.install_trust, "assert_called")
+        ):
+            cert_res = await asyncio.to_thread(channels_proxy.ca.install_trust)
+            if not cert_res.get("ok"):
+                raise HTTPException(
+                    409,
+                    str(cert_res.get("error") or "尚未完成本地根证书信任授权，请在系统弹窗中点击「是」后重试"),
+                )
+            cert_installed_now = True
+
     try:
         proxy_state = await channels_proxy.start(
             proxy_port=body.proxy_port,
@@ -2421,25 +2486,54 @@ async def start_channels_protocol_proxy(
     if body.apply_to_config:
         if channels_bridge.status(include_processes=False).get("running"):
             await channels_bridge.stop()
+        persisted_port = (
+            int(proxy_state.get("proxy_port") or 2023)
+            if int(body.proxy_port) == 0
+            else int(body.proxy_port)
+        )
+        if not (1024 <= persisted_port <= 65535):
+            persisted_port = int(getattr(cfg.engine, "channels_proxy_port", 2023) or 2023)
         save_channels_settings(
             cfg,
             {
                 "connection_mode": "proxy",
-                "channels_proxy_port": int(proxy_state.get("proxy_port") or body.proxy_port),
+                "channels_proxy_port": persisted_port,
+                "channels_proxy_manage_sysproxy": bool(body.enable_system_proxy),
             },
         )
     payload = _channels_status_payload()
     payload["proxy"] = proxy_state
+    payload["cert_installed_now"] = cert_installed_now
     return {"ok": True, **payload}
 
 
 @app.post("/api/channels/protocol/proxy/stop")
-async def stop_channels_protocol_proxy():
+async def stop_channels_protocol_proxy(
+    body: ChannelsProxyStopIn = Body(default_factory=ChannelsProxyStopIn),
+):
     """停止内置视频号代理并立即恢复退出前的 Windows 系统代理配置。"""
     proxy_state = await channels_proxy.stop()
+    if body.disable_auto_start and bool(getattr(cfg.engine, "channels_proxy_enabled", False)):
+        save_channels_settings(cfg, {"connection_mode": "none"})
     payload = _channels_status_payload()
     payload["proxy"] = proxy_state
     return {"ok": True, **payload}
+
+
+@app.post("/api/channels/protocol/wechat/open")
+async def open_channels_desktop_wechat():
+    """唤起或启动本机桌面微信主窗口，免除浏览器自定义协议确认弹窗。"""
+    res = await asyncio.to_thread(open_or_focus_wechat)
+    return {**res, "proxy": channels_proxy.status()}
+
+
+@app.post("/api/channels/protocol/wechat/restart")
+async def restart_channels_desktop_wechat():
+    """一键重启本机桌面微信客户端以立即应用新的系统代理配置。"""
+    res = await asyncio.to_thread(restart_wechat)
+    if res.get("ok"):
+        channels_proxy.clear_wechat_preexisting()
+    return {**res, "proxy": channels_proxy.status()}
 
 
 @app.post("/api/channels/protocol/proxy/cert/install")

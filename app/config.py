@@ -78,6 +78,7 @@ class EngineConfig:
     channels_cdp_endpoint_file: str = ""      # wmpf_cdp 生成的本地控制口令端点描述文件
     channels_proxy_enabled: bool = False      # 是否使用内置本机视频号选择性 HTTPS 代理桥接
     channels_proxy_port: int = 2023           # 内置视频号本机代理监听端口(127.0.0.1)
+    channels_proxy_manage_sysproxy: bool = True  # 内置代理是否自动托管 Windows 系统代理
     # 本账号管理中的独立读取通道。资料与粉丝已支持直连；其余三项保留
     # 独立开关，待协议完整可验证后无需再迁移配置。
     douyin_profile_mode: str = "hybrid"      # hybrid | api | browser

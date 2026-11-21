@@ -977,9 +977,9 @@ def test_wechat_42_liteapp_detection_and_bridge_landing_page(tmp_path):
                 probe_res = await proxy.probe()
                 assert probe_res["ok"] is False
                 assert "LiteApp" in probe_res["error"]
-                assert "channels.weixin.qq.com/web/pages/bridge" in probe_res["error"]
+                assert "channels.weixin.qq.com/platform/bridge" in probe_res["error"]
 
-            for path in ("/web/pages/bridge", "/platform/bridge", "/__creatorhub_bridge"):
+            for path in ("/platform/bridge", "/web/pages/platform/bridge", "/web/pages/bridge", "/__creatorhub_bridge"):
                 code_land, body_land = await asyncio.to_thread(_do_tls_request, "GET", path)
                 assert code_land == 200
                 text_land = body_land.decode("utf-8")
@@ -1088,3 +1088,113 @@ assert.strictEqual(calls.length, 0, "must fire zero JSBridge calls on load");
     proc = subprocess.run([node_bin, "-e", script], capture_output=True, text=True, timeout=15)
     assert proc.returncode == 0, proc.stderr
     assert "WECHAT_42_NATIVE_DRIVER_OK" in proc.stdout
+
+
+def test_oneclick_auto_cert_startup_resume_persistent_ws_token_and_wechat_helpers(local_project, monkeypatch):
+    """Verify 1-click auto CA install, startup auto-resume, persistent WS token, URL ticket stripping & WeChat helpers."""
+    from app.platforms.channels.proxy_bridge import _sanitize_page_url
+
+    assert (
+        _sanitize_page_url(
+            "https://channels.weixin.qq.com/web/pages/platform/bridge?exportkey=sec_123&pass_ticket=pt_456&wx_header=0"
+        )
+        == "https://channels.weixin.qq.com/web/pages/platform/bridge"
+    )
+    assert (
+        _sanitize_page_url(
+            "https://channels.weixin.qq.com/web/pages/profile?username=v2_abc@finder&exportkey=sec_123"
+        )
+        == "https://channels.weixin.qq.com/web/pages/profile?username=v2_abc%40finder"
+    )
+
+    cfg = local_project.cfg
+    cfg.db_path = str(local_project.path)
+    fake_reg = _FakeRegistryBackend(proxy_enable=0, proxy_server="", proxy_override="")
+    proxy_mgr = ChannelsProxyManager(local_project.root, system_proxy_backend=fake_reg)
+    token_first = proxy_mgr._ws_token
+    proxy_mgr.ca.close()
+
+    # Recreating ChannelsProxyManager on the same data_dir reuses the persisted WS token
+    # so minimized WeChat bridge windows reconnect after CreatorHub restarts without 403.
+    proxy_mgr2 = ChannelsProxyManager(local_project.root, system_proxy_backend=fake_reg)
+    assert proxy_mgr2._ws_token == token_first
+    monkeypatch.setattr(main, "channels_proxy", proxy_mgr2)
+    from app.platforms.channels import proxy_bridge
+
+    monkeypatch.setattr(proxy_bridge, "_ACTIVE_PROXY_MANAGER", proxy_mgr2)
+
+    async def _run():
+        ca_trusted_state = {"trusted": False}
+
+        def _fake_trust_status():
+            return {
+                "exists": True,
+                "trusted": ca_trusted_state["trusted"],
+                "thumbprint": "F998042ECD09",
+                "store": "CurrentUser\\Root" if ca_trusted_state["trusted"] else "",
+            }
+
+        install_mock = MagicMock(
+            side_effect=lambda: (
+                ca_trusted_state.update(trusted=True)
+                or {"ok": True, "trusted": True, "store": "CurrentUser\\Root"}
+            )
+        )
+        monkeypatch.setattr(proxy_mgr2.ca, "trust_status", _fake_trust_status)
+        monkeypatch.setattr(proxy_mgr2.ca, "install_trust", install_mock)
+
+        transport = httpx.ASGITransport(app=main.app, client=("127.0.0.1", 2345), raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+            # 1. One-click start automatically installs untrusted CA cert & persists settings
+            start_res = await client.post(
+                "/api/channels/protocol/proxy/start",
+                json={"proxy_port": 0, "enable_system_proxy": True, "apply_to_config": True, "auto_install_cert": True},
+            )
+            assert start_res.status_code == 200, start_res.text
+            started = start_res.json()
+            assert started["cert_installed_now"] is True
+            assert install_mock.call_count == 1
+            assert started["proxy"]["running"] is True
+            assert cfg.engine.channels_proxy_enabled is True
+            assert cfg.engine.channels_proxy_manage_sysproxy is True
+
+            # 2. Desktop WeChat wake & restart endpoints
+            proxy_mgr2._wechat_preexisting = True
+            with patch.object(main, "open_or_focus_wechat", return_value={"ok": True, "message": "已唤起微信"}):
+                wake_res = await client.post("/api/channels/protocol/wechat/open")
+                assert wake_res.status_code == 200
+                assert wake_res.json()["ok"] is True
+
+            with patch.object(main, "restart_wechat", return_value={"ok": True, "restarted": True, "message": "已重开微信"}):
+                restart_res = await client.post("/api/channels/protocol/wechat/restart")
+                assert restart_res.status_code == 200
+                assert restart_res.json()["ok"] is True
+                assert proxy_mgr2._wechat_preexisting is False
+
+            # 3. Simulate CreatorHub process shutdown (stops runtime proxy without clearing persisted auto-start)
+            await proxy_mgr2.stop()
+            assert proxy_mgr2.running is False
+            assert cfg.engine.channels_proxy_enabled is True
+
+            # 4. Simulate CreatorHub next startup -> auto_start_persisted_channels_proxy resumes silently
+            cfg.engine.channels_proxy_port = 0
+            resumed = await main.auto_start_persisted_channels_proxy(cfg, proxy_mgr2)
+            assert resumed["started"] is True
+            assert proxy_mgr2.running is True
+            assert fake_reg.proxy_enable == 1
+
+            # 5. User clicking "断开并关闭" (disable_auto_start=True) stops proxy AND clears auto-start
+            stop_res = await client.post(
+                "/api/channels/protocol/proxy/stop",
+                json={"disable_auto_start": True},
+            )
+            assert stop_res.status_code == 200
+            assert proxy_mgr2.running is False
+            assert cfg.engine.channels_proxy_enabled is False
+            resumed_after_disable = await main.auto_start_persisted_channels_proxy(cfg, proxy_mgr2)
+            assert resumed_after_disable["started"] is False
+
+    from unittest.mock import MagicMock
+
+    asyncio.run(_run())
+    proxy_mgr2.ca.close()

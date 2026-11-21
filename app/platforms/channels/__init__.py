@@ -126,6 +126,11 @@ from app.platforms.channels.system_proxy import (
     resolve_upstream_proxy,
     restore_system_proxy,
 )
+from app.platforms.channels.wechat_desktop import (
+    find_wechat_executable,
+    open_or_focus_wechat,
+    restart_wechat,
+)
 
 __all__ = [
     "Aweme",
@@ -222,4 +227,7 @@ __all__ = [
     "recover_stale_system_proxy",
     "resolve_upstream_proxy",
     "restore_system_proxy",
+    "find_wechat_executable",
+    "open_or_focus_wechat",
+    "restart_wechat",
 ]

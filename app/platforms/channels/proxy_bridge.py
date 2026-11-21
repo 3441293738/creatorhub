@@ -24,7 +24,11 @@ from app.platforms.channels.client import (
     normalize_capabilities,
     sanitize_bridge_error,
 )
-from app.platforms.channels.local_ca import ALLOWED_INTERCEPT_HOSTS, LocalCaManager
+from app.platforms.channels.local_ca import (
+    ALLOWED_INTERCEPT_HOSTS,
+    LocalCaManager,
+    _write_private_file,
+)
 from app.platforms.channels.system_proxy import (
     SystemProxyBackend,
     enable_system_proxy,
@@ -32,14 +36,22 @@ from app.platforms.channels.system_proxy import (
     resolve_upstream_proxy,
     restore_system_proxy,
 )
+from app.platforms.channels.wmpf_cdp import discover_wechat_processes
 
 logger = logging.getLogger(__name__)
 
 BRIDGE_SCRIPT_PATH = "/__creatorhub_bridge.js"
 BRIDGE_WS_PATH = "/__creatorhub_ws"
-BRIDGE_LANDING_PATHS = frozenset({"/web/pages/bridge", "/platform/bridge", "/__creatorhub_bridge"})
-DEFAULT_BRIDGE_ENTRY_URL = "https://channels.weixin.qq.com/web/pages/bridge"
-ALT_BRIDGE_ENTRY_URL = "https://channels.weixin.qq.com/platform/bridge"
+BRIDGE_LANDING_PATHS = frozenset(
+    {
+        "/platform/bridge",
+        "/web/pages/platform/bridge",
+        "/web/pages/bridge",
+        "/__creatorhub_bridge",
+    }
+)
+DEFAULT_BRIDGE_ENTRY_URL = "https://channels.weixin.qq.com/platform/bridge"
+ALT_BRIDGE_ENTRY_URL = "https://channels.weixin.qq.com/web/pages/bridge"
 _WECHAT_TRAFFIC_HOSTS = frozenset(
     {
         "liteapp.weixin.qq.com",
@@ -109,6 +121,45 @@ def set_active_proxy_manager(manager: "ChannelsProxyManager | None") -> None:
     _ACTIVE_PROXY_MANAGER = manager
 
 
+_SENSITIVE_PAGE_QUERY_KEYS = frozenset(
+    {
+        "exportkey",
+        "pass_ticket",
+        "wx_header",
+        "uin",
+        "key",
+        "ascene",
+        "devicetype",
+        "version",
+        "nettype",
+        "abtest_cookie",
+        "lang",
+        "fontgear",
+    }
+)
+_WS_TOKEN_FILENAME = "channels_proxy_ws.key"
+
+
+def _sanitize_page_url(raw_url: str) -> str:
+    """Strip ephemeral WeChat WebView query tickets (`exportkey`, `pass_ticket`) for clean UI display."""
+    text = str(raw_url or "").strip()
+    if not text or "?" not in text:
+        return text
+    try:
+        from urllib.parse import parse_qsl, urlencode, urlunsplit
+
+        parsed = urlsplit(text)
+        kept = [
+            (k, v)
+            for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+            if k.strip().lower() not in _SENSITIVE_PAGE_QUERY_KEYS
+        ]
+        clean_query = urlencode(kept) if kept else ""
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, clean_query, ""))
+    except Exception:
+        return text.split("?", 1)[0]
+
+
 @dataclass
 class ConnectedFinderPage:
     """State of a live top-level WeChat Channels webview connected over `__creatorhub_ws`."""
@@ -128,7 +179,7 @@ class ConnectedFinderPage:
     def to_public_dict(self) -> dict[str, Any]:
         return {
             "page_id": self.page_id,
-            "url": self.url,
+            "url": _sanitize_page_url(self.url),
             "title": self.title,
             "ready": self.ready,
             "origin": self.origin,
@@ -244,7 +295,7 @@ def _build_bridge_landing_html(script_url: str, module_preload_url: str = "") ->
         '    <div class="badge" id="creatorhub-bridge-badge" data-state="pending">正在握手本机 CreatorHub…</div>\n'
         "    <h1>CreatorHub 微信视频号原生协议桥接页</h1>\n"
         '    <p id="creatorhub-bridge-detail">正在检测微信内置浏览器 WeixinJSBridge 环境并连接本机回环代理…</p>\n'
-        "    <p>兼容微信 4.2+（LiteApp 版）与旧版微信：连接成功后将此窗口最小化留在后台即可，关闭窗口将断开桥接。</p>\n"
+        "    <p>连接成功后将此窗口最小化留在后台即可；CreatorHub 重启后本窗口会自动重连，无需重复操作。建议点击右上角「⋯ → 收藏」或保留在「文件传输助手」，下次开机点一下即可使用。</p>\n"
         f"    <p>桥接地址：<code>{DEFAULT_BRIDGE_ENTRY_URL}</code></p>\n"
         "  </div>\n"
         "</body>\n"
@@ -289,7 +340,7 @@ class ChannelsProxyManager:
         self.ca = ca_manager or LocalCaManager(self._data_dir)
         self._proxy_backend = system_proxy_backend
         self._upstream_transport = upstream_transport
-        self._ws_token = secrets.token_urlsafe(24)
+        self._ws_token = self._load_or_create_ws_token()
 
         self._proxy_port: int = 2023
         self._bound_port: int | None = None
@@ -320,13 +371,41 @@ class ChannelsProxyManager:
         self._tls_handshake_failed: int = 0
         self._wechat_traffic_seen: bool = False
         self._liteapp_detected: bool = False
+        self._wechat_preexisting: bool = False
         self._cached_finder_module_url: str = ""
         self._cached_finder_module_at: float = 0.0
         self._lock = asyncio.Lock()
 
+    def _ws_token_path(self) -> Path:
+        return (self._data_dir / _WS_TOKEN_FILENAME).resolve()
+
+    def _load_or_create_ws_token(self) -> str:
+        """Persist local WS bridge token across restarts so minimized WeChat bridge tabs auto-reconnect."""
+        token_path = self._ws_token_path()
+        try:
+            if token_path.is_file():
+                existing = token_path.read_text(encoding="ascii", errors="ignore").strip()
+                if len(existing) >= 24 and re.fullmatch(r"[A-Za-z0-9_-]+", existing):
+                    return existing
+        except OSError:
+            pass
+        fresh = secrets.token_urlsafe(24)
+        try:
+            _write_private_file(token_path, fresh.encode("ascii"))
+        except OSError:
+            pass
+        return fresh
+
+    def clear_wechat_preexisting(self) -> None:
+        self._wechat_preexisting = False
+
     def configure_data_dir(self, data_dir: Path) -> None:
-        self._data_dir = Path(data_dir).expanduser()
+        new_dir = Path(data_dir).expanduser()
+        changed = new_dir != self._data_dir
+        self._data_dir = new_dir
         self.ca.configure_data_dir(self._data_dir)
+        if changed and not self.running:
+            self._ws_token = self._load_or_create_ws_token()
 
     @property
     def running(self) -> bool:
@@ -404,6 +483,19 @@ class ChannelsProxyManager:
         else:
             state = "waiting_wechat"
 
+        wechat_procs = discover_wechat_processes()
+        wechat_running = any(
+            str(p.get("name") or "").lower() in {"weixin.exe", "wechat.exe"}
+            for p in wechat_procs
+        )
+        wechat_needs_restart = bool(
+            self.running
+            and wechat_running
+            and self._wechat_preexisting
+            and not self._wechat_traffic_seen
+            and not ready_pages
+        )
+
         return {
             "running": self.running,
             "state": state,
@@ -424,6 +516,8 @@ class ChannelsProxyManager:
             "tls_handshake_failed": self._tls_handshake_failed,
             "wechat_traffic_seen": self._wechat_traffic_seen,
             "liteapp_detected": self._liteapp_detected,
+            "wechat_running": wechat_running,
+            "wechat_needs_restart": wechat_needs_restart,
             "bridge_entry_url": DEFAULT_BRIDGE_ENTRY_URL,
             "alt_bridge_entry_url": ALT_BRIDGE_ENTRY_URL,
             "started_at": self._started_at,
@@ -469,10 +563,15 @@ class ChannelsProxyManager:
                 await self._stop_unlocked()
 
             self._last_error = ""
-            self._ws_token = secrets.token_urlsafe(24)
+            self._ws_token = self._load_or_create_ws_token()
             self._proxy_port = port
             self._wechat_traffic_seen = False
             self._liteapp_detected = False
+            pre_procs = await asyncio.to_thread(discover_wechat_processes)
+            self._wechat_preexisting = any(
+                str(p.get("name") or "").lower() in {"weixin.exe", "wechat.exe"}
+                for p in pre_procs
+            )
 
             # Pre-generate CA & leaf SSL context for channels.weixin.qq.com before listening.
             self.ca.ssl_context_for_host("channels.weixin.qq.com")
@@ -498,11 +597,23 @@ class ChannelsProxyManager:
                     raise RuntimeError("内部 WebSocket Hub 未能绑定端口")
                 self._ws_hub_port = int(ws_sockets[0].getsockname()[1])
 
-                self._proxy_server = await asyncio.start_server(
-                    self._spawn_client_handler,
-                    host="127.0.0.1",
-                    port=port,
-                )
+                try:
+                    self._proxy_server = await asyncio.start_server(
+                        self._spawn_client_handler,
+                        host="127.0.0.1",
+                        port=port,
+                    )
+                except OSError as bind_err:
+                    import errno
+
+                    if enable_system_proxy_flag and port != 0 and bind_err.errno in {errno.EADDRINUSE, 10048}:
+                        self._proxy_server = await asyncio.start_server(
+                            self._spawn_client_handler,
+                            host="127.0.0.1",
+                            port=0,
+                        )
+                    else:
+                        raise
                 proxy_sockets = self._proxy_server.sockets or []
                 if not proxy_sockets:
                     raise RuntimeError("本地 HTTPS 代理服务器未能绑定端口")
@@ -611,6 +722,7 @@ class ChannelsProxyManager:
         self._started_at = None
         self._wechat_traffic_seen = False
         self._liteapp_detected = False
+        self._wechat_preexisting = False
         if restore_error:
             self._last_error = restore_error
 
@@ -752,7 +864,7 @@ class ChannelsProxyManager:
                 "ok": bool(res.get("ready")),
                 "ready": bool(res.get("ready")),
                 "transport": "channels-local-proxy",
-                "url": page.url,
+                "url": _sanitize_page_url(page.url),
                 "title": page.title,
                 "origin": page.origin,
                 "capabilities": page.capabilities,
@@ -765,7 +877,7 @@ class ChannelsProxyManager:
                 "ok": False,
                 "ready": False,
                 "transport": "channels-local-proxy",
-                "url": page.url,
+                "url": _sanitize_page_url(page.url),
                 "connected_pages": len(self._pages),
                 "error": f"探测已连接视频号页面失败: {sanitize_bridge_error(exc)}",
             }

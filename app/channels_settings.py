@@ -19,7 +19,11 @@ _STR_FIELDS = (
     "channels_cdp_endpoint",
     "channels_cdp_endpoint_file",
 )
-_BOOL_FIELDS = ("channels_proxy_enabled",)
+_BOOL_FIELDS = ("channels_proxy_enabled", "channels_proxy_manage_sysproxy")
+_BOOL_DEFAULTS = {
+    "channels_proxy_enabled": False,
+    "channels_proxy_manage_sysproxy": True,
+}
 _INT_FIELDS = ("channels_proxy_port",)
 _PERSISTED_FIELDS = _STR_FIELDS + _BOOL_FIELDS + _INT_FIELDS
 
@@ -30,6 +34,7 @@ class ChannelsProtocolPatch(BaseModel):
     connection_mode: Literal["none", "proxy", "endpoint", "endpoint_file"] | None = None
     channels_proxy_enabled: bool | None = None
     channels_proxy_port: int | None = Field(default=None, ge=1024, le=65535)
+    channels_proxy_manage_sysproxy: bool | None = None
     channels_cdp_endpoint: str | None = Field(default=None, max_length=512)
     channels_cdp_endpoint_file: str | None = Field(default=None, max_length=512)
     channels_read_mode: Literal["auto", "protocol", "browser"] | None = None
@@ -55,7 +60,7 @@ def snapshot_channels_base_config(cfg: Config) -> dict[str, Any]:
     for key in _STR_FIELDS:
         snap[key] = str(getattr(cfg.engine, key, "") or "").strip()
     for key in _BOOL_FIELDS:
-        snap[key] = bool(getattr(cfg.engine, key, False))
+        snap[key] = bool(getattr(cfg.engine, key, _BOOL_DEFAULTS.get(key, False)))
     for key in _INT_FIELDS:
         snap[key] = int(getattr(cfg.engine, key, 2023) or 2023)
     setattr(cfg, "_channels_base_snapshot", snap)
@@ -118,6 +123,7 @@ def export_channels_settings(cfg: Config, *, saved_fields: list[str] | None = No
         read_mode = "auto"
     proxy_enabled = bool(getattr(cfg.engine, "channels_proxy_enabled", False))
     proxy_port = int(getattr(cfg.engine, "channels_proxy_port", 2023) or 2023)
+    proxy_manage_sysproxy = bool(getattr(cfg.engine, "channels_proxy_manage_sysproxy", True))
     endpoint = str(getattr(cfg.engine, "channels_cdp_endpoint", "") or "").strip()
     endpoint_file = str(getattr(cfg.engine, "channels_cdp_endpoint_file", "") or "").strip()
     if saved_fields is None:
@@ -134,6 +140,7 @@ def export_channels_settings(cfg: Config, *, saved_fields: list[str] | None = No
         "connection_mode": connection_mode,
         "proxy_enabled": proxy_enabled,
         "proxy_port": proxy_port,
+        "proxy_manage_sysproxy": proxy_manage_sysproxy,
         "cdp_endpoint": endpoint,
         "cdp_endpoint_file": endpoint_file,
         "configured": bool(proxy_enabled or endpoint or endpoint_file),
@@ -192,6 +199,8 @@ def save_channels_settings(cfg: Config, payload: dict[str, Any] | ChannelsProtoc
         updates["channels_proxy_enabled"] = bool(patch.channels_proxy_enabled)
     if patch.channels_proxy_port is not None:
         updates["channels_proxy_port"] = int(patch.channels_proxy_port)
+    if patch.channels_proxy_manage_sysproxy is not None:
+        updates["channels_proxy_manage_sysproxy"] = bool(patch.channels_proxy_manage_sysproxy)
 
     if patch.channels_cdp_endpoint is not None and "channels_cdp_endpoint" not in updates:
         updates["channels_cdp_endpoint"] = validate_channels_endpoint(patch.channels_cdp_endpoint)

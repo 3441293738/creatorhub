@@ -5105,7 +5105,85 @@ const CreatorHubChannelsProtocol = (() => {
     "ch-proto-endpoint",
     "ch-proto-endpoint-file",
   ];
+  const _STRIP_QUERY_KEYS = new Set([
+    "exportkey", "pass_ticket", "wx_header", "uin", "key",
+    "ascene", "devicetype", "version", "nettype", "abtest_cookie", "lang", "fontgear",
+  ]);
   let lastStatus = null;
+  let pollTimer = null;
+  let pollInFlight = false;
+  let prevReadyPages = 0;
+
+  function cleanFinderUrl(rawUrl) {
+    const text = String(rawUrl || "").trim();
+    const qIdx = text.indexOf("?");
+    if (qIdx === -1) return text.split("#")[0];
+    const base = text.slice(0, qIdx);
+    const queryRaw = text.slice(qIdx + 1).split("#")[0];
+    const kept = queryRaw.split("&").filter(part => {
+      if (!part) return false;
+      const eq = part.indexOf("=");
+      const k = (eq === -1 ? part : part.slice(0, eq)).trim().toLowerCase();
+      return k && !_STRIP_QUERY_KEYS.has(k);
+    });
+    return kept.length ? `${base}?${kept.join("&")}` : base;
+  }
+
+  function stopAutoPoll() {
+    if (pollTimer !== null && typeof clearTimeout === "function") {
+      clearTimeout(pollTimer);
+    }
+    pollTimer = null;
+  }
+
+  function isCardVisibleForPoll() {
+    if (typeof document === "undefined" || document.visibilityState === "hidden") return false;
+    const card = $("channels-protocol-card");
+    if (!card || card.hidden) return false;
+    if (typeof card.closest === "function" && card.closest("[hidden]")) return false;
+    return true;
+  }
+
+  async function pollOnce() {
+    pollTimer = null;
+    if (pollInFlight) return;
+    if (!isCardVisibleForPoll()) {
+      if (lastStatus?.proxy?.running && Number(lastStatus?.proxy?.ready_pages || 0) === 0 && typeof setTimeout === "function" && typeof document !== "undefined") {
+        pollTimer = setTimeout(pollOnce, 3000);
+      }
+      return;
+    }
+    pollInFlight = true;
+    try {
+      const data = await api("/api/channels/protocol/status");
+      const wasWaiting = prevReadyPages === 0;
+      const nowReady = Number(data?.proxy?.ready_pages || 0);
+      applyConfigToForm(data, false);
+      renderStatus(data);
+      if (wasWaiting && nowReady > 0) {
+        setMsg("已自动检测到微信桥接页面接入 ✓ 现在可直接使用搜索、主页采集、二级评论与视频解密", "success");
+        toast("微信视频号通道已自动连通 ✓", "ok");
+        globalThis.CreatorHubTransportMatrix?.load?.();
+      }
+    } catch {
+      // Ignore transient network hiccups during background poll
+    } finally {
+      pollInFlight = false;
+    }
+  }
+
+  function syncAutoPoll(proxy) {
+    const running = !!proxy?.running;
+    const readyPages = Number(proxy?.ready_pages || 0);
+    prevReadyPages = readyPages;
+    if (!running || readyPages > 0) {
+      stopAutoPoll();
+      return;
+    }
+    if (pollTimer === null && typeof setTimeout === "function" && typeof document !== "undefined") {
+      pollTimer = setTimeout(pollOnce, 1800);
+    }
+  }
 
   function setMsg(text, state = "") {
     const el = $("ch-proto-msg");
@@ -5131,8 +5209,10 @@ const CreatorHubChannelsProtocol = (() => {
     if (fileWrap) fileWrap.hidden = mode !== "endpoint_file";
     const proxyPanel = $("channels-proxy-panel");
     const bridgePanel = $("channels-bridge-panel");
+    const advDetails = $("channels-advanced-details");
     if (mode === "proxy" && proxyPanel) proxyPanel.open = true;
     if (mode === "endpoint_file" && bridgePanel) bridgePanel.open = true;
+    if ((mode === "endpoint" || mode === "endpoint_file") && advDetails) advDetails.open = true;
   }
 
   function renderCapabilities(caps, readMode) {
@@ -5174,8 +5254,9 @@ const CreatorHubChannelsProtocol = (() => {
         const capList = Array.isArray(rawCaps)
           ? rawCaps.map(x => String(x || "").trim()).filter(Boolean)
           : Object.entries(rawCaps || {}).filter(([, v]) => !!v).map(([k]) => k);
+        const cleanProbeUrl = cleanFinderUrl(probe.url || "https://channels.weixin.qq.com/web/pages/");
         box.innerHTML = `<b>握手成功 · 内置微信视频号代理已就绪</b>`
-          + `<div>页面：<code>${esc(probe.url || "https://channels.weixin.qq.com/web/pages/")}</code>`
+          + `<div>页面：<code>${esc(cleanProbeUrl)}</code>`
           + (probe.title ? ` · 标题：<b>${esc(probe.title)}</b>` : "")
           + ` · 已连接页面数：<b>${Number(probe.connected_pages || 1)}</b></div>`
           + (capList.length ? `<div>已挂载服务：<code>${esc(capList.join(" / "))}</code></div>` : "");
@@ -5262,8 +5343,20 @@ const CreatorHubChannelsProtocol = (() => {
         statusText.textContent = "仅拦截 channels.weixin.qq.com，其余网站流量原样加密直通（自动链式复用原本地代理），停止或退出软件时自动恢复系统代理。";
       }
     }
-    if (startBtn) startBtn.disabled = running;
-    if (stopBtn) stopBtn.disabled = !running;
+    if (startBtn) {
+      startBtn.disabled = running;
+      if (!running) {
+        startBtn.innerHTML = '<svg aria-hidden="true"><use href="#i-play"/></svg>一键连接本机微信';
+      } else if (readyPages > 0) {
+        startBtn.innerHTML = '<svg aria-hidden="true"><use href="#i-check"/></svg>已连通（重启自动恢复）';
+      } else {
+        startBtn.innerHTML = '<svg aria-hidden="true"><use href="#i-refresh"/></svg>正在自动等待微信接入…';
+      }
+    }
+    if (stopBtn) {
+      stopBtn.disabled = !running;
+      stopBtn.hidden = !running;
+    }
 
     if (caBadge) {
       if (caTrusted) {
@@ -5281,7 +5374,7 @@ const CreatorHubChannelsProtocol = (() => {
       if (caTrusted) {
         caText.textContent = `已安装到 ${ca.store || "CurrentUser\\Root"}（指纹 ${String(ca.thumbprint || "").slice(0, 12)}…）。`;
       } else {
-        caText.textContent = "本地自签名 CA 仅用于签发 channels.weixin.qq.com 本机证书；安装时请在 Windows 安全弹窗点击「是」。";
+        caText.textContent = "点击上方「一键连接本机微信」会自动安装本机根证书；安装时请在 Windows 安全弹窗点击「是」。";
       }
     }
     if (caInstallBtn) caInstallBtn.disabled = caTrusted;
@@ -5289,31 +5382,37 @@ const CreatorHubChannelsProtocol = (() => {
 
     if (pagesBox) {
       const pages = Array.isArray(proxy.pages) ? proxy.pages : [];
-      const bridgeUrl = String(proxy.bridge_entry_url || "https://channels.weixin.qq.com/web/pages/bridge");
-      const altBridgeUrl = String(proxy.alt_bridge_entry_url || "https://channels.weixin.qq.com/platform/bridge");
-      if (!pages.length) {
-        if (running) {
-          let tipHtml = "";
-          if (proxy.liteapp_detected) {
-            tipHtml = `<b>已检测到微信 4.2+ LiteApp 视频号流量</b>：新版微信侧边栏「视频号」改用本地离线容器不再加载网页，请点击右侧按钮复制 <code>${esc(bridgeUrl)}</code> 发送到微信「文件传输助手」并在微信内点开一次即可建立桥接。`;
-          } else if (!proxy.wechat_traffic_seen) {
-            tipHtml = `代理已监听（若开启代理前微信已在运行，<b>请先彻底退出微信并重开一次</b>以刷新代理缓存）；微信 4.2+ 请复制 <code>${esc(bridgeUrl)}</code> 发送到微信「文件传输助手」并在微信内点开。`;
-          } else {
-            tipHtml = `已收到微信流量，等待桥接页接入：请复制 <code>${esc(bridgeUrl)}</code> 发送到微信「文件传输助手」并在微信内点开一次（旧版微信也可直接打开视频号搜索页）。`;
-          }
-          pagesBox.innerHTML = `<div class="channels-proxy-page-row"><div class="channels-proxy-page-copy"><span class="field-help" style="margin:0">${tipHtml}</span></div><div class="channels-proxy-page-meta"><button type="button" class="ghost sm" onclick="CreatorHubChannelsProtocol.copyPageUrl(${jsArg(bridgeUrl)})"><svg aria-hidden="true"><use href="#i-copy"/></svg>复制桥接链接</button><button type="button" class="ghost sm" onclick="CreatorHubChannelsProtocol.copyPageUrl(${jsArg(altBridgeUrl)})">备用链接</button></div></div>`;
+      const bridgeUrl = String(proxy.bridge_entry_url || "https://channels.weixin.qq.com/platform/bridge");
+      if (!running && !pages.length) {
+        pagesBox.hidden = true;
+        pagesBox.innerHTML = "";
+      } else if (!pages.length) {
+        pagesBox.hidden = false;
+        if (!caTrusted && proxy.system_proxy_managed) {
+          pagesBox.innerHTML = `<div class="channels-proxy-page-row" data-guide="waiting"><div class="channels-proxy-page-copy"><span class="field-help" style="margin:0"><b>需要信任本机证书</b>：点击右侧按钮并在系统弹窗点击「是」，即可让微信信任本地视频号桥接。</span></div><div class="channels-proxy-page-meta"><button type="button" class="sm" onclick="CreatorHubChannelsProtocol.installProxyCert()"><svg aria-hidden="true"><use href="#i-shield"/></svg>安装根证书</button></div></div>`;
+        } else if (proxy.wechat_needs_restart) {
+          const tipHtml = `<b>开启前微信已在运行 · 按顺序点右侧两步即可</b>：先点「<b>① 一键重开微信</b>」让微信加载新代理，登录后点「<b>② 复制桥接链接并打开微信</b>」发到「文件传输助手」点开一次（点开即自动变绿，以后重启自动恢复）。`;
+          pagesBox.innerHTML = `<div class="channels-proxy-page-row" data-guide="waiting"><div class="channels-proxy-page-copy"><span class="field-help" style="margin:0">${tipHtml}</span></div><div class="channels-proxy-page-meta"><button type="button" class="ghost sm" onclick="CreatorHubChannelsProtocol.restartWechat()">① 一键重开微信</button><button type="button" class="sm" onclick="CreatorHubChannelsProtocol.copyAndOpenWechat(${jsArg(bridgeUrl)})"><svg aria-hidden="true"><use href="#i-copy"/></svg>② 复制桥接链接并打开微信</button></div></div>`;
         } else {
-          pagesBox.innerHTML = `<span class="field-help" style="margin:0">启动代理后，微信 4.2+ 可复制桥接链接 <code>${esc(bridgeUrl)}</code> 发到「文件传输助手」点开，此处将实时显示已桥接页面。</span>`;
+          const tipHtml = proxy.liteapp_detected
+            ? `<b>已检测到微信 4.2+ LiteApp 流量 · 最后一步</b>：点击右侧按钮自动复制 <code>${esc(bridgeUrl)}</code> 并唤起微信，粘贴到「文件传输助手」发送并点开一次即可（点开后本页自动变绿，保持窗口最小化即可）。`
+            : `<b>最后一步：在电脑微信点开一次桥接链接</b>：点击右侧按钮自动复制 <code>${esc(bridgeUrl)}</code> 并唤起微信，粘贴到「文件传输助手」发送并点开一次即可（点开后本页自动变绿；保留该链接下次点一下即可连）。`;
+          const restartBtn = proxy.wechat_running
+            ? `<button type="button" class="ghost sm" onclick="CreatorHubChannelsProtocol.restartWechat()">重开微信</button>`
+            : "";
+          pagesBox.innerHTML = `<div class="channels-proxy-page-row" data-guide="waiting"><div class="channels-proxy-page-copy"><span class="field-help" style="margin:0">${tipHtml}</span></div><div class="channels-proxy-page-meta"><button type="button" class="sm" onclick="CreatorHubChannelsProtocol.copyAndOpenWechat(${jsArg(bridgeUrl)})"><svg aria-hidden="true"><use href="#i-copy"/></svg>复制桥接链接并打开微信</button>${restartBtn}<button type="button" class="ghost sm" onclick="CreatorHubChannelsProtocol.copyPageUrl(${jsArg(bridgeUrl)})">仅复制链接</button></div></div>`;
         }
       } else {
+        pagesBox.hidden = false;
         pagesBox.innerHTML = pages.map(p => {
+          const cleanUrl = cleanFinderUrl(p.url);
           const pill = p.ready
-            ? '<span class="pill done bare">协议就绪</span>'
+            ? '<span class="pill done bare">协议就绪 · 自动重连</span>'
             : `<span class="pill pending bare">${esc(p.reason || "等待加载")}</span>`;
-          const copyBtn = p.url
-            ? `<button type="button" class="ghost sm" onclick="CreatorHubChannelsProtocol.copyPageUrl(${jsArg(p.url)})">复制链接</button>`
+          const copyBtn = cleanUrl
+            ? `<button type="button" class="ghost sm" onclick="CreatorHubChannelsProtocol.copyPageUrl(${jsArg(cleanUrl)})">复制链接</button>`
             : "";
-          return `<div class="channels-proxy-page-row"><div class="channels-proxy-page-copy"><b>${esc(p.title || "微信视频号页面")}</b> <code>${esc(p.url || "")}</code></div><div class="channels-proxy-page-meta">${copyBtn}${pill}</div></div>`;
+          return `<div class="channels-proxy-page-row" data-guide="${p.ready ? "ready" : "waiting"}"><div class="channels-proxy-page-copy"><b>${esc(p.title || "微信视频号页面")}</b> <code>${esc(cleanUrl)}</code></div><div class="channels-proxy-page-meta">${copyBtn}${pill}</div></div>`;
         }).join("");
       }
     }
@@ -5354,28 +5453,25 @@ const CreatorHubChannelsProtocol = (() => {
     const probe = probeOverride || data.probe || null;
 
     if (badge && summaryText) {
-      if (probe && probe.ok && probe.ready) {
+      const proxyReady = cfgState.connection_mode === "proxy" && proxyState.running && Number(proxyState.ready_pages || 0) > 0;
+      if ((probe && probe.ok && probe.ready) || proxyReady) {
         badge.className = "pill done";
         badge.textContent = "已连通微信视频号";
-        summaryText.textContent = "本机桌面微信 Finder 通道握手正常，可执行搜索、创作者采集、全量二级评论与视频解密。";
+        summaryText.textContent = "本机桌面微信通道运行正常，可执行搜索、创作者主页采集、全量二级评论与视频解密（下次打开软件自动恢复）。";
       } else if (probe && !probe.ok) {
         badge.className = "pill failed";
         badge.textContent = "连接未就绪";
         summaryText.textContent = probe.error || "本地微信 Finder 通道暂不可达";
       } else if (data.configured) {
         if (cfgState.connection_mode === "proxy") {
-          if (proxyState.running && Number(proxyState.ready_pages || 0) > 0) {
-            badge.className = "pill done";
-            badge.textContent = "代理已就绪";
-            summaryText.textContent = `内置本地代理 127.0.0.1:${proxyState.proxy_port || 2023} 已接入桌面微信视频号页面，可直接使用。`;
-          } else if (proxyState.running) {
+          if (proxyState.running) {
             badge.className = "pill pending";
-            badge.textContent = "代理待微信接入";
-            summaryText.textContent = "内置本地代理已运行，请在桌面微信中打开一次视频号页面。";
+            badge.textContent = "等待微信点开链接";
+            summaryText.textContent = "本地代理已就绪并正在实时监听，请在电脑微信「文件传输助手」点开桥接链接（点开后自动变绿，无需手动检测）。";
           } else {
             badge.className = "pill pending";
-            badge.textContent = "已选代理 · 未启动";
-            summaryText.textContent = "已配置内置视频号代理模式，请先在下方安装根证书并点击「启动代理并应用」。";
+            badge.textContent = "已保存 · 未启动";
+            summaryText.textContent = "点击下方「一键连接本机微信」即可立即开启通道。";
           }
         } else if (cfgState.connection_mode === "endpoint_file" && epInfo && !epInfo.exists) {
           badge.className = "pill pending";
@@ -5395,7 +5491,7 @@ const CreatorHubChannelsProtocol = (() => {
       } else {
         badge.className = "pill skipped";
         badge.textContent = "未配置";
-        summaryText.textContent = "当前仅支持创作者助手同步本账号作品与公开分享预览；建议启用「内置本机微信代理桥接」解锁全量能力。";
+        summaryText.textContent = "点击下方「一键连接本机微信」，一键完成证书检查、本地代理与开机恢复（仅本账号同步与发布可直接使用创作者助手）。";
       }
     }
 
@@ -5414,6 +5510,7 @@ const CreatorHubChannelsProtocol = (() => {
     renderProbeBox(probe);
     renderProxy(data.proxy);
     renderBridge(data.bridge);
+    syncAutoPoll(data.proxy);
   }
 
   function applyConfigToForm(data, force = false) {
@@ -5428,6 +5525,10 @@ const CreatorHubChannelsProtocol = (() => {
     assign("ch-proto-proxy-port", String(cfgState.proxy_port || data?.proxy?.proxy_port || 2023));
     assign("ch-proto-endpoint", cfgState.cdp_endpoint || "");
     assign("ch-proto-endpoint-file", cfgState.cdp_endpoint_file || "");
+    const sysCheck = $("ch-proxy-manage-sysproxy");
+    if (sysCheck && force && typeof cfgState.proxy_manage_sysproxy === "boolean") {
+      sysCheck.checked = cfgState.proxy_manage_sysproxy;
+    }
     if (force) {
       clearDirtyFlags();
     }
@@ -5513,8 +5614,13 @@ const CreatorHubChannelsProtocol = (() => {
           }),
         });
         const probeObj = res.probe || { ok: !!res.ok, ready: !!res.ready, error: res.error || "" };
-        if (lastStatus) renderStatus(lastStatus, probeObj);
-        else renderProbeBox(probeObj);
+        if (lastStatus) {
+          if (res.proxy) lastStatus = { ...lastStatus, proxy: res.proxy };
+          renderStatus(lastStatus, probeObj);
+        } else {
+          if (res.proxy) renderProxy(res.proxy);
+          renderProbeBox(probeObj);
+        }
         if (probeObj.ok && probeObj.ready) {
           setMsg("通道握手成功 ✓ 已命中微信原生视频号页面", "success");
           toast("微信视频号通道连通正常 ✓", "ok");
@@ -5605,6 +5711,18 @@ const CreatorHubChannelsProtocol = (() => {
     if (lastStatus?.bridge) renderBridge(lastStatus.bridge);
   }
 
+  async function silentCopyText(text) {
+    const clean = String(text || "").trim();
+    if (!clean) return false;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(clean);
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
   async function startProxy() {
     const btn = $("ch-proxy-start-btn");
     const proxyPort = Number($("ch-proto-proxy-port")?.value || 2023);
@@ -5615,8 +5733,13 @@ const CreatorHubChannelsProtocol = (() => {
       $("ch-proto-proxy-port")?.focus();
       return;
     }
-    setMsg(manageSysProxy ? "正在启动内置本地视频号代理并设置系统代理…" : "正在启动内置本地视频号代理（不修改系统代理）…");
-    await withBusy(btn, "启动中", async () => {
+    const caAlreadyTrusted = !!lastStatus?.proxy?.ca?.trusted;
+    setMsg(
+      manageSysProxy && !caAlreadyTrusted
+        ? "正在自动检查根证书（首次请在系统弹窗点「是」）并开启微信通道…"
+        : (manageSysProxy ? "正在一键开启本地视频号通道并保存自动恢复…" : "正在启动内置本地视频号代理（不修改系统代理）…")
+    );
+    await withBusy(btn, "连接中", async () => {
       try {
         const data = await api("/api/channels/protocol/proxy/start", {
           method: "POST",
@@ -5625,25 +5748,33 @@ const CreatorHubChannelsProtocol = (() => {
             proxy_port: proxyPort,
             enable_system_proxy: manageSysProxy,
             apply_to_config: true,
+            auto_install_cert: true,
           }),
         });
         applyConfigToForm(data, true);
         renderStatus(data);
-        const caTrusted = !!data?.proxy?.ca?.trusted;
-        const sysManagedMsg = manageSysProxy
-          ? "内置视频号代理已启动 ✓ 若微信此前已打开请重开微信，再将上方桥接链接发到「文件传输助手」点开"
-          : `内置视频号代理已监听 127.0.0.1:${proxyPort}（未修改系统代理），请将 channels.weixin.qq.com 流量指向该端口`;
-        setMsg(
-          caTrusted
-            ? sysManagedMsg
-            : "内置代理已启动，请先点击「安装根证书」让微信信任本机证书",
-          caTrusted ? "success" : "warning"
-        );
-        toast("内置视频号代理已启动", "ok");
+        const readyNow = Number(data?.proxy?.ready_pages || 0) > 0;
+        const bridgeUrl = String(data?.proxy?.bridge_entry_url || "https://channels.weixin.qq.com/platform/bridge");
+        if (readyNow) {
+          setMsg("微信视频号通道已连通 ✓ 下次打开软件将自动恢复", "success");
+          toast("微信视频号通道已连通 ✓", "ok");
+        } else {
+          const copied = await silentCopyText(bridgeUrl);
+          const copyNote = copied ? "（桥接链接已自动复制）" : "";
+          if (!manageSysProxy) {
+            setMsg(`内置视频号代理已监听 127.0.0.1:${proxyPort}${copyNote}，请将 channels.weixin.qq.com 分流至该端口`, "success");
+          } else if (data?.proxy?.wechat_needs_restart) {
+            setMsg(`通道已开启${copyNote} ✓ 请按上方引导点「① 一键重开微信」→「② 复制桥接链接并打开微信」`, "success");
+          } else {
+            setMsg(`通道已开启${copyNote} ✓ 点击上方「复制桥接链接并打开微信」，在「文件传输助手」粘贴点开即自动连通`, "success");
+          }
+          toast("本地通道已开启，请在微信点开桥接链接", "ok");
+        }
+        globalThis.CreatorHubEngineSettings?.load?.();
         globalThis.CreatorHubTransportMatrix?.load?.();
       } catch (e) {
-        setMsg("启动代理失败：" + e.message, "error");
-        toast("启动代理失败：" + e.message, "err", 7000);
+        setMsg("一键连接失败：" + e.message, "error");
+        toast("一键连接失败：" + e.message, "err", 7000);
       }
     });
     if (lastStatus?.proxy) renderProxy(lastStatus.proxy);
@@ -5651,20 +5782,83 @@ const CreatorHubChannelsProtocol = (() => {
 
   async function stopProxy() {
     const btn = $("ch-proxy-stop-btn");
-    setMsg("正在停止代理并恢复 Windows 系统代理…");
-    await withBusy(btn, "停止中", async () => {
+    stopAutoPoll();
+    setMsg("正在断开通道并恢复 Windows 系统代理…");
+    await withBusy(btn, "断开中", async () => {
       try {
-        const data = await api("/api/channels/protocol/proxy/stop", { method: "POST" });
+        const data = await api("/api/channels/protocol/proxy/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ disable_auto_start: true }),
+        });
         applyConfigToForm(data, true);
         renderStatus(data);
-        setMsg("内置视频号代理已停止，已恢复系统代理设置", "");
-        toast("内置视频号代理已停止", "info");
+        setMsg("已关闭视频号微信通道，系统代理已恢复原状", "");
+        toast("视频号微信通道已关闭", "info");
+        globalThis.CreatorHubEngineSettings?.load?.();
         globalThis.CreatorHubTransportMatrix?.load?.();
       } catch (e) {
-        setMsg("停止代理失败：" + e.message, "error");
+        setMsg("关闭通道失败：" + e.message, "error");
       }
     });
     if (lastStatus?.proxy) renderProxy(lastStatus.proxy);
+  }
+
+  async function copyAndOpenWechat(url) {
+    const bridgeUrl = String(url || lastStatus?.proxy?.bridge_entry_url || "https://channels.weixin.qq.com/platform/bridge").trim();
+    const copied = await silentCopyText(bridgeUrl);
+    try {
+      const res = await api("/api/channels/protocol/wechat/open", { method: "POST" });
+      if (lastStatus && res?.proxy) {
+        lastStatus = { ...lastStatus, proxy: res.proxy };
+        renderStatus(lastStatus);
+      }
+      if (res?.ok) {
+        setMsg(
+          (copied ? "桥接链接已复制，已唤起电脑微信 ✓ " : "已唤起电脑微信 ✓ ")
+            + "请在「文件传输助手」粘贴发送并点击打开一次，本页将自动变绿",
+          "success"
+        );
+        toast("链接已复制并已打开微信，请在「文件传输助手」粘贴点开", "ok", 4500);
+      } else {
+        setMsg(
+          (copied ? "桥接链接已复制 ✓ " : "")
+            + (res?.error || "请手动切换到电脑微信，在「文件传输助手」粘贴发送并点开"),
+          copied ? "success" : "warning"
+        );
+        toast(copied ? "桥接链接已复制，请切到微信粘贴点开" : (res?.error || "请手动打开电脑微信"), copied ? "ok" : "err", 4500);
+      }
+    } catch (e) {
+      if (copied) {
+        setMsg("桥接链接已复制 ✓ 请切换到电脑微信「文件传输助手」粘贴发送并点开", "success");
+        toast("桥接链接已复制，请切到微信粘贴点开", "ok", 4000);
+      } else {
+        setMsg("唤起微信失败：" + e.message, "error");
+      }
+    }
+  }
+
+  async function restartWechat() {
+    const bridgeUrl = String(lastStatus?.proxy?.bridge_entry_url || "https://channels.weixin.qq.com/platform/bridge").trim();
+    await silentCopyText(bridgeUrl);
+    setMsg("正在重启电脑微信以应用新代理…");
+    try {
+      const res = await api("/api/channels/protocol/wechat/restart", { method: "POST" });
+      if (lastStatus && res?.proxy) {
+        lastStatus = { ...lastStatus, proxy: res.proxy };
+        renderStatus(lastStatus);
+      }
+      if (res?.ok) {
+        setMsg(res.message || "已重开电脑微信 ✓ 点击「进入微信」后在「文件传输助手」粘贴并点开桥接链接", "success");
+        toast("电脑微信已重开（桥接链接已复制）✓", "ok", 5000);
+      } else {
+        setMsg(res?.error || "未能自动重开微信，请手动在右下角托盘退出微信后重新打开", "warning");
+        toast(res?.error || "请手动退出并重开电脑微信", "err", 6000);
+      }
+    } catch (e) {
+      setMsg("重启微信失败：" + e.message, "error");
+      toast("重启微信失败：" + e.message, "err", 6000);
+    }
   }
 
   async function installProxyCert() {
@@ -5819,6 +6013,10 @@ const CreatorHubChannelsProtocol = (() => {
     uninstallProxyCert,
     downloadProxyCert,
     copyPageUrl,
+    copyAndOpenWechat,
+    restartWechat,
+    pollOnce,
+    stopAutoPoll,
     startBridge,
     stopBridge,
   };

@@ -213,7 +213,7 @@ function fixture() {
   await f.ctrl.reset();
   assert.equal(f.nodes['ch-proto-mode'].value, 'none');
 
-  // Built-in local proxy workflow (CA install, proxy start/stop, connected pages rendering, uninstall)
+  // Built-in local proxy workflow (one-click auto cert, wake/restart WeChat, auto-sync probe, URL ticket stripping)
   f.nodes['ch-proto-mode'].value = 'proxy';
   f.ctrl.onModeChange();
   assert.equal(f.nodes['ch-proto-proxy-wrap'].hidden, false);
@@ -244,11 +244,12 @@ function fixture() {
   f.routes.set('POST /api/channels/protocol/proxy/start', body => {
     assert.equal(body.proxy_port, 2023);
     assert.equal(body.enable_system_proxy, true);
+    assert.equal(body.auto_install_cert, true);
     return {
       ...baseStatus,
       configured: true,
       proxy_configured: true,
-      config: { ...baseStatus.config, connection_mode: 'proxy', proxy_enabled: true, proxy_port: 2023, configured: true },
+      config: { ...baseStatus.config, connection_mode: 'proxy', proxy_enabled: true, proxy_port: 2023, proxy_manage_sysproxy: true, configured: true },
       proxy: {
         running: true,
         state: 'ready',
@@ -258,7 +259,7 @@ function fixture() {
         ca: proxyInstalledStatus.proxy.ca,
         connected_pages: 1,
         ready_pages: 1,
-        pages: [{ page_id: 'p1', title: '微信视频号<script>', url: 'https://channels.weixin.qq.com/web/pages/feed', ready: true }],
+        pages: [{ page_id: 'p1', title: '微信视频号<script>', url: 'https://channels.weixin.qq.com/web/pages/feed?exportkey=SECRET123&pass_ticket=TICKET456&username=v2_test@finder', ready: true }],
         commands_forwarded: 3,
       },
       capabilities: { ...baseStatus.capabilities, keyword_search: true, creator_works: true, full_comment_threads: true },
@@ -266,15 +267,20 @@ function fixture() {
   });
   await f.ctrl.startProxy();
   assert.equal(f.nodes['ch-proto-mode'].value, 'proxy');
+  assert.equal(f.nodes['ch-proto-badge'].textContent, '已连通微信视频号');
   assert.equal(f.nodes['ch-proxy-badge'].textContent, '运行中 · 页面就绪');
   assert.equal(f.nodes['ch-proxy-start-btn'].disabled, true);
   assert.equal(f.nodes['ch-proxy-stop-btn'].disabled, false);
+  assert.equal(f.nodes['ch-proxy-stop-btn'].hidden, false);
   assert(f.nodes['ch-proxy-pages'].innerHTML.includes('channels.weixin.qq.com/web/pages/feed'));
+  assert(f.nodes['ch-proxy-pages'].innerHTML.includes('username=v2_test@finder'));
+  assert(!f.nodes['ch-proxy-pages'].innerHTML.includes('SECRET123'));
+  assert(!f.nodes['ch-proxy-pages'].innerHTML.includes('TICKET456'));
   assert(f.nodes['ch-proxy-pages'].innerHTML.includes('copyPageUrl'));
   assert(!f.nodes['ch-proxy-pages'].innerHTML.includes('<script>'));
   assert.equal(await f.ctrl.copyPageUrl('https://channels.weixin.qq.com/web/pages/profile?username=v2_test@finder'), true);
 
-  // Verify WeChat 4.2+ LiteApp detection banner, bridge copy button & upstream proxy chaining label
+  // Verify WeChat 4.2+ LiteApp detection banner, bridge copy+open button & upstream proxy chaining label
   f.routes.set('GET /api/channels/protocol/status', () => ({
     ...baseStatus,
     configured: true,
@@ -293,34 +299,67 @@ function fixture() {
       pages: [],
       wechat_traffic_seen: true,
       liteapp_detected: true,
-      bridge_entry_url: 'https://channels.weixin.qq.com/web/pages/bridge',
-      alt_bridge_entry_url: 'https://channels.weixin.qq.com/platform/bridge',
+      wechat_running: true,
+      wechat_needs_restart: false,
+      bridge_entry_url: 'https://channels.weixin.qq.com/platform/bridge',
+      alt_bridge_entry_url: 'https://channels.weixin.qq.com/web/pages/bridge',
     },
   }));
   await f.ctrl.load();
   assert(f.nodes['ch-proxy-status-text'].textContent.includes('链式上游 127.0.0.1:17890'));
   assert(f.nodes['ch-proxy-pages'].innerHTML.includes('LiteApp'));
-  assert(f.nodes['ch-proxy-pages'].innerHTML.includes('channels.weixin.qq.com/web/pages/bridge'));
+  assert(f.nodes['ch-proxy-pages'].innerHTML.includes('channels.weixin.qq.com/platform/bridge'));
   assert(f.nodes['ch-proxy-pages'].innerHTML.includes('复制桥接链接'));
 
-  // One-click probe button always probes proxy mode explicitly
+  // Test copyAndOpenWechat & restartWechat helpers
+  f.routes.set('POST /api/channels/protocol/wechat/open', () => ({
+    ok: true,
+    message: '已唤起电脑微信窗口',
+    proxy: { ...proxyInstalledStatus.proxy, running: true, state: 'waiting_wechat' },
+  }));
+  await f.ctrl.copyAndOpenWechat('https://channels.weixin.qq.com/platform/bridge');
+  assert.equal(f.nodes['ch-proto-msg'].dataset.state, 'success');
+
+  f.routes.set('POST /api/channels/protocol/wechat/restart', () => ({
+    ok: true,
+    message: '已重新启动电脑微信',
+    proxy: { ...proxyInstalledStatus.proxy, running: true, state: 'waiting_wechat', wechat_needs_restart: false },
+  }));
+  await f.ctrl.restartWechat();
+  assert.equal(f.nodes['ch-proto-msg'].dataset.state, 'success');
+
+  // One-click probe button always probes proxy mode explicitly, strips tickets, and syncs proxy panel state
   f.nodes['ch-proto-mode'].value = 'endpoint_file';
   f.routes.set('POST /api/channels/protocol/probe', body => {
     assert.equal(body.connection_mode, 'proxy');
     return {
       ok: true, ready: true, configured: true,
-      probe: { ok: true, ready: true, transport: 'channels-local-proxy', url: 'https://channels.weixin.qq.com/web/pages/feed', connected_pages: 1 },
+      probe: { ok: true, ready: true, transport: 'channels-local-proxy', url: 'https://channels.weixin.qq.com/web/pages/feed?exportkey=HIDE_ME', connected_pages: 1 },
+      proxy: {
+        ...proxyInstalledStatus.proxy,
+        running: true,
+        state: 'ready',
+        connected_pages: 1,
+        ready_pages: 1,
+        pages: [{ page_id: 'p1', title: '视频号桥接', url: 'https://channels.weixin.qq.com/web/pages/bridge', ready: true }],
+      },
     };
   });
   await f.ctrl.probe('proxy');
   assert.equal(f.nodes['ch-proto-probe-box'].dataset.state, 'ready');
   assert(f.nodes['ch-proto-probe-box'].innerHTML.includes('channels.weixin.qq.com/web/pages/feed'));
+  assert(!f.nodes['ch-proto-probe-box'].innerHTML.includes('HIDE_ME'));
+  assert.equal(f.nodes['ch-proxy-badge'].textContent, '运行中 · 页面就绪');
 
-  f.routes.set('POST /api/channels/protocol/proxy/stop', () => proxyInstalledStatus);
+  f.routes.set('POST /api/channels/protocol/proxy/stop', body => {
+    assert.equal(body.disable_auto_start, true);
+    return proxyInstalledStatus;
+  });
   await f.ctrl.stopProxy();
   assert.equal(f.nodes['ch-proxy-badge'].textContent, '未启动');
   assert.equal(f.nodes['ch-proxy-start-btn'].disabled, false);
   assert.equal(f.nodes['ch-proxy-stop-btn'].disabled, true);
+  assert.equal(f.nodes['ch-proxy-stop-btn'].hidden, true);
 
   f.routes.set('POST /api/channels/protocol/proxy/cert/uninstall', () => ({
     ok: true,

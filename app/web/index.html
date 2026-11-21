@@ -2982,10 +2982,10 @@
   <div class="card" id="channels-protocol-card" data-section="channels">
     <div class="card-head">
       <span class="card-ic"><svg aria-hidden="true"><use href="#i-network"/></svg></span>
-      <h2>视频号微信通道 <span class="sub">一键连接本机微信 · 搜索 / 他人主页 / 视频解密</span></h2>
+      <h2>视频号微信通道 <span class="sub">一键连接本机微信 · 重启自动恢复</span></h2>
     </div>
     <div class="stack">
-      <div class="channels-proto-summary" id="channels-proto-summary">
+      <div class="channels-oneclick-panel stack" id="channels-proxy-panel">
         <div class="row-between gap-wrap">
           <div class="row gap-wrap">
             <span class="pill pending" id="ch-proto-badge">正在读取…</span>
@@ -2994,52 +2994,41 @@
           <button type="button" class="ghost sm" id="ch-proto-refresh-btn" onclick="CreatorHubChannelsProtocol.load()"><svg aria-hidden="true"><use href="#i-refresh"/></svg>刷新状态</button>
         </div>
         <div class="channels-proto-caps" id="ch-proto-caps" aria-label="视频号双通道当前能力"></div>
-        <div class="channels-proto-probe" id="ch-proto-probe-box" hidden></div>
-      </div>
 
-      <div class="channels-oneclick-panel stack" id="channels-proxy-panel">
-        <div class="row-between gap-wrap">
-          <div class="row gap-wrap">
-            <b>连接本机已登录微信（一键模式）</b>
-            <span class="pill skipped" id="ch-proxy-badge">未启动</span>
-          </div>
-          <button type="button" class="ghost sm" id="ch-proxy-refresh-btn" onclick="CreatorHubChannelsProtocol.load()"><svg aria-hidden="true"><use href="#i-refresh"/></svg>刷新状态</button>
-        </div>
-        <p class="field-help" id="ch-proxy-status-text" style="margin:0">仅拦截 channels.weixin.qq.com，其余网站流量原样加密直通，停止或退出软件时自动恢复系统代理。</p>
-
-        <div class="channels-proxy-ca-box">
-          <div class="row-between gap-wrap">
-            <div class="row gap-wrap">
-              <span class="pill skipped" id="ch-proxy-ca-badge">根证书未安装</span>
-              <span class="field-help" id="ch-proxy-ca-text" style="margin:0">本地自签名 CA 仅用于签发 channels.weixin.qq.com 本机证书；安装时请在系统弹窗点击「是」。</span>
-            </div>
-            <div class="channels-proto-inline-tools" style="margin-top:0">
-              <button type="button" class="ghost sm" id="ch-proxy-ca-install-btn" onclick="CreatorHubChannelsProtocol.installProxyCert()"><svg aria-hidden="true"><use href="#i-shield"/></svg>① 安装根证书</button>
-              <button type="button" class="ghost sm" id="ch-proxy-ca-download-btn" onclick="CreatorHubChannelsProtocol.downloadProxyCert()"><svg aria-hidden="true"><use href="#i-download"/></svg>下载证书</button>
-              <button type="button" class="ghost sm danger" id="ch-proxy-ca-uninstall-btn" onclick="CreatorHubChannelsProtocol.uninstallProxyCert()" disabled>卸载证书</button>
-            </div>
-          </div>
-        </div>
-
-        <div id="ch-proxy-pages" class="channels-proxy-pages" aria-label="已连接的微信视频号页面"></div>
-
-        <label class="switch-row" for="ch-proxy-manage-sysproxy">
-          <input id="ch-proxy-manage-sysproxy" type="checkbox" checked>
-          <span class="switch-copy"><b>自动托管 Windows 系统代理（推荐）</b><span>启动时备份原设置并指向本地代理，停止时自动恢复；若被外部代理守卫或权限限制拦截，可取消勾选后手动将 <code>channels.weixin.qq.com</code> 分流至 <code>127.0.0.1:2023</code>。</span></span>
-        </label>
+        <div id="ch-proxy-pages" class="channels-proxy-pages" aria-label="微信连接引导与已连接页面" hidden></div>
 
         <div class="form-actions channels-proxy-actions">
           <span class="status-text" id="ch-proto-msg" role="status" aria-live="polite"></span>
-          <button type="button" id="ch-proxy-start-btn" onclick="CreatorHubChannelsProtocol.startProxy()"><svg aria-hidden="true"><use href="#i-play"/></svg>② 一键开启并应用</button>
-          <button type="button" class="ghost" id="ch-proxy-probe-btn" onclick="CreatorHubChannelsProtocol.probe('proxy')"><svg aria-hidden="true"><use href="#i-bolt"/></svg>③ 检测微信连通</button>
-          <button type="button" class="ghost danger" id="ch-proxy-stop-btn" onclick="CreatorHubChannelsProtocol.stopProxy()" disabled><svg aria-hidden="true"><use href="#i-x"/></svg>停止</button>
+          <button type="button" id="ch-proxy-start-btn" onclick="CreatorHubChannelsProtocol.startProxy()"><svg aria-hidden="true"><use href="#i-play"/></svg>一键连接本机微信</button>
+          <button type="button" class="ghost danger" id="ch-proxy-stop-btn" onclick="CreatorHubChannelsProtocol.stopProxy()" hidden disabled><svg aria-hidden="true"><use href="#i-x"/></svg>断开并关闭</button>
         </div>
-        <p class="field-help" style="margin:0">操作顺序：① 首次点击「① 安装根证书」并同意系统弹窗 → ② 点击「② 一键开启并应用」（若微信此前已在运行，请先彻底退出微信再重新打开）→ 点击上方「复制桥接链接」发送到微信「文件传输助手」并在微信内点开一次（兼容微信 4.2+ LiteApp 新架构；旧版微信也可直接打开视频号页面）→ ③ 点击「③ 检测微信连通」即可使用。</p>
       </div>
 
       <details class="collection-advanced" id="channels-advanced-details">
-        <summary>高级连接方式与调试选项（一般用户无需展开）</summary>
+        <summary>高级设置、证书管理与调试选项（一般用户无需展开）</summary>
         <div class="collection-advanced-body stack">
+          <div class="channels-proxy-ca-box stack">
+            <div class="row-between gap-wrap">
+              <div class="row gap-wrap">
+                <b>本机代理与根证书状态</b>
+                <span class="pill skipped" id="ch-proxy-badge">未启动</span>
+                <span class="pill skipped" id="ch-proxy-ca-badge">根证书未安装</span>
+              </div>
+              <div class="channels-proto-inline-tools" style="margin-top:0">
+                <button type="button" class="ghost sm" id="ch-proxy-probe-btn" onclick="CreatorHubChannelsProtocol.probe('proxy')"><svg aria-hidden="true"><use href="#i-bolt"/></svg>手动检测连通</button>
+                <button type="button" class="ghost sm" id="ch-proxy-ca-install-btn" onclick="CreatorHubChannelsProtocol.installProxyCert()"><svg aria-hidden="true"><use href="#i-shield"/></svg>安装根证书</button>
+                <button type="button" class="ghost sm" id="ch-proxy-ca-download-btn" onclick="CreatorHubChannelsProtocol.downloadProxyCert()"><svg aria-hidden="true"><use href="#i-download"/></svg>下载证书</button>
+                <button type="button" class="ghost sm danger" id="ch-proxy-ca-uninstall-btn" onclick="CreatorHubChannelsProtocol.uninstallProxyCert()" disabled>卸载证书</button>
+              </div>
+            </div>
+            <p class="field-help" id="ch-proxy-status-text" style="margin:0">仅拦截 channels.weixin.qq.com，其余网站流量原样加密直通，停止或退出软件时自动恢复系统代理。</p>
+            <p class="field-help" id="ch-proxy-ca-text" style="margin:0">点击上方「一键连接本机微信」时会自动检查并安装本机根证书；仅排障时需在此手动管理。</p>
+            <div class="channels-proto-probe" id="ch-proto-probe-box" hidden></div>
+            <label class="switch-row" for="ch-proxy-manage-sysproxy">
+              <input id="ch-proxy-manage-sysproxy" type="checkbox" checked>
+              <span class="switch-copy"><b>自动托管 Windows 系统代理（推荐）</b><span>启动时备份原设置并指向本地代理，退出软件时自动恢复；若使用外部代理规则手动将 <code>channels.weixin.qq.com</code> 分流至 <code>127.0.0.1:2023</code>，可取消勾选。</span></span>
+            </label>
+          </div>
       <form id="channels-protocol-form" class="stack" novalidate onsubmit="event.preventDefault();CreatorHubChannelsProtocol.save()">
         <div class="form-grid">
           <div class="form-field">
@@ -3131,7 +3120,7 @@
 
       <div class="form-note">
         <svg aria-hidden="true"><use href="#i-info"/></svg>
-        <span>遵循零进程注入与零补丁原则：推荐使用「内置本机微信代理桥接」（仅拦截 channels.weixin.qq.com 并信任本地 CA，无需修改微信），或接入本机 CDP / WMPF 调试通道并在微信内打开一次视频号页面（<code>channels.weixin.qq.com/web/pages/*</code>）；仅同步「本账号作品」和发布可直接使用创作者助手。</span>
+        <span>首次点击「一键连接本机微信」后，只需在电脑微信「文件传输助手」粘贴并点开一次桥接链接（保持窗口最小化即可）；此后重启 CreatorHub 会自动恢复连接，无需重复配置。</span>
       </div>
     </div>
   </div>
