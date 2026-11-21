@@ -825,3 +825,266 @@ def test_ws_bridge_handles_bootstrap_list_capabilities(tmp_path):
             proxy.ca.close()
 
     asyncio.run(_run())
+
+
+def test_upstream_proxy_chaining_and_dead_upstream_fallback(tmp_path):
+    """Verify local upstream HTTP proxy chaining and automatic fallback when upstream is unreachable."""
+    from app.platforms.channels.system_proxy import parse_loopback_proxy_server, resolve_upstream_proxy
+
+    assert parse_loopback_proxy_server("127.0.0.1:17890") == ("127.0.0.1", 17890)
+    assert parse_loopback_proxy_server("http=127.0.0.1:7890;https=localhost:7891") == ("localhost", 7891)
+    assert parse_loopback_proxy_server("corp.proxy:8080") is None
+
+    # Dead port must fall back cleanly to direct instead of causing 502s.
+    dead_reg = _FakeRegistryBackend(proxy_enable=1, proxy_server="127.0.0.1:65431", proxy_override="")
+    dead_res = resolve_upstream_proxy(data_dir=tmp_path, proxy_port=2023, backend=dead_reg, timeout=0.15)
+    assert dead_res["enabled"] is False
+
+    # Same port as local proxy must never self-loop.
+    same_reg = _FakeRegistryBackend(proxy_enable=1, proxy_server="127.0.0.1:2023", proxy_override="")
+    same_res = resolve_upstream_proxy(data_dir=tmp_path, proxy_port=2023, backend=same_reg, probe_tcp=False)
+    assert same_res["enabled"] is False
+
+    async def _run():
+        seen_authorities: list[str] = []
+
+        async def _fake_upstream_proxy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            try:
+                head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5.0)
+                first_line = head.decode("latin-1").split("\r\n", 1)[0]
+                parts = first_line.split(" ")
+                if len(parts) >= 2 and parts[0] == "CONNECT":
+                    seen_authorities.append(parts[1])
+                    writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    await writer.drain()
+                    data = await asyncio.wait_for(reader.read(1024), timeout=5.0)
+                    writer.write(b"UPSTREAM:" + data)
+                    await writer.drain()
+            finally:
+                writer.close()
+
+        upstream_srv = await asyncio.start_server(_fake_upstream_proxy, "127.0.0.1", 0)
+        upstream_port = upstream_srv.sockets[0].getsockname()[1]
+
+        fake_reg = _FakeRegistryBackend(
+            proxy_enable=1,
+            proxy_server=f"127.0.0.1:{upstream_port}",
+            proxy_override="localhost;<local>",
+        )
+        proxy = ChannelsProxyManager(tmp_path, system_proxy_backend=fake_reg)
+        try:
+            started = await proxy.start(proxy_port=0, enable_system_proxy_flag=True)
+            proxy_port = started["proxy_port"]
+            assert started["upstream_proxy"]["enabled"] is True
+            assert started["upstream_proxy"]["server"] == f"127.0.0.1:{upstream_port}"
+            assert fake_reg.proxy_server == f"127.0.0.1:{proxy_port}"
+
+            def _roundtrip_via_upstream() -> bytes:
+                sock = _open_proxy_connect_socket(proxy_port, "finder.video.qq.com:443")
+                try:
+                    sock.sendall(b"video-chunk")
+                    return sock.recv(64)
+                finally:
+                    sock.close()
+
+            reply = await asyncio.to_thread(_roundtrip_via_upstream)
+            assert reply == b"UPSTREAM:video-chunk"
+            assert "finder.video.qq.com:443" in seen_authorities
+            assert proxy.status()["wechat_traffic_seen"] is True
+
+            await proxy.stop()
+            assert fake_reg.proxy_server == f"127.0.0.1:{upstream_port}"
+        finally:
+            await proxy.stop()
+            proxy.ca.close()
+            upstream_srv.close()
+            await upstream_srv.wait_closed()
+
+    asyncio.run(_run())
+
+
+def test_wechat_42_liteapp_detection_and_bridge_landing_page(tmp_path):
+    """Verify WeChat 4.2+ LiteApp telemetry (`pf=lite`) and `/web/pages/bridge` landing HTML."""
+
+    def _upstream_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/web/pages/home":
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/html; charset=utf-8"},
+                text='<!doctype html><html><head><link rel="modulepreload" href="//res.wx.qq.com/t/wx_fed/finder/web/web-finder/res/js/virtual_svg-icons-register.publishTest42.js"></head><body></body></html>',
+            )
+        if request.url.path == "/web/report-perf":
+            return httpx.Response(201, text="ok")
+        return httpx.Response(404, text="not found")
+
+    async def _run():
+        fake_reg = _FakeRegistryBackend(proxy_enable=0, proxy_server="", proxy_override="")
+        proxy = ChannelsProxyManager(
+            tmp_path,
+            system_proxy_backend=fake_reg,
+            upstream_transport=httpx.MockTransport(_upstream_handler),
+        )
+        try:
+            started = await proxy.start(proxy_port=0, enable_system_proxy_flag=False)
+            proxy_port = started["proxy_port"]
+            ca_ctx = ssl.create_default_context(cafile=str(proxy.ca.ca_cert_path))
+
+            def _do_tls_request(method: str, target: str) -> tuple[int, bytes]:
+                sock = _open_proxy_connect_socket(proxy_port, "channels.weixin.qq.com:443")
+                tls_sock = ca_ctx.wrap_socket(sock, server_hostname="channels.weixin.qq.com")
+                try:
+                    c = h11.Connection(h11.CLIENT)
+                    tls_sock.sendall(
+                        c.send(
+                            h11.Request(
+                                method=method,
+                                target=target,
+                                headers=[
+                                    ("Host", "channels.weixin.qq.com"),
+                                    ("User-Agent", "Mozilla/5.0 UnifiedPCWindows(0xf2540c35) MicroMessenger"),
+                                    ("Connection", "close"),
+                                ],
+                            )
+                        )
+                        + c.send(h11.EndOfMessage())
+                    )
+                    status_code = 0
+                    chunks: list[bytes] = []
+                    while True:
+                        ev = c.next_event()
+                        if ev is h11.NEED_DATA:
+                            c.receive_data(tls_sock.recv(65536))
+                            continue
+                        if isinstance(ev, h11.Response):
+                            status_code = ev.status_code
+                        elif isinstance(ev, h11.Data):
+                            chunks.append(ev.data)
+                        elif isinstance(ev, h11.EndOfMessage):
+                            break
+                    return status_code, b"".join(chunks)
+                finally:
+                    tls_sock.close()
+
+            code_perf, _ = await asyncio.to_thread(
+                _do_tls_request, "POST", "/web/report-perf?pf=lite"
+            )
+            assert code_perf == 201
+            st = proxy.status()
+            assert st["wechat_traffic_seen"] is True
+            assert st["liteapp_detected"] is True
+
+            with patch.object(proxy.ca, "trust_status", return_value={"trusted": True}):
+                probe_res = await proxy.probe()
+                assert probe_res["ok"] is False
+                assert "LiteApp" in probe_res["error"]
+                assert "channels.weixin.qq.com/web/pages/bridge" in probe_res["error"]
+
+            for path in ("/web/pages/bridge", "/platform/bridge", "/__creatorhub_bridge"):
+                code_land, body_land = await asyncio.to_thread(_do_tls_request, "GET", path)
+                assert code_land == 200
+                text_land = body_land.decode("utf-8")
+                assert "/__creatorhub_bridge.js?" in text_land
+                assert "virtual_svg-icons-register.publishTest42.js" in text_land
+        finally:
+            await proxy.stop()
+            proxy.ca.close()
+
+    asyncio.run(_run())
+
+
+def test_native_weixin_jsbridge_driver_and_h5_auth_fallback_in_node():
+    """Verify pure WeixinJSBridge mode (WeChat 4.2+ bridge page) + finderH5Auth retry + uint64 safety."""
+    import shutil
+    import subprocess
+
+    node_bin = shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
+    if not Path(node_bin).exists():
+        pytest.skip("Node.js runtime not installed")
+
+    boot_js = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "platforms"
+        / "channels"
+        / "js"
+        / "finder_protocol_browser_bootstrap.js"
+    ).as_posix()
+
+    script = f"""
+const fs = require("fs");
+const vm = require("vm");
+const assert = require("assert");
+
+const calls = [];
+const ctx = vm.createContext({{
+  globalThis: null,
+  setTimeout,
+  clearTimeout,
+  location: {{ href: "https://channels.weixin.qq.com/web/pages/bridge" }},
+  document: {{ scripts: [], querySelectorAll: () => [] }},
+  performance: {{ getEntriesByType: () => [] }},
+  WeixinJSBridge: {{
+    invoke: (method, params, cb) => {{
+      calls.push({{ method, params }});
+      if (method === "finderH5Auth") {{
+        cb({{ base_resp: {{ ret: 0 }}, h5AuthToken: "h5_tok_42" }});
+        return;
+      }}
+      if (method === "finderH5ExtTransfer") {{
+        // Simulate WeChat 4.2 general H5 tab requiring h5AuthToken on first attempt
+        if (!params.h5AuthToken) {{
+          cb({{ err_msg: "finderH5ExtTransfer:fail", jsapi_resp: {{ ret: -13 }} }});
+          return;
+        }}
+        const req = JSON.parse(params.req_json);
+        if (params.cgi_cmdid === 4287) {{
+          // Simulate unquoted >53-bit integer + NaN recovery in resp_json
+          cb({{
+            err_msg: "finderH5ExtTransfer:ok",
+            jsapi_resp: {{
+              ret: 0,
+              resp_json: '{{"BaseResponse":{{"Ret":0}},"object_list":[{{"id":15048048986165157126,"object_nonce_id":"n_42","score":NaN}}],"continue_flag":0}}'
+            }}
+          }});
+          return;
+        }}
+        if (params.cgi_cmdid === 6624) {{
+          cb({{
+            err_msg: "finderH5ExtTransfer:ok",
+            jsapi_resp: {{
+              ret: 0,
+              resp_json: JSON.stringify({{ BaseResponse: {{ Ret: 0 }}, object: [{{ id: "15048048986165157126", finder_username: req.username }}] }})
+            }}
+          }});
+          return;
+        }}
+      }}
+      cb({{ err_msg: "unknown" }});
+    }},
+  }},
+}});
+ctx.globalThis = ctx;
+vm.runInContext(fs.readFileSync({json.dumps(boot_js)}, "utf8"), ctx);
+assert.strictEqual(calls.length, 0, "must fire zero JSBridge calls on load");
+
+(async () => {{
+  const loaded = await ctx.__finderProtocolLoad();
+  assert.strictEqual(loaded.ready, true);
+  assert.strictEqual(loaded.origin, "native WeixinJSBridge");
+  assert.strictEqual(calls.length, 0, "must fire zero JSBridge calls during __finderProtocolLoad");
+
+  const searchRes = await ctx.__finderProtocol.search({{ query: "无人机" }});
+  assert.strictEqual(searchRes.errCode, 0);
+  assert.strictEqual(searchRes.data.objectList[0].id, "15048048986165157126");
+  assert.strictEqual(searchRes.data.objectList[0].objectNonceId, "n_42");
+  assert(calls.some(c => c.method === "finderH5Auth"), "must auto-fallback to finderH5Auth");
+
+  const userRes = await ctx.__finderProtocol.fetchUserPage({{ username: "v2_abc@finder", finderUsername: "v2_self@finder" }});
+  assert.strictEqual(userRes.errCode, 0);
+  assert.strictEqual(userRes.data.object[0].finderUsername, "v2_abc@finder");
+  console.log("WECHAT_42_NATIVE_DRIVER_OK");
+}})().catch(err => {{ console.error(err); process.exit(1); }});
+"""
+    proc = subprocess.run([node_bin, "-e", script], capture_output=True, text=True, timeout=15)
+    assert proc.returncode == 0, proc.stderr
+    assert "WECHAT_42_NATIVE_DRIVER_OK" in proc.stdout

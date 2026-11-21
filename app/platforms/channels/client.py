@@ -87,7 +87,11 @@ def is_finder_page_target(target: dict[str, Any]) -> bool:
         u = urlsplit(str(target.get("url") or ""))
     except ValueError:
         return False
-    return (u.hostname or "").lower() == "channels.weixin.qq.com" and (u.path or "").startswith("/web/pages/")
+    path = (u.path or "/").rstrip("/") or "/"
+    return (u.hostname or "").lower() == "channels.weixin.qq.com" and (
+        (u.path or "").startswith("/web/pages/")
+        or path in {"/platform/bridge", "/__creatorhub_bridge"}
+    )
 
 
 def choose_finder_target(targets: list[dict[str, Any]], target_id: str = "") -> dict[str, Any]:
@@ -410,8 +414,9 @@ class ChannelsProtocolClient:
             await session.call("Runtime.enable")
             env = await session.evaluate(
                 "(()=>({host:location.hostname,path:location.pathname,"
-                "nativeBridge:typeof globalThis.WeixinJSBridge?.invoke==='function',"
-                "wechatUA:/MicroMessenger|WindowsWechat/i.test(navigator.userAgent)}))()"
+                "nativeBridge:typeof globalThis.WeixinJSBridge?.invoke==='function'"
+                "||typeof globalThis.IlinkJSBridge?.invoke==='function',"
+                "wechatUA:/MicroMessenger|WindowsWechat|MacWechat|UnifiedPC/i.test(navigator.userAgent)}))()"
             )
             if (
                 not isinstance(env, dict)

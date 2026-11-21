@@ -48,6 +48,55 @@
   };
   let loadingPromise = null;
 
+  function hasNativeJsBridge() {
+    return (
+      typeof globalThis.WeixinJSBridge !== 'undefined' ||
+      typeof globalThis.IlinkJSBridge !== 'undefined'
+    );
+  }
+
+  function updateBridgePageUi() {
+    if (typeof document?.getElementById !== 'function') {
+      return;
+    }
+    const badgeEl = document.getElementById('creatorhub-bridge-badge');
+    const detailEl = document.getElementById('creatorhub-bridge-detail');
+    if (!badgeEl && !detailEl) {
+      return;
+    }
+    const wsConnected = Boolean(socket && socket.readyState === WebSocket.OPEN);
+    const hasBridge = hasNativeJsBridge();
+    if (wsConnected && loadState.ready) {
+      if (badgeEl) {
+        badgeEl.textContent = '✓ 已连接 CreatorHub · 协议就绪';
+        badgeEl.dataset.state = 'ready';
+      }
+      if (detailEl) {
+        detailEl.textContent =
+          '当前微信内置页面已完成原生通道桥接（' +
+          (loadState.origin || 'WeixinJSBridge') +
+          '）。请保持此窗口在后台开启（可最小化），现在可回到 CreatorHub 使用搜索、主页采集、二级评论与视频解密。';
+      }
+    } else if (!hasBridge) {
+      if (badgeEl) {
+        badgeEl.textContent = '等待微信 WeixinJSBridge 环境…';
+        badgeEl.dataset.state = 'warn';
+      }
+      if (detailEl) {
+        detailEl.textContent =
+          '若您是在 Chrome / Edge 等外部浏览器打开了本页，请复制上方链接发送到电脑微信「文件传输助手」，并在微信聊天窗口内点击打开。';
+      }
+    } else {
+      if (badgeEl) {
+        badgeEl.textContent = wsConnected ? '正在加载视频号协议服务…' : '正在连接本机 CreatorHub 代理…';
+        badgeEl.dataset.state = 'pending';
+      }
+      if (detailEl && loadState.reason && loadState.reason !== 'initializing') {
+        detailEl.textContent = '状态：' + loadState.reason;
+      }
+    }
+  }
+
   function normalizeCapabilities(raw) {
     if (Array.isArray(raw)) {
       const mapped = {};
@@ -80,6 +129,7 @@
         capabilities: normalizeCapabilities(globalThis.__finderProtocol.capabilities),
         reason: '',
       };
+      updateBridgePageUi();
       return loadState;
     }
     if (typeof globalThis.__finderProtocolLoad !== 'function') {
@@ -89,6 +139,7 @@
         capabilities: {},
         reason: 'bootstrap_missing',
       };
+      updateBridgePageUi();
       return loadState;
     }
     if (!loadingPromise) {
@@ -119,6 +170,7 @@
           };
         } finally {
           loadingPromise = null;
+          updateBridgePageUi();
         }
         return loadState;
       })();
@@ -135,7 +187,7 @@
       origin: String(loadState.origin || ''),
       reason: String(loadState.reason || ''),
       capabilities: loadState.capabilities || {},
-      hasWeixinJSBridge: typeof globalThis.WeixinJSBridge !== 'undefined',
+      hasWeixinJSBridge: hasNativeJsBridge(),
     };
   }
 
@@ -238,6 +290,7 @@
       reconnectAttempts = 0;
       await ensureProtocolLoaded();
       sendJson({ type: 'hello', ...snapshotMeta() });
+      updateBridgePageUi();
     });
     socket.addEventListener('message', (event) => {
       try {
@@ -247,6 +300,7 @@
     });
     socket.addEventListener('close', () => {
       socket = null;
+      updateBridgePageUi();
       if (!closed) {
         reconnectAttempts += 1;
         scheduleReconnect();
@@ -278,11 +332,24 @@
     void tick();
   }
 
+  const onJsBridgeReady = () => {
+    void ensureProtocolLoaded().then(() => {
+      sendJson({ type: 'hello', ...snapshotMeta() });
+      updateBridgePageUi();
+    });
+  };
+  if (typeof document?.addEventListener === 'function') {
+    document.addEventListener('WeixinJSBridgeReady', onJsBridgeReady);
+    document.addEventListener('IlinkJSBridgeReady', onJsBridgeReady);
+  }
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
+      updateBridgePageUi();
       startDiscoveryLoop();
     }, { once: true });
   } else {
+    updateBridgePageUi();
     startDiscoveryLoop();
   }
   globalThis.addEventListener('load', () => {
@@ -290,6 +357,7 @@
       if (state.ready) {
         sendJson({ type: 'hello', ...snapshotMeta() });
       }
+      updateBridgePageUi();
     });
   }, { once: true });
 

@@ -5243,14 +5243,18 @@ const CreatorHubChannelsProtocol = (() => {
         const sysLabel = proxy.system_proxy_managed && sysProxy.proxy_enable
           ? `WinINet 系统代理已指向 ${sysProxy.proxy_server || ("127.0.0.1:" + (proxy.proxy_port || 2023))}`
           : "系统代理未托管（手动模式）";
+        const upProxy = proxy.upstream_proxy || {};
+        const upLabel = upProxy.enabled && upProxy.server
+          ? ` · 链式上游 ${upProxy.server}`
+          : "";
         const connLabel = readyPages > 0
           ? `已就绪 ${readyPages} 个视频号页面`
-          : (connectedPages > 0 ? `已接入 ${connectedPages} 页，等待模块加载` : "请在微信中打开一次视频号页面");
-        statusText.textContent = `监听 127.0.0.1:${proxy.proxy_port || 2023} · ${sysLabel} · ${connLabel} · 已转发 ${Number(proxy.commands_forwarded || 0)} 条请求`;
+          : (connectedPages > 0 ? `已接入 ${connectedPages} 页，等待模块加载` : "请在微信内打开桥接链接或视频号网页");
+        statusText.textContent = `监听 127.0.0.1:${proxy.proxy_port || 2023} · ${sysLabel}${upLabel} · ${connLabel} · 已转发 ${Number(proxy.commands_forwarded || 0)} 条请求`;
       } else if (proxy.system_proxy?.low_integrity) {
         statusText.textContent = "检测到后端处于 Windows 低完整性级别（Low IL），无法自动改写系统代理；建议用外部 Python 启动 uvicorn，或取消勾选下方开关后手动将系统代理指向 127.0.0.1:" + (proxy.proxy_port || 2023) + "。";
       } else {
-        statusText.textContent = "仅拦截 channels.weixin.qq.com，其余网站流量原样加密直通，停止或退出软件时自动恢复系统代理。";
+        statusText.textContent = "仅拦截 channels.weixin.qq.com，其余网站流量原样加密直通（自动链式复用原本地代理），停止或退出软件时自动恢复系统代理。";
       }
     }
     if (startBtn) startBtn.disabled = running;
@@ -5280,10 +5284,22 @@ const CreatorHubChannelsProtocol = (() => {
 
     if (pagesBox) {
       const pages = Array.isArray(proxy.pages) ? proxy.pages : [];
+      const bridgeUrl = String(proxy.bridge_entry_url || "https://channels.weixin.qq.com/web/pages/bridge");
+      const altBridgeUrl = String(proxy.alt_bridge_entry_url || "https://channels.weixin.qq.com/platform/bridge");
       if (!pages.length) {
-        pagesBox.innerHTML = running
-          ? '<span class="field-help" style="margin:0">代理已监听，等待桌面微信打开 <code>https://channels.weixin.qq.com/web/pages/*</code> 页面…</span>'
-          : '<span class="field-help" style="margin:0">启动代理并在桌面微信中打开视频号后，此处将实时显示已桥接的视频号页面。</span>';
+        if (running) {
+          let tipHtml = "";
+          if (proxy.liteapp_detected) {
+            tipHtml = `<b>已检测到微信 4.2+ LiteApp 视频号流量</b>：新版微信侧边栏「视频号」改用本地离线容器不再加载网页，请点击右侧按钮复制 <code>${esc(bridgeUrl)}</code> 发送到微信「文件传输助手」并在微信内点开一次即可建立桥接。`;
+          } else if (!proxy.wechat_traffic_seen) {
+            tipHtml = `代理已监听（若开启代理前微信已在运行，<b>请先彻底退出微信并重开一次</b>以刷新代理缓存）；微信 4.2+ 请复制 <code>${esc(bridgeUrl)}</code> 发送到微信「文件传输助手」并在微信内点开。`;
+          } else {
+            tipHtml = `已收到微信流量，等待桥接页接入：请复制 <code>${esc(bridgeUrl)}</code> 发送到微信「文件传输助手」并在微信内点开一次（旧版微信也可直接打开视频号搜索页）。`;
+          }
+          pagesBox.innerHTML = `<div class="channels-proxy-page-row"><div class="channels-proxy-page-copy"><span class="field-help" style="margin:0">${tipHtml}</span></div><div class="channels-proxy-page-meta"><button type="button" class="ghost sm" onclick="CreatorHubChannelsProtocol.copyPageUrl(${jsArg(bridgeUrl)})"><svg aria-hidden="true"><use href="#i-copy"/></svg>复制桥接链接</button><button type="button" class="ghost sm" onclick="CreatorHubChannelsProtocol.copyPageUrl(${jsArg(altBridgeUrl)})">备用链接</button></div></div>`;
+        } else {
+          pagesBox.innerHTML = `<span class="field-help" style="margin:0">启动代理后，微信 4.2+ 可复制桥接链接 <code>${esc(bridgeUrl)}</code> 发到「文件传输助手」点开，此处将实时显示已桥接页面。</span>`;
+        }
       } else {
         pagesBox.innerHTML = pages.map(p => {
           const pill = p.ready
@@ -5610,7 +5626,7 @@ const CreatorHubChannelsProtocol = (() => {
         renderStatus(data);
         const caTrusted = !!data?.proxy?.ca?.trusted;
         const sysManagedMsg = manageSysProxy
-          ? "内置视频号代理已启动 ✓ 请在桌面微信打开一次视频号页面"
+          ? "内置视频号代理已启动 ✓ 若微信此前已打开请重开微信，再将上方桥接链接发到「文件传输助手」点开"
           : `内置视频号代理已监听 127.0.0.1:${proxyPort}（未修改系统代理），请将 channels.weixin.qq.com 流量指向该端口`;
         setMsg(
           caTrusted

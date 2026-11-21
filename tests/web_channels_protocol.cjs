@@ -274,6 +274,35 @@ function fixture() {
   assert(!f.nodes['ch-proxy-pages'].innerHTML.includes('<script>'));
   assert.equal(await f.ctrl.copyPageUrl('https://channels.weixin.qq.com/web/pages/profile?username=v2_test@finder'), true);
 
+  // Verify WeChat 4.2+ LiteApp detection banner, bridge copy button & upstream proxy chaining label
+  f.routes.set('GET /api/channels/protocol/status', () => ({
+    ...baseStatus,
+    configured: true,
+    proxy_configured: true,
+    config: { ...baseStatus.config, connection_mode: 'proxy', proxy_enabled: true, proxy_port: 2023, configured: true },
+    proxy: {
+      running: true,
+      state: 'waiting_wechat',
+      proxy_port: 2023,
+      system_proxy_managed: true,
+      system_proxy: { supported: true, proxy_enable: true, proxy_server: '127.0.0.1:2023' },
+      upstream_proxy: { enabled: true, server: '127.0.0.1:17890' },
+      ca: proxyInstalledStatus.proxy.ca,
+      connected_pages: 0,
+      ready_pages: 0,
+      pages: [],
+      wechat_traffic_seen: true,
+      liteapp_detected: true,
+      bridge_entry_url: 'https://channels.weixin.qq.com/web/pages/bridge',
+      alt_bridge_entry_url: 'https://channels.weixin.qq.com/platform/bridge',
+    },
+  }));
+  await f.ctrl.load();
+  assert(f.nodes['ch-proxy-status-text'].textContent.includes('链式上游 127.0.0.1:17890'));
+  assert(f.nodes['ch-proxy-pages'].innerHTML.includes('LiteApp'));
+  assert(f.nodes['ch-proxy-pages'].innerHTML.includes('channels.weixin.qq.com/web/pages/bridge'));
+  assert(f.nodes['ch-proxy-pages'].innerHTML.includes('复制桥接链接'));
+
   // One-click probe button always probes proxy mode explicitly
   f.nodes['ch-proto-mode'].value = 'endpoint_file';
   f.routes.set('POST /api/channels/protocol/probe', body => {

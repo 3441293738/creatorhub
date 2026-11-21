@@ -112,6 +112,8 @@ from .wmpf_cdp import (
 )
 from app.platforms.channels.local_ca import ALLOWED_INTERCEPT_HOSTS, LocalCaManager
 from app.platforms.channels.proxy_bridge import (
+    ALT_BRIDGE_ENTRY_URL,
+    DEFAULT_BRIDGE_ENTRY_URL,
     ChannelsProxyManager,
     get_active_proxy_manager,
     set_active_proxy_manager,
@@ -119,7 +121,9 @@ from app.platforms.channels.proxy_bridge import (
 from app.platforms.channels.system_proxy import (
     enable_system_proxy,
     get_system_proxy_state,
+    parse_loopback_proxy_server,
     recover_stale_system_proxy,
+    resolve_upstream_proxy,
     restore_system_proxy,
 )
 
@@ -208,10 +212,14 @@ __all__ = [
     "ALLOWED_INTERCEPT_HOSTS",
     "LocalCaManager",
     "ChannelsProxyManager",
+    "DEFAULT_BRIDGE_ENTRY_URL",
+    "ALT_BRIDGE_ENTRY_URL",
     "get_active_proxy_manager",
     "set_active_proxy_manager",
     "enable_system_proxy",
     "get_system_proxy_state",
+    "parse_loopback_proxy_server",
     "recover_stale_system_proxy",
+    "resolve_upstream_proxy",
     "restore_system_proxy",
 ]

@@ -302,9 +302,12 @@ def unwrap_cdp_result(
 _WECHAT_EXE_NAMES = frozenset({
     "wechat.exe",
     "weixin.exe",
+    "weixinext.exe",
     "wechatappex.exe",
+    "wechatbrowser.exe",
     "wmpfruntime.exe",
     "wechatplayer.exe",
+    "xplayer.exe",
 })
 
 

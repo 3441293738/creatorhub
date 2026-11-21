@@ -29,6 +29,7 @@ from app.platforms.channels.system_proxy import (
     SystemProxyBackend,
     enable_system_proxy,
     get_system_proxy_state,
+    resolve_upstream_proxy,
     restore_system_proxy,
 )
 
@@ -36,6 +37,31 @@ logger = logging.getLogger(__name__)
 
 BRIDGE_SCRIPT_PATH = "/__creatorhub_bridge.js"
 BRIDGE_WS_PATH = "/__creatorhub_ws"
+BRIDGE_LANDING_PATHS = frozenset({"/web/pages/bridge", "/platform/bridge", "/__creatorhub_bridge"})
+DEFAULT_BRIDGE_ENTRY_URL = "https://channels.weixin.qq.com/web/pages/bridge"
+ALT_BRIDGE_ENTRY_URL = "https://channels.weixin.qq.com/platform/bridge"
+_WECHAT_TRAFFIC_HOSTS = frozenset(
+    {
+        "liteapp.weixin.qq.com",
+        "finder.video.qq.com",
+        "findermp.video.qq.com",
+        "findera4.video.qq.com",
+        "servicewechat.com",
+        "mp.weixin.qq.com",
+        "res.wx.qq.com",
+    }
+)
+_WECHAT_UA_MARKERS = (b"micromessenger", b"windowswechat", b"macwechat", b"unifiedpc")
+_FINDER_MODULE_RE = re.compile(
+    r'((?:https?:)?//res\.wx\.qq\.com/[^\s"\'<>]*virtual_svg-icons-register\.publish[^\s"\'<>]*\.js)',
+    re.IGNORECASE,
+)
+_SYNTHETIC_WECHAT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 NetType/WIFI "
+    "MicroMessenger/7.0.20.1781(0x6700143B) WindowsWechat(0x63090c11) XWEB/11581 Flue"
+)
+
 ALLOWED_BRIDGE_METHODS = frozenset(
     {
         "fetchCommentsPage",
@@ -180,6 +206,53 @@ def _inject_bridge_script_into_html(html_text: str, script_url: str) -> str:
     return tag + html_text
 
 
+def _build_bridge_landing_html(script_url: str, module_preload_url: str = "") -> bytes:
+    """Render same-origin Finder protocol bridge page on `https://channels.weixin.qq.com` for WeChat 4.2+."""
+    preload_tag = ""
+    if module_preload_url and module_preload_url.startswith("https://res.wx.qq.com/"):
+        safe_mod = (
+            module_preload_url.replace("&", "&amp;")
+            .replace('"', "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        preload_tag = f'  <link rel="modulepreload" crossorigin href="{safe_mod}">\n'
+    html = (
+        "<!DOCTYPE html>\n"
+        '<html lang="zh-CN">\n'
+        "<head>\n"
+        '  <meta charset="utf-8">\n'
+        '  <meta name="viewport" content="width=device-width,initial-scale=1">\n'
+        "  <title>微信视频号桥接 · CreatorHub</title>\n"
+        f"{preload_tag}"
+        "  <style>\n"
+        "    :root{color-scheme:light dark;font-family:system-ui,-apple-system,'Microsoft YaHei',sans-serif}\n"
+        "    body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#f5f6f8;color:#18191c}\n"
+        "    @media(prefers-color-scheme:dark){body{background:#111317;color:#eef0f4}.card{background:#1b1e24!important;border-color:#2b303b!important}}\n"
+        "    .card{max-width:520px;width:100%;background:#fff;border:1px solid #e3e6ec;border-radius:16px;padding:24px;box-shadow:0 8px 28px rgba(0,0,0,.06)}\n"
+        "    .badge{display:inline-block;padding:5px 12px;border-radius:999px;font-size:13px;font-weight:600;background:#eef2ff;color:#3b5bdb;margin-bottom:12px}\n"
+        "    .badge[data-state='ready']{background:#e6fcf5;color:#087f5b}\n"
+        "    .badge[data-state='warn']{background:#fff4e6;color:#d9480f}\n"
+        "    h1{font-size:18px;margin:0 0 10px}\n"
+        "    p{font-size:14px;line-height:1.65;margin:0 0 10px;opacity:.86}\n"
+        "    code{font-size:12px;padding:2px 6px;border-radius:6px;background:rgba(127,127,127,.14);word-break:break-all}\n"
+        "  </style>\n"
+        f'  <script src="{script_url}" defer></script>\n'
+        "</head>\n"
+        "<body>\n"
+        '  <div class="card">\n'
+        '    <div class="badge" id="creatorhub-bridge-badge" data-state="pending">正在握手本机 CreatorHub…</div>\n'
+        "    <h1>CreatorHub 微信视频号原生协议桥接页</h1>\n"
+        '    <p id="creatorhub-bridge-detail">正在检测微信内置浏览器 WeixinJSBridge 环境并连接本机回环代理…</p>\n'
+        "    <p>兼容微信 4.2+（LiteApp 版）与旧版微信：连接成功后将此窗口最小化留在后台即可，关闭窗口将断开桥接。</p>\n"
+        f"    <p>桥接地址：<code>{DEFAULT_BRIDGE_ENTRY_URL}</code></p>\n"
+        "  </div>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+    return html.encode("utf-8")
+
+
 async def _relay_streams(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -230,6 +303,13 @@ class ChannelsProxyManager:
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
         self._system_proxy_managed: bool = False
+        self._upstream_proxy: dict[str, Any] = {
+            "enabled": False,
+            "host": "",
+            "port": 0,
+            "server": "",
+            "note": "",
+        }
         self._started_at: float | None = None
         self._last_error: str = ""
         self._commands_forwarded: int = 0
@@ -238,6 +318,10 @@ class ChannelsProxyManager:
         self._connect_passthrough: int = 0
         self._html_injected: int = 0
         self._tls_handshake_failed: int = 0
+        self._wechat_traffic_seen: bool = False
+        self._liteapp_detected: bool = False
+        self._cached_finder_module_url: str = ""
+        self._cached_finder_module_at: float = 0.0
         self._lock = asyncio.Lock()
 
     def configure_data_dir(self, data_dir: Path) -> None:
@@ -270,6 +354,35 @@ class ChannelsProxyManager:
         configured_bridge = bridge.replace("/*__CREATORHUB_PROXY_CONFIG__*/ null", cfg_json, 1)
         return (bootstrap + "\n" + configured_bridge).encode("utf-8")
 
+    async def _discover_upstream_finder_module_url(self) -> str:
+        now = time.time()
+        if self._cached_finder_module_url and (now - self._cached_finder_module_at) < 1800:
+            return self._cached_finder_module_url
+        if self._upstream_client is None:
+            return ""
+        try:
+            resp = await self._upstream_client.get(
+                "https://channels.weixin.qq.com/web/pages/home",
+                headers={
+                    "User-Agent": _SYNTHETIC_WECHAT_UA,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Encoding": "gzip, deflate",
+                },
+                timeout=4.0,
+            )
+            if resp.status_code == 200 and "text/html" in resp.headers.get("content-type", "").lower():
+                match = _FINDER_MODULE_RE.search(resp.text)
+                if match:
+                    raw_url = match.group(1)
+                    if raw_url.startswith("//"):
+                        raw_url = "https:" + raw_url
+                    self._cached_finder_module_url = raw_url
+                    self._cached_finder_module_at = now
+                    return raw_url
+        except Exception:
+            pass
+        return self._cached_finder_module_url
+
     def status(self) -> dict[str, Any]:
         ca_status = self.ca.trust_status()
         sys_proxy = get_system_proxy_state(data_dir=self._data_dir, backend=self._proxy_backend)
@@ -277,7 +390,7 @@ class ChannelsProxyManager:
             page.to_public_dict()
             for page in sorted(
                 self._pages.values(),
-                key=lambda item: (item.ready, item.last_seen),
+                key=lambda item: (item.ready, item.has_weixin_js_bridge, item.last_seen),
                 reverse=True,
             )
         ]
@@ -298,6 +411,7 @@ class ChannelsProxyManager:
             "proxy_port": int(self._bound_port or self._proxy_port),
             "system_proxy_managed": self._system_proxy_managed,
             "system_proxy": sys_proxy,
+            "upstream_proxy": dict(self._upstream_proxy),
             "ca": ca_status,
             "connected_pages": len(pages),
             "ready_pages": len(ready_pages),
@@ -308,6 +422,10 @@ class ChannelsProxyManager:
             "connect_passthrough": self._connect_passthrough,
             "html_injected": self._html_injected,
             "tls_handshake_failed": self._tls_handshake_failed,
+            "wechat_traffic_seen": self._wechat_traffic_seen,
+            "liteapp_detected": self._liteapp_detected,
+            "bridge_entry_url": DEFAULT_BRIDGE_ENTRY_URL,
+            "alt_bridge_entry_url": ALT_BRIDGE_ENTRY_URL,
             "started_at": self._started_at,
             "last_error": self._last_error,
         }
@@ -330,9 +448,16 @@ class ChannelsProxyManager:
             if self.running:
                 if port == self._proxy_port or (port != 0 and port == self._bound_port):
                     if enable_system_proxy_flag and not self._system_proxy_managed:
+                        active_port = int(self._bound_port or self._proxy_port)
+                        self._upstream_proxy = await asyncio.to_thread(
+                            resolve_upstream_proxy,
+                            data_dir=self._data_dir,
+                            proxy_port=active_port,
+                            backend=self._proxy_backend,
+                        )
                         sys_res = enable_system_proxy(
                             host="127.0.0.1",
-                            port=int(self._bound_port or self._proxy_port),
+                            port=active_port,
                             data_dir=self._data_dir,
                             backend=self._proxy_backend,
                         )
@@ -346,6 +471,8 @@ class ChannelsProxyManager:
             self._last_error = ""
             self._ws_token = secrets.token_urlsafe(24)
             self._proxy_port = port
+            self._wechat_traffic_seen = False
+            self._liteapp_detected = False
 
             # Pre-generate CA & leaf SSL context for channels.weixin.qq.com before listening.
             self.ca.ssl_context_for_host("channels.weixin.qq.com")
@@ -381,6 +508,14 @@ class ChannelsProxyManager:
                     raise RuntimeError("本地 HTTPS 代理服务器未能绑定端口")
                 self._bound_port = int(proxy_sockets[0].getsockname()[1])
                 self._started_at = time.time()
+
+                # Snapshot pre-existing local HTTP proxy before applying CreatorHub's WinINet setting.
+                self._upstream_proxy = await asyncio.to_thread(
+                    resolve_upstream_proxy,
+                    data_dir=self._data_dir,
+                    proxy_port=self._bound_port,
+                    backend=self._proxy_backend,
+                )
 
                 if enable_system_proxy_flag:
                     sys_res = enable_system_proxy(
@@ -422,6 +557,13 @@ class ChannelsProxyManager:
             restore_error = sanitize_bridge_error(exc)
         finally:
             self._system_proxy_managed = False
+            self._upstream_proxy = {
+                "enabled": False,
+                "host": "",
+                "port": 0,
+                "server": "",
+                "note": "",
+            }
 
         for req_id, fut in list(self._pending.items()):
             if not fut.done():
@@ -467,6 +609,8 @@ class ChannelsProxyManager:
             self._upstream_client = None
 
         self._started_at = None
+        self._wechat_traffic_seen = False
+        self._liteapp_detected = False
         if restore_error:
             self._last_error = restore_error
 
@@ -477,7 +621,11 @@ class ChannelsProxyManager:
             self._pages.values(),
             key=lambda item: (
                 item.ready,
-                "/web/pages/" in item.url,
+                item.has_weixin_js_bridge,
+                any(
+                    marker in item.url
+                    for marker in ("/web/pages/", "/platform/bridge", "/__creatorhub_bridge")
+                ),
                 "/web/pages/login" not in item.url,
                 item.last_seen,
             ),
@@ -499,7 +647,7 @@ class ChannelsProxyManager:
         page = self._select_page()
         if page is None:
             raise ChannelsProtocolTransportError(
-                "本地代理运行中，但尚未检测到微信视频号页面连接；请在桌面微信中打开一次视频号页面（channels.weixin.qq.com/web/pages/）后再试"
+                f"本地代理运行中，但尚未检测到微信视频号页面连接；请在桌面微信「文件传输助手」发送并点开一次 {DEFAULT_BRIDGE_ENTRY_URL}（或旧版微信打开视频号网页）后再试"
             )
 
         req_id = f"rpc-{secrets.token_hex(8)}"
@@ -536,6 +684,24 @@ class ChannelsProxyManager:
         finally:
             self._pending.pop(req_id, None)
 
+    def _waiting_page_hint(self, *, ca_trusted: bool) -> str:
+        if not ca_trusted:
+            return "请先安装并信任本地 CA 根证书，然后重启桌面微信并点开桥接链接"
+        if self._liteapp_detected:
+            return (
+                f"已检测到微信 4.2+ LiteApp 视频号流量！新版微信侧边栏视频号不再加载网页，"
+                f"请复制桥接链接 {DEFAULT_BRIDGE_ENTRY_URL} 发送到微信「文件传输助手」并在微信内点击打开一次"
+            )
+        if not self._wechat_traffic_seen:
+            return (
+                f"尚未收到微信流量：若开启代理前微信已在运行，请先彻底退出并重开微信（微信启动时缓存代理），"
+                f"然后在微信「文件传输助手」发送并点开 {DEFAULT_BRIDGE_ENTRY_URL}"
+            )
+        return (
+            f"请在微信「文件传输助手」发送并点开桥接链接 {DEFAULT_BRIDGE_ENTRY_URL}"
+            f"（或旧版微信打开视频号主页/搜索页）以建立页面桥接"
+        )
+
     async def probe(self, timeout: float = 8.0) -> dict[str, Any]:
         if not self.running:
             return {
@@ -547,16 +713,15 @@ class ChannelsProxyManager:
         page = self._select_page()
         if page is None:
             ca_trusted = bool(self.ca.trust_status().get("trusted"))
-            hint = (
-                "请先安装并信任本地 CA 根证书，然后在微信中打开一次视频号页面"
-                if not ca_trusted
-                else "请在微信中打开一次视频号页面（例如视频号主页或搜索页）以建立页面桥接"
-            )
+            hint = self._waiting_page_hint(ca_trusted=ca_trusted)
             return {
                 "ok": False,
                 "ready": False,
                 "transport": "channels-local-proxy",
                 "connected_pages": 0,
+                "wechat_traffic_seen": self._wechat_traffic_seen,
+                "liteapp_detected": self._liteapp_detected,
+                "bridge_entry_url": DEFAULT_BRIDGE_ENTRY_URL,
                 "error": f"代理已监听 127.0.0.1:{self._bound_port or self._proxy_port}，等待微信视频号页面接入（{hint}）",
             }
 
@@ -575,7 +740,14 @@ class ChannelsProxyManager:
             page.capabilities = normalize_capabilities(res.get("capabilities")) or page.capabilities
             page.url = str(res.get("url") or page.url)
             page.title = str(res.get("title") or page.title)
+            if "hasWeixinJSBridge" in res:
+                page.has_weixin_js_bridge = bool(res.get("hasWeixinJSBridge"))
             page.last_seen = time.time()
+            not_ready_hint = (
+                "当前页面缺少微信 WeixinJSBridge（请勿在外部浏览器打开，需在电脑微信内点击桥接链接）"
+                if not page.ready and not page.has_weixin_js_bridge
+                else (res.get("reason") or "页面尚未加载视频号运行时模块")
+            )
             return {
                 "ok": bool(res.get("ready")),
                 "ready": bool(res.get("ready")),
@@ -584,8 +756,9 @@ class ChannelsProxyManager:
                 "title": page.title,
                 "origin": page.origin,
                 "capabilities": page.capabilities,
+                "has_weixin_js_bridge": page.has_weixin_js_bridge,
                 "connected_pages": len(self._pages),
-                "error": "" if res.get("ready") else (res.get("reason") or "页面尚未加载视频号运行时模块"),
+                "error": "" if res.get("ready") else not_ready_hint,
             }
         except Exception as exc:
             return {
@@ -630,6 +803,8 @@ class ChannelsProxyManager:
                     existing.reason = str(msg.get("reason") or "")
                     existing.capabilities = normalize_capabilities(msg.get("capabilities"))
                     existing.has_weixin_js_bridge = bool(msg.get("hasWeixinJSBridge"))
+                    if existing.has_weixin_js_bridge:
+                        self._wechat_traffic_seen = True
                     existing.last_seen = time.time()
                 elif msg_type == "bye":
                     pid = str(msg.get("pageId") or registered_id or "")
@@ -701,17 +876,58 @@ class ChannelsProxyManager:
             headers_raw.append((k.strip().encode("latin-1"), v.strip().encode("latin-1")))
 
         if method == "CONNECT":
-            await self._handle_connect(target, reader, writer)
+            await self._handle_connect(target, reader, writer, headers_raw=headers_raw)
             return
 
         # Plain HTTP request through proxy (e.g. non-HTTPS resources) — forward without JS injection.
         await self._handle_plain_http(method, target, headers_raw, reader, writer, version=version)
+
+    async def _open_passthrough_connection(
+        self,
+        host: str,
+        port: int,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """Connect to target via pre-existing local HTTP proxy when active, falling back to direct TCP."""
+        is_loopback = host in {"127.0.0.1", "localhost", "::1"}
+        up = self._upstream_proxy
+        if not is_loopback and up.get("enabled"):
+            up_host = str(up.get("host") or "")
+            up_port = int(up.get("port") or 0)
+            if up_host and up_port and up_port != self._bound_port:
+                up_writer: asyncio.StreamWriter | None = None
+                try:
+                    up_reader, up_writer = await asyncio.wait_for(
+                        asyncio.open_connection(up_host, up_port),
+                        timeout=4.0,
+                    )
+                    authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+                    connect_req = (
+                        f"CONNECT {authority} HTTP/1.1\r\n"
+                        f"Host: {authority}\r\n"
+                        f"Proxy-Connection: Keep-Alive\r\n\r\n"
+                    ).encode("latin-1")
+                    up_writer.write(connect_req)
+                    await up_writer.drain()
+                    resp_head = await asyncio.wait_for(up_reader.readuntil(b"\r\n\r\n"), timeout=10.0)
+                    status_line = resp_head.split(b"\r\n", 1)[0]
+                    if b" 200 " in status_line or status_line.endswith(b" 200"):
+                        return up_reader, up_writer
+                    await self._close_writer(up_writer)
+                except Exception:
+                    await self._close_writer(up_writer)
+
+        return await asyncio.wait_for(
+            asyncio.open_connection(host, port),
+            timeout=15.0,
+        )
 
     async def _handle_connect(
         self,
         authority: str,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
+        *,
+        headers_raw: list[tuple[bytes, bytes]] | None = None,
     ) -> None:
         host, port = _parse_host_port(authority, default_port=443)
         host_lower = host.lower()
@@ -723,6 +939,20 @@ class ChannelsProxyManager:
             await self._close_writer(writer)
             return
 
+        if headers_raw:
+            for k, v in headers_raw:
+                if k.lower() == b"user-agent":
+                    ua_low = v.lower()
+                    if any(marker in ua_low for marker in _WECHAT_UA_MARKERS):
+                        self._wechat_traffic_seen = True
+                    break
+
+        if host_lower == "liteapp.weixin.qq.com":
+            self._wechat_traffic_seen = True
+            self._liteapp_detected = True
+        elif host_lower in _WECHAT_TRAFFIC_HOSTS:
+            self._wechat_traffic_seen = True
+
         if host_lower in ALLOWED_INTERCEPT_HOSTS and port == 443:
             self._connect_intercepted += 1
             await self._handle_intercepted_tls(host_lower, reader, writer)
@@ -730,10 +960,7 @@ class ChannelsProxyManager:
 
         self._connect_passthrough += 1
         try:
-            up_reader, up_writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port),
-                timeout=15.0,
-            )
+            up_reader, up_writer = await self._open_passthrough_connection(host, port)
         except Exception:
             try:
                 writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
@@ -814,11 +1041,20 @@ class ChannelsProxyManager:
                 else:
                     return
 
+            ua_bytes = header_map.get(b"user-agent", b"").lower()
+            if any(marker in ua_bytes for marker in _WECHAT_UA_MARKERS):
+                self._wechat_traffic_seen = True
+
             target = event.target.decode("latin-1", errors="replace")
             parsed = urlsplit(target)
-            path = parsed.path or "/"
+            path = (parsed.path or "/").rstrip("/") or "/"
+            raw_path = parsed.path or "/"
 
-            if event.method == b"GET" and path == BRIDGE_SCRIPT_PATH:
+            if raw_path.startswith("/web/report-perf") and "pf=lite" in (parsed.query or "").lower():
+                self._wechat_traffic_seen = True
+                self._liteapp_detected = True
+
+            if event.method == b"GET" and raw_path == BRIDGE_SCRIPT_PATH:
                 bundle = self._build_bridge_bundle()
                 resp_headers = [
                     (b"Content-Type", b"application/javascript; charset=utf-8"),
@@ -831,7 +1067,30 @@ class ChannelsProxyManager:
                 conn.start_next_cycle()
                 continue
 
-            if path == BRIDGE_WS_PATH and b"websocket" in header_map.get(b"upgrade", b"").lower():
+            if event.method in {b"GET", b"HEAD"} and path in BRIDGE_LANDING_PATHS:
+                mod_url = await self._discover_upstream_finder_module_url()
+                script_url = f"{BRIDGE_SCRIPT_PATH}?v={int(time.time())}"
+                landing = _build_bridge_landing_html(script_url, module_preload_url=mod_url)
+                self._html_injected += 1
+                resp_headers = [
+                    (b"Content-Type", b"text/html; charset=utf-8"),
+                    (b"Cache-Control", b"no-store, no-cache, must-revalidate"),
+                    (b"Content-Length", str(len(landing)).encode("ascii")),
+                ]
+                await self._send_h11_response(
+                    conn,
+                    writer,
+                    200,
+                    resp_headers,
+                    landing,
+                    is_head=(event.method == b"HEAD"),
+                )
+                if conn.our_state is h11.MUST_CLOSE:
+                    return
+                conn.start_next_cycle()
+                continue
+
+            if raw_path == BRIDGE_WS_PATH and b"websocket" in header_map.get(b"upgrade", b"").lower():
                 query_params = parse_qs(parsed.query)
                 client_token = (query_params.get("token") or [""])[0]
                 if not self._ws_token or not secrets.compare_digest(client_token, self._ws_token):
@@ -1008,6 +1267,13 @@ class ChannelsProxyManager:
             and "text/html" in content_type
         ):
             decoded = resp.text
+            mod_match = _FINDER_MODULE_RE.search(decoded)
+            if mod_match:
+                found_mod = mod_match.group(1)
+                self._cached_finder_module_url = (
+                    "https:" + found_mod if found_mod.startswith("//") else found_mod
+                )
+                self._cached_finder_module_at = time.time()
             script_url = f"{BRIDGE_SCRIPT_PATH}?v={int(time.time())}"
             updated = _inject_bridge_script_into_html(decoded, script_url)
             if updated != decoded:

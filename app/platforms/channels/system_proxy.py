@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -228,6 +229,125 @@ def _matches_creatorhub_server(current_server: str | None, applied_server: str |
     return f"={applied}" in current
 
 
+def parse_loopback_proxy_server(proxy_server: str | None) -> tuple[str, int] | None:
+    """Extract `(host, port)` from a WinINet `ProxyServer` value when pointing to 127.0.0.1/localhost."""
+    raw = str(proxy_server or "").strip()
+    if not raw:
+        return None
+
+    candidate = ""
+    if ";" in raw or "=" in raw:
+        mapped: dict[str, str] = {}
+        bare: list[str] = []
+        for item in raw.split(";"):
+            part = item.strip()
+            if not part:
+                continue
+            if "=" in part:
+                scheme, _, val = part.partition("=")
+                mapped[scheme.strip().lower()] = val.strip()
+            else:
+                bare.append(part)
+        candidate = mapped.get("https") or mapped.get("http") or (bare[0] if bare else "")
+    else:
+        candidate = raw
+
+    for prefix in ("https://", "http://"):
+        if candidate.lower().startswith(prefix):
+            candidate = candidate[len(prefix) :]
+            break
+    candidate = candidate.strip().rstrip("/")
+    if ":" not in candidate:
+        return None
+    host, _, port_str = candidate.rpartition(":")
+    host_clean = host.strip().lower()
+    if host_clean not in {"127.0.0.1", "localhost"} or not port_str.isdigit():
+        return None
+    port = int(port_str)
+    if not (1 <= port <= 65535):
+        return None
+    return ("127.0.0.1" if host_clean == "127.0.0.1" else "localhost", port)
+
+
+def _probe_tcp_endpoint(host: str, port: int, *, timeout: float = 0.8) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def resolve_upstream_proxy(
+    *,
+    data_dir: Path | None = None,
+    proxy_port: int,
+    backend: SystemProxyBackend | None = None,
+    probe_tcp: bool = True,
+    timeout: float = 0.8,
+) -> dict[str, Any]:
+    """Inspect pre-existing WinINet loopback HTTP proxy and verify reachability before chaining."""
+    ops = backend or WindowsWinInetBackend()
+    proxy_enable: int | None = None
+    proxy_server: str | None = None
+
+    if data_dir is not None:
+        backup_path = _active_backup_path(data_dir)
+        backup = _read_backup(backup_path) if backup_path else None
+        if isinstance(backup, dict) and isinstance(backup.get("previous"), dict):
+            prev = backup["previous"]
+            proxy_enable = prev.get("proxy_enable")
+            proxy_server = prev.get("proxy_server")
+
+    if proxy_enable is None and proxy_server is None and ops.supported:
+        try:
+            snap = ops.read_snapshot()
+            proxy_enable = snap.proxy_enable
+            proxy_server = snap.proxy_server
+        except Exception:
+            pass
+
+    if int(proxy_enable or 0) != 1:
+        return {"enabled": False, "host": "", "port": 0, "server": "", "note": "系统代理未启用，直连"}
+
+    parsed = parse_loopback_proxy_server(proxy_server)
+    if parsed is None:
+        return {
+            "enabled": False,
+            "host": "",
+            "port": 0,
+            "server": "",
+            "note": f"原代理非本机 HTTP 端口（{proxy_server or '-'}），直连",
+        }
+
+    up_host, up_port = parsed
+    if up_port == int(proxy_port):
+        return {
+            "enabled": False,
+            "host": "",
+            "port": 0,
+            "server": "",
+            "note": f"原代理端口与当前监听端口相同（{up_port}），跳过同端口转发并改为直连",
+        }
+
+    server_text = f"{up_host}:{up_port}"
+    if probe_tcp and not _probe_tcp_endpoint(up_host, up_port, timeout=timeout):
+        return {
+            "enabled": False,
+            "host": "",
+            "port": 0,
+            "server": "",
+            "note": f"原代理 {server_text} 当前未监听，自动回退直连",
+        }
+
+    return {
+        "enabled": True,
+        "host": up_host,
+        "port": up_port,
+        "server": server_text,
+        "note": f"链式上游 {server_text}",
+    }
+
+
 def _fallback_backup_file() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()).expanduser()
     return (base / "CreatorHub" / BACKUP_FILENAME).resolve()
@@ -396,6 +516,7 @@ def enable_system_proxy(
         **after,
         "applied_server": target_server,
         "backup_path": str(written_backup),
+        "previous": backup_payload.get("previous") or {},
     }
 
 
