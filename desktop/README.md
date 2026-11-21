@@ -35,12 +35,11 @@ npm ci
 npm run build:ui
 npm run build:desktop
 python desktop/build_windows.py --version 0.2.0
-python desktop/smoke_windows.py dist/windows/CreatorHub/CreatorHub.exe
 ```
 
 生成 `dist/windows/CreatorHub/CreatorHub.exe`。这是 **onedir 便携运行目录**，分享时必须包含整个 CreatorHub 文件夹，不能只复制 EXE。
 
-监控功能由随包的 `app/web` 与后端共同提供。工作台和启动中心均需构建；CI 会运行监控接口、秒级/自定义间隔与前端回归，并对冻结程序实际提供的 JS/CSS 与本次构建做字节比对。监控间隔始终按整秒保存，已有分钟配置不重置。只推送源码不会更新已安装客户端，需发布新版本安装包后通过“检查更新”升级。
+监控功能由随包的 `app/web` 与后端共同提供，工作台和启动中心均需构建。监控间隔始终按整秒保存，已有分钟配置不重置。只推送源码不会更新已安装客户端，需发布新版本安装包后通过“检查更新”升级。
 
 旧版正在运行时，先退出再覆盖构建；如要保留旧版，可加 `--dist-dir dist/windows-0.2.0` 输出到仓库内的独立目录。Inno Setup 默认从 `dist/windows/CreatorHub` 取文件；使用独立构建目录时，通过 `/DAppSourceDir=绝对路径` 指定其中的 `CreatorHub` 文件夹，并保持 `/DAppVersion` 与构建版本一致。编译器的 `/O输出目录` 可将体验版安装包与旧版分开保存。
 
@@ -105,11 +104,11 @@ python desktop/release.py 0.2.0
 
 源码开发时可运行 `python desktop/launcher.py`。这同样使用独立的用户目录。测试可通过 `CREATORHUB_DESKTOP_HOME` 指定临时目录；该变量不用于普通用户配置。
 
-## 桌面开发与测试
+## 桌面开发
 
 默认启动服务；`--no-autostart` 保留手动模式，更新后重启显式使用该参数。服务进程独立持有 `service.lock`，即使启动中心异常退出，新服务也不能同时使用同一数据目录。启动中心消失时先取消组件准备并请求正常停止，卡住超过 30 秒后结束本次服务进程树；POSIX 使用独立进程组，不终止用户的其他浏览器。源码版没有离线文档时继续使用在线教程。
 
-父进程监视使用 Windows 进程句柄，避免仅按 PID 轮询；参考 [OpenProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess) 和 [WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)。`tests/test_desktop_lifecycle.py` 在临时数据目录覆盖手动启动、重复服务拒绝、运行中丢失启动中心和启动卡住时的回收。
+父进程监视使用 Windows 进程句柄，避免仅按 PID 轮询；参考 [OpenProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess) 和 [WaitForSingleObject](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)。
 
 ### 在线检查与一键更新
 
@@ -164,29 +163,16 @@ python desktop/build_update.py --app-dir dist/windows/CreatorHub --version 0.2.1
 
 更新日志位于 `logs/update-handoff.log`、`logs/update-*-helper.log`、`logs/update-*-setup.log`；配置与数据库备份位于 `backups/`，已下载文件位于 `runtime/updates/`。不要在安装期间清理这些目录。中断后再次打开时会提示上次更新结果；日志可能包含本机路径，请勿直接公开。
 
-实现依据：[GitHub Releases API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)、[资产 digest](https://docs.github.com/en/rest/releases/assets)、[Inno Setup 安装参数](https://jrsoftware.org/ishelp/topic_setupcmdline.htm)、[安装退出码](https://jrsoftware.org/ishelp/topic_setupexitcodes.htm)、[PyInstaller 冻结路径](https://pyinstaller.org/en/stable/runtime-information.html)。构建器同时打包独立 `CreatorHubUpdater.exe`，CI 验证它随主程序分发。
+实现依据：[GitHub Releases API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)、[资产 digest](https://docs.github.com/en/rest/releases/assets)、[Inno Setup 安装参数](https://jrsoftware.org/ishelp/topic_setupcmdline.htm)、[安装退出码](https://jrsoftware.org/ishelp/topic_setupexitcodes.htm)、[PyInstaller 冻结路径](https://pyinstaller.org/en/stable/runtime-information.html)。构建器同时打包独立 `CreatorHubUpdater.exe`。
 
-```powershell
-python -m unittest discover -s tests -p "test_desktop_update*.py"
-npm run build:desktop
-python tests/desktop_update_browser.py
-python desktop/smoke_update_windows.py dist/windows/CreatorHub/_internal/desktop/CreatorHubUpdater.exe
-python desktop/smoke_update_windows.py dist/windows/CreatorHub/_internal/desktop/CreatorHubUpdater.exe --delta
-```
-
-页面验收使用本地响应和非可执行字节样本，覆盖下载/取消/重试、安装确认、深浅主题与窄窗口。原生交接验收使用临时 C# 假应用/假安装器，验证进程退出、文件锁、带中文/空格路径的替换和重新启动，不安装真实软件或访问账号。正式发布前仍需在测试机上验证 Inno Setup 旧版→新版覆盖安装、空间不足、断电/安装中断后的修复和数据保留。
+正式发布前仍需在测试机上验证 Inno Setup 旧版→新版覆盖安装、空间不足、断电/安装中断后的修复和数据保留。
 
 界面源码仅在 `frontend/desktop/`，构建产物仅在 `desktop/web/`。控制层在 `desktop/controller.py`，本机接口和原生窗口在 `desktop/web_shell.py`。接口使用随机令牌、Host/Origin 校验和操作白名单，不监听公网，不复用 Web 业务路由。
 
 ```powershell
 npm run build:desktop
 python desktop/launcher.py --no-autostart
-python -m unittest discover -s tests -p test_desktop_shell.py
-python desktop/launcher.py --shell-smoke-test
-python tests/desktop_browser.py
 ```
-
-浏览器验收脚本使用独立临时数据及 Patchright Chromium，不使用真实账号。覆盖服务启停、主题持久化、搜索与详情返回、诊断下载、取消退出、错误及离线恢复、窄窗口和减少动态效果。原生冒烟实际加载 WebView2 并验证页面导航；打包冒烟同时验证冻结资源和服务生命周期。
 
 仅预览桌面界面：`python -m desktop.dev_server --port 8082 --home build/desktop-preview-data --skip-browser-install`。本地预览不是主 Web 端。紧急排障时可显式运行 `python desktop/launcher.py --legacy-ui` 使用旧窗口。
 

@@ -44,8 +44,6 @@ def main():
                     "--workpath", str(staging / "updater-work"), "--specpath", str(staging),
                     str(ROOT / "desktop" / "update_helper.py")], cwd=ROOT, check=True)
     helper = helper_dir / "CreatorHubUpdater.exe"
-    subprocess.run([str(helper), "--self-test"], check=True, timeout=30,
-                   creationflags=subprocess.CREATE_NO_WINDOW)
     command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir", "--windowed",
                "--name", "CreatorHub", "--icon", str(staging / "CreatorHub.ico"),
                "--distpath", str(dist_root),

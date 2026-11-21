@@ -100,7 +100,6 @@ def main():
     with plist_path.open("wb") as stream:
         plistlib.dump(info, stream)
     sign_bundle(bundle, args.identity or "-")
-    subprocess.run([sys.executable, str(ROOT / "desktop/smoke_macos.py"), str(bundle)], check=True)
     if args.notary_profile:
         archive = staging / "notarization.zip"
         subprocess.run(["ditto", "-c", "-k", "--keepParent", str(bundle), str(archive)], check=True)

@@ -21,20 +21,6 @@ npm run build:ui
 标签页通过卡片的 `data-section` 与 `groupSpecs` 中的值绑定，不依赖卡片排列顺序。新增标签页时同步维护这两处，并声明适用的平台。
 临时隐藏功能时，在对应卡片上添加 `hidden`，标签入口和内容会一起隐藏；聚合私信目前按此方式保留但不展示。
 
-## 测试
-
-```bash
-python -m pytest -q
-```
-
-浏览器测试默认跳过。设置 `CREATORHUB_RUN_LOCAL_CDP=1` 后执行：
-
-```bash
-python -m pytest tests/test_web_appearance_browser.py tests/test_workbench_sections_browser.py -q
-```
-
-浏览器写操作使用隔离的示例接口，不操作真实账号。
-
 ## 界面预览维护
 
 调整 UI 后，同步更新 README 的截图（需已安装项目 Python 依赖和 Chrome）：

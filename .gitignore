@@ -32,8 +32,11 @@ dist/
 .vscode/
 .worktrees/
 
-# Claude Code 本地技能/配置(不随仓库发布)
+# AI 本地技能与规则配置(不随仓库发布)
 .claude/
+.agents/
+GEMINI.md
+AGENTS.md
 
 # Runtime data (login states, downloaded media, sqlite db, uploads)
 data/

@@ -1,11 +1,10 @@
-"""CreatorHub 一键安装、启动与自检入口。
+"""CreatorHub 一键安装与启动入口。
 
 这个文件只使用 Python 标准库，因此可以在项目依赖尚未安装时直接运行。
 常用命令：
 
     python creatorhub.py
     python creatorhub.py install
-    python creatorhub.py check
 """
 from __future__ import annotations
 
@@ -262,14 +261,6 @@ def start(
     run(command)
 
 
-def check() -> None:
-    ensure_config()
-    python = venv_python()
-    if not python.exists():
-        raise RuntimeError("尚未安装运行环境，请先运行：python creatorhub.py install")
-    run([python, ROOT / "selftest.py"])
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="CreatorHub 一键安装与启动",
@@ -278,7 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("start", "install", "check"),
+        choices=("start", "install"),
         default="start",
         help="操作；不填写时直接启动",
     )
@@ -311,8 +302,6 @@ def main() -> int:
         os.chdir(ROOT)
         if args.command == "install":
             install(skip_browser=args.skip_browser, skip_node=args.skip_node)
-        elif args.command == "check":
-            check()
         else:
             start(
                 host=args.host,

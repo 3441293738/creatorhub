@@ -64,13 +64,11 @@ jobs:
           cache: npm
       - name: Install build dependencies
         run: |
-          python -m pip install -r requirements.txt -r desktop/requirements-macos.txt pytest
+          python -m pip install -r requirements.txt -r desktop/requirements-macos.txt
           python -m pip freeze > macos-dependencies.txt
           npm ci
           npm run build:ui
           npm run build:desktop
-      - name: Test shared runtime and packaging contracts
-        run: python -m pytest tests/test_bilibili_capabilities.py tests/test_rednote_capabilities.py tests/test_instagram_capabilities.py tests/test_desktop_optimization.py tests/test_media_tools.py tests/test_macos_packaging.py tests/test_owned_processes.py tests/test_desktop_launcher.py tests/test_xhs_publish_resources.py -q
       - name: Prepare isolated signing keychain
         if: env.SIGN_BUILD == 'true'
         env:

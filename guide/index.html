@@ -97,11 +97,10 @@ cd creatorhub</code></pre><p>克隆方式便于以后更新；ZIP 方式不要�
       <div class="success"><strong>完成标志：</strong>能看到工作概览，切换平台、打开“平台账号”页面。第一次列表为空是正常的。</div>
       <h3>以后怎么启动、怎么停止？</h3>
       <p>下次仍在同一文件夹运行启动脚本。服务运行期间保持终端开启；停止时回到终端按 <kbd>Ctrl</kbd> + <kbd>C</kbd>。仅关闭网页并不会停止后台服务。</p>
-      <details><summary>常用启动与开发命令</summary><pre><code>.\start.cmd check
-.\start.cmd install
+      <details><summary>常用启动与开发命令</summary><pre><code>.\start.cmd install
 .\start.cmd --port 8080
 .\start.cmd --no-open
-.\start.cmd --reload</code></pre><p>依次对应环境自检、安装或更新依赖、换端口、不自动打开网页、开发热重载。换端口后访问 <code>http://127.0.0.1:8080</code>。macOS / Linux 把 <code>.\start.cmd</code> 换成 <code>./start.sh</code>。</p></details>
+.\start.cmd --reload</code></pre><p>依次对应安装或更新依赖、换端口、不自动打开网页、开发热重载。换端口后访问 <code>http://127.0.0.1:8080</code>。macOS / Linux 把 <code>.\start.cmd</code> 换成 <code>./start.sh</code>。</p></details>
       <details><summary>手动安装（不使用启动脚本）</summary><pre><code>python -m venv .venv
 
 # Windows 激活虚拟环境
@@ -111,8 +110,7 @@ source .venv/bin/activate
 
 python -m pip install -r requirements.txt
 python -m patchright install chromium
-# 复制 config.example.yaml 为 config.yaml，再执行：
-python selftest.py
+# 复制 config.example.yaml 为 config.yaml，再启动服务：
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激活命令按操作系统二选一；启动服务保持单 worker。需要小红书 API 通道时，在仓库根目录额外运行 <code>npm install</code>。</p></details>
       </details>
     </section>
@@ -391,7 +389,7 @@ proxies: []</code></pre>
       <details><summary>开启视频号代理后网页打不开 / 系统代理没恢复</summary><p>先在“视频号微信通道”点击“停止”，会恢复启动前备份的系统代理。软件异常退出时，下次启动会自动恢复。仍不正常时，到 Windows“设置 → 网络和 Internet → 代理”检查并关闭指向 <code>127.0.0.1</code> 的手动代理。</p></details>
       <details><summary>下载成功但找不到文件 / 没声音 / 画质不够</summary><p>查看下载记录与当前保存目录，默认文件在 <code>data/media/</code> 下。媒体处理异常先更新依赖；项目可使用 Python 依赖附带的 ffmpeg，也可使用加入 PATH 的系统 ffmpeg。画质还受源资源限制。</p></details>
       <details><summary>任务一直等待，重启后也没有立即执行</summary><p>查看“任务队列”和“风控中心”的账号状态，确认审核、活跃时段、限额、共享间隔、代理和风险冷却。等待不是卡死的充分证据，重复提交可能制造重复任务。</p></details>
-      <details><summary>Windows 提示浏览器子进程错误</summary><p>先使用项目启动脚本和单 worker，不要额外添加 <code>--workers</code>。更新依赖并运行 <code>.\start.cmd check</code>，仍失败时保留完整错误日志。</p></details>
+      <details><summary>Windows 提示浏览器子进程错误</summary><p>先使用项目启动脚本和单 worker，不要额外添加 <code>--workers</code>。运行 <code>.\start.cmd install</code> 更新依赖，仍失败时保留完整错误日志。</p></details>
       <details><summary>macOS 安装提示 clang++ failed</summary><p>先备份数据并更新项目，停止服务，把项目内的旧 <code>.venv</code> 重命名留作排查，再执行 <code>./start.sh install</code> 重建环境。不要改动系统 Python 或误删 <code>data/</code>。</p></details>
       <details><summary>能把本地面板直接暴露到公网吗？</summary><p>入门时保持默认回环地址，仅在本机使用。面板管理登录态及真实发布操作，公开访问需要另行评估身份认证、访问控制和网络保护，不要直接做公网端口映射。</p></details>
     </section>

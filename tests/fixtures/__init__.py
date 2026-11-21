@@ -1,1 +1,0 @@
-"""Local-only integration fixtures."""

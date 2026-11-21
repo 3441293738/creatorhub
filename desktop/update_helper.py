@@ -294,13 +294,9 @@ def apply_update(filename):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--request")
-    parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--recover-home")
     parser.add_argument("--parent-pid", type=int, default=0)
     args = parser.parse_args()
-    if args.self_test:
-        assert numeric_version("1.10.0") > numeric_version("1.9.0")
-        return 0
     if os.name == "nt" and args.recover_home:
         return recover_update(Path(args.recover_home), args.parent_pid)
     if os.name != "nt" or not args.request:

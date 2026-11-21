@@ -146,20 +146,14 @@ Windows 安装包的 AI 助手无新增 Python 依赖。MCP SDK 放在独立环�
 
 ## 扩展方式
 
-新业务查询首先加入 `tools.py`，写白名单字段 / 范围 / 分页测试，然后选择是否加入 MCP 的独立 allowlist。
+新业务查询首先加入 `tools.py`，配置白名单字段 / 范围 / 分页，然后选择是否加入 MCP 的独立 allowlist。
 新写操作先定义严格参数模型、确认文案、幂等事务和现有业务服务执行器，再加入工作流；不直接暴露路由全集。
-新模型协议实现 `ModelSession` 的 request / parse / add_results 与 `NativeStream` 的增量组装，测试完整终止事件、公开预览和工具往返；不要靠替换 URL 假定协议完全兼容。
+新模型协议实现 `ModelSession` 的 request / parse / add_results 与 `NativeStream` 的增量组装，确保完整终止事件、公开预览和工具往返一致；不要靠替换 URL 假定协议完全兼容。
 
 参考：[OpenAI 工具调用](https://developers.openai.com/api/docs/guides/function-calling)、[Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create)、[MCP 官方 SDK](https://github.com/modelcontextprotocol/python-sdk/tree/v1.30.0)。
 
-## 验证
+## 前端构建
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests/test_agent.py tests/test_agent_catalog.py tests/test_agent_provider_settings.py tests/test_agent_channels.py tests/test_agent_response_formats.py tests/test_agent_conversations.py tests/test_agent_telemetry.py tests/test_agent_streaming.py tests/test_access_and_submissions.py tests/test_monitor_strategy.py tests/test_task_queue.py -q
 npm run build:ui
-$env:CREATORHUB_RUN_LOCAL_CDP = '1'
-.venv\Scripts\python.exe -m pytest tests/test_agent_browser.py tests/test_agent_chat_browser.py tests/test_agent_telemetry_browser.py tests/test_agent_streaming_browser.py -q
 ```
-
-浏览器测试只启动隔离的本地演示站点和合成 API；不启动业务引擎、不访问真实账号、不调用模型。
-可选 `test_agent_mcp_sdk.py` 通过官方 SDK 客户端验证 stdio 发现 / 调用 / 写工具拒绝；只连接本地 HTTP fixture。

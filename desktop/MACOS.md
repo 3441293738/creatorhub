@@ -37,7 +37,7 @@ export MACOS_SIGNING_IDENTITY='Developer ID Application: YOUR NAME (TEAM_ID)'
 python desktop/build_macos.py --version 0.2.7 --arch arm64 --notary-profile creatorhub
 ```
 
-脚本按内到外签名 Mach-O 文件、嵌套 bundle 与应用，开启 Hardened Runtime，仅添加 Node/V8 所需 JIT entitlement。随后执行资源、Node/媒体处理、WKWebView、服务生命周期冒烟测试；对应用 ZIP 公证、给 `.app` 装订票据，通过 Gatekeeper 检查后创建 DMG，再签名、公证、装订并生成 SHA-256。公证返回状态必须为 `Accepted`。
+脚本按内到外签名 Mach-O 文件、嵌套 bundle 与应用，开启 Hardened Runtime，仅添加 Node/V8 所需 JIT entitlement。随后对应用 ZIP 公证、给 `.app` 装订票据，通过 Gatekeeper 检查后创建 DMG，再签名、公证、装订并生成 SHA-256。公证返回状态必须为 `Accepted`。
 
 在 Actions 启用 `sign` 前配置六个 repository secrets：
 

@@ -33,5 +33,5 @@ Fork 用户需按自己的 Pages 地址调整 README 入口和指南里的仓库
 2. 新增章节使用稳定且唯一的 `id`，同步更新目录，尽量保留原锚点以免旧链接失效。
 3. 截图只使用脱敏示例。新增图片需同步 `preview/build_preview.py` 的 `GUIDE_IMAGES` 清单。
 4. 不把 `docs/`、`config.yaml`、数据库、日志、账号 Profile 或运行时数据打包到公开站点。
-5. 运行 `python -m unittest discover -s tests -p test_guide_site.py`，再构建检查输出。
-6. 新增平台时同步检查 `platforms.json`、首页平台卡片与能力表、`preview/build_preview.py` 的平台白名单及文档链接测试；功能范围以当前界面和后端实现为准。
+5. 本地运行 `python preview/build_preview.py _site` 构建并检查输出。
+6. 新增平台时同步检查 `platforms.json`、首页平台卡片与能力表、`preview/build_preview.py` 的平台白名单；功能范围以当前界面和后端实现为准。

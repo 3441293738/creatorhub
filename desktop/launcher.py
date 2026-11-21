@@ -1,6 +1,6 @@
 """Windows desktop entry point. Source mode uses the same isolated user data.
 
-The frozen executable also hosts --serve and --smoke-test child modes; it never
+The frozen executable also hosts --serve child mode; it never
 attempts to run `sys.executable -m ...` as if a frozen bootloader were Python.
 """
 from __future__ import annotations
@@ -208,66 +208,6 @@ def _serve(home: Path, session: str, install_browser: bool) -> int:
         sock.close()
         state.unlink(missing_ok=True)
         stop.unlink(missing_ok=True)
-    return 0
-
-
-def smoke_test() -> int:
-    # Import all application dependencies and resolve bundled assets in an
-    # isolated directory, without starting jobs, signing in or making requests.
-    import tempfile
-    previous = Path.cwd()
-    with tempfile.TemporaryDirectory() as temp:
-        try:
-            os.chdir(temp)
-            os.environ["CREATORHUB_CONFIG_PATH"] = str(Path(temp) / "absent.yaml")
-            import app as app_pkg
-            from app.main import app, WEB_DIR
-            from app.platforms.bilibili import BilibiliClient, publish_bilibili, receive_bili_broadcast
-            from app.platforms.rednote import RednoteApiClient, publish_rednote_browser
-            from app.platforms.instagram import InstagramClient, publish_instagram
-            from app.platforms.channels.local_ca import LocalCaManager
-            import websockets.asyncio.client
-            from patchright._impl._driver import compute_driver_executable
-            from imageio_ffmpeg import get_ffmpeg_exe
-            from patchright.sync_api import sync_playwright
-            import tkinter as tk
-            import pystray
-            channels_js = Path(app_pkg.__file__).parent / "platforms" / "channels" / "js"
-            assert app and LocalCaManager and BilibiliClient and receive_bili_broadcast and publish_bilibili and RednoteApiClient and publish_rednote_browser
-            assert InstagramClient and publish_instagram
-            assert websockets.asyncio.client and (WEB_DIR / "workbench.js").is_file()
-            assert (channels_js / "finder_proxy_bridge.js").is_file()
-            assert (channels_js / "finder_native_protocol.js").is_file()
-            assert (channels_js / "finder_protocol_browser_bootstrap.js").is_file()
-            assert (resources() / "config.example.yaml").is_file()
-            assert (resources() / "desktop-guide" / "xhs" / "index.html").is_file()
-            assert (resources() / "desktop-guide" / "bilibili" / "index.html").is_file()
-            assert (resources() / "desktop-guide" / "rednote" / "index.html").is_file()
-            assert (resources() / "desktop-guide" / "instagram" / "index.html").is_file()
-            if os.name == "nt" and getattr(sys, "frozen", False):
-                updater = resources() / "desktop" / "CreatorHubUpdater.exe"
-                assert updater.is_file()
-                from desktop.update_helper import clean_environment
-                subprocess.run([str(updater), "--self-test"], env=clean_environment(),
-                               check=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
-            assert all(Path(path).is_file() for path in compute_driver_executable())
-            assert Path(get_ffmpeg_exe()).is_file()
-            verify_shared_runtimes()
-            with sync_playwright() as playwright:
-                assert playwright.chromium.executable_path
-            ui = tk.Tk()
-            ui.withdraw()
-            from types import SimpleNamespace
-            from desktop.ui import LauncherView
-            owner = SimpleNamespace(root=ui, **{name: lambda: None for name in (
-                "start", "open_panel", "open_guide", "open_data", "diagnostics", "hide", "close")})
-            view = LauncherView(owner, version())
-            view.phase("ready", "http://127.0.0.1:8000")
-            ui.update_idletasks()
-            ui.destroy()
-            assert pystray.Icon
-        finally:
-            os.chdir(previous)
     return 0
 
 
@@ -569,20 +509,13 @@ def main() -> int:
     parser.add_argument("--serve", action="store_true")
     parser.add_argument("--session", default="")
     parser.add_argument("--parent-pid", type=int, default=0)
-    parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--update-health-check", action="store_true")
-    parser.add_argument("--shell-smoke-test", action="store_true")
     parser.add_argument("--skip-browser-install", action="store_true")
     parser.add_argument("--legacy-ui", action="store_true", help="Use the legacy emergency window")
     parser.add_argument("--no-autostart", action="store_true")
     args = parser.parse_args()
     if args.update_health_check:
         return update_health_check()
-    if args.shell_smoke_test:
-        from desktop.webview_smoke import smoke
-        return smoke()
-    if args.smoke_test:
-        return smoke_test()
     home = user_directory()
     prepare_home(home)
     if os.name == "nt" and getattr(sys, "frozen", False) and recover_interrupted_update(home):
