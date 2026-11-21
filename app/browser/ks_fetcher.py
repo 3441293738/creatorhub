@@ -1,4 +1,4 @@
-"""快手 Web 抓取(浏览器自动化 + 拦截 GraphQL 响应),对标 douyin/fetcher.py。
+"""快手 Web 抓取(浏览器自动化 + 拦截 GraphQL 响应),与 douyin/fetcher.py 保持统一返回契约。
 
 快手 PC 站把数据都打在 POST https://www.kuaishou.com/graphql 上,前端拦截响应即可:
   - 打开 /profile/{userId}      -> visionProfile(资料) + visionProfilePhotoList(作品)
@@ -105,7 +105,7 @@ def _feed_ts(feed: dict) -> int:
 def _ks_page_reaches_boundary(items: list, known_ids: set, stop_before: int = 0) -> bool:
     """一整批作品都已见过 / 早于监控起点时,才认为翻到了历史边界。
 
-    置顶作品会把旧 ID 混在首页,不能因为单个旧 ID 就停止(对标抖音
+    置顶作品会把旧 ID 混在首页,不能因为单个旧 ID 就停止(与抖音
     _page_reaches_boundary)。"""
     rows = [it for it in items if _feed_id(it)]
     if not rows:
@@ -313,7 +313,7 @@ async def fetch_ks_videos(mgr: BrowserManager, identity: Identity, user_id: str,
     stop_before>0 时,翻到整页都早于该时间戳(秒)即停止,用于历史回填边界;
     min_scrolls 保证至少真实滚动几次,避免首屏置顶旧作品直接截断扫描。"""
     collected: Dict[str, dict] = {}
-    pages: List[List[dict]] = []   # 每批响应新增的作品(边界判断用,对标抖音 post_pages)
+    pages: List[List[dict]] = []   # 每批响应新增的作品(边界判断用,同抖音 post_pages)
     author: Optional[dict] = None
     error = ""
     api_seen: list = []          # 诊断:看到的 GraphQL operation + 其它响应路径

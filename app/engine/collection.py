@@ -42,6 +42,13 @@ from ..browser.ig_fetcher import (
     fetch_ig_posts,
     fetch_ig_search,
 )
+from ..browser.twitter_fetcher import (
+    fetch_twitter_comments,
+    fetch_twitter_search,
+    fetch_twitter_self_profile,
+    fetch_twitter_tweet_detail,
+    fetch_twitter_user_tweets,
+)
 from ..db import get_session
 from ..models import (
     KeywordCollectionComment,
@@ -74,6 +81,12 @@ from ..platforms.instagram import (
     cookie_map_from_state as ig_cookie_map,
     parse_ig_aweme,
     resolve_ig_user_target,
+)
+from ..platforms.twitter import (
+    TwitterClient,
+    parse_twitter_aweme,
+    parse_twitter_user,
+    resolve_twitter_user_target,
 )
 from ..platforms.channels import (
     ChannelsProtocolClient,
@@ -203,6 +216,10 @@ def _author_id(raw: dict, platform: str) -> str:
             raw.get("owner") if isinstance(raw.get("owner"), dict) else {}
         )
         return str(user.get("username") or user.get("pk") or user.get("id") or raw.get("author_unique_id") or "")
+    if platform == "twitter":
+        core_u = ((raw.get("core") or {}).get("user_results") or {}).get("result") if isinstance(raw.get("core"), dict) else raw.get("user")
+        u_info = parse_twitter_user(core_u) if core_u else {}
+        return str(u_info.get("unique_id") or u_info.get("uid") or raw.get("author_unique_id") or raw.get("screen_name") or "")
     return str((parse_note_brief(raw) or {}).get("author_id") or "")
 
 
@@ -322,6 +339,8 @@ def _sort_channels_search_items(
 def _collection_content_matches(aweme: Aweme, job: KeywordCollectionJob,
                                 *, now: int | None = None) -> bool:
     if job.content_type != "all" and aweme.media_type != job.content_type:
+        return False
+    if job.content_type == "images" and job.platform == "twitter" and not aweme.medias:
         return False
     if aweme.like_count < max(0, int(job.min_likes or 0)):
         return False
@@ -1154,6 +1173,10 @@ class KeywordCollector:
                   and job.platform == "shipinhao"):
                 row.download_status = "skipped"
                 row.error = detail_error or "视频号未提供可直接下载媒体，仅保存作品元数据"
+            elif (job.download_media and not aweme.medias
+                  and job.platform == "twitter" and not detail_error):
+                row.download_status = "skipped"
+                row.error = ""
             elif job.download_media and not aweme.medias:
                 row.download_status = "failed"
                 row.error = detail_error or "未取得媒体地址"
@@ -1196,6 +1219,10 @@ class KeywordCollector:
             if account is not None:
                 download_ua = download_ua or str(getattr(account, "ua", "") or "")
             download_referer = "https://www.instagram.com/"
+        elif job.platform == "twitter":
+            if account is not None:
+                download_ua = download_ua or str(getattr(account, "ua", "") or "")
+            download_referer = "https://x.com/"
         ok, local_path, error = await self.downloader.download_aweme(
             aweme, str(base_dir), routed_proxy,
             user_agent=download_ua,
@@ -1655,6 +1682,19 @@ class KeywordCollector:
                 return await self._run_keywords(
                     job_id, job, account, keywords, proxy,
                     identity=identity, ig_client=ig_client)
+        if job.platform == "twitter":
+            tw_state = (account.storage_state or account.cookie) if account is not None else ""
+            tw_client = TwitterClient(
+                tw_state,
+                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                proxy=proxy,
+                timeout=self.cfg.engine.request_timeout_seconds,
+            )
+            self._progress(job_id, step="启动 X (Twitter) 采集任务")
+            async with tw_client.session_scope():
+                return await self._run_keywords(
+                    job_id, job, account, keywords, proxy,
+                    identity=identity, tw_client=tw_client)
         if xhs_client is not None:
             async with xhs_client.session_scope():
                 return await self._run_keywords(
@@ -1953,6 +1993,165 @@ class KeywordCollector:
             comments = [c for c in comments if not c.get("reply_to")]
         return comments[:limit], err
 
+    async def _discover_twitter_keyword(
+        self,
+        keyword: str,
+        job: KeywordCollectionJob,
+        *,
+        tw_client: TwitterClient | None = None,
+        identity=None,
+    ) -> tuple[list[dict], str]:
+        mode = str(getattr(self.cfg.engine, "twitter_read_mode", "hybrid") or "hybrid").lower()
+        max_pages = max(1, min(10, int(job.max_pages_per_keyword or 3)))
+        items: list[dict] = []
+        err = ""
+        if mode in {"api", "hybrid"} and tw_client is not None:
+            items, err = await tw_client.search_posts(
+                keyword,
+                max_pages=max_pages,
+                latest=(job.search_sort == "latest"),
+                content_type=job.content_type or "all",
+            )
+            if items:
+                return items, ""
+            if err.startswith(("logged_out:", "verification_required:", "rate_limit:")):
+                return [], err
+        if (mode == "browser" or (mode == "hybrid" and not items)) and identity is not None:
+            b_items, b_err = await fetch_twitter_search(
+                self.browser,
+                identity,
+                keyword,
+                latest=(job.search_sort == "latest"),
+                content_type=job.content_type or "all",
+                max_scrolls=max_pages,
+                block_media=self.cfg.engine.block_media_resources,
+            )
+            if b_items:
+                return b_items, ""
+            if mode == "browser" or not err:
+                err = b_err
+        if err == "empty":
+            err = ""
+        return items, err
+
+    async def _discover_twitter_creator(
+        self,
+        job: KeywordCollectionJob,
+        *,
+        tw_client: TwitterClient | None = None,
+        identity=None,
+    ) -> tuple[list[dict], str]:
+        user_ref = resolve_twitter_user_target(job.source_ref) or str(job.source_ref or "").strip()
+        if not user_ref:
+            return [], "无法解析 X (Twitter) 创作者 @username 或链接"
+        mode = str(getattr(self.cfg.engine, "twitter_read_mode", "hybrid") or "hybrid").lower()
+        max_pages = max(1, min(12, int(job.max_pages_per_keyword or 4)))
+        items: list[dict] = []
+        err = ""
+        if mode in {"api", "hybrid"} and tw_client is not None:
+            items, _uinfo, err = await tw_client.fetch_user_tweets(
+                user_ref, max_pages=max_pages
+            )
+            if items:
+                return items, ""
+            if err.startswith(("logged_out:", "verification_required:", "rate_limit:")):
+                return [], err
+        if (mode == "browser" or (mode == "hybrid" and not items)) and identity is not None:
+            b_items, _author, b_err = await fetch_twitter_user_tweets(
+                self.browser,
+                identity,
+                user_ref,
+                set(),
+                max_scrolls=max_pages,
+                block_media=self.cfg.engine.block_media_resources,
+            )
+            if b_items:
+                return b_items, ""
+            if mode == "browser" or not err:
+                err = b_err
+        if err == "empty":
+            err = ""
+        return items, err
+
+    async def _discover_twitter_account(
+        self,
+        account,
+        job: KeywordCollectionJob,
+        *,
+        tw_client: TwitterClient | None,
+        identity=None,
+    ) -> tuple[list[dict], str]:
+        user_ref = str(
+            getattr(account, "douyin_id", "")
+            or getattr(account, "sec_uid", "")
+            or getattr(account, "uid", "")
+            or ""
+        ).strip()
+        if not user_ref and tw_client is not None:
+            prof, p_err = await tw_client.fetch_self_profile()
+            if p_err.startswith(("logged_out:", "verification_required:")):
+                return [], p_err
+            user_ref = str(prof.get("unique_id") or prof.get("sec_uid") or prof.get("uid") or "")
+        if not user_ref and identity is not None:
+            prof, p_err = await fetch_twitter_self_profile(self.browser, identity)
+            if p_err.startswith(("logged_out:", "verification_required:")):
+                return [], p_err
+            user_ref = str(prof.get("unique_id") or prof.get("sec_uid") or prof.get("uid") or "")
+        if not user_ref:
+            return [], "未获取到当前 X (Twitter) 账号标识，请先在账号页刷新资料"
+        clone_job = KeywordCollectionJob(
+            platform="twitter",
+            account_id=getattr(account, "id", 0) or 0,
+            source_type="creator",
+            source_ref=user_ref,
+            max_contents_per_keyword=job.max_contents_per_keyword,
+            max_pages_per_keyword=job.max_pages_per_keyword,
+        )
+        return await self._discover_twitter_creator(clone_job, tw_client=tw_client, identity=identity)
+
+    async def _twitter_comments(
+        self,
+        identity,
+        work_id: str,
+        limit: int,
+        include_replies: bool,
+        *,
+        tw_client: TwitterClient | None = None,
+        target_url: str = "",
+    ) -> tuple[list[dict], str]:
+        if limit <= 0:
+            return [], ""
+        mode = str(getattr(self.cfg.engine, "twitter_read_mode", "hybrid") or "hybrid").lower()
+        comments: list[dict] = []
+        err = ""
+        if mode in {"api", "hybrid"} and tw_client is not None:
+            comments, err = await tw_client.fetch_comments(
+                target_url or work_id,
+                max_count=limit,
+                include_replies=include_replies,
+            )
+        if (
+            mode == "browser"
+            or (mode == "hybrid" and not comments and err and not err.startswith(("logged_out:", "verification_required:", "rate_limit:")))
+        ) and identity is not None:
+            b_comments, b_err = await fetch_twitter_comments(
+                self.browser,
+                identity,
+                target_url or work_id,
+                max_count=limit,
+                include_replies=include_replies,
+                block_media=self.cfg.engine.block_media_resources,
+            )
+            if b_comments:
+                comments, err = b_comments, ""
+            elif mode == "browser":
+                err = b_err
+        if err == "empty":
+            err = ""
+        if not include_replies:
+            comments = [c for c in comments if not c.get("reply_to")]
+        return comments[:limit], err
+
     async def _run_keywords(self, job_id: int, job: KeywordCollectionJob,
                             account, keywords: list[str], proxy: str,
                              douyin_client: DouyinClient | None = None,
@@ -1961,6 +2160,7 @@ class KeywordCollector:
                              channels_client: ChannelsProtocolClient | None = None,
                              bili_client: BilibiliClient | None = None,
                              ig_client: InstagramClient | None = None,
+                             tw_client: TwitterClient | None = None,
                              context=None, identity=None) -> dict:
 
         browser_reads = self._xhs_browser_reads_enabled()
@@ -1986,16 +2186,16 @@ class KeywordCollector:
                 await asyncio.sleep(1.0 * random.uniform(1.0, 1.35))
             elif job.platform == "bilibili" and keyword_index:
                 await asyncio.sleep(0.8 * random.uniform(1.0, 1.35))
-            elif job.platform == "instagram" and keyword_index:
+            elif job.platform in {"instagram", "twitter"} and keyword_index:
                 await asyncio.sleep(1.2 * random.uniform(1.0, 1.35))
             self._progress(
                 job_id,
                 keyword=keyword,
                 step=(
                     "同步本账号作品"
-                    if (job.platform in {"shipinhao", "bilibili", "instagram"} and job.source_type == "account_works")
+                    if (job.platform in {"shipinhao", "bilibili", "instagram", "twitter"} and job.source_type == "account_works")
                     else "读取创作者作品"
-                    if (job.platform in {"shipinhao", "bilibili", "instagram"} and job.source_type == "creator")
+                    if (job.platform in {"shipinhao", "bilibili", "instagram", "twitter"} and job.source_type == "creator")
                     else "搜索作品"
                 ),
                 processed_keyword_count=keyword_index,
@@ -2040,6 +2240,16 @@ class KeywordCollector:
                 else:
                     raw_items, search_error = await self._discover_instagram_keyword(
                         keyword, job, ig_client=ig_client, identity=identity)
+            elif job.platform == "twitter":
+                if job.source_type == "creator":
+                    raw_items, search_error = await self._discover_twitter_creator(
+                        job, tw_client=tw_client, identity=identity)
+                elif job.source_type == "account_works":
+                    raw_items, search_error = await self._discover_twitter_account(
+                        account, job, tw_client=tw_client, identity=identity)
+                else:
+                    raw_items, search_error = await self._discover_twitter_keyword(
+                        keyword, job, tw_client=tw_client, identity=identity)
             elif job.platform == "shipinhao":
                 if job.source_type == "creator":
                     raw_items, search_error = await self._discover_channels_creator(
@@ -2200,6 +2410,22 @@ class KeywordCollector:
                         elif info_err and job.download_media and not aweme.medias:
                             detail_error = info_err
                     token = ""
+                elif job.platform == "twitter":
+                    aweme = parse_twitter_aweme(raw)
+                    if (
+                        aweme is not None
+                        and job.download_media
+                        and not aweme.medias
+                        and tw_client is not None
+                        and not isinstance(raw.get("legacy"), dict)
+                    ):
+                        full_aw, full_raw, _info_err = await tw_client.fetch_tweet_syndication(
+                            aweme.source_url or aweme.aweme_id
+                        )
+                        if full_aw is not None and full_aw.medias:
+                            aweme = full_aw
+                            detail_raw = full_raw
+                    token = ""
                 elif browser_reads:
                     aweme, parts, detail_error = \
                         await self._materialize_xhs_browser(identity, raw)
@@ -2232,7 +2458,7 @@ class KeywordCollector:
                 if aweme is None:
                     self._record_error(job_id, f"{keyword}: 无法解析一条搜索结果")
                     continue
-                if job.platform in {"xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"} and not \
+                if job.platform in {"xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"} and not \
                         _collection_content_matches(aweme, job):
                     continue
 
@@ -2328,6 +2554,11 @@ class KeywordCollector:
                             identity, aweme.aweme_id,
                             job.max_comments_per_content, job.include_replies,
                             ig_client=ig_client)
+                    elif job.platform == "twitter":
+                        comments, comment_error = await self._twitter_comments(
+                            identity, aweme.aweme_id,
+                            job.max_comments_per_content, job.include_replies,
+                            tw_client=tw_client, target_url=aweme.source_url)
                     elif browser_reads:
                         comments, comment_error = await self._xhs_comments_browser(
                             identity, aweme.aweme_id, token, source,
@@ -2352,7 +2583,7 @@ class KeywordCollector:
                     if comment_error:
                         self._record_error(
                             job_id, f"{keyword}/{aweme.aweme_id}: {comment_error}")
-                        if job.platform in {"xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"} and classify_platform_error(
+                        if job.platform in {"xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"} and classify_platform_error(
                                 comment_error)[0] in {
                                 RiskCategory.RISK, RiskCategory.AUTH,
                                 RiskCategory.NETWORK}:

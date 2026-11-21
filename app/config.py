@@ -71,6 +71,9 @@ class EngineConfig:
     # Instagram 读写通道: hybrid=双栈协议直连优先、兼容失败回退页面; api=仅直连; browser=仅页面
     instagram_read_mode: str = "hybrid"       # hybrid | api | browser
     instagram_write_mode: str = "hybrid"      # hybrid | api | browser
+    # X (Twitter) 读取与写入通道: hybrid=Syndication/REST直连优先、GraphQL时间线回退隔离浏览器; browser=全程隔离浏览器
+    twitter_read_mode: str = "hybrid"         # hybrid | api | browser
+    twitter_write_mode: str = "browser"       # browser
     # 视频号读取模式: auto=优先桌面微信原生 Finder CDP 协议、回退创作者助手页面;
     # protocol=仅原生 Finder 协议; browser=仅创作者助手页面。
     channels_read_mode: str = "auto"          # auto | protocol | browser

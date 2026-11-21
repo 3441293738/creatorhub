@@ -39,6 +39,7 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       interactive_tiktok_login,
                       interactive_bilibili_login, interactive_bilibili_creator_login,
                       interactive_instagram_login, interactive_instagram_creator_login,
+                      interactive_twitter_login, interactive_twitter_creator_login,
                       fetch_self_profile, fetch_xhs_self_profile,
                       fetch_xhs_note_detail, fetch_xhs_comments,
                        fetch_xhs_favorite_boards,
@@ -49,6 +50,8 @@ from .browser import (BrowserManager, cookie_string_to_state,
                       fetch_channels_self_profile,
                       fetch_bili_self_profile,
                       fetch_ig_self_profile,
+                      fetch_twitter_self_profile, fetch_twitter_users,
+                      fetch_twitter_tweet_detail, do_twitter_like, do_twitter_retweet,
                       fetch_account_works, fetch_follows, fetch_dm_conversations,
                       fetch_dm_history, fetch_douyin_account_works_api)
 from .browser.tiktok_fetcher import (
@@ -162,6 +165,22 @@ from .platforms.instagram import (
     resolve_ig_user_target,
     resolve_ig_work,
     resolve_ig_work_ref,
+)
+from .platforms.twitter import (
+    TwitterClient,
+    build_twitter_storage_state,
+    clean_twitter_username,
+    cookie_str_from_state,
+    has_twitter_login_cookies,
+    looks_like_twitter_tweet,
+    parse_twitter_aweme,
+    parse_twitter_credential_input,
+    resolve_twitter_short_url,
+    resolve_twitter_target,
+    resolve_twitter_tweet_ref,
+    resolve_twitter_user_target,
+    trim_to_twitter_limit,
+    validate_twitter_publish_files,
 )
 from .engine import Downloader, MonitorEngine
 from .engine.share_downloader import (
@@ -286,6 +305,7 @@ def _login_scope_label(platform: str, creator: bool) -> str:
         "tiktok": "TikTok",
         "bilibili": "哔哩哔哩",
         "instagram": "Instagram",
+        "twitter": "Twitter",
         "douyin": "抖音",
     }.get(platform, platform or "平台")
     return f"{label}创作者" if creator else label
@@ -893,11 +913,12 @@ async def _enrich_account_profile(account_id: int, state: str, *,
         identity = (None if (dy_transport and dy_transport["effective_mode"] == "api")
                     or (platform == "bilibili" and str(getattr(cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid").lower() == "api")
                     or (platform == "instagram" and str(getattr(cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower() == "api")
+                    or (platform == "twitter" and str(getattr(cfg.engine, "twitter_read_mode", "hybrid") or "hybrid").lower() == "api")
                     else (browser.identity_for(a0)
                           if callable(getattr(browser, "identity_for", None))
                           else None))
 
-    if platform not in {"douyin", "bilibili", "instagram"} and browser is None:
+    if platform not in {"douyin", "bilibili", "instagram", "twitter"} and browser is None:
         return _done("error", "browser_unavailable")
 
     # XHS 创作者号:用创作平台「我的信息」拿资料 + 判活(www 接口对创作态拿不到)
@@ -1060,6 +1081,30 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 if browser is None:
                     return _done("error", "browser_unavailable")
                 u, err = await fetch_ig_self_profile(browser, identity)
+        elif platform == "twitter":
+            tmode = str(getattr(cfg.engine, "twitter_read_mode", "hybrid") or "hybrid").lower()
+            u, err = None, ""
+            tw_enriched_state = ""
+            if tmode in {"api", "hybrid"} and state:
+                tcli = TwitterClient(
+                    state,
+                    a0.ua or cfg.engine.user_agent,
+                    proxy=proxy,
+                    timeout=cfg.engine.request_timeout_seconds,
+                )
+                async with tcli.session_scope():
+                    u, err = await tcli.fetch_self_profile(
+                        hint_screen_name=(a0.douyin_id or a0.sec_uid or "")
+                    )
+                if tcli.cookies.get("auth_token") and tcli.cookies.get("ct0"):
+                    tw_enriched_state = build_twitter_storage_state(tcli.cookies)
+            auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
+            if not u and tmode == "hybrid" and not auth_failed and browser is not None:
+                u, err = await fetch_twitter_self_profile(browser, identity)
+            elif not u and tmode == "browser":
+                if browser is None:
+                    return _done("error", "browser_unavailable")
+                u, err = await fetch_twitter_self_profile(browser, identity)
         else:
             mode = dy_transport["effective_mode"]
             u, err = None, ""
@@ -1115,8 +1160,12 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     "following_count": int(u.get("following_count") or 0),
                     "aweme_count": int(u.get("video_count") or 0),
                 }
-            elif platform in {"bilibili", "instagram"}:
+            elif platform in {"bilibili", "instagram", "twitter"}:
                 p = dict(u)
+                if platform == "twitter" and locals().get("tw_enriched_state"):
+                    acc.storage_state = tw_enriched_state
+                    acc.creator_storage_state = tw_enriched_state
+                    acc.cookie = cookie_str_from_state(tw_enriched_state)
             else:
                 p = parse_self_user(u)
             if p.get("nickname"):
@@ -1126,7 +1175,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 acc.uid = str(p["uid"])
             acc.douyin_id = p.get("douyin_id") or acc.douyin_id
             acc.avatar = p.get("avatar") or acc.avatar
-            if platform in {"kuaishou", "tiktok", "bilibili", "instagram"}:
+            if platform in {"kuaishou", "tiktok", "bilibili", "instagram", "twitter"}:
                 # 快手资料接口会明确返回 0；不能用 ``or`` 保留旧值，否则
                 # 取消关注、删光作品等场景会让账号卡片一直显示过期数据。
                 acc.follower_count = int(p.get("follower_count") or 0)
@@ -1236,6 +1285,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
           else "视频号账号" if platform == "shipinhao"
           else "哔哩哔哩账号" if platform == "bilibili"
           else "Instagram账号" if platform == "instagram"
+          else "Twitter账号" if platform == "twitter"
           else "TikTok账号" if platform == "tiktok"
           else "创作者账号" if creator else "扫码账号")
     try:
@@ -1426,6 +1476,10 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 reauth_options = {"force_reauth": True} if account_id else {}
                 ok, state_json, nickname = await interactive_instagram_login(
                     browser, identity, **reauth_options)
+            elif platform == "twitter":
+                reauth_options = {"force_reauth": True} if account_id else {}
+                ok, state_json, nickname = await interactive_twitter_login(
+                    browser, identity, **reauth_options)
             elif creator:
                 reauth_options = {"force_reauth": True} if account_id else {}
                 ok, state_json, nickname = await interactive_creator_login(
@@ -1541,8 +1595,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     # 视频号一套登录态即读取又发布,两处都写
                     acc.storage_state = state_json
                     acc.creator_storage_state = state_json
-                elif platform in {"bilibili", "instagram"}:
-                    # B站 / Instagram 顶域登录态同时支持读取、发布与私信
+                elif platform in {"bilibili", "instagram", "twitter"}:
+                    # B站 / Instagram / Twitter 顶域登录态同时支持读取、发布与私信
                     acc.storage_state = state_json
                     acc.creator_storage_state = state_json
                 elif platform == "rednote":
@@ -1574,7 +1628,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 acc.status = "active"
                 s.add(acc); s.commit()
 
-            if fresh_account and platform in {"xhs", "rednote", "tiktok", "instagram"}:
+            if fresh_account and platform in {"xhs", "rednote", "tiktok", "instagram", "twitter"}:
                 # Promote the successful temporary login session to the new
                 # durable account id without closing/reopening Chromium.
                 rebound = getattr(browser, "rebind_context", None)
@@ -2030,6 +2084,32 @@ async def login_instagram_start(proxy: str = "auto", browser_backend: str = "def
             "hint": "已打开 Instagram 登录窗口，请完成登录及双重验证(如有)"}
 
 
+@app.post("/api/login/twitter/start")
+async def login_twitter_start(proxy: str = "auto", browser_backend: str = "default",
+                              browser_runtime_id: str = "",
+                              fingerprint: dict[str, Any] | None = None):
+    """X (Twitter) 独立浏览器登录；`.x.com` 会话同时用于采集、互动、私信与发布。"""
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = _validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
+    fingerprint_overrides = _validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await _reuse_or_reject_interactive_login("twitter", False)
+    if reused is not None:
+        return reused
+    task_id = uuid.uuid4().hex
+    login_tasks[task_id] = _login_task_state(
+        status="opening", platform="twitter", creator=False, account_id=None)
+    asyncio.create_task(_run_login(
+        task_id, platform="twitter", proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
+    return {"task_id": task_id, "status": "opening",
+            "hint": "已打开 X (Twitter) 登录窗口，请完成登录及两步验证(如有)"}
+
+
 @app.get("/api/login/browser/poll")
 async def login_browser_poll(task_id: str):
     info = login_tasks.get(task_id)
@@ -2049,14 +2129,112 @@ class CookieIn(BaseModel):
 
 @app.post("/api/login/cookie")
 async def login_cookie(body: CookieIn):
-    """Cookie 粘贴兜底登录:转成浏览器登录态。"""
-    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram") else "douyin"
+    """Cookie / Token 粘贴兜底登录:转成浏览器登录态（Twitter 支持 40 位 auth_token、多字段导出文本或 JSON Cookie）。"""
+    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter") else "douyin"
+    if platform == "twitter":
+        cookie_raw = (body.cookie or "").strip()
+        tw_cookies, hint_user = parse_twitter_credential_input(cookie_raw)
+        if not tw_cookies.get("auth_token"):
+            if re.search(r"[0-9a-fA-F]{6,}\s*(?:\.{2,}|…)\s*[0-9a-fA-F]{4,}", cookie_raw):
+                raise HTTPException(
+                    400,
+                    "检测到粘贴的 Token 带有省略号(...)，请复制并粘贴完整的 40 位 auth_token",
+                )
+            raise HTTPException(
+                400,
+                "未识别到有效的 Twitter Token (auth_token)，可直接粘贴 40 位 Token、账号----密码----Token 文本或完整 Cookie",
+            )
+        initial_state = build_twitter_storage_state(tw_cookies)
+        with get_session() as s:
+            probe_proxy = assign_proxy_from_pool(s, cfg, platform="twitter") or (
+                cfg.proxies[0] if cfg.proxies else ""
+            )
+        tcli = TwitterClient(
+            initial_state,
+            cfg.engine.user_agent,
+            proxy=probe_proxy,
+            timeout=15.0,
+        )
+        try:
+            async with tcli.session_scope():
+                prof, err = await tcli.fetch_self_profile(hint_screen_name=hint_user)
+        except Exception as exc:
+            prof, err = {}, str(exc)
+
+        if err.startswith("logged_out:"):
+            raise HTTPException(400, "该 Twitter Token (auth_token) 无效或已过期，请核对后重试")
+
+        final_cookies = tcli.cookies if tcli.cookies.get("auth_token") else tw_cookies
+        final_state = build_twitter_storage_state(final_cookies)
+        final_cookie_str = cookie_str_from_state(final_state)
+        resolved_uid = str(prof.get("uid") or tcli.self_uid or "").strip()
+        resolved_sn = str(prof.get("douyin_id") or prof.get("unique_id") or hint_user or "").strip()
+        resolved_nick = (
+            body.nickname.strip()
+            or str(prof.get("nickname") or "").strip()
+            or (f"@{resolved_sn}" if resolved_sn else "Twitter账号")
+        )
+
+        with get_session() as s:
+            acc = None
+            if resolved_uid:
+                acc = s.exec(
+                    select(DouyinAccount).where(
+                        DouyinAccount.platform == "twitter",
+                        DouyinAccount.uid == resolved_uid,
+                    )
+                ).first()
+            if acc is None and resolved_sn:
+                acc = s.exec(
+                    select(DouyinAccount).where(
+                        DouyinAccount.platform == "twitter",
+                        DouyinAccount.douyin_id == resolved_sn,
+                    )
+                ).first()
+            if acc is None:
+                acc = DouyinAccount(
+                    nickname=resolved_nick,
+                    platform="twitter",
+                    identity_mode="native",
+                )
+            elif body.nickname.strip():
+                acc.nickname = body.nickname.strip()
+            elif prof.get("nickname"):
+                acc.nickname = str(prof["nickname"]).strip()
+
+            acc.cookie = final_cookie_str
+            acc.storage_state = final_state
+            acc.creator_storage_state = final_state
+            if resolved_uid:
+                acc.uid = resolved_uid
+            if resolved_sn:
+                acc.sec_uid = resolved_sn
+                acc.douyin_id = resolved_sn
+            if prof.get("avatar"):
+                acc.avatar = str(prof["avatar"])
+            if prof:
+                acc.follower_count = int(prof.get("follower_count") or 0)
+                acc.following_count = int(prof.get("following_count") or 0)
+                acc.aweme_count = int(prof.get("aweme_count") or 0)
+                acc.total_favorited = int(prof.get("total_favorited") or 0)
+                acc.status = "active"
+            elif err.startswith("verification_required:"):
+                acc.status = "verify"
+            s.add(acc); s.commit(); s.refresh(acc)
+            ensure_identity(acc, cfg, session=s, assign_proxy=True)
+            s.add(acc); s.commit(); s.refresh(acc)
+            return {
+                "account_id": acc.id,
+                "nickname": acc.nickname,
+                "warning": err if err.startswith("verification_required:") else "",
+            }
+
     state = cookie_string_to_state(body.cookie, platform)
     with get_session() as s:
         acc = DouyinAccount(
             nickname=body.nickname or "Cookie账号", platform=platform,
             identity_mode="native", cookie=body.cookie.strip(), storage_state=state,
-            creator_storage_state=(state if platform in {"bilibili", "rednote", "instagram"} else ""))
+            creator_storage_state=(state if platform in {"bilibili", "rednote", "instagram", "twitter"} else ""))
         s.add(acc); s.commit(); s.refresh(acc)
         # 分配画像(profile/UA/指纹/代理):Cookie 会在首次开持久 profile 时桥接注入
         ensure_identity(acc, cfg, session=s, assign_proxy=True)
@@ -2136,9 +2314,81 @@ async def instagram_media_thumb_proxy(url: str):
         raise HTTPException(502, f"Instagram 图片代理拉取失败: {type(exc).__name__}") from exc
 
 
+@app.get("/api/tw-media-thumb")
+async def twitter_media_thumb_proxy(url: str):
+    """本地只读代理 X (Twitter) 官方图片 CDN (`pbs.twimg.com` / `abs.twimg.com`)，自动复用海外代理。"""
+    import httpx
+    from .browser.manager import normalize_proxy
+
+    raw = str(url or "").strip()
+    if not raw or len(raw) > 4096:
+        raise HTTPException(400, "无效的媒体地址")
+    parsed = urlsplit(raw)
+    host = (parsed.hostname or "").lower().strip(".")
+    if (
+        parsed.scheme != "https"
+        or parsed.username
+        or parsed.password
+        or not host
+        or not (host == "twimg.com" or host.endswith(".twimg.com"))
+    ):
+        raise HTTPException(400, "仅允许 X (Twitter) 官方图片 CDN 域名(twimg.com)")
+
+    proxy_url = ""
+    ua_str = cfg.engine.user_agent
+    with get_session() as s:
+        tw_acc = s.exec(
+            select(DouyinAccount)
+            .where(DouyinAccount.platform == "twitter")
+            .order_by(DouyinAccount.id.desc())
+        ).first()
+        if tw_acc:
+            if tw_acc.proxy:
+                proxy_url = normalize_proxy(tw_acc.proxy)
+            if tw_acc.ua:
+                ua_str = tw_acc.ua
+    if not proxy_url and cfg.engine.route_download_via_proxy and cfg.proxies:
+        proxy_url = normalize_proxy(cfg.proxies[0])
+
+    headers = {
+        "User-Agent": ua_str,
+        "Referer": "https://x.com/",
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+            follow_redirects=False,
+            headers=headers,
+            proxy=proxy_url or None,
+        ) as http:
+            async with http.stream("GET", raw) as resp:
+                if resp.status_code != 200:
+                    raise HTTPException(resp.status_code if 400 <= resp.status_code < 600 else 502, "上游图片不可用")
+                ctype = (resp.headers.get("content-type") or "image/jpeg").split(";", 1)[0].strip().lower()
+                if not ctype.startswith("image/"):
+                    raise HTTPException(415, "上游响应不是图片")
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes(65536):
+                    total += len(chunk)
+                    if total > 8 * 1024 * 1024:
+                        raise HTTPException(413, "图片体积超出预览上限")
+                    chunks.append(chunk)
+                return Response(
+                    content=b"".join(chunks),
+                    media_type=ctype,
+                    headers={"Cache-Control": "private, max-age=3600"},
+                )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Twitter 图片代理拉取失败: {type(exc).__name__}") from exc
+
+
 @app.get("/api/overview/summary")
 async def overview_summary(platform: str = "douyin"):
-    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
+    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"}:
         raise HTTPException(422, "平台类型无效")
     with get_session() as session:
         def count(model, *conditions):
@@ -2631,7 +2881,7 @@ async def list_accounts(platform: str | None = None):
                     environment_check = None
             has_creator = (
                 bool(a.creator_storage_state)
-                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram")
+                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter")
                     and bool(a.storage_state))
                 or (a.platform == "xhs" and has_creator_cookies(a.storage_state))
             )
@@ -3167,14 +3417,14 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
             "douyin": "抖音号", "xhs": "小红书号", "rednote": "Rednote ID",
             "kuaishou": "快手号", "shipinhao": "视频号",
             "bilibili": "B站 UID", "tiktok": "TikTok",
-            "instagram": "Instagram",
+            "instagram": "Instagram", "twitter": "Twitter @",
         }.get(account.platform, "账号 ID")
     else:
         platform_account_id = account.sec_uid
         platform_account_id_label = {
             "douyin": "sec_uid", "xhs": "user_id", "rednote": "user_id",
             "kuaishou": "user_id", "shipinhao": "finder_id",
-            "bilibili": "UID", "instagram": "pk",
+            "bilibili": "UID", "instagram": "pk", "twitter": "screen_name",
         }.get(account.platform, "账号 ID")
     return {
         "account_id": account.id,
@@ -4249,6 +4499,7 @@ async def refresh_account_profile(account_id: int):
                else "[rednote_self_profile]" if platform == "rednote"
                else "[ks_self_profile]" if platform == "kuaishou"
                else "[ig_self_profile]" if platform == "instagram"
+               else "[tw_self_profile]" if platform == "twitter"
                else "[self_profile]")
         raise HTTPException(400, f"未能获取账号资料:请看服务端控制台 {tag} 那行日志"
                                  "(含它实际看到的请求),把它发我即可定位")
@@ -4263,7 +4514,7 @@ async def refresh_account_profile(account_id: int):
         )
         has_creator_login = bool(acc and (
             acc.creator_storage_state
-            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram")
+            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter")
                 and acc.storage_state)
             or (acc.platform == "xhs" and has_creator_cookies(acc.storage_state))
         ))
@@ -4363,12 +4614,13 @@ async def sync_account_works(account_id: int):
         platform = acc.platform
         uid = (
             acc.douyin_id if platform == "tiktok"
+            else (acc.douyin_id or acc.sec_uid or acc.uid) if platform == "twitter"
             else (acc.sec_uid or acc.uid or acc.douyin_id) if platform == "instagram"
             else acc.sec_uid
         ) or ""
         transport = (
             resolve_transport(cfg, platform, "account_works", acc)
-            if platform in {"douyin", "bilibili", "rednote", "instagram"}
+            if platform in {"douyin", "bilibili", "rednote", "instagram", "twitter"}
             else None
         )
         effective_mode = transport["effective_mode"] if transport else "browser"
@@ -5095,7 +5347,7 @@ async def sync_dm(account_id: int):
             raise HTTPException(404, "账号不存在")
         platform = acc.platform
         dm_transport = (resolve_transport(cfg, platform, "dm_sync", acc)
-                        if platform in {"douyin", "instagram"} else None)
+                        if platform in {"douyin", "instagram", "twitter"} else None)
         if dm_transport and dm_transport["effective_mode"] == "unavailable":
             raise HTTPException(409, dm_transport["reason"] or "当前私信同步通道不可用")
         effective_mode = (dm_transport["effective_mode"]
@@ -5171,6 +5423,24 @@ async def sync_dm(account_id: int):
                 if direct_ig or not api_error:
                     source = "api"
                     return direct_ig, ""
+            if effective_mode == "api" or api_error.startswith(("logged_out:", "verification_required:")):
+                source = "api"
+                return [], api_error or "empty_response"
+        elif platform == "twitter" and effective_mode in {"api", "hybrid"}:
+            if not state:
+                api_error = "logged_out:缺少 Twitter 登录态"
+            else:
+                tcli = TwitterClient(
+                    state,
+                    ua,
+                    proxy=proxy,
+                    timeout=cfg.engine.request_timeout_seconds,
+                )
+                async with tcli.session_scope():
+                    direct_tw, api_error = await tcli.fetch_dm_inbox()
+                if direct_tw or not api_error:
+                    source = "api"
+                    return direct_tw, ""
             if effective_mode == "api" or api_error.startswith(("logged_out:", "verification_required:")):
                 source = "api"
                 return [], api_error or "empty_response"
@@ -5295,7 +5565,11 @@ async def fetch_dm_conversation_history(account_id: int, conv_id: str,
             raise HTTPException(404, "账号不存在")
         platform = acc.platform
         ig_mode = str(getattr(cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower()
-        if browser is None and not (platform == "instagram" and ig_mode in {"api", "hybrid"}):
+        tw_mode = str(getattr(cfg.engine, "twitter_read_mode", "hybrid") or "hybrid").lower()
+        if browser is None and not (
+            (platform == "instagram" and ig_mode in {"api", "hybrid"})
+            or (platform == "twitter" and tw_mode in {"api", "hybrid"})
+        ):
             raise HTTPException(503, "浏览器未就绪")
         identity = browser.identity_for(acc) if browser is not None else None
         acc_state = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
@@ -5331,6 +5605,17 @@ async def fetch_dm_conversation_history(account_id: int, conv_id: str,
                 msgs_ig, err_ig = await icli.fetch_dm_history(conv_id)
             if msgs_ig or not err_ig or ig_mode == "api" or browser is None:
                 return {"messages": msgs_ig, "next_cursor": "", "has_more": False}, err_ig
+        if platform == "twitter" and tw_mode in {"api", "hybrid"} and acc_state:
+            tcli = TwitterClient(
+                acc_state,
+                acc_ua,
+                proxy=acc_proxy,
+                timeout=cfg.engine.request_timeout_seconds,
+            )
+            async with tcli.session_scope():
+                msgs_tw, err_tw = await tcli.fetch_dm_messages(conv_id)
+            if msgs_tw or not err_tw or tw_mode == "api" or browser is None:
+                return {"messages": msgs_tw, "next_cursor": "", "has_more": False}, err_tw
         return await fetch_dm_history(
             browser, identity, platform, conv_id, short_id,
             conv_type=1, cursor=cursor, debug=debug,
@@ -5362,7 +5647,7 @@ async def fetch_dm_conversation_history(account_id: int, conv_id: str,
             if not mid or mid in seen:
                 continue
             seen.add(mid)
-            direction = (str(m.get("direction") or "") if platform in ("xhs", "bilibili", "instagram") else
+            direction = (str(m.get("direction") or "") if platform in ("xhs", "bilibili", "instagram", "twitter") else
                          "out" if self_uid and m.get("sender_uid") == self_uid else "in")
             card = m.get("card")
             existing = s.exec(select(DmMessage).where(
@@ -5728,7 +6013,7 @@ _PLATFORM_HOST = {"douyin": "douyin.com", "xhs": "xiaohongshu.com",
                   "rednote": "rednote.com",
                   "kuaishou": "kuaishou.com", "shipinhao": "weixin.qq.com",
                   "tiktok": "tiktok.com", "bilibili": "bilibili.com",
-                  "instagram": "instagram.com"}
+                  "instagram": "instagram.com", "twitter": "x.com"}
 _XHS_USER_ME_API = "/api/sns/web/v2/user/me"
 
 
@@ -5739,10 +6024,14 @@ def _platform_url_allowed(platform: str, value: str) -> bool:
         host = (parsed.hostname or "").casefold()
     except (TypeError, ValueError):
         return False
-    return bool(
-        expected and parsed.scheme in {"http", "https"}
-        and (host == expected or host.endswith("." + expected))
-    )
+    if parsed.scheme not in {"http", "https"} or not expected:
+        return False
+    if platform == "twitter":
+        return any(
+            host == d or host.endswith("." + d)
+            for d in ("x.com", "twitter.com")
+        )
+    return bool(host == expected or host.endswith("." + expected))
 
 
 def _xhs_open_auth_response_handler(evidence: dict):
@@ -5801,6 +6090,18 @@ async def _opened_page_login_state(page, platform: str,
         try:
             cookies = await page.context.cookies("https://www.instagram.com")
             if any(c.get("name") == "sessionid" and c.get("value") for c in cookies):
+                return "authenticated"
+        except Exception:
+            pass
+        return "unconfirmed"
+    if platform == "twitter":
+        if "/account/access" in current_url or "/suspended" in current_url or "/disabled" in current_url:
+            return "verification"
+        if "/i/flow/login" in current_url or current_url.rstrip("/").endswith("/login"):
+            return "logged_out"
+        try:
+            cookies = await page.context.cookies(["https://x.com", "https://twitter.com"])
+            if any(c.get("name") == "auth_token" and c.get("value") for c in cookies):
                 return "authenticated"
         except Exception:
             pass
@@ -5896,6 +6197,7 @@ async def open_account_browser(
             "tiktok": "https://www.tiktok.com/",
             "bilibili": "https://www.bilibili.com/",
             "instagram": "https://www.instagram.com/",
+            "twitter": "https://x.com/home",
             "shipinhao": "https://channels.weixin.qq.com/platform"}.get(
                 platform, "https://www.douyin.com/")
     # 传了 url 且属于本平台域名 -> 停在该地址(否则回首页,防被当跳转开任意站)
@@ -6273,6 +6575,7 @@ async def _probe_proxy(url: str, platform: str | None = None, timeout: float = 1
         "shipinhao": "https://channels.weixin.qq.com/",
         "bilibili": "https://www.bilibili.com/",
         "instagram": "https://www.instagram.com/",
+        "twitter": "https://x.com/",
     }
     if platform is not None and platform not in platform_urls:
         return False, "未配置该平台的检测地址"
@@ -6920,6 +7223,7 @@ def _write_account_cookie_file(account_id: int | None) -> tuple[str, str, str]:
             "tiktok": ".tiktok.com",
             "bilibili": ".bilibili.com",
             "instagram": ".instagram.com",
+            "twitter": ".x.com",
         }.get(platform, ".douyin.com")
         for part in raw_cookie.split(";"):
             name, sep, value = part.strip().partition("=")
@@ -7615,6 +7919,158 @@ async def _instagram_native_share(
     }
 
 
+async def _twitter_native_share(
+    source_url: str,
+    *,
+    account_id: int | None,
+    output_root: Path,
+    quality: str = "highest",
+    should_download: bool,
+    save_metadata: bool,
+    save_thumbnail: bool,
+    proxy: str,
+    user_agent: str,
+) -> dict | None:
+    """使用 TwitterClient Syndication 直连（及账号浏览器回退）解析推文视频/多图原图并下载。"""
+    state_text = ""
+    acc_proxy = proxy
+    acc_ua = user_agent
+    identity = None
+    with get_session() as session:
+        acc = session.get(DouyinAccount, account_id) if account_id else None
+        if acc is None or acc.platform != "twitter":
+            acc = session.exec(
+                select(DouyinAccount)
+                .where(DouyinAccount.platform == "twitter")
+                .where(DouyinAccount.status == "active")
+            ).first()
+        if acc is not None:
+            state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
+            acc_proxy = acc_proxy or acc.proxy or ""
+            acc_ua = acc.ua or acc_ua
+            if browser is not None:
+                identity = browser.identity_for(acc)
+
+    tcli = TwitterClient(
+        state_text,
+        acc_ua,
+        proxy=acc_proxy,
+        timeout=cfg.engine.request_timeout_seconds,
+    )
+    async with tcli.session_scope():
+        aweme, raw_item, err = await tcli.fetch_tweet_syndication(source_url)
+
+    if (aweme is None or not aweme.medias) and browser is not None and identity is not None and state_text:
+        node, b_err = await fetch_twitter_tweet_detail(
+            browser, identity, source_url, block_media=cfg.engine.block_media_resources
+        )
+        if node:
+            aweme = parse_twitter_aweme(node)
+            raw_item = node
+            err = ""
+        elif b_err:
+            err = err or b_err
+
+    if aweme is None or not aweme.medias:
+        if str(err or "").startswith(("logged_out:", "verification_required:")):
+            raise ShareDownloadError(f"X (Twitter) 账号登录态异常: {err}")
+        raise ShareDownloadFallback(err or "Twitter 推文未提取到媒体直链，回退通用下载器")
+
+    if quality == "audio" and aweme.media_type == "video":
+        return None
+
+    metadata = _native_aweme_metadata(aweme, aweme.source_url or source_url)
+    metadata["uploader"] = aweme.author_name or aweme.author_unique_id
+    metadata["uploader_id"] = aweme.author_unique_id
+    if not should_download:
+        return {
+            "ok": True,
+            "job_id": f"twitter_{aweme.aweme_id}",
+            "url": source_url,
+            "output_dir": str(output_root.resolve()),
+            "metadata": metadata,
+            "files": [],
+            "progress": {"status": "inspected"},
+            "warnings": [],
+        }
+
+    target_root = output_root / "twitter"
+    dl_ua = acc_ua or cfg.engine.user_agent
+    dl_timeout = max(30.0, float(cfg.engine.download_timeout_seconds))
+    downloader = Downloader(str(target_root), dl_ua, timeout=dl_timeout)
+    ok, saved_path, dl_err = await downloader.download_aweme(
+        aweme,
+        base_dir=str(target_root),
+        proxy=acc_proxy,
+        user_agent=dl_ua,
+        referer="https://x.com/",
+    )
+    if not ok:
+        raise ShareDownloadError(f"X (Twitter) 媒体下载失败: {dl_err}")
+
+    saved = Path(saved_path)
+    target_dir = saved if saved.is_dir() else saved.parent
+    title = safe_title(aweme.desc) if str(aweme.desc or "").strip() else aweme.aweme_id
+    if save_metadata:
+        info_path = target_dir / f"{aweme.aweme_id}_{title}.info.json"
+        info_path.write_text(
+            json.dumps(
+                {
+                    **metadata,
+                    "media": [
+                        {"url": m.url, "kind": m.kind, "ext": m.ext, "index": m.index}
+                        for m in aweme.medias
+                    ],
+                    "raw": raw_item,
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+    if save_thumbnail and aweme.media_type == "video" and aweme.cover:
+        import httpx
+        from .browser.manager import normalize_proxy
+
+        cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
+        headers = {"User-Agent": dl_ua, "Referer": "https://x.com/"}
+        try:
+            async with httpx.AsyncClient(
+                timeout=dl_timeout,
+                follow_redirects=True,
+                headers=headers,
+                proxy=normalize_proxy(acc_proxy) or None,
+            ) as http:
+                await downloader._download_one(http, aweme.cover, cover_path)
+        except Exception:
+            pass
+
+    files = []
+    for path in sorted(target_dir.glob(f"{aweme.aweme_id}_*")):
+        if not path.is_file() or path.suffix.lower() in {".part", ".ytdl"}:
+            continue
+        files.append({
+            "name": path.name,
+            "path": str(path.resolve()),
+            "relative_path": path.relative_to(output_root).as_posix(),
+            "size": path.stat().st_size,
+            "role": _share_file_role(path),
+        })
+    if not any(item["role"] == "media" for item in files):
+        raise ShareDownloadError("Twitter 推文解析成功，但本地未生成媒体文件")
+    return {
+        "ok": True,
+        "job_id": f"twitter_{aweme.aweme_id}",
+        "url": source_url,
+        "output_dir": str(target_dir.resolve()),
+        "metadata": metadata,
+        "files": files,
+        "progress": {"status": "finished"},
+        "warnings": [],
+    }
+
+
 async def _xhs_native_share(
     source_url: str,
     *,
@@ -8050,6 +8506,21 @@ async def share_download(body: ShareDownloadIn):
                     elif link.platform == "instagram":
                         try:
                             item = await _instagram_native_share(
+                                link.url,
+                                account_id=body.account_id,
+                                output_root=output_root,
+                                quality=body.quality,
+                                should_download=body.download,
+                                save_metadata=body.save_metadata,
+                                save_thumbnail=body.save_thumbnail,
+                                proxy=proxy,
+                                user_agent=user_agent,
+                            )
+                        except ShareDownloadFallback as exc:
+                            fallback_error = str(exc)
+                    elif link.platform == "twitter":
+                        try:
+                            item = await _twitter_native_share(
                                 link.url,
                                 account_id=body.account_id,
                                 output_root=output_root,
@@ -8543,19 +9014,126 @@ async def create_tiktok_comment_task(body: TikTokCommentTaskIn):
     return payload
 
 
+class TwitterUserSearchIn(BaseModel):
+    account_id: int
+    keyword: str
+    max_results: int = PydanticField(default=50, ge=1, le=200)
+
+
+class TwitterInteractIn(BaseModel):
+    account_id: int
+    action: Literal["like", "unlike", "retweet", "unretweet", "quote"]
+    tweet_url: str
+    quote_text: str = ""
+
+
+@app.post("/api/twitter/users/search")
+async def search_twitter_users(body: TwitterUserSearchIn):
+    keyword = body.keyword.strip()
+    if not keyword:
+        raise HTTPException(422, "请输入用户关键词")
+    if browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    with get_session() as session:
+        account = session.get(DouyinAccount, body.account_id)
+        if (
+            not account
+            or account.platform != "twitter"
+            or account.status != "active"
+            or not (account.storage_state or account.cookie)
+        ):
+            raise HTTPException(400, "请选择有效的 Twitter 登录账号")
+        identity = browser.identity_for(account)
+    items, error = await fetch_twitter_users(
+        browser,
+        identity,
+        keyword,
+        max_results=body.max_results,
+        block_media=cfg.engine.block_media_resources,
+    )
+    return {"items": items, "error": "" if error == "empty" else error}
+
+
+@app.post("/api/twitter/interact")
+async def twitter_interact(body: TwitterInteractIn):
+    """受风控与节流门禁保护的 X (Twitter) 推文点赞、转推与引用接口。"""
+    if browser is None or engine is None:
+        raise HTTPException(503, "浏览器或调度引擎未就绪")
+    ref = resolve_twitter_tweet_ref(body.tweet_url)
+    if ref is None:
+        raise HTTPException(422, "请输入有效的 X (Twitter) 推文链接或数字 status ID")
+    if body.action == "quote" and not body.quote_text.strip():
+        raise HTTPException(422, "引用推文(Quote)需填写附加评论内容")
+    with get_session() as session:
+        account = session.get(DouyinAccount, body.account_id)
+        if (
+            not account
+            or account.platform != "twitter"
+            or account.status != "active"
+            or not (account.storage_state or account.cookie)
+        ):
+            raise HTTPException(400, "请选择有效的 Twitter 登录账号")
+        gate_err = engine._action_gate_error(body.account_id, 30, body.action)
+        if gate_err:
+            raise HTTPException(429, gate_err)
+        identity = browser.identity_for(account)
+
+    async with engine.guard_operation(
+        body.account_id, OperationKind.SOCIAL, fallback_key=f"tw-act:{body.account_id}"
+    ):
+        if body.action in {"like", "unlike"}:
+            ok, err = await do_twitter_like(
+                browser,
+                identity,
+                ref.url,
+                unlike=(body.action == "unlike"),
+                headed=True,
+            )
+            res_id = ref.tweet_id
+        else:
+            ok, res_id, err = await do_twitter_retweet(
+                browser,
+                identity,
+                ref.url,
+                quote_text=(body.quote_text.strip() if body.action == "quote" else ""),
+                unretweet=(body.action == "unretweet"),
+                headed=True,
+            )
+
+    if ok:
+        engine.risk.record_success(body.account_id, OperationKind.SOCIAL)
+    elif not str(err or "").startswith("write_uncertain:"):
+        engine.risk.record_failure(body.account_id, OperationKind.SOCIAL, err)
+
+    record_account_operation(
+        platform="twitter",
+        account_id=body.account_id,
+        task_type="actions",
+        task_id=ref.tweet_id,
+        action=body.action,
+        status="done" if ok else ("uncertain" if str(err or "").startswith("write_uncertain:") else "failed"),
+        target=ref.url,
+        channel="browser",
+        detail="" if ok else str(err or "")[:200],
+    )
+    if not ok:
+        raise HTTPException(400, err or f"Twitter {body.action} 执行失败")
+    return {"ok": True, "action": body.action, "tweet_id": ref.tweet_id, "result": res_id}
+
+
 def _validated_collection_input(body: KeywordCollectionIn) \
         -> tuple[str, list[str], str, str, dict]:
     """校验创建/编辑共用的任务配置并返回规范化值。"""
     platform = body.platform.strip().lower()
-    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
-        raise HTTPException(400, "批量采集仅支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩或 Instagram")
+    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"}:
+        raise HTTPException(400, "批量采集仅支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram 或 Twitter")
     source_type = body.source_type.strip().lower() or "keyword"
     if source_type not in {
             "keyword", "favorite_all", "favorite_board", "creator",
             "account_works"}:
         raise HTTPException(400, "采集来源须为关键词、创作者主页、全部收藏、指定收藏夹或本账号作品")
-    if platform not in {"shipinhao", "bilibili", "instagram"} and source_type == "account_works":
-        raise HTTPException(400, "本账号作品来源仅支持视频号、哔哩哔哩或 Instagram")
+    if platform not in {"shipinhao", "bilibili", "instagram", "twitter"} and source_type == "account_works":
+        raise HTTPException(400, "本账号作品来源仅支持视频号、哔哩哔哩、Instagram 或 Twitter")
     if platform == "tiktok" and source_type != "keyword":
         raise HTTPException(400, "TikTok 首版批量采集仅支持关键词视频搜索")
     if source_type in {"favorite_all", "favorite_board"} and platform not in {"xhs", "rednote"}:
@@ -8731,6 +9309,31 @@ async def _resolve_ig_creator_source(body: KeywordCollectionIn) -> None:
             raise HTTPException(
                 400,
                 "无法解析 Instagram 创作者标识，请填写 @username、instagram.com/<username> 主页链接或数字 UID",
+            )
+        body.source_ref = target
+        if not body.source_name or body.source_name == f"创作者 {original_ref}":
+            body.source_name = f"创作者 @{target}" if not target.isdigit() else f"创作者 {target}"
+
+
+async def _resolve_twitter_creator_source(body: KeywordCollectionIn) -> None:
+    """把 Twitter 创作者采集的 source_ref 规范化为 @screen_name 或数字 rest_id。"""
+    if (
+        body.platform.strip().lower() == "twitter"
+        and body.source_type.strip().lower() == "creator"
+    ):
+        original_ref = body.source_ref.strip()
+        cleaned = _clean_platform_target_input(original_ref, "twitter")
+        expanded = await resolve_twitter_short_url(cleaned, user_agent=cfg.engine.user_agent)
+        if looks_like_twitter_tweet(expanded):
+            raise HTTPException(
+                400,
+                "检测到 X (Twitter) 单条推文链接；创作者采集请填写 @username、x.com/<username> 主页链接或数字 UID",
+            )
+        target = resolve_twitter_user_target(expanded)
+        if not target:
+            raise HTTPException(
+                400,
+                "无法解析 X (Twitter) 创作者标识，请填写 @username、x.com/<username> 主页链接或数字 UID",
             )
         body.source_ref = target
         if not body.source_name or body.source_name == f"创作者 {original_ref}":
@@ -8945,6 +9548,8 @@ def _collection_content_dict(row: KeywordCollectionContent) -> dict:
         )
     elif row.platform == "instagram":
         url = row.source_url or f"https://www.instagram.com/p/{row.aweme_id}/"
+    elif row.platform == "twitter":
+        url = row.source_url or f"https://x.com/i/web/status/{row.aweme_id}"
     else:
         url = f"https://www.douyin.com/video/{row.aweme_id}"
     local_files = _collection_local_media_paths(row)
@@ -9301,6 +9906,7 @@ async def create_keyword_collection(body: KeywordCollectionIn, request: Request 
     await _resolve_bili_creator_source(body)
     await _resolve_rednote_creator_source(body)
     await _resolve_ig_creator_source(body)
+    await _resolve_twitter_creator_source(body)
     with get_session() as session:
         def create():
             platform, keywords, quality, download_dir, options = _validated_collection_input(body)
@@ -9341,6 +9947,7 @@ async def update_keyword_collection(job_id: int, body: KeywordCollectionIn):
     await _resolve_bili_creator_source(body)
     await _resolve_rednote_creator_source(body)
     await _resolve_ig_creator_source(body)
+    await _resolve_twitter_creator_source(body)
     platform, keywords, quality, download_dir, options = _validated_collection_input(body)
     with get_session() as session:
         job = session.get(KeywordCollectionJob, job_id)
@@ -9388,7 +9995,7 @@ async def list_keyword_collections(platform: str | None = None, limit: int = 100
     limit = max(1, min(limit, 300))
     with get_session() as session:
         stmt = select(KeywordCollectionJob)
-        if platform in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
+        if platform in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"}:
             stmt = stmt.where(KeywordCollectionJob.platform == platform)
         rows = session.exec(
             stmt.order_by(KeywordCollectionJob.created_at.desc()).limit(limit)).all()
@@ -9484,6 +10091,8 @@ async def keyword_collection_content_media(job_id: int, content_id: int):
                            if row.platform == "bilibili"
                            else (row.source_url or f"https://www.instagram.com/p/{row.aweme_id}/")
                            if row.platform == "instagram"
+                           else (row.source_url or f"https://x.com/i/web/status/{row.aweme_id}")
+                           if row.platform == "twitter"
                            else f"https://www.douyin.com/video/{row.aweme_id}"),
         }
 
@@ -9796,12 +10405,12 @@ def _clean_platform_target_input(value: str, platform: str) -> str:
         platform_name = {
             "douyin": "抖音", "xhs": "小红书", "rednote": "海外小红书", "kuaishou": "快手",
             "shipinhao": "视频号", "tiktok": "TikTok", "bilibili": "哔哩哔哩",
-            "instagram": "Instagram",
+            "instagram": "Instagram", "twitter": "Twitter",
         }.get(platform, platform)
         detected_names = {
             "douyin": "抖音", "xhs": "小红书", "rednote": "海外小红书", "kuaishou": "快手",
             "wechat": "微信/视频号", "tiktok": "TikTok", "bilibili": "哔哩哔哩",
-            "instagram": "Instagram",
+            "instagram": "Instagram", "twitter": "Twitter",
             "generic": "其他站点",
         }
         names = "、".join(dict.fromkeys(
@@ -9860,12 +10469,12 @@ async def add_monitor(body: TargetIn, request: Request = None):
         replay = replay_if_exists(session, request=request, scope="monitor", body=body)
         if replay is not None:
             return replay
-    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter") else "douyin"
     sec_uid = keyword = xsec_token = ""
     nickname = avatar = ""
     kind = "creator"
 
-    if platform in ("xhs", "rednote", "instagram") and body.target_kind == "keyword":
+    if platform in ("xhs", "rednote", "instagram", "twitter") and body.target_kind == "keyword":
         kind = "keyword"
         keyword = body.url_or_secuid.strip()
         if not keyword:
@@ -9909,6 +10518,15 @@ async def add_monitor(body: TargetIn, request: Request = None):
             raise HTTPException(400, "无法解析 Instagram 创作者，请粘贴 instagram.com/<username> 主页链接、@username 或数字 UID")
         if not sec_uid.isdigit():
             nickname = f"@{sec_uid}"
+    elif platform == "twitter" and kind != "keyword":
+        expanded_tw = await resolve_twitter_short_url(target_input, user_agent=cfg.engine.user_agent)
+        if looks_like_twitter_tweet(expanded_tw):
+            raise HTTPException(400, "检测到 X (Twitter) 单条推文链接；作品监控请填写创作者 @username、x.com/<username> 主页链接或切换为关键词监控")
+        sec_uid = resolve_twitter_user_target(expanded_tw)
+        if not sec_uid:
+            raise HTTPException(400, "无法解析 X (Twitter) 创作者，请粘贴 x.com/<username> 主页链接、@username 或数字 UID")
+        if not sec_uid.isdigit():
+            nickname = f"@{sec_uid}"
     elif platform == "douyin":
         sec_uid = await resolve_sec_uid(target_input, cfg.engine.user_agent)
         if not sec_uid:
@@ -9933,10 +10551,11 @@ async def add_monitor(body: TargetIn, request: Request = None):
             raise HTTPException(400, f"下载目录不可用: {e}")
     with get_session() as s:
         def create():
-            if platform in {"douyin", "tiktok", "instagram"}:
+            if platform in {"douyin", "tiktok", "instagram", "twitter"}:
                 platform_name = (
                     "TikTok" if platform == "tiktok"
                     else "Instagram" if platform == "instagram"
+                    else "Twitter" if platform == "twitter"
                     else "抖音"
                 )
                 if not body.account_id:
@@ -9946,7 +10565,7 @@ async def add_monitor(body: TargetIn, request: Request = None):
                 if (not monitor_acc or monitor_acc.platform != platform
                         or monitor_acc.status != "active"):
                     raise HTTPException(400, f"所选{platform_name}账号不存在或登录态已失效")
-                if (platform in {"tiktok", "instagram"}
+                if (platform in {"tiktok", "instagram", "twitter"}
                         and not (monitor_acc.storage_state
                                  or monitor_acc.creator_storage_state
                                  or monitor_acc.cookie)):
@@ -10069,9 +10688,10 @@ async def update_monitor(tid: int, body: TargetUpdate):
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != t.platform or acc.status != "active":
                 raise HTTPException(400, "账号不存在、登录态失效或与监控平台不匹配")
-            if (t.platform in {"tiktok", "instagram"}
+            if (t.platform in {"tiktok", "instagram", "twitter"}
                     and not (acc.storage_state or acc.creator_storage_state or acc.cookie)):
-                raise HTTPException(400, f"所选 {('Instagram' if t.platform == 'instagram' else 'TikTok')} 账号缺少登录会话，请重新登录")
+                pname_t = "Instagram" if t.platform == "instagram" else "Twitter" if t.platform == "twitter" else "TikTok"
+                raise HTTPException(400, f"所选 {pname_t} 账号缺少登录会话，请重新登录")
             if t.target_kind != "keyword":
                 _ensure_creator_monitor_available(
                     s, platform=t.platform, sec_uid=t.sec_uid,
@@ -10890,7 +11510,7 @@ async def export_danmaku_report(
 def _target_dict(t: MonitorTarget) -> dict:
     nickname = (tiktok_display_text(t.nickname)
                 if t.platform == "tiktok" else t.nickname)
-    if t.platform in {"tiktok", "instagram"} and not nickname and t.sec_uid and not t.sec_uid.isdigit():
+    if t.platform in {"tiktok", "instagram", "twitter"} and not nickname and t.sec_uid and not t.sec_uid.isdigit():
         nickname = f"@{t.sec_uid}"
     return {
         "id": t.id, "platform": t.platform, "target_kind": t.target_kind,
@@ -10925,7 +11545,7 @@ def _content_source(target_id: int, platform: str, target: MonitorTarget | None 
                 "group_name": "", "tags": []}
     nickname = (tiktok_display_text(target.nickname)
                 if platform == "tiktok" else target.nickname)
-    if platform in {"tiktok", "instagram"} and not nickname and target.sec_uid and not target.sec_uid.isdigit():
+    if platform in {"tiktok", "instagram", "twitter"} and not nickname and target.sec_uid and not target.sec_uid.isdigit():
         nickname = f"@{target.sec_uid}"
     base = ("#" + target.keyword if target.target_kind == "keyword"
             else nickname or target.sec_uid[:12] or f"任务 #{target.id}")
@@ -11186,7 +11806,7 @@ async def list_watches(platform: str | None = None):
 
 @app.post("/api/comment-watches")
 async def add_watch(body: WatchIn):
-    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter") else "douyin"
     aweme_id = sec_uid = xsec_token = ""
     title = ""
     target_input = _clean_platform_target_input(body.url_or_id, platform)
@@ -11359,6 +11979,27 @@ async def add_watch(body: WatchIn):
                 raise HTTPException(400, "无法解析 Instagram 创作者 @username，请粘贴主页链接、@username 或数字 UID")
             title = f"@{sec_uid}" if not sec_uid.isdigit() else f"IG 用户 {sec_uid}"
         mode = "public"
+    elif platform == "twitter":
+        expanded_tw, tw_ref, tw_user = await resolve_twitter_target(
+            target_input, user_agent=cfg.engine.user_agent
+        )
+        kind = body.kind if body.kind in {"auto", "video", "user"} else "auto"
+        if kind == "auto":
+            kind = "video" if tw_ref else "user"
+        if kind == "video":
+            if tw_ref is None or not tw_ref.tweet_id:
+                raise HTTPException(400, "无法解析 X (Twitter) 推文，请粘贴 x.com/<user>/status/<id> 链接、t.co 短链或推文数字 ID")
+            aweme_id = tw_ref.tweet_id
+            sec_uid = tw_ref.screen_name
+            title = f"@{sec_uid} 推文 {aweme_id}" if sec_uid else f"推文 {aweme_id}"
+        else:
+            if looks_like_twitter_tweet(expanded_tw):
+                raise HTTPException(400, "检测到 X (Twitter) 推文链接；创作者评论监控请粘贴 @username 或 x.com/<username> 主页链接")
+            sec_uid = tw_user or resolve_twitter_user_target(expanded_tw)
+            if not sec_uid:
+                raise HTTPException(400, "无法解析 X (Twitter) 创作者 @username，请粘贴 x.com/<username> 主页链接、@username 或数字 UID")
+            title = f"@{sec_uid}" if not sec_uid.isdigit() else f"X 用户 {sec_uid}"
+        mode = "public"
     else:
         kind = body.kind
         if kind == "auto":
@@ -11385,8 +12026,8 @@ async def add_watch(body: WatchIn):
                 raise HTTPException(400, "创作中心模式需要选择一个已“创作者登录”的账号")
 
     with get_session() as s:
-        if platform in {"tiktok", "instagram"}:
-            pname = "Instagram" if platform == "instagram" else "TikTok"
+        if platform in {"tiktok", "instagram", "twitter"}:
+            pname = "Instagram" if platform == "instagram" else "Twitter" if platform == "twitter" else "TikTok"
             account = s.get(DouyinAccount, body.account_id) if body.account_id else None
             if not account or account.platform != platform or account.status != "active":
                 raise HTTPException(400, f"{pname} 评论监控必须选择一个登录有效的 {pname} 账号")
@@ -11446,9 +12087,10 @@ async def update_watch(wid: int, body: WatchUpdate):
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != w.platform or acc.status != "active":
                 raise HTTPException(400, "账号不存在、登录态失效或与评论监控平台不匹配")
-            if (w.platform in {"tiktok", "instagram"}
+            if (w.platform in {"tiktok", "instagram", "twitter"}
                     and not (acc.storage_state or acc.creator_storage_state or acc.cookie)):
-                raise HTTPException(400, f"所选 {('Instagram' if w.platform == 'instagram' else 'TikTok')} 账号缺少登录会话，请重新登录")
+                pname_w = "Instagram" if w.platform == "instagram" else "Twitter" if w.platform == "twitter" else "TikTok"
+                raise HTTPException(400, f"所选 {pname_w} 账号缺少登录会话，请重新登录")
             w.account_id = body.account_id
         if new_mode == "creator":
             if w.platform != "douyin" or w.kind != "user":
@@ -12199,6 +12841,7 @@ class PublishIn(BaseModel):
     allow_stitch: bool = True              # TikTok:允许 Stitch
     bili_options: dict[str, Any] = PydanticField(default_factory=dict)  # B站投稿扩展参数
     ig_options: dict[str, Any] = PydanticField(default_factory=dict)    # Instagram 发布扩展参数(post_kind/share_to_feed 等)
+    tw_options: dict[str, Any] = PydanticField(default_factory=dict)    # Twitter 发布扩展参数(reply_permission/first_comment/long_text 等)
     scheduled_at: str | None = None       # ISO 带偏移；无偏移按账号时区，空=尽快发
 
 
@@ -12215,6 +12858,7 @@ class PublishUpdate(BaseModel):
     allow_stitch: bool | None = None
     bili_options: dict[str, Any] | None = None
     ig_options: dict[str, Any] | None = None
+    tw_options: dict[str, Any] | None = None
     scheduled_at: str | None = None
 
 
@@ -12239,6 +12883,10 @@ def _publish_dict(t: PublishTask) -> dict:
         ig_opts = json.loads(getattr(t, "ig_options_json", "{}") or "{}")
     except Exception:
         ig_opts = {}
+    try:
+        tw_opts = json.loads(getattr(t, "tw_options_json", "{}") or "{}")
+    except Exception:
+        tw_opts = {}
     return {
         "id": t.id, "platform": t.platform, "account_id": t.account_id,
         "media_type": t.media_type, "title": t.title, "desc": t.desc,
@@ -12249,6 +12897,7 @@ def _publish_dict(t: PublishTask) -> dict:
         "allow_stitch": t.allow_stitch,
         "bili_options": bili_opts if isinstance(bili_opts, dict) else {},
         "ig_options": ig_opts if isinstance(ig_opts, dict) else {},
+        "tw_options": tw_opts if isinstance(tw_opts, dict) else {},
         "error": t.error, "live_stage": engine.get_publish_stage(t.id) if (engine and hasattr(engine, "get_publish_stage")) else "",
         "media_count": len(json.loads(t.media_json or "[]")),
         "source_platform": t.source_platform, "source_content_id": t.source_content_id,
@@ -12279,7 +12928,7 @@ async def list_publish(platform: str | None = None):
 
 
 def _publish_title_cap(platform: str) -> int:
-    return {"douyin": 30, "shipinhao": 16, "bilibili": 80, "instagram": 2200}.get(str(platform or "").lower(), 20)
+    return {"douyin": 30, "shipinhao": 16, "bilibili": 80, "instagram": 2200, "twitter": 4000}.get(str(platform or "").lower(), 20)
 
 
 def _validate_non_xhs_publish_files(platform: str, media_type: str,
@@ -12294,6 +12943,11 @@ def _validate_non_xhs_publish_files(platform: str, media_type: str,
             except OSError as exc:
                 raise HTTPException(400, f"无法读取媒体文件: {path.name}") from exc
             paths.append(raw)
+    if platform == "twitter":
+        checked, tw_err = validate_twitter_publish_files(media_type, paths)
+        if tw_err:
+            raise HTTPException(422, tw_err)
+        return [str(p) for p in checked]
     if not paths:
         raise HTTPException(400, "没有可用的媒体文件,请先上传")
     if platform == "tiktok" and media_type != "video":
@@ -12320,9 +12974,9 @@ async def add_publish(body: PublishIn, request: Request = None):
                 raise HTTPException(400, "media_type 须为 images 或 video")
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform not in (
-                    "xhs", "rednote", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram"):
+                    "xhs", "rednote", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"):
                 raise HTTPException(
-                    400, "请选择一个已登录的抖音 / 小红书 / 海外小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩 / Instagram 账号")
+                    400, "请选择一个已登录的抖音 / 小红书 / 海外小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩 / Instagram / Twitter 账号")
             if acc.platform in ("xhs", "rednote"):
                 from .platforms.xhs.media import validate_publish_files
                 try:
@@ -12332,14 +12986,17 @@ async def add_publish(body: PublishIn, request: Request = None):
             else:
                 paths = _validate_non_xhs_publish_files(
                     acc.platform, body.media_type, body.media_paths)
+                if acc.platform == "twitter" and not paths and not (body.title.strip() or body.desc.strip()):
+                    raise HTTPException(400, "Twitter 纯文本发布请至少填写推文内容，或上传 1~4 张图片 / 1 个视频")
             pname = {"kuaishou": "快手", "douyin": "抖音",
                      "shipinhao": "视频号", "tiktok": "TikTok",
-                     "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram"}.get(
+                     "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram",
+                     "twitter": "Twitter"}.get(
                          acc.platform, "小红书")
             if acc.platform == "rednote":
                 if not (acc.creator_storage_state or acc.storage_state):
                     raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成登录")
-            elif acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram"):
+            elif acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"):
                 if not (acc.creator_storage_state or acc.storage_state or acc.cookie):
                     raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
@@ -12361,6 +13018,7 @@ async def add_publish(body: PublishIn, request: Request = None):
                 allow_stitch=bool(body.allow_stitch),
                 bili_options_json=json.dumps(body.bili_options or {}, ensure_ascii=False),
                 ig_options_json=json.dumps(body.ig_options or {}, ensure_ascii=False),
+                tw_options_json=json.dumps(body.tw_options or {}, ensure_ascii=False),
                 media_json=json.dumps(paths),
                 scheduled_at=_parse_when(body.scheduled_at, acc.timezone_id),
             )
@@ -12413,6 +13071,8 @@ async def update_publish(tid: int, body: PublishUpdate):
             t.bili_options_json = json.dumps(body.bili_options, ensure_ascii=False)
         if body.ig_options is not None:
             t.ig_options_json = json.dumps(body.ig_options, ensure_ascii=False)
+        if body.tw_options is not None:
+            t.tw_options_json = json.dumps(body.tw_options, ensure_ascii=False)
         if "scheduled_at" in body.model_fields_set:
             account = s.get(DouyinAccount, t.account_id) if t.account_id else None
             t.scheduled_at = _parse_when(body.scheduled_at, account.timezone_id if account else "Asia/Shanghai")
@@ -13102,7 +13762,7 @@ async def _repost_content(cid: int, body: RepostIn, target_platform: str, reques
             if target_platform == "rednote":
                 if not (acc.creator_storage_state or acc.storage_state):
                     raise HTTPException(400, "请先在账号页完成登录")
-            elif target_platform in ("douyin", "shipinhao", "kuaishou", "tiktok", "bilibili", "instagram"):
+            elif target_platform in ("douyin", "shipinhao", "kuaishou", "tiktok", "bilibili", "instagram", "twitter"):
                 if not (acc.creator_storage_state or acc.storage_state or acc.cookie):
                     raise HTTPException(400, "请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
@@ -13170,6 +13830,12 @@ async def repost_to_rednote(cid: int, body: RepostIn, request: Request = None):
 async def repost_to_instagram(cid: int, body: RepostIn, request: Request = None):
     """把一条已下载作品转成 Instagram 发布任务。"""
     return await _repost_content(cid, body, "instagram", request)
+
+
+@app.post("/api/contents/{cid}/repost-twitter")
+async def repost_to_twitter(cid: int, body: RepostIn, request: Request = None):
+    """把一条已下载作品转成 X (Twitter) 发布任务。"""
+    return await _repost_content(cid, body, "twitter", request)
 
 
 # ─────────── 自动评论(规则 + 任务)───────────
@@ -13260,6 +13926,13 @@ async def _resolve_rule_target(platform: str, mode: str, target_kind: str, targe
                 sec_uid = resolve_ig_user_target(target)
                 if not sec_uid:
                     raise HTTPException(400, "无法解析 Instagram 创作者(@username / 主页链接 / 数字 UID)")
+            elif platform == "twitter":
+                expanded_tw = await resolve_twitter_short_url(target, user_agent=cfg.engine.user_agent)
+                if looks_like_twitter_tweet(expanded_tw):
+                    raise HTTPException(400, "创作者模式请填写 Twitter @username 或主页链接，不要填写单条推文链接")
+                sec_uid = resolve_twitter_user_target(expanded_tw)
+                if not sec_uid:
+                    raise HTTPException(400, "无法解析 Twitter 创作者(@username / x.com/<username> / 数字 UID)")
             else:
                 sec_uid = await resolve_sec_uid(target, cfg.engine.user_agent)
                 if not sec_uid:
@@ -13285,6 +13958,12 @@ async def _resolve_rule_target(platform: str, mode: str, target_kind: str, targe
                 aweme_id = wref.shortcode if wref else ""
                 if not aweme_id:
                     raise HTTPException(400, "无法解析 Instagram 作品(/p/<code>/ 或 /reel/<code>/ 链接或 shortcode)")
+            elif platform == "twitter":
+                expanded_tw = await resolve_twitter_short_url(target, user_agent=cfg.engine.user_agent)
+                tref = resolve_twitter_tweet_ref(expanded_tw)
+                aweme_id = tref.tweet_id if tref else ""
+                if not aweme_id:
+                    raise HTTPException(400, "无法解析 Twitter 推文(x.com/<user>/status/<id> 链接、t.co 短链或数字推文 ID)")
             else:
                 aweme_id = await resolve_aweme_id(target, cfg.engine.user_agent)
                 if not aweme_id:
@@ -13326,12 +14005,12 @@ async def add_comment_rule(body: CommentRuleIn, request: Request = None):
         previous = replay_if_exists(s, request=request, scope="comment-rule", body=body)
         if previous is not None:
             return previous
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "bilibili", "instagram") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "bilibili", "instagram", "twitter") else "douyin"
     mode = body.mode if body.mode in ("auto_reply", "auto_comment") else "auto_reply"
     templates = [t.strip() for t in body.templates if t.strip()]
     if not templates:
         raise HTTPException(400, "请至少配置一条文案模板(AI 生成失败时回退用)")
-    _pn = {"xhs": "小红书", "kuaishou": "快手", "bilibili": "哔哩哔哩", "instagram": "Instagram"}.get(platform, "抖音")
+    _pn = {"xhs": "小红书", "kuaishou": "快手", "bilibili": "哔哩哔哩", "instagram": "Instagram", "twitter": "Twitter"}.get(platform, "抖音")
     with get_session() as s:
         acc = s.get(DouyinAccount, body.account_id)
         if not acc or acc.platform != platform:
@@ -13543,7 +14222,7 @@ class CommentBatchApproveIn(BaseModel):
 @app.post("/api/comment-tasks/batch-approve")
 async def batch_approve_comment_tasks(body: CommentBatchApproveIn):
     """Only approve an explicit, scope-checked selection, atomically."""
-    if body.platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
+    if body.platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"}:
         raise HTTPException(422, "平台类型无效")
     ids = list(dict.fromkeys(body.ids))
     if not ids or any(value <= 0 for value in ids):

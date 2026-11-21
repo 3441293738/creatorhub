@@ -1979,12 +1979,25 @@ _COOKIE_DOMAIN = {
     "tiktok": ".tiktok.com",
     "bilibili": ".bilibili.com",
     "instagram": ".instagram.com",
+    "twitter": ".x.com",
 }
 
 
 def cookie_string_to_state(cookie_str: str, platform: str = "douyin") -> str:
-    """把粘贴的 Cookie 串转成 Patchright storage_state JSON(兜底登录用)。"""
-    domain = _COOKIE_DOMAIN.get(platform, ".douyin.com")
+    """把粘贴的 Cookie 或会话 Token 串转成 Patchright storage_state JSON(兜底登录用)。"""
+    if platform == "twitter":
+        from ..platforms.twitter.protocol import (
+            build_twitter_storage_state,
+            parse_twitter_credential_input,
+        )
+        tw_cookies, _ = parse_twitter_credential_input(cookie_str)
+        if tw_cookies:
+            return build_twitter_storage_state(tw_cookies)
+    domains = (
+        [".x.com", ".twitter.com"]
+        if platform == "twitter"
+        else [_COOKIE_DOMAIN.get(platform, ".douyin.com")]
+    )
     cookies: List[Dict[str, Any]] = []
     for part in cookie_str.strip().split(";"):
         if "=" not in part:
@@ -1992,8 +2005,9 @@ def cookie_string_to_state(cookie_str: str, platform: str = "douyin") -> str:
         k, v = part.strip().split("=", 1)
         if not k:
             continue
-        cookies.append({
-            "name": k.strip(), "value": v.strip(),
-            "domain": domain, "path": "/",
-        })
+        for dom in domains:
+            cookies.append({
+                "name": k.strip(), "value": v.strip(),
+                "domain": dom, "path": "/",
+            })
     return json.dumps({"cookies": cookies, "origins": []})

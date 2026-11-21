@@ -20,6 +20,8 @@ engine:
   bilibili_write_mode: hybrid      # hybrid=CSRF/WBI直连优先(评论/私信/关注);api=仅直连;browser=仅页面
   instagram_read_mode: hybrid      # hybrid=Instagram双栈直连优先、兼容失败回退浏览器;api=仅直连;browser=仅页面
   instagram_write_mode: hybrid     # hybrid=SIGNATURE./Direct直连优先(评论/私信/关注/发布);api=仅直连;browser=仅页面
+  twitter_read_mode: hybrid        # hybrid=GraphQL/Syndication/REST直连优先、兼容失败回退隔离浏览器;api=仅直连;browser=全程浏览器
+  twitter_write_mode: browser      # X (Twitter) 写操作与发布统一走隔离浏览器原生签名通道
   douyin_profile_mode: hybrid      # 手动刷新资料:hybrid/API/browser
   douyin_followers_mode: hybrid    # 粉丝同步:hybrid/API/browser
   douyin_dm_sync_mode: hybrid      # 私信会话同步:hybrid/API/browser

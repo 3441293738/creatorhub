@@ -1091,6 +1091,116 @@ async def interactive_instagram_creator_login(
     )
 
 
+# ── X (Twitter) 登录 ──
+_TWITTER_AUTH_BLOCKED_PATHS = (
+    "/i/flow/login",
+    "/login",
+    "/account/access",
+    "/account/suspended",
+    "/suspended",
+    "/disabled",
+    "/i/flow/signup",
+)
+
+
+async def interactive_twitter_login(
+    mgr: BrowserManager,
+    identity: Identity,
+    timeout_seconds: int = 300,
+    force_reauth: bool = False,
+) -> Tuple[bool, str, str]:
+    """X (Twitter) 独立浏览器登录（支持用户名/密码、TOTP 二步验证与人工挑战解锁）。
+
+    判定成功：`x.com` / `twitter.com` 存在非空 `auth_token` Cookie，且当前页面已离开登录流与 `/account/access` 锁定页。
+    """
+    ctx = await mgr.open_headed(identity)
+    if force_reauth:
+        await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
+    page = await ctx.new_page()
+    await _focus(page)
+    logged, nickname, state_json = False, "", ""
+
+    try:
+        await page.goto(
+            "https://x.com/i/flow/login",
+            wait_until="domcontentloaded",
+            timeout=45000,
+        )
+        await _focus(page)
+        waited = 0.0
+        stable_hits = 0
+        while waited < timeout_seconds:
+            if page.is_closed():
+                break
+            try:
+                cookies = await ctx.cookies(["https://x.com", "https://twitter.com"])
+            except Exception:
+                break
+            cmap = {c.get("name"): c.get("value") for c in cookies if c.get("name")}
+            cur_url = str(page.url or "").lower()
+            on_x = ("x.com" in cur_url) or ("twitter.com" in cur_url)
+            on_blocked = any(p in cur_url for p in _TWITTER_AUTH_BLOCKED_PATHS)
+            if cmap.get("auth_token") and on_x and not on_blocked:
+                stable_hits += 1
+                if stable_hits >= 2:
+                    logged = True
+                    break
+            else:
+                stable_hits = 0
+            await asyncio.sleep(1.5)
+            waited += 1.5
+
+        if logged:
+            await page.wait_for_timeout(1500)
+            cur_url = str(page.url or "").lower()
+            cookies = await ctx.cookies(["https://x.com", "https://twitter.com"])
+            cmap = {c.get("name"): c.get("value") for c in cookies if c.get("name")}
+            if cmap.get("auth_token") and not any(p in cur_url for p in _TWITTER_AUTH_BLOCKED_PATHS):
+                try:
+                    nav_info = await page.evaluate(
+                        """() => {
+                            const sw = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                            if (sw) {
+                                const lines = (sw.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean);
+                                const name = lines.find(s => !s.startsWith('@')) || lines[0] || '';
+                                if (name) return name;
+                            }
+                            const prof = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
+                            if (prof) {
+                                const h = (prof.getAttribute('href') || '').replace(/^\\/+|\\/+$/g, '');
+                                if (h && !h.includes('/')) return h;
+                            }
+                            return '';
+                        }"""
+                    )
+                    if nav_info and str(nav_info).strip():
+                        nickname = str(nav_info).strip()[:40]
+                except Exception:
+                    pass
+                state_json = json.dumps(await ctx.storage_state())
+            else:
+                logged = False
+    finally:
+        try:
+            await ctx.close()
+        except Exception:
+            pass
+    return logged, state_json, nickname
+
+
+async def interactive_twitter_creator_login(
+    mgr: BrowserManager,
+    identity: Identity,
+    timeout_seconds: int = 300,
+    force_reauth: bool = False,
+) -> Tuple[bool, str, str]:
+    """X (Twitter) 发布与主站共用 `.x.com` 会话。"""
+    return await interactive_twitter_login(
+        mgr, identity, timeout_seconds=timeout_seconds, force_reauth=force_reauth
+    )
+
+
 # ── 海外小红书（Rednote）登录 ──
 _REDNOTE_CREATOR_COOKIES = {
     "customerClientId",

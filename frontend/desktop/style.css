@@ -1075,6 +1075,8 @@ kbd, .key-button {
 .pf-tiktok { background: rgba(13, 148, 136, 0.14); color: #0f766e; }
 .pf-bilibili { background: rgba(0, 174, 236, 0.14); color: #0077a8; }
 .pf-instagram { background: rgba(225, 48, 108, 0.14); color: #b81d58; }
+.pf-twitter { background: rgba(29, 155, 240, 0.15); color: #0c7abf; }
+:root[data-theme=dark] .pf-twitter { background: rgba(56, 189, 248, 0.18); color: #38bdf8; }
 
 .guide-detail {
   min-width: 0;

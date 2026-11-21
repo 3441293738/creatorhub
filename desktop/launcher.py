@@ -224,6 +224,7 @@ def update_health_check() -> int:
             from app.platforms.bilibili import BilibiliClient, publish_bilibili, receive_bili_broadcast
             from app.platforms.rednote import RednoteApiClient, publish_rednote_browser
             from app.platforms.instagram import InstagramClient, publish_instagram
+            from app.platforms.twitter import TwitterClient, publish_twitter
             from app.platforms.channels.local_ca import LocalCaManager
             from desktop.controller import Controller
             from desktop.installer_assets import render_brand_icon
@@ -235,6 +236,7 @@ def update_health_check() -> int:
             channels_js = Path(app_pkg.__file__).parent / "platforms" / "channels" / "js"
             assert app and LocalCaManager and BilibiliClient and receive_bili_broadcast and publish_bilibili and RednoteApiClient and publish_rednote_browser
             assert InstagramClient and publish_instagram
+            assert TwitterClient and publish_twitter
             assert websockets.asyncio.client and Controller and ShellServer and webview
             assert render_brand_icon(32).size == (32, 32)
             assert (WEB_DIR / "workbench.js").is_file()

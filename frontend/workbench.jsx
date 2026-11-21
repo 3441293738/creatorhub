@@ -34,7 +34,7 @@ const composerSpecs = {
 };
 const composerTitle = (key, platform) => key === "collections"
   ? platform === "shipinhao" ? "新建视频号作品采集"
-    : `新建${({ douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram" })[platform] || "平台"}关键词采集`
+    : `新建${({ douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram", twitter: "Twitter" })[platform] || "平台"}关键词采集`
   : composerSpecs[key]?.[1] || "新建任务";
 // Notifications previously mixed configuration and saved objects in one card.
 const notificationCard = $("n-name").closest(".card");
@@ -67,7 +67,7 @@ for (const key of ["monitors", "comments", "danmaku"]) {
 
 // Configuration is progressively disclosed; the search/record tools stay first.
 const groupSpecs = {
-  accounts: [["accounts", "账号列表"], ["inbox", "聚合私信", ["douyin", "xhs", "kuaishou", "bilibili", "instagram"]], ["runtime", "浏览器内核"], ["proxies", "代理池"]],
+  accounts: [["accounts", "账号列表"], ["inbox", "聚合私信", ["douyin", "xhs", "kuaishou", "bilibili", "instagram", "twitter"]], ["runtime", "浏览器内核"], ["proxies", "代理池"]],
   settings: [["appearance", "外观与体验"], ["downloads", "下载设置"], ["ai", "AI 文案"], ["engine", "采集与运行"], ["channels", "视频号微信通道"]],
   monitors: [["targets", "监控目标"], ["records", "作品记录"]],
   comments: [["targets", "监控目标"], ["records", "评论记录"]],

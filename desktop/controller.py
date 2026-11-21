@@ -423,7 +423,7 @@ class Controller:
             (self.home / "runtime" / "browser-component.cancel").touch()
         elif name == "open_guide":
             slug = data.get("platform", "")
-            if slug not in {"", "douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"}:
+            if slug not in {"", "douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"}:
                 raise ValueError("请选择有效的平台。")
             root = self.url + "/guide/" if self.url and (resources() / "desktop-guide").exists() else "https://3441293738.github.io/creatorhub/guide/"
             webbrowser.open(root + (slug + "/" if slug else ""))

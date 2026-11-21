@@ -15,7 +15,7 @@ from ..models import (AccountActionTask, AccountOperationLog, AccountStatSnapsho
 from ..risk import classify_platform_error
 from .privacy import redact
 
-Platform = Literal["", "douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"]
+Platform = Literal["", "douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"]
 TaskType = Literal["collections", "publishes", "comments", "actions", "monitors"]
 TASK_MODELS = {"collections": KeywordCollectionJob, "publishes": PublishTask,
                "comments": CommentTask, "actions": AccountActionTask, "monitors": MonitorTarget}

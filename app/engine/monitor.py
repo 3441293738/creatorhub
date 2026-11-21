@@ -33,6 +33,10 @@ from ..browser import (BrowserManager, fetch_videos, fetch_comments,
                        fetch_bili_self_profile, post_bili_comment,
                        fetch_ig_posts, fetch_ig_search, fetch_ig_comments,
                        fetch_ig_self_profile, post_ig_comment,
+                       fetch_twitter_user_tweets, fetch_twitter_search,
+                       fetch_twitter_tweet_detail, fetch_twitter_comments,
+                       fetch_twitter_self_profile, post_twitter_comment,
+                       do_twitter_follow, send_twitter_dm,
                        fetch_account_works, fetch_douyin_account_works_api,
                        do_follow, send_dm, send_dm_api,
                        douyin_secure_post_api)
@@ -100,6 +104,12 @@ from ..platforms.instagram import (
     cookie_map_from_state as ig_cookie_map,
     parse_ig_aweme,
     publish_instagram,
+)
+from ..platforms.twitter import (
+    TwitterClient,
+    parse_twitter_aweme,
+    publish_twitter,
+    trim_to_twitter_limit,
 )
 from ..platforms.tiktok.urls import profile_url as tiktok_profile_url
 from ..platforms.tiktok.urls import video_url as tiktok_video_url
@@ -1567,6 +1577,24 @@ class MonitorEngine:
                     auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
                     if imode == "browser" or (not u and imode == "hybrid" and not auth_failed):
                         u, err = await fetch_ig_self_profile(self.browser, identity)
+                elif platform == "twitter":
+                    tmode = str(getattr(
+                        self.cfg.engine, "twitter_read_mode", "hybrid") or "hybrid").lower()
+                    u, err = {}, ""
+                    if tmode in {"api", "hybrid"} and state:
+                        tcli = TwitterClient(
+                            state,
+                            identity.ua or self.cfg.engine.user_agent,
+                            proxy=proxy,
+                            timeout=self.cfg.engine.request_timeout_seconds,
+                        )
+                        async with tcli.session_scope():
+                            u, err = await tcli.fetch_self_profile()
+                    elif tmode == "api" and not state:
+                        u, err = {}, "logged_out:缺少 X (Twitter) 登录态"
+                    auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
+                    if tmode == "browser" or (not u and tmode == "hybrid" and not auth_failed):
+                        u, err = await fetch_twitter_self_profile(self.browser, identity)
                 else:
                     u, err = await fetch_self_profile(self.browser, identity)
                 if u:
@@ -1603,7 +1631,7 @@ class MonitorEngine:
                         "following_count": int(u.get("following_count") or 0),
                         "aweme_count": int(u.get("video_count") or 0),
                     }
-                elif platform in {"bilibili", "instagram"}:
+                elif platform in {"bilibili", "instagram", "twitter"}:
                     parsed = dict(u)
                 else:
                     parsed = parse_self_user(u)
@@ -1616,7 +1644,7 @@ class MonitorEngine:
                     account.uid = str(parsed["uid"])
                 account.douyin_id = parsed.get("douyin_id") or account.douyin_id
                 account.avatar = parsed.get("avatar") or account.avatar
-                if platform in {"kuaishou", "tiktok", "bilibili", "instagram"}:
+                if platform in {"kuaishou", "tiktok", "bilibili", "instagram", "twitter"}:
                     account.follower_count = int(parsed.get("follower_count") or 0)
                     account.following_count = int(parsed.get("following_count") or 0)
                     account.aweme_count = int(parsed.get("aweme_count") or 0)
@@ -1717,7 +1745,7 @@ class MonitorEngine:
         self._last_work_health = now
         with get_session() as s:
             accs = [(a.id, a.platform,
-                     (a.sec_uid or a.uid or a.douyin_id or "") if a.platform == "instagram" else (a.sec_uid or ""),
+                     (a.sec_uid or a.uid or a.douyin_id or "") if a.platform in {"instagram", "twitter"} else (a.sec_uid or ""),
                      self.browser.identity_for(a))
                     for a in s.exec(select(DouyinAccount)).all()
                     if a.status != "invalid" and (a.storage_state or a.creator_storage_state)]
@@ -2382,6 +2410,320 @@ class MonitorEngine:
             "error": error,
         }
 
+    def _make_twitter_client(self, identity=None, state: str = "", ua: str = "", proxy: str = "") -> TwitterClient:
+        raw_state = state
+        if not raw_state and identity is not None:
+            b_states = getattr(identity, "bridge_states", None) or ()
+            if b_states:
+                raw_state = b_states[0]
+        eff_ua = ua or (getattr(identity, "ua", "") if identity is not None else "") or self.cfg.engine.user_agent
+        eff_proxy = proxy or (getattr(identity, "proxy", "") if identity is not None else "") or ""
+        return TwitterClient(
+            raw_state,
+            eff_ua,
+            proxy=eff_proxy,
+            timeout=self.cfg.engine.request_timeout_seconds,
+        )
+
+    async def _tw_read_search(
+        self, identity, keyword: str, *, latest: bool = True, content_type: str = "all", max_pages: int = 3, state: str = "", ua: str = "", proxy: str = ""
+    ) -> tuple[list[dict], str]:
+        mode = str(getattr(self.cfg.engine, "twitter_read_mode", "hybrid") or "hybrid").lower()
+        tcli = self._make_twitter_client(identity, state=state, ua=ua, proxy=proxy)
+        items: list[dict] = []
+        err = ""
+        if mode in {"api", "hybrid"} and tcli.has_auth:
+            async with tcli.session_scope():
+                items, err = await tcli.search_posts(
+                    keyword, max_pages=max_pages, latest=latest, content_type=content_type
+                )
+            if items or err.startswith(("logged_out:", "verification_required:", "rate_limit:")):
+                return items, ("" if items else err)
+        if (mode == "browser" or (mode == "hybrid" and not items)) and identity is not None:
+            b_items, b_err = await fetch_twitter_search(
+                self.browser,
+                identity,
+                keyword,
+                latest=latest,
+                content_type=content_type,
+                max_scrolls=max_pages,
+                block_media=self.cfg.engine.block_media_resources,
+            )
+            if b_items:
+                return b_items, ""
+            if mode == "browser" or not err:
+                err = b_err
+        return items, err
+
+    async def _tw_read_user_tweets(
+        self, identity, user_ref: str, known: set[str] | None = None, *, max_pages: int = 3, state: str = "", ua: str = "", proxy: str = ""
+    ) -> tuple[list[dict], dict, str]:
+        mode = str(getattr(self.cfg.engine, "twitter_read_mode", "hybrid") or "hybrid").lower()
+        tcli = self._make_twitter_client(identity, state=state, ua=ua, proxy=proxy)
+        items: list[dict] = []
+        uinfo: dict = {}
+        err = ""
+        if mode in {"api", "hybrid"} and tcli.has_auth:
+            async with tcli.session_scope():
+                items, uinfo, err = await tcli.fetch_user_tweets(user_ref, max_pages=max_pages)
+            if items or err.startswith(("logged_out:", "verification_required:", "rate_limit:")):
+                return items, uinfo, ("" if items else err)
+        if (mode == "browser" or (mode == "hybrid" and not items)) and identity is not None:
+            b_items, b_author, b_err = await fetch_twitter_user_tweets(
+                self.browser,
+                identity,
+                user_ref,
+                known or set(),
+                max_scrolls=max_pages,
+                block_media=self.cfg.engine.block_media_resources,
+            )
+            if b_items:
+                return b_items, (b_author or uinfo), ""
+            if mode == "browser" or not err:
+                err = b_err
+        return items, uinfo, err
+
+    async def _tw_read_comments(
+        self, identity, work_id: str, *, max_count: int = 60, include_replies: bool = True, state: str = "", ua: str = "", proxy: str = ""
+    ) -> tuple[list[dict], str, str]:
+        mode = str(getattr(self.cfg.engine, "twitter_read_mode", "hybrid") or "hybrid").lower()
+        tcli = self._make_twitter_client(identity, state=state, ua=ua, proxy=proxy)
+        rows: list[dict] = []
+        err = ""
+        source = "api"
+        if mode in {"api", "hybrid"} and tcli.has_auth:
+            async with tcli.session_scope():
+                rows, err = await tcli.fetch_comments(
+                    work_id, max_count=max_count, include_replies=include_replies
+                )
+            if rows or err.startswith(("logged_out:", "verification_required:", "rate_limit:")):
+                return rows, ("" if rows else err), "api"
+        if (mode == "browser" or (mode == "hybrid" and not rows and err)) and identity is not None:
+            b_rows, b_err = await fetch_twitter_comments(
+                self.browser,
+                identity,
+                work_id,
+                max_count=max_count,
+                include_replies=include_replies,
+                block_media=self.cfg.engine.block_media_resources,
+            )
+            source = "browser_fallback" if mode == "hybrid" else "browser"
+            if b_rows:
+                return b_rows, "", source
+            if mode == "browser" or not err:
+                err = b_err
+        return rows, err, source
+
+    async def _scan_twitter_target_locked(self, target_id: int) -> dict:
+        with get_session() as s:
+            target = s.get(MonitorTarget, target_id)
+            if not target:
+                return {"ok": False, "error": "target not found"}
+            first_scan = target.last_scan_at is None
+            if not target.account_id:
+                return self._mark_target_skip(
+                    target_id, "X (Twitter) 作品监控必须绑定已登录的 Twitter 账号"
+                )
+            acc = s.get(DouyinAccount, target.account_id)
+            if not acc or acc.platform != "twitter" or acc.status != "active":
+                return self._mark_target_skip(
+                    target_id, "绑定的 Twitter 账号不存在或登录态已失效，请重新绑定/登录"
+                )
+            if self._proxy_bad(acc):
+                return self._mark_target_skip(
+                    target_id, "账号代理标记为不可用(proxy bad)，已跳过以免暴露真实 IP"
+                )
+            identity = (
+                self.browser.identity_for(acc)
+                if callable(getattr(self.browser, "identity_for", None))
+                else None
+            )
+            proxy = acc.proxy or ""
+            state = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
+            ua = acc.ua or self.cfg.engine.user_agent
+            known = set(
+                s.exec(select(ContentRecord.aweme_id).where(ContentRecord.target_id == target_id)).all()
+            )
+            known_create_times = list(
+                s.exec(select(ContentRecord.create_time).where(ContentRecord.target_id == target_id)).all()
+            )
+            target_kind = target.target_kind or "creator"
+            sec_uid = (target.sec_uid or "").strip()
+            keyword = (target.keyword or "").strip()
+            base_dir = target.download_dir or get_setting("download_dir", self.cfg.engine.media_dir)
+            monitor_since = int(target.created_at.timestamp())
+            scan_since = _douyin_scan_since(monitor_since, known_create_times)
+            backfill_count = target.initial_backfill_count
+            should_backfill = first_scan or (backfill_count != 0 and not known)
+            auto_download = target.download_enabled
+            media_filter = target.media_filter or "all"
+            strategy = _monitor_strategy(target, default_scrolls=4, default_items=0)
+
+        if identity is None:
+            return self._mark_target_skip(target_id, "缺少 Twitter 账号浏览器隔离身份")
+
+        raw_items: list[dict] = []
+        author_name = ""
+        author_avatar = ""
+        error = ""
+        scrolls = max(1, min(6, strategy["max_scrolls"] or 3))
+
+        if target_kind == "keyword":
+            raw_items, error = await self._tw_read_search(
+                identity,
+                keyword,
+                latest=True,
+                content_type=strategy.get("media_type") or "all",
+                max_pages=scrolls,
+                state=state,
+                ua=ua,
+                proxy=proxy,
+            )
+        else:
+            raw_items, b_author, error = await self._tw_read_user_tweets(
+                identity,
+                sec_uid,
+                known,
+                max_pages=scrolls,
+                state=state,
+                ua=ua,
+                proxy=proxy,
+            )
+            if isinstance(b_author, dict):
+                author_name = str(b_author.get("nickname") or author_name)
+                author_avatar = str(b_author.get("avatar") or author_avatar)
+        if error == "empty":
+            error = ""
+
+        candidates: list[Aweme] = []
+        seen_ids: set[str] = set()
+        for r in raw_items:
+            aw = parse_twitter_aweme(r, skip_retweets=(target_kind == "creator"))
+            if aw is None or aw.aweme_id in known or aw.aweme_id in seen_ids:
+                continue
+            seen_ids.add(aw.aweme_id)
+            if aw.author_name and not author_name and target_kind == "creator":
+                author_name = aw.author_name
+            if aw.avatar and not author_avatar and target_kind == "creator":
+                author_avatar = aw.avatar
+            candidates.append(aw)
+
+        candidates.sort(key=lambda a: int(a.create_time or 0), reverse=True)
+        if should_backfill:
+            if backfill_count == 0:
+                candidates = [a for a in candidates if not a.create_time or a.create_time >= monitor_since]
+            elif backfill_count > 0:
+                candidates = candidates[:backfill_count]
+        else:
+            candidates = [a for a in candidates if not a.create_time or a.create_time >= scan_since]
+
+        tcli = TwitterClient(
+            state,
+            ua,
+            proxy=proxy,
+            timeout=self.cfg.engine.request_timeout_seconds,
+        )
+        new_records = []
+        filtered_count = 0
+        async with tcli.session_scope():
+            for aw in candidates:
+                if not _monitor_content_matches(aw, strategy):
+                    filtered_count += 1
+                    continue
+                if strategy["max_items"] and len(new_records) >= strategy["max_items"]:
+                    break
+                should_download = auto_download and (
+                    media_filter == "all" or aw.media_type == media_filter
+                )
+                if should_download and not aw.medias:
+                    full_aw, _raw_m, _m_err = await tcli.fetch_tweet_syndication(
+                        aw.source_url or aw.aweme_id
+                    )
+                    if full_aw is not None and full_aw.medias:
+                        aw = full_aw
+                media_json = json.dumps([
+                    {
+                        "url": m.url,
+                        "kind": m.kind,
+                        "ext": m.ext,
+                        "index": m.index,
+                    }
+                    for m in aw.medias
+                ])
+                # 纯文本推文无附件属于正常情况，标记 skipped 避免误报下载失败
+                dl_status = (
+                    "pending"
+                    if (should_download and aw.medias)
+                    else "skipped"
+                )
+                rec = ContentRecord(
+                    platform="twitter",
+                    target_id=target_id,
+                    aweme_id=aw.aweme_id,
+                    desc=aw.desc,
+                    media_type=aw.media_type,
+                    quality=aw.quality_label,
+                    create_time=aw.create_time,
+                    cover_url=aw.cover or "",
+                    like_count=aw.like_count,
+                    comment_count=aw.comment_count,
+                    duration=aw.duration,
+                    media_json=media_json,
+                    download_status=dl_status,
+                    error="",
+                )
+                new_records.append((rec, aw, bool(should_download and aw.medias)))
+
+        target_name = ""
+        with get_session() as s:
+            for rec, _, _ in new_records:
+                s.add(rec)
+            t = s.get(MonitorTarget, target_id)
+            if t:
+                t.last_scan_at = datetime.utcnow()
+                t.last_error = error
+                if target_kind == "creator":
+                    if author_name and not t.nickname:
+                        t.nickname = author_name
+                    if author_avatar and not t.avatar:
+                        t.avatar = author_avatar
+                target_name = t.nickname or t.keyword or t.sec_uid
+                s.add(t)
+            s.commit()
+            for rec, _, _ in new_records:
+                s.refresh(rec)
+
+        for rec, aw, should_download in new_records:
+            if not should_download:
+                continue
+            ok, path, dl_err = await self.downloader.download_aweme(
+                aw,
+                base_dir,
+                self._dl_proxy(proxy),
+                user_agent=ua,
+                referer="https://x.com/",
+            )
+            with get_session() as s:
+                r = s.get(ContentRecord, rec.id)
+                if r:
+                    r.download_status = "done" if ok else "failed"
+                    r.local_path = path
+                    r.error = dl_err
+                    s.add(r)
+                    s.commit()
+
+        if not first_scan and new_records:
+            await self._notify_new_works(target_name, [aw for _, aw, _ in new_records])
+        return {
+            "ok": not error,
+            "new": len(new_records),
+            "new_works": len(new_records),
+            "scanned": len(candidates),
+            "filtered": filtered_count,
+            "backfill_count": backfill_count,
+            "error": error,
+        }
+
     async def _scan_target_locked(self, target_id: int) -> dict:
         with get_session() as s:
             t0 = s.get(MonitorTarget, target_id)
@@ -2402,6 +2744,8 @@ class MonitorEngine:
             return await self._scan_bilibili_target_locked(target_id)
         if platform == "instagram":
             return await self._scan_instagram_target_locked(target_id)
+        if platform == "twitter":
+            return await self._scan_twitter_target_locked(target_id)
         with get_session() as s:
             target = s.get(MonitorTarget, target_id)
             if not target:
@@ -4473,6 +4817,26 @@ class MonitorEngine:
                     if cid and cid not in known and cid not in dedup_ig:
                         dedup_ig[cid] = c
                 fresh = list(dedup_ig.values())
+            elif platform == "twitter":
+                configured_mode = str(
+                    getattr(self.cfg.engine, "twitter_read_mode", "hybrid") or "hybrid"
+                ).lower()
+                if identity is None:
+                    error = "缺少 Twitter 账号浏览器身份"
+                else:
+                    tw_rows, tw_err, source = await self._tw_read_comments(
+                        identity,
+                        item_id,
+                        max_count=200,
+                        include_replies=True,
+                    )
+                    error = "" if tw_rows or tw_err == "empty" else tw_err
+                    dedup_tw: dict[str, dict] = {}
+                    for c in tw_rows:
+                        cid = c.get("comment_id")
+                        if cid and cid not in known and cid not in dedup_tw:
+                            dedup_tw[cid] = c
+                    fresh = list(dedup_tw.values())
             else:
                 return {"ok": False, "fetched": 0, "added": 0,
                         "error": f"不支持的平台:{platform}",
@@ -4659,6 +5023,14 @@ class MonitorEngine:
                     w.last_error = msg
                     s.add(w); s.commit()
                     return {"ok": False, "new_comments": 0, "error": msg}
+            if platform == "twitter":
+                acc_tw = s.get(DouyinAccount, w.account_id) if w.account_id else None
+                if not w.account_id or not acc_tw or acc_tw.platform != "twitter" or acc_tw.status != "active" or not state:
+                    msg = "Twitter 评论监控必须绑定已登录且状态正常的 Twitter 账号"
+                    w.last_scan_at = datetime.utcnow()
+                    w.last_error = msg
+                    s.add(w); s.commit()
+                    return {"ok": False, "new_comments": 0, "error": msg}
 
         # 公开抖音读取可复用一个带 Cookie 的 Web API 会话；创作中心仍由
         # 浏览器处理。没有登录态时 hybrid 继续允许匿名浏览器回退。
@@ -4742,6 +5114,12 @@ class MonitorEngine:
             elif platform == "instagram":
                 total_new, author = await self._cw_instagram_video(
                     watch_id, identity, state, ua, proxy, aweme_id, name, first_scan)
+            elif platform == "twitter" and kind == "user":
+                total_new, author = await self._cw_twitter_user(
+                    watch_id, identity, state, ua, proxy, sec_uid, name, first_scan)
+            elif platform == "twitter":
+                total_new, author = await self._cw_twitter_video(
+                    watch_id, identity, state, ua, proxy, aweme_id, name, first_scan)
             elif kind == "user" and mode == "creator":
                 total_new, author = await self._cw_creator(watch_id, identity, has_creator,
                                                            name, first_scan)
@@ -4771,10 +5149,11 @@ class MonitorEngine:
                     if (
                         not w.title
                         or (w.platform == "instagram" and w.title.startswith("IG "))
+                        or (w.platform == "twitter" and w.title.startswith("推文 "))
                     ):
                         w.title = author.get("nickname") or w.title
                     ava = (author.get("avatar_thumb") or {}).get("url_list") or []
-                    if ava and ava[0] and (not w.avatar or w.platform == "instagram"):
+                    if ava and ava[0] and (not w.avatar or w.platform in {"instagram", "twitter"}):
                         w.avatar = ava[0]
                 w.comment_count = len(s.exec(select(CommentRecord.id)
                                              .where(CommentRecord.watch_id == watch_id)).all())
@@ -5763,6 +6142,124 @@ class MonitorEngine:
                 )
         return total, author_dict
 
+    async def _cw_twitter_video(
+        self, watch_id: int, identity, state: str, ua: str, proxy: str,
+        work_id: str, name: str, first_scan: bool, work_desc: str = ""
+    ):
+        settings = self._comment_watch_settings(watch_id)
+        with get_session() as s:
+            known = set(
+                s.exec(
+                    select(CommentRecord.comment_id)
+                    .where(CommentRecord.watch_id == watch_id)
+                    .where(CommentRecord.aweme_id == work_id)
+                ).all()
+            )
+        max_c = max(30, int(settings["max_scrolls"] or 4) * 20)
+        author_dict = None
+        tcli = TwitterClient(
+            state, ua, proxy=proxy, timeout=self.cfg.engine.request_timeout_seconds
+        )
+        async with tcli.session_scope():
+            aw_info, _raw_m, _ = await tcli.fetch_tweet_syndication(work_id)
+            if aw_info is not None and (aw_info.author_name or aw_info.desc):
+                clean_desc = " ".join(str(aw_info.desc or "").split())[:36]
+                display_title = (
+                    f"{aw_info.author_name} · {clean_desc}"
+                    if aw_info.author_name and clean_desc
+                    else (clean_desc or aw_info.author_name)
+                )
+                if not work_desc and aw_info.desc:
+                    work_desc = aw_info.desc[:80]
+                author_dict = {
+                    "nickname": display_title,
+                    "avatar_thumb": {"url_list": [str(aw_info.avatar or aw_info.cover or "")]},
+                }
+        if identity is None:
+            raise RuntimeError("缺少 Twitter 账号浏览器隔离身份")
+        rows, err, _ = await self._tw_read_comments(
+            identity,
+            work_id,
+            max_count=max_c,
+            include_replies=True,
+            state=state,
+            ua=ua,
+            proxy=proxy,
+        )
+        if err and err != "empty" and not rows:
+            raise RuntimeError(err)
+        fresh = [c for c in rows if c and c.get("comment_id") and c["comment_id"] not in known]
+        total = await self._ingest(
+            watch_id, work_id, fresh, name, work_desc or name, first_scan, platform="twitter"
+        )
+        return total, author_dict
+
+    async def _cw_twitter_user(
+        self, watch_id: int, identity, state: str, ua: str, proxy: str,
+        user_ref: str, name: str, first_scan: bool
+    ):
+        _ = (state, ua, proxy)
+        if identity is None:
+            raise RuntimeError("缺少 Twitter 账号浏览器隔离身份")
+        settings = self._comment_watch_settings(watch_id)
+        raw_feed, b_author, err = await self._tw_read_user_tweets(
+            identity,
+            user_ref,
+            set(),
+            max_pages=3,
+            state=state,
+            ua=ua,
+            proxy=proxy,
+        )
+        if err and err != "empty" and not raw_feed:
+            raise RuntimeError(err)
+        author_dict = None
+        if isinstance(b_author, dict) and b_author.get("nickname"):
+            author_dict = {
+                "nickname": str(b_author["nickname"]),
+                "avatar_thumb": {"url_list": [str(b_author.get("avatar") or "")]},
+            }
+        cutoff = int(time.time()) - settings["recent_days"] * 86400
+        selected: list[tuple[str, str]] = []
+        for raw in raw_feed:
+            aw = parse_twitter_aweme(raw, skip_retweets=True)
+            if aw is None:
+                continue
+            if not author_dict and aw.author_name:
+                author_dict = {
+                    "nickname": str(aw.author_name),
+                    "avatar_thumb": {"url_list": [str(aw.avatar or "")]},
+                }
+            if not cutoff or not aw.create_time or aw.create_time >= cutoff:
+                selected.append((aw.aweme_id, aw.desc))
+            if len(selected) >= settings["recent_works"]:
+                break
+        max_c = max(20, int(settings["max_scrolls"] or 4) * 20)
+        total = 0
+        for tid, desc in selected:
+            with get_session() as s:
+                known = set(
+                    s.exec(
+                        select(CommentRecord.comment_id)
+                        .where(CommentRecord.watch_id == watch_id)
+                        .where(CommentRecord.aweme_id == tid)
+                    ).all()
+                )
+            rows, _, _ = await self._tw_read_comments(
+                identity,
+                tid,
+                max_count=max_c,
+                include_replies=True,
+                state=state,
+                ua=ua,
+                proxy=proxy,
+            )
+            fresh = [c for c in rows if c and c.get("comment_id") and c["comment_id"] not in known]
+            total += await self._ingest(
+                watch_id, tid, fresh, name, desc, first_scan, platform="twitter"
+            )
+        return total, author_dict
+
     # ── 发布(小红书创作平台)+ 跨平台转发 ──
     def _content_files(self, rec: ContentRecord) -> list:
         """收集一条作品记录在本地的媒体文件路径。"""
@@ -5818,6 +6315,11 @@ class MonitorEngine:
                 raise ValueError("TikTok 网页发布当前仅支持视频")
             if target_platform == "instagram" and len(files) > 10:
                 raise ValueError("Instagram 轮播发布最多支持 10 个媒体文件")
+            if target_platform == "twitter":
+                if rec.media_type == "video" and len(files) > 1:
+                    files = files[:1]
+                elif rec.media_type != "video" and len(files) > 4:
+                    raise ValueError("Twitter 图集发布单次最多支持 4 张图片，请先勾选最多 4 张图片")
             if target_platform in {"xhs", "rednote"}:
                 from ..platforms.xhs.media import validate_publish_files
                 files = validate_publish_files(
@@ -5825,6 +6327,8 @@ class MonitorEngine:
             raw_title = title if title is not None else (rec.desc or "")
             if target_platform == "rednote":
                 t_title = weighted_truncate(raw_title.strip(), 20)
+            elif target_platform == "twitter":
+                t_title = trim_to_twitter_limit(raw_title.strip(), limit=280)
             else:
                 title_cap = {"douyin": 30, "shipinhao": 16, "bilibili": 80, "instagram": 2200}.get(target_platform, 20)
                 t_title = raw_title[:title_cap]
@@ -5967,6 +6471,7 @@ class MonitorEngine:
             allow_stitch = getattr(t, "allow_stitch", True)
             bili_options = _loads(getattr(t, "bili_options_json", "{}") or "{}")
             ig_options = _loads(getattr(t, "ig_options_json", "{}") or "{}")
+            tw_options = _loads(getattr(t, "tw_options_json", "{}") or "{}")
             location = getattr(t, "location", "") or ""
             platform = t.platform
             files = _loads_list(t.media_json)
@@ -6074,6 +6579,18 @@ class MonitorEngine:
                 allow_comment=allow_comment, ig_options=ig_options,
                 mode=ig_write_mode, headed=True, channel=ig_channel)
 
+        if platform == "twitter":
+            if not state:
+                return await self._finish_publish(
+                    task_id, False, "", "该账号未完成 Twitter 登录，请先在账号页登录或导入 Cookie",
+                    platform="twitter")
+            return await self._run_browser_publish(
+                task_id, "twitter", publish_twitter,
+                self.browser, identity, state, media_type, title, desc, files,
+                topics=topics, visibility=visibility,
+                allow_comment=allow_comment, tw_options=tw_options,
+                headed=True, channel="browser")
+
         if not state:
             return await self._finish_publish(
                 task_id, False, "", "该账号未完成小红书「创作者登录」,请先在账号页点「创作者登录」",
@@ -6110,6 +6627,7 @@ class MonitorEngine:
         pname = {"kuaishou": "快手", "douyin": "抖音",
                  "shipinhao": "视频号", "tiktok": "TikTok",
                  "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram",
+                 "twitter": "Twitter",
                  "xhs": "小红书"}.get(platform, platform)
         call_kwargs = dict(kwargs)
         try:
@@ -6196,7 +6714,8 @@ class MonitorEngine:
                 if channels:
                     pname = {"kuaishou": "快手", "douyin": "抖音",
                              "shipinhao": "视频号", "tiktok": "TikTok",
-                             "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram"}.get(
+                             "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram",
+                             "twitter": "Twitter"}.get(
                                  platform, "小红书")
                     await notify_all(channels, f"{pname}发布成功", url or "已发布一条作品")
             except Exception:
@@ -6883,6 +7402,102 @@ class MonitorEngine:
                             "source_text": c.get("text", ""),
                         })
                 return cands, ("" if cands else err)
+        # ── Twitter: 隔离浏览器拦截 SearchTimeline / UserTweets / TweetDetail 发现待评推文与回复 ──
+        if platform == "twitter":
+            if identity is None:
+                return [], "缺少 Twitter 账号浏览器隔离身份"
+            if mode == "auto_comment":
+                if kind == "keyword":
+                    rows, err = await self._tw_read_search(
+                        identity,
+                        rf["keyword"],
+                        latest=True,
+                        max_pages=2,
+                    )
+                else:
+                    rows, _a, err = await self._tw_read_user_tweets(
+                        identity,
+                        rf["sec_uid"],
+                        set(),
+                        max_pages=2,
+                    )
+                if err == "empty":
+                    err = ""
+                for r in rows[: self.cfg.engine.comment_recent_works]:
+                    aw = parse_twitter_aweme(r, skip_retweets=(kind != "keyword"))
+                    if aw:
+                        cands.append({
+                            "aweme_id": aw.aweme_id,
+                            "xsec_token": "",
+                            "target_comment_id": "",
+                            "target_nick": aw.author_name or aw.author_unique_id,
+                            "ctx": {"kw": rf["keyword"]} if kind == "keyword" else {},
+                            "source_text": aw.desc,
+                        })
+                return cands, err
+
+            # auto_reply: 回复自己推文下的新评论
+            works_to_check: list[str] = []
+            err = ""
+            if rf["target_kind"] == "work" and rf["aweme_id"]:
+                works_to_check = [rf["aweme_id"]]
+            else:
+                target_self = acc_sec_uid or rf.get("account_uid", "")
+                if not target_self:
+                    prof, p_err = await fetch_twitter_self_profile(self.browser, identity)
+                    if p_err and not prof:
+                        return [], p_err
+                    target_self = str(prof.get("unique_id") or prof.get("sec_uid") or "")
+                if target_self:
+                    feed_rows, _a, err = await self._tw_read_user_tweets(
+                        identity,
+                        target_self,
+                        set(),
+                        max_pages=2,
+                    )
+                    if err == "empty":
+                        err = ""
+                    cutoff = int(time.time()) - max(0, self.cfg.engine.comment_recent_days) * 86400
+                    for r in feed_rows:
+                        aw = parse_twitter_aweme(r, skip_retweets=True)
+                        if aw and (not cutoff or not aw.create_time or aw.create_time >= cutoff):
+                            works_to_check.append(aw.aweme_id)
+                        if len(works_to_check) >= self.cfg.engine.comment_recent_works:
+                            break
+
+            comment_cutoff = int(time.time()) - max(0, self.cfg.engine.comment_recent_days) * 86400
+            for tid in works_to_check:
+                c_rows, c_err, _ = await self._tw_read_comments(
+                    identity,
+                    tid,
+                    max_count=40,
+                    include_replies=True,
+                )
+                if c_err and c_err != "empty" and not c_rows:
+                    err = err or c_err
+                    continue
+                for c in c_rows:
+                    cid = str(c.get("comment_id") or "")
+                    if not cid:
+                        continue
+                    ct = int(c.get("create_time") or 0)
+                    if comment_cutoff and ct and ct < comment_cutoff:
+                        continue
+                    c_sec = str(c.get("user_sec_uid") or "").lower()
+                    if (
+                        (acc_sec_uid and c_sec == str(acc_sec_uid).lower())
+                        or (acc_nick and c.get("user_nickname") == acc_nick)
+                    ):
+                        continue
+                    cands.append({
+                        "aweme_id": tid,
+                        "xsec_token": "",
+                        "target_comment_id": cid,
+                        "target_nick": c.get("user_nickname", ""),
+                        "ctx": {"nick": c.get("user_nickname", "")},
+                        "source_text": c.get("text", ""),
+                    })
+            return cands, ("" if cands else err)
         # ── 抖音:浏览器自动化(发现仍用拦截抓取)──
         if mode == "auto_comment":
             if kind == "keyword":
@@ -7183,6 +7798,11 @@ class MonitorEngine:
                         self.browser, identity, target_sec_uid or target_uid,
                         on_submit=lambda: self._mark_write_submit(
                             AccountActionTask, task_id))
+                elif platform == "twitter":
+                    ok, err = await do_twitter_follow(
+                        self.browser, identity, target_sec_uid or target_uid,
+                        on_submit=lambda: self._mark_write_submit(
+                            AccountActionTask, task_id))
                 else:
                     ok, err = await do_follow(self.browser, identity, platform,
                                               target_uid, target_sec_uid)
@@ -7190,6 +7810,12 @@ class MonitorEngine:
             if action == "unfollow":
                 if platform == "tiktok":
                     ok, err = await do_tiktok_follow(
+                        self.browser, identity, target_sec_uid or target_uid,
+                        unfollow=True,
+                        on_submit=lambda: self._mark_write_submit(
+                            AccountActionTask, task_id))
+                elif platform == "twitter":
+                    ok, err = await do_twitter_follow(
                         self.browser, identity, target_sec_uid or target_uid,
                         unfollow=True,
                         on_submit=lambda: self._mark_write_submit(
@@ -7214,6 +7840,12 @@ class MonitorEngine:
                 if platform == "tiktok":
                     ok, err = await send_tiktok_dm(
                         self.browser, identity, target_sec_uid or target_uid, content,
+                        on_submit=lambda: self._mark_write_submit(
+                            AccountActionTask, task_id))
+                elif platform == "twitter":
+                    ok, err = await send_twitter_dm(
+                        self.browser, identity, target_sec_uid or target_uid, content,
+                        conv_id=dm_conv_id,
                         on_submit=lambda: self._mark_write_submit(
                             AccountActionTask, task_id))
                 elif platform == "xhs":
@@ -7778,6 +8410,18 @@ class MonitorEngine:
                     require_reply=bool(target_cid),
                     on_submit=lambda: self._mark_write_submit(CommentTask, task_id),
                     headed=True, target_url=target_url)
+            elif platform == "twitter":
+                method = "browser"
+                ok, result, err = await post_twitter_comment(
+                    self.browser,
+                    identity,
+                    aweme_id,
+                    content,
+                    target_url=target_url,
+                    reply_to_comment_id=target_cid,
+                    headed=(True if native_mode else self.cfg.engine.comment_browser_headed),
+                    on_submit=lambda: self._mark_write_submit(CommentTask, task_id, channel="browser"),
+                )
             elif platform == "rednote":
                 method = "unavailable"
                 err = "unavailable:海外小红书暂未开放评论写入与自动计划"
@@ -8142,10 +8786,55 @@ class MonitorEngine:
                 not media_json or not aw.medias)
             needs_ig_refetch = platform == "instagram" and (
                 not media_json or not aw.medias)
+            needs_tw_refetch = platform == "twitter" and (
+                not media_json or not aw.medias)
             rec.download_status = "downloading"
-            if not needs_xhs_refetch and not needs_bili_refetch and not needs_ig_refetch:
+            if not needs_xhs_refetch and not needs_bili_refetch and not needs_ig_refetch and not needs_tw_refetch:
                 rec.retry_count = (rec.retry_count or 0) + 1
             s.add(rec); s.commit()
+
+        if platform == "twitter" and (not media_json or not aw.medias):
+            tcli = TwitterClient(
+                acc_state,
+                (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
+                proxy=acc_proxy,
+                timeout=self.cfg.engine.request_timeout_seconds,
+            )
+            async with tcli.session_scope():
+                aw2, _raw_t, tw_err = await tcli.fetch_tweet_syndication(note_id)
+            if (aw2 is None or not aw2.medias) and identity is not None:
+                raw_node, b_err = await fetch_twitter_tweet_detail(
+                    self.browser, identity, note_id, block_media=self.cfg.engine.block_media_resources
+                )
+                if raw_node:
+                    aw2 = parse_twitter_aweme(raw_node)
+                tw_err = tw_err or b_err
+            if aw2 and aw2.medias:
+                aw = aw2
+                media_json = json.dumps([
+                    {
+                        "url": m.url,
+                        "kind": m.kind,
+                        "ext": m.ext,
+                        "index": m.index,
+                    }
+                    for m in aw.medias
+                ])
+                with get_session() as s:
+                    rec = s.get(ContentRecord, record_id)
+                    if rec:
+                        rec.retry_count = (rec.retry_count or 0) + 1
+                        rec.media_json = media_json
+                        s.add(rec); s.commit()
+            else:
+                with get_session() as s:
+                    rec = s.get(ContentRecord, record_id)
+                    if rec:
+                        rec.retry_count = (rec.retry_count or 0) + 1
+                        rec.download_status = "failed"
+                        rec.error = tw_err or "重拉 Twitter 推文详情仍无可用媒体直链(可能为纯文本推文)"
+                        s.add(rec); s.commit()
+                return {"ok": False, "error": tw_err or "重拉 Twitter 推文详情仍无可用媒体直链"}
 
         if platform == "instagram" and (not media_json or not aw.medias):
             icli = InstagramClient(
@@ -8390,6 +9079,9 @@ class MonitorEngine:
         elif platform == "instagram":
             download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
             download_referer = "https://www.instagram.com/"
+        elif platform == "twitter":
+            download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
+            download_referer = "https://x.com/"
         ok, path, err = await self.downloader.download_aweme(
             aw, base_dir, self._dl_proxy(acc_proxy), user_agent=download_ua,
             cookies=download_cookies, referer=download_referer)
@@ -8417,6 +9109,20 @@ class MonitorEngine:
             )
             async with icli_refresh.session_scope():
                 aw_fresh, _raw_m, _ = await icli_refresh.fetch_media_info(note_id)
+            if aw_fresh and aw_fresh.medias:
+                aw = aw_fresh
+                ok, path, err = await self.downloader.download_aweme(
+                    aw, base_dir, self._dl_proxy(acc_proxy), user_agent=download_ua,
+                    cookies=download_cookies, referer=download_referer)
+        elif not ok and platform == "twitter" and not needs_tw_refetch and "403" in str(err):
+            tcli_refresh = TwitterClient(
+                acc_state,
+                download_ua or self.cfg.engine.user_agent,
+                proxy=acc_proxy,
+                timeout=self.cfg.engine.request_timeout_seconds,
+            )
+            async with tcli_refresh.session_scope():
+                aw_fresh, _raw_t, _ = await tcli_refresh.fetch_tweet_syndication(note_id)
             if aw_fresh and aw_fresh.medias:
                 aw = aw_fresh
                 ok, path, err = await self.downloader.download_aweme(

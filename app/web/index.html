@@ -92,6 +92,7 @@
   .pswitch button.active[data-pf="tiktok"] { background:rgba(37,244,238,.12); color:#00b8b2; border-color:rgba(254,44,85,.38); }
   .pswitch button.active[data-pf="bilibili"] { background:rgba(0,174,236,.14); color:#00aeec; border-color:rgba(0,174,236,.42); }
   .pswitch button.active[data-pf="instagram"] { background:rgba(225,48,108,.14); color:#e1306c; border-color:rgba(225,48,108,.42); }
+  .pswitch button.active[data-pf="twitter"] { background:rgba(29,155,240,.15); color:#1d9bf0; border-color:rgba(29,155,240,.42); }
   .hidden { display:none !important; }
 
   /* Platform accents and light/dark themes are independent: appearance.css. */
@@ -1882,6 +1883,7 @@
     <button role="tab" data-pf="tiktok" onclick="switchPlatform('tiktok')">TikTok</button>
     <button role="tab" data-pf="bilibili" onclick="switchPlatform('bilibili')">哔哩哔哩</button>
     <button role="tab" data-pf="instagram" onclick="switchPlatform('instagram')">Instagram</button>
+    <button role="tab" data-pf="twitter" onclick="switchPlatform('twitter')">Twitter</button>
   </div>
   <div class="header-actions">
     <button class="ghost command-trigger" id="command-trigger" type="button" aria-label="搜索功能" aria-haspopup="dialog" aria-controls="command-dialog" aria-keyshortcuts="Control+k Meta+k" title="搜索功能（Ctrl / ⌘ K）"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>搜索功能</span><kbd>Ctrl K</kbd></button>
@@ -1978,7 +1980,7 @@
   </div>
   <div class="platform-callout" role="note">
     <svg aria-hidden="true"><use href="#i-info"/></svg>
-    <div><b>平台数据彼此独立</b><p>切换平台后，账号、采集与任务数据会独立展示；通知和下载设置全局共用。TikTok、哔哩哔哩与 Instagram 均已提供登录、采集、本账号作品与数据、发布及受控写操作，暂不含直播。</p></div>
+    <div><b>平台数据彼此独立</b><p>切换平台后，账号、采集与任务数据会独立展示；通知和下载设置全局共用。TikTok、哔哩哔哩、Instagram 与 Twitter 均已提供登录、采集、本账号作品与数据、发布及受控写操作，暂不含直播。</p></div>
   </div>
   </section>
 
@@ -2007,6 +2009,8 @@
         <button class="bili-only" onclick="startBilibiliLogin()"><svg><use href="#i-qr"/></svg>哔哩哔哩扫码登录</button>
         <button class="ghost bili-only" onclick="toggleCookie()">Cookie 粘贴</button>
         <button class="ig-only" onclick="startInstagramLogin()"><svg><use href="#i-login"/></svg>Instagram 登录</button>
+        <button class="tw-only" onclick="startTwitterLogin()"><svg><use href="#i-login"/></svg>Twitter 登录</button>
+        <button class="ghost tw-only" onclick="toggleCookie()">Token / Cookie 登录</button>
         <button class="ghost ig-only" onclick="toggleCookie()">Cookie 粘贴</button>
       </div>
       <div id="qrbox" style="display:none;margin-bottom:14px">
@@ -2832,6 +2836,13 @@
             <p class="field-help" id="engine-ig-read-help">使用当前账号会话直连 Instagram Mobile v1 / Web API 获取主页、Reels、标签搜索、stream_comments 评论、关注/粉丝与 Direct v2 私信。</p>
           </div>
           <div class="form-field">
+            <label for="engine-twitter_read_mode">Twitter (X) 读取方式</label>
+            <select id="engine-twitter_read_mode" name="twitter_read_mode" disabled aria-describedby="engine-tw-read-help">
+              <option value="hybrid">轻量协议优先，时间线走隔离浏览器（推荐）</option><option value="browser">全程使用隔离浏览器页面</option><option value="api">仅轻量协议（资料/单帖/私信）</option>
+            </select>
+            <p class="field-help" id="engine-tw-read-help">公开单帖下载与本账号资料/私信优先走 Syndication 与 REST 通道；主页时间线、搜索与评论自动在隔离浏览器内拦截原生 GraphQL 响应。</p>
+          </div>
+          <div class="form-field">
             <label for="engine-monitor_initial_backfill_count">抖音新监控的历史作品数量</label>
             <input id="engine-monitor_initial_backfill_count" name="monitor_initial_backfill_count" type="number" min="-1" max="1000" step="1" required disabled aria-describedby="engine-backfill-help">
             <p class="field-help" id="engine-backfill-help">0 = 只看新增，-1 = 尽可能读取全部历史。仅影响抖音新建时选择“跟随全局设置”的监控，已建监控不变。</p>
@@ -2897,6 +2908,7 @@
             <div class="form-field"><label for="engine-douyin_write_mode">抖音写入方式</label><select id="engine-douyin_write_mode" name="douyin_write_mode" disabled><option value="hybrid">API 优先，明确失败后浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">影响评论、回复、关注/取关和已有会话私信；发布作品仍使用创作中心浏览器流程。网络结果不确定时不会重复提交或回退。</p></div>
             <div class="form-field"><label for="engine-bilibili_write_mode">哔哩哔哩写入方式</label><select id="engine-bilibili_write_mode" name="bilibili_write_mode" disabled><option value="hybrid">API 优先，明确失败后浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">影响评论、回复、关注/取关、稿件可见性与私信发送；发布视频和图文动态走创作中心浏览器流程。网络结果不确定时不会重复提交或回退。</p></div>
             <div class="form-field"><label for="engine-instagram_write_mode">Instagram 写入与发布方式</label><select id="engine-instagram_write_mode" name="instagram_write_mode" disabled><option value="hybrid">API 优先，明确失败后浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">支持 Photo / Reels / Story / Carousel 两阶段 rupload + configure 直连发布、user_breadcrumb 评论与回复、关注/取关及 Direct v2 私信；网络结果不确定时不会重复提交或回退。</p></div>
+            <div class="form-field"><label for="engine-twitter_write_mode">Twitter 写入与发布方式</label><select id="engine-twitter_write_mode" name="twitter_write_mode" disabled><option value="browser">独立浏览器环境（推荐 · 原生生成 x-client-transaction-id）</option></select><p class="field-help">支持纯文本、最多 4 图或单视频/GIF 推文发布、回复权限控制、首评自回复串推、点赞、转推/引用、关注/取关与私信发送；网络结果不确定时不会重复提交。</p></div>
             <div class="form-field"><label class="switch-row" for="engine-comment_browser_headed"><input id="engine-comment_browser_headed" name="comment_browser_headed" type="checkbox" disabled><span class="switch-copy"><b>评论操作显示浏览器窗口</b><span>推荐开启，遇到登录或验证时可以直接处理；关闭后在后台运行。</span></span></label></div>
             <div class="form-field"><label class="switch-row" for="engine-xhs_comment_review_before_publish"><input id="engine-xhs_comment_review_before_publish" name="xhs_comment_review_before_publish" type="checkbox" disabled><span class="switch-copy"><b>小红书评论先审核</b><span>推荐开启。关闭后，新生成的评论可能直接进入发送队列。</span></span></label></div>
           </div>
@@ -3305,6 +3317,29 @@
               <option value="0">普通评论区</option>
               <option value="1">精选评论后展示</option>
             </select>
+          </div>
+        </fieldset>
+        <fieldset class="publish-permissions tw-only" id="pub-tw-opts">
+          <legend>Twitter 推文与互动设置</legend>
+          <div class="publish-permission">
+            <label class="field" for="pub-tw-reply-perm">谁可以回复</label>
+            <select id="pub-tw-reply-perm" aria-label="Twitter 回复权限">
+              <option value="everyone">所有人</option>
+              <option value="following">你关注的账号</option>
+              <option value="verified">认证账号</option>
+              <option value="mentioned">仅你提及的账号</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-tw-long">字数上限</label>
+            <select id="pub-tw-long" aria-label="Twitter 字数上限" onchange="applyPlatformUI()">
+              <option value="0">标准推文（≤280 权重字符）</option>
+              <option value="1">X Premium 长推文（≤4000 权重字符）</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-tw-first-comment">发布后首评串推（可选）</label>
+            <input id="pub-tw-first-comment" maxlength="280" placeholder="发布成功后自动在主推文下追加一条自回复（如外链或补充说明）">
           </div>
         </fieldset>
         <fieldset class="publish-permissions ig-only" id="pub-ig-opts">

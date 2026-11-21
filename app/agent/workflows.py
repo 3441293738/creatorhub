@@ -24,7 +24,7 @@ from .privacy import redact
 class WorkflowStep(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     kind: Literal["create_collection", "create_monitor"]
-    platform: Literal["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram"]
+    platform: Literal["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"]
     account_id: int = Field(gt=0)
     keywords: list[str] = Field(default_factory=list, max_length=10)
     target: str = Field(default="", max_length=2000)
@@ -46,8 +46,8 @@ class WorkflowStep(BaseModel):
             if not self.target or self.keywords:
                 raise ValueError("监控需填写目标，关键词列表仅用于采集")
             if self.monitor_kind == "keyword":
-                if self.platform not in {"xhs", "rednote"} or len(self.target) > 80:
-                    raise ValueError("关键词监控适用于小红书/海外小红书，最多 80 字")
+                if self.platform not in {"xhs", "rednote", "instagram", "twitter"} or len(self.target) > 80:
+                    raise ValueError("关键词监控适用于小红书/海外小红书/Instagram/Twitter，最多 80 字")
             elif "://" in self.target:
                 parsed = urlsplit(self.target)
                 domains = {"douyin": ("douyin.com", "iesdouyin.com"), "xhs": ("xiaohongshu.com", "xhslink.com"),
@@ -55,7 +55,8 @@ class WorkflowStep(BaseModel):
                            "kuaishou": ("kuaishou.com",), "shipinhao": ("weixin.qq.com",),
                            "tiktok": ("tiktok.com",),
                            "bilibili": ("bilibili.com", "b23.tv"),
-                           "instagram": ("instagram.com", "instagr.am")}[self.platform]
+                           "instagram": ("instagram.com", "instagr.am"),
+                           "twitter": ("x.com", "twitter.com", "t.co")}[self.platform]
                 host = (parsed.hostname or "").lower()
                 if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
                         or parsed.port not in {None, 80, 443}
@@ -187,6 +188,6 @@ async def apply_plan(plan_id: str, plan_hash: str, executors: dict) -> dict:
 
 
 PLAN_TOOL = {"name": "propose_workflow", "description": (
-    "仅生成待确认草稿，不执行。支持关键词采集和作品监控（抖音/小红书/海外小红书/快手/视频号/TikTok/哔哩哔哩/Instagram）。"
+    "仅生成待确认草稿，不执行。支持关键词采集和作品监控（抖音/小红书/海外小红书/快手/视频号/TikTok/哔哩哔哩/Instagram/Twitter）。"
     "先查询真实账号 ID；缺少目标先询问。日报定时发送、代码修改、发布等未支持需求须列入 unsupported。"
     "每次只提交一个计划，最多五步。"), "inputSchema": WorkflowPlan.model_json_schema()}

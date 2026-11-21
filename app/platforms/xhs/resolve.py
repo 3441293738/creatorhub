@@ -1,5 +1,5 @@
 """从分享链接/主页 URL 解析小红书 user_id / note_id(及 xsec_token)。
-对标 app/douyin/resolve.py,但小红书很多接口需要 URL 里带 xsec_token,
+职责与 app/douyin/resolve.py 一致,但小红书很多接口需要 URL 里带 xsec_token,
 所以这里尽量把 xsec_token / xsec_source 一并解析出来。
 """
 from __future__ import annotations

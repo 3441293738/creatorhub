@@ -123,6 +123,12 @@ body.pf-instagram {
   --brand-shadow:0 4px 14px -4px rgba(225,48,108,.38);
   --acc:#a31762; --acc-solid:#a31762; --acc-hover:#85114f;
 }
+body.pf-twitter {
+  --brand:#1d9bf0; --brand-secondary:#0f1419;
+  --brand-mark:linear-gradient(135deg,#0f1419,#1d9bf0);
+  --brand-shadow:0 4px 14px -4px rgba(29,155,240,.38);
+  --acc:#0c7abf; --acc-solid:#0c7abf; --acc-hover:#09629b;
+}
 :root[data-theme="dark"] body.pf-xhs {
   --acc:#ff758a; --chart-secondary:#78d7f6;
   --bg:#171214; --bg-grad:#1b1518;
@@ -138,6 +144,7 @@ body.pf-instagram {
 :root[data-theme="dark"] body.pf-bilibili { --acc:#5cd1ff; }
 :root[data-theme="dark"] body.pf-rednote { --acc:#ff7a96; }
 :root[data-theme="dark"] body.pf-instagram { --acc:#ff7ab8; }
+:root[data-theme="dark"] body.pf-twitter { --acc:#38bdf8; }
 /* Resolve derived colors where platform tokens live, not at the root default. */
 body {
   --acc-soft:color-mix(in srgb,var(--acc) 10%,transparent);

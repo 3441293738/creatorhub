@@ -7,6 +7,7 @@
     tiktok_read_mode: "native", channels_read_mode: "auto",
     bilibili_read_mode: "hybrid", bilibili_write_mode: "hybrid",
     instagram_read_mode: "hybrid", instagram_write_mode: "hybrid",
+    twitter_read_mode: "hybrid", twitter_write_mode: "browser",
     douyin_profile_mode: "hybrid", douyin_followers_mode: "hybrid",
     douyin_dm_sync_mode: "hybrid", douyin_creator_danmaku_mode: "hybrid",
     douyin_publish_mode: "browser",
@@ -123,11 +124,12 @@
     { id: 6, platform: "bilibili", nickname: "B站示例 UP 主", douyin_id: "1008601", sec_uid: "1008601", aweme_count: 42, follower_count: 3560, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: false, proxy_status: "unknown" },
     { id: 7, platform: "rednote", nickname: "Rednote 示例号", douyin_id: "rn_demo", sec_uid: "DEMO_REDNOTE_ACCOUNT", aweme_count: 19, follower_count: 540, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: true, proxy: "socks5://***:***@HOST:PORT", proxy_status: "ok" },
     { id: 8, platform: "instagram", nickname: "Instagram 示例号", douyin_id: "ig_creator_demo", sec_uid: "900100200", aweme_count: 31, follower_count: 2150, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: true, proxy: "http://***:***@HOST:PORT", proxy_status: "ok" },
+    { id: 9, platform: "twitter", nickname: "Twitter 示例号", douyin_id: "x_creator_demo", sec_uid: "x_creator_demo", aweme_count: 48, follower_count: 3420, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: true, proxy: "http://***:***@HOST:PORT", proxy_status: "ok" },
   ];
 
   const platformAccount = (platform) => accounts.find((item) => item.platform === platform) || accounts[0];
-  const platformName = { douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram" };
-  const monitoredName = { douyin: "示例创作者", xhs: "城市生活研究所", rednote: "Studio Nomad", kuaishou: "影像日记", shipinhao: "本账号内容", tiktok: "GlobalCreator", bilibili: "科技美学示例 UP", instagram: "StudioVisuals" };
+  const platformName = { douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram", twitter: "Twitter" };
+  const monitoredName = { douyin: "示例创作者", xhs: "城市生活研究所", rednote: "Studio Nomad", kuaishou: "影像日记", shipinhao: "本账号内容", tiktok: "GlobalCreator", bilibili: "科技美学示例 UP", instagram: "StudioVisuals", twitter: "IndieBuilder" };
 
   function monitor(platform) {
     const account = platformAccount(platform);
@@ -278,6 +280,12 @@
       row("instagram", "comment_write", "评论/回复/点赞/关注", "instagram_write_mode", true, true),
       row("instagram", "dm_send", "Direct v2 私信发送", "instagram_write_mode", true, true),
       row("instagram", "publish", "单图/轮播/Reels/Story 发布", "instagram_write_mode", true, true),
+      row("twitter", "public_monitor", "推文详情/时间线/搜索/回复读取", "twitter_read_mode", true, true),
+      row("twitter", "account_works", "本账号推文/关注/粉丝读取", "twitter_read_mode", true, true),
+      row("twitter", "dm_sync", "私信收件箱与历史消息同步", "twitter_read_mode", true, true),
+      row("twitter", "comment_write", "回复/点赞/转推/引用/关注", "twitter_write_mode", false, true),
+      row("twitter", "dm_send", "私信发送", "twitter_write_mode", false, true),
+      row("twitter", "publish", "纯文本/最多4图/单视频推文与首评串推", "twitter_write_mode", false, true),
     ], accounts: accounts.map(account => ({
       account_id: account.id, platform: account.platform, nickname: account.nickname,
       profile_isolated: true, credential_isolated: true, api_session_isolated: true,

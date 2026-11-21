@@ -1,4 +1,4 @@
-"""Instagram 网页端隔离浏览器读写适配器（对标 `bili_fetcher.py` / `tiktok_fetcher.py`）。
+"""Instagram 网页端隔离浏览器读写适配器（与项目其他平台浏览器抓取器保持统一返回契约）。
 
 当 `instagram_read_mode` / `instagram_write_mode` 设为 `browser`，
 或在 `hybrid` 模式下遇到直连接口兼容性失败（不含 `write_uncertain:`）时，

@@ -343,6 +343,11 @@ def _norm_ig_work(it: dict) -> Optional[dict]:
     return parse_ig_creator_work(it)
 
 
+def _norm_twitter_work(it: dict) -> Optional[dict]:
+    from ..platforms.twitter import parse_twitter_creator_work
+    return parse_twitter_creator_work(it)
+
+
 async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid: str,
                               max_scrolls: int = 14) -> Tuple[List[dict], str]:
     """抓取登录账号自己发布的作品(复用各平台已有的主页拦截抓取)。
@@ -366,8 +371,8 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                 uid = self3x
         except Exception as e:
             print(f"[hub-self] kuaishou self-resolve failed: {e!r}")
-    # 视频号 / B站 / 海外小红书创作中心 / Instagram: 可先按本账号 Cookie 读取自身资料与作品
-    if not uid and not open_url and platform not in ("shipinhao", "bilibili", "rednote", "instagram"):
+    # 视频号 / B站 / 海外小红书创作中心 / Instagram / Twitter: 可先按本账号 Cookie 读取自身资料与作品
+    if not uid and not open_url and platform not in ("shipinhao", "bilibili", "rednote", "instagram", "twitter"):
         return [], "missing_uid:账号缺自身 uid,请先点账号「刷新资料」再同步作品"
 
     known: Set[str] = set()
@@ -479,6 +484,45 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                 mgr, identity, target_ref, known, max_scrolls=max_scrolls
             )
             norm = _norm_ig_work
+        elif platform == "twitter":
+            from ..platforms.twitter import TwitterClient, parse_twitter_creator_work
+            from .twitter_fetcher import fetch_twitter_self_profile, fetch_twitter_user_tweets
+            cookie_s = await _twitter_cookie_str(mgr, identity)
+            target_ref = uid
+            if cookie_s:
+                client = TwitterClient(
+                    cookie_s,
+                    getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
+                    proxy=getattr(identity, "proxy", ""),
+                )
+                async with client.session_scope():
+                    if not target_ref:
+                        prof, perr = await client.fetch_self_profile()
+                        if perr.startswith(("logged_out:", "verification_required:")):
+                            return [], perr
+                        target_ref = str(prof.get("unique_id") or prof.get("sec_uid") or prof.get("uid") or client.self_uid)
+                    if target_ref:
+                        raw_tws, _uinfo, cerr = await client.fetch_user_tweets(
+                            target_ref,
+                            max_pages=max(1, min(8, max_scrolls // 2 or 3)),
+                        )
+                        if raw_tws:
+                            works = [w for w in (parse_twitter_creator_work(x) for x in raw_tws) if w]
+                            if works:
+                                return works, ""
+                        if cerr.startswith(("logged_out:", "verification_required:")):
+                            return [], cerr
+            if not target_ref:
+                prof, perr = await fetch_twitter_self_profile(mgr, identity)
+                if perr.startswith(("logged_out:", "verification_required:")):
+                    return [], perr
+                target_ref = str(prof.get("unique_id") or prof.get("sec_uid") or prof.get("uid") or "")
+            if not target_ref:
+                return [], "missing_uid:账号缺自身 @username 或 uid,请先点账号「刷新资料」再同步作品"
+            items, _author, err = await fetch_twitter_user_tweets(
+                mgr, identity, target_ref, known, max_scrolls=max_scrolls
+            )
+            norm = _norm_twitter_work
         elif platform == "tiktok":
             from .tiktok_fetcher import fetch_tiktok_profile_works
             items, err = await fetch_tiktok_profile_works(
@@ -920,6 +964,11 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
     返回 (归一后的用户 dict 列表, error)。"""
     if platform == "rednote":
         return [], "unavailable:海外小红书网页端未开放关注/粉丝列表"
+    if platform == "twitter":
+        from .twitter_fetcher import fetch_twitter_follows
+        return await fetch_twitter_follows(
+            mgr, identity, uid, direction, max_pages=max(4, min(20, max_scrolls))
+        )
     if platform == "instagram":
         from ..platforms.instagram import InstagramClient
         cookie_s = await _ig_cookie_str(mgr, identity)
@@ -1617,6 +1666,21 @@ async def _ig_cookie_str(mgr: BrowserManager, identity) -> str:
     return cookie_str_from_state(getattr(identity, "storage_state", "") or "")
 
 
+async def _twitter_cookie_str(mgr: BrowserManager, identity) -> str:
+    """从账号专属 context 或 storage_state 提取 x.com 完整 Cookie 串。"""
+    from ..platforms.twitter import cookie_str_from_state
+    try:
+        ctx = await mgr.context_for(identity)
+        cks = await ctx.cookies(["https://x.com", "https://twitter.com"])
+        if cks:
+            merged = {c["name"]: c["value"] for c in cks if c.get("name")}
+            if merged.get("auth_token"):
+                return "; ".join(f"{k}={v}" for k, v in merged.items())
+    except Exception:
+        pass
+    return cookie_str_from_state(getattr(identity, "storage_state", "") or "")
+
+
 async def _fetch_im_user_info(page, sec_ids: list) -> Dict[str, dict]:
     """在 douyin 页面内批量 POST /aweme/v1/web/im/user/info/(body sec_user_ids=[...]),
     抖音自己的 fetch 拦截器会补 a_bogus 签名。返回 sec_uid -> {nickname, avatar, sec_uid}。"""
@@ -1664,6 +1728,23 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
     """打开私信页,拦截会话列表 XHR,启发式抽会话。无公开接口,首版用于标定。"""
     if platform == "rednote":
         return [], "unavailable:海外小红书暂未开放私信协议通道"
+    if platform == "twitter":
+        from ..platforms.twitter import TwitterClient
+        from .twitter_fetcher import fetch_twitter_dm_conversations
+        cookie_s = await _twitter_cookie_str(mgr, identity)
+        self_uid = ""
+        if cookie_s:
+            client = TwitterClient(
+                cookie_s,
+                getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
+                proxy=getattr(identity, "proxy", ""),
+            )
+            self_uid = client.self_uid
+            async with client.session_scope():
+                rows, err = await client.fetch_dm_inbox()
+                if rows or err.startswith(("logged_out:", "verification_required:")):
+                    return rows, err
+        return await fetch_twitter_dm_conversations(mgr, identity, self_uid=self_uid)
     if platform == "instagram":
         from ..platforms.instagram import InstagramClient
         cookie_s = await _ig_cookie_str(mgr, identity)
@@ -2151,6 +2232,28 @@ async def fetch_dm_history(mgr: BrowserManager, identity, platform: str,
     返回 (parse_messages 结果, error)。debug=True 时额外打印原始响应 b64(标定用)。"""
     if platform == "rednote":
         return {}, "unavailable:海外小红书暂未开放私信协议通道"
+    if platform == "twitter":
+        from ..platforms.twitter import TwitterClient
+        from .twitter_fetcher import fetch_twitter_dm_history
+        cookie_s = await _twitter_cookie_str(mgr, identity)
+        eff_self = self_uid or ""
+        if cookie_s:
+            client = TwitterClient(
+                cookie_s,
+                getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
+                proxy=getattr(identity, "proxy", ""),
+            )
+            eff_self = eff_self or client.self_uid
+            async with client.session_scope():
+                msgs, err = await client.fetch_dm_messages(conv_id)
+                if msgs or err.startswith(("logged_out:", "verification_required:")):
+                    return {"messages": msgs, "next_cursor": "", "has_more": False}, err
+        msgs, err = await fetch_twitter_dm_history(
+            mgr, identity, conv_id, self_uid=eff_self, max_msgs=count
+        )
+        if err and not msgs:
+            return {}, err
+        return {"messages": msgs, "next_cursor": "", "has_more": False}, ""
     if platform == "instagram":
         from ..platforms.instagram import InstagramClient
         cookie_s = await _ig_cookie_str(mgr, identity)
@@ -2243,6 +2346,7 @@ _PROFILE_URL = {
     "kuaishou": "https://www.kuaishou.com/profile/{uid}",
     "bilibili": "https://space.bilibili.com/{uid}",
     "instagram": "https://www.instagram.com/{sec}/",
+    "twitter": "https://x.com/{sec}",
 }
 
 
@@ -2368,6 +2472,11 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
     """
     if platform == "rednote":
         return False, "unavailable:海外小红书暂未开放自动关注/取关"
+    if platform == "twitter":
+        from .twitter_actions import do_twitter_follow
+        return await do_twitter_follow(
+            mgr, identity, target_sec_uid or target_uid, unfollow=unfollow
+        )
     if platform == "instagram":
         from ..platforms.instagram import InstagramClient
         cookie_s = await _ig_cookie_str(mgr, identity)
@@ -2480,6 +2589,7 @@ _DM_ENTRY_URL = {
     "kuaishou": "https://www.kuaishou.com/profile/{uid}",
     "bilibili": "https://message.bilibili.com/#/whisper/mid{uid}",
     "instagram": "https://www.instagram.com/direct/inbox/",
+    "twitter": "https://x.com/messages",
 }
 
 
@@ -2535,6 +2645,11 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
     sec = target_sec_uid or target_uid
     if platform == "rednote":
         return False, "unavailable:海外小红书暂未开放自动私信发送"
+    if platform == "twitter":
+        from .twitter_actions import send_twitter_dm
+        return await send_twitter_dm(
+            mgr, identity, target_sec_uid or target_uid, text, on_submit=on_submit
+        )
     url = _DM_ENTRY_URL.get(platform, _DM_ENTRY_URL["douyin"]).format(
         sec=sec, uid=target_uid or sec)
     if platform == "instagram":

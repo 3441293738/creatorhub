@@ -11,6 +11,7 @@ const platforms = {
   tiktok: { name: "TikTok", task: "完成首次关键词视频采集", target: "collections", hint: "登录 TikTok 账号后，输入 1 个关键词做小规模视频与评论采集，再按需开启媒体下载。" },
   bilibili: { name: "哔哩哔哩", task: "下载第一条视频或监控弹幕", target: "share-download", hint: "粘贴整段哔哩哔哩分享文案或 BV 号到链接下载，也可在弹幕监控中拉取视频时间轴弹幕。" },
   instagram: { name: "Instagram", task: "下载第一条帖子或采集话题", target: "share-download", hint: "登录 Instagram 账号后，粘贴 /p/ 或 /reel/ 链接到链接下载保存原图、轮播或视频，也可在关键词采集中搜索 #话题。" },
+  twitter: { name: "Twitter", task: "下载推文原片或实时搜索采集", target: "share-download", hint: "绑定海外代理并登录 X (Twitter) 账号后，粘贴 x.com/.../status/... 或 t.co 短链下载最高清视频与原图，或进行关键词与创作者批量采集。" },
 };
 function savedState() {
   try {

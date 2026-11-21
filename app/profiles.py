@@ -21,7 +21,7 @@ from .models import DouyinAccount, ProxyPool
 _proxy_reservation_lock = threading.RLock()
 _proxy_reservations: dict[str, str] = {}
 DOMESTIC_PLATFORMS = {"douyin", "xhs", "kuaishou", "shipinhao", "bilibili"}
-OVERSEAS_PLATFORMS = {"tiktok", "rednote"}
+OVERSEAS_PLATFORMS = {"tiktok", "rednote", "instagram", "twitter"}
 
 
 def is_mainland_geo(country: str, region: str = "", city: str = "") -> bool:

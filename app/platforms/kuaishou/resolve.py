@@ -1,4 +1,4 @@
-"""从分享链接/主页 URL 解析快手 user_id / photo_id。对标 douyin/resolve.py。
+"""从分享链接/主页 URL 解析快手 user_id / photo_id,与 douyin/resolve.py 保持统一职责边界。
 
 快手 PC 链接形态:
   - 主页:  https://www.kuaishou.com/profile/3x...           (user_id)

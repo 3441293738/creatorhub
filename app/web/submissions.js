@@ -4,7 +4,7 @@
   function supports(path, options) {
     return (options.method || "GET").toUpperCase() === "POST" && typeof options.body === "string" &&
       (/^\/api\/(publish|account-actions|comment-rules|collections|dm\/auto-reply-rules)$/.test(path) ||
-       /^\/api\/contents\/\d+\/repost-(xhs|rednote|douyin|shipinhao|kuaishou|tiktok|bilibili|instagram)$/.test(path));
+       /^\/api\/contents\/\d+\/repost-(xhs|rednote|douyin|shipinhao|kuaishou|tiktok|bilibili|instagram|twitter)$/.test(path));
   }
   async function fingerprint(value) {
     const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));

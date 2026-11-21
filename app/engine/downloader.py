@@ -55,6 +55,7 @@ class Downloader:
             "https://channels.weixin.qq.com/" if _pf == "shipinhao" else
             "https://www.bilibili.com/" if _pf == "bilibili" else
             "https://www.instagram.com/" if _pf == "instagram" else
+            "https://x.com/" if _pf == "twitter" else
             "https://www.douyin.com/"
         )
         headers = {
