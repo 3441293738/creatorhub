@@ -299,6 +299,8 @@ def update_health_check() -> int:
             assert render_brand_icon(32).size == (32, 32)
             assert (WEB_DIR / "workbench.js").is_file()
             assert (channels_js / "finder_proxy_bridge.js").is_file()
+            assert (channels_js / "finder_native_protocol.js").is_file()
+            assert (channels_js / "finder_protocol_browser_bootstrap.js").is_file()
             for name in ("desktop/web/app.js", "desktop/web/index.html", "config.example.yaml"):
                 assert (resources() / name).is_file(), name
             assert all(Path(path).is_file() for path in compute_driver_executable())

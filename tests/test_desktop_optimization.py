@@ -107,7 +107,9 @@ def test_execjs_uses_absolute_node_and_utf8_even_with_ansi_locale(monkeypatch, f
     monkeypatch.setattr(creator_sign, "_JS_CACHE", {})
     monkeypatch.setenv("PATH", "")
     # Match English Windows even when the test interpreter itself uses UTF-8.
-    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "cp1252")
+    import locale
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "cp1252", raising=False)
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda *_: "cp1252")
     context = creator_sign._ctx("xhs_rap.js")
     assert context.eval("1 + 1") == 2
     assert context.eval("'中文输入输出😀'") == "中文输入输出😀"
