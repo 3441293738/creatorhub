@@ -950,7 +950,7 @@ kbd, .key-button {
   border: 0;
   outline-offset: 4px;
   color: var(--fg);
-  width: 150px;
+  width: clamp(150px, 22vw, 220px);
   min-height: 36px;
   font-size: 12.5px;
 }
@@ -970,6 +970,13 @@ kbd, .key-button {
 .activity-row:hover {
   background: var(--surface-2);
   border-color: var(--line-soft);
+}
+.activity-row .object-copy > span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 .event-icon {
   height: 30px;

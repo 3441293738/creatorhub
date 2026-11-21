@@ -2587,7 +2587,7 @@ function showWatchRecords(kind, id) {
   const view = watchRecordConfig(kind);
   if (kind === "comment") { COMMENT_SRC = value; COMMENT_GROUP = COMMENT_TAG = ""; selComment.clear(); }
   else DANMAKU_SRC = value;
-  for (const suffix of ["query", "group", "tag", "type", "min-likes", "time-start", "time-end", "captured-from", "captured-to"]) {
+  for (const suffix of ["query", "ip-label", "group", "tag", "type", "min-likes", "time-start", "time-end", "captured-from", "captured-to"]) {
     const node = $(kind + "-" + suffix); if (node) { node.value = ""; node._csSync?.(); }
   }
   if ($(kind + "-sort")) { $(kind + "-sort").value = "captured_desc"; $(kind + "-sort")._csSync?.(); }
@@ -2873,7 +2873,7 @@ function renderTikTokUsers() {
       + '">sec_uid ' + esc(secUid ? secUid.slice(0, 22) + (secUid.length > 22 ? "…" : "") : "—") + '</div></td>'
       + '<td>' + fmtNum(user.follower_count || 0) + ' 粉丝<div class="mut">'
       + fmtNum(user.following_count || 0) + ' 关注 · ' + fmtNum(user.video_count || 0) + ' 视频</div></td>'
-      + '<td title="' + esc(user.signature || "") + '">' + esc((user.signature || "—").slice(0, 120)) + '</td>'
+      + '<td class="wrap" style="max-width:260px" title="' + esc(user.signature || "") + '">' + esc((user.signature || "—").slice(0, 120)) + '</td>'
       + '<td class="acttd"><button class="ghost sm"' + disabled + ' onclick="runTikTokUserAction(' + index + ',\'follow\')">关注</button>'
       + '<button class="ghost sm"' + disabled + ' onclick="runTikTokUserAction(' + index + ',\'unfollow\')">取关</button>'
       + '<button class="ghost sm"' + disabled + ' onclick="runTikTokUserAction(' + index + ',\'send_dm\')">私信</button></td></tr>';
@@ -3112,11 +3112,9 @@ function renderRiskAccounts() {
       : "尚未获取平台账号 ID";
     return `<tr>
       <td><div class="risk-account"><b>${esc(account.nickname || "未命名账号")}</b><small title="${esc(actualAccountId)}">${esc(riskPlatformLabel(account.platform))} · ${esc(actualAccountId)}</small></div></td>
-      <td><span class="risk-status ${esc(account.status_tone)}">${esc(account.status_label)}</span></td>
-      <td class="num"><b>L${Number(account.risk_level) || 0}</b></td>
+      <td><div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap"><span class="risk-status ${esc(account.status_tone)}">${esc(account.status_label)}</span><span class="pill bare num">L${Number(account.risk_level) || 0}</span></div></td>
       <td><div class="risk-reason"><span title="${esc(reason)}">${esc(reason)}</span><small>${account.last_risk_at ? "触发于 " + esc(riskTime(account.last_risk_at)) : "暂无风险记录"}</small></div></td>
-      <td><div class="risk-account">${timing}</div></td>
-      <td><div class="risk-progress"><div class="risk-progress-track"><i style="width:${progress}%"></i></div><span>${account.risk_level > 0 ? `${account.recovery_successes}/${account.recovery_target}` : "完成"}</span></div></td>
+      <td><div class="risk-account">${timing}<div class="risk-progress" style="margin-top:4px"><div class="risk-progress-track"><i style="width:${progress}%"></i></div><span>${account.risk_level > 0 ? `${account.recovery_successes}/${account.recovery_target}` : "完成"}</span></div></div></td>
       <td><b class="num">${account.blocked_tasks || 0} / ${queue.total || 0}</b><div class="mut" style="font-size:11px" title="${esc(account.latest_block_reason || "")}">受阻 / 待执行${account.task_next_allowed_at ? ` · ${esc(riskRemaining(account.task_next_allowed_at))}` : ""}</div></td>
       <td><div class="risk-account"><span>${account.proxy ? `<code>${esc(account.proxy)}</code>` : "本机直连"}</span><small>${esc(account.proxy_status || "unknown")} · ${esc(account.network_key || "—")}</small></div></td>
       <td class="acttd">
@@ -3126,7 +3124,7 @@ function renderRiskAccounts() {
         ${account.status !== "normal" ? `<button class="ghost sm danger" onclick="clearRiskAccount(${account.account_id})">解除</button>` : ""}
       </td>
     </tr>`;
-  }).join("") || empty(9, "没有匹配的账号状态", "i-shield", "调整筛选条件或先添加平台账号");
+  }).join("") || empty(7, "没有匹配的账号状态", "i-shield", "调整筛选条件或先添加平台账号");
 }
 
 function fillRiskConfig(config) {
@@ -3493,9 +3491,12 @@ async function loadHubStats() {
         + `<div class="spark-wrap" role="img" aria-label="${summary}">${_spark(vals)}</div></div>`;
     }
     if (wb) wb.innerHTML = (d.works || []).length
-      ? d.works.map(w => `<tr><td>${esc((w.desc || w.item_id || "").slice(0, 30))}</td>`
-        + `<td class="num">${fmtNum(w.play_count || 0)}</td><td class="num">${fmtNum(w.like_count || 0)}</td><td class="num">${fmtNum(w.comment_count || 0)}</td>`
-        + `<td><span class="pill bare">${esc(w.status || "—")}</span></td></tr>`).join("")
+      ? d.works.map(w => {
+        const fullTitle = w.desc || w.item_id || "无描述";
+        return `<tr><td class="wrap" style="max-width:340px"><span class="content-desc-text clickable" title="${esc(fullTitle)}" onclick="openWork(${jsArg(w.platform || PLATFORM)},${jsArg(w.item_id)})">${esc(fullTitle)}</span></td>`
+          + `<td class="num">${fmtNum(w.play_count || 0)}</td><td class="num">${fmtNum(w.like_count || 0)}</td><td class="num">${fmtNum(w.comment_count || 0)}</td>`
+          + `<td><span class="pill bare">${esc(w.status || "—")}</span></td></tr>`;
+      }).join("")
       : `<tr><td colspan="5" class="mut">暂无作品数据,先到「我的作品」点「同步作品」</td></tr>`;
   } catch (e) { if (!isCurrent()) return;
     kpi.innerHTML = `<div class="mut">加载失败:${esc(e.message)}</div>`;
@@ -3801,7 +3802,7 @@ function followRow(f, direction) {
     : `<button class="ghost sm" onclick="actFollow('follow',${f.id})">回关</button>`;
   return `<tr>
     <td><div class="fu-cell">
-      ${f.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(f.avatar))}" referrerpolicy="no-referrer" alt="">` : `<span class="avatar"></span>`}
+      ${f.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(f.avatar))}" referrerpolicy="no-referrer" alt="">` : `<span class="wb-avatar-fallback" style="width:36px;height:36px;flex:0 0 36px;font-size:15px" aria-hidden="true">${esc((f.nickname || "用").slice(0, 1))}</span>`}
       <div><div><b>${esc(f.nickname)}</b></div>${f.signature ? `<div class="fu-sign">${esc(f.signature)}</div>` : ""}</div>
     </div></td>
     <td>${rel}</td>
@@ -6185,7 +6186,12 @@ function shareHistoryTitle(row) {
 }
 function shareHistoryType(row) {
   const value = String((row && (row.media_type || row.type)) || shareHistoryMetadata(row).media_type || "").toLowerCase();
-  return value === "images" || value === "image" || value === "图文" ? "images" : value === "video" || value === "视频" ? "video" : value;
+  if (value === "images" || value === "image" || value === "图文") return "images";
+  if (value === "video" || value === "视频") return "video";
+  const path = shareHistoryFirstPath(row).toLowerCase();
+  if (/\.(?:mp4|mov|webm|mkv|m4v|flv|avi)(?:$|[?#])/.test(path) || shareHistoryNumber(row, "duration") > 0) return "video";
+  if (/\.(?:jpe?g|png|webp|gif|avif|heic)(?:$|[?#])/.test(path)) return "images";
+  return value;
 }
 function shareHistoryCreateTime(row) {
   const direct = Number(row && row.create_time || 0);
@@ -6227,20 +6233,19 @@ function shareHistoryFirstPath(row) {
 }
 function shareHistoryPathCell(row) {
   const path = shareHistoryFirstPath(row);
-  if (!path) return `<span class="local-path-empty">—</span>`;
+  if (!path) return "";
   const p = contentPathMeta({ local_path: path, aweme_id: row.item_id });
   const files = shareHistoryFiles(row);
   const totalSize = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
   const fileHint = files.length > 1
     ? `${files.length} 个文件${totalSize ? ` · ${fmtShareSize(totalSize)}` : ""}`
     : (totalSize ? fmtShareSize(totalSize) : "");
-  return `<div class="local-path">
+  const dirLabel = [p ? (p.dir || "当前目录") : "当前目录", fileHint].filter(Boolean).join(" · ");
+  return `<div class="local-path" title="${esc(path)}">
     <div class="local-path-info">
-      <div class="local-path-file"><span class="local-path-name">${esc(p ? p.name : path)}</span>${p && p.ext ? `<span class="local-path-ext">${esc(p.ext)}</span>` : ""}</div>
-      <div class="local-path-dir">${esc(p ? (p.dir || "当前目录") : "当前目录")}</div>
-      ${fileHint ? `<span class="share-history-file-count">${esc(fileHint)}</span>` : ""}
+      <div class="local-path-file"><span class="local-path-name" title="${esc(path)}">${esc(p ? p.name : path)}</span>${p && p.ext ? `<span class="local-path-ext">${esc(p.ext)}</span>` : ""}</div>
+      <div class="local-path-dir" title="${esc(dirLabel)}">${esc(dirLabel)}</div>
     </div>
-    <button type="button" class="ghost local-path-action reveal" onclick="revealShareHistoryPath(${Number(row.id)},this)" data-tip="在文件夹中显示" aria-label="在文件夹中显示">${ic("i-folder")}</button>
   </div>`;
 }
 function populateShareHistoryFacets() {
@@ -6248,8 +6253,9 @@ function populateShareHistoryFacets() {
   if (!select) return;
   const old = select.value;
   const platforms = [...new Set(SHARE_HISTORY.map(shareHistoryPlatform).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
+  const sharePf = { wechat: "视频号", channels: "视频号", youtube: "YouTube", weibo: "微博", twitter: "X", x: "X", generic: "通用站点" };
   select.innerHTML = `<option value="">全部平台</option>` + platforms.map(platform =>
-    `<option value="${esc(platform)}">${esc(PF_NAME[platform] || (platform === "generic" ? "通用站点" : platform))}</option>`).join("");
+    `<option value="${esc(platform)}">${esc(PF_NAME[platform] || sharePf[platform] || platform)}</option>`).join("");
   select.value = platforms.includes(old) ? old : "";
   if (select._csSync) select._csSync();
 }
@@ -6278,7 +6284,8 @@ function shareHistoryRow(row) {
   const typeName = type === "images" ? "图文" : type === "video" ? "视频" : (row.media_type || "媒体");
   const status = shareHistoryStatus(row);
   const platform = shareHistoryPlatform(row);
-  const platformName = PF_NAME[platform] || (platform === "generic" ? "通用站点" : platform || "通用站点");
+  const sharePf = { wechat: "视频号", channels: "视频号", youtube: "YouTube", weibo: "微博", twitter: "X", x: "X", generic: "通用站点" };
+  const platformName = PF_NAME[platform] || sharePf[platform] || platform || "通用站点";
   const cover = row.cover_url || metadata.thumbnail || "";
   const title = shareHistoryTitle(row);
   const author = row.author || metadata.uploader || metadata.channel || "";
@@ -6298,15 +6305,18 @@ function shareHistoryRow(row) {
     ${downloadTime ? `<span class="share-history-download-time" title="下载于 ${esc(downloadTime)}">下载于 ${esc(downloadTime)}</span>` : ""}
   </div>`;
   const quality = shareHistoryQuality(row);
+  const hasPath = Boolean(shareHistoryFirstPath(row));
+  const durBadge = duration ? `<span class="thumb-dur">${esc(fmtDur(duration))}</span>` : "";
+  const specSub = [quality, mediaCount > 1 ? `${mediaCount} 媒体` : (duration ? fmtDur(duration) : "")].filter(Boolean).join(" · ");
   return `<tr>
     <td class="content-check-cell"><input type="checkbox" data-id="${Number(row.id)}" onchange="shareHistoryToggleOne(${Number(row.id)},this.checked)" ${selShareHistory.has(row.id) ? "checked" : ""} aria-label="选择下载记录"></td>
-    <td class="content-cover-cell">${cover ? `<img class="thumb" src="${esc(cover)}" alt="${esc(title.slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy" onclick="openShareHistoryPreview(${Number(row.id)})">` : `<span class="content-cover-empty" onclick="openShareHistoryPreview(${Number(row.id)})">${ic(type === "images" ? "i-image" : "i-film")}</span>`}</td>
-    <td class="content-desc-cell"><div class="content-desc-text" title="${esc(title)}">${esc(title)}</div>${descriptionMeta}</td>
-    <td><span class="content-kind">${esc(typeName)}</span>${quality ? `<span class="content-quality">${esc(quality)}</span>` : ""}${mediaCount ? `<span class="content-quality">${mediaCount} 个媒体</span>` : ""}</td>
+    <td class="content-cover-cell"><span class="content-cover-box" onclick="openShareHistoryPreview(${Number(row.id)})" title="点击站内预览">${cover ? `<img class="thumb" src="${esc(cover)}" alt="${esc(title.slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy">` : `<span class="content-cover-empty">${ic(type === "images" ? "i-image" : "i-film")}</span>`}${durBadge}</span></td>
+    <td class="content-desc-cell"><div class="content-desc-text clickable" title="${esc(title)}" onclick="openShareHistoryPreview(${Number(row.id)})">${esc(title)}</div>${descriptionMeta}</td>
+    <td><span class="content-kind">${esc(typeName)}</span>${specSub ? `<span class="content-quality">${esc(specSub)}</span>` : ""}</td>
     <td class="mut num">${contentTimeCell(createTime)}</td>
-    <td class="content-metrics num"><span class="metric like">${ic("i-heart")}${fmtNum(likeCount)}</span>${commentCount ? `<span class="metric">${ic("i-msg")}${fmtNum(commentCount)}</span>` : ""}${duration ? `<span class="metric">${ic("i-clock")}${fmtDur(duration)}</span>` : ""}${!files.length && mediaCount ? `<span class="metric">${ic("i-film")}${mediaCount}</span>` : ""}</td>
-    <td class="content-action-cell"><div class="content-status-row"><span class="pill ${status}">${contentStatusLabel(status)}</span>${error}</div><div class="content-action-buttons"><button class="ghost sm content-action-delete danger" onclick="deleteShareHistory(${Number(row.id)})" data-tip="删除记录" aria-label="删除下载记录">${ic("i-trash")}</button></div>${row.error ? `<div class="mut" style="max-width:180px;white-space:normal;margin-top:5px">${esc(row.error)}</div>` : ""}</td>
-    <td class="local-path-cell">${shareHistoryPathCell(row)}</td>
+    <td class="content-metrics num"><span class="metric like">${ic("i-heart")}${fmtNum(likeCount)}</span>${commentCount ? `<span class="metric">${ic("i-msg")}${fmtNum(commentCount)}</span>` : ""}</td>
+    <td class="content-status-cell"><div class="content-status-row"><span class="pill ${status}">${contentStatusLabel(status)}</span>${error}</div>${shareHistoryPathCell(row)}${row.error ? `<div class="content-error-preview" data-tip="${esc(row.error)}" title="${esc(row.error)}">${esc(row.error)}</div>` : ""}</td>
+    <td class="content-action-cell acttd"><div class="content-action-buttons"><button type="button" class="ghost sm content-icon-btn" onclick="openShareHistoryPreview(${Number(row.id)})" data-tip="站内预览" title="站内预览" aria-label="预览媒体">${ic("i-eye")}</button>${hasPath ? `<button type="button" class="ghost sm content-icon-btn local-path-action reveal" onclick="revealShareHistoryPath(${Number(row.id)},this)" data-tip="在文件夹中显示" title="在文件夹中显示" aria-label="在文件夹中显示">${ic("i-folder")}</button>` : ""}<button type="button" class="ghost sm content-action-delete danger" onclick="deleteShareHistory(${Number(row.id)})" data-tip="删除记录" title="删除记录" aria-label="删除下载记录">${ic("i-trash")}</button></div></td>
   </tr>`;
 }
 function renderShareHistoryPager(total) {
@@ -6327,8 +6337,10 @@ function renderShareHistoryPager(total) {
 }
 function updateShareHistorySelBar() {
   const count = selShareHistory.size;
-  $("sd-history-selcount").textContent = "已选 " + count;
+  $("sd-history-selcount").textContent = "已选 " + count + " 项";
   $("sd-history-selbar").style.display = count ? "inline-flex" : "none";
+  const barWrap = $("sd-history-selbar")?.closest?.(".wb-bulk-bar");
+  if (barWrap) barWrap.hidden = !count;
   const ids = [...document.querySelectorAll('#sd-history-body input[type="checkbox"]')].map(cb => +cb.dataset.id).filter(Boolean);
   const allSelected = ids.length > 0 && ids.every(id => selShareHistory.has(id));
   const selectedOnPage = ids.filter(id => selShareHistory.has(id)).length;
@@ -6606,13 +6618,14 @@ async function refreshWebhooks() {
     WEBHOOKS = subscriptions || [];
     $("wh-table").innerHTML = WEBHOOKS.map(row => `<tr>
       <td><b>${esc(row.name || "Webhook")}</b><div class="mut">${row.secret_configured ? "签名密钥已配置" : "未配置签名密钥"}</div></td>
-      <td><code title="${esc(row.url)}">${esc(row.url)}</code></td>
+      <td class="wrap" style="max-width:280px;word-break:break-all"><code title="${esc(row.url)}">${esc(row.url)}</code></td>
       <td>${(row.event_types || []).map(value => `<span class="meta-chip">${esc(value)}</span>`).join("")}</td>
       <td><span class="pill ${row.enabled ? "active" : "invalid"}">${row.enabled ? "启用" : "停用"}</span></td>
       <td class="acttd"><button class="ghost sm" onclick="editWebhook(${row.id})">编辑</button><button class="ghost sm" onclick="toggleWebhook(${row.id},${!row.enabled})">${row.enabled ? "停用" : "启用"}</button><button class="ghost sm danger" onclick="deleteWebhook(${row.id})">${ic("i-trash")}删除</button></td></tr>`).join("") || empty(5, "还没有 Webhook 订阅", "i-bolt", "添加订阅后，账号操作和业务变化会进入事件投递队列");
+    const whSt = { delivered: "已投递", failed: "投递失败", pending: "待投递", sending: "投递中" };
     $("wh-event-table").innerHTML = (events || []).map(row => `<tr>
       <td><b>${esc(row.event_type)}</b></td><td>${esc([row.aggregate_type, row.aggregate_id].filter(Boolean).join(" / ") || "—")}</td>
-      <td><span class="pill ${row.status === "delivered" ? "active" : row.status === "failed" ? "invalid" : "pending"}">${esc(row.status)}</span>${row.last_error ? `<div class="mut" title="${esc(row.last_error)}">${esc(row.last_error.slice(0, 100))}</div>` : ""}</td>
+      <td><span class="pill ${row.status === "delivered" ? "active" : row.status === "failed" ? "invalid" : "pending"}">${esc(whSt[row.status] || row.status)}</span>${row.last_error ? `<div class="mut" title="${esc(row.last_error)}">${esc(row.last_error.slice(0, 100))}</div>` : ""}</td>
       <td>${Number(row.delivered_count || 0)} 成功 / ${Number(row.attempts || 0)} 次</td><td>${collectionDate(row.created_at)}</td>
       <td class="acttd"><button class="ghost sm" onclick="dispatchWebhookEvent(${row.id})">${ic("i-play")}投递</button></td></tr>`).join("") || empty(6, "还没有事件", "i-inbox", "业务事件产生后会显示在这里");
   } catch (e) { toast("Webhook 事件中心加载失败：" + e.message, "err"); }
@@ -7680,9 +7693,11 @@ function monitorStrategySummary(t) {
   if ((t.include_keywords || []).length) filters.push(`含 ${t.include_keywords.join("/")}`);
   if ((t.exclude_keywords || []).length) filters.push(`排除 ${t.exclude_keywords.join("/")}`);
   const filterLabel = filters.length ? filters.join(" · ") : "无入库筛选";
-  return `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px" title="${esc(filterLabel)}"><span class="pill q bare">深度 ${depth}</span><span class="pill q bare">上限 ${limit || "不限"}</span>${filters.length ? `<span class="pill q bare">${esc(filterLabel)}</span>` : ""}</div>`;
+  return `<span class="pill q bare" title="${esc(filterLabel)}">深度 ${depth}</span><span class="pill q bare" title="${esc(filterLabel)}">上限 ${limit || "不限"}</span>${filters.length ? `<span class="pill q bare" title="${esc(filterLabel)}">${esc(filterLabel)}</span>` : ""}`;
 }
 function monRow(t) {
+  const plainLabel = t.target_kind === "keyword"
+    ? `#${t.keyword || ""}` : (t.nickname || (t.sec_uid || "").slice(0, 12));
   const label = t.target_kind === "keyword"
     ? `<span class="ic-text">${ic("i-hash")}${esc(t.keyword)}</span>` : esc(t.nickname || (t.sec_uid || "").slice(0, 12));
   const acc = ACCOUNTS.find(a => a.id === t.account_id);
@@ -7695,15 +7710,13 @@ function monRow(t) {
   const downloadLabel = t.download_enabled === false ? "仅记录"
     : ({ all: "全部下载", video: "仅视频", images: "仅图集" }[t.media_filter] || "全部下载");
   return `<tr>
-    <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(t.avatar))}" alt="" referrerpolicy="no-referrer">` : ""}<div><span title="${label}">${label}</span>${t.alias ? `<div class="alias-line" title="${esc(t.alias)}">${esc(t.alias)}</div>` : ""}${accTag}</div></div></td>
+    <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(t.avatar))}" alt="" referrerpolicy="no-referrer">` : `<span class="wb-avatar-fallback" style="width:30px;height:30px;flex:0 0 30px;font-size:13px;border-radius:50%" aria-hidden="true">${esc((plainLabel || "监").replace(/^#/, "").slice(0, 1))}</span>`}<div><span title="${esc(plainLabel)}">${label}</span>${t.alias ? `<div class="alias-line" title="${esc(t.alias)}">${esc(t.alias)}</div>` : ""}${accTag}</div></div></td>
     <td>${metaChips(t)}</td>
     <td class="num"><button type="button" class="ghost sm monitor-record-link" data-monitor-records="${t.id}" onclick="showMonitorRecords(${t.id})">查看记录 <span>${t.content_count || 0}</span></button></td>
     <td class="num">${monitorIntervalText(t.interval_seconds)}</td>
-    <td class="wrap" style="max-width:230px">
-      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px"><span class="pill q bare">${downloadLabel}</span></div>
-      ${monitorStrategySummary(t)}
-      ${(t.platform === "xhs" || t.platform === "rednote") ? "" : `<span class="pill q bare">${QMAP[t.video_quality] || "默认画质"}</span> `}
-      <span class="mut" title="${esc(t.download_dir || "默认目录")}" style="display:inline-block;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${esc(t.download_dir || "默认")}</span></td>
+    <td class="wrap" style="max-width:240px">
+      <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center"><span class="pill q bare">${downloadLabel}</span>${(t.platform === "xhs" || t.platform === "rednote") ? "" : `<span class="pill q bare">${QMAP[t.video_quality] || "默认画质"}</span>`}${monitorStrategySummary(t)}</div>
+      ${t.download_dir ? `<div class="mut" title="${esc(t.download_dir)}" style="font-size:11px;margin-top:3px;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">目录：${esc(t.download_dir)}</div>` : ""}</td>
     <td class="mut">${t.last_scan_at ? new Date(t.last_scan_at + "Z").toLocaleString() : "—"}${t.last_error ? ` <span class="warn-ic" title="${esc(t.last_error)}">${ic("i-info")}</span>` : ""}${autoRunHint(t.next_auto_run_at)}</td>
     <td><span class="pill ${t.enabled ? "active" : "paused"}">${t.enabled ? "监控中" : "已暂停"}</span></td>
     <td class="acttd">
@@ -7716,9 +7729,13 @@ function monRow(t) {
 function renderMonitorRows() {
   const groupName = $("mon-group") ? $("mon-group").value : "";
   const tag = $("mon-tag") ? $("mon-tag").value : "";
+  const status = $("mon-status") ? $("mon-status").value : "";
   const query = (($("mon-search") && $("mon-search").value) || "").trim().toLocaleLowerCase();
   const rows = MONITORS.filter(t => {
     if (!matchesMeta(t, groupName, tag)) return false;
+    if (status === "enabled" && !t.enabled) return false;
+    if (status === "paused" && t.enabled) return false;
+    if (status === "error" && !t.last_error) return false;
     if (!query) return true;
     return [monitorBaseName(t), t.alias, t.group_name, ...itemTags(t)]
       .join(" ").toLocaleLowerCase().includes(query);
@@ -7794,13 +7811,13 @@ function contentPathMeta(r) {
 }
 function contentPathCell(r) {
   const p = contentPathMeta(r);
-  if (!p) return `<span class="local-path-empty">—</span>`;
-  return `<div class="local-path">
+  if (!p) return "";
+  const rawPath = String(r.local_path || "").trim();
+  return `<div class="local-path" title="${esc(rawPath)}">
     <div class="local-path-info">
-      <div class="local-path-file"><span class="local-path-name">${esc(p.name)}</span>${p.ext ? `<span class="local-path-ext">${esc(p.ext)}</span>` : ""}</div>
-      <div class="local-path-dir">${esc(p.dir || "当前目录")}</div>
+      <div class="local-path-file"><span class="local-path-name" title="${esc(rawPath)}">${esc(p.name)}</span>${p.ext ? `<span class="local-path-ext">${esc(p.ext)}</span>` : ""}</div>
+      <div class="local-path-dir" title="${esc(p.dir || "当前目录")}">${esc(p.dir || "当前目录")}</div>
     </div>
-    <button type="button" class="ghost local-path-action reveal" onclick="revealContentPath(${r.id},this)" data-tip="在文件夹中显示" aria-label="在文件夹中显示">${ic("i-folder")}</button>
   </div>`;
 }
 async function revealContentPath(id, btn) {
@@ -7832,8 +7849,10 @@ function contentSelAllToggle() {
 function contentSelClear() { selContent.clear(); const sa = $("content-selall"); if (sa) sa.checked = false; refreshContents(); }
 function updateContentSelBar() {
   const n = selContent.size;
-  $("content-selcount").textContent = "已选 " + n;
+  $("content-selcount").textContent = "已选 " + n + " 项";
   $("content-selbar").style.display = n ? "inline-flex" : "none";
+  const barWrap = $("content-selbar")?.closest?.(".wb-bulk-bar");
+  if (barWrap) barWrap.hidden = !n;
   const ids = [...document.querySelectorAll(CONTENT_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
   const allSel = ids.length > 0 && ids.every(id => selContent.has(id));
   const selectedOnPage = ids.filter(id => selContent.has(id)).length;
@@ -7856,8 +7875,11 @@ function commentSelAllToggle() {
 }
 function commentSelClear() { selComment.clear(); const sa = $("comment-selall"); if (sa) sa.checked = false; refreshComments(); }
 function updateCommentSelBar() {
-  const n = selComment.size; const c = $("comment-selcount"), b = $("comment-batchbtn");
-  c.textContent = "已选 " + n; c.style.display = n ? "inline" : "none"; b.style.display = n ? "inline-flex" : "none";
+  const n = selComment.size; const c = $("comment-selcount"), bar = $("comment-selbar");
+  if (c) c.textContent = "已选 " + n + " 项";
+  if (bar) bar.style.display = n ? "inline-flex" : "none";
+  const barWrap = bar?.closest?.(".wb-bulk-bar");
+  if (barWrap) barWrap.hidden = !n;
   const ids = [...document.querySelectorAll(COMMENT_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
   const allSel = ids.length > 0 && ids.every(id => selComment.has(id));
   const selectedOnPage = ids.filter(id => selComment.has(id)).length;
@@ -8047,26 +8069,34 @@ async function refreshContents(resetPage = false) {
   }
   $("content-table").innerHTML = rows.map(r => {
     const description = esc(r.desc || "（未填写作品文案）");
+    const durText = r.duration ? (typeof fmtDur === "function" ? fmtDur(r.duration) : String(r.duration)) : "";
+    const durBadge = durText ? `<span class="thumb-dur">${esc(durText)}</span>` : "";
+    const specSub = [r.quality, durText].filter(Boolean).join(" · ");
+    const hasLocal = Boolean(String(r.local_path || "").trim());
     return `<tr>
       <td class="content-check-cell"><label class="content-selection" title="选择这条作品"><input type="checkbox" data-id="${r.id}" aria-label="选择这条作品" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></label></td>
-      <td class="content-cover-cell">${r.cover_url ? `<img class="thumb" src="${esc(safeMediaUrl(r.cover_url))}" alt="封面" referrerpolicy="no-referrer" onclick="openPreview(${r.id})">` : `<span class="content-cover-empty">${ic(r.media_type === "images" ? "i-image" : "i-film")}</span>`}</td>
+      <td class="content-cover-cell"><span class="content-cover-box" onclick="openPreview(${r.id})" title="点击站内预览">${r.cover_url ? `<img class="thumb" src="${esc(safeMediaUrl(r.cover_url))}" alt="封面" referrerpolicy="no-referrer">` : `<span class="content-cover-empty">${ic(r.media_type === "images" ? "i-image" : "i-film")}</span>`}${durBadge}</span></td>
       <td class="content-desc-cell">
-        <div class="content-desc-text" title="${description}">${description}</div>
+        <div class="content-desc-text clickable" title="${description}" onclick="openPreview(${r.id})">${description}</div>
         ${contentSourceMarkup(r)}
       </td>
-      <td class="content-type-cell"><span class="content-kind">${r.media_type === "images" ? "图集" : "视频"}</span>${r.quality ? `<span class="content-quality">${esc(r.quality)}</span>` : ""}</td>
+      <td class="content-type-cell"><span class="content-kind">${r.media_type === "images" ? "图集" : "视频"}</span>${specSub ? `<span class="content-quality">${esc(specSub)}</span>` : ""}</td>
       <td class="content-record-time"><span class="content-origin-label">抓取入库</span>${contentCapturedTime(r.captured_at)}<div class="content-published-time">发布 · ${fmtTime(r.create_time)}</div></td>
-      <td class="content-metrics num"><span class="metric like">${ic("i-heart")}${fmtNum(r.like_count)}</span><span class="metric">${ic("i-msg")}${fmtNum(r.comment_count)}</span>${r.duration ? `<span class="metric">${ic("i-clock")}${fmtDur(r.duration)}</span>` : ""}</td>
-      <td class="content-action-cell">
-        <div class="content-status-row"><span class="pill ${r.download_status}">${contentStatusLabel(r.download_status)}</span>${r.error ? `<span class="warn-ic" data-tip="${esc(r.error)}">${ic("i-info")}</span>` : ""}</div>
+      <td class="content-metrics num"><span class="metric like">${ic("i-heart")}${fmtNum(r.like_count)}</span><span class="metric">${ic("i-msg")}${fmtNum(r.comment_count)}</span></td>
+      <td class="content-status-cell">
+        <div class="content-status-row"><span class="pill ${r.download_status}">${contentStatusLabel(r.download_status)}</span>${r.error ? `<span class="warn-ic" data-tip="${esc(r.error)}" title="${esc(r.error)}">${ic("i-info")}</span>` : ""}</div>
+        ${contentPathCell(r)}
+      </td>
+      <td class="content-action-cell acttd">
         <div class="content-action-buttons">
-          ${["failed", "skipped"].includes(r.download_status) ? `<button class="ghost sm" onclick="retryDl(${r.id})">${r.download_status === "skipped" ? "下载" : "重试"}</button>` : ""}
-          ${(["douyin", "bilibili", "instagram"].includes(PLATFORM) && r.download_status === "done") ? `<button class="ghost sm content-action-primary" onclick="pickRepostTarget(${r.id})">${ic("i-send")}转发</button>` : ""}
+          <button type="button" class="ghost sm content-icon-btn" onclick="openPreview(${r.id})" data-tip="站内预览" title="站内预览" aria-label="预览作品">${ic("i-eye")}</button>
+          ${hasLocal ? `<button type="button" class="ghost sm content-icon-btn local-path-action reveal" onclick="revealContentPath(${r.id},this)" data-tip="在文件夹中显示" title="在文件夹中显示" aria-label="在文件夹中显示">${ic("i-folder")}</button>` : ""}
+          ${["failed", "skipped"].includes(r.download_status) ? `<button type="button" class="ghost sm" onclick="retryDl(${r.id})">${r.download_status === "skipped" ? "下载" : "重试"}</button>` : ""}
+          ${(["douyin", "bilibili", "instagram"].includes(PLATFORM) && r.download_status === "done") ? `<button type="button" class="ghost sm content-action-primary" onclick="pickRepostTarget(${r.id})">${ic("i-send")}转发</button>` : ""}
           ${(PLATFORM === "xhs" && r.download_status === "done") ? `<button class="ghost sm content-action-primary" onclick="repostDouyin(${r.id})">${ic("i-send")}发抖音</button>` : ""}
-          <button class="ghost sm content-action-delete danger" onclick="delContent(${r.id})" data-tip="删除作品" aria-label="删除作品">${ic("i-trash")}</button>
+          <button type="button" class="ghost sm content-action-delete danger" onclick="delContent(${r.id})" data-tip="删除作品" title="删除作品" aria-label="删除作品">${ic("i-trash")}</button>
         </div>
       </td>
-      <td class="local-path-cell">${contentPathCell(r)}</td>
     </tr>`;
   }).join("") || empty(8, "暂无作品", "i-film", "监控目标有新作品时会自动抓取并下载,显示在这里");
   updateContentSelBar(); renderContentPager(meta);
@@ -8114,17 +8144,17 @@ function danmakuWatchRow(w) {
       " · " + (w.recent_days ? "近 " + w.recent_days + " 天" : "全局 " + (w.effective_recent_days || "") + " 天") +
       "</div>" : "";
   return '<tr>' +
-    '<td><div class="user-cell">' + avatar + '<div><span>' + base + "</span>" + alias + scope + "</div></div></td>" +
-    "<td>" + (w.kind === "video" ? "单条视频" : "账号作品") + "</td>" +
-    "<td>" + source + "</td>" +
+    '<td><div class="user-cell">' + avatar + '<div><span title="' + base + '">' + base + "</span>" + alias + scope + "</div></div></td>" +
+    "<td>" + metaChips(w) + "</td>" +
+    "<td>" + (w.kind === "video" ? "单条视频" : "账号作品") + ' · <span class="mut">' + source + "</span></td>" +
     `<td class="num"><button type="button" class="ghost sm monitor-record-link" data-danmaku-records="${w.id}" onclick="showWatchRecords('danmaku',${w.id})">查看记录 <span>${fmtNum(w.danmaku_count || 0)}</span></button></td>` +
     '<td class="num">' + interval + "</td>" +
     '<td class="mut">' + (w.last_scan_at ? new Date(w.last_scan_at + "Z").toLocaleString() : "—") + error + autoRunHint(w.next_auto_run_at) + "</td>" +
     '<td><span class="pill ' + (w.enabled ? "active" : "paused") + '">' +
       (w.enabled ? "监控中" : "已暂停") + "</span></td>" +
     '<td class="acttd">' +
-      '<button class="ghost sm" onclick="editDanmakuWatch(' + w.id + ')">编辑</button>' +
       '<button class="ghost sm" onclick="scanDanmakuWatch(' + w.id + ')">立即抓取</button>' +
+      '<button class="ghost sm" onclick="editDanmakuWatch(' + w.id + ')">编辑</button>' +
       '<button class="ghost sm" onclick="toggleDanmakuWatch(' + w.id + ", " + (!w.enabled) + ')">' +
         (w.enabled ? "暂停" : "启用") + "</button>" +
       '<button class="ghost sm danger" onclick="delDanmakuWatch(' + w.id + ')">' +
@@ -8133,9 +8163,13 @@ function danmakuWatchRow(w) {
 function renderDanmakuWatchRows() {
   const group = $("danmaku-watch-group") ? $("danmaku-watch-group").value : "";
   const tag = $("danmaku-watch-tag") ? $("danmaku-watch-tag").value : "";
+  const status = $("danmaku-watch-status") ? $("danmaku-watch-status").value : "";
   const query = (($("danmaku-watch-search") && $("danmaku-watch-search").value) || "").trim().toLocaleLowerCase();
   const rows = DANMAKU_WATCHES.filter(w => {
     if (!matchesMeta(w, group, tag)) return false;
+    if (status === "enabled" && !w.enabled) return false;
+    if (status === "paused" && w.enabled) return false;
+    if (status === "error" && !w.last_error) return false;
     if (!query) return true;
     return [danmakuWatchBaseName(w), w.alias, w.group_name, ...itemTags(w)]
       .join(" ").toLocaleLowerCase().includes(query);
@@ -8446,7 +8480,8 @@ function setDanmakuPageSize() {
   refreshDanmaku();
 }
 async function deleteDanmaku(id) {
-  try { await api("/api/danmaku/" + id, { method: "DELETE" }); refreshDanmaku(); }
+  if (!await uiConfirm({ title: "删除弹幕记录", message: "确认删除这条弹幕记录吗？", okText: "删除", danger: true })) return;
+  try { await api("/api/danmaku/" + id, { method: "DELETE" }); toast("弹幕记录已删除", "ok"); refreshDanmaku(); }
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 async function clearDanmaku() {
@@ -8507,11 +8542,12 @@ async function addWatch() {
 function watchRow(w) {
   const base = esc(watchBaseName(w));
   const isNotePlatform = w.platform === "xhs" || w.platform === "rednote";
+  const kindLabel = w.kind === "video" ? (isNotePlatform ? "笔记" : "视频") : (isNotePlatform ? "创作者" : "账号");
+  const srcLabel = isNotePlatform ? "公开" : (SRC[w.mode] || w.mode);
   return `<tr>
-    <td><div class="user-cell">${w.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(w.avatar))}" referrerpolicy="no-referrer">` : ""}<div><span title="${base}">${base}</span>${w.alias ? `<div class="alias-line" title="${esc(w.alias)}">${esc(w.alias)}</div>` : ""}</div></div></td>
+    <td><div class="user-cell">${w.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(w.avatar))}" referrerpolicy="no-referrer">` : `<span class="wb-avatar-fallback" style="width:30px;height:30px;flex:0 0 30px;font-size:13px;border-radius:50%" aria-hidden="true">${esc((watchBaseName(w) || "评").slice(0, 1))}</span>`}<div><span title="${base}">${base}</span>${w.alias ? `<div class="alias-line" title="${esc(w.alias)}">${esc(w.alias)}</div>` : ""}</div></div></td>
     <td>${metaChips(w)}</td>
-    <td>${w.kind === "video" ? (isNotePlatform ? "笔记" : "视频") : (isNotePlatform ? "创作者" : "账号")}</td>
-    <td>${isNotePlatform ? "公开" : (SRC[w.mode] || w.mode)}</td>
+    <td>${kindLabel} · <span class="mut">${srcLabel}</span></td>
     <td class="num"><button type="button" class="ghost sm monitor-record-link" data-comment-records="${w.id}" onclick="showWatchRecords('comment',${w.id})">查看记录 <span>${fmtNum(w.comment_count || 0)}</span></button></td>
     <td class="num">${monitorIntervalText(w.interval_seconds)}
       ${w.kind === "user" && (w.recent_works || w.recent_days) ? `<div class="mut" style="font-size:11px">${w.recent_works ? `近 ${w.recent_works} 个` : "全局作品数"} · ${w.recent_days ? `${w.recent_days} 天` : "全局天数"}</div>` : ""}</td>
@@ -8527,16 +8563,20 @@ function watchRow(w) {
 function renderWatchRows() {
   const groupName = $("watch-group") ? $("watch-group").value : "";
   const tag = $("watch-tag") ? $("watch-tag").value : "";
+  const status = $("watch-status") ? $("watch-status").value : "";
   const query = (($("watch-search") && $("watch-search").value) || "").trim().toLocaleLowerCase();
   const rows = WATCHES.filter(w => {
     if (!matchesMeta(w, groupName, tag)) return false;
+    if (status === "enabled" && !w.enabled) return false;
+    if (status === "paused" && w.enabled) return false;
+    if (status === "error" && !w.last_error) return false;
     if (!query) return true;
     return [watchBaseName(w), w.alias, w.group_name, ...itemTags(w)]
       .join(" ").toLocaleLowerCase().includes(query);
   });
   if ($("watch-filter-count")) $("watch-filter-count").textContent = `显示 ${rows.length} / ${WATCHES.length}`;
   $("watch-table").innerHTML = rows.map(watchRow).join("")
-    || empty(9, "没有匹配的评论监控", "i-msg", WATCHES.length ? "调整分组、标签或搜索条件" : "添加作品或账号，开始收集新评论。", WATCHES.length ? "" : "comments");
+    || empty(8, "没有匹配的评论监控", "i-msg", WATCHES.length ? "调整分组、标签或搜索条件" : "添加作品或账号，开始收集新评论。", WATCHES.length ? "" : "comments");
 }
 async function refreshWatches() {
   const isCurrent = beginViewRequest("watches");
@@ -8747,7 +8787,8 @@ async function refreshComments(resetPage = false) {
   updateCommentSelBar(); renderCommentPager(meta);
 }
 async function delComment(id) {
-  try { await api("/api/comments/" + id, { method: "DELETE" }); refreshComments(); }
+  if (!await uiConfirm({ title: "删除评论记录", message: "确认删除这条评论记录吗？", okText: "删除", danger: true })) return;
+  try { await api("/api/comments/" + id, { method: "DELETE" }); toast("评论记录已删除", "ok"); selComment.delete(id); refreshComments(); }
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 async function clearComments() {
@@ -9203,18 +9244,21 @@ async function refreshPublish() {
   if (!isCurrent()) return;
   PUBLISH_TASKS = rows;
   if ($("tb-pub")) $("tb-pub").textContent = rows.length;
-  $("pub-table").innerHTML = rows.map(t => `<tr>
-    <td class="wrap" style="max-width:220px">${esc(t.title || "(无标题)")}</td>
-    <td>${t.media_type === "video" ? "视频" : "图文"}</td>
-    <td class="num">${t.media_count}</td>
-    <td>${t.source_platform ? esc(t.source_platform) + " 转发" : "手动"}</td>
+  $("pub-table").innerHTML = rows.map(t => {
+    const pubAcc = (ACCOUNTS.find(a => a.id === t.account_id) || {}).nickname || (t.account_id ? `账号 #${t.account_id}` : "—");
+    return `<tr>
+    <td class="wrap" style="max-width:240px"><b>${esc(t.title || "(无标题)")}</b></td>
+    <td>${esc(pubAcc)}</td>
+    <td>${t.media_type === "video" ? "视频" : "图文"} · <span class="mut num">${t.media_count || 0}</span></td>
+    <td>${t.source_platform ? esc(PF_NAME[t.source_platform] || t.source_platform) + " 转发" : "手动"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>
-    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ((["kuaishou", "shipinhao", "tiktok"].includes(t.platform) || (t.platform === "bilibili" && String(t.result_url).includes("member.bilibili.com"))) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeMediaUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}</td>
+    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ((["kuaishou", "shipinhao", "tiktok"].includes(t.platform) || (t.platform === "bilibili" && String(t.result_url).includes("member.bilibili.com"))) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeMediaUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}${t.status === "publishing" ? `<div class="mut" id="pub-stage-${t.id}" style="margin-top:4px;white-space:normal;max-width:200px">${esc(t.live_stage || "执行中，请等待结果")}</div>` : ""}</td>
     <td class="acttd">
-      ${["draft", "pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">${t.schedule_needs_confirmation ? "确认预约时间" : "编辑"}</button>` : ""}
       ${["pending", "failed"].includes(t.status) ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
-      ${t.status === "uncertain" ? `<button class="ghost sm" onclick="resolveTaskResult('publishes',${t.id})">核对结果</button>` : t.status === "publishing" ? `<span class="mut" id="pub-stage-${t.id}">${esc(t.live_stage || "执行中，请等待结果")}</span>` : `<button class="ghost sm danger" onclick="delPublish(${t.id})">${ic("i-trash")}删除</button>`}
-    </td></tr>`).join("") || empty(7, "暂无发布任务", "i-send",
+      ${["draft", "pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">${t.schedule_needs_confirmation ? "确认预约时间" : "编辑"}</button>` : ""}
+      ${t.status === "uncertain" ? `<button class="ghost sm" onclick="resolveTaskResult('publishes',${t.id})">核对结果</button>` : t.status === "publishing" ? "" : `<button class="ghost sm danger" onclick="delPublish(${t.id})">${ic("i-trash")}删除</button>`}
+    </td></tr>`;
+  }).join("") || empty(7, "暂无发布任务", "i-send",
       PLATFORM === "kuaishou" ? "上传图集/视频加入队列(发布到快手创作平台)"
       : PLATFORM === "douyin" ? "上传图集/视频加入队列(发布到抖音创作平台)"
       : PLATFORM === "tiktok" ? "上传单个视频加入队列(发布到 TikTok Studio)"
@@ -9717,22 +9761,22 @@ async function refreshCommentRules() {
   $("ac-rule-table").innerHTML = rows.map(r => {
     const tgt = r.mode === "auto_comment"
       ? (r.target_kind === "keyword" ? "#" + esc(r.keyword) : esc((r.sec_uid || "").slice(0, 14)))
-      : (r.target_kind === "work" ? esc(r.aweme_id) : "自己近期作品");
+      : (r.target_kind === "work" ? esc(r.aweme_id) : "");
     const acc = (ACCOUNTS.find(a => a.id === r.account_id) || {}).nickname || ("#" + r.account_id);
     const tags = [r.use_ai ? "AI文案" : "", r.require_review ? "草稿审核" : ""].filter(Boolean)
       .map(x => `<span class="pill downloading" style="margin-left:4px;font-size:10px">${x}</span>`).join("");
     return `<tr>
-      <td>${esc(r.name)}${tags}</td>
+      <td><b>${esc(r.name)}</b>${tags}</td>
       <td>${AC_MODE_T[r.mode] || r.mode}</td>
-      <td class="wrap" style="max-width:160px">${AC_KIND_T[r.target_kind] || r.target_kind}<br><span class="mut">${tgt}</span></td>
+      <td class="wrap" style="max-width:180px">${AC_KIND_T[r.target_kind] || r.target_kind}${tgt ? `<div class="mut">${tgt}</div>` : ""}</td>
       <td>${esc(acc)}</td>
       <td class="mut num">${r.daily_cap}/日 · ${Math.round(r.interval_seconds / 60)}分</td>
       <td class="mut num">${r.last_run_at ? new Date(r.last_run_at + "Z").toLocaleString() : "—"}${r.last_error ? ` <span class="warn-ic" title="${esc(r.last_error)}">${ic("i-info")}</span>` : ""}${autoRunHint(r.next_auto_run_at)}</td>
       <td><span class="pill ${r.enabled ? "done" : "paused"}">${r.enabled ? "运行中" : "已停用"}</span></td>
       <td class="acttd">
-        <button class="ghost sm" onclick="toggleRule(${r.id}, ${r.enabled ? "false" : "true"})">${r.enabled ? "停用" : "启用"}</button>
-        <button class="ghost sm" onclick="editRule(${r.id})">编辑</button>
         <button class="ghost sm" onclick="runRule(${r.id})">试跑</button>
+        <button class="ghost sm" onclick="editRule(${r.id})">编辑</button>
+        <button class="ghost sm" onclick="toggleRule(${r.id}, ${r.enabled ? "false" : "true"})">${r.enabled ? "停用" : "启用"}</button>
         <button class="ghost sm danger" onclick="delRule(${r.id})">${ic("i-trash")}删除</button>
       </td></tr>`;
   }).join("") || empty(8, "暂无评论规则", "i-msg", "创建规则后可先试跑，确认内容再启用。", "autocomment");
@@ -9771,11 +9815,23 @@ async function refreshCommentTasks() {
     $("ac-draft-bar").style.display = drafts.length ? "flex" : "none";
     if (drafts.length) $("ac-draft-count").textContent = `有 ${drafts.length} 条草稿待审核——逐条「通过/编辑」,或一键全部通过后由引擎按节流发出`;
   }
-  $("ac-task-table").innerHTML = rows.map(t => {
+  renderCommentTaskRows();
+}
+function renderCommentTaskRows() {
+  if (!$("ac-task-table")) return;
+  const query = (($("ac-task-search") && $("ac-task-search").value) || "").trim().toLocaleLowerCase();
+  const filtered = AC_TASKS.filter(t => {
+    if (!query) return true;
+    const accName = (ACCOUNTS.find(a => a.id === t.account_id) || {}).nickname || "";
+    return [t.content, t.aweme_id, t.target_nick, accName].filter(Boolean).join(" ").toLocaleLowerCase().includes(query);
+  });
+  if ($("ac-task-count")) $("ac-task-count").textContent = AC_TASKS.length ? `显示 ${filtered.length} / ${AC_TASKS.length}` : "";
+  $("ac-task-table").innerHTML = filtered.map(t => {
     const isDraft = t.status === "draft", canSend = t.status === "pending" || t.status === "failed";
+    const accName = (ACCOUNTS.find(a => a.id === t.account_id) || {}).nickname || (t.account_id ? `账号 #${t.account_id}` : "");
     return `<tr>
-    <td class="wrap" style="max-width:240px">${esc(t.content)}</td>
-    <td class="mut">${esc((t.aweme_id || "").slice(0, 16))}</td>
+    <td class="wrap" style="max-width:260px">${esc(t.content)}</td>
+    <td><code title="${esc(t.aweme_id || "")}">${esc((t.aweme_id || "—").slice(0, 18))}</code>${accName ? `<div class="mut">${esc(accName)}</div>` : ""}</td>
     <td>${t.target_comment_id ? "回复 " + esc(t.target_nick || "") : "顶层评论"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at + "Z").toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>
     <td class="mut">${t.method === "browser" ? "浏览器页面" : t.method === "api" ? "API 兼容模式" : t.method === "manual" ? "人工草稿" : "—"}</td>
@@ -9787,7 +9843,7 @@ async function refreshCommentTasks() {
       ${(isDraft || canSend) ? `<button class="ghost sm" onclick="cancelTask(${t.id})">${isDraft ? "弃用" : "取消"}</button>` : ""}
       ${t.status === "uncertain" ? `<button class="ghost sm" onclick="resolveTaskResult('comments',${t.id})">核对结果</button>` : t.status !== "doing" ? `<button class="ghost sm danger" onclick="delTask(${t.id})">${ic("i-trash")}删除</button>` : ""}
     </td></tr>`;
-  }).join("") || empty(7, "暂无评论任务", "i-msg", "启用规则或点「试跑」后,这里会出现待发评论");
+  }).join("") || empty(7, query ? "没有匹配的评论任务" : "暂无评论任务", "i-msg", query ? "调整搜索词或清除筛选" : "启用规则或点「试跑」后,这里会出现待发评论");
 }
 async function approveTask(id) {
   try { await api("/api/comment-tasks/" + id + "/approve", { method: "POST" }); toast("已通过,转入待发队列", "ok"); refreshCommentTasks(); }
@@ -9826,6 +9882,7 @@ async function cancelTask(id) {
   catch (e) { toast("操作失败:" + e.message, "err"); }
 }
 async function delTask(id) {
+  if (!await uiConfirm({ title: "删除评论任务", message: "确认删除这条评论任务或记录吗？", okText: "删除", danger: true })) return;
   try { await api("/api/comment-tasks/" + id, { method: "DELETE" }); toast("已删除", "ok"); refreshCommentTasks(); }
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }
@@ -9977,7 +10034,7 @@ function renderTaskQueuePager(data) {
   $("queue-next").disabled = TASK_QUEUE_PAGE >= TASK_QUEUE_PAGES;
   $("queue-last").disabled = TASK_QUEUE_PAGE >= TASK_QUEUE_PAGES;
   if ($("queue-page-size")) $("queue-page-size").value = String(TASK_QUEUE_PAGE_SIZE);
-  pager.hidden = false;
+  pager.hidden = Number(data.total || 0) <= TASK_QUEUE_PAGE_SIZE && TASK_QUEUE_PAGES <= 1;
 }
 
 function renderTaskQueueSummary(summary = {}) {
@@ -10131,13 +10188,13 @@ async function loop() {
 $("mon-table").innerHTML = skeleton(8);
 $("content-table").innerHTML = skeleton(8);
 $("sd-history-body").innerHTML = skeleton(8);
-$("watch-table").innerHTML = skeleton(9);
+$("watch-table").innerHTML = skeleton(8);
 $("comment-table").innerHTML = skeleton(6);
 $("danmaku-watch-table").innerHTML = skeleton(8);
 $("danmaku-table").innerHTML = skeleton(6);
 $("collection-job-table").innerHTML = collectionTaskSkeleton(3);
 $("collection-content-list").innerHTML = collectionResultSkeleton(4);
-$("queue-table").innerHTML = skeleton(7);
+$("queue-table").innerHTML = skeleton(8);
 
 // restore last-selected section (default: 总览);旧版四个独立页已并入「账号管理」
 const VALID_TABS = ["overview", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "tiktok-tools", "publish", "autocomment", "share-download", "notifications", "settings"];

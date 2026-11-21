@@ -43,6 +43,7 @@ notificationForm.className = "card";
 while (notificationCard.firstElementChild && !notificationCard.firstElementChild.classList.contains("section-divider")) {
   notificationForm.append(notificationCard.firstElementChild);
 }
+notificationCard.querySelector(":scope > .section-divider")?.remove();
 notificationCard.prepend(notificationForm);
 const composers = Object.fromEntries(Object.entries(composerSpecs).map(([key, [field, title, description]]) => {
   const node = $(field).closest(".card");
@@ -73,6 +74,7 @@ const groupSpecs = {
   danmaku: [["targets", "监控目标"], ["records", "弹幕记录"]],
   autocomment: [["rules", "评论规则"], ["tasks", "任务与审核"]],
   publish: [["editor", "撰写内容"], ["records", "发布记录"], ["published", "已发布作品", ["xhs", "rednote"]]],
+  notifications: [["channels", "通知渠道"], ["webhooks", "Webhook 订阅"]],
   "risk-control": [["status", "账号状态"], ["rules", "风控规则"]],
 };
 const groups = Object.entries(groupSpecs).map(([key, spec]) => {
@@ -140,6 +142,7 @@ for (const [id, key, label, selector] of [
   ["pub-table", "publish", "发布标题、状态", "tr:not(:has([colspan]))"],
   ["ac-rule-table", "rule", "评论规则、目标", "tr:not(:has([colspan]))"],
   ["n-table", "channel", "通知渠道、类型", "tbody tr:not(:has([colspan]))"],
+  ["proxy-table", "proxy", "代理备注、地址或归属地", "tbody tr:not(:has([colspan]))"],
 ]) {
   const container = $(id);
   const target = container.closest(".table-wrap") || container;
@@ -497,6 +500,11 @@ function App() {
 
 // Mobile filters collapse independently and always report non-default criteria.
 document.querySelectorAll(".manage-toolbar").forEach((toolbar, i) => {
+  const selbar = toolbar.querySelector('[id$="-selbar"]');
+  if (selbar) {
+    const bulkBar = document.createElement("div"); bulkBar.className = "wb-bulk-bar"; bulkBar.hidden = true;
+    bulkBar.append(selbar); toolbar.after(bulkBar);
+  }
   const controls = [...toolbar.children].filter(el => !el.matches('input[type="search"],.filter-count'));
   if (!controls.length) return;
   const details = document.createElement("details"); details.className = "wb-filter-details";
@@ -505,13 +513,22 @@ document.querySelectorAll(".manage-toolbar").forEach((toolbar, i) => {
   const clear = document.createElement("button"); clear.type = "button"; clear.className = "ghost sm"; clear.textContent = "重置筛选";
   const defaults = [...toolbar.querySelectorAll("select,input:not([type=search])")].map(el => [el, el.value]);
   const update = () => { const count = defaults.filter(([el, value]) => el.value !== value).length; summary.querySelector(".wb-filter-total").textContent = count ? `${count} 项` : ""; };
-  clear.onclick = () => { defaults.forEach(([el, value]) => { if (el.value === value) return; el.value = value; el._csSync?.(); el.dispatchEvent(new Event("change", { bubbles: true })); }); update(); };
+  clear.onclick = () => {
+    defaults.forEach(([el, value]) => {
+      if (el.value === value) return;
+      el.value = value; el._csSync?.();
+      if (el.tagName !== "SELECT" && el.type !== "date" && el.type !== "number") el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    update();
+  };
   body.append(...controls, clear); details.append(summary, body); toolbar.append(details);
   toolbar.addEventListener("change", update);
+  toolbar.addEventListener("input", e => { if (e.target.type !== "search") update(); });
 });
 
 // Search affordances use the same SVG as navigation, not a hard-coded bitmap.
-document.querySelectorAll('.manage-toolbar > input[type="search"],#command-search').forEach(input => {
+document.querySelectorAll('.manage-toolbar > input[type="search"],#command-search,#risk-account-search,.follow-toolbar > input[type="search"]').forEach(input => {
   const label = document.createElement("label"); label.className = "wb-search-field";
   label.innerHTML = '<svg aria-hidden="true"><use href="#i-logo"/></svg>';
   input.before(label); label.append(input);
@@ -524,7 +541,7 @@ const badgeObserver = new MutationObserver(records => records.forEach(record => 
 }));
 document.querySelectorAll(".nav-badge").forEach(badge => { badge.classList.toggle("wb-zero", badge.textContent.trim() === "0"); badgeObserver.observe(badge, { childList: true, characterData: true, subtree: true }); });
 // Stacked record rows on narrow screens keep column context and every action.
-for (const id of ["mon-table", "watch-table", "danmaku-watch-table", "queue-table", "pub-table", "ac-rule-table", "ac-task-table", "n-table", "risk-account-table"]) {
+for (const id of ["mon-table", "watch-table", "danmaku-watch-table", "queue-table", "pub-table", "ac-rule-table", "ac-task-table", "n-table", "risk-account-table", "runtime-table", "proxy-table", "wh-table", "wh-event-table", "tk-user-results", "following-table", "fans-table"]) {
   const node = $(id), table = node.tagName === "TABLE" ? node : node.closest("table");
   table.dataset.objectTable = "";
   const labelRows = () => {

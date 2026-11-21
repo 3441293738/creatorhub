@@ -842,64 +842,87 @@
   td.num { font-family:var(--mono); font-size:12.5px; }
   .acttd { text-align:right; white-space:nowrap; }
   .acttd button { margin-left:4px; }
-  .local-path-cell { width:220px; min-width:200px; max-width:240px; }
-  .local-path { display:grid; grid-template-columns:minmax(0,1fr) 28px; align-items:center; gap:8px; min-width:0; }
-  .local-path-info { min-width:0; }
-  .local-path-file { display:flex; align-items:baseline; gap:6px; min-width:0; }
+  .local-path-cell { width:220px; min-width:180px; max-width:240px; }
+  .local-path { display:flex; align-items:center; gap:8px; min-width:0; }
+  .local-path-info { min-width:0; flex:1; }
+  .local-path-file { display:flex; align-items:center; gap:6px; min-width:0; }
   .local-path-name { color:var(--fg); font:500 11.5px/1.35 var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .local-path-ext { flex:0 0 auto; color:var(--info); font:650 9.5px/1 var(--mono); }
-  .local-path-dir { margin-top:4px; color:var(--mut-2); font:400 10.5px/1.25 var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  button.local-path-action { width:28px; height:28px; padding:0; border-radius:6px; color:var(--mut); }
+  .local-path-ext { flex:0 0 auto; color:var(--info); background:var(--info-soft); padding:1px 5px; border-radius:4px; font:650 10px/1.2 var(--mono); }
+  .local-path-dir { margin-top:2px; color:var(--mut-2); font:400 10.5px/1.25 var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  button.local-path-action { width:30px; min-width:30px; height:30px; min-height:30px; padding:0; border-radius:7px; color:var(--mut); }
   button.local-path-action:hover { color:var(--fg-strong); }
   button.local-path-action.reveal { color:var(--info); }
-  .local-path-empty { color:var(--mut-2); }
+  .local-path-empty { color:var(--mut-2); font-size:12px; }
 
-  /* 作品列表：描述优先，状态与操作分层，避免多个发布按钮挤在一行 */
+  /* 作品列表：主信息左对齐紧凑排布，只读状态与右侧操作列彻底解耦 */
   .content-record-table { table-layout:fixed; min-width:920px; }
-  .content-record-table .content-col-check { width:44px; }
-  .content-record-table .content-col-cover { width:72px; }
-  .content-record-table .content-col-type { width:72px; }
-  .content-record-table .content-col-time { width:108px; }
-  .content-record-table .content-col-data { width:84px; }
-  .content-record-table .content-col-actions { width:126px; }
-  .content-record-table .content-col-local { width:172px; }
-  .content-record-table th, .content-record-table td { padding:12px 10px; }
-  .content-record-table tbody tr { height:96px; }
-  .content-check-cell { text-align:center; }
+  .content-record-table .content-col-check { width:42px; }
+  .content-record-table .content-col-cover { width:68px; }
+  .content-record-table .content-col-type { width:100px; }
+  .content-record-table .content-col-time { width:176px; }
+  .content-record-table .content-col-data { width:96px; }
+  .content-record-table .content-col-local { width:196px; }
+  .content-record-table .content-col-actions { width:196px; }
+  .content-record-table th, .content-record-table td { padding:10px; vertical-align:top; }
+  .content-check-cell { text-align:center; padding-top:14px !important; }
   .content-cover-cell { text-align:center; }
+  .content-cover-box { position:relative; display:inline-block; width:46px; height:62px; }
   .content-cover-cell .thumb { width:46px; height:62px; }
+  .thumb-dur {
+    position:absolute; right:3px; bottom:3px; padding:1px 4px; border-radius:4px;
+    background:rgba(0,0,0,.74); color:#fff; font:600 9.5px/1.2 var(--mono);
+    pointer-events:none; letter-spacing:-.2px;
+  }
   .content-cover-empty {
-    display:inline-grid; place-items:center; width:46px; height:62px;
+    display:inline-grid; place-items:center; width:46px; height:62px; cursor:pointer;
     color:var(--mut-2); background:var(--surface-2); border:1px solid var(--line-soft); border-radius:7px;
   }
+  .content-cover-empty:hover { border-color:var(--acc); color:var(--acc); }
   .content-cover-empty svg { width:18px; height:18px; }
   .content-desc-cell { white-space:normal; min-width:0; }
   .content-desc-text {
-    display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:3;
-    color:var(--fg-strong); font-size:13px; font-weight:550; line-height:1.5;
+    display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2;
+    color:var(--fg-strong); font-size:13px; font-weight:560; line-height:1.48;
     word-break:break-word;
   }
+  .content-desc-text.clickable { cursor:pointer; transition:color .14s var(--ease); }
+  .content-desc-text.clickable:hover { color:var(--acc); }
   .content-desc-meta { margin-top:6px; }
   .content-desc-meta > div { margin-top:3px !important; }
   .content-desc-meta .meta-stack { max-width:100%; }
   .content-kind {
-    display:block; color:var(--fg); font-size:12px; font-weight:600;
+    display:block; color:var(--fg); font-size:12px; font-weight:600; line-height:1.35;
   }
   .content-quality {
-    display:block; margin-top:4px; color:var(--mut-2); font:400 10.5px/1.2 var(--mono);
+    display:block; margin-top:3px; color:var(--mut-2); font:400 11px/1.35 var(--mono); white-space:normal; overflow-wrap:anywhere;
   }
-  .content-time { display:grid; gap:4px; color:var(--mut); line-height:1.2; }
-  .content-time span:last-child { color:var(--mut-2); }
+  .content-time { display:grid; gap:3px; color:var(--mut); line-height:1.3; font-size:12px; }
+  .content-time span:last-child { color:var(--mut-2); font-size:11.5px; }
   .content-metrics { white-space:normal; }
-  .content-metrics .metric { display:flex; width:max-content; margin:0 0 6px; }
-  .content-metrics .metric:last-child { margin-bottom:0; }
-  .content-action-cell { white-space:normal; }
-  .content-status-row { display:flex; align-items:center; gap:5px; min-height:24px; }
+  .content-metrics .metric {
+    display:grid; grid-template-columns:14px minmax(0,1fr); align-items:center;
+    gap:5px; width:max-content; margin:0; font-size:12.5px; line-height:1.35;
+  }
+  .content-metrics .metric + .metric { margin:5px 0 0 0; }
+  .content-error-preview {
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+    font-size:11.5px; line-height:1.45; margin-top:4px; color:var(--danger); white-space:normal; word-break:break-word;
+  }
+  .content-status-cell { white-space:normal; min-width:0; }
+  .content-status-cell .local-path { margin-top:5px; }
+  .content-action-cell { white-space:nowrap; text-align:right; }
+  .content-status-row { display:flex; align-items:center; flex-wrap:wrap; gap:5px; min-height:22px; }
   .content-status-row .warn-ic { display:inline-flex; }
-  .content-action-buttons { display:flex; align-items:center; gap:6px; margin-top:8px; }
+  .content-action-buttons { display:inline-flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:5px; margin-top:0; }
   .content-action-buttons button { margin:0; }
   .content-action-buttons .content-action-primary { color:var(--fg-strong); }
-  button.content-action-delete { width:30px; padding:5px; color:var(--mut-2); }
+  button.content-icon-btn,
+  button.content-action-delete {
+    width:30px; min-width:30px; height:30px; min-height:30px; padding:0 !important;
+    border-radius:7px; color:var(--mut); display:inline-grid; place-items:center;
+  }
+  button.content-icon-btn:hover { color:var(--acc); border-color:var(--acc-ring); }
+  button.content-action-delete { color:var(--mut-2); }
   button.content-action-delete:hover { color:var(--danger); border-color:color-mix(in srgb,var(--danger) 45%,var(--line)); }
   button.content-action-delete.danger:hover { color:#fff; border-color:var(--danger); }
   .content-record-table .local-path-cell { width:auto; min-width:0; max-width:none; }
@@ -913,10 +936,10 @@
   .share-history-meta .share-history-download-time { color:var(--mut-2); }
   .share-history-file-count { display:block; margin-top:5px; color:var(--mut-2); font-size:10.5px; line-height:1.25; }
   /* 分享历史与作品表共用固定列宽；长格式名/指标必须在列内收口，不能挤到相邻列。 */
-  .share-history-table .content-kind,
-  .share-history-table .content-quality { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .share-history-table .content-kind { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .share-history-table .content-quality { max-width:100%; white-space:normal; overflow-wrap:anywhere; }
   .share-history-table .content-metrics { min-width:0; overflow:hidden; }
-  .share-history-table .content-metrics .metric { width:100%; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .share-history-table .content-metrics .metric, .share-history-table .content-metrics .metric + .metric { max-width:100%; margin-left:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .share-history-table .content-time { min-width:0; overflow:hidden; }
 
   /* ── 监控分组 / 标签 / 别名 ── */
@@ -1564,14 +1587,14 @@
   }
   .queue-toolbar .form-field { min-width:0; }
   .queue-toolbar button { min-height:40px; }
-  .queue-table { min-width:1084px; table-layout:fixed; }
-  .queue-table .queue-col-type { width:122px; }
-  .queue-table .queue-col-content { width:310px; }
-  .queue-table .queue-col-account { width:150px; }
-  .queue-table .queue-col-time { width:160px; }
-  .queue-table .queue-col-status { width:118px; }
-  .queue-table .queue-col-reason { width:230px; }
-  .queue-table .queue-col-action { width:92px; }
+  .queue-table { min-width:1020px; table-layout:fixed; }
+  .queue-table .queue-col-type { width:112px; }
+  .queue-table .queue-col-content { width:auto; }
+  .queue-table .queue-col-account { width:138px; }
+  .queue-table .queue-col-time { width:148px; }
+  .queue-table .queue-col-status { width:112px; }
+  .queue-table .queue-col-reason { width:206px; }
+  .queue-table .queue-col-action { width:164px; }
   .queue-copy, .queue-reason { white-space:normal; min-width:0; line-height:1.45; overflow-wrap:anywhere; }
   .queue-copy b { display:block; color:var(--fg-strong); font-weight:620; }
   .queue-copy small, .queue-reason small, .queue-account small, .queue-time small {
@@ -1734,9 +1757,9 @@
   .risk-status.warn::before { background:var(--warn); }
   .risk-status.danger { color:var(--danger); background:var(--danger-soft); border-color:rgba(248,113,113,.34); }
   .risk-status.danger::before { background:var(--danger); }
-  .risk-account { display:grid; gap:2px; min-width:150px; }
+  .risk-account { display:grid; gap:2px; min-width:118px; }
   .risk-account small, .risk-reason small { color:var(--mut); font-size:11px; }
-  .risk-reason { min-width:240px; max-width:420px; white-space:normal; line-height:1.45; }
+  .risk-reason { min-width:170px; max-width:360px; white-space:normal; line-height:1.45; }
   .risk-progress { display:grid; grid-template-columns:1fr auto; gap:5px 8px; align-items:center; min-width:120px; }
   .risk-progress-track { height:5px; border-radius:999px; overflow:hidden; background:var(--surface-3); }
   .risk-progress-track i { display:block; height:100%; background:var(--warn); border-radius:inherit; }
@@ -2000,7 +2023,7 @@
         </div>
         <button onclick="saveCookie()"><svg><use href="#i-check"/></svg>保存</button>
       </div>
-      <div class="table-wrap mini-table"><table id="acc-table" aria-label="平台账号列表"><tbody></tbody></table></div>
+      <div class="table-wrap mini-table"><table id="acc-table" aria-label="平台账号列表"><thead><tr><th>账号与环境</th><th>状态与负载</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table></div>
     </div>
 
     <!-- 暂时隐藏聚合私信入口与内容，保留功能；移除 hidden 即可恢复。 -->
@@ -2029,7 +2052,7 @@
         <button class="ghost" onclick="scanBrowserRuntimes()"><svg><use href="#i-eye"/></svg>扫描内核目录</button>
         <button class="ghost" onclick="addBrowserRuntime()"><svg><use href="#i-plus"/></svg>手动添加 chrome.exe</button>
       </div>
-      <div class="table-wrap mini-table"><table id="runtime-table" aria-label="浏览器内核列表"><tbody></tbody></table></div>
+      <div class="table-wrap mini-table"><table id="runtime-table" aria-label="浏览器内核列表"><thead><tr><th>内核与路径</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table></div>
     </div>
 
     <!-- 代理池(提前配置好,账号从池里关联) -->
@@ -2086,7 +2109,7 @@
         <span class="actions-spacer"></span>
         <button onclick="addProxy()"><svg><use href="#i-plus"/></svg>加入代理池</button>
       </div>
-      <div class="table-wrap mini-table"><table id="proxy-table" aria-label="代理池列表"><tbody></tbody></table></div>
+      <div class="table-wrap mini-table"><table id="proxy-table" aria-label="代理池列表"><thead><tr><th>代理节点</th><th>归属地 / 出口 IP</th><th>分配状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table></div>
     </div>
   </section>
 
@@ -2157,10 +2180,10 @@
         <span class="filter-count" id="risk-filter-count" role="status" aria-live="polite"></span>
         <span class="spacer"></span>
         <button class="ghost sm" id="risk-admin-token-btn" type="button" onclick="setRiskAdminToken()" style="display:none"><svg><use href="#i-shield"/></svg>管理口令</button>
-        <button class="ghost sm" type="button" onclick="refreshRiskCenter(true)"><svg><use href="#i-play"/></svg>刷新状态</button>
+        <button class="ghost sm" type="button" onclick="refreshRiskCenter(true)"><svg><use href="#i-refresh"/></svg>刷新状态</button>
       </div>
       <div class="table-wrap"><table aria-label="账号风险状态列表">
-        <thead><tr><th>账号</th><th>状态</th><th>等级</th><th>原因</th><th>等待 / 探测</th><th>恢复</th><th>任务</th><th>网络</th><th>操作</th></tr></thead>
+        <thead><tr><th>账号</th><th>状态 / 等级</th><th>原因</th><th>冷却 / 恢复进度</th><th>任务</th><th>网络</th><th style="text-align:right">操作</th></tr></thead>
         <tbody id="risk-account-table"></tbody>
       </table></div>
     </div>
@@ -2264,7 +2287,7 @@
         <div class="form-field"><label for="queue-type">队列类型</label><select id="queue-type" onchange="refreshTaskQueue(true)"><option value="">全部队列</option><option value="collections">关键词采集</option><option value="publishes">内容发布</option><option value="comments">自动评论</option><option value="actions">账号动作</option><option value="monitor_downloads">监控下载</option><option value="collection_downloads">采集下载</option></select></div>
         <div class="form-field"><label for="queue-state">任务状态</label><select id="queue-state" onchange="refreshTaskQueue(true)"><option value="active">活动任务</option><option value="pending">等待执行</option><option value="running">正在执行</option><option value="blocked">风控延后</option><option value="failed">失败任务</option><option value="completed">已完成</option><option value="all">全部状态</option></select></div>
         <div class="form-field"><label for="queue-query">搜索</label><input id="queue-query" type="search" placeholder="任务内容、账号、错误或风控原因" onkeydown="if(event.key==='Enter'){event.preventDefault();refreshTaskQueue(true)}"></div>
-        <button type="button" class="ghost" onclick="refreshTaskQueue(true)"><svg><use href="#i-bolt"/></svg>刷新</button>
+        <button type="button" class="ghost" onclick="refreshTaskQueue(true)"><svg><use href="#i-refresh"/></svg>刷新</button>
         <button type="button" class="ghost danger" id="queue-batch-stop" onclick="batchStopSelectedTasks()"><svg><use href="#i-x"/></svg>停止所选</button>
       </div>
       <div class="table-wrap" id="queue-table-wrap">
@@ -2362,7 +2385,6 @@
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-list"/></svg></span>
         <h2>采集任务 <span class="sub">进度、编辑、续跑与导出</span></h2>
-        <div class="right"><button class="ghost sm" type="button" onclick="refreshCollections()"><svg><use href="#i-bolt"/></svg>刷新</button></div>
       </div>
       <div class="collection-task-list" id="collection-job-table" role="list" aria-label="关键词采集任务列表" aria-live="polite"></div>
     </div>
@@ -2569,7 +2591,7 @@
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-download"/></svg></span>
         <h2>下载历史 <span class="sub" id="sd-history-count">0 条</span></h2>
-        <button class="ghost sm" onclick="refreshShareHistory()"><svg><use href="#i-clock"/></svg>刷新</button>
+        <button class="ghost sm" onclick="refreshShareHistory()"><svg><use href="#i-refresh"/></svg>刷新</button>
       </div>
       <div class="manage-toolbar share-history-toolbar">
         <input type="search" id="sd-history-search" placeholder="搜索作品描述 / 作者 / ID" aria-label="搜索链接下载历史" oninput="renderShareHistoryRows(true)">
@@ -2584,7 +2606,6 @@
         </select>
         <span class="filter-count" id="sd-history-filter-count" role="status" aria-live="polite"></span>
         <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
-          <button class="ghost sm" onclick="refreshShareHistory()"><svg><use href="#i-clock"/></svg>刷新</button>
           <button class="ghost sm" id="sd-history-selall-btn" onclick="shareHistorySelAllToggle()">全选</button>
           <span id="sd-history-selbar" style="display:none;align-items:center;gap:8px">
             <span class="mut" id="sd-history-selcount">已选 0</span>
@@ -2602,11 +2623,11 @@
         <colgroup>
           <col class="content-col-check"><col class="content-col-cover"><col class="content-col-desc">
           <col class="content-col-type"><col class="content-col-time"><col class="content-col-data">
-          <col class="content-col-actions"><col class="content-col-local">
+          <col class="content-col-local"><col class="content-col-actions">
         </colgroup>
         <thead><tr>
           <th><input type="checkbox" id="sd-history-selall" onchange="shareHistoryToggleAll(this.checked)" aria-label="全选"></th>
-          <th>封面</th><th>作品描述</th><th>类型</th><th>发布时间</th><th>数据</th><th>状态 / 操作</th><th>本地文件</th>
+          <th>封面</th><th>作品描述</th><th>规格</th><th>发布时间</th><th>互动数据</th><th>状态 / 本地文件</th><th style="text-align:right">操作</th>
         </tr></thead><tbody id="sd-history-body"></tbody>
       </table></div>
       <div id="sd-history-pager" class="danmaku-pager" hidden>
@@ -3324,10 +3345,10 @@
     <div class="card" data-section="records">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-list"/></svg></span>
-        <h2>发布记录 / 队列</h2>
+        <h2>发布记录 <span class="sub">排队中与历史发布任务</span></h2>
       </div>
       <div class="table-wrap"><table aria-label="发布任务列表"><thead><tr>
-        <th>标题</th><th>类型</th><th>媒体</th><th>来源</th><th>计划时间</th><th>状态</th><th>操作</th>
+        <th>标题</th><th>发布账号</th><th>类型 / 素材</th><th>来源</th><th>计划时间</th><th>状态</th><th style="text-align:right">操作</th>
       </tr></thead><tbody id="pub-table"></tbody></table></div>
     </div>
 
@@ -3405,8 +3426,10 @@
 
     <!-- 任务列表 -->
     <div class="card" data-section="tasks">
-      <div class="card-head"><span class="card-ic"><svg><use href="#i-msg"/></svg></span><h2>评论任务 / 记录</h2>
-        <select id="ac-task-filter" onchange="refreshCommentTasks()" style="margin-left:auto;max-width:160px;flex:0 0 auto" aria-label="按状态筛选评论任务">
+      <div class="card-head"><span class="card-ic"><svg><use href="#i-msg"/></svg></span><h2>任务与审核 <span class="sub">待审草稿与自动发送记录</span></h2></div>
+      <div class="wb-list-tools">
+        <label class="wb-search-field"><svg aria-hidden="true"><use href="#i-logo"/></svg><input type="search" id="ac-task-search" placeholder="搜索文案、作品 ID 或昵称" aria-label="搜索评论任务" oninput="renderCommentTaskRows()"></label>
+        <select id="ac-task-filter" onchange="refreshCommentTasks()" style="max-width:170px;flex:0 0 auto" aria-label="按状态筛选评论任务">
           <option value="">全部状态</option>
           <option value="draft">草稿待审</option>
           <option value="pending">排队中</option>
@@ -3415,20 +3438,21 @@
           <option value="failed">失败</option>
           <option value="canceled">已取消</option>
         </select>
+        <span class="filter-count" id="ac-task-count" role="status" aria-live="polite"></span>
       </div>
-      <div id="ac-draft-bar" class="hint" style="display:none;align-items:center;gap:10px;border-left:3px solid var(--info);padding:8px 10px;margin-bottom:10px">
+      <div id="ac-draft-bar" class="hint" style="display:none;align-items:center;gap:10px;border-left:3px solid var(--info);padding:8px 12px;margin-bottom:10px;background:var(--info-soft);border-radius:var(--r-xs)">
         <span id="ac-draft-count" style="flex:1"></span>
         <button class="sm" onclick="approveAllDrafts()"><svg><use href="#i-check"/></svg>全部通过</button>
       </div>
       <div class="table-wrap"><table aria-label="自动评论任务记录"><thead><tr>
-        <th>文案</th><th>目标作品</th><th>对象</th><th>计划时间</th><th>通道</th><th>状态</th><th>操作</th>
+        <th>评论文案</th><th>目标与账号</th><th>互动类型</th><th>计划时间</th><th>执行通道</th><th>状态</th><th style="text-align:right">操作</th>
       </tr></thead><tbody id="ac-task-table"></tbody></table></div>
     </div>
   </section>
 
   <section data-panel="notifications">
   <!-- 通知推送 -->
-  <div class="card">
+  <div class="card" data-section="channels">
     <div class="card-head">
       <span class="card-ic"><svg><use href="#i-bell"/></svg></span>
       <h2>通知推送 <span class="sub">新作品 / 新评论时提醒</span></h2>
@@ -3458,9 +3482,9 @@
     </div>
     <div class="section-divider"></div>
     <div class="data-section-head"><b>已配置渠道</b><span>可单独测试、停用或编辑</span></div>
-    <div class="table-wrap mini-table"><table id="n-table" aria-label="通知渠道列表"><tbody></tbody></table></div>
+    <div class="table-wrap mini-table"><table id="n-table" aria-label="通知渠道列表"><thead><tr><th>渠道名称 / 类型</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table></div>
   </div>
-  <div class="card">
+  <div class="card" data-section="webhooks">
     <div class="card-head">
       <span class="card-ic"><svg><use href="#i-bolt"/></svg></span>
       <h2>Webhook 事件中心 <span class="sub">账号操作、群成员变化与直播线索</span></h2>
@@ -3491,11 +3515,12 @@
       <input type="search" id="mon-search" placeholder="搜索用户或别名" aria-label="搜索监控目标" oninput="onMonitorFilter()">
       <select id="mon-group" aria-label="按分组筛选监控" onchange="onMonitorFilter()"><option value="">全部分组</option></select>
       <select id="mon-tag" aria-label="按标签筛选监控" onchange="onMonitorFilter()"><option value="">全部标签</option></select>
+      <select id="mon-status" aria-label="按运行状态筛选监控" onchange="onMonitorFilter()"><option value="">全部状态</option><option value="enabled">监控中</option><option value="paused">已暂停</option><option value="error">有异常</option></select>
       <span class="filter-count" id="mon-filter-count" role="status" aria-live="polite"></span>
       <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="监控列表 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('monitors', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出监控列表当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('monitors', true, this)" title="导出当前平台全部记录" aria-label="导出监控列表全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div></div>
     </div>
     <div class="table-wrap"><table aria-label="作品监控列表"><thead><tr>
-      <th>用户</th><th>分组 / 标签</th><th>作品数</th><th>间隔</th><th>下载设置</th><th>上次扫描</th><th>状态</th><th></th>
+      <th>监控对象</th><th>分组 / 标签</th><th>已采记录</th><th>检查间隔</th><th>抓取与下载策略</th><th>上次扫描</th><th>状态</th><th style="text-align:right">操作</th>
     </tr></thead><tbody id="mon-table"></tbody></table></div>
   </div>
 
@@ -3561,11 +3586,11 @@
       <colgroup>
         <col class="content-col-check"><col class="content-col-cover"><col class="content-col-desc">
         <col class="content-col-type"><col class="content-col-time"><col class="content-col-data">
-        <col class="content-col-actions"><col class="content-col-local">
+        <col class="content-col-local"><col class="content-col-actions">
       </colgroup>
       <thead><tr>
         <th><input type="checkbox" id="content-selall" onchange="contentToggleAll(this.checked)" aria-label="全选"></th>
-        <th>封面</th><th>作品 / 来源任务</th><th>类型</th><th>抓取 / 发布时间</th><th>数据</th><th>状态 / 操作</th><th>本地文件</th>
+        <th>封面</th><th>作品 / 来源任务</th><th>规格</th><th>抓取 / 发布时间</th><th>互动数据</th><th>状态 / 本地文件</th><th style="text-align:right">操作</th>
       </tr></thead><tbody id="content-table"></tbody>
      </table></div>
     <div id="content-cards" class="xhs-grid" style="display:none"></div>
@@ -3674,11 +3699,12 @@
       <input type="search" id="watch-search" placeholder="搜索对象或别名" aria-label="搜索评论监控" oninput="onWatchFilter()">
       <select id="watch-group" aria-label="按分组筛选评论监控" onchange="onWatchFilter()"><option value="">全部分组</option></select>
       <select id="watch-tag" aria-label="按标签筛选评论监控" onchange="onWatchFilter()"><option value="">全部标签</option></select>
+      <select id="watch-status" aria-label="按状态筛选评论监控" onchange="onWatchFilter()"><option value="">全部状态</option><option value="enabled">监控中</option><option value="paused">已暂停</option><option value="error">有异常</option></select>
       <span class="filter-count" id="watch-filter-count" role="status" aria-live="polite"></span>
       <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="评论监控 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('comment-watches', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出评论监控当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('comment-watches', true, this)" title="导出当前平台全部记录" aria-label="导出评论监控全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div></div>
       </div>
       <div class="table-wrap"><table aria-label="评论监控列表"><thead><tr>
-        <th>对象</th><th>分组 / 标签</th><th>类型</th><th>来源</th><th>评论数</th><th>间隔</th><th>上次扫描</th><th>状态</th><th>操作</th>
+        <th>监控对象</th><th>分组 / 标签</th><th>类型 / 来源</th><th>已采评论</th><th>检查间隔</th><th>上次扫描</th><th>状态</th><th style="text-align:right">操作</th>
       </tr></thead><tbody id="watch-table"></tbody></table></div>
     </div>
 
@@ -3686,7 +3712,7 @@
   <div class="card" data-section="records">
     <div class="card-head">
       <span class="card-ic"><svg><use href="#i-msg"/></svg></span>
-      <h2>抓到的评论</h2>
+      <h2>评论记录 <span class="sub">按来源任务与入库时间检索</span></h2>
     </div>
     <div class="content-scope">
       <div class="content-scope-copy"><span class="content-origin-label">当前查看范围</span>
@@ -3713,7 +3739,7 @@
     </div>
     <div class="manage-toolbar">
         <input type="search" id="comment-query" placeholder="搜索评论 / 用户 / 地区 / 作品 ID" aria-label="搜索评论内容" oninput="refreshComments(true)">
-        <input type="search" id="comment-ip-label" placeholder="地区" aria-label="按评论地区筛选" oninput="refreshComments(true)">
+        <input type="text" id="comment-ip-label" placeholder="地区（如：广东）" aria-label="按评论地区筛选" oninput="refreshComments(true)">
         <select id="comment-group" onchange="onCommentMetaFilter()" aria-label="按分组筛选评论"><option value="">全部分组</option></select>
         <select id="comment-tag" onchange="onCommentMetaFilter()" aria-label="按标签筛选评论"><option value="">全部标签</option></select>
         <select id="comment-type" onchange="refreshComments(true)" aria-label="按评论类型筛选">
@@ -3728,13 +3754,16 @@
         <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
           <div class="export-actions" role="group" aria-label="评论数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('comments', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出评论数据当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('comments', true, this)" title="导出当前平台全部记录" aria-label="导出评论数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div>
           <button class="ghost sm" id="comment-selall-btn" onclick="commentSelAllToggle()">全选</button>
-          <span class="mut" id="comment-selcount" style="display:none">已选 0</span>
-          <button class="sm danger" id="comment-batchbtn" style="display:none" onclick="commentBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
+          <span id="comment-selbar" style="display:none;align-items:center;gap:8px">
+            <span class="mut" id="comment-selcount">已选 0</span>
+            <button class="ghost sm" type="button" onclick="commentSelClear()">取消</button>
+            <button class="sm danger" id="comment-batchbtn" onclick="commentBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
+          </span>
           <button class="ghost sm danger" onclick="clearComments()"><svg><use href="#i-trash"/></svg>清空评论</button>
         </div>
     </div>
     <div class="table-wrap" id="comment-table-wrap"><table class="watch-record-table comment-record-table" aria-label="已抓取评论、来源任务与抓取时间"><thead><tr>
-      <th style="width:30px"><input type="checkbox" id="comment-selall" onchange="commentToggleAll(this.checked)" aria-label="全选"></th>
+      <th><input type="checkbox" id="comment-selall" onchange="commentToggleAll(this.checked)" aria-label="全选"></th>
       <th>评论 / 来源任务</th><th>用户</th><th>赞</th><th>抓取 / 评论时间</th><th>操作</th>
     </tr></thead><tbody id="comment-table"></tbody></table></div>
     <div id="comment-pager" class="danmaku-pager" hidden>
@@ -3850,18 +3879,19 @@
         <input type="search" id="danmaku-watch-search" placeholder="搜索对象或别名" aria-label="搜索弹幕监控" oninput="renderDanmakuWatchRows()">
         <select id="danmaku-watch-group" aria-label="按分组筛选弹幕监控" onchange="renderDanmakuWatchRows()"><option value="">全部分组</option></select>
         <select id="danmaku-watch-tag" aria-label="按标签筛选弹幕监控" onchange="renderDanmakuWatchRows()"><option value="">全部标签</option></select>
+        <select id="danmaku-watch-status" aria-label="按状态筛选弹幕监控" onchange="renderDanmakuWatchRows()"><option value="">全部状态</option><option value="enabled">监控中</option><option value="paused">已暂停</option><option value="error">有异常</option></select>
         <span class="filter-count" id="danmaku-watch-filter-count"></span>
         <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="弹幕监控 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('danmaku-watches', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出弹幕监控当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('danmaku-watches', true, this)" title="导出当前平台全部记录" aria-label="导出弹幕监控全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div></div>
       </div>
       <div class="table-wrap"><table aria-label="弹幕监控列表"><thead><tr>
-        <th>对象</th><th>类型</th><th>来源</th><th>弹幕数</th><th>间隔</th><th>上次扫描</th><th>状态</th><th>操作</th>
+        <th>监控对象</th><th>分组 / 标签</th><th>类型 / 来源</th><th>已采弹幕</th><th>检查间隔</th><th>上次扫描</th><th>状态</th><th style="text-align:right">操作</th>
       </tr></thead><tbody id="danmaku-watch-table"></tbody></table></div>
     </div>
 
     <div class="card" data-section="records">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-msg"/></svg></span>
-        <h2>抓到的弹幕</h2>
+        <h2>弹幕记录 <span class="sub">按视频时间点与来源任务检索</span></h2>
       </div>
       <div class="content-scope">
         <div class="content-scope-copy"><span class="content-origin-label">当前查看范围</span>
@@ -3900,9 +3930,8 @@
           <button class="ghost sm danger" onclick="clearDanmaku()"><svg><use href="#i-trash"/></svg>清空弹幕</button>
         </div>
       </div>
-      <div class="hint" style="margin:8px 0 10px">“来源任务”是抓取该记录的监控配置；“获取渠道”是播放页或创作中心；“视频内时间”表示弹幕在视频中的出现位置。</div>
       <div class="table-wrap" id="danmaku-table-wrap"><table class="watch-record-table danmaku-record-table" aria-label="已抓取弹幕、来源任务与抓取时间"><thead><tr>
-        <th>弹幕 / 来源任务</th><th>用户</th><th>视频内时间</th><th>获取渠道</th><th>抓取 / 发送时间</th><th>操作</th>
+        <th title="弹幕文本与抓取该记录的监控任务">弹幕 / 来源任务</th><th>用户</th><th title="弹幕在视频播放轴中的出现位置">视频内时间</th><th title="公开视频播放页或创作者中心">获取渠道</th><th>抓取 / 发送时间</th><th style="text-align:right">操作</th>
       </tr></thead><tbody id="danmaku-table"></tbody></table></div>
       <div id="danmaku-pager" class="danmaku-pager" hidden>
         <div class="danmaku-pager-left">

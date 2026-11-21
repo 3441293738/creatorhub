@@ -384,8 +384,13 @@ export function AgentAssistant({ page }) {
             <div className="agent-section-head"><h3>历史对话</h3><button type="button" className="ghost agent-new-chat-btn" disabled={busy || running(run)} onClick={newConversation}><Icon name="plus" />新建对话</button></div>
             <p className="field-help">打开对话不会重新调用模型。最近记录按对话归组；同范围、同渠道可继续追问。</p>
             <label className="agent-history-search" htmlFor="agent-history-search">搜索对话<input id="agent-history-search" type="search" maxLength={200} value={historyQuery} placeholder="搜索标题或最近的问题" onChange={event => setHistoryQuery(event.target.value)} /></label>
-            {!conversationList.length ? <div className="agent-empty"><Icon name="clock" /><p>{historyQuery ? "没有匹配的对话" : "还没有对话记录"}</p></div> : <ul className="agent-history">{conversationList.map(item => <li key={item.id}><button type="button" className="ghost" disabled={busy || running(run)}
-              aria-pressed={(run?.conversation_id || run?.id) === (item.conversation_id || item.id)} onClick={() => loadRun(item.id)}><span>{item.conversation_title || item.prompt}</span><small>{platformText[item.platform] || "全平台"} · {item.model_name} · {statusText[item.status] || item.status}</small></button></li>)}</ul>}
+            {!conversationList.length ? <div className="agent-empty"><Icon name="clock" /><p>{historyQuery ? "没有匹配的对话" : "还没有对话记录"}</p></div> : <ul className="agent-history">{conversationList.map(item => {
+              const rawTs = item.created_at ? String(item.created_at) : "";
+              const parsedTs = rawTs ? new Date(rawTs.endsWith("Z") || /[+-]\d\d:\d\d$/.test(rawTs) ? rawTs : `${rawTs}Z`) : null;
+              const timeLabel = parsedTs && !Number.isNaN(parsedTs.getTime()) ? parsedTs.toLocaleString(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+              return <li key={item.id}><button type="button" className="ghost" disabled={busy || running(run)}
+                aria-pressed={(run?.conversation_id || run?.id) === (item.conversation_id || item.id)} onClick={() => loadRun(item.id)}><span>{item.conversation_title || item.prompt}</span><small>{platformText[item.platform] || "全平台"} · {item.model_name} · {statusText[item.status] || item.status}{timeLabel ? ` · ${timeLabel}` : ""}</small></button></li>;
+            })}</ul>}
           </Tabs.Content>
           <Tabs.Content value="settings" forceMount hidden={view !== "settings"}>
             {!!channels.length && <ChannelList channels={channels} activeId={activeChannelId} editingId={editingChannelId} busy={busy} dirty={dirty || addingModel}

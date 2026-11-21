@@ -1123,7 +1123,7 @@
   overflow:hidden;
   overflow-wrap:anywhere;
 }
-.agent-history small { font-size:11.5px; font-weight:460; color:var(--mut); }
+.agent-history small { font-size:11.5px; font-weight:460; color:var(--mut); overflow-wrap:anywhere; }
 
 /* ── Settings: Multi-Channel List & Provider Form ── */
 .agent-channels { display:grid; gap:10px; margin-bottom:14px; }
@@ -1305,7 +1305,7 @@
   background:var(--surface-card);
   box-shadow:var(--sh-card);
 }
-.agent-directory-list { display:grid; gap:8px; list-style:none; padding:0; margin:0; }
+.agent-directory-list { display:grid; gap:8px; list-style:none; padding:0 2px 0 0; margin:0; max-height:310px; overflow-y:auto; overscroll-behavior:contain; }
 .agent-directory-list>li {
   display:flex;
   align-items:center;
@@ -1322,17 +1322,19 @@
   border-color:color-mix(in srgb,var(--acc) 44%,var(--border-card));
 }
 .agent-directory-fields { display:grid; grid-template-columns:minmax(0,1.12fr) minmax(0,1fr); flex:1; gap:8px; min-width:0; }
-.agent-directory-fields label { position:relative; font-size:11px!important; color:var(--mut)!important; }
+.agent-directory-fields label { font-size:11px!important; color:var(--mut)!important; }
+.agent-directory-label-row { display:flex; align-items:center; justify-content:space-between; gap:4px; min-height:16px; }
 .agent-current-model {
-  position:absolute;
-  right:0;
-  top:-1px;
   padding:0 6px;
   border-radius:999px;
   background:var(--acc-soft);
   color:var(--acc);
   font-size:10px;
   font-weight:640;
+  flex-shrink:0;
+}
+@media(max-width:440px) {
+  .agent-directory-fields { grid-template-columns:minmax(0,1fr); gap:6px; }
 }
 .agent-directory-fields input { min-height:36px; padding:6px 9px; font-size:12px!important; border-radius:9px; }
 .agent-directory-actions { display:flex; gap:2px; flex-shrink:0; align-self:flex-end; }

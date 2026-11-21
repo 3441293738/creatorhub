@@ -74,8 +74,8 @@ export function ModelDirectory({ models, currentModel, busy, onRename, onEdit, o
   useEffect(() => setPage(value => Math.min(value, pages - 1)), [pages]);
   return <div className="agent-directory">
     <ul className="agent-directory-list" aria-label="已配置模型">{models.slice(page * 20, (page + 1) * 20).map(item => <li key={item.id} data-model-id={item.id} data-current={currentModel === item.id}>
-      <div className="agent-directory-fields"><label>模型 ID{currentModel === item.id && <span className="agent-current-model">当前使用</span>}<input value={item.id} readOnly aria-label={`模型 ${item.id} 的 ID`} /></label>
-        <label>显示名称<input value={item.name} maxLength={200} placeholder={item.id} disabled={busy} aria-label={`模型 ${item.id} 的显示名称`} onChange={event => onRename(item.id, event.target.value)} /></label></div>
+      <div className="agent-directory-fields"><label><span className="agent-directory-label-row"><span>模型 ID</span>{currentModel === item.id && <span className="agent-current-model">当前使用</span>}</span><input value={item.id} title={item.id} readOnly aria-label={`模型 ${item.id} 的 ID`} /></label>
+        <label><span className="agent-directory-label-row"><span>显示名称</span></span><input value={item.name} title={item.name || item.id} maxLength={200} placeholder={item.id} disabled={busy} aria-label={`模型 ${item.id} 的显示名称`} onChange={event => onRename(item.id, event.target.value)} /></label></div>
       <div className="agent-directory-actions"><button type="button" className="ghost agent-icon-button" disabled={busy} aria-label={`配置模型 ${item.id}`} title="编辑模型 ID 与显示名称" onClick={() => onEdit(item)}><Icon name="edit" /></button>
         <button type="button" className="ghost agent-icon-button agent-directory-remove" disabled={busy} aria-label={`移除模型 ${item.id}`} title="从目录移除" onClick={() => onRemove(item.id)}><Icon name="trash" /></button></div>
     </li>)}</ul>
