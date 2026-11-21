@@ -1,0 +1,380 @@
+  <section data-panel="publish">
+    <!-- 发布到小红书 -->
+    <div class="card" data-section="editor">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-send"/></svg></span>
+        <h2 id="pub-head"><span id="pub-head-lead">发布笔记</span> <span class="sub" id="pub-head-sub">上传图集 / 视频到小红书(实验性)</span></h2>
+      </div>
+      <div class="stack">
+        <div class="form-grid">
+          <div class="form-field"><label for="pub-acc">发布账号</label><select id="pub-acc"></select></div>
+          <div class="form-field"><label for="pub-type">作品类型</label><select id="pub-type" onchange="onPubType()">
+              <option value="images">图文（图集）</option><option value="video">视频</option>
+          </select></div>
+        </div>
+        <div>
+          <label class="field" id="pub-files-label" for="pub-files">选择图片（可多选）</label>
+          <div class="filepick" id="pub-drop">
+            <input type="file" id="pub-files" class="filepick-input" multiple accept="image/*" aria-label="选择文件">
+            <div class="filepick-cta"><svg><use href="#i-download"/></svg><span><b>点击选择</b> 或拖拽文件到此</span></div>
+            <div class="filepick-list" id="pub-filelist"></div>
+          </div>
+        </div>
+        <div>
+          <label class="field" for="pub-title"><span id="pub-title-label-text">标题(≤20 字)</span></label>
+          <input id="pub-title" maxlength="20" placeholder="给作品起个标题">
+        </div>
+        <div>
+          <label class="field" for="pub-desc">正文</label>
+          <textarea id="pub-desc" rows="3" placeholder="正文内容…"></textarea>
+        </div>
+        <div class="form-grid">
+          <div class="form-field"><label for="pub-topics">话题</label><input id="pub-topics" placeholder="逗号分隔，不用带 #；例如：露营,户外"></div>
+          <div class="form-field"><label for="pub-when">发布时间</label><input type="datetime-local" id="pub-when" aria-label="定时发布（留空则尽快发布）"><div class="field-help">留空表示尽快发布</div></div>
+        </div>
+        <div class="form-field sh-only">
+          <label for="pub-location">位置（可选）</label><input id="pub-location" placeholder="城市或地点名，例如：东莞市 / 杭州西湖">
+        </div>
+        <fieldset class="publish-permissions" id="pub-dy-opts">
+          <legend>互动与权限</legend>
+          <div class="publish-permission">
+            <label class="field" for="pub-visibility">谁可以看</label>
+            <select id="pub-visibility" aria-label="谁可以看">
+              <option value="public">公开</option>
+              <option value="friends">好友可见</option>
+              <option value="private">仅自己可见</option>
+            </select>
+          </div>
+          <div class="publish-permission dy-only">
+            <label class="field" for="pub-allowsave">保存权限</label>
+            <select id="pub-allowsave" aria-label="保存权限">
+              <option value="1">允许他人保存</option>
+              <option value="0">不允许</option>
+            </select>
+          </div>
+        </fieldset>
+        <fieldset class="publish-permissions tk-only" id="pub-tiktok-opts">
+          <legend>TikTok 可见范围与互动</legend>
+          <div class="publish-permission">
+            <label class="field" for="pub-tk-visibility">谁可以看</label>
+            <select id="pub-tk-visibility" aria-label="TikTok 谁可以看">
+              <option value="public">所有人</option>
+              <option value="friends">好友</option>
+              <option value="private">仅自己</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-tk-comment">评论</label>
+            <select id="pub-tk-comment" aria-label="TikTok 评论权限">
+              <option value="1">允许</option><option value="0">关闭</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-tk-duet">Duet</label>
+            <select id="pub-tk-duet" aria-label="TikTok Duet 权限">
+              <option value="1">允许</option><option value="0">关闭</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-tk-stitch">Stitch</label>
+            <select id="pub-tk-stitch" aria-label="TikTok Stitch 权限">
+              <option value="1">允许</option><option value="0">关闭</option>
+            </select>
+          </div>
+        </fieldset>
+        <fieldset class="publish-permissions bili-only" id="pub-bili-opts">
+          <legend>哔哩哔哩投稿与互动设置</legend>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-tid">投稿分区</label>
+            <select id="pub-bili-tid" aria-label="哔哩哔哩投稿分区">
+              <option value="21">生活 · 日常</option>
+              <option value="17">游戏 · 单机游戏</option>
+              <option value="95">科技 · 数码</option>
+              <option value="122">科技 · 野生技术协会</option>
+              <option value="208">知识 · 科学科普</option>
+              <option value="138">生活 · 搞笑</option>
+              <option value="161">生活 · 手工</option>
+              <option value="76">美食 · 美食制作</option>
+              <option value="183">影视 · 影视杂谈</option>
+              <option value="28">音乐 · 原创音乐</option>
+              <option value="27">动画 · 综合</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-copyright">稿件类型</label>
+            <select id="pub-bili-copyright" aria-label="哔哩哔哩稿件类型" onchange="onBiliCopyrightChange()">
+              <option value="1">自制</option>
+              <option value="2">转载</option>
+            </select>
+          </div>
+          <div class="publish-permission" id="pub-bili-source-wrap" style="display:none">
+            <label class="field" for="pub-bili-source">转载来源</label>
+            <input id="pub-bili-source" maxlength="200" placeholder="转载时必填原视频链接或出处">
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-statement">创作声明</label>
+            <select id="pub-bili-statement" aria-label="哔哩哔哩创作声明">
+              <option value="-1">内容无需标注</option>
+              <option value="1">含AI生成内容</option>
+              <option value="2">含虚构演绎内容</option>
+              <option value="3">内容含营销信息</option>
+              <option value="4">个人观点，仅供参考</option>
+              <option value="-2">内容为转载</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-recreate">二创权限</label>
+            <select id="pub-bili-recreate" aria-label="哔哩哔哩二创权限">
+              <option value="-1">默认（不开启二创）</option>
+              <option value="1">允许二创</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-visibility">可见范围</label>
+            <select id="pub-bili-visibility" aria-label="哔哩哔哩可见范围">
+              <option value="public">公开可见</option>
+              <option value="private">仅自己可见</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-close-danmu">弹幕权限</label>
+            <select id="pub-bili-close-danmu" aria-label="哔哩哔哩弹幕权限">
+              <option value="0">开启弹幕</option>
+              <option value="1">关闭弹幕</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-close-reply">评论权限</label>
+            <select id="pub-bili-close-reply" aria-label="哔哩哔哩评论权限">
+              <option value="0">开启评论</option>
+              <option value="1">关闭评论</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-bili-selection-reply">评论精选</label>
+            <select id="pub-bili-selection-reply" aria-label="哔哩哔哩评论精选">
+              <option value="0">普通评论区</option>
+              <option value="1">精选评论后展示</option>
+            </select>
+          </div>
+        </fieldset>
+        <fieldset class="publish-permissions tw-only" id="pub-tw-opts">
+          <legend>Twitter 推文与互动设置</legend>
+          <div class="publish-permission">
+            <label class="field" for="pub-tw-reply-perm">谁可以回复</label>
+            <select id="pub-tw-reply-perm" aria-label="Twitter 回复权限">
+              <option value="everyone">所有人</option>
+              <option value="following">你关注的账号</option>
+              <option value="verified">认证账号</option>
+              <option value="mentioned">仅你提及的账号</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-tw-long">字数上限</label>
+            <select id="pub-tw-long" aria-label="Twitter 字数上限" onchange="applyPlatformUI()">
+              <option value="0">标准推文（≤280 权重字符）</option>
+              <option value="1">X Premium 长推文（≤4000 权重字符）</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-tw-first-comment">发布后首评串推（可选）</label>
+            <input id="pub-tw-first-comment" maxlength="280" placeholder="发布成功后自动在主推文下追加一条自回复（如外链或补充说明）">
+          </div>
+        </fieldset>
+        <fieldset class="publish-permissions ig-only" id="pub-ig-opts">
+          <legend>Instagram 发布形态与互动设置</legend>
+          <div class="publish-permission">
+            <label class="field" for="pub-ig-kind">发布形态</label>
+            <select id="pub-ig-kind" aria-label="Instagram 发布形态">
+              <option value="auto">动态帖子 / Reels / 多图轮播（自动识别）</option>
+              <option value="reels">Reels 短视频（configure_to_clips）</option>
+              <option value="feed">普通视频动态（configure）</option>
+              <option value="story">Story 快拍（configure_to_story）</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-ig-share-feed">Reels 同步主页</label>
+            <select id="pub-ig-share-feed" aria-label="Instagram Reels 同步主页">
+              <option value="1">同步展示到个人主页网格</option>
+              <option value="0">仅展示在 Reels 标签页</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-ig-comment">评论权限</label>
+            <select id="pub-ig-comment" aria-label="Instagram 评论权限">
+              <option value="1">开启评论</option>
+              <option value="0">关闭评论</option>
+            </select>
+          </div>
+        </fieldset>
+        <div class="form-actions">
+          <span class="status-text" id="pub-msg" role="status" aria-live="polite"></span>
+          <button onclick="addPublish()"><svg><use href="#i-send"/></svg>加入发布队列</button>
+        </div>
+        <div class="form-note" id="pub-hint"><svg aria-hidden="true"><use href="#i-info"/></svg><span>发布通过自动化创作平台完成，遇到验证码或需补充封面时，可在弹出的浏览器窗口中手动处理。定时任务由后台引擎按计划执行。</span></div>
+      </div>
+    </div>
+
+    <!-- 发布任务列表 -->
+    <div class="card" data-section="records">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-list"/></svg></span>
+        <h2>发布记录 <span class="sub">排队中与历史发布任务</span></h2>
+      </div>
+      <div class="table-wrap"><table aria-label="发布任务列表"><thead><tr>
+        <th>标题</th><th>发布账号</th><th>类型 / 素材</th><th>来源</th><th>计划时间</th><th>状态</th><th style="text-align:right">操作</th>
+      </tr></thead><tbody id="pub-table"></tbody></table></div>
+    </div>
+
+    <!-- 已发布作品(创作平台)· 仅小红书 -->
+    <div class="card xhs-rn-only" data-section="published">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-film"/></svg></span>
+        <h2>已发布作品 <span class="sub">小红书创作平台</span></h2>
+        <button class="ghost sm" style="margin-left:auto" onclick="loadPublished()">拉取列表</button>
+      </div>
+      <div id="published-grid" class="xhs-grid"></div>
+      <div class="mut" id="published-msg">点「拉取列表」获取当前小红书账号已发布的笔记。</div>
+    </div>
+  </section>
+
+  <section data-panel="autocomment">
+    <!-- 新建自动评论规则 -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-plus"/></svg></span>
+        <h2>新建自动评论规则 <span class="sub">自动回复自己作品 / 自动评论他人</span></h2>
+      </div>
+      <div class="stack">
+        <div class="row">
+          <select id="ac-mode" aria-label="模式" onchange="onAcMode()">
+            <option value="auto_reply">自动回复(回自己作品评论 · 仍有写入风控)</option>
+            <option value="auto_comment">自动评论(去别人帖子 · 高风险)</option>
+          </select>
+          <select id="ac-kind" aria-label="目标类型" onchange="onAcKind()"></select>
+          <select id="ac-acc" aria-label="使用账号"></select>
+        </div>
+        <div id="ac-target-wrap">
+          <label class="field" id="ac-target-label" for="ac-target">目标</label>
+          <input id="ac-target" placeholder="">
+        </div>
+        <div>
+          <label class="field" for="ac-templates">文案模板(每行一条;支持 {nick} 对方昵称、{kw} 关键词、同义随机 {好棒|不错|赞})</label>
+          <textarea id="ac-templates" rows="4" placeholder="谢谢支持~{记得关注我哦|有空常来}&#10;写得真好,{学到了|涨知识了}"></textarea>
+        </div>
+        <label class="mut" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="ac-use-ai" style="width:auto"> 用大模型生成文案(需在「设置」里配好 API;失败自动回退上面的模板)
+        </label>
+        <label class="mut" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="ac-review" style="width:auto"> 草稿审核(只生成不自动发,人工通过后再批量发出)
+        </label>
+        <div class="row" id="ac-filter-wrap">
+          <input id="ac-reply-filter" placeholder="仅回复正文含此关键词的评论(留空=全回)" aria-label="回复过滤">
+          <input id="ac-skip" placeholder="跳过含这些词的评论/作品(逗号分隔)" aria-label="跳过关键词">
+        </div>
+        <div class="row" style="flex-wrap:wrap;gap:10px;justify-content:flex-start">
+          <label class="mut" style="display:flex;align-items:center;gap:6px">每日上限 <input type="number" id="ac-cap" value="20" min="0" style="width:72px"></label>
+          <label class="mut" style="display:flex;align-items:center;gap:6px">最小间隔秒 <input type="number" id="ac-gap" value="90" min="1" style="width:84px"></label>
+          <label class="mut" style="display:flex;align-items:center;gap:6px">每轮最多 <input type="number" id="ac-max" value="5" min="1" style="width:72px"></label>
+          <select id="ac-interval" aria-label="运行频率" style="flex:0 0 auto">
+            <option value="900">每 15 分钟跑一轮</option>
+            <option value="1800" selected>每 30 分钟跑一轮</option>
+            <option value="3600">每小时跑一轮</option>
+          </select>
+        </div>
+        <div class="row" style="justify-content:flex-start">
+          <button onclick="addCommentRule()" style="flex:0 0 auto"><svg><use href="#i-msg"/></svg>创建规则(默认关闭)</button>
+          <span class="mut" id="ac-msg" style="flex:1"></span>
+        </div>
+        <div class="form-note warn"><svg aria-hidden="true"><use href="#i-info"/></svg><span>自动评论是平台较敏感的动作：同质化文案可能被判定为垃圾营销。规则<b>默认关闭</b>，建议先「试跑」检查生成内容，再手动启用。每个账号仍受每日总量限制。</span></div>
+      </div>
+    </div>
+
+    <!-- 规则列表 -->
+    <div class="card" data-section="rules">
+      <div class="card-head"><span class="card-ic"><svg><use href="#i-list"/></svg></span><h2>评论规则</h2></div>
+      <div class="table-wrap"><table aria-label="自动评论规则列表"><thead><tr>
+        <th>名称</th><th>模式</th><th>目标</th><th>账号</th><th>每日/间隔</th><th>上次运行</th><th>状态</th><th>操作</th>
+      </tr></thead><tbody id="ac-rule-table"></tbody></table></div>
+    </div>
+
+    <!-- 任务列表 -->
+    <div class="card" data-section="tasks">
+      <div class="card-head"><span class="card-ic"><svg><use href="#i-msg"/></svg></span><h2>任务与审核 <span class="sub">待审草稿与自动发送记录</span></h2></div>
+      <div class="wb-list-tools">
+        <label class="wb-search-field"><svg aria-hidden="true"><use href="#i-logo"/></svg><input type="search" id="ac-task-search" placeholder="搜索文案、作品 ID 或昵称" aria-label="搜索评论任务" oninput="renderCommentTaskRows()"></label>
+        <select id="ac-task-filter" onchange="refreshCommentTasks()" style="max-width:170px;flex:0 0 auto" aria-label="按状态筛选评论任务">
+          <option value="">全部状态</option>
+          <option value="draft">草稿待审</option>
+          <option value="pending">排队中</option>
+          <option value="uncertain">结果待确认</option>
+          <option value="done">已发送</option>
+          <option value="failed">失败</option>
+          <option value="canceled">已取消</option>
+        </select>
+        <span class="filter-count" id="ac-task-count" role="status" aria-live="polite"></span>
+      </div>
+      <div id="ac-draft-bar" class="hint" style="display:none;align-items:center;gap:10px;border-left:3px solid var(--info);padding:8px 12px;margin-bottom:10px;background:var(--info-soft);border-radius:var(--r-xs)">
+        <span id="ac-draft-count" style="flex:1"></span>
+        <button class="sm" onclick="approveAllDrafts()"><svg><use href="#i-check"/></svg>全部通过</button>
+      </div>
+      <div class="table-wrap"><table aria-label="自动评论任务记录"><thead><tr>
+        <th>评论文案</th><th>目标与账号</th><th>互动类型</th><th>计划时间</th><th>执行通道</th><th>状态</th><th style="text-align:right">操作</th>
+      </tr></thead><tbody id="ac-task-table"></tbody></table></div>
+    </div>
+  </section>
+
+  <section data-panel="notifications">
+  <!-- 通知推送 -->
+  <div class="card" data-section="channels">
+    <div class="card-head">
+      <span class="card-ic"><svg><use href="#i-bell"/></svg></span>
+      <h2>通知推送 <span class="sub">新作品 / 新评论时提醒</span></h2>
+    </div>
+    <div class="form-grid download-grid">
+      <div class="form-field">
+        <label for="n-name">渠道备注</label>
+        <input id="n-name" placeholder="例如：运营群通知（可选）">
+      </div>
+      <div class="form-field">
+        <label for="n-type">渠道类型</label>
+        <select id="n-type" onchange="onTypeChange()">
+          <option value="bark">Bark</option>
+          <option value="dingtalk">钉钉</option>
+          <option value="telegram">Telegram</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-field notification-config">
+      <label for="n-config">渠道配置 JSON</label>
+      <textarea id="n-config" class="code-input" rows="4" spellcheck="false" aria-describedby="n-config-help" onblur="validateNotificationConfig()" oninput="if(this.getAttribute('aria-invalid')==='true') validateNotificationConfig()"></textarea>
+      <div class="field-help" id="n-config-help">切换渠道类型时会自动填入所需字段模板</div>
+    </div>
+    <div class="form-actions">
+      <span class="status-text" id="n-msg" role="status" aria-live="polite"></span>
+      <button onclick="addChannel()"><svg><use href="#i-plus"/></svg>添加通知渠道</button>
+    </div>
+    <div class="section-divider"></div>
+    <div class="data-section-head"><b>已配置渠道</b><span>可单独测试、停用或编辑</span></div>
+    <div class="table-wrap mini-table"><table id="n-table" aria-label="通知渠道列表"><thead><tr><th>渠道名称 / 类型</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table></div>
+  </div>
+  <div class="card" data-section="webhooks">
+    <div class="card-head">
+      <span class="card-ic"><svg><use href="#i-bolt"/></svg></span>
+      <h2>Webhook 事件中心 <span class="sub">账号操作、群成员变化与直播线索</span></h2>
+      <div class="right"><button class="ghost sm" type="button" onclick="dispatchPendingWebhooks()"><svg><use href="#i-play"/></svg>投递待处理</button></div>
+    </div>
+    <div class="form-grid cols-4">
+      <div class="form-field"><label for="wh-name">订阅名称</label><input id="wh-name" placeholder="例如 CRM 线索同步"></div>
+      <div class="form-field"><label for="wh-url">接收地址</label><input id="wh-url" type="url" placeholder="https://example.com/webhooks/creatorhub"></div>
+      <div class="form-field"><label for="wh-events">事件类型</label><input id="wh-events" value="*" placeholder="* 或逗号分隔"></div>
+      <div class="form-field"><label for="wh-secret">签名密钥</label><input id="wh-secret" type="password" autocomplete="new-password" placeholder="编辑时留空表示保留"></div>
+    </div>
+    <div class="form-actions"><span class="status-text" id="wh-msg" role="status"></span><button class="ghost" id="wh-cancel" type="button" onclick="cancelWebhookEdit()" hidden>取消编辑</button><button type="button" id="wh-save" onclick="saveWebhook()"><svg><use href="#i-check"/></svg>添加订阅</button></div>
+    <div class="section-divider"></div>
+    <div class="data-section-head"><b>订阅与最近事件</b><span>请求带 HMAC-SHA256 签名，可按事件重试</span></div>
+    <div class="table-wrap"><table aria-label="Webhook 订阅列表"><thead><tr><th>订阅</th><th>地址</th><th>事件</th><th>状态</th><th>操作</th></tr></thead><tbody id="wh-table"></tbody></table></div>
+    <div class="table-wrap" style="margin-top:12px"><table aria-label="Webhook 事件列表"><thead><tr><th>事件</th><th>对象</th><th>状态</th><th>尝试</th><th>时间</th><th>操作</th></tr></thead><tbody id="wh-event-table"></tbody></table></div>
+  </div>
+  </section>
+

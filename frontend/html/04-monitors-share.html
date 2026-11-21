@@ -1,0 +1,240 @@
+  <section data-panel="monitors">
+    <!-- 添加作品监控 -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-plus"/></svg></span>
+        <h2 id="mon-add-title">添加作品监控 <span class="sub">监控并下载新作品</span></h2>
+      </div>
+      <div class="stack">
+        <div class="xhs-rn-only">
+          <label class="field" for="t-kind">监控类型</label>
+          <select id="t-kind" aria-label="监控类型" onchange="applyMonitorForm()">
+            <option value="creator">创作者笔记(盯一个博主)</option>
+            <option value="keyword">关键词(盯一个搜索词)</option>
+          </select>
+        </div>
+        <div>
+          <label class="field" for="t-url" id="t-url-label">创作者主页 / 完整分享文案 / sec_uid</label>
+          <div class="smart-target-input">
+            <input id="t-url" maxlength="100000" autocomplete="off"
+              placeholder="直接粘贴整段主页分享文案，将自动提取有效链接"
+              onpaste="handleMonitorTargetPaste()" oninput="resetMonitorTargetState()"
+              onkeydown="handleMonitorTargetKeydown(event)">
+            <button type="button" class="smart-target-action" onclick="normalizeMonitorTarget(this)"
+              aria-label="识别并清洗分享文案" title="识别并清洗分享文案">
+              <svg><use href="#i-bolt"/></svg><span>识别</span>
+            </button>
+          </div>
+          <div class="smart-target-feedback" id="t-url-feedback" role="status" aria-live="polite">
+            支持完整分享文案、主页长链、平台短链或用户 ID
+          </div>
+        </div>
+        <div>
+          <label class="field" for="t-dir">下载目录(可选)</label>
+          <input id="t-dir" placeholder="留空使用全局默认目录">
+        </div>
+        <div class="meta-fields">
+          <div>
+            <label class="field" for="t-alias">管理别名(可选)</label>
+            <input id="t-alias" maxlength="60" placeholder="如：体育主号">
+          </div>
+          <div>
+            <label class="field" for="t-group">分组名(可选)<span class="field-scope meta-scope">当前平台独立</span></label>
+            <input id="t-group" maxlength="40" autocomplete="off" data-meta-combo="group" placeholder="选择或输入新分组">
+          </div>
+          <div>
+            <label class="field" for="t-tags">标签(可选)<span class="field-scope meta-scope">当前平台独立</span></label>
+            <input id="t-tags" autocomplete="off" data-meta-combo="tags" placeholder="选择或输入新标签">
+          </div>
+        </div>
+        <div class="form-grid cols-auto">
+          <div class="form-field" id="t-acc-wrap"><label for="t-acc">使用账号</label><select id="t-acc"></select></div>
+          <div class="form-field"><label for="t-interval">检查频率</label><select id="t-interval" aria-describedby="t-interval-help">
+              <option value="1">每 1 秒</option><option value="5">每 5 秒</option><option value="10">每 10 秒</option>
+              <option value="15">每 15 秒</option><option value="30">每 30 秒</option><option value="60">每 1 分钟</option>
+              <option value="300" selected>每 5 分钟</option><option value="600">每 10 分钟</option>
+              <option value="1800">每 30 分钟</option><option value="3600">每小时</option>
+              <option value="custom">自定义…</option>
+          </select><p id="t-interval-help" class="field-help">支持秒、分钟和自定义间隔；实际执行仍受任务耗时、错峰和账号限制影响。</p></div>
+          <div class="form-field dy-only"><label for="t-quality">视频画质</label><select id="t-quality">
+              <option value="">跟随全局设置</option><option value="highest">原画 / 最高</option>
+              <option value="1080">1080P</option><option value="720">720P</option>
+              <option value="540">540P</option><option value="lowest">最低省流</option>
+          </select></div>
+          <div class="form-field" id="t-backfill-wrap"><label for="t-backfill">首次历史回填</label><select id="t-backfill">
+              <option value="">跟随全局设置</option>
+              <option value="0">不下载历史作品</option><option value="5">最近 5 条</option>
+              <option value="20">最近 20 条</option><option value="-1">尽可能全量</option>
+          </select></div>
+          <div class="form-field"><label for="t-download">自动下载范围</label><select id="t-download">
+              <option value="all">全部作品</option><option value="video">仅视频</option>
+              <option value="images">仅图集</option><option value="none">仅记录，不下载</option>
+          </select></div>
+        </div>
+        <details class="collection-advanced monitor-advanced">
+          <summary>高级抓取与筛选 <span>控制翻页深度、单轮上限和入库条件</span></summary>
+          <div class="collection-advanced-body">
+            <div class="form-grid cols-4">
+              <div class="form-field"><label for="t-max-scrolls">抓取深度</label><select id="t-max-scrolls">
+                <option value="0">平台默认</option><option value="3">3 次下滑</option>
+                <option value="6">6 次下滑</option><option value="12">12 次下滑</option>
+                <option value="20">20 次下滑</option><option value="30">30 次下滑</option>
+              </select></div>
+              <div class="form-field"><label for="t-max-items">每轮作品上限</label><select id="t-max-items">
+                <option value="0">平台默认</option><option value="5">5 条</option>
+                <option value="12">12 条</option><option value="20">20 条</option>
+                <option value="50">50 条</option><option value="100">100 条</option>
+              </select></div>
+              <div class="form-field"><label for="t-record-media">作品类型</label><select id="t-record-media">
+                <option value="all">全部入库</option><option value="video">仅视频</option>
+                <option value="images">仅图文/图集</option>
+              </select></div>
+              <div class="form-field"><label for="t-recent-days">发布时间范围</label>
+                <input id="t-recent-days" type="number" min="0" max="3650" value="0" inputmode="numeric">
+                <div class="field-help">最近 N 天；0 表示不限</div></div>
+            </div>
+            <div class="form-grid cols-4">
+              <div class="form-field"><label for="t-min-likes">最低点赞数</label>
+                <input id="t-min-likes" type="number" min="0" max="1000000000" value="0" inputmode="numeric"></div>
+              <div class="form-field"><label for="t-min-comments">最低评论数</label>
+                <input id="t-min-comments" type="number" min="0" max="1000000000" value="0" inputmode="numeric"></div>
+              <div class="form-field"><label for="t-include-keywords">必须包含</label>
+                <input id="t-include-keywords" maxlength="320" placeholder="多个词用逗号分隔"></div>
+              <div class="form-field"><label for="t-exclude-keywords">排除关键词</label>
+                <input id="t-exclude-keywords" maxlength="320" placeholder="多个词用逗号分隔"></div>
+            </div>
+            <div class="field-help">筛选只决定作品是否进入监控记录；“自动下载范围”仍单独控制下载行为。深度越高，请求耗时与账号访问频率越高。</div>
+          </div>
+        </details>
+        <div class="form-actions">
+          <span class="status-text" id="add-msg" role="status" aria-live="polite"></span>
+          <button onclick="addMonitor()"><svg><use href="#i-target"/></svg>开始监控</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section data-panel="share-download">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-download"/></svg></span>
+        <h2>通用链接下载 <span class="sub">整段分享文案直接粘贴</span></h2>
+      </div>
+      <div class="stack">
+        <div>
+          <label class="field" for="sd-text">分享链接 / 分享口令 / 含中文和符号的完整文案</label>
+          <textarea id="sd-text" rows="5" placeholder="例如：复制这段内容，打开对应平台查看作品 https://v.douyin.com/xxxx/ 😄&#10;支持全角符号、HTML 实体、URL 编码、Unicode 转义和一段文字中的多个链接"></textarea>
+        </div>
+        <div class="form-grid cols-4">
+          <div class="form-field">
+            <label for="sd-quality">下载画质</label>
+            <select id="sd-quality">
+              <option value="highest">原画 / 最高</option>
+              <option value="1080">1080P</option>
+              <option value="720">720P</option>
+              <option value="540">540P</option>
+              <option value="lowest">最低省流</option>
+              <option value="audio">仅音频</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="sd-account">复用登录账号</label>
+            <select id="sd-account">
+              <option value="">先识别链接，再选择账号</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="sd-dir">保存目录</label>
+            <input id="sd-dir" placeholder="留空使用全局目录 / share">
+          </div>
+          <div class="form-field">
+            <label for="sd-max-size">文件上限</label>
+            <input id="sd-max-size" type="number" min="0" max="102400" value="0" placeholder="0 = 不限">
+            <div class="field-help">单位 MB，填 0 表示不限</div>
+          </div>
+        </div>
+        <div class="option-grid" aria-label="附加下载选项">
+          <label class="switch-row"><input type="checkbox" id="sd-metadata"><span class="switch-copy"><b>元数据 JSON</b><span>保存作品详细信息</span></span></label>
+          <label class="switch-row"><input type="checkbox" id="sd-thumbnail" checked><span class="switch-copy"><b>作品封面</b><span>保存原始封面图片</span></span></label>
+          <label class="switch-row"><input type="checkbox" id="sd-subtitles"><span class="switch-copy"><b>字幕文件</b><span>有字幕时一并保存</span></span></label>
+          <label class="switch-row"><input type="checkbox" id="sd-all-links"><span class="switch-copy"><b>全部链接</b><span>处理文案里的每个链接</span></span></label>
+        </div>
+        <div class="form-actions">
+          <span class="status-text" id="sd-msg" role="status" aria-live="polite"></span>
+          <button class="ghost" onclick="parseShareLinks()"><svg><use href="#i-bolt"/></svg>识别链接</button>
+          <button class="ghost" onclick="inspectShareLink()"><svg><use href="#i-eye"/></svg>只读取作品信息</button>
+          <button onclick="downloadShareLink()"><svg><use href="#i-download"/></svg>开始下载</button>
+        </div>
+        <div id="sd-links" class="hint" style="display:none"></div>
+      </div>
+    </div>
+    <div class="card" id="sd-result-card" style="display:none">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-film"/></svg></span>
+        <h2>处理结果 <span class="sub" id="sd-result-summary"></span></h2>
+      </div>
+      <div id="sd-result"></div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-download"/></svg></span>
+        <h2>下载历史 <span class="sub" id="sd-history-count">0 条</span></h2>
+        <button class="ghost sm" onclick="refreshShareHistory()"><svg><use href="#i-refresh"/></svg>刷新</button>
+      </div>
+      <div class="manage-toolbar share-history-toolbar">
+        <input type="search" id="sd-history-search" placeholder="搜索作品描述 / 作者 / ID" aria-label="搜索链接下载历史" oninput="renderShareHistoryRows(true)">
+        <select id="sd-history-platform" aria-label="按平台筛选链接下载历史" onchange="renderShareHistoryRows(true)">
+          <option value="">全部平台</option>
+        </select>
+        <select id="sd-history-type" aria-label="按作品类型筛选链接下载历史" onchange="renderShareHistoryRows(true)">
+          <option value="">全部类型</option><option value="video">视频</option><option value="images">图文</option>
+        </select>
+        <select id="sd-history-status" aria-label="按下载状态筛选链接下载历史" onchange="renderShareHistoryRows(true)">
+          <option value="">全部状态</option><option value="done">已下载</option><option value="failed">失败</option>
+        </select>
+        <span class="filter-count" id="sd-history-filter-count" role="status" aria-live="polite"></span>
+        <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
+          <button class="ghost sm" id="sd-history-selall-btn" onclick="shareHistorySelAllToggle()">全选</button>
+          <span id="sd-history-selbar" style="display:none;align-items:center;gap:8px">
+            <span class="mut" id="sd-history-selcount">已选 0</span>
+            <button class="ghost sm" onclick="shareHistorySelClear()">取消</button>
+            <button class="sm danger" onclick="shareHistoryBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
+          </span>
+          <div class="export-actions" role="group" aria-label="链接下载历史 Excel 导出">
+            <span class="export-caption" title="导出链接下载历史"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span>
+          <button type="button" class="export-btn filtered" onclick="exportShareHistoryReport(false, this)" title="导出当前条件下的链接下载历史" aria-label="导出链接下载历史当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button>
+          <button type="button" class="export-btn full" onclick="exportShareHistoryReport(true, this)" title="导出当前平台全部链接下载历史" aria-label="导出链接下载历史全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button>
+          </div>
+        </div>
+      </div>
+      <div class="table-wrap" id="sd-history-table-wrap"><table class="content-record-table share-history-table" aria-label="链接下载历史">
+        <colgroup>
+          <col class="content-col-check"><col class="content-col-cover"><col class="content-col-desc">
+          <col class="content-col-type"><col class="content-col-time"><col class="content-col-data">
+          <col class="content-col-local"><col class="content-col-actions">
+        </colgroup>
+        <thead><tr>
+          <th><input type="checkbox" id="sd-history-selall" onchange="shareHistoryToggleAll(this.checked)" aria-label="全选"></th>
+          <th>封面</th><th>作品描述</th><th>规格</th><th>发布时间</th><th>互动数据</th><th>状态 / 本地文件</th><th style="text-align:right">操作</th>
+        </tr></thead><tbody id="sd-history-body"></tbody>
+      </table></div>
+      <div id="sd-history-pager" class="danmaku-pager" hidden>
+        <div class="danmaku-pager-left">
+          <button id="sd-history-first" class="ghost sm danmaku-page-icon" onclick="goShareHistoryPage(1)" title="第一页" aria-label="第一页"><svg aria-hidden="true"><use href="#i-first"/></svg></button>
+          <button id="sd-history-prev" class="ghost sm" onclick="changeShareHistoryPage(-1)"><svg aria-hidden="true"><use href="#i-prev"/></svg>上一页</button>
+        </div>
+        <div class="danmaku-pager-center">
+          <span id="sd-history-page-info" class="mut danmaku-page-info"></span>
+          <label class="danmaku-page-jump">跳至 <input id="sd-history-page-input" type="number" min="1" step="1" inputmode="numeric" aria-label="跳转链接下载历史页码" onkeydown="handleShareHistoryPageInput(event)"> 页 <button class="ghost sm" onclick="jumpShareHistoryPage()">确定</button></label>
+        </div>
+        <div class="danmaku-pager-right">
+          <button id="sd-history-next" class="ghost sm" onclick="changeShareHistoryPage(1)">下一页<svg aria-hidden="true"><use href="#i-next"/></svg></button>
+          <button id="sd-history-last" class="ghost sm danmaku-page-icon" onclick="goShareHistoryPage(0)" title="最后一页" aria-label="最后一页"><svg aria-hidden="true"><use href="#i-last"/></svg></button>
+          <select id="sd-history-page-size" class="ghost sm danmaku-page-size" onchange="setShareHistoryPageSize()" aria-label="每页链接下载历史数">
+            <option value="10" selected>每页 10 条</option><option value="20">每页 20 条</option><option value="50">每页 50 条</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </section>
+

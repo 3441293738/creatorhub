@@ -1,0 +1,257 @@
+  <section data-panel="risk-control">
+    <div class="risk-stats" aria-label="风控状态统计">
+      <div class="risk-stat" data-tone="success"><b id="risk-stat-normal">—</b><span>正常账号</span></div>
+      <div class="risk-stat" data-tone="danger"><b id="risk-stat-cooldown">—</b><span>冷却 / 暂停 / 熔断</span></div>
+      <div class="risk-stat" data-tone="warn"><b id="risk-stat-recovering">—</b><span>渐进恢复</span></div>
+      <div class="risk-stat" data-tone="danger"><b id="risk-stat-invalid">—</b><span>登录 / 代理 / 验证</span></div>
+      <div class="risk-stat" data-tone="warn"><b id="risk-stat-blocked">—</b><span>受阻任务</span></div>
+      <div class="risk-stat"><b id="risk-stat-today">—</b><span>今日风险事件</span></div>
+    </div>
+
+    <div class="card" data-section="status">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-shield"/></svg></span>
+        <h2>账号风险态势 <span class="sub">状态、原因、恢复进度与待执行任务</span></h2>
+      </div>
+      <div class="risk-toolbar">
+        <input id="risk-account-search" type="search" placeholder="搜索账号或原因" aria-label="搜索风险账号" oninput="renderRiskAccounts()">
+        <select id="risk-status-filter" aria-label="筛选风险状态" onchange="renderRiskAccounts()">
+          <option value="">全部状态</option><option value="normal">正常</option><option value="cooldown">风险冷却</option>
+          <option value="recovering">渐进恢复</option><option value="auth_invalid">登录失效</option>
+          <option value="proxy_error">代理异常</option><option value="network_circuit">网络熔断</option>
+          <option value="write_paused">写入暂停</option>
+          <option value="verification_required">待人工验证</option><option value="network_backoff">网络退避</option>
+        </select>
+        <span class="filter-count" id="risk-filter-count" role="status" aria-live="polite"></span>
+        <span class="spacer"></span>
+        <button class="ghost sm" id="risk-admin-token-btn" type="button" onclick="setRiskAdminToken()" style="display:none"><svg><use href="#i-shield"/></svg>管理口令</button>
+        <button class="ghost sm" type="button" onclick="refreshRiskCenter(true)"><svg><use href="#i-refresh"/></svg>刷新状态</button>
+      </div>
+      <div class="table-wrap"><table aria-label="账号风险状态列表">
+        <thead><tr><th>账号</th><th>状态 / 等级</th><th>原因</th><th>冷却 / 恢复进度</th><th>任务</th><th>网络</th><th style="text-align:right">操作</th></tr></thead>
+        <tbody id="risk-account-table"></tbody>
+      </table></div>
+    </div>
+
+    <div class="card" data-section="rules">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-settings"/></svg></span>
+        <h2>风控规则 <span class="sub">保存后立即作用于后台调度</span></h2>
+        <span class="right status-text" id="risk-config-msg" role="status" aria-live="polite"></span>
+      </div>
+      <div class="form-grid" style="margin-bottom:12px">
+        <label class="switch-row"><input type="checkbox" id="risk-enabled"><span class="switch-copy"><b>启用统一风控</b><span>关闭后平台操作不经过持久化风控闸门</span></span></label>
+        <div class="form-field"><label for="risk-mode">策略模式</label><select id="risk-mode"><option value="conservative">保守模式（保留安全下限）</option><option value="custom">自定义模式</option></select></div>
+        <div class="form-field"><label for="risk-retention">事件保留天数</label><input id="risk-retention" type="number" min="1" max="3650"></div>
+      </div>
+      <div class="risk-config-shell">
+        <fieldset class="risk-config-group">
+          <legend>读取与恢复</legend>
+          <div class="form-grid">
+            <div class="form-field"><label for="risk-read-light">轻量读取间隔（秒）</label><input id="risk-read-light" type="number" min="0"></div>
+            <div class="form-field"><label for="risk-read-heavy">重读取间隔（秒）</label><input id="risk-read-heavy" type="number" min="0"></div>
+            <div class="form-field"><label for="risk-recovery-count">恢复成功次数</label><input id="risk-recovery-count" type="number" min="1" max="20"></div>
+            <div class="form-field"><label for="risk-probe-gap">探测间隔（分钟）</label><input id="risk-probe-gap" type="number" min="1"></div>
+            <div class="form-field" style="grid-column:span 2"><label for="risk-cooldown-steps">冷却阶梯（分钟，逗号分隔）</label><input id="risk-cooldown-steps" placeholder="30, 120, 360, 1440"></div>
+          </div>
+        </fieldset>
+        <fieldset class="risk-config-group">
+          <legend>网络与时间策略</legend>
+          <div class="form-grid">
+            <div class="form-field"><label for="risk-network-concurrency">同出口并发</label><input id="risk-network-concurrency" type="number" min="1" max="32"></div>
+            <div class="form-field"><label for="risk-network-accounts">熔断账号阈值</label><input id="risk-network-accounts" type="number" min="0"></div>
+            <div class="form-field"><label for="risk-network-window">统计窗口（分钟）</label><input id="risk-network-window" type="number" min="1"></div>
+            <div class="form-field"><label for="risk-network-cooldown">出口冷却（分钟）</label><input id="risk-network-cooldown" type="number" min="1"></div>
+            <div class="form-field"><label for="risk-account-check">账号体检间隔（分钟）</label><input id="risk-account-check" type="number" min="0"></div>
+            <div class="form-field"><label for="risk-captcha-wait">验证码等待（分钟）</label><input id="risk-captcha-wait" type="number" min="0"></div>
+            <label class="switch-row" style="grid-column:1/-1"><input type="checkbox" id="risk-quiet-enabled"><span class="switch-copy"><b>启用写操作活跃时段</b><span>时段外的自动写操作保持等待</span></span></label>
+            <div class="form-field"><label for="risk-active-start">开始小时</label><input id="risk-active-start" type="number" min="0" max="23"></div>
+            <div class="form-field"><label for="risk-active-end">结束小时</label><input id="risk-active-end" type="number" min="1" max="47"></div>
+          </div>
+        </fieldset>
+        <fieldset class="risk-config-group wide">
+          <legend>账号操作节奏</legend>
+          <div class="form-grid">
+            <div class="form-field"><label for="risk-operation-min">跨功能间隔下限（秒）</label><input id="risk-operation-min" type="number" min="0" max="3600"></div>
+            <div class="form-field"><label for="risk-operation-max">跨功能间隔上限（秒）</label><input id="risk-operation-max" type="number" min="0" max="3600"></div>
+            <div class="form-field"><label for="risk-session-limit">连续操作次数（0 关闭休息）</label><input id="risk-session-limit" type="number" min="0" max="1000"></div>
+            <div class="form-field"><label for="risk-rest-min">连续操作后休息下限（秒）</label><input id="risk-rest-min" type="number" min="1" max="86400"></div>
+            <div class="form-field"><label for="risk-rest-max">连续操作后休息上限（秒）</label><input id="risk-rest-max" type="number" min="1" max="86400"></div>
+          </div>
+          <p class="mut">同一账号的读写任务共享节奏，失败尝试也计数；等待时间在重启后保留，原有最小间隔和额度继续生效。登录与媒体下载不计入连续操作。遇到平台安全验证时暂停自动操作，留待人工处理。</p>
+        </fieldset>
+        <fieldset class="risk-config-group wide">
+          <legend>自动任务错峰</legend>
+          <div class="form-grid">
+            <div class="form-field"><label for="risk-scan-jitter">周期扫描额外等待上限（%）</label><input id="risk-scan-jitter" type="number" min="0" max="100" aria-describedby="risk-jitter-help"></div>
+            <div class="form-field"><label for="risk-comment-jitter">评论基础间隔额外等待上限（%）</label><input id="risk-comment-jitter" type="number" min="0" max="100" aria-describedby="risk-jitter-help"></div>
+            <div class="form-field"><label for="risk-dm-poll-jitter">私信轮询额外等待上限（%）</label><input id="risk-dm-poll-jitter" type="number" min="0" max="100" aria-describedby="risk-jitter-help"></div>
+            <div class="form-field"><label for="risk-initial-spread">新监控首次错峰上限（秒）</label><input id="risk-initial-spread" type="number" min="0" max="600" aria-describedby="risk-jitter-help"></div>
+            <div class="form-field"><label for="risk-retry-jitter">网络重试额外等待上限（秒）</label><input id="risk-retry-jitter" type="number" min="0" max="300" aria-describedby="risk-jitter-help"></div>
+          </div>
+          <p id="risk-jitter-help" class="mut">只增加等待，不缩短基础间隔。例：300 秒扫描周期加 15%，最早调度间隔为 300–345 秒；同一轮不会因轮询或重启重新抽取。首次错峰适用于新监控和评论规则，不改变预约发布。评论排队参数用于新生成任务，仍会叠加连续休息及账号风控等待；已有排队时间保持不变。网络重试在至少 5 分钟退避后再增加等待；验证仍需人工处理。填 0 关闭对应的额外等待。</p>
+        </fieldset>
+        <fieldset class="risk-config-group wide">
+          <legend>写操作间隔与额度</legend>
+          <div class="table-wrap"><table class="risk-limit-table" aria-label="写操作风控额度">
+            <thead><tr><th>操作</th><th>最小间隔（分钟）</th><th>每小时上限</th><th>每日上限</th></tr></thead>
+            <tbody>
+              <tr><td>评论 / 回复</td><td><input id="risk-comment-gap" type="number" min="0" aria-label="评论或回复最小间隔（分钟）"></td><td><input id="risk-comment-hourly" type="number" min="0" aria-label="评论或回复每小时上限"></td><td><input id="risk-comment-daily" type="number" min="0" aria-label="评论或回复每日上限"></td></tr>
+              <tr><td>关注 / 取关</td><td><input id="risk-social-gap" type="number" min="0" aria-label="关注或取关最小间隔（分钟）"></td><td><input id="risk-social-hourly" type="number" min="0" aria-label="关注或取关每小时上限"></td><td><input id="risk-social-daily" type="number" min="0" aria-label="关注或取关每日上限"></td></tr>
+              <tr><td>私信</td><td><input id="risk-dm-gap" type="number" min="0" aria-label="私信最小间隔（分钟）"></td><td><input id="risk-dm-hourly" type="number" min="0" aria-label="私信每小时上限"></td><td><input id="risk-dm-daily" type="number" min="0" aria-label="私信每日上限"></td></tr>
+              <tr><td>发布</td><td><input id="risk-publish-gap" type="number" min="0" aria-label="发布最小间隔（分钟）"></td><td><input id="risk-publish-hourly" type="number" min="0" aria-label="发布每小时上限"></td><td><input id="risk-publish-daily" type="number" min="0" aria-label="发布每日上限"></td></tr>
+            </tbody>
+          </table></div>
+          <div class="form-grid" style="margin-top:10px">
+            <div class="form-field"><label for="risk-shared-write">共享写间隔（分钟）</label><input id="risk-shared-write" type="number" min="0"></div>
+            <div class="form-field"><label for="risk-combined-hourly">综合动作小时上限</label><input id="risk-combined-hourly" type="number" min="0"></div>
+            <div class="form-field"><label for="risk-combined-daily">综合动作每日上限</label><input id="risk-combined-daily" type="number" min="0"></div>
+          </div>
+        </fieldset>
+      </div>
+      <div class="form-note" style="margin-top:12px"><svg aria-hidden="true"><use href="#i-info"/></svg><span>保守模式会强制保留评论、社交、私信、发布和共享写入间隔的安全下限；需要完全按输入值运行时选择自定义模式。</span></div>
+      <div class="form-actions"><button class="ghost" type="button" onclick="showRiskAudit()"><svg><use href="#i-list"/></svg>查看变更记录</button><span class="actions-spacer"></span><button type="button" onclick="saveRiskConfig()"><svg><use href="#i-check"/></svg>保存并立即生效</button></div>
+    </div>
+  </section>
+
+  <section data-panel="queue">
+    <div class="queue-stats" aria-label="任务队列统计">
+      <button type="button" class="queue-stat active" data-queue-state="active" onclick="setTaskQueueState('active')"><b id="queue-stat-active">—</b><span>处理中 / 等待中</span></button>
+      <button type="button" class="queue-stat" data-queue-state="pending" onclick="setTaskQueueState('pending')"><b id="queue-stat-pending">—</b><span>等待执行</span></button>
+      <button type="button" class="queue-stat" data-queue-state="running" data-tone="info" onclick="setTaskQueueState('running')"><b id="queue-stat-running">—</b><span>正在执行</span></button>
+      <button type="button" class="queue-stat" data-queue-state="blocked" data-tone="warn" onclick="setTaskQueueState('blocked')"><b id="queue-stat-blocked">—</b><span>风控延后</span></button>
+      <button type="button" class="queue-stat" data-queue-state="failed" data-tone="danger" onclick="setTaskQueueState('failed')"><b id="queue-stat-failed">—</b><span>失败 / 待处理</span></button>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-list"/></svg></span>
+        <h2>任务明细 <span class="sub">统一查看采集、发布、评论、账号动作和下载任务</span></h2>
+      </div>
+      <div class="queue-toolbar" aria-label="任务队列筛选">
+        <div class="form-field"><label for="queue-platform">平台范围</label><select id="queue-platform" onchange="refreshTaskQueue(true)"><option value="current" id="queue-platform-current">当前平台</option><option value="all">全部平台</option></select></div>
+        <div class="form-field"><label for="queue-type">队列类型</label><select id="queue-type" onchange="refreshTaskQueue(true)"><option value="">全部队列</option><option value="collections">关键词采集</option><option value="publishes">内容发布</option><option value="comments">自动评论</option><option value="actions">账号动作</option><option value="monitor_downloads">监控下载</option><option value="collection_downloads">采集下载</option></select></div>
+        <div class="form-field"><label for="queue-state">任务状态</label><select id="queue-state" onchange="refreshTaskQueue(true)"><option value="active">活动任务</option><option value="pending">等待执行</option><option value="running">正在执行</option><option value="blocked">风控延后</option><option value="failed">失败任务</option><option value="completed">已完成</option><option value="all">全部状态</option></select></div>
+        <div class="form-field"><label for="queue-query">搜索</label><input id="queue-query" type="search" placeholder="任务内容、账号、错误或风控原因" onkeydown="if(event.key==='Enter'){event.preventDefault();refreshTaskQueue(true)}"></div>
+        <button type="button" class="ghost" onclick="refreshTaskQueue(true)"><svg><use href="#i-refresh"/></svg>刷新</button>
+        <button type="button" class="ghost danger" id="queue-batch-stop" onclick="batchStopSelectedTasks()"><svg><use href="#i-x"/></svg>停止所选</button>
+      </div>
+      <div class="table-wrap" id="queue-table-wrap">
+        <table class="queue-table" aria-label="任务队列明细">
+          <thead><tr><th style="width:44px"><input type="checkbox" aria-label="选择本页全部任务" onchange="toggleTaskQueuePage(this.checked)"></th><th class="queue-col-type">队列</th><th class="queue-col-content">任务内容</th><th class="queue-col-account">账号</th><th class="queue-col-time">时间</th><th class="queue-col-status">状态</th><th class="queue-col-reason">阻塞 / 错误</th><th class="queue-col-action">操作</th></tr></thead>
+          <tbody id="queue-table"></tbody>
+        </table>
+      </div>
+      <div class="queue-pager" id="queue-pager" hidden>
+        <span class="mut" id="queue-page-info">第 1 / 1 页</span>
+        <div class="queue-pager-actions">
+          <button type="button" class="ghost" id="queue-first" onclick="goTaskQueuePage(1)" aria-label="任务队列第一页">«</button>
+          <button type="button" class="ghost" id="queue-prev" onclick="goTaskQueuePage(TASK_QUEUE_PAGE-1)" aria-label="任务队列上一页">‹</button>
+          <button type="button" class="ghost" id="queue-next" onclick="goTaskQueuePage(TASK_QUEUE_PAGE+1)" aria-label="任务队列下一页">›</button>
+          <button type="button" class="ghost" id="queue-last" onclick="goTaskQueuePage(TASK_QUEUE_PAGES)" aria-label="任务队列最后一页">»</button>
+        </div>
+        <div class="form-field"><label for="queue-page-size">每页</label><select id="queue-page-size" onchange="setTaskQueuePageSize(this.value)"><option value="10">10 条</option><option value="20" selected>20 条</option><option value="50">50 条</option><option value="100">100 条</option></select></div>
+      </div>
+    </div>
+  </section>
+
+  <section data-panel="collections" class="collect-only">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-hash"/></svg></span>
+        <h2><span id="collection-create-title">新建关键词采集</span> <span class="sub" id="collection-create-sub">批量搜索作品并抓取评论</span></h2>
+      </div>
+      <div class="stack">
+        <div class="form-grid cols-4">
+          <div class="form-field"><label for="col-source">采集来源</label><select id="col-source" onchange="collectionSourceChanged()"><option value="keyword">关键词搜索</option><option value="creator">创作者主页</option><option value="favorite_all" data-xhs-source>全部收藏</option><option value="favorite_board" data-xhs-source>指定收藏夹</option><option value="account_works" data-channels-source>本账号作品</option></select></div>
+          <div class="form-field xhs-only" id="col-board-wrap" style="display:none"><label for="col-board">收藏夹</label><select id="col-board"><option value="">先选择账号并加载</option></select><p class="hint" id="col-board-help"></p></div>
+          <div class="form-field" id="col-source-ref-wrap" style="display:none">
+            <label for="col-source-ref" id="col-source-ref-label">创作者用户 ID / 主页或视频链接</label>
+            <div class="smart-target-input">
+              <input id="col-source-ref" maxlength="100000" autocomplete="off"
+                placeholder="抖音 sec_uid / 小红书 user_id / 快手 user_id 或主页链接或短链"
+                onpaste="handleCollectionCreatorPaste()" oninput="resetCollectionCreatorState()">
+              <button type="button" class="smart-target-action" onclick="normalizeCollectionCreatorTarget(this)"
+                aria-label="识别并清洗创作者链接" title="识别并提取创作者标识">
+                <svg><use href="#i-bolt"/></svg><span>识别</span>
+              </button>
+            </div>
+            <div class="smart-target-feedback" id="col-source-ref-feedback" role="status" aria-live="polite">
+              使用公开主页作品列表；视频号可粘贴 v2_...@finder、主页链接或单条视频 weixin.qq.com/sph/... 链接（自动反查作者）
+            </div>
+          </div>
+        </div>
+        <div class="form-field" id="col-keywords-wrap">
+          <label for="col-keywords">关键词 <span class="field-scope">必填 · 最多 20 个</span></label>
+          <textarea id="col-keywords" rows="5" placeholder="每行一个关键词，例如：&#10;露营装备&#10;城市骑行&#10;夏季穿搭" aria-describedby="col-keywords-help"></textarea>
+          <p class="hint" id="col-keywords-help">支持换行或逗号分隔；任务会按关键词逐个执行并自动去重。</p>
+        </div>
+        <div class="form-grid cols-4">
+          <div class="form-field" id="col-account-wrap"><label for="col-account">使用账号</label><select id="col-account" onchange="collectionAccountChanged()"></select></div>
+          <div class="form-field"><label for="col-content-limit" id="col-content-limit-label">每词作品上限</label><input id="col-content-limit" type="number" min="1" max="100" value="20" inputmode="numeric"></div>
+          <div class="form-field"><label for="col-comment-limit">每作品评论上限</label><input id="col-comment-limit" type="number" min="0" max="200" value="20" inputmode="numeric"></div>
+          <div class="form-field dy-only"><label for="col-quality">视频画质</label><select id="col-quality"><option value="highest">原画 / 最高</option><option value="1080">1080P</option><option value="720">720P</option><option value="540">540P</option><option value="lowest">最低省流</option></select></div>
+        </div>
+        <div class="form-grid cols-4 collection-filter-grid" aria-label="搜索深度与排序">
+          <div class="form-field"><label for="col-page-limit" id="col-page-limit-label">每词采集深度 <span class="field-scope">1–40 页</span></label><input id="col-page-limit" type="number" min="1" max="40" value="12" inputmode="numeric"><p class="hint" id="col-page-help">一页对应一次搜索结果下滑。</p></div>
+          <div class="form-field" id="col-sort-wrap"><label for="col-sort">搜索排序</label><select id="col-sort"><option value="general">综合排序</option><option value="latest">最新发布</option><option value="most_liked">最多点赞</option></select></div>
+          <div class="form-field"><label for="col-publish-time">发布时间</label><select id="col-publish-time"><option value="all">不限</option><option value="day">一天内</option><option value="week">一周内</option><option value="half_year">半年内</option></select></div>
+          <div class="form-field"><label for="col-content-type">内容类型</label><select id="col-content-type"><option value="all">全部作品</option><option value="video">视频</option><option value="images">图文 / 图集</option></select></div>
+        </div>
+        <details class="collection-advanced">
+          <summary>高级停止与数据门槛 <span>可选，减少无效结果</span></summary>
+          <div class="collection-advanced-body">
+            <div class="form-grid cols-4">
+              <div class="form-field"><label for="col-min-likes">最低点赞数</label><input id="col-min-likes" type="number" min="0" value="0" inputmode="numeric"></div>
+              <div class="form-field"><label for="col-min-comments">最低评论数</label><input id="col-min-comments" type="number" min="0" value="0" inputmode="numeric"></div>
+              <div class="form-field"><label for="col-stagnant-pages">连续无新增停止 <span class="field-scope">1–8 页</span></label><input id="col-stagnant-pages" type="number" min="1" max="8" value="3" inputmode="numeric"></div>
+            </div>
+          </div>
+        </details>
+        <div class="form-field" id="col-dir-wrap" style="display:none">
+          <label for="col-download-dir">下载目录（可选）</label>
+          <input id="col-download-dir" placeholder="留空保存到 data/media/keyword-collections">
+        </div>
+        <div class="option-grid" aria-label="采集选项">
+          <label class="switch-row"><input type="checkbox" id="col-download" onchange="applyCollectionForm()"><span class="switch-copy"><b>下载媒体</b><span>保存视频、图集和封面来源</span></span></label>
+          <label class="switch-row"><input type="checkbox" id="col-replies"><span class="switch-copy"><b>包含二级评论</b><span id="col-replies-help">采集平台当前可返回的回复</span></span></label>
+        </div>
+        <div class="platform-callout" role="note">
+          <svg aria-hidden="true"><use href="#i-info"/></svg>
+          <div><b id="collection-callout-title">作品上限、采集深度和停止条件任一满足即结束</b><p id="collection-callout-copy">平台筛选后会在本地复核类型、时间和数据门槛；任务默认串行执行，可随时取消，已入库结果会保留。</p><div class="channels-proto-inline-tools sh-only hidden"><button type="button" class="ghost sm" onclick="openChannelsProtocolSettings()"><svg aria-hidden="true"><use href="#i-network"/></svg>配置本地微信通道</button></div></div>
+        </div>
+        <div class="form-actions">
+          <span class="status-text" id="col-create-msg" role="status" aria-live="polite"></span>
+          <button type="button" onclick="createCollection()"><svg><use href="#i-play"/></svg>开始批量采集</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-list"/></svg></span>
+        <h2>采集任务 <span class="sub">进度、编辑、续跑与导出</span></h2>
+      </div>
+      <div class="collection-task-list" id="collection-job-table" role="list" aria-label="关键词采集任务列表" aria-live="polite"></div>
+    </div>
+
+    <div class="card" id="collection-results-card" style="display:none">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-film"/></svg></span>
+        <h2 id="collection-results-title">采集结果 <span class="sub" id="collection-results-sub"></span></h2>
+        <div class="right"><button class="ghost sm" type="button" onclick="closeCollectionResults()"><svg><use href="#i-prev"/></svg>返回任务列表</button></div>
+      </div>
+      <div class="collection-kpis" aria-label="当前任务统计">
+        <div class="collection-kpi"><b id="col-stat-content">0</b><span>已采作品</span></div>
+        <div class="collection-kpi"><b id="col-stat-comments">0</b><span>已采评论</span></div>
+        <div class="collection-kpi"><b id="col-stat-errors">0</b><span>异常记录</span></div>
+      </div>
+      <div class="collection-error" id="collection-results-error" role="alert" style="display:none"></div>
+      <div class="collection-result-headline">
+        <div><b>作品与本地文件</b><span>点击封面可站内预览；已下载文件可直接打开或在目录中定位</span></div>
+        <span id="collection-result-count" aria-live="polite"></span>
+      </div>
+      <div class="collection-result-grid" id="collection-content-list" aria-label="关键词采集作品结果" aria-live="polite"></div>
+      <div class="pager" id="collection-pager"></div>
+    </div>
+  </section>
+

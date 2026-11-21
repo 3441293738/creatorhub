@@ -1,3 +1,5 @@
+/* AUTO-GENERATED FROM frontend/app/*.js BY npm run build:ui — EDIT SOURCE MODULES IN frontend/app/ */
+// 01-core-modals.js — 核心网络请求封装、全局忙碌指示器、表单辅助与通用对话框模态。
 const $ = (id) => document.getElementById(id);
 // 有用户发起的慢操作(开浏览器抓评论/发评论/解析链接等)在进行时,暂停 8 秒轮询刷新,
 // 否则定时重渲染会把按钮的「…中」加载态冲掉。
@@ -451,6 +453,7 @@ function uiPrompt({ title, hint, value, placeholder, multiline, rows, secret = f
   });
 }
 
+// 02-ui-controls.js — 渐进增强下拉框、自定义悬浮提示、日期时间选择器与总览趋势图。
 // ─── 自定义下拉:渐进增强原生 <select>(美化展开列表)───
 // 弹层挂到 body 以避开卡片 overflow；Tab 时显式回到文档顺序，避免焦点落到 body 末尾。
 let _openSelectClose = null;
@@ -870,6 +873,7 @@ async function refreshOverviewChart() {
   box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="近 7 天每日新增作品与评论柱状图">${gl}${axt}${bars}${labels}</svg><details class="wb-chart-data"><summary>查看每日数据</summary><table><caption class="sr-only">每日新增作品与评论</caption><thead><tr><th>日期</th><th>作品</th><th>评论</th></tr></thead><tbody>${days.map((day, i) => `<tr><th>${esc(day)}</th><td>${Number(A[i]) || 0}</td><td>${Number(B[i]) || 0}</td></tr>`).join("")}</tbody></table></details>`;
 }
 
+// 03-navigation-platform.js — 九平台上下文切换、平台差异化表单显隐与工作台标签页导航。
 // ─── 平台切换(抖音 / 小红书) ───
 
 async function exportMonitorReport(explicitBtn = null) {
@@ -1722,6 +1726,7 @@ function switchTab(name, pushHistory = false) {
   if (changed && !["hub", "share-download", "collections", "queue", "risk-control"].includes(name)) loop();
 }
 
+// 04-auth-login.js — 多平台浏览器扫码登录、预登录指纹选择与 Cookie/Token 凭证导入。
 // ─── 扫码登录(真实浏览器窗口) ───
 let qrTimer = null;
 let preLoginBrowserBackend = "default";
@@ -2192,6 +2197,7 @@ async function saveCookie() {
   } catch (e) { toast("保存失败:" + e.message, "err"); }
 }
 
+// 05-accounts.js — 账号列表渲染、环境指纹编辑、浏览器内核目录与账号级操作。
 // ─── 账号 ───
 let ACCOUNTS = [];
 let BROWSER_RUNTIMES = [];
@@ -3028,6 +3034,7 @@ async function createTikTokCommentTask() {
   });
 }
 
+// 06-risk-center.js — 风控中心看板、操作节奏参数配置、人工验证解除与审计日志。
 // ═══════════ 风控中心 ═══════════
 let RISK_ACCOUNTS = [];
 let RISK_CONFIG = null;
@@ -3354,6 +3361,7 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape" && $("risk-event-modal")?.style.display !== "none") hideRiskEvents();
 });
 
+// 07-account-hub.js — 账号中心（本账号作品、关注列表、粉丝列表与异步同步进度）。
 // ═══════════ 账号管理(独立面板:我的作品 / 关注 / 粉丝 / 私信)═══════════
 // 当前操作的账号 id —— 按平台各记各的,切平台不串号、不串数
 let HUB_ACC = "";
@@ -3901,6 +3909,7 @@ async function actFollow(action, edgeId) {
   if (HUB_ACC === accountId) refreshFollows(dir);
 }
 
+// 08-dm-center.js — 私信会话收件箱、SSE 实时消息流、历史消息拉取与自动回复规则。
 // ── 私信 ──
 // ─── 私信实时接收(SSE):进 DM 面板订阅,新消息即时刷新;离开断开 ───
 let DM_SSE = null, DM_SSE_ACC = "", DM_AUTO_TASKS = [], DM_AUTO_RULES = [], DM_REFRESH_TIMER = null;
@@ -4753,6 +4762,7 @@ async function manageFingerprint(id) {
   await refreshAccounts();
 }
 
+// 09-proxies-settings.js — 代理池增删改查、连通性归属地探测、兼容矩阵与全局下载/AI 设置。
 // ─── 代理池 ───
 let PROXIES = [];
 let LAST_DETECT = null;   // {url, geo} 判别结果,加入池时一并带上归属地
@@ -5131,6 +5141,7 @@ async function saveSettings() {
   });
 }
 
+// 10-channels-bridge.js — 微信视频号本地通道引导、系统代理与证书安装及桌面微信控制。
 // ─── 视频号本机微信通道可视化配置 ───
 function openChannelsProtocolSettings() {
   switchTab("settings");
@@ -6065,6 +6076,7 @@ const CreatorHubChannelsProtocol = (() => {
 globalThis.CreatorHubChannelsProtocol = CreatorHubChannelsProtocol;
 const QMAP = { "": "默认", highest: "原画", "1080": "1080P", "720": "720P", "540": "540P", lowest: "省流" };
 
+// 11-share-notifications.js — 通用分享链接无水印下载、下载历史管理及通知渠道与 Webhook。
 // ─── 通用分享链接下载 ───
 let SHARE_LINKS = [], SHARE_LINK_INDEX = 0, SHARE_SOURCE = "", SHARE_ACCOUNTS = [];
 let SHARE_HISTORY = [], SHARE_HISTORY_PAGE = 1, SHARE_HISTORY_PAGE_SIZE = 10, SHARE_HISTORY_TOTAL = 0;
@@ -6759,6 +6771,7 @@ async function testChannel(id) {
 async function toggleChannel(id, enabled) { try { await api("/api/notifications/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) }); refreshChannels(); } catch (e) { toast("操作失败:" + e.message, "err"); } }
 async function delChannel(id) { if (await uiConfirm({ title: "删除渠道", message: "删除该通知渠道?", okText: "删除", danger: true })) { try { await api("/api/notifications/" + id, { method: "DELETE" }); toast("渠道已删除", "ok"); refreshChannels(); } catch (e) { toast("删除失败:" + e.message, "err"); } } }
 
+// 12-collections.js — 关键词与创作者批量作品采集任务管理、结果筛选与报表导出。
 // ─── 监控 ───
 // ═══════════ 抖音 / 小红书关键词批量采集 ═══════════
 function parseCollectionKeywords(raw) {
@@ -7472,6 +7485,7 @@ function exportCollection(jobId) {
   document.body.appendChild(link); link.click(); link.remove();
 }
 
+// 13-monitors-contents.js — 作品监控目标管理、已捕获内容库检索、批量操作与本地文件定位。
 async function addMonitor() {
   const btn = evtBtn() || document.querySelector('button[onclick="addMonitor()"]');
   if (btn?.disabled) return;
@@ -8165,6 +8179,7 @@ async function delContent(id) {
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 
+// 14-watches-lightbox.js — 独立弹幕监控、独立评论监控及作品图集/视频预览灯箱。
 // ─── 短视频弹幕监控(独立) ───
 function danmakuWatchBaseName(w) {
   return w.title || w.aweme_id || (w.sec_uid || "").slice(0, 12);
@@ -8987,6 +9002,7 @@ document.addEventListener("keydown", e => {
   else if (modal === $("preview") && e.key === "ArrowRight") pvNav(1);
 });
 
+// 15-publish-repost.js — 多平台图文/视频发布编辑器、已发布作品管理与跨平台转发。
 // ─── 多平台发布 ───
 const BILI_PARTITION_CACHE = new Map();
 function onBiliCopyrightChange() {
@@ -9643,6 +9659,8 @@ async function submitRepost() {
   }
   if (success) { hideRepost(); if (typeof refreshPublish === "function") refreshPublish(); }
 }
+
+// 16-autocomment-queue-boot.js — 自动评论规则与审核、统一任务队列、轮询主循环及 CreatorHubBridge。
 // ─── 自动评论 ───
 let AC_RULES = [];
 const AC_MODE_T = { auto_reply: "自动回复", auto_comment: "自动评论" };

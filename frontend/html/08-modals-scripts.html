@@ -1,0 +1,164 @@
+</main>
+</div>
+
+<!-- 预览 lightbox -->
+<div id="preview" class="pv-overlay" style="display:none" onclick="if(event.target.id==='preview')hidePreview()" role="dialog" aria-modal="true" aria-label="作品预览">
+  <div class="pv-box">
+    <button class="pv-close" onclick="hidePreview()" aria-label="关闭预览"><svg><use href="#i-x"/></svg></button>
+    <div class="pv-media" id="pv-media"></div>
+    <div class="pv-cap" id="pv-cap"></div>
+  </div>
+</div>
+
+<!-- 跨平台转发 · 编辑后推送 -->
+<div id="repost" class="pv-overlay" style="display:none" onclick="if(event.target.id==='repost')hideRepost()" role="dialog" aria-modal="true" aria-labelledby="rp-head">
+  <div class="rp-box">
+    <div class="ui-modal-head">
+      <div class="ui-modal-heading"><span class="ui-modal-icon" aria-hidden="true"><svg><use href="#i-send"/></svg></span><h2 id="rp-head" tabindex="-1">发小红书 · 编辑后推送</h2></div>
+      <button class="pv-close" onclick="hideRepost()" aria-label="关闭"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+    </div>
+    <div class="stack" id="rp-body">
+      <div id="rp-thumbs" class="rp-thumbs" style="display:none"></div>
+      <div>
+        <label class="field" for="rp-acc">发布账号</label>
+        <select id="rp-acc" aria-label="发布账号"></select>
+      </div>
+      <div class="row dy-repost-only" id="rp-dy-opts" style="display:none;gap:14px;flex-wrap:wrap">
+        <div style="flex:1 1 190px;min-width:150px">
+          <label class="field" for="rp-visibility" style="white-space:nowrap">谁可以看</label>
+          <select id="rp-visibility" aria-label="谁可以看" style="width:100%">
+            <option value="public">公开</option>
+            <option value="friends">好友可见</option>
+            <option value="private">仅自己可见</option>
+          </select>
+        </div>
+        <div style="flex:1 1 190px;min-width:150px">
+          <label class="field" for="rp-allowsave" style="white-space:nowrap">保存权限</label>
+          <select id="rp-allowsave" aria-label="保存权限" style="width:100%">
+            <option value="1">允许他人保存</option>
+            <option value="0">不允许</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label class="field" for="rp-title" id="rp-title-label">标题(≤20 字)</label>
+        <input id="rp-title" maxlength="20" placeholder="给笔记起个标题">
+      </div>
+      <div>
+        <label class="field" for="rp-desc">正文</label>
+        <div class="rp-src" id="rp-src"></div>
+        <textarea id="rp-desc" rows="4" placeholder="正文内容…"></textarea>
+      </div>
+      <div class="form-grid">
+        <div><label class="field" for="rp-topics">话题</label><input id="rp-topics" placeholder="逗号分隔，不用带 #"></div>
+        <div><label class="field" for="rp-when">定时发布</label><input type="datetime-local" id="rp-when" aria-label="定时发布（留空尽快发布）"></div>
+      </div>
+    </div>
+    <div class="ui-modal-footer">
+      <span class="mut" id="rp-msg" role="status" tabindex="-1"></span>
+      <div class="row" id="rp-actions">
+        <button class="ghost" onclick="hideRepost()">取消</button>
+        <button id="rp-submit" onclick="submitRepost()"><svg aria-hidden="true"><use href="#i-send"/></svg>确认推送</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 作品评论(弹窗) -->
+<div id="collection-comments-modal" class="pv-overlay" style="display:none" role="dialog" aria-modal="true"
+     aria-labelledby="collection-comments-title" onclick="if(event.target.id==='collection-comments-modal')hideCollectionComments()">
+  <div class="rp-box" style="width:min(94vw,620px);max-height:86vh;display:flex;flex-direction:column">
+    <button class="pv-close" onclick="hideCollectionComments()" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+    <h2 id="collection-comments-title">采集评论</h2>
+    <div class="collection-comment-filters">
+      <div>
+        <label class="field" for="collection-comments-scope">评论范围</label>
+        <select id="collection-comments-scope" onchange="scheduleCollectionCommentFilter()" aria-label="评论范围">
+          <option value="">全部作品</option>
+        </select>
+      </div>
+      <div>
+        <label class="field" for="collection-comments-q">评论关键词</label>
+        <input id="collection-comments-q" placeholder="搜索评论内容" oninput="scheduleCollectionCommentFilter()">
+      </div>
+      <div>
+        <label class="field" for="collection-comments-region">地区</label>
+        <input id="collection-comments-region" placeholder="如：广东" oninput="scheduleCollectionCommentFilter()">
+      </div>
+      <div>
+        <label class="field" for="collection-comments-secuid">用户 sec_uid</label>
+        <input id="collection-comments-secuid" placeholder="输入 sec_uid 片段" oninput="scheduleCollectionCommentFilter()">
+      </div>
+      <label class="switch-row" style="grid-column:1/-1"><input type="checkbox" id="collection-comments-dedupe" onchange="scheduleCollectionCommentFilter()"><span class="switch-copy"><b>按 sec_uid 去重</b><span>跨作品保留每位用户的最新评论</span></span></label>
+      <div class="collection-comment-filter-actions">
+        <span class="spacer"></span>
+        <button type="button" class="ghost sm" onclick="resetCollectionCommentFilters()"><svg><use href="#i-refresh"/></svg>重置</button>
+        <button type="button" class="ghost sm" onclick="exportFilteredCollectionComments(this)"><svg><use href="#i-download"/></svg>导出当前结果</button>
+      </div>
+    </div>
+    <div class="mut" id="collection-comments-count" style="font-size:12px;margin:-6px 0 12px">—</div>
+    <div id="collection-comments-list" style="overflow:auto;flex:1;min-height:140px"></div>
+    <div id="collection-comments-pager" class="collection-comment-pager" hidden></div>
+  </div>
+</div>
+
+<div id="wcmodal" class="pv-overlay" style="display:none" role="dialog" aria-modal="true"
+     aria-labelledby="wc-title" onclick="if(event.target.id==='wcmodal')hideWorkComments()">
+  <div class="rp-box" style="width:min(94vw,560px);max-height:86vh;display:flex;flex-direction:column">
+    <button class="pv-close" onclick="hideWorkComments()" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+    <h2 id="wc-title">作品评论</h2>
+    <div class="row" style="justify-content:space-between;align-items:center;margin:-4px 0 12px">
+      <span class="mut" id="wc-count" style="font-size:12px">—</span>
+      <button class="ghost sm" onclick="syncWorkComments()" style="flex:0 0 auto"><svg><use href="#i-download"/></svg>抓取评论</button>
+    </div>
+    <div id="wc-list" style="overflow:auto;flex:1;min-height:120px"></div>
+  </div>
+</div>
+
+<!-- 通用模态(下拉选择 / 文本输入),替代浏览器原生 prompt -->
+<div id="uimodal" class="pv-overlay" style="display:none" role="dialog" aria-modal="true"
+     aria-labelledby="ui-title" aria-describedby="ui-hint" onclick="if(event.target.id==='uimodal')uiModalCancel()">
+  <div class="rp-box" style="width:min(94vw,480px)">
+    <div class="ui-modal-head">
+      <div class="ui-modal-heading"><span class="ui-modal-icon" aria-hidden="true"><svg><use id="ui-icon" href="#i-edit"/></svg></span><h2 id="ui-title">选择</h2></div>
+      <button class="pv-close" onclick="uiModalCancel()" aria-label="关闭"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+      <p class="mut" id="ui-hint"></p>
+    </div>
+    <div id="ui-body" class="stack" tabindex="-1"></div>
+    <div class="ui-modal-footer">
+      <div id="ui-feedback" class="ui-feedback" role="alert" tabindex="-1" hidden></div>
+      <div class="row" id="ui-actions">
+        <button class="ghost" onclick="uiModalCancel()">取消</button>
+        <button id="ui-ok" onclick="uiModalOk()"><svg aria-hidden="true"><use href="#i-check"/></svg>确定</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="risk-event-modal" class="pv-overlay" style="display:none" role="dialog" aria-modal="true"
+     aria-labelledby="risk-event-title" onclick="if(event.target.id==='risk-event-modal')hideRiskEvents()">
+  <div class="rp-box" style="width:min(94vw,840px);max-height:88vh;display:flex;flex-direction:column">
+    <button class="pv-close" onclick="hideRiskEvents()" aria-label="关闭"><svg><use href="#i-x"/></svg></button>
+    <h2 id="risk-event-title">风险事件</h2>
+    <div class="mut" id="risk-event-subtitle" style="font-size:12px;margin:-8px 0 12px">最近事件</div>
+    <div class="risk-event-list" id="risk-event-list"></div>
+  </div>
+</div>
+
+<dialog class="command-dialog" id="command-dialog" aria-labelledby="command-title" aria-describedby="command-hint">
+  <div class="command-header"><h2 id="command-title">搜索功能</h2><button class="ghost" id="command-close" type="button" aria-label="关闭功能搜索"><svg aria-hidden="true"><use href="#i-x"/></svg></button></div>
+  <div class="command-search"><input id="command-search" type="search" placeholder="搜索页面、功能或设置…" aria-label="搜索页面或功能" aria-controls="command-results" autocomplete="off"></div>
+  <div class="command-results" id="command-results"></div>
+  <p class="command-hint" id="command-hint">↑ ↓ 选择 · Enter 打开 · Esc 关闭 · 仅显示当前平台可用功能</p>
+</dialog>
+<div id="toasts" aria-live="polite" aria-atomic="false"></div>
+<div id="agent-root"></div>
+<button id="backtop" class="ghost" type="button" tabindex="-1" aria-hidden="true" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="返回顶部" title="返回顶部"><svg><use href="#i-next"/></svg></button>
+
+<script src="/static/submissions.js"></script>
+<script src="/static/engine-settings.js"></script>
+<script src="/static/app.js"></script>
+<script src="/static/workspace-ui.js"></script>
+<script src="/static/workbench.js"></script>
+</body>
+</html>

@@ -1,0 +1,562 @@
+  <section data-panel="monitors">
+  <!-- 监控列表 -->
+  <div class="card" data-section="targets">
+    <div class="card-head">
+      <span class="card-ic"><svg><use href="#i-target"/></svg></span>
+      <h2>监控列表 <span class="sub">运行中</span></h2>
+    </div>
+    <div class="manage-toolbar">
+      <input type="search" id="mon-search" placeholder="搜索用户或别名" aria-label="搜索监控目标" oninput="onMonitorFilter()">
+      <select id="mon-group" aria-label="按分组筛选监控" onchange="onMonitorFilter()"><option value="">全部分组</option></select>
+      <select id="mon-tag" aria-label="按标签筛选监控" onchange="onMonitorFilter()"><option value="">全部标签</option></select>
+      <select id="mon-status" aria-label="按运行状态筛选监控" onchange="onMonitorFilter()"><option value="">全部状态</option><option value="enabled">监控中</option><option value="paused">已暂停</option><option value="error">有异常</option></select>
+      <span class="filter-count" id="mon-filter-count" role="status" aria-live="polite"></span>
+      <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="监控列表 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('monitors', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出监控列表当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('monitors', true, this)" title="导出当前平台全部记录" aria-label="导出监控列表全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div></div>
+    </div>
+    <div class="table-wrap"><table aria-label="作品监控列表"><thead><tr>
+      <th>监控对象</th><th>分组 / 标签</th><th>已采记录</th><th>检查间隔</th><th>抓取与下载策略</th><th>上次扫描</th><th>状态</th><th style="text-align:right">操作</th>
+    </tr></thead><tbody id="mon-table"></tbody></table></div>
+  </div>
+
+  <!-- 下载记录 -->
+  <div class="card" data-section="records">
+    <div class="card-head">
+      <span class="card-ic"><svg><use href="#i-film"/></svg></span>
+      <h2 id="content-title">作品记录</h2>
+    </div>
+    <div class="content-scope">
+      <div class="content-scope-copy"><span class="content-origin-label">当前查看范围</span>
+        <h3 id="content-scope-name" tabindex="-1">全部监控任务</h3>
+        <p id="content-scope-hint">当前平台的任务汇总；点击来源任务可单独查看。抓取时间与作品发布时间分开记录。</p>
+      </div>
+      <div class="content-scope-actions">
+        <button type="button" class="ghost sm" onclick="backToMonitorTasks()">返回任务列表</button>
+        <button type="button" class="ghost sm" id="content-show-all" onclick="showMonitorRecords(null)" hidden>查看全部任务</button>
+        <button type="button" class="ghost sm" onclick="showMonitorRecords(CONTENT_SRC || null)">清除筛选</button>
+      </div>
+    </div>
+    <div class="content-attribution-filters">
+      <div class="form-field"><label for="content-src">来源监控任务</label>
+        <select id="content-src" onchange="onContentSrc()" aria-label="按来源监控任务筛选"><option value="">全部监控任务</option></select>
+      </div>
+      <div class="form-field"><label for="content-captured-from">抓取开始日期</label>
+        <input id="content-captured-from" type="date" onchange="refreshContents(true)" aria-describedby="content-capture-help">
+      </div>
+      <div class="form-field"><label for="content-captured-to">抓取结束日期</label>
+        <input id="content-captured-to" type="date" onchange="refreshContents(true)" aria-describedby="content-capture-help">
+      </div>
+      <p id="content-capture-help" role="status" aria-live="polite">按当前设备时区筛选，包含结束当天；抓取时间为首次入库时间。</p>
+    </div>
+    <div class="manage-toolbar">
+      <input type="search" id="content-search" placeholder="搜索作品描述 / ID" aria-label="搜索作品" oninput="refreshContents(true)">
+      <select id="content-group" onchange="onContentMetaFilter()" aria-label="按分组筛选作品"><option value="">全部分组</option></select>
+      <select id="content-tag" onchange="onContentMetaFilter()" aria-label="按标签筛选作品"><option value="">全部标签</option></select>
+      <select id="content-type" onchange="refreshContents(true)" aria-label="按作品类型筛选">
+        <option value="">全部类型</option><option value="video">视频</option><option value="images">图集 / 图文</option>
+      </select>
+      <select id="content-status" onchange="refreshContents(true)" aria-label="按下载状态筛选">
+        <option value="">全部状态</option><option value="pending">等待中</option><option value="downloading">下载中</option>
+        <option value="done">已下载</option><option value="failed">失败</option><option value="skipped">仅记录</option>
+      </select>
+      <input id="content-min-likes" type="number" min="0" step="1" placeholder="最低点赞" aria-label="最低点赞数" onchange="refreshContents(true)">
+      <input id="content-min-comments" type="number" min="0" step="1" placeholder="最低评论" aria-label="最低评论数" onchange="refreshContents(true)">
+      <select id="content-sort" onchange="refreshContents(true)" aria-label="作品排序">
+        <option value="captured_desc">最近抓取</option><option value="captured_asc">最早抓取</option>
+        <option value="create_desc">最新发布</option><option value="create_asc">最早发布</option>
+        <option value="likes_desc">点赞最多</option><option value="comments_desc">评论最多</option>
+      </select>
+      <span class="filter-count" id="content-filter-count" role="status" aria-live="polite"></span>
+      <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
+        <div class="export-actions" role="group" aria-label="作品数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('contents', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出作品数据当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('contents', true, this)" title="导出当前平台全部记录" aria-label="导出作品数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div>
+        <button class="ghost sm" id="content-selall-btn" onclick="contentSelAllToggle()">全选</button>
+        <span id="content-selbar" style="display:none;align-items:center;gap:8px">
+          <span class="mut" id="content-selcount">已选 0</span>
+          <button class="ghost sm" onclick="contentSelClear()">取消</button>
+          <button class="sm danger" onclick="contentBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
+        </span>
+      </div>
+    </div>
+    <div class="table-wrap" id="content-table-wrap"><table class="content-record-table" aria-label="作品记录、来源任务与抓取时间">
+      <colgroup>
+        <col class="content-col-check"><col class="content-col-cover"><col class="content-col-desc">
+        <col class="content-col-type"><col class="content-col-time"><col class="content-col-data">
+        <col class="content-col-local"><col class="content-col-actions">
+      </colgroup>
+      <thead><tr>
+        <th><input type="checkbox" id="content-selall" onchange="contentToggleAll(this.checked)" aria-label="全选"></th>
+        <th>封面</th><th>作品 / 来源任务</th><th>规格</th><th>抓取 / 发布时间</th><th>互动数据</th><th>状态 / 本地文件</th><th style="text-align:right">操作</th>
+      </tr></thead><tbody id="content-table"></tbody>
+     </table></div>
+    <div id="content-cards" class="xhs-grid" style="display:none"></div>
+    <div id="content-pager" class="danmaku-pager" hidden>
+      <div class="danmaku-pager-left">
+        <button id="content-first" class="ghost sm danmaku-page-icon" onclick="goContentPage(1)" title="第一页" aria-label="第一页"><svg aria-hidden="true"><use href="#i-first"/></svg></button>
+        <button id="content-prev" class="ghost sm" onclick="changeContentPage(-1)"><svg aria-hidden="true"><use href="#i-prev"/></svg>上一页</button>
+      </div>
+      <div class="danmaku-pager-center">
+        <span id="content-page-info" class="mut danmaku-page-info"></span>
+        <label class="danmaku-page-jump">跳至 <input id="content-page-input" type="number" min="1" step="1" inputmode="numeric" aria-label="跳转作品页码" onkeydown="handleContentPageInput(event)"> 页 <button class="ghost sm" onclick="jumpContentPage()">确定</button></label>
+      </div>
+      <div class="danmaku-pager-right">
+        <button id="content-next" class="ghost sm" onclick="changeContentPage(1)">下一页<svg aria-hidden="true"><use href="#i-next"/></svg></button>
+        <button id="content-last" class="ghost sm danmaku-page-icon" onclick="goContentPage(0)" title="最后一页" aria-label="最后一页"><svg aria-hidden="true"><use href="#i-last"/></svg></button>
+        <select id="content-page-size" class="ghost sm danmaku-page-size" onchange="setContentPageSize()" aria-label="每页作品数">
+          <option value="10" selected>每页 10 条</option><option value="20">每页 20 条</option>
+          <option value="50">每页 50 条</option><option value="100">每页 100 条</option><option value="200">每页 200 条</option>
+        </select>
+      </div>
+    </div>
+  </div>
+  </section>
+
+  <section data-panel="comments">
+    <!-- 添加评论监控 -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-plus"/></svg></span>
+        <h2>添加评论监控 <span class="sub">盯视频或账号的评论区</span></h2>
+      </div>
+      <div class="stack">
+        <div>
+          <label class="field" for="w-url" id="w-url-label">作品 / 创作者主页 / 完整分享文案 / ID</label>
+          <div class="smart-target-input">
+            <input id="w-url" maxlength="100000" autocomplete="off"
+              placeholder="直接粘贴整段分享文案，将自动提取作品或主页链接"
+              onpaste="handleWatchTargetPaste()" oninput="resetWatchTargetState()"
+              onkeydown="handleWatchTargetKeydown(event)">
+            <button type="button" class="smart-target-action" onclick="normalizeWatchTarget(this)"
+              aria-label="识别并清洗评论监控分享文案" title="识别并清洗分享文案">
+              <svg><use href="#i-bolt"/></svg><span>识别</span>
+            </button>
+          </div>
+          <div class="smart-target-feedback" id="w-url-feedback" role="status" aria-live="polite">
+            支持完整分享文案、作品链接、创作者主页、平台短链或 ID
+          </div>
+        </div>
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="w-kind">监控对象类型</label><select id="w-kind" onchange="resetWatchTargetState()">
+              <option value="auto">自动识别</option><option value="video">单条视频</option><option value="user">账号近期作品</option>
+          </select></div>
+          <div class="form-field dy-only"><label for="w-mode">评论来源</label><select id="w-mode" onchange="populateWatchAccount()">
+              <option value="public">公开评论区</option><option value="creator">创作中心（仅自有账号）</option>
+          </select></div>
+          <div class="form-field" id="w-acc-wrap"><label for="w-acc">使用账号</label><select id="w-acc"></select></div>
+          <div class="form-field"><label for="w-interval">检查频率</label><select id="w-interval" aria-describedby="w-interval-help">
+              <option value="1">每 1 秒</option><option value="5">每 5 秒</option><option value="10">每 10 秒</option>
+              <option value="15">每 15 秒</option><option value="30">每 30 秒</option><option value="60">每 1 分钟</option>
+              <option value="300">每 5 分钟</option><option value="600" selected>每 10 分钟</option><option value="1800">每 30 分钟</option><option value="3600">每小时</option>
+              <option value="custom">自定义…</option>
+          </select><p id="w-interval-help" class="field-help">支持秒、分钟和自定义间隔；实际执行仍受任务耗时、错峰和账号限制影响。</p></div>
+        </div>
+        <div class="meta-fields">
+          <div>
+            <label class="field" for="w-alias">管理别名(可选)</label>
+            <input id="w-alias" maxlength="60" placeholder="如：618活动评论">
+          </div>
+          <div>
+            <label class="field" for="w-group">分组名(可选)<span class="field-scope meta-scope">当前平台独立</span></label>
+            <input id="w-group" maxlength="40" autocomplete="off" data-meta-combo="group" placeholder="选择或输入新分组">
+          </div>
+          <div>
+            <label class="field" for="w-tags">标签(可选)<span class="field-scope meta-scope">当前平台独立</span></label>
+            <input id="w-tags" autocomplete="off" data-meta-combo="tags" placeholder="选择或输入新标签">
+          </div>
+        </div>
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="w-recent">近期作品数</label><select id="w-recent">
+              <option value="0">跟随全局设置</option><option value="3">最近 3 个作品</option>
+              <option value="5">最近 5 个作品</option><option value="10">最近 10 个作品</option><option value="20">最近 20 个作品</option>
+          </select></div>
+          <div class="form-field"><label for="w-days">作品时间范围</label><select id="w-days">
+              <option value="0">跟随全局设置</option><option value="3">最近 3 天</option>
+              <option value="7">最近 7 天</option><option value="14">最近 14 天</option><option value="30">最近 30 天</option>
+          </select></div>
+          <div class="form-field"><label for="w-depth">评论抓取深度</label><select id="w-depth">
+              <option value="0">跟随全局设置</option><option value="3">浅层抓取</option>
+              <option value="6">标准抓取</option><option value="12">深度抓取</option><option value="20">最大抓取</option>
+          </select></div>
+        </div>
+        <div class="form-actions">
+          <span class="status-text" id="w-msg" role="status" aria-live="polite"></span>
+          <button onclick="addWatch()"><svg><use href="#i-msg"/></svg>开始监控评论</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 评论监控列表 -->
+    <div class="card" data-section="targets">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-list"/></svg></span>
+        <h2>评论监控列表</h2>
+      </div>
+      <div class="manage-toolbar">
+      <input type="search" id="watch-search" placeholder="搜索对象或别名" aria-label="搜索评论监控" oninput="onWatchFilter()">
+      <select id="watch-group" aria-label="按分组筛选评论监控" onchange="onWatchFilter()"><option value="">全部分组</option></select>
+      <select id="watch-tag" aria-label="按标签筛选评论监控" onchange="onWatchFilter()"><option value="">全部标签</option></select>
+      <select id="watch-status" aria-label="按状态筛选评论监控" onchange="onWatchFilter()"><option value="">全部状态</option><option value="enabled">监控中</option><option value="paused">已暂停</option><option value="error">有异常</option></select>
+      <span class="filter-count" id="watch-filter-count" role="status" aria-live="polite"></span>
+      <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="评论监控 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('comment-watches', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出评论监控当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('comment-watches', true, this)" title="导出当前平台全部记录" aria-label="导出评论监控全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div></div>
+      </div>
+      <div class="table-wrap"><table aria-label="评论监控列表"><thead><tr>
+        <th>监控对象</th><th>分组 / 标签</th><th>类型 / 来源</th><th>已采评论</th><th>检查间隔</th><th>上次扫描</th><th>状态</th><th style="text-align:right">操作</th>
+      </tr></thead><tbody id="watch-table"></tbody></table></div>
+    </div>
+
+  <!-- 评论数据 -->
+  <div class="card" data-section="records">
+    <div class="card-head">
+      <span class="card-ic"><svg><use href="#i-msg"/></svg></span>
+      <h2>评论记录 <span class="sub">按来源任务与入库时间检索</span></h2>
+    </div>
+    <div class="content-scope">
+      <div class="content-scope-copy"><span class="content-origin-label">当前查看范围</span>
+        <h3 id="comment-scope-name" tabindex="-1">全部评论监控任务</h3>
+        <p id="comment-scope-hint">当前平台的评论记录汇总；点击来源任务可单独查看。抓取时间指首次入库。</p>
+      </div>
+      <div class="content-scope-actions">
+        <button type="button" class="ghost sm" onclick="backToWatchTasks('comment')">返回任务列表</button>
+        <button type="button" class="ghost sm" id="comment-show-all" onclick="showWatchRecords('comment',null)" hidden>查看全部任务</button>
+        <button type="button" class="ghost sm" onclick="showWatchRecords('comment',COMMENT_SRC || null)">清除筛选</button>
+      </div>
+    </div>
+    <div class="content-attribution-filters">
+      <div class="form-field"><label for="comment-src">来源评论监控任务</label>
+        <select id="comment-src" onchange="onCommentSrc()" aria-label="按来源评论监控筛选"><option value="">全部评论监控任务</option></select>
+      </div>
+      <div class="form-field"><label for="comment-captured-from">抓取开始日期</label>
+        <input id="comment-captured-from" type="date" onchange="refreshComments(true)" aria-describedby="comment-capture-help">
+      </div>
+      <div class="form-field"><label for="comment-captured-to">抓取结束日期</label>
+        <input id="comment-captured-to" type="date" onchange="refreshComments(true)" aria-describedby="comment-capture-help">
+      </div>
+      <p id="comment-capture-help" role="status" aria-live="polite">按当前设备时区筛选，包含结束当天；抓取时间为首次入库时间。</p>
+    </div>
+    <div class="manage-toolbar">
+        <input type="search" id="comment-query" placeholder="搜索评论 / 用户 / 地区 / 作品 ID" aria-label="搜索评论内容" oninput="refreshComments(true)">
+        <input type="text" id="comment-ip-label" placeholder="地区（如：广东）" aria-label="按评论地区筛选" oninput="refreshComments(true)">
+        <select id="comment-group" onchange="onCommentMetaFilter()" aria-label="按分组筛选评论"><option value="">全部分组</option></select>
+        <select id="comment-tag" onchange="onCommentMetaFilter()" aria-label="按标签筛选评论"><option value="">全部标签</option></select>
+        <select id="comment-type" onchange="refreshComments(true)" aria-label="按评论类型筛选">
+          <option value="">全部评论</option><option value="top">仅主评论</option><option value="reply">仅回复</option>
+        </select>
+        <input id="comment-min-likes" type="number" min="0" step="1" placeholder="最低点赞" aria-label="评论最低点赞数" onchange="refreshComments(true)">
+        <select id="comment-sort" onchange="refreshComments(true)" aria-label="评论排序">
+          <option value="captured_desc">最近抓取</option><option value="captured_asc">最早抓取</option>
+          <option value="latest">最新评论</option><option value="oldest">最早评论</option><option value="likes_desc">点赞最多</option>
+        </select>
+        <span class="filter-count" id="comment-filter-count" role="status" aria-live="polite"></span>
+        <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
+          <div class="export-actions" role="group" aria-label="评论数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('comments', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出评论数据当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('comments', true, this)" title="导出当前平台全部记录" aria-label="导出评论数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div>
+          <button class="ghost sm" id="comment-selall-btn" onclick="commentSelAllToggle()">全选</button>
+          <span id="comment-selbar" style="display:none;align-items:center;gap:8px">
+            <span class="mut" id="comment-selcount">已选 0</span>
+            <button class="ghost sm" type="button" onclick="commentSelClear()">取消</button>
+            <button class="sm danger" id="comment-batchbtn" onclick="commentBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
+          </span>
+          <button class="ghost sm danger" onclick="clearComments()"><svg><use href="#i-trash"/></svg>清空评论</button>
+        </div>
+    </div>
+    <div class="table-wrap" id="comment-table-wrap"><table class="watch-record-table comment-record-table" aria-label="已抓取评论、来源任务与抓取时间"><thead><tr>
+      <th><input type="checkbox" id="comment-selall" onchange="commentToggleAll(this.checked)" aria-label="全选"></th>
+      <th>评论 / 来源任务</th><th>用户</th><th>赞</th><th>抓取 / 评论时间</th><th>操作</th>
+    </tr></thead><tbody id="comment-table"></tbody></table></div>
+    <div id="comment-pager" class="danmaku-pager" hidden>
+      <div class="danmaku-pager-left">
+        <button id="comment-first" class="ghost sm danmaku-page-icon" onclick="goCommentPage(1)" title="第一页" aria-label="第一页"><svg aria-hidden="true"><use href="#i-first"/></svg></button>
+        <button id="comment-prev" class="ghost sm" onclick="changeCommentPage(-1)"><svg aria-hidden="true"><use href="#i-prev"/></svg>上一页</button>
+      </div>
+      <div class="danmaku-pager-center">
+        <span id="comment-page-info" class="mut danmaku-page-info"></span>
+        <label class="danmaku-page-jump">跳至 <input id="comment-page-input" type="number" min="1" step="1" inputmode="numeric" aria-label="跳转评论页码" onkeydown="handleCommentPageInput(event)"> 页 <button class="ghost sm" onclick="jumpCommentPage()">确定</button></label>
+      </div>
+      <div class="danmaku-pager-right">
+        <button id="comment-next" class="ghost sm" onclick="changeCommentPage(1)">下一页<svg aria-hidden="true"><use href="#i-next"/></svg></button>
+        <button id="comment-last" class="ghost sm danmaku-page-icon" onclick="goCommentPage(0)" title="最后一页" aria-label="最后一页"><svg aria-hidden="true"><use href="#i-last"/></svg></button>
+        <select id="comment-page-size" class="ghost sm danmaku-page-size" onchange="setCommentPageSize()" aria-label="每页评论数">
+          <option value="10" selected>每页 10 条</option><option value="20">每页 20 条</option>
+          <option value="50">每页 50 条</option><option value="100">每页 100 条</option><option value="200">每页 200 条</option>
+        </select>
+      </div>
+    </div>
+  </div>
+  </section>
+
+  <section data-panel="danmaku" class="danmaku-only">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-msg"/></svg></span>
+        <h2>添加弹幕监控 <span class="sub">监控视频内时间点弹幕，不是评论区评论</span></h2>
+      </div>
+      <div class="hint" style="margin-bottom:14px">
+        自己的抖音视频可选择「创作中心」并绑定创作者账号；抖音与哔哩哔哩公开视频选择「公开视频播放页」。首次扫描会建立历史基线，后续只推送新增弹幕。
+      </div>
+      <div class="stack">
+        <div>
+          <label class="field" for="d-w-url" id="d-w-url-label">视频 / 账号主页 / 完整分享文案 / ID</label>
+          <div class="smart-target-input">
+            <input id="d-w-url" maxlength="100000" autocomplete="off"
+              placeholder="直接粘贴整段抖音或哔哩哔哩分享文案，将自动提取视频或主页链接"
+              onpaste="handleDanmakuTargetPaste()" oninput="resetDanmakuTargetState()"
+              onkeydown="handleDanmakuTargetKeydown(event)">
+            <button type="button" class="smart-target-action" onclick="normalizeDanmakuTarget(this)"
+              aria-label="识别并清洗弹幕监控分享文案" title="识别并清洗分享文案">
+              <svg><use href="#i-bolt"/></svg><span>识别</span>
+            </button>
+          </div>
+          <div class="smart-target-feedback" id="d-w-url-feedback" role="status" aria-live="polite">
+            支持完整抖音 / 哔哩哔哩分享文案、BV/av 号、视频链接、空间主页或短链
+          </div>
+        </div>
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="d-w-kind">监控对象</label><select id="d-w-kind" onchange="applyDanmakuForm()">
+            <option value="auto">自动识别</option><option value="video">单条视频</option><option value="user">账号近期作品</option>
+          </select></div>
+          <div class="form-field"><label for="d-w-mode">弹幕来源</label><select id="d-w-mode" onchange="applyDanmakuForm()">
+            <option value="public">公开视频播放页</option><option value="creator" class="dy-only">创作中心（自己的视频）</option>
+          </select></div>
+          <div class="form-field"><label for="d-w-acc" id="d-w-acc-label">播放页账号（可选）</label><select id="d-w-acc"></select></div>
+          <div class="form-field"><label for="d-w-interval">检查频率</label><select id="d-w-interval" aria-describedby="d-w-interval-help">
+            <option value="0" selected>跟随全局设置</option>
+            <option value="1">每 1 秒</option><option value="5">每 5 秒</option><option value="10">每 10 秒</option>
+            <option value="15">每 15 秒</option><option value="30">每 30 秒</option><option value="60">每 1 分钟</option>
+            <option value="300">每 5 分钟</option><option value="600">每 10 分钟</option><option value="1800">每 30 分钟</option><option value="3600">每小时</option>
+            <option value="custom">自定义…</option>
+          </select><p id="d-w-interval-help" class="field-help">支持秒、分钟和自定义间隔；实际执行仍受任务耗时、错峰和账号限制影响。</p></div>
+        </div>
+        <div class="meta-fields">
+          <div><label class="field" for="d-w-alias">管理别名(可选)</label><input id="d-w-alias" maxlength="60" placeholder="如：新品视频弹幕"></div>
+          <div><label class="field" for="d-w-group">分组(可选)</label><input id="d-w-group" data-meta-combo="group" placeholder="选择或输入新分组"></div>
+          <div><label class="field" for="d-w-tags">标签(可选)</label><input id="d-w-tags" data-meta-combo="tags" placeholder="选择或输入标签"></div>
+        </div>
+        <div class="form-grid cols-auto">
+          <div class="form-field" id="d-w-recent-wrap"><label for="d-w-recent">账号模式作品数</label><select id="d-w-recent">
+            <option value="0" selected>跟随全局设置</option><option value="3">最近 3 个作品</option><option value="5">最近 5 个作品</option><option value="10">最近 10 个作品</option><option value="20">最近 20 个作品</option>
+          </select></div>
+          <div class="form-field" id="d-w-days-wrap"><label for="d-w-days">作品时间范围</label><select id="d-w-days">
+            <option value="0" selected>跟随全局设置</option><option value="3">最近 3 天</option><option value="7">最近 7 天</option><option value="14">最近 14 天</option><option value="30">最近 30 天</option>
+          </select></div>
+          <div class="form-field"><label for="d-w-depth" id="d-w-depth-label">弹幕加载轮次</label><select id="d-w-depth">
+            <option value="0" selected>跟随全局设置</option><option value="3">浅层</option><option value="6">标准</option><option value="12">深度</option><option value="20">最大</option>
+          </select></div>
+        </div>
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="d-w-time-start">视频内起点(秒)</label><input id="d-w-time-start" type="number" min="0" max="86400" step="0.1" value="0" placeholder="0=从头"></div>
+          <div class="form-field"><label for="d-w-time-end">视频内终点(秒)</label><input id="d-w-time-end" type="number" min="0" max="86400" step="0.1" value="0" placeholder="0=到结尾"></div>
+          <div class="form-field" id="d-w-probe-wrap"><label for="d-w-probe-step">时间轴扫描步长</label><select id="d-w-probe-step">
+            <option value="0" selected>跟随全局设置</option><option value="0.5">每 0.5 秒</option><option value="1">每 1 秒</option><option value="2">每 2 秒</option><option value="5">每 5 秒</option>
+          </select></div>
+          <div class="form-field"><label for="d-w-min-like">最少点赞数</label><input id="d-w-min-like" type="number" min="0" max="1000000" value="0" placeholder="0=不限"></div>
+        </div>
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="d-w-min-len">最短文本长度</label><input id="d-w-min-len" type="number" min="0" max="200" value="0" placeholder="0=不限"></div>
+          <div class="form-field"><label for="d-w-max-len">最长文本长度</label><input id="d-w-max-len" type="number" min="0" max="200" value="0" placeholder="0=不限"></div>
+          <div class="form-field"><label for="d-w-scan-cap">单轮入库上限</label><input id="d-w-scan-cap" type="number" min="0" max="100000" value="0" placeholder="0=跟随全局"></div>
+          <div class="form-field"><label for="d-w-total-cap">总保留上限</label><input id="d-w-total-cap" type="number" min="0" max="1000000" value="0" placeholder="0=跟随全局"></div>
+        </div>
+        <div class="meta-fields">
+          <div><label class="field" for="d-w-include">包含关键词(可选)</label><input id="d-w-include" placeholder="逗号分隔，命中任一项才保留"></div>
+          <div><label class="field" for="d-w-exclude">排除关键词(可选)</label><input id="d-w-exclude" placeholder="逗号分隔，命中任一项则丢弃"></div>
+        </div>
+        <div class="form-actions">
+          <span class="status-text" id="d-w-msg" role="status" aria-live="polite"></span>
+          <button onclick="addDanmakuWatch()"><svg><use href="#i-msg"/></svg>开始监控弹幕</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" data-section="targets">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-list"/></svg></span>
+        <h2>弹幕监控列表</h2>
+      </div>
+      <div class="manage-toolbar">
+        <input type="search" id="danmaku-watch-search" placeholder="搜索对象或别名" aria-label="搜索弹幕监控" oninput="renderDanmakuWatchRows()">
+        <select id="danmaku-watch-group" aria-label="按分组筛选弹幕监控" onchange="renderDanmakuWatchRows()"><option value="">全部分组</option></select>
+        <select id="danmaku-watch-tag" aria-label="按标签筛选弹幕监控" onchange="renderDanmakuWatchRows()"><option value="">全部标签</option></select>
+        <select id="danmaku-watch-status" aria-label="按状态筛选弹幕监控" onchange="renderDanmakuWatchRows()"><option value="">全部状态</option><option value="enabled">监控中</option><option value="paused">已暂停</option><option value="error">有异常</option></select>
+        <span class="filter-count" id="danmaku-watch-filter-count"></span>
+        <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="弹幕监控 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('danmaku-watches', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出弹幕监控当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('danmaku-watches', true, this)" title="导出当前平台全部记录" aria-label="导出弹幕监控全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div></div>
+      </div>
+      <div class="table-wrap"><table aria-label="弹幕监控列表"><thead><tr>
+        <th>监控对象</th><th>分组 / 标签</th><th>类型 / 来源</th><th>已采弹幕</th><th>检查间隔</th><th>上次扫描</th><th>状态</th><th style="text-align:right">操作</th>
+      </tr></thead><tbody id="danmaku-watch-table"></tbody></table></div>
+    </div>
+
+    <div class="card" data-section="records">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-msg"/></svg></span>
+        <h2>弹幕记录 <span class="sub">按视频时间点与来源任务检索</span></h2>
+      </div>
+      <div class="content-scope">
+        <div class="content-scope-copy"><span class="content-origin-label">当前查看范围</span>
+          <h3 id="danmaku-scope-name" tabindex="-1">全部弹幕监控任务</h3>
+          <p id="danmaku-scope-hint">当前平台的弹幕记录汇总；点击来源任务可单独查看。抓取时间指首次入库。</p>
+        </div>
+        <div class="content-scope-actions">
+          <button type="button" class="ghost sm" onclick="backToWatchTasks('danmaku')">返回任务列表</button>
+          <button type="button" class="ghost sm" id="danmaku-show-all" onclick="showWatchRecords('danmaku',null)" hidden>查看全部任务</button>
+          <button type="button" class="ghost sm" onclick="showWatchRecords('danmaku',DANMAKU_SRC || null)">清除筛选</button>
+        </div>
+      </div>
+      <div class="content-attribution-filters">
+        <div class="form-field"><label for="danmaku-src">来源弹幕监控任务</label>
+          <select id="danmaku-src" aria-label="按来源弹幕监控筛选" onchange="onDanmakuSrc()"><option value="">全部弹幕监控任务</option></select>
+        </div>
+        <div class="form-field"><label for="danmaku-captured-from">抓取开始日期</label>
+          <input id="danmaku-captured-from" type="date" onchange="refreshDanmaku(true)" aria-describedby="danmaku-capture-help">
+        </div>
+        <div class="form-field"><label for="danmaku-captured-to">抓取结束日期</label>
+          <input id="danmaku-captured-to" type="date" onchange="refreshDanmaku(true)" aria-describedby="danmaku-capture-help">
+        </div>
+        <p id="danmaku-capture-help" role="status" aria-live="polite">按当前设备时区筛选，包含结束当天；抓取时间为首次入库时间。</p>
+      </div>
+      <div class="manage-toolbar">
+        <input id="danmaku-query" type="search" placeholder="筛选文本 / 用户 ID" aria-label="筛选弹幕文本或用户" oninput="refreshDanmaku(true)">
+        <input id="danmaku-time-start" type="number" min="0" step="0.1" placeholder="起点秒" aria-label="视频内起点秒" onchange="refreshDanmaku(true)">
+        <input id="danmaku-time-end" type="number" min="0" step="0.1" placeholder="终点秒" aria-label="视频内终点秒" onchange="refreshDanmaku(true)">
+        <select id="danmaku-sort" onchange="refreshDanmaku(true)" aria-label="弹幕排序">
+          <option value="captured_desc">最近抓取</option><option value="captured_asc">最早抓取</option>
+          <option value="video_asc">视频内时间正序</option><option value="video_desc">视频内时间倒序</option>
+        </select>
+        <span class="filter-count" id="danmaku-filter-count" role="status" aria-live="polite"></span>
+        <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span>
+          <div class="export-actions" role="group" aria-label="弹幕数据 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('danmaku', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出弹幕数据当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('danmaku', true, this)" title="导出当前平台全部记录" aria-label="导出弹幕数据全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div>
+          <button class="ghost sm danger" onclick="clearDanmaku()"><svg><use href="#i-trash"/></svg>清空弹幕</button>
+        </div>
+      </div>
+      <div class="table-wrap" id="danmaku-table-wrap"><table class="watch-record-table danmaku-record-table" aria-label="已抓取弹幕、来源任务与抓取时间"><thead><tr>
+        <th title="弹幕文本与抓取该记录的监控任务">弹幕 / 来源任务</th><th>用户</th><th title="弹幕在视频播放轴中的出现位置">视频内时间</th><th title="公开视频播放页或创作者中心">获取渠道</th><th>抓取 / 发送时间</th><th style="text-align:right">操作</th>
+      </tr></thead><tbody id="danmaku-table"></tbody></table></div>
+      <div id="danmaku-pager" class="danmaku-pager" hidden>
+        <div class="danmaku-pager-left">
+          <button id="danmaku-first" class="ghost sm danmaku-page-icon" onclick="goDanmakuPage(1)" title="第一页" aria-label="第一页"><svg aria-hidden="true"><use href="#i-first"/></svg></button>
+          <button id="danmaku-prev" class="ghost sm" onclick="changeDanmakuPage(-1)"><svg aria-hidden="true"><use href="#i-prev"/></svg>上一页</button>
+        </div>
+        <div class="danmaku-pager-center">
+          <span id="danmaku-page-info" class="mut danmaku-page-info"></span>
+          <label class="danmaku-page-jump">跳至 <input id="danmaku-page-input" type="number" min="1" step="1" inputmode="numeric" aria-label="跳转页码" onkeydown="handleDanmakuPageInput(event)"> 页 <button class="ghost sm" onclick="jumpDanmakuPage()">确定</button></label>
+        </div>
+        <div class="danmaku-pager-right">
+          <button id="danmaku-next" class="ghost sm" onclick="changeDanmakuPage(1)">下一页<svg aria-hidden="true"><use href="#i-next"/></svg></button>
+          <button id="danmaku-last" class="ghost sm danmaku-page-icon" onclick="goDanmakuPage(0)" title="最后一页" aria-label="最后一页"><svg aria-hidden="true"><use href="#i-last"/></svg></button>
+          <select id="danmaku-page-size" class="ghost sm danmaku-page-size" onchange="setDanmakuPageSize()" aria-label="每页条数">
+            <option value="10" selected>每页 10 条</option><option value="20">每页 20 条</option>
+            <option value="50">每页 50 条</option><option value="100">每页 100 条</option>
+            <option value="200">每页 200 条</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────── 账号管理(独立面板:本账号的作品/关注/粉丝/私信,数据按所选账号隔离) ───────── -->
+  <section data-panel="hub">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-user"/></svg></span>
+        <h2>本账号管理 <span class="sub">本账号的作品、数据与已支持的关系功能</span></h2>
+        <div class="right" style="display:flex;gap:8px;align-items:center">
+          <select id="hub-acc" onchange="onHubAcc()" style="width:auto;min-width:190px" aria-label="选择账号"></select>
+        </div>
+      </div>
+      <div class="tabbar" style="position:static;margin-bottom:14px">
+        <button class="tab active" data-hubtab="myworks" onclick="switchHubTab('myworks')"><svg><use href="#i-film"/></svg>我的作品 <span class="tab-badge" id="hb-myworks">0</span></button>
+        <button class="tab notsh-only tk-hide rn-hide" data-hubtab="following" onclick="switchHubTab('following')"><svg><use href="#i-user"/></svg>关注 <span class="tab-badge" id="hb-following">0</span></button>
+        <button class="tab notsh-only tk-hide rn-hide" data-hubtab="fans" onclick="switchHubTab('fans')"><svg><use href="#i-heart"/></svg>粉丝 <span class="tab-badge" id="hb-fans">0</span></button>
+        <button class="tab notsh-only tk-hide rn-hide" data-hubtab="dm" onclick="switchHubTab('dm')"><svg><use href="#i-send"/></svg>私信 <span class="tab-badge" id="hb-dm">0</span></button>
+        <button class="tab" data-hubtab="stats" onclick="switchHubTab('stats')"><svg><use href="#i-eye"/></svg>数据 <span class="tab-badge" id="hb-stats">0</span></button>
+      </div>
+
+      <div data-hubpanel="myworks">
+        <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:12px">
+          <div class="hint" style="margin:0;flex:1">点「同步作品」用当前账号登录态读取自己的已发布作品。TikTok 会打开本账号公开主页，并同时读取作品接口、页面内嵌数据和可见作品卡。计数只统计当前所选账号。</div>
+          <button class="ghost sm" style="flex:0 0 auto" onclick="syncMyWorks()"><svg><use href="#i-download"/></svg>同步作品</button>
+        </div>
+        <div id="mw-grid" class="xhs-grid"></div>
+      </div>
+
+      <div data-hubpanel="following" style="display:none">
+        <div class="follow-toolbar">
+          <input id="following-search" type="search" placeholder="搜索关注用户" aria-label="搜索关注用户" oninput="queueFollowSearch('following')">
+          <button class="ghost sm" onclick="syncFollows('following')"><svg><use href="#i-download"/></svg>同步关注</button>
+        </div>
+        <div id="following-sync-status" class="follow-sync-status" hidden></div>
+        <div class="table-wrap"><table aria-label="关注列表"><thead><tr><th>用户</th><th>关系</th><th>操作</th></tr></thead><tbody id="following-table"></tbody></table></div>
+        <div id="following-pager" class="danmaku-pager" hidden>
+          <div class="danmaku-pager-left"><span id="following-page-info" class="danmaku-page-info"></span></div>
+          <div class="danmaku-pager-center">
+            <button class="ghost sm danmaku-page-icon" data-tip="上一页" aria-label="关注列表上一页" onclick="changeFollowPage('following',-1)"><svg><use href="#i-prev"/></svg></button>
+            <button class="ghost sm danmaku-page-icon" data-tip="下一页" aria-label="关注列表下一页" onclick="changeFollowPage('following',1)"><svg><use href="#i-next"/></svg></button>
+          </div>
+          <div class="danmaku-pager-right"><span id="following-synced-at" class="follow-pager-time"></span></div>
+        </div>
+      </div>
+
+      <div data-hubpanel="fans" style="display:none">
+        <div class="follow-toolbar">
+          <input id="fan-search" type="search" placeholder="搜索粉丝" aria-label="搜索粉丝" oninput="queueFollowSearch('fan')">
+          <button class="ghost sm" onclick="syncFollows('fan')"><svg><use href="#i-download"/></svg>同步粉丝</button>
+        </div>
+        <div id="fan-sync-status" class="follow-sync-status" hidden></div>
+        <div class="table-wrap"><table aria-label="粉丝列表"><thead><tr><th>用户</th><th>关系</th><th>操作</th></tr></thead><tbody id="fans-table"></tbody></table></div>
+        <div id="fan-pager" class="danmaku-pager" hidden>
+          <div class="danmaku-pager-left"><span id="fan-page-info" class="danmaku-page-info"></span></div>
+          <div class="danmaku-pager-center">
+            <button class="ghost sm danmaku-page-icon" data-tip="上一页" aria-label="粉丝列表上一页" onclick="changeFollowPage('fan',-1)"><svg><use href="#i-prev"/></svg></button>
+            <button class="ghost sm danmaku-page-icon" data-tip="下一页" aria-label="粉丝列表下一页" onclick="changeFollowPage('fan',1)"><svg><use href="#i-next"/></svg></button>
+          </div>
+          <div class="danmaku-pager-right"><span id="fan-synced-at" class="follow-pager-time"></span></div>
+        </div>
+      </div>
+
+      <div data-hubpanel="dm" style="display:none">
+        <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:12px">
+          <div class="hint" style="margin:0;flex:1"><span class="ic-text"><svg aria-hidden="true"><use href="#i-msg"/></svg><b>网页私信</b></span>：抖音与小红书均可同步会话和历史。小红书复用账号 Chrome 的原生实时推送，并以低频检查补偿漏推；自动回复默认先生成待审核草稿。</div>
+          <button class="ghost sm" style="flex:0 0 auto" onclick="syncDm()"><svg><use href="#i-download"/></svg>同步</button>
+          <button class="ghost sm dy-only" style="flex:0 0 auto" onclick="startNewDm()"><svg><use href="#i-plus"/></svg>新私信</button>
+          <button style="flex:0 0 auto" onclick="openHubAccountBrowser()"><svg><use href="#i-send"/></svg>打开浏览器收发</button>
+        </div>
+        <details class="dm-auto" id="dm-auto-panel">
+          <summary>自动回复规则与待审核回复</summary>
+          <div class="hint" style="margin-top:8px">仅处理建立监控基线后收到的新消息。默认先生成草稿；自动发送仍受活跃时段、15 分钟私信间隔、小时/每日配额和风险冷却控制。</div>
+          <div class="hint" id="dm-monitor-status" style="margin-top:8px">正在读取账号级实时监听状态…</div>
+          <div class="dm-auto-grid">
+            <label>规则名称<input id="dm-rule-name" value="常用问询"></label>
+            <label>关键词（逗号分隔）<input id="dm-rule-keywords" placeholder="价格,合作,购买"></label>
+            <label>回复模板（每行一条）<textarea id="dm-rule-templates" rows="2" placeholder="你好 {nickname}，已收到你的消息，我们稍后回复。"></textarea></label>
+            <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+              <label style="flex-direction:row"><input id="dm-rule-auto" type="checkbox">免审核自动发送</label>
+              <button class="sm" onclick="saveDmRule()">新增规则</button>
+            </div>
+            <label>排除词（逗号分隔）<input id="dm-rule-excludes" placeholder="停止,不要联系"></label>
+            <label>最短延迟（秒）<input id="dm-rule-delay-min" type="number" min="15" max="3600" value="75"></label>
+            <label>最长延迟（秒）<input id="dm-rule-delay-max" type="number" min="15" max="7200" value="300"></label>
+            <label>同会话冷却（小时）<input id="dm-rule-cooldown" type="number" min="1" max="168" value="6"></label>
+          </div>
+          <div class="dm-auto-rules" id="dm-auto-rules"></div>
+          <div style="font-weight:650;margin-top:12px">待审核回复</div>
+          <div class="dm-auto-tasks" id="dm-auto-tasks"></div>
+        </details>
+        <div class="dm-wrap">
+          <div class="dm-list" id="dm-convs"></div>
+          <div class="dm-main">
+            <div class="dm-thread" id="dm-thread"><div class="empty"><div class="empty-ic"><svg><use href="#i-send"/></svg></div><div class="empty-t">选择左侧会话查看消息</div></div></div>
+            <div class="dm-composer">
+              <input id="dm-input" placeholder="输入私信内容…" aria-label="私信内容" onkeydown="if(event.key==='Enter')sendDm()">
+              <button onclick="sendDm()"><svg><use href="#i-send"/></svg>发送</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div data-hubpanel="stats" style="display:none">
+        <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:12px">
+          <div class="hint" style="margin:0;flex:1">本账号数据趋势(粉丝 / 作品互动)由后台引擎在账号体检时逐日快照;单篇明细来自「我的作品」。作品健康监控(持续0播/违规告警)可在 <code>config.yaml</code> 打开 <code>engine.work_health_enabled</code>。趋势需运行若干天才有多点。</div>
+          <button class="ghost sm" style="flex:0 0 auto" onclick="loadHubStats()"><svg><use href="#i-download"/></svg>刷新数据</button>
+        </div>
+        <div id="stats-kpi" class="kpi-grid"></div>
+        <div id="stats-trend"></div>
+        <div class="table-wrap"><table aria-label="账号作品数据"><thead><tr><th>作品</th><th>播放</th><th>点赞</th><th>评论</th><th>状态</th></tr></thead><tbody id="stats-works"></tbody></table></div>
+      </div>
+    </div>
+  </section>

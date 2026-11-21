@@ -922,3 +922,7 @@ class ShareDownloadRecord(SQLModel, table=True):
     metadata_json: str = "{}"
     error: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
+# 语义化多平台账号模型别名（底层物理表名保留 douyinaccount 以兼容存量 SQLite 数据库）
+PlatformAccount = DouyinAccount

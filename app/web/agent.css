@@ -1,3 +1,4 @@
+/* AUTO-GENERATED FROM frontend/agent.css BY npm run build:ui — DO NOT EDIT DIRECTLY */
 /* Global, nonmodal assistant — iOS Dynamic Liquid Glass surface system.
    All colors, translucency, and elevation follow appearance.css & workbench.css tokens. */
 .agent-global [hidden] { display:none!important; }
