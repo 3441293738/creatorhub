@@ -215,6 +215,8 @@ def update_health_check() -> int:
     """Import/resource readiness only; never start services or migrate user data."""
     import tempfile
     previous = Path.cwd()
+    if sys.argv and sys.argv[0]:
+        sys.argv[0] = str(Path(sys.argv[0]).resolve())
     with tempfile.TemporaryDirectory(prefix="creatorhub-health-") as temp:
         try:
             os.chdir(temp)
@@ -225,6 +227,7 @@ def update_health_check() -> int:
             from app.platforms.rednote import RednoteApiClient, publish_rednote_browser
             from app.platforms.instagram import InstagramClient, publish_instagram
             from app.platforms.twitter import TwitterClient, publish_twitter
+            from app.platforms.channels import open_or_focus_wechat
             from app.platforms.channels.local_ca import LocalCaManager
             from desktop.controller import Controller
             from desktop.installer_assets import render_brand_icon
@@ -234,12 +237,13 @@ def update_health_check() -> int:
             from imageio_ffmpeg import get_ffmpeg_exe
             import webview
             channels_js = Path(app_pkg.__file__).parent / "platforms" / "channels" / "js"
-            assert app and LocalCaManager and BilibiliClient and receive_bili_broadcast and publish_bilibili and RednoteApiClient and publish_rednote_browser
+            assert app and LocalCaManager and open_or_focus_wechat and BilibiliClient and receive_bili_broadcast and publish_bilibili and RednoteApiClient and publish_rednote_browser
             assert InstagramClient and publish_instagram
             assert TwitterClient and publish_twitter
             assert websockets.asyncio.client and Controller and ShellServer and webview
             assert render_brand_icon(32).size == (32, 32)
-            assert (WEB_DIR / "workbench.js").is_file()
+            for web_asset in ("index.html", "app.js", "workbench.js"):
+                assert (WEB_DIR / web_asset).is_file(), web_asset
             assert (channels_js / "finder_proxy_bridge.js").is_file()
             assert (channels_js / "finder_native_protocol.js").is_file()
             assert (channels_js / "finder_protocol_browser_bootstrap.js").is_file()
