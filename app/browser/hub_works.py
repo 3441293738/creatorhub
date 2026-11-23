@@ -91,7 +91,12 @@ def _norm_channels_work(it: dict) -> Optional[dict]:
     这里只记元数据+统计(供本账号作品展示 + 作品健康监控)。字段以真机抓包为准。"""
     if not isinstance(it, dict):
         return None
-    oid = str(_first(it, "objectId", "exportId", "id", default="") or "")
+    oid = ""
+    for _id_key in ("objectId", "exportId", "id"):
+        _cand = str(it.get(_id_key) or "").strip()
+        if _cand and _cand != "0":
+            oid = _cand
+            break
     if not oid:
         return None
     # 助手当前 post_list 使用 desc；旧版/部分接口使用 objectDesc。
@@ -243,8 +248,13 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
     known: Set[str] = set()
     try:
         if platform == "shipinhao":
-            items, _author, err = await fetch_channels_works(mgr, identity, known,
-                                                             max_scrolls=max_scrolls)
+            items, _author, err = await fetch_channels_works(
+                mgr,
+                identity,
+                known,
+                max_scrolls=max_scrolls,
+                max_pages=max(120, max_scrolls * 8),
+            )
             norm = _norm_channels_work
         elif platform == "rednote":
             from app.platforms.rednote import RednoteApiClient, RednoteApiError, has_a1

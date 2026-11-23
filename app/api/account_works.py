@@ -40,7 +40,8 @@ def _work_dict(w: AccountWork) -> dict:
 
 
 @router.get("/api/account-works")
-async def list_account_works(account_id: int, limit: int = 200):
+async def list_account_works(account_id: int, limit: int = 1000):
+    limit = max(1, min(int(limit or 1000), 2000))
     with get_session() as s:
         q = (select(AccountWork).where(AccountWork.account_id == account_id)
              .order_by(AccountWork.create_time.desc()).limit(limit))
@@ -188,6 +189,14 @@ async def sync_account_works(account_id: int):
                 s.add(AccountWork(platform=platform, account_id=account_id,
                                   fetched_at=now, **w))
                 added += 1
+        acc_row = s.get(DouyinAccount, account_id)
+        if acc_row is not None:
+            total_works = len(s.exec(
+                select(AccountWork.id).where(AccountWork.account_id == account_id)
+            ).all())
+            if not acc_row.aweme_count or acc_row.aweme_count < total_works:
+                acc_row.aweme_count = total_works
+                s.add(acc_row)
         s.commit()
     thumb_cache.schedule_thumb_prewarm(
         [str(w.get("cover_url") or "") for w in items],

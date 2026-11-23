@@ -508,10 +508,15 @@ class TargetScanMixin:
                 await proto_client.close()
         if not items and (proto_client is None or (read_mode == "auto" and error)):
             if has_active_account and (not user_id or user_id == acc_sec_uid):
+                scan_pages = max(
+                    int(strategy["max_scrolls"] or 8),
+                    ((max(40, int(strategy["max_items"] or 40)) + 4) // 5) + 1,
+                )
                 items, author, browser_err = await fetch_channels_works(
                     self.browser, identity, known,
                     max_scrolls=strategy["max_scrolls"],
                     block_media=self.cfg.engine.block_media_resources,
+                    max_pages=min(80, scan_pages),
                 )
                 error = browser_err or ("" if items else error)
             elif proto_client is None:

@@ -184,9 +184,12 @@ def parse_channels_feed(item: dict, quality: str = "highest") -> Optional[Aweme]
     if "object" in item and isinstance(item["object"], dict) and not _first(item, "objectId", "id", "exportId", "share_id"):
         item = item["object"]
 
-    oid = str(
-        _first(item, "objectId", "id", "exportId", "export_id", "share_id", default="") or ""
-    ).strip()
+    oid = ""
+    for _id_key in ("objectId", "exportId", "export_id", "id", "share_id"):
+        _cand = str(item.get(_id_key) or "").strip()
+        if _cand and _cand != "0":
+            oid = _cand
+            break
     if not oid:
         return None
 

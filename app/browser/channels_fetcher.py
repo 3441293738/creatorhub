@@ -8,7 +8,11 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Set, Tuple
+import asyncio
+import json
+import random
+import time
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .human_interaction import (
     DEFAULT_HUMAN_ENGINE,
@@ -80,7 +84,247 @@ def _dig_comments(data: dict) -> list:
 
 
 def _obj_id(it: dict) -> str:
-    return str(_rf(it, "objectId", "exportId", "id", default="") or "")
+    if not isinstance(it, dict):
+        return ""
+    for key in ("objectId", "exportId", "id"):
+        val = str(it.get(key) or "").strip()
+        if val and val != "0":
+            return val
+    return ""
+
+
+def _to_nonneg_int(val: Any) -> Optional[int]:
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        return max(0, int(val))
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        return max(0, int(float(s)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_total_count(d: dict) -> Optional[int]:
+    if not isinstance(d, dict):
+        return None
+    for key in ("totalCount", "total_count"):
+        if key in d:
+            parsed = _to_nonneg_int(d.get(key))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _build_replay_headers(headers: Any) -> Dict[str, str]:
+    if not isinstance(headers, dict):
+        return {"content-type": "application/json;charset=UTF-8"}
+    out: Dict[str, str] = {}
+    for raw_k, raw_v in headers.items():
+        if not raw_k or raw_v is None:
+            continue
+        k = str(raw_k).strip().lower()
+        if k in ("accept", "content-type") or (
+            k.startswith("x-") and not k.startswith(("x-devtools-", "x-playwright-"))
+        ):
+            out[k] = str(raw_v)
+    out.setdefault("content-type", "application/json;charset=UTF-8")
+    return out
+
+
+async def _fetch_post_list_page_in_frame(
+    page,
+    template: dict,
+    current_page: int,
+    page_size: int,
+) -> Tuple[bool, Optional[dict]]:
+    """复用首屏已通过鉴权的 post/post_list 请求模板，在同源上下文按页拉取作品。"""
+    base_body = template.get("body")
+    if not isinstance(base_body, dict) or not template.get("url"):
+        return False, None
+    payload = dict(base_body)
+    page_key = (
+        "currentPage"
+        if "currentPage" in payload or "current_page" not in payload
+        else "current_page"
+    )
+    size_key = (
+        "pageSize"
+        if "pageSize" in payload or "page_size" not in payload
+        else "page_size"
+    )
+    payload[page_key] = int(current_page)
+    payload[size_key] = int(page_size)
+    if "timestamp" in payload:
+        ts_ms = int(time.time() * 1000)
+        payload["timestamp"] = (
+            str(ts_ms) if isinstance(payload["timestamp"], str) else ts_ms
+        )
+    req_args = {
+        "url": str(template["url"]),
+        "headers": template.get("headers") or {"content-type": "application/json;charset=UTF-8"},
+        "bodyText": json.dumps(payload, ensure_ascii=False),
+    }
+    candidate_frames = []
+    tpl_frame = template.get("frame")
+    if tpl_frame is not None and not getattr(tpl_frame, "is_detached", lambda: False)():
+        candidate_frames.append(tpl_frame)
+    if page.main_frame not in candidate_frames:
+        candidate_frames.append(page.main_frame)
+    for frame in candidate_frames:
+        try:
+            res = await asyncio.wait_for(
+                frame.evaluate(
+                    """async ({ url, headers, bodyText }) => {
+                        const resp = await fetch(url, {
+                            method: "POST",
+                            headers,
+                            body: bodyText,
+                            credentials: "include",
+                        });
+                        const data = await resp.json().catch(() => null);
+                        return { ok: resp.ok, status: resp.status, data };
+                    }""",
+                    req_args,
+                ),
+                timeout=20.0,
+            )
+            if isinstance(res, dict) and res.get("ok") and isinstance(res.get("data"), dict):
+                err_code = _rf(res["data"], "errCode", "err_code", default=0)
+                if err_code in (0, "0", None, ""):
+                    return True, res["data"]
+            return False, (res.get("data") if isinstance(res, dict) else None)
+        except Exception:
+            continue
+    return False, None
+
+
+async def _click_next_page_in_frames(page) -> bool:
+    """穿透主页面、wujie Shadow DOM 与子 iframe，点击分页器的「下一页」按钮。"""
+    for frame in page.frames:
+        is_main = frame == page.main_frame
+        try:
+            hit = await frame.evaluate(
+                """({ clickDirectly }) => {
+                    const roots = [document];
+                    const collectRoots = (root) => {
+                        const all = root.querySelectorAll ? root.querySelectorAll('*') : [];
+                        for (const el of all) {
+                            if (el.shadowRoot) {
+                                roots.push(el.shadowRoot);
+                                collectRoots(el.shadowRoot);
+                            }
+                        }
+                    };
+                    try { collectRoots(document); } catch (e) {}
+
+                    const isVisible = (el) => {
+                        if (!el || !el.getBoundingClientRect) return false;
+                        const st = window.getComputedStyle(el);
+                        if (!st || st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) {
+                            return false;
+                        }
+                        const r = el.getBoundingClientRect();
+                        return r.width > 2 && r.height > 2;
+                    };
+                    const isDisabled = (el) => {
+                        if (!el) return true;
+                        let cur = el;
+                        for (let i = 0; i < 3 && cur; i++, cur = cur.parentElement) {
+                            const cls = String(cur.className || '');
+                            if (
+                                cur.disabled ||
+                                cur.getAttribute?.('disabled') !== null ||
+                                cur.getAttribute?.('aria-disabled') === 'true' ||
+                                /disabled/i.test(cls)
+                            ) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    };
+
+                    let target = null;
+                    for (const root of roots) {
+                        const direct = root.querySelectorAll(
+                            '.ant-pagination-next, .rc-pagination-next, .weui-desktop-pagination__nav, [class*="pagination"] a, [class*="pagination"] button, mp-pagination button, mp-pagination a'
+                        );
+                        for (const el of direct) {
+                            if (!isVisible(el) || isDisabled(el)) continue;
+                            const txt = (el.innerText || el.textContent || '').trim();
+                            const title = (el.getAttribute('title') || el.getAttribute('aria-label') || '').trim();
+                            const cls = String(el.className || '');
+                            if (
+                                txt === '下一页' ||
+                                title === '下一页' ||
+                                /pagination-next/i.test(cls)
+                            ) {
+                                target = el;
+                                break;
+                            }
+                        }
+                        if (target) break;
+
+                        // MpPagination / weui-desktop-pagination 图标翻页形态: `1 / 24` 右侧的未禁用图标按钮
+                        const pagers = root.querySelectorAll(
+                            '.weui-desktop-pagination, mp-pagination, [class*="pagination"]'
+                        );
+                        for (const pg of pagers) {
+                            if (!isVisible(pg)) continue;
+                            const nodes = [pg, ...pg.querySelectorAll('*')];
+                            let indicatorRect = null;
+                            for (const n of nodes) {
+                                const t = (n.innerText || n.textContent || '').trim();
+                                const m = /^(\\d+)\\s*\\/\\s*(\\d+)$/.exec(t);
+                                if (m && Number(m[1]) < Number(m[2]) && isVisible(n)) {
+                                    indicatorRect = n.getBoundingClientRect();
+                                    break;
+                                }
+                            }
+                            if (!indicatorRect) continue;
+                            const btns = [...pg.querySelectorAll('button, .weui-desktop-icon-btn, a')]
+                                .filter(b => isVisible(b) && !isDisabled(b));
+                            const rightBtns = btns
+                                .map(b => ({ b, r: b.getBoundingClientRect() }))
+                                .filter(x => x.r.left >= indicatorRect.right - 6)
+                                .sort((a, b) => a.r.left - b.r.left);
+                            if (rightBtns.length) {
+                                target = rightBtns[0].b;
+                                break;
+                            }
+                        }
+                        if (target) break;
+                    }
+
+                    if (!target) return null;
+                    try { target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+                    const r = target.getBoundingClientRect();
+                    if (clickDirectly || r.width <= 0 || r.height <= 0) {
+                        target.click();
+                        return { clicked: true };
+                    }
+                    return {
+                        clicked: false,
+                        box: { x: r.x, y: r.y, width: r.width, height: r.height },
+                    };
+                }""",
+                {"clickDirectly": not is_main},
+            )
+            if not isinstance(hit, dict):
+                continue
+            if hit.get("clicked"):
+                return True
+            box = hit.get("box")
+            if isinstance(box, dict) and box.get("width") and box.get("height"):
+                tx, ty = DEFAULT_HUMAN_ENGINE.sample_box_point(box)
+                await DEFAULT_HUMAN_ENGINE.move_mouse(page, tx, ty)
+                await page.mouse.click(tx, ty)
+                return True
+        except Exception:
+            continue
+    return False
 
 
 async def _find_in_frames(page, selectors: List[str]):
@@ -195,8 +439,9 @@ async def fetch_channels_works(
     max_scrolls: int = 8,
     settle_ms: int = 1800,
     block_media: bool = True,
+    max_pages: int = 0,
 ) -> Tuple[List[dict], Optional[dict], str]:
-    """依次打开视频号助手的视频/图文管理页，拦截 post/post_list 收集作品。"""
+    """依次打开视频号助手的视频/图文管理页，拦截并分页拉取 post/post_list 全量作品。"""
     collected: Dict[str, dict] = {}
     error = ""
     api_seen: list = []
@@ -204,7 +449,44 @@ async def fetch_channels_works(
     post_response_count = 0
     post_totals: list = []
     post_errors: list = []
+    page_budget = max_pages if max_pages > 0 else max(1, int(max_scrolls or 8))
+    current_route: Dict[str, Any] = {
+        "ids": set(),
+        "total": None,
+        "responses": 0,
+        "template": None,
+    }
     page = await mgr.new_page(identity, block_media)
+
+    def _ingest_payload(
+        data: dict, active_route: Dict[str, Any], *, is_post_list: bool
+    ) -> Tuple[int, Set[str]]:
+        d = _dig_data(data)
+        if is_post_list:
+            total = _extract_total_count(d)
+            if total is not None:
+                post_totals.append(total)
+                active_route["total"] = total
+        err_code = _rf(data, "errCode", "err_code", default=0)
+        if err_code not in (0, "0", None, ""):
+            post_errors.append(str(err_code))
+        posts = _dig_posts(data)
+        batch_ids: Set[str] = set()
+        for it in posts:
+            if not isinstance(it, dict):
+                continue
+            oid = _obj_id(it)
+            if not oid:
+                continue
+            batch_ids.add(oid)
+            active_route["ids"].add(oid)
+            if oid in collected:
+                collected[oid].update(it)
+            else:
+                collected[oid] = dict(it)
+            if not sample:
+                sample.append(str(it)[:1200])
+        return len(posts), batch_ids
 
     async def on_response(resp):
         nonlocal post_response_count
@@ -212,34 +494,37 @@ async def fetch_channels_works(
         if "mmfinderassistant-bin" in url and len(api_seen) < 40:
             p = url.split("?")[0].split("mmfinderassistant-bin")[-1]
             api_seen.append(f"{resp.status} {p}")
-        if POST_LIST_API not in url and STAT_API not in url:
+        is_post_list = POST_LIST_API in url
+        if not is_post_list and STAT_API not in url:
             return
+        active_route = current_route
         post_response_count += 1
+        active_route["responses"] = int(active_route.get("responses") or 0) + 1
         try:
             data = await resp.json()
         except Exception as e:
             post_errors.append(f"json:{type(e).__name__}")
             return
-        d = _dig_data(data)
-        total = _rf(d, "totalCount", "total_count", default=None)
-        if total is not None:
-            post_totals.append(total)
         err_code = _rf(data, "errCode", "err_code", default=0)
-        if err_code not in (0, "0", None, ""):
-            post_errors.append(str(err_code))
-        posts = _dig_posts(data)
-        for it in posts:
-            if not isinstance(it, dict):
-                continue
-            oid = _obj_id(it)
-            if not oid:
-                continue
-            if oid in collected:
-                collected[oid].update(it)
-            else:
-                collected[oid] = it
-            if not sample:
-                sample.append(str(it)[:1200])
+        if (
+            is_post_list
+            and active_route.get("template") is None
+            and err_code in (0, "0", None, "")
+            and resp.request.method.upper() == "POST"
+        ):
+            try:
+                raw_post = resp.request.post_data or ""
+                parsed_body = json.loads(raw_post) if raw_post else None
+                if isinstance(parsed_body, dict):
+                    active_route["template"] = {
+                        "url": url,
+                        "headers": _build_replay_headers(resp.request.headers),
+                        "body": parsed_body,
+                        "frame": resp.frame,
+                    }
+            except Exception:
+                pass
+        _ingest_payload(data, active_route, is_post_list=is_post_list)
 
     page.on("response", on_response)
     final_url = ""
@@ -247,22 +532,154 @@ async def fetch_channels_works(
     navigation_errors: list = []
     try:
         for list_url in POST_LIST_URLS:
+            current_route = {
+                "ids": set(),
+                "total": None,
+                "responses": 0,
+                "template": None,
+            }
+            route_started = time.monotonic()
             try:
                 await page.goto(list_url, wait_until="domcontentloaded", timeout=30000)
-                await human_wait(page, settle_ms)
-                stagnant = 0
-                for _ in range(max_scrolls):
-                    before = len(collected)
-                    await _scroll_all_frames(page, 4000)
-                    await human_wait(page, settle_ms)
-                    if len(collected) == before:
-                        stagnant += 1
-                        if stagnant >= 2:
-                            break
-                    else:
-                        stagnant = 0
+                wait_budget_ms = max(int(settle_ms or 1800), 5400)
+                waited_ms = 0
+                while waited_ms < wait_budget_ms and current_route["responses"] == 0:
+                    if "/login" in page.url or "login.html" in page.url:
+                        break
+                    step_ms = min(600, wait_budget_ms - waited_ms)
+                    await human_wait(page, step_ms)
+                    waited_ms += step_ms
+                if current_route["responses"] > 0:
+                    await human_wait(page, min(max(450, settle_ms // 2), 900))
+
                 final_url = page.url
                 final_urls.append(final_url)
+                if "/login" in final_url or "login.html" in final_url:
+                    break
+
+                def _route_complete() -> bool:
+                    if "/login" in page.url or "login.html" in page.url:
+                        return True
+                    rt_total = current_route["total"]
+                    if rt_total is not None and len(current_route["ids"]) >= rt_total:
+                        return True
+                    if (
+                        known_ids
+                        and len(current_route["ids"]) >= 5
+                        and current_route["ids"].issubset(known_ids)
+                    ):
+                        return True
+                    return False
+
+                pages_used = 1
+                fetch_failed = False
+                tpl = current_route.get("template")
+                if (
+                    not _route_complete()
+                    and page_budget > 1
+                    and isinstance(tpl, dict)
+                    and isinstance(tpl.get("body"), dict)
+                ):
+                    body = tpl["body"]
+                    page_key = (
+                        "currentPage"
+                        if "currentPage" in body or "current_page" not in body
+                        else "current_page"
+                    )
+                    size_key = (
+                        "pageSize"
+                        if "pageSize" in body or "page_size" not in body
+                        else "page_size"
+                    )
+                    orig_size = max(
+                        1,
+                        _to_nonneg_int(body.get(size_key))
+                        or len(current_route["ids"])
+                        or 5,
+                    )
+                    orig_page = max(1, _to_nonneg_int(body.get(page_key)) or 1)
+                    active_size = orig_size
+                    next_page = orig_page + 1
+
+                    # 视频号助手 UI 首屏默认 pageSize=5；当总作品数更多时，优先从第 1 页尝试
+                    # pageSize=20 以减少翻页请求次数，若服务端限制为原条数则无缝按原条数步进。
+                    if (
+                        orig_page == 1
+                        and orig_size < 20
+                        and (
+                            current_route["total"] is None
+                            or current_route["total"] > orig_size
+                        )
+                    ):
+                        await human_wait(page, random.randint(280, 520))
+                        ok_probe, probe_data = await _fetch_post_list_page_in_frame(
+                            page, tpl, 1, 20
+                        )
+                        pages_used += 1
+                        if ok_probe and isinstance(probe_data, dict):
+                            probe_len, probe_ids = _ingest_payload(
+                                probe_data, current_route, is_post_list=True
+                            )
+                            if probe_len > orig_size:
+                                active_size = probe_len
+                                next_page = 2
+                            if known_ids and probe_ids and probe_ids.issubset(known_ids):
+                                next_page = page_budget + 1
+
+                    stagnant = 0
+                    while (
+                        pages_used < page_budget
+                        and next_page <= page_budget
+                        and not _route_complete()
+                        and (time.monotonic() - route_started) < 90.0
+                    ):
+                        before_ids = len(current_route["ids"])
+                        await human_wait(page, random.randint(300, 580))
+                        ok_page, page_data = await _fetch_post_list_page_in_frame(
+                            page, tpl, next_page, active_size
+                        )
+                        pages_used += 1
+                        if not ok_page or not isinstance(page_data, dict):
+                            fetch_failed = True
+                            break
+                        batch_len, batch_ids = _ingest_payload(
+                            page_data, current_route, is_post_list=True
+                        )
+                        if batch_len == 0:
+                            break
+                        if known_ids and batch_ids and batch_ids.issubset(known_ids):
+                            break
+                        if len(current_route["ids"]) == before_ids:
+                            stagnant += 1
+                            if stagnant >= 2:
+                                break
+                        else:
+                            stagnant = 0
+                        if current_route["total"] is None and batch_len < active_size:
+                            break
+                        next_page += 1
+
+                # 兜底：若未捕获到可复用的 POST 模板或同源分页请求受阻，则穿透 Shadow DOM 点击「下一页」并配合滚动
+                if not _route_complete() and (tpl is None or fetch_failed):
+                    remaining = max(1, min(page_budget - max(0, pages_used - 1), max(max_scrolls, 30)))
+                    stagnant = 0
+                    for _ in range(remaining):
+                        if (time.monotonic() - route_started) >= 90.0:
+                            break
+                        before_ids = len(current_route["ids"])
+                        clicked = await _click_next_page_in_frames(page)
+                        if not clicked:
+                            await _scroll_all_frames(page, 4000)
+                        await human_wait(page, settle_ms)
+                        if _route_complete():
+                            break
+                        if len(current_route["ids"]) == before_ids:
+                            stagnant += 1
+                            if stagnant >= 2:
+                                break
+                        else:
+                            stagnant = 0
+                final_url = page.url
             except Exception as e:
                 navigation_errors.append(f"{list_url}: {e!r}")
                 continue
@@ -296,7 +713,10 @@ async def fetch_channels_works(
             f"api_seen({len(api_seen)})={api_seen[:40]}"
         )
     elif sample:
-        print(f"[channels_works] sample={sample[0]}")
+        print(
+            f"[channels_works] collected={len(collected)} totals={post_totals} "
+            f"sample={sample[0][:400]}"
+        )
 
     new_items = [it for oid, it in collected.items() if oid not in known_ids]
     return new_items, None, error

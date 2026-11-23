@@ -216,13 +216,20 @@ class CollectionDiscoverMixin:
             if values or not proto_err:
                 return values[:job.max_contents_per_keyword], proto_err
 
+        needed_pages = max(
+            int(job.max_pages_per_keyword or 1),
+            ((max(1, int(job.max_contents_per_keyword or 20)) + 4) // 5) + 1,
+        )
         values, _author, error = await fetch_channels_works(
             self.browser,
             identity,
             set(),
             max_scrolls=max(1, min(40, int(job.max_pages_per_keyword or 1))),
             block_media=self.cfg.engine.block_media_resources,
+            max_pages=min(120, needed_pages),
         )
+        if job.max_contents_per_keyword and job.max_contents_per_keyword > 0:
+            values = values[:job.max_contents_per_keyword]
         if values and job.download_media and proto_client is not None:
             enriched: list[dict] = []
             for item in values:

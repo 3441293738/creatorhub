@@ -549,10 +549,12 @@ class CommentWatchMixin:
                 )
             if not items and (proto_client is None or (read_mode == "auto" and err)):
                 if state and read_mode != "protocol":
+                    cw_pages = max(4, ((max(10, int(settings["recent_works"] or 10)) + 4) // 5) + 1)
                     items, author, err = await fetch_channels_works(
                         self.browser, identity, set(),
                         max_scrolls=4,
-                        block_media=cfg.block_media_resources)
+                        block_media=cfg.block_media_resources,
+                        max_pages=min(40, cw_pages))
                 elif proto_client is None:
                     raise RuntimeError(
                         "视频号创作者评论监控需要连接本机已登录微信，请先在「设置 → 视频号微信通道」开启一键本地代理并在微信内打开一次视频号页面"
