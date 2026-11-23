@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import tempfile
 import time
 from datetime import datetime
@@ -103,8 +104,14 @@ _FORM_ERROR_KEYWORDS = (
 _DEBUG_DIR = Path("./data/debug")
 
 
+_pub_log = logging.getLogger("creatorhub.publish.bilibili")
+
+
 def _log(msg: str) -> None:
-    print(f"[bili-publish] {msg}", flush=True)
+    if any(k in msg for k in ("失败", "超时", "异常", "验证", "拦截")):
+        _pub_log.warning("%s", msg)
+    else:
+        _pub_log.info("%s", msg)
 
 
 async def _dump(page, tag: str) -> str:

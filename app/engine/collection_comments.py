@@ -10,6 +10,7 @@ from app.browser import fetch_channels_comments, fetch_comments, fetch_ks_commen
 from app.browser.tiktok_fetcher import fetch_tiktok_comments
 from app.db import get_session
 from app.engine.collection_helpers import _content_error_after_download, _media_json, _tiktok_download_session
+from app.engine.monitor_helpers import log
 from app.models import KeywordCollectionComment, KeywordCollectionContent, KeywordCollectionJob
 from app.platforms.bilibili import cookie_map_from_state as bili_cookie_map
 from app.platforms.channels import ChannelsProtocolClient, flatten_channels_comments, parse_channels_comment
@@ -368,10 +369,9 @@ class CollectionCommentsMixin:
                 if not include_replies:
                     parsed = [item for item in parsed if not item.get("reply_to")]
                 return self._dedupe_comments(parsed, limit), native.error
-            print(
-                f"[tiktok-comments] 离线接口兼容失败，页面回退: "
-                f"{native.category}; HTTP={native.http_status}; "
-                f"bytes={native.body_length}; tt_orcas_res={native.tt_orcas_res!r}"
+            log.info(
+                "TikTok 评论离线接口兼容失败，回退页面: %s (HTTP=%s, bytes=%s)",
+                native.category, native.http_status, native.body_length,
             )
         raw, error = await fetch_tiktok_comments(
             self.browser, identity, aweme_id, set(), max_comments=limit,

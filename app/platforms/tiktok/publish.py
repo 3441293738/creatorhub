@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable, Iterable, List, Tuple
@@ -74,8 +75,14 @@ _REJECT_TEXT = (
 _DEBUG_DIR = Path("./data/debug")
 
 
+_pub_log = logging.getLogger("creatorhub.publish.tiktok")
+
+
 def _log(message: str) -> None:
-    print(f"[tiktok-publish] {message}", flush=True)
+    if any(k in message for k in ("失败", "超时", "异常", "验证", "拦截", "failed", "Failed")):
+        _pub_log.warning("%s", message)
+    else:
+        _pub_log.info("%s", message)
 
 
 def build_caption(title: str, desc: str, topics: str, limit: int = 2200) -> str:

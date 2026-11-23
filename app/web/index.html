@@ -2652,6 +2652,326 @@
   @media(max-width:640px) {
     .mx-kpi-strip { grid-template-columns:1fr; }
   }
+
+  /* ── 日志与诊断面板（精致工作台风格） ── */
+  .diag-layout { display:grid; gap:14px; }
+
+  /* 1. 顶部问题提报英雄卡片 */
+  .diag-hero {
+    display:grid; gap:13px; padding:18px 20px; border-radius:16px;
+    background:
+      radial-gradient(540px 180px at 0% -10%, color-mix(in srgb,var(--acc) 7.5%,transparent), transparent 72%),
+      var(--surface-card, var(--surface));
+    border:1px solid var(--border-card, var(--line));
+    box-shadow:var(--sh-card, var(--sh-sm));
+  }
+  .diag-hero-top {
+    display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  }
+  .diag-hero-title-group { display:flex; align-items:flex-start; gap:13px; min-width:0; flex:1 1 340px; }
+  .diag-hero-badge {
+    width:38px; height:38px; flex:0 0 38px; border-radius:11px;
+    display:grid; place-items:center;
+    background:color-mix(in srgb,var(--acc) 12%,var(--surface));
+    border:1px solid var(--acc-ring); color:var(--acc);
+    box-shadow:inset 0 1px 0 var(--glass-rim);
+  }
+  .diag-hero-badge svg { width:18px; height:18px; }
+  .diag-hero-title-group h3 {
+    margin:0; font-size:14.5px; font-weight:700; line-height:1.35; color:var(--fg-strong);
+  }
+  .diag-hero-title-group p {
+    margin:3px 0 0; font-size:12px; line-height:1.45; color:var(--mut);
+  }
+  .diag-hero-actions { display:flex; align-items:center; gap:9px; flex:0 0 auto; flex-wrap:wrap; }
+  .diag-hero-actions button { white-space:nowrap; }
+
+  .diag-note-input-wrap { position:relative; width:100%; }
+  .diag-note-ic {
+    position:absolute; left:13px; top:50%; transform:translateY(-50%);
+    width:15px; height:15px; color:var(--mut-2); pointer-events:none;
+  }
+  .diag-note-input-wrap > input {
+    width:100%; min-height:40px; height:40px;
+    padding:8px 14px 8px 36px; border-radius:10px;
+    background:var(--control-bg); border:1px solid var(--line);
+    font-size:12.5px;
+  }
+  .diag-note-input-wrap > input:focus {
+    background:var(--surface); border-color:var(--acc); box-shadow:0 0 0 3px var(--acc-ring);
+  }
+
+  .diag-privacy-strip {
+    display:flex; align-items:center; gap:7px; flex-wrap:wrap;
+    padding:8px 11px; border-radius:10px;
+    background:color-mix(in srgb,var(--success) 5.5%,var(--surface-2));
+    border:1px solid color-mix(in srgb,var(--success) 20%,var(--line-soft));
+    font-size:11.5px; color:var(--mut);
+  }
+  .diag-privacy-badge {
+    display:inline-flex; align-items:center; gap:5px;
+    color:var(--success); font-weight:650; white-space:nowrap;
+  }
+  .diag-privacy-badge svg { width:14px; height:14px; flex:0 0 14px; }
+  .diag-privacy-text { color:var(--mut); white-space:nowrap; }
+  .diag-privacy-tag {
+    display:inline-flex; align-items:center; padding:1.5px 8px; border-radius:999px;
+    background:var(--surface); border:1px solid var(--line-soft);
+    color:var(--fg); font-size:11px; font-weight:530; white-space:nowrap;
+  }
+
+  /* 2. 四宫格运行指标与快捷控制条 */
+  .diag-kpi-grid {
+    display:grid; grid-template-columns:1.25fr 1fr 1fr 1.2fr; gap:12px;
+  }
+  .diag-stat-card {
+    display:flex; flex-direction:column; justify-content:space-between; gap:8px;
+    padding:14px 16px; border-radius:14px; text-align:left; min-height:108px;
+    background:var(--surface-card, var(--surface));
+    border:1px solid var(--border-card, var(--line));
+    box-shadow:var(--sh-sm);
+  }
+  button.diag-stat-card {
+    font:inherit; color:inherit; cursor:pointer;
+    transition:border-color .16s var(--ease), transform .16s var(--ease), box-shadow .16s var(--ease);
+  }
+  button.diag-stat-card:hover {
+    border-color:var(--acc-ring); transform:translateY(-1px);
+    box-shadow:var(--sh-card-hover, var(--sh)); filter:none; background:var(--surface-card, var(--surface));
+  }
+  button.diag-stat-card.is-active-filter {
+    border-color:var(--acc); box-shadow:0 0 0 2px var(--acc-soft), var(--sh-sm);
+  }
+  .diag-stat-card.has-warn .diag-stat-val b { color:var(--warn); }
+  .diag-stat-card.has-err .diag-stat-val b { color:var(--danger); }
+
+  .diag-stat-head {
+    display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%;
+  }
+  .diag-stat-label { font-size:12px; font-weight:600; color:var(--mut); white-space:nowrap; }
+  .diag-mini-tag {
+    display:inline-flex; align-items:center; padding:2px 7px; border-radius:999px;
+    font:650 10.5px/1.3 var(--mono); white-space:nowrap;
+  }
+  .diag-mini-tag.warn { background:var(--warn-soft); color:var(--warn); }
+  .diag-mini-tag.danger { background:var(--danger-soft); color:var(--danger); }
+  .diag-mini-tag.muted { background:var(--surface-2); color:var(--mut); font-family:var(--sans); font-weight:580; }
+
+  .diag-mode-pill {
+    display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:999px;
+    font-size:11px; font-weight:650; white-space:nowrap;
+  }
+  .diag-mode-pill .diag-dot { width:6px; height:6px; border-radius:50%; background:currentColor; flex:0 0 6px; }
+  .diag-mode-pill.is-info { background:var(--success-soft); color:var(--success); }
+  .diag-mode-pill.is-debug { background:var(--warn-soft); color:var(--warn); }
+  .diag-mode-pill.is-warn { background:var(--surface-2); color:var(--mut); }
+
+  .diag-mode-seg {
+    display:grid; grid-template-columns:repeat(3, 1fr); gap:3px; padding:3px;
+    border-radius:9px; background:var(--glass-well-bg, var(--surface-2));
+    border:1px solid var(--line-soft);
+  }
+  .diag-mode-seg button {
+    min-height:27px; height:27px; padding:0 6px; border:0; border-radius:6.5px;
+    background:transparent; color:var(--mut); box-shadow:none;
+    font-size:11.5px; font-weight:600; white-space:nowrap; justify-content:center;
+  }
+  .diag-mode-seg button:hover:not(.active) { color:var(--fg-strong); background:color-mix(in srgb,var(--surface) 55%,transparent); filter:none; }
+  .diag-mode-seg button.active,
+  .diag-mode-seg button.active:hover {
+    background:var(--glass-pill-bg, var(--surface)); color:var(--acc); font-weight:680;
+    box-shadow:var(--sh-thumb, 0 1px 3px rgba(0,0,0,.1));
+  }
+
+  .diag-stat-val { display:flex; align-items:baseline; gap:5px; }
+  .diag-stat-val b {
+    font:700 22px/1.15 var(--sans); font-variant-numeric:tabular-nums;
+    color:var(--fg-strong); white-space:nowrap;
+  }
+  .diag-stat-val small { font-size:12px; color:var(--mut); font-weight:550; }
+  .diag-stat-sub { font-size:11px; color:var(--mut-2); line-height:1.35; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .diag-stat-actions { display:flex; align-items:center; gap:6px; flex-wrap:nowrap; }
+  .diag-stat-actions button.sm {
+    min-height:27px; height:27px; padding:0 9px; font-size:11.5px; border-radius:7px; white-space:nowrap;
+  }
+  .diag-stat-actions button.sm svg { width:13px; height:13px; }
+
+  /* 3. 一体化日志检视控制台 */
+  .diag-console {
+    border-radius:16px; overflow:hidden;
+    background:var(--surface);
+    border:1px solid var(--border-card, var(--line));
+    box-shadow:var(--sh-card, var(--sh-sm));
+  }
+  .diag-console-bar {
+    display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+    padding:10px 14px;
+    background:color-mix(in srgb,var(--surface-2) 65%,var(--surface));
+    border-bottom:1px solid var(--line-soft);
+  }
+  .diag-console-left, .diag-console-right {
+    display:flex; align-items:center; gap:9px; flex-wrap:wrap;
+  }
+  .diag-bar-sep { width:1px; height:20px; background:var(--line); flex:0 0 1px; }
+
+  .diag-seg {
+    display:inline-flex; align-items:center; gap:3px; padding:3px;
+    border-radius:10px; background:var(--glass-well-bg, var(--surface-2));
+    border:1px solid var(--line-soft); flex:0 0 auto;
+  }
+  .diag-seg button {
+    display:inline-flex; align-items:center; gap:6px;
+    min-height:30px; height:30px; padding:0 11px; border:0; border-radius:7.5px;
+    background:transparent; color:var(--mut); box-shadow:none;
+    font-size:12px; font-weight:580; white-space:nowrap;
+  }
+  .diag-seg button:hover:not(.active) { color:var(--fg-strong); background:color-mix(in srgb,var(--surface) 50%,transparent); filter:none; }
+  .diag-seg button.active,
+  .diag-seg button.active:hover {
+    background:var(--glass-pill-bg, var(--surface)); color:var(--acc); font-weight:660;
+    box-shadow:var(--sh-thumb, 0 1px 3px rgba(0,0,0,.1));
+  }
+  .diag-seg-cnt {
+    padding:0.5px 6px; border-radius:999px;
+    font:650 10.5px/1.35 var(--mono); font-variant-numeric:tabular-nums;
+    background:color-mix(in srgb,var(--fg) 8%,transparent); color:var(--mut);
+  }
+  .diag-seg button.active .diag-seg-cnt { background:var(--acc-soft); color:var(--acc); }
+
+  .cs.diag-source-select, select.diag-source-select { width:196px; flex:0 0 196px; }
+  .cs.diag-source-select .cs-trg {
+    min-height:34px; height:34px; padding:4px 10px; border-radius:9px;
+    font-size:12px; background:var(--surface);
+  }
+
+  .diag-search-box {
+    position:relative; display:inline-flex; align-items:center; width:246px; flex:0 0 auto;
+  }
+  .diag-search-ic {
+    position:absolute; left:10px; width:14px; height:14px; color:var(--mut-2); pointer-events:none;
+  }
+  .diag-search-box > input {
+    width:100%; min-height:34px; height:34px;
+    padding:4px 28px 4px 31px; border-radius:9px;
+    background:var(--surface); border:1px solid var(--line); font-size:12px;
+  }
+  .diag-search-box > input::-webkit-search-cancel-button { -webkit-appearance:none; display:none; }
+  .diag-search-clear {
+    position:absolute; right:5px; width:22px; height:22px; min-height:0; padding:0;
+    border:0; border-radius:6px; background:transparent; color:var(--mut); box-shadow:none;
+    display:grid; place-items:center;
+  }
+  .diag-search-clear[hidden] { display:none; }
+  .diag-search-clear:hover { background:var(--surface-2); color:var(--fg); filter:none; }
+  .diag-search-clear svg { width:13px; height:13px; }
+  .diag-refresh-btn.sm { min-height:34px; height:34px; padding:0 12px; border-radius:9px; white-space:nowrap; }
+
+  .diag-log-viewport {
+    min-height:230px; max-height:440px; overflow-y:auto;
+    background:var(--surface);
+    font-family:var(--mono); font-size:12px; line-height:1.55;
+  }
+  .diag-empty-state {
+    display:grid; justify-items:center; align-content:center; gap:8px;
+    min-height:230px; padding:36px 20px; text-align:center; font-family:var(--sans);
+  }
+  .diag-empty-halo {
+    width:46px; height:46px; border-radius:50%; display:grid; place-items:center;
+    background:var(--success-soft); color:var(--success);
+    border:1px solid color-mix(in srgb,var(--success) 24%,transparent);
+    margin-bottom:2px;
+  }
+  .diag-empty-halo.is-neutral {
+    background:var(--surface-2); color:var(--mut); border-color:var(--line);
+  }
+  .diag-empty-halo svg { width:22px; height:22px; }
+  .diag-empty-title { font-size:14.5px; font-weight:680; color:var(--fg-strong); }
+  .diag-empty-sub { font-size:12.5px; color:var(--mut); max-width:440px; line-height:1.5; }
+  .diag-empty-act { margin-top:6px; }
+
+  .diag-log-row {
+    position:relative;
+    display:grid; grid-template-columns:152px 62px 134px minmax(0,1fr) auto;
+    gap:10px; align-items:baseline; padding:8.5px 14px;
+    border-bottom:1px solid var(--line-soft);
+    border-left:3px solid transparent;
+    transition:background .12s;
+  }
+  .diag-log-row:last-child { border-bottom:0; }
+  .diag-log-row:hover { background:color-mix(in srgb,var(--fg) 2.5%,transparent); }
+  .diag-log-row.lvl-error {
+    border-left-color:var(--danger);
+    background:color-mix(in srgb,var(--danger) 5.5%,transparent);
+  }
+  .diag-log-row.lvl-warn {
+    border-left-color:var(--warn);
+    background:color-mix(in srgb,var(--warn) 5%,transparent);
+  }
+  .diag-log-ts { color:var(--mut-2); white-space:nowrap; font-size:11.5px; font-variant-numeric:tabular-nums; }
+  .diag-log-mod {
+    display:inline-block; max-width:134px; padding:1px 7px; border-radius:6px;
+    background:var(--surface-2); color:var(--info);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:11px; font-weight:580;
+  }
+  .diag-log-msg { color:var(--fg); word-break:break-word; white-space:pre-wrap; }
+  .diag-log-req {
+    display:inline-block; margin-right:6px; padding:0.5px 5.5px; border-radius:4px;
+    background:var(--surface-2); border:1px solid var(--line-soft);
+    color:var(--mut); font-size:10.5px;
+  }
+  .diag-row-copy {
+    opacity:0; min-height:22px; height:22px; padding:0 6px; border-radius:6px;
+    border:1px solid var(--line-soft); background:var(--surface); color:var(--mut);
+    font:550 11px/1 var(--sans); box-shadow:none; transition:opacity .12s;
+  }
+  .diag-log-row:hover .diag-row-copy, .diag-row-copy:focus-visible { opacity:1; }
+  .diag-row-copy:hover { color:var(--fg-strong); border-color:var(--line); filter:none; }
+
+  .diag-log-exc {
+    grid-column:1 / -1; margin-top:5px; padding:8px 11px;
+    border-radius:8px; background:var(--surface-2);
+    border:1px solid var(--line-soft); color:var(--mut);
+  }
+  .diag-log-exc summary {
+    cursor:pointer; color:var(--danger); font-family:var(--sans);
+    font-size:12px; font-weight:620; user-select:none;
+  }
+  .diag-log-exc pre {
+    margin:7px 0 0; white-space:pre-wrap; word-break:break-all;
+    font-family:var(--mono); font-size:11px; line-height:1.48; color:var(--fg);
+  }
+
+  .diag-console-foot {
+    display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+    padding:9px 14px;
+    background:color-mix(in srgb,var(--surface-2) 55%,var(--surface));
+    border-top:1px solid var(--line-soft); font-size:11.5px; color:var(--mut);
+  }
+  .diag-foot-path { display:flex; align-items:center; gap:7px; min-width:0; flex-wrap:wrap; }
+  .diag-foot-path > svg { width:14px; height:14px; flex:0 0 14px; color:var(--mut-2); }
+  .diag-foot-path code {
+    padding:2px 7px; border-radius:6px; background:var(--surface);
+    border:1px solid var(--line-soft); font-family:var(--mono); font-size:11px; color:var(--fg);
+    max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .diag-path-copy {
+    width:24px; height:24px; min-height:0; padding:0; border:0; border-radius:6px;
+    background:transparent; color:var(--mut); box-shadow:none; display:grid; place-items:center;
+  }
+  .diag-path-copy:hover { background:var(--surface); color:var(--fg-strong); filter:none; }
+  .diag-path-copy svg { width:13px; height:13px; }
+  .diag-foot-rule { color:var(--mut-2); }
+
+  @media(max-width:1100px) {
+    .diag-kpi-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+  }
+  @media(max-width:780px) {
+    .diag-kpi-grid { grid-template-columns:1fr; }
+    .diag-bar-sep { display:none; }
+    .diag-search-box, .cs.diag-source-select { width:100%; flex:1 1 100%; }
+    .diag-log-row { grid-template-columns:1fr; gap:4px; }
+    .diag-row-copy { opacity:1; justify-self:start; }
+  }
 </style>
 <link rel="stylesheet" href="/static/appearance.css">
 <link rel="stylesheet" href="/static/workbench.css">
@@ -4066,6 +4386,133 @@
       <div class="form-note">
         <svg aria-hidden="true"><use href="#i-info"/></svg>
         <span>首次点击「一键连接本机微信」后，只需在电脑微信「文件传输助手」粘贴并点开一次桥接链接（保持窗口最小化即可）；此后重启 CreatorHub 会自动恢复连接，无需重复配置。</span>
+      </div>
+    </div>
+  </div>
+  <!-- 系统日志与问题排查诊断 -->
+  <div class="card diag-card" id="diagnostics-card" data-section="diagnostics">
+    <div class="card-head">
+      <span class="card-ic"><svg aria-hidden="true"><use href="#i-shield"/></svg></span>
+      <h2>日志与诊断 <span class="sub">精简运行记录 · 自动脱敏 · 一键导出反馈</span></h2>
+    </div>
+    <div class="diag-layout">
+      <!-- 1. 顶部问题反馈与一键导出工作区 -->
+      <div class="diag-hero">
+        <div class="diag-hero-top">
+          <div class="diag-hero-title-group">
+            <span class="diag-hero-badge" aria-hidden="true"><svg><use href="#i-sparkles"/></svg></span>
+            <div>
+              <h3>遇到问题需要向开发者反馈？</h3>
+              <p>补充现象说明后一键导出诊断压缩包，或复制精简摘要直接粘贴到微信 / Issue，无需手动翻找日志文件。</p>
+            </div>
+          </div>
+          <div class="diag-hero-actions">
+            <button type="button" class="ghost" id="diag-copy-report-btn" onclick="CreatorHubDiagnostics.copyReport()"><svg aria-hidden="true"><use href="#i-copy"/></svg>复制排查摘要</button>
+            <button type="button" id="diag-export-zip-btn" onclick="CreatorHubDiagnostics.exportZip()"><svg aria-hidden="true"><use href="#i-download"/></svg>导出脱敏诊断包 (.zip)</button>
+          </div>
+        </div>
+        <div class="diag-note-input-wrap">
+          <svg class="diag-note-ic" aria-hidden="true"><use href="#i-edit"/></svg>
+          <input id="diag-issue-note" maxlength="500" autocomplete="off" aria-label="问题现象简述（选填）" placeholder="选填：简述问题现象（会自动写入诊断报告开头），例如：小红书图文点击发布后提示未找到上传框…">
+        </div>
+        <div class="diag-privacy-strip" aria-label="自动隐私脱敏说明">
+          <span class="diag-privacy-badge"><svg aria-hidden="true"><use href="#i-shield"/></svg>自动脱敏已启用</span>
+          <span class="diag-privacy-text">导出时自动剥离：</span>
+          <span class="diag-privacy-tag">Cookie / 登录态</span>
+          <span class="diag-privacy-tag">API Key / 代理密码</span>
+          <span class="diag-privacy-tag">账号昵称 / UID</span>
+          <span class="diag-privacy-tag">私信与评论正文</span>
+          <span class="diag-privacy-tag">本机系统用户名</span>
+        </div>
+      </div>
+
+      <!-- 2. 四宫格运行指标与快捷控制条 -->
+      <div class="diag-kpi-grid">
+        <div class="diag-stat-card">
+          <div class="diag-stat-head">
+            <span class="diag-stat-label">记录模式</span>
+            <span class="diag-mode-pill is-info" id="diag-level-pill"><i class="diag-dot"></i>INFO 精简</span>
+          </div>
+          <div class="diag-mode-seg" role="group" aria-label="切换运行日志级别">
+            <button type="button" class="active" data-diag-mode="info" onclick="CreatorHubDiagnostics.changeLevel('info')">精简</button>
+            <button type="button" data-diag-mode="debug" onclick="CreatorHubDiagnostics.changeLevel('debug')">调试</button>
+            <button type="button" data-diag-mode="warning" onclick="CreatorHubDiagnostics.changeLevel('warning')">仅告警</button>
+          </div>
+          <div class="diag-stat-sub" id="diag-mode-hint">默认静默高频页面轮询请求</div>
+        </div>
+
+        <button type="button" class="diag-stat-card is-interactive" id="diag-card-warn" onclick="CreatorHubDiagnostics.setFilter('warn')">
+          <div class="diag-stat-head">
+            <span class="diag-stat-label">本次运行告警</span>
+            <span class="diag-mini-tag warn">WARN</span>
+          </div>
+          <div class="diag-stat-val"><b id="diag-warn-num">0</b><small>条</small></div>
+          <div class="diag-stat-sub">通道回退 · 风控冷却 · 慢请求</div>
+        </button>
+
+        <button type="button" class="diag-stat-card is-interactive" id="diag-card-err" onclick="CreatorHubDiagnostics.setFilter('error')">
+          <div class="diag-stat-head">
+            <span class="diag-stat-label">本次异常错误</span>
+            <span class="diag-mini-tag danger">ERROR</span>
+          </div>
+          <div class="diag-stat-val"><b id="diag-err-num">0</b><small>条</small></div>
+          <div class="diag-stat-sub">任务执行失败 · 未捕获异常栈</div>
+        </button>
+
+        <div class="diag-stat-card">
+          <div class="diag-stat-head">
+            <span class="diag-stat-label">本地日志占用</span>
+            <span class="diag-mini-tag muted" id="diag-file-cnt">0 个文件</span>
+          </div>
+          <div class="diag-stat-val"><b id="diag-size-val">0 KB</b></div>
+          <div class="diag-stat-actions">
+            <button type="button" class="ghost sm" onclick="CreatorHubDiagnostics.openDir()"><svg aria-hidden="true"><use href="#i-folder"/></svg>打开目录</button>
+            <button type="button" class="ghost sm danger" onclick="CreatorHubDiagnostics.clearLogs()"><svg aria-hidden="true"><use href="#i-trash"/></svg>清理日志</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. 一体化日志检视控制台 -->
+      <div class="diag-console">
+        <div class="diag-console-bar">
+          <div class="diag-console-left">
+            <div class="diag-seg" role="group" aria-label="日志级别筛选">
+              <button type="button" class="active" data-diag-lvl="warn" onclick="CreatorHubDiagnostics.setFilter('warn')">告警与错误 <span class="diag-seg-cnt" id="diag-cnt-warn">0</span></button>
+              <button type="button" data-diag-lvl="error" onclick="CreatorHubDiagnostics.setFilter('error')">仅错误 <span class="diag-seg-cnt" id="diag-cnt-err">0</span></button>
+              <button type="button" data-diag-lvl="all" onclick="CreatorHubDiagnostics.setFilter('all')">全部记录 <span class="diag-seg-cnt" id="diag-cnt-all">0</span></button>
+            </div>
+            <span class="diag-bar-sep" aria-hidden="true"></span>
+            <select id="diag-source-select" class="diag-source-select" onchange="CreatorHubDiagnostics.setSource(this.value)" aria-label="日志读取来源">
+              <option value="memory">实时内存缓冲</option>
+              <option value="error.log">error.log · 历史错误</option>
+              <option value="app.log">app.log · 历史运行</option>
+            </select>
+          </div>
+          <div class="diag-console-right">
+            <div class="diag-search-box">
+              <svg class="diag-search-ic" aria-hidden="true"><use href="#i-search"/></svg>
+              <input id="diag-search-input" type="search" placeholder="搜索模块、状态码或错误关键字…" oninput="CreatorHubDiagnostics.onSearchInput()" aria-label="搜索日志">
+              <button type="button" class="diag-search-clear" id="diag-search-clear" hidden onclick="CreatorHubDiagnostics.clearSearch()" aria-label="清除搜索"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+            </div>
+            <button type="button" class="ghost sm diag-refresh-btn" id="diag-refresh-btn" onclick="CreatorHubDiagnostics.load()"><svg aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+          </div>
+        </div>
+
+        <div class="diag-log-viewport" id="diag-log-list" role="log" aria-live="off" aria-label="系统运行日志列表">
+          <div class="diag-empty-state">
+            <div class="diag-empty-title">正在读取运行日志…</div>
+          </div>
+        </div>
+
+        <div class="diag-console-foot">
+          <div class="diag-foot-path">
+            <svg aria-hidden="true"><use href="#i-folder"/></svg>
+            <code id="diag-dir-code">./logs</code>
+            <button type="button" class="diag-path-copy" id="diag-copy-path-btn" onclick="CreatorHubDiagnostics.copyDirPath()" title="复制日志目录路径" aria-label="复制日志目录路径"><svg aria-hidden="true"><use href="#i-copy"/></svg></button>
+            <span class="diag-foot-rule">app.log (≤5MB×4) · error.log (≤2MB×3) 自动滚动限容</span>
+          </div>
+          <span class="status-text" id="diag-status-msg" role="status" aria-live="polite"></span>
+        </div>
       </div>
     </div>
   </div>

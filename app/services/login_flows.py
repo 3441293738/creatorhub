@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 import json
-import traceback
+import logging
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -467,7 +467,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                             acc.exit_checked_at = datetime.utcnow()
                             s.add(acc); s.commit()
                 except Exception as exc:
-                    print(f"[login-proxy] account={acc_id} probe deferred: {exc!r}")
+                    logging.getLogger("creatorhub.login").debug(
+                        "登录后出口探测延后(account=%s): %r", acc_id, exc
+                    )
 
             # 登录态已经持久化且账号已经落库：立即通知前端把账号显示出来。
             # 完整资料抓取可能还需数秒，不能让它阻塞“扫码成功”的交互反馈。
@@ -532,7 +534,11 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 status="expired", platform=platform, creator=creator,
                 account_id=account_id, environment=login_environment)
     except Exception as e:
-        traceback.print_exc()
+        _lg = logging.getLogger("creatorhub.login")
+        if "VerificationRequired" in type(e).__name__ or "安全验证" in str(e):
+            _lg.warning("账号登录需完成安全验证 [%s]: %s", platform, e)
+        else:
+            _lg.exception("交互式登录失败 [%s, account=%s]", platform, account_id)
         if fresh_account and tmp_profile:
             try:
                 await app_runtime.browser.close_context(identity.key)

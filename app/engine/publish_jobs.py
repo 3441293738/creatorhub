@@ -13,7 +13,7 @@ import inspect
 
 from app.account_lifecycle import AccountUnavailableError
 from app.db import get_session
-from app.engine.monitor_helpers import _WRITE_SUBMIT_PREFIX, _loads, _loads_list
+from app.engine.monitor_helpers import _WRITE_SUBMIT_PREFIX, _loads, _loads_list, log
 from app.models import ContentRecord, DouyinAccount, NotificationChannel, PublishTask
 from app.notifier import notify_all
 from app.platforms.bilibili import publish_bilibili
@@ -433,6 +433,7 @@ class PublishJobMixin:
             await self._finish_publish(task_id, False, "", msg, platform=platform)
             raise
         except Exception as e:
+            log.exception("发布任务 #%s(%s) 执行异常", task_id, platform)
             ok, url, err = False, "", f"发布异常: {e!r}"
         finally:
             self._set_publish_stage(task_id, "")
@@ -484,6 +485,10 @@ class PublishJobMixin:
                 s.add(t); s.commit()
         if ok and account_id:
             self.risk.record_success(account_id, OperationKind.PUBLISH)
+        if ok:
+            log.info("发布任务 #%s(%s, 账号#%s) 已完成%s", task_id, platform, account_id or "-", f": {url}" if url else "")
+        else:
+            log.warning("发布任务 #%s(%s, 账号#%s) 未完成: %s", task_id, platform, account_id or "-", err[:300])
         if ok:
             try:
                 with get_session() as s:

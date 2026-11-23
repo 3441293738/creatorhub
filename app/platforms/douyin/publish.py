@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable, List, Tuple
@@ -80,8 +81,14 @@ _VERIFY_WAY_LABELS = {
 }
 
 
+_pub_log = logging.getLogger("creatorhub.publish.douyin")
+
+
 def _log(msg: str) -> None:
-    print(f"[dy-publish] {msg}", flush=True)
+    if any(k in msg for k in ("失败", "超时", "异常", "验证", "拦截")):
+        _pub_log.warning("%s", msg)
+    else:
+        _pub_log.info("%s", msg)
 
 
 async def _visible_any(page, keywords) -> str:

@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import logging
 import random
 import time
 import urllib.parse
@@ -539,8 +540,13 @@ class DouyinClient:
                     self.last_error, reason = detail_http_error(r.status_code, r.content)
                     if reason:
                         self.last_response["rejection_reason"] = reason
-                print(f"[dy-client] {path} → HTTP {r.status_code} len={len(r.content)}"
-                      f"{' (空 body:多半被风控拒,非无数据)' if r.status_code == 200 else ''}")
+                logging.getLogger("creatorhub.douyin.client").warning(
+                    "%s -> HTTP %s len=%d%s",
+                    path,
+                    r.status_code,
+                    len(r.content),
+                    " (空 body:多半触发风控拦截)" if r.status_code == 200 else "",
+                )
                 return []
             try:
                 payload = r.json()
@@ -562,7 +568,12 @@ class DouyinClient:
                 self.last_error = ("risk:verification_required:html" if re.search(
                     r"<title[^>]*>[^<]*(?:验证码中间页|安全验证|人机验证)", body, re.I)
                     else "invalid_json")
-                print(f"[dy-client] {path} → 非 JSON len={len(r.content)}")
+                logging.getLogger("creatorhub.douyin.client").warning(
+                    "%s -> 非 JSON 响应 (%s, len=%d)",
+                    path,
+                    self.last_error,
+                    len(r.content),
+                )
                 return []
         except Exception as exc:
             self.last_error = f"network:{type(exc).__name__}"

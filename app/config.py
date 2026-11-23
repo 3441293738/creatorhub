@@ -162,6 +162,18 @@ class ServerConfig:
 
 
 @dataclass
+class LoggingConfig:
+    level: str = "info"                     # info | debug | warning
+    dir: str = "./logs"                     # 日志目录(可用 CREATORHUB_LOG_DIR 覆盖)
+    max_bytes: int = 5 * 1024 * 1024        # app.log 单文件体积上限(默认 5 MB)
+    backup_count: int = 4                   # app.log 滚动备份数量
+    error_max_bytes: int = 2 * 1024 * 1024  # error.log 单文件体积上限(默认 2 MB)
+    error_backup_count: int = 3             # error.log 滚动备份数量
+    slow_request_ms: int = 3000             # 慢请求告警阈值(毫秒,0=关闭)
+    log_mutations: bool = True              # 记录写请求(POST/PUT/PATCH/DELETE)轨迹,高频轮询默认静默
+
+
+@dataclass
 class RiskControlConfig:
     """Conservative cross-feature limits for platform-facing account activity."""
     enabled: bool = True
@@ -206,6 +218,7 @@ class RiskControlConfig:
 @dataclass
 class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     engine: EngineConfig = field(default_factory=EngineConfig)
     risk_control: RiskControlConfig = field(default_factory=RiskControlConfig)
     db_path: str = "./data/creatorhub.db"
@@ -316,9 +329,28 @@ def load_config(path: str | None = None) -> Config:
         risk_values["mode"] = (
             mode if mode in {"conservative", "custom"} else "conservative")
         cfg.risk_control = RiskControlConfig(**risk_values)
+        log_raw = raw.get("logging", {}) or {}
+        if isinstance(log_raw, dict):
+            log_values = {
+                k: v for k, v in log_raw.items()
+                if k in LoggingConfig.__dataclass_fields__
+            }
+            cfg.logging = LoggingConfig(**log_values)
         cfg.db_path = (raw.get("storage", {}) or {}).get("db_path", cfg.db_path)
         px = raw.get("proxies") or []
         cfg.proxies = [str(p).strip() for p in px if str(p).strip()]
+    env_log_dir = os.environ.get("CREATORHUB_LOG_DIR", "").strip()
+    if env_log_dir:
+        cfg.logging.dir = env_log_dir
+    env_log_level = os.environ.get("CREATORHUB_LOG_LEVEL", "").strip().lower()
+    raw_level = env_log_level or str(cfg.logging.level or "info").strip().lower()
+    cfg.logging.level = raw_level if raw_level in {"debug", "info", "warning", "error"} else "info"
+    cfg.logging.max_bytes = max(512 * 1024, min(50 * 1024 * 1024, int(cfg.logging.max_bytes or 5 * 1024 * 1024)))
+    cfg.logging.backup_count = max(1, min(10, int(cfg.logging.backup_count or 4)))
+    cfg.logging.error_max_bytes = max(256 * 1024, min(20 * 1024 * 1024, int(cfg.logging.error_max_bytes or 2 * 1024 * 1024)))
+    cfg.logging.error_backup_count = max(1, min(10, int(cfg.logging.error_backup_count or 3)))
+    cfg.logging.slow_request_ms = max(0, min(60000, int(cfg.logging.slow_request_ms or 0)))
+    cfg.logging.log_mutations = bool(cfg.logging.log_mutations)
     if not cfg.engine.channels_cdp_endpoint:
         cfg.engine.channels_cdp_endpoint = os.environ.get(
             "CREATORHUB_CHANNELS_CDP_ENDPOINT", ""

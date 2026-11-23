@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from fastapi import HTTPException
 
@@ -78,7 +79,7 @@ async def _xhs_profile(state: str, proxy: str = "", *,
             return {}, exc
         return {}, "logged_out" if exc.category == "auth" else exc.category
     except Exception as e:
-        print(f"[xhs_profile] self_info 失败: {e!r}")
+        logging.getLogger("creatorhub.profile").warning("小红书 self_info 拉取失败: %r", e)
         return ({}, e) if detailed else ({}, "error")
     if not me or me.get("guest") is True or not me.get("user_id"):
         return {}, "logged_out"

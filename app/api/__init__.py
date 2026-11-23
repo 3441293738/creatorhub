@@ -20,6 +20,7 @@ from . import account_actions
 from . import account_browser
 from . import proxies
 from . import settings
+from . import diagnostics
 from . import share_downloads
 from . import platform_tools
 from . import collections
@@ -65,6 +66,7 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(account_browser.router)
     app.include_router(proxies.router)
     app.include_router(settings.router)
+    app.include_router(diagnostics.router)
     app.include_router(share_downloads.router)
     app.include_router(platform_tools.router)
     app.include_router(collections.router)

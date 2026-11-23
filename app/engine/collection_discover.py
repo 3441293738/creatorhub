@@ -6,6 +6,7 @@ import math
 from app.browser import fetch_channels_works, fetch_douyin_search, fetch_ks_search, fetch_ks_videos, fetch_rednote_comments, fetch_rednote_favorites, fetch_rednote_note_detail, fetch_rednote_notes, fetch_rednote_search, fetch_videos, fetch_xhs_favorites, fetch_xhs_note_detail, fetch_xhs_notes, fetch_xhs_search
 from app.browser.tiktok_fetcher import fetch_tiktok_search
 from app.engine.collection_helpers import _XHS_NOTE_TYPE, _XHS_SEARCH_SORT, _sort_channels_search_items, _sort_xhs_search_items
+from app.engine.monitor_helpers import log
 from app.models import KeywordCollectionJob
 from app.platforms.channels import ChannelsProtocolClient, parse_channels_feed
 from app.platforms.douyin import DouyinClient
@@ -26,7 +27,7 @@ class CollectionDiscoverMixin:
             items, error = [], ""
             api_compatibility_failure = False
             try:
-                print("[dy-search] HTTP search/single API 请求")
+                log.debug("抖音搜索执行 HTTP search/single API 请求 (job=%s)", job.id)
                 items, error = await client.search_awemes(
                     keyword,
                     max_results=job.max_contents_per_keyword,
@@ -43,7 +44,7 @@ class CollectionDiscoverMixin:
                 if mode == "api" or category in {
                         RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
                     return [], message
-                print(f"[dy-search] API 兼容性异常，浏览器回退: {type(exc).__name__}")
+                log.info("抖音搜索 API 兼容性异常，回退浏览器: %s", type(exc).__name__)
                 api_compatibility_failure = True
             if items:
                 return items, ("抖音搜索接口失败: " + error if error else "")
@@ -54,11 +55,11 @@ class CollectionDiscoverMixin:
                 category, _ = classify_platform_error(message)
                 if error == "verification_required" or category in {
                         RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
-                    print("[dy-search] API 返回验证/风控信号，进入冷却，不打开浏览器")
+                    log.warning("抖音搜索 API 返回验证/风控信号(%s)，进入冷却且不打开浏览器", error)
                     return [], message
                 if mode == "api":
                     return [], message
-                print(f"[dy-search] API 兼容性失败，浏览器回退: {error}")
+                log.info("抖音搜索 API 兼容性失败(%s)，回退浏览器", error)
         elif mode == "api":
             return [], "抖音搜索接口异常: API 客户端不可用"
         identity = self.browser.identity_for(account)
@@ -153,10 +154,9 @@ class CollectionDiscoverMixin:
                 return native.items, native.error
             if native.category == "empty_valid":
                 return [], ""
-            print(
-                f"[tiktok-search] 离线接口兼容失败，页面回退: "
-                f"{native.category}; HTTP={native.http_status}; "
-                f"bytes={native.body_length}; tt_orcas_res={native.tt_orcas_res!r}"
+            log.info(
+                "TikTok 搜索离线接口兼容失败，回退页面: %s (HTTP=%s, bytes=%s)",
+                native.category, native.http_status, native.body_length,
             )
         if mode == "auto":
             async with self.browser.temporary_headed_context(identity):

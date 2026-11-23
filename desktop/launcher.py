@@ -126,6 +126,20 @@ def utf8_child_environment(**overrides: str) -> dict[str, str]:
     return env
 
 
+def open_service_stdio_log(home: Path):
+    """Rotate at most one previous child stdio log so logs/ never grows unbounded."""
+    logs_dir = home / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    current = logs_dir / "service-stdio.log"
+    previous = logs_dir / "service-stdio.prev.log"
+    if current.is_file():
+        try:
+            current.replace(previous)
+        except OSError:
+            pass
+    return current.open("w", encoding="utf-8", errors="backslashreplace")
+
+
 def configure_process_streams(home: Path) -> None:
     """Make frozen and redirected output independent of the Windows code page."""
     if sys.stdout is None or sys.stderr is None:
@@ -164,6 +178,7 @@ def serve(home: Path, session: str, install_browser: bool, parent_pid=0) -> int:
 def _serve(home: Path, session: str, install_browser: bool) -> int:
     os.chdir(home)
     os.environ["CREATORHUB_CONFIG_PATH"] = str(home / "config.yaml")
+    os.environ.setdefault("CREATORHUB_LOG_DIR", str(home / "logs"))
     os.environ.pop("DY_CONFIG_PATH", None)
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(home / "browsers")
     docs = resources() / "desktop-guide"
@@ -192,7 +207,7 @@ def _serve(home: Path, session: str, install_browser: bool) -> int:
     temp = state.with_suffix(".tmp")
     temp.write_text(json.dumps({"port": port}), encoding="utf-8")
     temp.replace(state)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, workers=1, log_config=None))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, workers=1, access_log=False, log_config=None))
     stop = home / "runtime" / f"{session}.stop"
     def watch_stop():
         while not server.should_exit:
@@ -356,10 +371,12 @@ class Launcher:
             self.session = uuid.uuid4().hex
             if self.closing:
                 return
-            log = self.home / "logs" / f"desktop-{time.strftime('%Y%m%d-%H%M%S')}.log"
             self.events.put(("status", "正在启动；如缺少浏览器组件，将自动下载…"))
-            with log.open("w", encoding="utf-8") as output:
-                env = utf8_child_environment(CREATORHUB_DESKTOP_HOME=str(self.home))
+            with open_service_stdio_log(self.home) as output:
+                env = utf8_child_environment(
+                    CREATORHUB_DESKTOP_HOME=str(self.home),
+                    CREATORHUB_LOG_DIR=str(self.home / "logs"),
+                )
                 self.process = subprocess.Popen(child_command("--serve", "--session", self.session, "--parent-pid", str(os.getpid())),
                     cwd=self.home, env=env, stdout=output, stderr=subprocess.STDOUT,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
@@ -470,16 +487,26 @@ class Launcher:
     def diagnostics(self):
         from tkinter import filedialog, messagebox
         import platform
-        path = filedialog.asksaveasfilename(title="导出不含账号数据的诊断摘要", defaultextension=".json", initialfile="creatorhub-diagnostics.json")
+        from app.logging_setup import read_log_tail
+        path = filedialog.asksaveasfilename(title="导出脱敏诊断摘要", defaultextension=".json", initialfile="creatorhub-diagnostics.json")
         if path:
-            # Allowlist only: no raw logs, paths, config, tokens, accounts or DB.
-            data = {"app_version": version(), "os": platform.system(), "os_release": platform.release(),
-                    "python": platform.python_version(), "frozen": bool(getattr(sys, "frozen", False)),
-                    "service_running": bool(self.process and self.process.poll() is None),
-                    "exit_code": self.process.poll() if self.process else None}
+            logs_dir = self.home / "logs"
+            data = {
+                "app_version": version(),
+                "os": platform.system(),
+                "os_release": platform.release(),
+                "arch": platform.machine(),
+                "python": platform.python_version(),
+                "frozen": bool(getattr(sys, "frozen", False)),
+                "service_running": bool(self.process and self.process.poll() is None),
+                "exit_code": self.process.poll() if self.process else None,
+                "error_log_tail": read_log_tail(logs_dir / "error.log", max_lines=80, max_bytes=32768, for_export=True),
+                "app_log_tail": read_log_tail(logs_dir / "app.log", max_lines=80, max_bytes=32768, for_export=True),
+                "stdio_log_tail": read_log_tail(logs_dir / "service-stdio.log", max_lines=60, max_bytes=24576, for_export=True),
+            }
             try:
                 Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-                messagebox.showinfo("已导出", "摘要不包含配置、账号、日志或本机目录。")
+                messagebox.showinfo("已导出", "脱敏诊断摘要已保存（已自动剔除账号凭据、密钥与本机路径）。")
             except OSError as exc:
                 messagebox.showerror("保存失败", str(exc))
 

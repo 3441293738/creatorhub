@@ -10,7 +10,7 @@ from sqlmodel import select
 
 from app.browser import fetch_rednote_note_detail, fetch_rednote_notes, fetch_rednote_search, fetch_xhs_note_detail, fetch_xhs_notes, fetch_xhs_search
 from app.db import get_session
-from app.engine.monitor_helpers import _loads, _monitor_content_matches, _monitor_strategy
+from app.engine.monitor_helpers import _loads, _monitor_content_matches, _monitor_strategy, log
 from app.models import ContentRecord, DouyinAccount, MonitorTarget
 from app.platforms.douyin.extract import Aweme
 from app.platforms.rednote import RednoteApiError, parse_rednote_brief, parse_rednote_detail, parse_rednote_self_user, cookie_str_from_state as rednote_cookie_str_from_state
@@ -268,11 +268,17 @@ class NoteTargetScanMixin:
         if not error and first_detail_error:
             error = first_detail_error
 
-        print(f"[xhs_scan] kind={kind} key={keyword or user_id} briefs={len(briefs_raw)} "
-              f"new_records={len(new_records)} "
-              f"details={detail_attempts}/{detail_budget or '不限'} "
-              f"filtered={filtered_count} "
-              f"with_media={sum(1 for _, a, _ in new_records if a.medias)} error={error!r}")
+        _scan_fn = log.warning if error else (log.info if new_records else log.debug)
+        _scan_fn(
+            "小红书监控扫描(target=%s, kind=%s): 候选=%d 新增=%d 详情=%d 过滤=%d%s",
+            target_id,
+            kind,
+            len(briefs_raw),
+            len(new_records),
+            detail_attempts,
+            filtered_count,
+            f" 错误={error!r}" if error else "",
+        )
 
         target_name = ""
         refreshed_access = 0

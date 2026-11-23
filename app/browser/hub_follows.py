@@ -4,7 +4,10 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Set, Tuple
 import asyncio
 import json
+import logging
 import re
+
+_log = logging.getLogger("creatorhub.browser.follows")
 
 import inspect
 
@@ -412,7 +415,7 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
             if self3x:
                 uid = self3x
         except Exception as e:
-            print(f"[follow] kuaishou self-resolve failed: {e!r}")
+            _log.warning("快手关系同步反查本人 ID 失败: %r", e)
     if "{uid}" in nav["url"] and not uid and not self_url:
         return [], "missing_uid:账号缺自身 uid,请先点账号「刷新资料」"
     url = self_url or (nav["url"].format(uid=uid) if "{uid}" in nav["url"] else nav["url"])
@@ -559,12 +562,10 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         else:
             await human_wait(page, settle_ms)
         if platform == "douyin":
-            # 标定:hydrate 后把关注/粉丝入口的真实标记打出来,别再盲猜选择器
             try:
-                print(f"[follow-probe] douyin stat entries: "
-                      f"{await page.evaluate(_DOUYIN_STAT_PROBE_JS)}")
+                _log.debug("douyin stat entries: %s", await page.evaluate(_DOUYIN_STAT_PROBE_JS))
             except Exception as e:
-                print(f"[follow-probe] douyin probe failed: {e!r}")
+                _log.debug("douyin stat probe failed: %r", e)
         # 打开「当前方向」的列表:依次试候选入口,点完等该方向专属接口回包来确认开对了。
         openers = nav.get("open", {}).get(direction, [])
         opened = False
@@ -578,7 +579,7 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                     tx, ty = DEFAULT_HUMAN_ENGINE.sample_box_point(stat_box)
                     await DEFAULT_HUMAN_ENGINE.click_point(page, tx, ty)
                     clicked = stat_box.get("desc") or cand[5:]
-                    print(f"[follow] douyin stat click {cand[5:]} → {clicked!r}")
+                    _log.debug("douyin stat click %s -> %r", cand[5:], clicked)
                 elif cand.startswith("xhs:"):
                     clicked = await _click_xhs_profile_stat(
                         mgr, page, cand[4:])
@@ -708,19 +709,21 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
     result = collected
     if platform == "xhs" and not result and scraped:
         result = scraped
-    # 标定期:无论成败都打日志,便于把真实接口固化进 _FOLLOW_PRECISE / _norm_follow_user
     scraped_n = len(scraped) if platform == "xhs" else 0
-    print(f"[follow] platform={platform} dir={direction} uid={uid} "
-          f"precise={len(collected)} broad={len(broad)} scraped={scraped_n} "
-          f"modal={modal_seen if platform == 'xhs' else '-'} hit_urls={hit_urls[:8]} "
-          f"final_url={final_url} api_seen({len(api_seen)})={api_seen[:50]}")
-    # 小红书抽不到时,把弹层真实结构打出来(据此写精确选择器/解析)
+    if not result and not precise_empty_confirmed:
+        _log.warning(
+            "关系列表未拦截到结果: platform=%s dir=%s precise=%d broad=%d scraped=%d final_url=%s",
+            platform, direction, len(collected), len(broad), scraped_n, final_url,
+        )
+    _log.debug(
+        "follow sync platform=%s dir=%s precise=%d hit_urls=%s api_seen(%d)=%s",
+        platform, direction, len(collected), hit_urls[:8], len(api_seen), api_seen[:50],
+    )
     if platform == "xhs" and not result:
-        print(f"[follow-dom] dir={direction} dbg={xhs_dbg}")
-    # 快手:打样本(粉丝只抽出 1 个 / 关注抽出 0 个时,据真实结构对准解析)
-    if platform == "kuaishou":
-        for i, smp in enumerate(ks_samples):
-            print(_console_safe(f"[follow-ks {direction} {i}] {smp}"))
+        _log.debug("xhs follow dom dbg=%s", xhs_dbg)
+    if platform == "kuaishou" and not result:
+        for i, smp in enumerate(ks_samples[:2]):
+            _log.debug("follow-ks %s sample[%d] len=%d", direction, i, len(_console_safe(smp)))
     if not result:
         if precise_empty_confirmed:
             error = "empty"

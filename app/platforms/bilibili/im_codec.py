@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import random
 import struct
@@ -318,8 +319,9 @@ async def receive_bili_broadcast(
     from ...netfp import curl_proxy_url
 
     norm_proxy = curl_proxy_url(proxy)
+    _im_log = logging.getLogger("creatorhub.im.bili")
     if not norm_proxy:
-        print("[bili-im-ws] 提醒: 当前未配置代理，B站实时私信使用本机直连（同平台多账号请注意真实 IP 关联风险）")
+        _im_log.debug("B站实时私信当前未配置代理，使用本机直连")
 
     ua = str(user_agent or "").strip() or _DEFAULT_WS_UA
     eff_seed = str(account_seed or "").strip()
@@ -338,7 +340,7 @@ async def receive_bili_broadcast(
             try:
                 await on_watch_notify()
             except Exception as exc:
-                print(f"[bili-im-ws] WatchNotify sync failed: {exc!r}")
+                _im_log.warning("B站 WatchNotify 增量同步失败: %r", exc)
             await asyncio.sleep(random.uniform(0.85, 1.35))
 
     while not stop_check():
@@ -434,7 +436,7 @@ async def receive_bili_broadcast(
                 break
             backoff = min(60.0, 4.0 * (2 ** min(attempt, 4))) * random.uniform(0.85, 1.25)
             attempt += 1
-            print(f"[bili-im-ws] disconnected ({exc!r}), reconnecting in {backoff:.1f}s...")
+            _im_log.warning("B站私信长连接断开(%r)，%.1fs 后重连", exc, backoff)
             await asyncio.sleep(backoff)
         finally:
             if heartbeat_task is not None and not heartbeat_task.done():

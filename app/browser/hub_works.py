@@ -1,7 +1,10 @@
 """多平台本账号已发布作品列表浏览器抓取与直连同步。"""
 from __future__ import annotations
 
+import logging
 from typing import List, Optional, Set, Tuple
+
+_log = logging.getLogger("creatorhub.browser.hub")
 
 from app.browser.channels_fetcher import fetch_channels_works
 from app.browser.fetcher import fetch_videos
@@ -240,7 +243,7 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
             if self3x:
                 uid = self3x
         except Exception as e:
-            print(f"[hub-self] kuaishou self-resolve failed: {e!r}")
+            _log.warning("快手本人主页 ID 反查失败: %r", e)
     # 视频号 / B站 / 海外小红书创作中心 / Instagram / Twitter: 可先按本账号 Cookie 读取自身资料与作品
     if not uid and not open_url and platform not in ("shipinhao", "bilibili", "rednote", "instagram", "twitter"):
         return [], "missing_uid:账号缺自身 uid,请先点账号「刷新资料」再同步作品"

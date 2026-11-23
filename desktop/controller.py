@@ -14,8 +14,8 @@ import urllib.request
 import uuid
 import webbrowser
 
-from desktop.launcher import (InstanceLock, child_command, resources, snapshot,
-                              utf8_child_environment, version)
+from desktop.launcher import (InstanceLock, child_command, open_service_stdio_log,
+                              resources, snapshot, utf8_child_environment, version)
 from desktop.updates import UpdateChecker, RELEASES_URL
 from desktop.update_helper import atomic_json, clean_environment, read_request, verify_installer
 from desktop.platform_support import open_folder
@@ -150,9 +150,12 @@ class Controller:
             args = ["--serve", "--session", session, "--parent-pid", str(os.getpid())]
             if not self.install_browser:
                 args.append("--skip-browser-install")
-            with (self.home / "logs" / f"desktop-{session[:8]}.log").open("w", encoding="utf-8") as log:
+            with open_service_stdio_log(self.home) as log:
                 process = subprocess.Popen(child_command(*args), cwd=self.home,
-                    env=utf8_child_environment(CREATORHUB_DESKTOP_HOME=str(self.home)),
+                    env=utf8_child_environment(
+                        CREATORHUB_DESKTOP_HOME=str(self.home),
+                        CREATORHUB_LOG_DIR=str(self.home / "logs"),
+                    ),
                     stdout=log, stderr=subprocess.STDOUT, **child_options())
             with self.lock:
                 self.process = process
@@ -263,10 +266,34 @@ class Controller:
             self.change("error", "服务尚未完全退出，请再次尝试停止或查看本地日志。")
 
     def diagnostic(self):
+        from app.logging_setup import read_log_tail, sanitize_for_export
+        logs_dir = self.home / "logs"
         with self.lock:
-            return {"app_version": version(), "os": platform.system(), "os_release": platform.release(),
-                    "python": platform.python_version(), "service_state": self.phase,
-                    "exit_code": self.process.poll() if self.process else None}
+            recent_events = [
+                {
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(e["time"])),
+                    "level": e.get("level", "info"),
+                    "title": sanitize_for_export(e.get("title", "")),
+                    "detail": sanitize_for_export(e.get("detail", "")),
+                }
+                for e in list(self.events)[:30]
+            ]
+            summary = {
+                "app_version": version(),
+                "os": platform.system(),
+                "os_release": platform.release(),
+                "arch": platform.machine(),
+                "python": platform.python_version(),
+                "frozen": bool(getattr(sys, "frozen", False)),
+                "service_state": self.phase,
+                "uptime_seconds": int(time.monotonic() - self.started_at) if self.started_at else 0,
+                "exit_code": self.process.poll() if self.process else None,
+                "recent_events": recent_events,
+            }
+        summary["error_log_tail"] = read_log_tail(logs_dir / "error.log", max_lines=80, max_bytes=32768, for_export=True)
+        summary["app_log_tail"] = read_log_tail(logs_dir / "app.log", max_lines=80, max_bytes=32768, for_export=True)
+        summary["stdio_log_tail"] = read_log_tail(logs_dir / "service-stdio.log", max_lines=60, max_bytes=24576, for_export=True)
+        return summary
 
     def install_update(self, tag):
         with self.lock:

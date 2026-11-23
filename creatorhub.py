@@ -43,10 +43,18 @@ def venv_python() -> Path:
 def run(command: list[str | Path], *, env: dict[str, str] | None = None) -> None:
     printable = " ".join(str(part) for part in command)
     log(f"> {printable}")
+    merged_env = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUNBUFFERED": "1",
+    }
+    if env:
+        merged_env.update(env)
     subprocess.run(
         [str(part) for part in command],
         cwd=ROOT,
-        env=env,
+        env=merged_env,
         check=True,
     )
 
@@ -253,11 +261,12 @@ def start(
         selected_host,
         "--port",
         str(selected_port),
+        "--no-access-log",
     ]
     if reload:
         command.append("--reload")
 
-    log(f"启动中，按 Ctrl+C 停止；访问地址：{url}")
+    log(f"启动中，按 Ctrl+C 停止；访问地址：{url}（日志保存于 logs/app.log 与 logs/error.log）")
     run(command)
 
 

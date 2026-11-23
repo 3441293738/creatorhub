@@ -387,5 +387,5 @@ class CommentTaskRunnerMixin:
             self.risk.record_success(account_id, OperationKind.COMMENT)
             log.info("评论任务 %s 已发送(%s,作品 %s)", task_id, method, aweme_id)
         else:
-            log.info("评论任务 %s 失败: %s", task_id, err)
+            log.warning("评论任务 %s 失败: %s", task_id, err)
         return {"ok": ok, "error": err, "method": method}

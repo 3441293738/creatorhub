@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -71,8 +72,14 @@ _VERIFY_KW = ("安全验证", "扫码验证", "短信验证", "验证码", "拖�
 _DEBUG_DIR = Path("./data/debug")
 
 
+_pub_log = logging.getLogger("creatorhub.publish.kuaishou")
+
+
 def _log(message: str) -> None:
-    print(f"[ks-publish] {message}", flush=True)
+    if any(k in message for k in ("失败", "超时", "异常", "验证", "拦截")):
+        _pub_log.warning("%s", message)
+    else:
+        _pub_log.info("%s", message)
 
 
 def _published_work_url(payload) -> str:

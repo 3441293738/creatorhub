@@ -5,6 +5,7 @@ import asyncio
 import contextvars
 import inspect
 import json
+import logging
 import threading
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import ExitStack
@@ -363,8 +364,11 @@ async def list_published(storage_state_json: str, proxy: str = "",
     try:
         d = await client.notes_by_creator(uid)
         notes = d.get("notes") or []
-        print(f"[xhs_published_web] uid={uid} got={len(notes)} "
-              f"note0_keys={list(notes[0].keys()) if notes else []}")
+        logging.getLogger("creatorhub.publish.xhs").debug(
+            "xhs_published_web got=%d note0_keys=%s",
+            len(notes),
+            list(notes[0].keys()) if notes else [],
+        )
         return True, "ok", notes
     except XhsApiError as e:
         return False, str(e), []

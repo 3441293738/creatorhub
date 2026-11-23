@@ -9,6 +9,7 @@
 """
 import asyncio
 import json
+import logging
 import time
 from datetime import datetime
 from typing import Dict
@@ -23,6 +24,7 @@ from ..platforms.bilibili import BilibiliClient, cookie_str_from_state, receive_
 
 # 非聊天正文的消息类型(已读回执等),不入库/不推
 _SKIP_MSG_TYPES = {50001, 50002}
+_im_log = logging.getLogger("creatorhub.im")
 
 
 class ImReceiverManager:
@@ -88,7 +90,7 @@ class ImReceiverManager:
             with get_session() as s:
                 acc = s.get(DouyinAccount, account_id)
                 if not acc or acc.platform != "douyin":
-                    print(f"[im-ws] _run account={account_id} 非抖音/不存在,跳过")
+                    _im_log.debug("实时私信跳过非抖音/不存在账号 account=%s", account_id)
                     return
                 uid = acc.uid
                 proxy = str(acc.proxy or "").strip()
@@ -105,20 +107,20 @@ class ImReceiverManager:
                 return
             await asyncio.sleep(2)
         if not uid:
-            print(f"[im-ws] account {account_id} 无 uid,点一次「同步」存下 uid 即自动接上")
+            _im_log.info("抖音实时私信等待账号 #%s 同步 uid 后自动连接", account_id)
             return
         if not proxy:
-            print(f"[im-ws] account {account_id} 未绑定代理，将使用本机直连建立实时私信连接（多号同 IP 请注意防关联风险）")
+            _im_log.debug("抖音账号 #%s 未绑定代理，使用本机直连建立实时私信连接", account_id)
         if app_runtime.engine is not None:
             decision = app_runtime.engine.risk.preflight(account_id, OperationKind.READ_LIGHT)
             if not decision.allowed:
-                print(f"[im-ws] account {account_id} 风控/休眠门禁延后: {decision.reason}")
+                _im_log.debug("抖音实时私信受风控/休眠门禁延后(account=%s): %s", account_id, decision.reason)
                 return
         try:
             async with self.browser.lock_for(account_id):
                 cookie = await _douyin_cookie_str(self.browser, identity)
         except Exception as e:
-            print(f"[im-ws] account {account_id} 取 cookie 失败: {e!r}")
+            _im_log.warning("抖音实时私信获取账号 #%s Cookie 失败: %r", account_id, e)
             return
 
         def on_msg(m):
@@ -156,11 +158,11 @@ class ImReceiverManager:
             self_uid = str(acc.uid or acc.sec_uid or "")
             fallback_cookie = cookie_str_from_state(acc.storage_state or acc.cookie or "")
         if not proxy:
-            print(f"[bili-im-ws] account {account_id} 未绑定代理，将使用本机直连建立实时私信连接（多号同 IP 请注意防关联风险）")
+            _im_log.debug("B站账号 #%s 未绑定代理，使用本机直连建立实时私信连接", account_id)
         if app_runtime.engine is not None:
             decision = app_runtime.engine.risk.preflight(account_id, OperationKind.READ_LIGHT)
             if not decision.allowed:
-                print(f"[bili-im-ws] account {account_id} 风控/休眠门禁延后: {decision.reason}")
+                _im_log.debug("B站实时私信受风控/休眠门禁延后(account=%s): %s", account_id, decision.reason)
                 return
         try:
             async with self.browser.lock_for(account_id):
@@ -168,7 +170,7 @@ class ImReceiverManager:
         except Exception:
             cookie = fallback_cookie
         if not cookie:
-            print(f"[bili-im-ws] account {account_id} 无有效 Cookie，跳过实时私信连接")
+            _im_log.warning("B站账号 #%s 缺少有效 Cookie，跳过实时私信连接", account_id)
             return
 
         begin_ts = int(time.time() * 1_000_000)
@@ -302,7 +304,7 @@ class ImReceiverManager:
                     s.add(conv)
                 s.commit()
         except Exception as e:
-            print(f"[im-ws] 入库失败: {e!r}")
+            _im_log.warning("实时私信入库失败(account=%s): %r", account_id, e)
         # 推给 SSE 订阅者
         st = self._accts.get(account_id)
         if st:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -109,7 +110,9 @@ async def sync_account_works(account_id: int):
             if api_items or effective_mode == "api" or api_err == "empty":
                 source = "api"
                 return api_items, api_err
-            print(f"[dy-account-works] API 空响应({api_err}),回退浏览器")
+            logging.getLogger("creatorhub.works").info(
+                "抖音本账号作品 API 空响应(%s)，账号#%s 回退浏览器获取", api_err, account_id
+            )
             source = "browser_fallback"
         elif platform == "bilibili" and effective_mode in {"api", "hybrid"} and bili_state:
             bcli = BilibiliClient(

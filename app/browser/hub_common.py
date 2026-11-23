@@ -3,8 +3,11 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 from urllib.parse import urljoin
+import logging
 import re
 import sys
+
+_log = logging.getLogger("creatorhub.browser.hub")
 
 from app.browser.human_interaction import human_wait
 from app.browser.manager import BrowserManager
@@ -102,7 +105,7 @@ async def _self_profile_link(mgr: BrowserManager, identity, platform: str
             href = ""
         m = re.search(r"/user/profile/([0-9a-zA-Z_-]+)", href)
         uid = m.group(1) if m else ""
-        print(f"[hub-self] platform={platform} href={href!r} uid={uid}")
+        _log.debug("hub-self platform=%s has_href=%s has_uid=%s", platform, bool(href), bool(uid))
         return href, uid
 
     page = await mgr.new_page(identity, block_media=True)
@@ -125,7 +128,7 @@ async def _self_profile_link(mgr: BrowserManager, identity, platform: str
             pass
     m = re.search(r"/(?:user/profile|profile)/([0-9a-zA-Z_-]+)", href)
     uid = m.group(1) if m else ""
-    print(f"[hub-self] platform={platform} href={href!r} uid={uid}")
+    _log.debug("hub-self platform=%s has_href=%s has_uid=%s", platform, bool(href), bool(uid))
     return href, uid
 
 

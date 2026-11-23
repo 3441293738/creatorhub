@@ -507,7 +507,7 @@ class HealthProbeMixin:
                             proxy=proxy,
                             environment=douyin_client_environment(identity))
                         if not items and self.cfg.engine.douyin_read_mode == "hybrid":
-                            print(f"[dy-work-health] API 空响应({err}),回退浏览器")
+                            log.debug("抖音作品健康检查 API 空响应(%s)，账号#%s 回退浏览器", err, aid)
                             items, err = await fetch_account_works(
                                 self.browser, identity, platform, uid)
                     else:

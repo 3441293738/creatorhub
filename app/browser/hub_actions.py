@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import Any, Tuple
+
+_log = logging.getLogger("creatorhub.browser.hub")
 
 from app.browser.hub_common import _bili_cookie_str, _ig_cookie_str
 from app.browser.human_interaction import (
@@ -329,8 +332,13 @@ async def send_dm_api(mgr: BrowserManager, identity, conv_id: str,
                      "referer": "https://www.douyin.com/"})
         body = await resp.body()
         r = parse_send_response(body)
-        print(f"[dm-send] conv={conv_id} status={resp.status} "
-              f"ok={r['ok']} msg={r['msg']!r} code={r['error_code']} resp_len={len(body)}")
+        if not (resp.status == 200 and r["ok"] and r["cmd"] == 100):
+            _log.warning(
+                "抖音私信发送异常: status=%s ok=%s code=%s msg=%r",
+                resp.status, r["ok"], r["error_code"], r["msg"],
+            )
+        else:
+            _log.debug("抖音私信已发送: status=%s resp_len=%d", resp.status, len(body))
         if resp.status == 200 and r["ok"] and r["cmd"] == 100:
             return True, ""
         if resp.status == 200 and r["ok"]:

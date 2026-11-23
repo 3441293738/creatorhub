@@ -448,9 +448,10 @@ class WorkSyncMixin:
         except Exception as e:
             return [], repr(e)
         meta = getattr(client, "last_follow_meta", {})
-        print(f"[follow-direct] dir={direction} sec_uid={sec_uid} "
-              f"pages={meta.get('pages', 0)} norm={len(out)} "
-              f"complete={meta.get('complete', False)}")
+        log.debug(
+            "抖音关系直连同步 dir=%s pages=%s norm=%d complete=%s",
+            direction, meta.get("pages", 0), len(out), meta.get("complete", False),
+        )
         # HTTP 200 + 空 body、非法 JSON 等是传输/风控失败，不是“有效空列表”。
         # 保留 DouyinClient 的分类，让上层决定是否回退浏览器且不清空旧快照。
         return out, (client.last_error or ("" if out else "empty"))

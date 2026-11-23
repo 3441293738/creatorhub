@@ -5,7 +5,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+
+_log = logging.getLogger("creatorhub.browser.douyin")
 import time
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit
@@ -389,13 +392,16 @@ async def fetch_videos(mgr: BrowserManager, identity: Identity, sec_uid: str,
             pass
 
     if not collected:
-        # 「aweme/post 没发出来」和「发了但 aweme_list 空/读不到」是两回事,原来一律报同一句话
-        print(f"[works] 未拿到作品; sec_uid={sec_uid[:24]}… final_url={final_url}; "
-              f"post_hits({len(post_hits)})={post_hits[:5]}; dom={dom}")
-        print(f"[works] api_seen({len(api_seen)})={api_seen[:30]}")
+        _log.warning(
+            "抖音主页未拦截到作品: sec_uid=%s… final_url=%s post_hits=%d",
+            sec_uid[:20], final_url, len(post_hits),
+        )
+        _log.debug("抖音主页作品诊断: dom=%s api_seen(%d)=%s", dom, len(api_seen), api_seen[:30])
     elif pagination_stalled:
-        print(f"[works] 主页分页未触发; sec_uid={sec_uid[:24]}… "
-              f"collected={len(collected)} post_hits={post_hits[:3]}")
+        _log.debug(
+            "抖音主页分页未继续触发: sec_uid=%s… collected=%d post_hits=%s",
+            sec_uid[:20], len(collected), post_hits[:3],
+        )
     new_items = [it for aid, it in collected.items() if aid not in known_ids]
     return new_items, author, error
 
@@ -572,8 +578,11 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
             pass
 
     if not collected:
-        print(f"[dy_search] keyword={keyword!r} final_url={final_url!r} "
-              f"title={page_title!r} api_seen({len(api_seen)})={api_seen[:10]}")
+        _log.warning(
+            "抖音页面搜索无结果: final_url=%r title=%r api_seen=%d",
+            final_url, page_title, len(api_seen),
+        )
+        _log.debug("抖音页面搜索 api_seen=%s", api_seen[:10])
     return _sort_douyin_search_items(list(collected.values()), search_sort)[:max_results], error
 
 
@@ -895,7 +904,7 @@ async def fetch_creator_danmaku(mgr: BrowserManager, identity: Identity,
                 with open(capture_path, "w", encoding="utf-8") as f:
                     json.dump(captured_requests, f, ensure_ascii=False, indent=2)
             except Exception as exc:
-                print(f"[creator-danmaku] capture dump failed: {exc!r}")
+                _log.debug("创作中心弹幕抓包落盘失败: %r", exc)
         try:
             await page.close()
         except Exception:
@@ -1029,7 +1038,7 @@ async def post_comment_browser(mgr: BrowserManager, identity: Identity, aweme_id
                 diag = await page.evaluate(_DIAG_INPUTS)
             except Exception:
                 pass
-            print(f"[comment_post] 未找到输入框 aweme={aweme_id} diag={diag}")
+            _log.warning("抖音发评论未找到输入框: aweme=%s diag=%s", aweme_id, diag[:240])
             return False, ("未找到评论输入框(评论区可能未加载/被关闭/页面改版)。"
                            f"页面诊断: {diag[:300]}")
 
@@ -1209,7 +1218,7 @@ async def _refetch_in_page(page, full_url: str) -> Optional[dict]:
               } catch (e) { return null; }
             }""", path)
     except Exception as e:
-        print(f"[self_profile] refetch failed: {e!r}")
+        _log.debug("抖音本人资料页内重拉失败: %r", e)
         return None
 
 
@@ -1395,10 +1404,11 @@ async def fetch_self_profile(mgr: BrowserManager, identity: Identity,
         elif not error:
             # 区分「接口没发出来」和「发了但取不到 user」——之前一律报后者,误导排查
             error = ("profile/self 命中但取不到 user" if hit_apis else "no_profile_xhr")
-        print(f"[self_profile] 未拿到资料; err={error}; final_url={final_url}; "
-              f"login_btn_visible={has_login_btn}; login_cookie={has_login_cookie}; "
-              f"storage_uid={bool(storage_uid)}; hit={hit_apis}; shapes={shapes}; "
-              f"api_seen({len(api_seen)})={api_seen[:25]}")
+        _log.warning(
+            "抖音本人资料未获取: err=%s final_url=%s login_btn=%s login_cookie=%s hit=%s",
+            error, final_url, has_login_btn, has_login_cookie, hit_apis,
+        )
+        _log.debug("抖音本人资料诊断: shapes=%s api_seen(%d)=%s", shapes, len(api_seen), api_seen[:25])
     return result, error
 
 

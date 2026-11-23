@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from . import runtime
 from .api import register_routes
 from .local_access import LocalAccessMiddleware
+from .logging_setup import RequestLoggingMiddleware
 from .services.lifecycle import lifespan
 
 WEB_DIR = runtime.WEB_DIR
@@ -16,6 +17,7 @@ def create_app() -> FastAPI:
     """装配本地 FastAPI 应用实例（导入阶段不启动浏览器或后台协程）。"""
     application = FastAPI(title="CreatorHub", lifespan=lifespan)
     application.add_middleware(LocalAccessMiddleware)
+    application.add_middleware(RequestLoggingMiddleware, cfg_getter=lambda: runtime.cfg)
     register_routes(application)
     application.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
     return application

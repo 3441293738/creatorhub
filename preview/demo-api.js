@@ -1,6 +1,7 @@
 (function () {
   "use strict";
 
+  let demoDiagLevel = "info";
   const realFetch = window.fetch.bind(window);
   const engineDefaults = {
     xhs_read_mode: "api", rednote_read_mode: "hybrid", douyin_read_mode: "hybrid", douyin_write_mode: "browser",
@@ -481,6 +482,34 @@
       };
     }
     if (/^\/api\/contents\/\d+\/media$/.test(path)) return { media_type: "images", cover_url: "", medias: [] };
+    if (path === "/api/diagnostics/logs") {
+      const lvl = (url.searchParams.get("level") || "warn").toLowerCase();
+      const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+      const allEntries = [
+        { timestamp: "2026-04-20 17:42:18.312", level: "WARNING", logger: "risk", req_id: "", message: "账号 #2 触发平台频控冷却保护，已暂停自动写操作 30 分钟 (xsec_token=[REDACTED])", exception: "" },
+        { timestamp: "2026-04-20 17:38:05.104", level: "INFO", logger: "publish.xhs", req_id: "8f31c2a9", message: "发布任务 #18(xhs, 账号#1) 已完成", exception: "" },
+        { timestamp: "2026-04-20 17:30:11.882", level: "INFO", logger: "engine", req_id: "", message: "小红书监控扫描(target=3, kind=creator): 候选=12 新增=2 详情=2 过滤=0", exception: "" },
+        { timestamp: "2026-04-20 17:20:01.045", level: "INFO", logger: "startup", req_id: "", message: "服务初始化就绪 (backend=local | runtimes=1 | persisted=risk,engine) | logs=./logs", exception: "" },
+      ];
+      const filtered = allEntries.filter(item => {
+        if (lvl === "error" && item.level !== "ERROR") return false;
+        if (lvl === "warn" && !["WARNING", "ERROR"].includes(item.level)) return false;
+        if (q && !`${item.logger} ${item.message}`.toLowerCase().includes(q)) return false;
+        return true;
+      });
+      return {
+        log_dir: "./logs",
+        level: demoDiagLevel,
+        total_bytes: 48640,
+        files: [{ name: "app.log", size_bytes: 42496 }, { name: "error.log", size_bytes: 6144 }],
+        memory_counts: { total: allEntries.length, warnings: 1, errors: 0 },
+        source: url.searchParams.get("source") || "memory",
+        entries: filtered,
+      };
+    }
+    if (path === "/api/diagnostics/summary") {
+      return { app_version: "demo", run_mode: "preview", logging: { level: demoDiagLevel, total_bytes: 48640 } };
+    }
     return [];
   }
 
@@ -541,6 +570,28 @@
           "Content-Disposition": 'attachment; filename="creatorhub_share_download_history_demo.xlsx"',
         },
       });
+    }
+    if (method === "GET" && url.pathname === "/api/diagnostics/export.zip") {
+      return new Response("CreatorHub sanitized diagnostic bundle (online preview placeholder)", {
+        status: 200,
+        headers: {
+          "Content-Type": "application/zip",
+          "Content-Disposition": 'attachment; filename="creatorhub-diagnostics-demo.zip"',
+        },
+      });
+    }
+    if (method === "PUT" && url.pathname === "/api/diagnostics/log-level") {
+      const body = JSON.parse(init.body || "{}");
+      if (["info", "debug", "warning"].includes(body.level)) demoDiagLevel = body.level;
+      return new Response(JSON.stringify({ ok: true, level: demoDiagLevel, note: `在线演示已切换为 ${demoDiagLevel.toUpperCase()} 级别` }), { status: 200, headers: { "Content-Type": "application/json; charset=utf-8" } });
+    }
+    if (method === "POST" && url.pathname === "/api/diagnostics/report-text") {
+      const body = JSON.parse(init.body || "{}");
+      const text = `### CreatorHub 问题排查摘要 (在线演示)\n- **版本/模式**: \`demo\` · 日志级别 \`${demoDiagLevel.toUpperCase()}\`\n` + (body.note ? `- **用户问题描述**: ${body.note}\n` : "") + "- **近期告警**: 账号 #2 触发频控冷却保护 (敏感凭据已自动脱敏)\n";
+      return new Response(JSON.stringify({ ok: true, text }), { status: 200, headers: { "Content-Type": "application/json; charset=utf-8" } });
+    }
+    if (method === "POST" && (url.pathname === "/api/diagnostics/open-dir" || url.pathname === "/api/diagnostics/clear-logs")) {
+      return new Response(JSON.stringify({ ok: true, cleared: 2, log_dir: "./logs" }), { status: 200, headers: { "Content-Type": "application/json; charset=utf-8" } });
     }
     if (method === "PUT" && url.pathname === "/api/settings/engine") Object.assign(engineValues, JSON.parse(init.body));
     if (url.pathname === "/api/channels/protocol/config") {

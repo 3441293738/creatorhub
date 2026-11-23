@@ -369,7 +369,7 @@ class DanmakuWatchMixin:
                         elif self.cfg.engine.douyin_read_mode == "api":
                             error = f"douyin_api_danmaku:{api_client.last_error or 'empty_response'}"
                         else:
-                            print(f"[dy-danmaku-watch] API 空响应({api_client.last_error}),回退浏览器")
+                            log.debug("抖音弹幕监控(视频=%s) API 空响应(%s)，回退浏览器", aweme_id, api_client.last_error)
                             raw, error = await fetch_danmaku(
                                 self.browser, identity, aweme_id, known,
                                 max_rounds=max(1, min(settings["max_scrolls"], 2)),
@@ -383,7 +383,7 @@ class DanmakuWatchMixin:
                         if self.cfg.engine.douyin_read_mode == "api":
                             raw, error = [], f"douyin_api_danmaku:{type(exc).__name__}"
                         else:
-                            print(f"[dy-danmaku-watch] API 异常({type(exc).__name__}),回退浏览器")
+                            log.debug("抖音弹幕监控(视频=%s) API 异常(%s)，回退浏览器", aweme_id, type(exc).__name__)
                             raw, error = await fetch_danmaku(
                                 self.browser, identity, aweme_id, known,
                                 max_rounds=max(1, min(settings["max_scrolls"], 2)),

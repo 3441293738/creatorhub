@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 import os
 
 from sqlmodel import select
@@ -114,13 +115,13 @@ def _seed_browser_runtimes() -> list[dict]:
             item = runtime_metadata(configured_path)
             discovered[item["runtime_id"]] = item
         except (OSError, ValueError) as exc:
-            print(f"[startup] 指纹内核路径不可用: {exc}")
+            logging.getLogger("creatorhub.startup").warning("指纹内核路径不可用: %s", exc)
     for root in _browser_runtime_scan_roots():
         try:
             for item in discover_chromium_runtimes(root):
                 discovered[item["runtime_id"]] = item
         except (OSError, ValueError) as exc:
-            print(f"[startup] 指纹内核扫描失败 ({root}): {exc}")
+            logging.getLogger("creatorhub.startup").warning("指纹内核扫描失败 (%s): %s", root, exc)
 
     with get_session() as session:
         existing = {

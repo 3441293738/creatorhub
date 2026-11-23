@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
+
+_log = logging.getLogger("creatorhub.browser.xhs")
 import urllib.parse
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -416,10 +419,9 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
                         if nid and nid not in collected:
                             collected[nid] = it
                             added += 1
-                    print(
-                        f"[xhs_notes] ssr_notes={len(ssr_items)} merged={added}")
+                    _log.debug("小红书 SSR 兜底合并笔记: ssr=%d merged=%d", len(ssr_items), added)
                 except Exception as e:
-                    print(f"[xhs_notes] ssr_fallback failed: {e!r}")
+                    _log.debug("小红书 SSR 兜底失败: %r", e)
             # otherinfo 也可能不再发 XHR，作者资料和首屏笔记一样从 SSR 读取。
             if author is None:
                 try:
@@ -437,8 +439,8 @@ async def fetch_xhs_notes(mgr: BrowserManager, identity: Identity, user_id: str,
             error = page_failure or "未拦截到笔记（创作者可能暂无公开笔记，或页面接口已调整）"
         if not collected:
             saw = any("user_posted" in a for a in api_seen)
-            print(f"[xhs_notes] user_id={user_id}; saw_posted_api={saw}; "
-                  f"final_url={final_url}; api_seen({len(api_seen)})={api_seen[:30]}")
+            _log.warning("小红书主页未拦截到笔记: saw_posted_api=%s final_url=%s", saw, final_url)
+            _log.debug("小红书主页 api_seen(%d)=%s", len(api_seen), api_seen[:30])
     except Exception as e:
         error = f"打开创作者主页失败: {e!r}"
 
@@ -558,9 +560,8 @@ async def fetch_xhs_search(mgr: BrowserManager, identity: Identity, keyword: str
             error = page_failure or "未拦截到搜索结果（关键词可能无结果，或页面接口已调整）"
         if not collected:
             saw = any("search/notes" in a for a in api_seen)
-            print(f"[xhs_search] kw={keyword!r}; typed={typed}; direct_fallback={direct_fallback}; "
-                  f"saw_search_api={saw}; "
-                  f"final_url={final_url}; api_seen({len(api_seen)})={api_seen[:30]}")
+            _log.warning("小红书页面搜索无结果: saw_search_api=%s final_url=%s", saw, final_url)
+            _log.debug("小红书搜索 api_seen(%d)=%s", len(api_seen), api_seen[:30])
     except Exception as e:
         error = f"打开搜索页失败: {e!r}"
 
@@ -896,9 +897,7 @@ async def fetch_creator_published(mgr: BrowserManager, identity: Identity,
                     break
             final_url = page.url
         if not collected:
-            print(
-                f"[xhs_creator_published] collected=0 "
-                f"final_url={final_url} api_seen={api_seen[:8]}")
+            _log.debug("小红书创作者中心作品为空: final_url=%s api_seen=%s", final_url, api_seen[:8])
     except Exception as e:
         error = f"打开创作平台失败: {e!r}"
     return list(collected.values()), error
@@ -1001,9 +1000,10 @@ async def fetch_xhs_self_profile(mgr: BrowserManager, identity: Identity,
         elif not error:
             error = ("no_user_me_xhr" if not user_me_seen
                      else "user/me 无有效用户字段")
-        print(f"[xhs_self_profile] 未拿到资料; err={error}; final_url={final_url}; login_btn={has_login_btn}; "
-              f"guest={me_data.get('guest')}; me={'有' if me_data else '无'}; "
-              f"other={'有' if other_data else '无'}; state_user={'有' if state_user else '无'}; "
-              f"api_seen({len(api_seen)})={api_seen[:25]}")
+        _log.warning(
+            "小红书本人资料未获取: err=%s final_url=%s login_btn=%s guest=%s",
+            error, final_url, has_login_btn, me_data.get("guest"),
+        )
+        _log.debug("小红书本人资料 api_seen(%d)=%s", len(api_seen), api_seen[:25])
         return ({} if logged_out else result), error
     return result, error

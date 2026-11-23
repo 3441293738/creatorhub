@@ -309,7 +309,7 @@ class CommentWatchMixin:
                 err = api_client.last_error or "empty_response"
                 if cfg.douyin_read_mode == "api":
                     raise RuntimeError(f"douyin_api_comments:{err}")
-                print(f"[dy-comment-watch] API 空响应({err}),回退浏览器")
+                log.debug("抖音评论监控(视频=%s) API 空响应(%s)，回退浏览器", aweme_id, err)
             except Exception as exc:
                 err = f"api:{type(exc).__name__}"
                 if cfg.douyin_read_mode == "api":
@@ -342,7 +342,7 @@ class CommentWatchMixin:
                 if not items:
                     err = api_client.last_error or "empty_response"
                 if not items and cfg.douyin_read_mode == "hybrid":
-                    print(f"[dy-comment-watch] API 作品空响应({err}),回退浏览器")
+                    log.debug("抖音评论监控(账号) API 作品空响应(%s)，回退浏览器", err)
             except Exception as exc:
                 err = f"api:{type(exc).__name__}"
                 if cfg.douyin_read_mode == "api":

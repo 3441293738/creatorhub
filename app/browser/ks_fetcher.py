@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
+
+_log = logging.getLogger("creatorhub.browser.kuaishou")
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 
@@ -314,8 +317,8 @@ async def fetch_ks_search(mgr: BrowserManager, identity: Identity, keyword: str,
             pass
 
     if not collected:
-        print(f"[ks_search] keyword={keyword!r} final_url={final_url} "
-              f"api_seen({len(api_seen)})={api_seen[:40]}")
+        _log.warning("快手搜索未拦截到结果: final_url=%s api_seen=%d", final_url, len(api_seen))
+        _log.debug("快手搜索 api_seen=%s", api_seen[:40])
     return [feed for photo_id, feed in collected.items()
             if photo_id not in known_ids], error
 
@@ -444,11 +447,10 @@ async def fetch_ks_videos(mgr: BrowserManager, identity: Identity, user_id: str,
             pass
 
     if not collected:
-        print(f"[ks_videos] user_id={user_id!r} open_url={open_url!r} "
-              f"final_url={final_url} api_seen({len(api_seen)})={api_seen[:40]}")
-    # REST feed 命中但可能字段没对齐:打样本便于核对 _rest_item_to_feed
+        _log.warning("快手主页未拦截到作品: final_url=%s api_seen=%d", final_url, len(api_seen))
+        _log.debug("快手主页 api_seen=%s", api_seen[:40])
     if feed_sample:
-        print(f"[ks_videos] feed_sample={feed_sample[0]}")
+        _log.debug("快手 REST feed 样本长度=%d", len(feed_sample[0]))
 
     new_items = [feed for pid, feed in collected.items() if pid not in known_ids]
     return new_items, author, error
@@ -541,9 +543,8 @@ async def fetch_ks_comments(mgr: BrowserManager, identity: Identity, photo_id: s
         if "passport" in final_url or "/login" in final_url:
             error = "logged_out:登录态失效,请重新登录"
         else:
-            print(f"[ks_comments] photo_id={photo_id!r} final_url={final_url} "
-                  f"api_seen={api_seen} gql_shape={gql_shape}")
-            print(f"[ks_comments] gql_sample={gql_sample}")
+            _log.warning("快手详情页未拦截到评论: photo_id=%r final_url=%s", photo_id, final_url)
+            _log.debug("快手评论诊断: api_seen=%s gql_shape=%s", api_seen, gql_shape)
             sample = gql_sample[0][:600] if gql_sample else "无"
             error = f"未拦截到评论; 评论响应样本={sample}"
     new = [c for cid, c in collected.items() if cid not in known_cids]
@@ -854,8 +855,10 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
             error = "logged_out"
         elif not error:
             error = "no_profile_data"
-        print(f"[ks_self_profile] 未拿到资料; err={error}; login_btn={has_login_btn}; uid_cookie={uid_cookie!r}; "
-              f"hit_urls={hit_urls[:6]}; attempts={attempts}")
+        _log.warning(
+            "快手本人资料未获取: err=%s login_btn=%s hit_urls=%s",
+            error, has_login_btn, hit_urls[:6],
+        )
     return result, error
 
 

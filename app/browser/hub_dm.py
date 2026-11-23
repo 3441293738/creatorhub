@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Set, Tuple
 import json
+import logging
 import os
+
+_log = logging.getLogger("creatorhub.browser.dm")
 
 from app.browser.douyin_im_pb import parse_conversations
 from app.browser.hub_common import _ID_KEYS, _NAME_KEYS, _STRONG_ID_KEYS, _avatar_of, _bili_cookie_str, _ig_cookie_str, _looks_like_user, _twitter_cookie_str
@@ -272,7 +275,7 @@ async def _fetch_im_user_info(page, sec_ids: list) -> Dict[str, dict]:
               return out;
             }""", ids)
     except Exception as e:
-        print(f"[dm-userinfo] in-page fetch failed: {e!r}")
+        _log.debug("dm-userinfo 页内批量拉取失败: %r", e)
         return {}
     prof: Dict[str, dict] = {}
     for u in (data or []):
@@ -284,7 +287,7 @@ async def _fetch_im_user_info(page, sec_ids: list) -> Dict[str, dict]:
         nick = str(u.get("nickname") or u.get("alias_nickname") or "")
         avatar = _avatar_of(u)
         prof[sec] = {"nickname": nick, "avatar": avatar, "sec_uid": sec}
-    print(f"[dm-userinfo] batch fetched {len(prof)}/{len(ids)} profiles")
+    _log.debug("dm-userinfo 批量补全资料 %d/%d", len(prof), len(ids))
     return prof
 
 
@@ -415,11 +418,11 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 b = await resp.body()      # body() 内部已等 body 下完,无需 finished()
             except Exception as e:
                 b = b""
-                print(f"[dm-init] body 读取失败: {e!r}")
+                _log.debug("dm-init body 读取失败: %r", e)
             # 一次同步会收到多份(增量包),只在换成更大的那份时打日志
             if len(b) > len(dm_init_raw[0]):
                 dm_init_raw[0] = b
-                print(f"[dm-init] get_message_by_init kept={len(b)} bytes")
+                _log.debug("dm-init get_message_by_init kept=%d bytes", len(b))
         # 私信接口可能是 protobuf:先取文本,JSON 解析失败也留个样本(标注 non-json)
         raw_text = ""
         try:
@@ -497,7 +500,7 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
             return
         popups.append(p)
         p.on("response", on_response)     # 新页的 XHR 也要拦
-        print(f"[dm] douyin popup opened: {p.url!r}")
+        _log.debug("douyin dm popup opened: %s", p.url.split("?")[0])
 
     page.context.on("page", on_popup)
     try:
@@ -526,9 +529,9 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                     ".filter(o => /私信|消息|message|\\/im|im-|conversation/i.test("
                     "  [o.txt,o.href,o.aria,o.cls,o.de].join(' ')))"
                     ".slice(0,25)")
-                print(f"[dm-probe] douyin entry candidates({len(probe)}): {ascii(probe)}")
+                _log.debug("douyin dm entry candidates=%d", len(probe or []))
             except Exception as e:
-                print(f"[dm-probe] douyin probe failed: {ascii(repr(e))}")
+                _log.debug("douyin dm probe failed: %r", e)
         # 抖音:「消息」是 <div>(无 href),React onClick 绑在祖先上,严禁合成 element.click()。
         # 统一使用拟人贝塞尔轨迹 + 随机安全落点 + 真实硬件按压驻留点击。
         if platform == "douyin":
@@ -550,7 +553,7 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 boxes = await page.evaluate(_DOUYIN_IM_BOXES_JS)
             except Exception:
                 boxes = []
-            print(f"[dm-probe] douyin message boxes({len(boxes or [])}): {ascii(boxes)}")
+            _log.debug("douyin dm message boxes=%d", len(boxes or []))
             # 嵌套的「消息」DIV 常落在同一坐标,点 3 次和点 1 次等价 —— 去重,省 10s
             seen_pt: Set[tuple] = set()
             ordered = []
@@ -575,8 +578,7 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 except Exception:
                     continue
             after_dom = await _dm_panel_probe(page)
-            print(f"[dm-probe] douyin dom before={before_dom}")
-            print(f"[dm-probe] douyin dom after ={after_dom}")
+            _log.debug("douyin dm dom before=%s after=%s", before_dom, after_dom)
             if popups:
                 # 私信开在了新标签页:后续等待/滚动/取资料都必须对着它做
                 page = popups[-1]
@@ -585,8 +587,7 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 except Exception:
                     pass
                 via = via or f"popup:{page.url.split('?')[0]}"
-                print(f"[dm] douyin switched to popup url={page.url} "
-                      f"dom={await _dm_panel_probe(page)}")
+                _log.debug("douyin dm switched to popup url=%s", page.url.split("?")[0])
             if not im_hit[0]:
                 # 兜底定位可见「消息/私信」或会话卡片，执行硬件级拟人点击（严禁 JS t.click()）
                 for fallback_sel in (
@@ -655,8 +656,7 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                             break
                     except Exception:
                         continue
-            print(f"[dm] {platform} entry clicked_by="
-                  f"{clicked_by or 'NONE(IM未起来)'} im_hit={im_hit[0]}")
+            _log.debug("%s dm entry clicked_by=%s im_hit=%s", platform, clicked_by or "NONE", im_hit[0])
         # 小红书是 SPA:/im 直开不稳定；只用可见站内入口触发前端路由。
         if platform == "xhs":
             await mgr.xhs_interaction.pause(0.25, 0.55)
@@ -668,10 +668,10 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
         except Exception:
             pass
         if platform == "douyin":
-            # 打印放在等待之后:IM SDK 是慢启动的,点击那一刻 im_hit 必然还是 False
-            print(f"[dm] douyin im open im_hit={im_hit[0]} "
-                  f"via={douyin_open_via or 'FAIL'} boxes={len(boxes or [])} "
-                  f"url={page.url}")
+            _log.debug(
+                "douyin im open im_hit=%s via=%s boxes=%d",
+                im_hit[0], douyin_open_via or "FAIL", len(boxes or []),
+            )
         if platform == "xhs":
             await mgr.xhs_interaction.pause(0.25, 0.55)
         else:
@@ -700,25 +700,24 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 await human_wait(page, 500)
                 if dm_init_raw[0]:
                     break
-            print(f"[dm-init] 等待 body 落地: len={len(dm_init_raw[0])}")
+            _log.debug("dm-init 等待 body 落地: len=%d", len(dm_init_raw[0]))
         # 标定用:把会话大包落盘,protobuf 字段号可以离线试,不用每次都跑浏览器
         _dump = os.environ.get("CREATORHUB_DM_DUMP")
         if _dump and dm_init_raw[0]:
             try:
                 with open(_dump, "wb") as f:
                     f.write(dm_init_raw[0])
-                print(f"[dm-init] 已落盘 {_dump} ({len(dm_init_raw[0])} bytes)")
+                _log.debug("dm-init 已落盘 %s (%d bytes)", _dump, len(dm_init_raw[0]))
             except Exception as e:
-                print(f"[dm-init] 落盘失败: {e!r}")
+                _log.warning("dm-init 落盘失败: %r", e)
         _request_dump = os.environ.get("CREATORHUB_DM_REQUEST_DUMP")
         if _request_dump and dm_init_request_raw[0]:
             try:
                 with open(_request_dump, "wb") as f:
                     f.write(dm_init_request_raw[0])
-                print(f"[dm-init] request saved {_request_dump} "
-                      f"({len(dm_init_request_raw[0])} bytes)")
+                _log.debug("dm-init request 已落盘 %s (%d bytes)", _request_dump, len(dm_init_request_raw[0]))
             except Exception as e:
-                print(f"[dm-init] request dump failed: {e!r}")
+                _log.warning("dm-init request 落盘失败: %r", e)
         # 抖音:会话在 get_message_by_init 的 protobuf 大包里。解会话 → 页面内批量
         # POST im/user/info(按 sec_uid,抖音自己签名)补昵称/头像 → 水合。
         if platform == "douyin" and dm_init_raw[0]:
@@ -751,21 +750,16 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                         "raw_json": last_meta,
                     }
                 _named = sum(1 for v in collected.values() if v["peer_nickname"])
-                print(f"[dm-pb] douyin parsed={len(collected)} "
-                      f"im_profiles={len(im_profiles)} sec_profiles={len(sec_profiles)} "
-                      f"named={_named}")
-                # named 远小于 profiles 总数 = 键对不上,而不是「没拉到资料」。
-                # 分别统计三条水合路径的命中数,定位是哪条断了。
                 _with_sec = sum(1 for c in convs_parsed if c.get("peer_sec_uid"))
                 _by_uid = sum(1 for c in convs_parsed if im_profiles.get(c["peer_uid"]))
                 _by_sec = sum(1 for c in convs_parsed
                               if sec_profiles.get(c.get("peer_sec_uid") or "\0"))
-                print(f"[dm-pb] convs={len(convs_parsed)} with_sec={_with_sec} "
-                      f"hydrated_by_uid={_by_uid} hydrated_by_sec={_by_sec}")
-                print(f"[dm-pb] im_profiles keys sample={list(im_profiles)[:3]} "
-                      f"peer_uid sample={[c['peer_uid'] for c in convs_parsed[:3]]}")
+                _log.debug(
+                    "dm-pb douyin parsed=%d named=%d with_sec=%d by_uid=%d by_sec=%d",
+                    len(collected), _named, _with_sec, _by_uid, _by_sec,
+                )
             except Exception as e:
-                print(f"[dm-pb] douyin protobuf parse failed: {e!r}")
+                _log.warning("抖音私信 protobuf 解析失败: %r", e)
 
         final_url = page.url
     except Exception as e:
@@ -782,12 +776,15 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                     await p.close()
             except Exception:
                 pass
-    # 标定期:无论成败都打日志(私信接口完全未知,这行最关键)
-    print(f"[dm] convs platform={platform} got={len(collected)} im_visible={im_visible} "
-          f"hit_urls={hit_urls[:8]} final_url={final_url} api_seen({len(api_seen)})={api_seen[:60]}")
-    print(f"[dm-ws] ws_urls({len(ws_urls)})={ws_urls[:10]} frames={ws_frames}")
-    for i, smp in enumerate(dm_samples):
-        print(f"[dm-sample {i}] {smp}")
+    if not collected:
+        _log.warning(
+            "私信会话列表为空: platform=%s im_visible=%s hit_urls=%s final_url=%s",
+            platform, im_visible, hit_urls[:8], final_url,
+        )
+    _log.debug(
+        "dm convs platform=%s got=%d ws_count=%d api_seen(%d)=%s",
+        platform, len(collected), len(ws_urls), len(api_seen), api_seen[:40],
+    )
     if not collected:
         # 小红书:message/entry 返回 visible=false —— 该账号网页端私信未开放(仅 App),非本项目可解
         if platform == "xhs" and im_visible is False:
@@ -889,15 +886,10 @@ async def fetch_dm_history(mgr: BrowserManager, identity, platform: str,
         body = await resp.body()
         parsed = parse_messages(body)
         if debug:
-            print(f"[dm-hist] conv={conv_id} status={resp.status} "
-                  f"resp_len={len(body)} msgs={len(parsed.get('messages', []))} "
-                  f"next_cursor={parsed.get('next_cursor')}")
-            print(f"[dm-hist-raw] b64:{_b64.b64encode(body[:1200]).decode()}")
-            # 非文本消息(分享视频=8/图片=27/语音=17...)dump 原始 content JSON,标定字段用
-            for _m in parsed.get("messages", []):
-                if _m.get("msg_type") not in (7, 0):
-                    print(f"[dm-hist-content] type={_m.get('msg_type')} "
-                          f"text={_m.get('text')!r} content={_m.get('content')}")
+            _log.debug(
+                "dm-hist status=%s resp_len=%d msgs=%d next_cursor=%s",
+                resp.status, len(body), len(parsed.get("messages", [])), parsed.get("next_cursor"),
+            )
         if resp.status != 200:
             return parsed, f"imapi 返回 {resp.status}"
         return parsed, ""

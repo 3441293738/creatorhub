@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import asyncio
+import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException
@@ -217,7 +218,10 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
             if effective_mode == "api" or direct_err.startswith("page_limit:"):
                 source = "api"
                 return direct_users, direct_err or "empty_response"
-            print(f"[follow] douyin direct 未完成({direct_err}, got={len(direct_users)}),回退浏览器拦截")
+            logging.getLogger("creatorhub.follows").info(
+                "抖音关系列表直连未完成(account=%s, err=%s, got=%d)，回退浏览器拦截",
+                account_id, direct_err, len(direct_users),
+            )
         elif platform == "bilibili" and effective_mode in {"api", "hybrid"} and bili_state:
             report(phase="fetching", source="api")
             bcli = BilibiliClient(

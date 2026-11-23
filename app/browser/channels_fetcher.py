@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
+
+_log = logging.getLogger("creatorhub.browser.channels")
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -425,10 +428,8 @@ async def fetch_channels_self_profile(
     if not result and not error:
         error = "no_profile_data"
     if not result:
-        print(
-            f"[channels_self_profile] err={error} final_url={final_url} login_btn={has_login_btn} "
-            f"api_seen({len(api_seen)})={api_seen[:40]}"
-        )
+        _log.warning("视频号本人资料未获取: err=%s final_url=%s login_btn=%s", error, final_url, has_login_btn)
+        _log.debug("视频号本人资料 api_seen(%d)=%s", len(api_seen), api_seen[:40])
     return result, error
 
 
@@ -706,17 +707,13 @@ async def fetch_channels_works(
             pass
 
     if not collected:
-        print(
-            f"[channels_works] final_urls={final_urls or [final_url]} "
-            f"post_responses={post_response_count} totals={post_totals} "
-            f"post_errors={post_errors} "
-            f"api_seen({len(api_seen)})={api_seen[:40]}"
+        _log.warning(
+            "视频号作品未拦截到数据: post_responses=%s post_errors=%s",
+            post_response_count, post_errors,
         )
+        _log.debug("视频号作品 api_seen(%d)=%s", len(api_seen), api_seen[:40])
     elif sample:
-        print(
-            f"[channels_works] collected={len(collected)} totals={post_totals} "
-            f"sample={sample[0][:400]}"
-        )
+        _log.debug("视频号作品抓取完成: collected=%d totals=%s", len(collected), post_totals)
 
     new_items = [it for oid, it in collected.items() if oid not in known_ids]
     return new_items, None, error
@@ -809,7 +806,7 @@ async def fetch_channels_comments(
 
     if not collected and not error and comment_resp_seen == 0:
         error = "未拦截到评论响应(若需采集公开作品评论及全量二级回复，请连接桌面微信 Finder CDP 协议通道)"
-        print(f"[channels_comments] object_id={object_id} api_seen({len(api_seen)})={api_seen[:40]}")
+        _log.debug("视频号评论未命中 object_id=%s api_seen(%d)=%s", object_id, len(api_seen), api_seen[:40])
     new = [c for cid, c in collected.items() if cid not in known_cids]
     return new, error
 

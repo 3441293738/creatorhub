@@ -1,9 +1,13 @@
 """Account-level operation journal shared by API and background workers."""
 from __future__ import annotations
 
+import logging
+
 from .db import get_session
 from .event_center import emit_event
 from .models import AccountOperationLog
+
+_op_log = logging.getLogger("creatorhub.operation")
 
 
 def record_account_operation(*, platform: str, account_id: int,
@@ -23,6 +27,18 @@ def record_account_operation(*, platform: str, account_id: int,
         session.commit()
         session.refresh(row)
         row_id = int(row.id)
+    if status in {"failed", "error", "blocked", "uncertain"}:
+        _op_log.warning(
+            "操作异常 [%s/%s] 账号#%s 任务=%s 通道=%s 状态=%s%s%s",
+            platform,
+            task_type,
+            account_id,
+            task_id or "-",
+            channel or "-",
+            status,
+            f" 信号={risk_signal}" if risk_signal else "",
+            f" | {str(detail)[:240]}" if detail else "",
+        )
     emit_event(
         "account.operation",
         {"operation_id": row_id, "platform": platform, "account_id": account_id,

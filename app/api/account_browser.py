@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager, suppress
 from urllib.parse import urlsplit
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, HTTPException
 
@@ -18,6 +19,7 @@ from app.services import account_profiles as account_profiles_service
 from app.services import login_sessions as login_sessions_service
 
 router = APIRouter()
+log = logging.getLogger("creatorhub.browser")
 
 
 _PLATFORM_HOST = {"douyin": "douyin.com", "xhs": "xiaohongshu.com",
@@ -342,7 +344,7 @@ async def open_account_browser(
                     ctx, identity, assume_empty=False, overwrite=False
                 )
             except Exception as e:
-                print(f"[open-browser] 桥接缺失 Cookie 失败: {e!r}")
+                log.warning("打开账号浏览器时桥接缺失 Cookie 失败(account=%s): %r", account_id, e)
         check_opener = getattr(app_runtime.browser, "open_environment_check", None)
         if environment_check:
             if not callable(check_opener):
@@ -362,7 +364,7 @@ async def open_account_browser(
                     check_opened = check_page is not None
                 except Exception as check_exc:
                     check_error = f"{type(check_exc).__name__}: {check_exc}"
-                    print(f"[environment-check] 自动打开失败: {check_exc!r}")
+                    log.warning("环境检测标签自动打开失败(account=%s): %r", account_id, check_exc)
             page = (await app_runtime.browser.new_page(identity, block_media=False)
                     if platform in {"xhs", "rednote"} else await ctx.new_page())
             xhs_evidence: dict = {}

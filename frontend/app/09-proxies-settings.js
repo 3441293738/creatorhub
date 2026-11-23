@@ -777,6 +777,7 @@ globalThis.CreatorHubTransportMatrix = { load: refreshTransportMatrix, route: tr
 async function loadSettings() {
   globalThis.CreatorHubEngineSettings?.load();
   globalThis.CreatorHubChannelsProtocol?.load?.();
+  globalThis.CreatorHubDiagnostics?.load?.();
   refreshTransportMatrix();
   try {
     const s = await api("/api/settings");

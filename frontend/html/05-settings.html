@@ -502,5 +502,132 @@
       </div>
     </div>
   </div>
+  <!-- 系统日志与问题排查诊断 -->
+  <div class="card diag-card" id="diagnostics-card" data-section="diagnostics">
+    <div class="card-head">
+      <span class="card-ic"><svg aria-hidden="true"><use href="#i-shield"/></svg></span>
+      <h2>日志与诊断 <span class="sub">精简运行记录 · 自动脱敏 · 一键导出反馈</span></h2>
+    </div>
+    <div class="diag-layout">
+      <!-- 1. 顶部问题反馈与一键导出工作区 -->
+      <div class="diag-hero">
+        <div class="diag-hero-top">
+          <div class="diag-hero-title-group">
+            <span class="diag-hero-badge" aria-hidden="true"><svg><use href="#i-sparkles"/></svg></span>
+            <div>
+              <h3>遇到问题需要向开发者反馈？</h3>
+              <p>补充现象说明后一键导出诊断压缩包，或复制精简摘要直接粘贴到微信 / Issue，无需手动翻找日志文件。</p>
+            </div>
+          </div>
+          <div class="diag-hero-actions">
+            <button type="button" class="ghost" id="diag-copy-report-btn" onclick="CreatorHubDiagnostics.copyReport()"><svg aria-hidden="true"><use href="#i-copy"/></svg>复制排查摘要</button>
+            <button type="button" id="diag-export-zip-btn" onclick="CreatorHubDiagnostics.exportZip()"><svg aria-hidden="true"><use href="#i-download"/></svg>导出脱敏诊断包 (.zip)</button>
+          </div>
+        </div>
+        <div class="diag-note-input-wrap">
+          <svg class="diag-note-ic" aria-hidden="true"><use href="#i-edit"/></svg>
+          <input id="diag-issue-note" maxlength="500" autocomplete="off" aria-label="问题现象简述（选填）" placeholder="选填：简述问题现象（会自动写入诊断报告开头），例如：小红书图文点击发布后提示未找到上传框…">
+        </div>
+        <div class="diag-privacy-strip" aria-label="自动隐私脱敏说明">
+          <span class="diag-privacy-badge"><svg aria-hidden="true"><use href="#i-shield"/></svg>自动脱敏已启用</span>
+          <span class="diag-privacy-text">导出时自动剥离：</span>
+          <span class="diag-privacy-tag">Cookie / 登录态</span>
+          <span class="diag-privacy-tag">API Key / 代理密码</span>
+          <span class="diag-privacy-tag">账号昵称 / UID</span>
+          <span class="diag-privacy-tag">私信与评论正文</span>
+          <span class="diag-privacy-tag">本机系统用户名</span>
+        </div>
+      </div>
+
+      <!-- 2. 四宫格运行指标与快捷控制条 -->
+      <div class="diag-kpi-grid">
+        <div class="diag-stat-card">
+          <div class="diag-stat-head">
+            <span class="diag-stat-label">记录模式</span>
+            <span class="diag-mode-pill is-info" id="diag-level-pill"><i class="diag-dot"></i>INFO 精简</span>
+          </div>
+          <div class="diag-mode-seg" role="group" aria-label="切换运行日志级别">
+            <button type="button" class="active" data-diag-mode="info" onclick="CreatorHubDiagnostics.changeLevel('info')">精简</button>
+            <button type="button" data-diag-mode="debug" onclick="CreatorHubDiagnostics.changeLevel('debug')">调试</button>
+            <button type="button" data-diag-mode="warning" onclick="CreatorHubDiagnostics.changeLevel('warning')">仅告警</button>
+          </div>
+          <div class="diag-stat-sub" id="diag-mode-hint">默认静默高频页面轮询请求</div>
+        </div>
+
+        <button type="button" class="diag-stat-card is-interactive" id="diag-card-warn" onclick="CreatorHubDiagnostics.setFilter('warn')">
+          <div class="diag-stat-head">
+            <span class="diag-stat-label">本次运行告警</span>
+            <span class="diag-mini-tag warn">WARN</span>
+          </div>
+          <div class="diag-stat-val"><b id="diag-warn-num">0</b><small>条</small></div>
+          <div class="diag-stat-sub">通道回退 · 风控冷却 · 慢请求</div>
+        </button>
+
+        <button type="button" class="diag-stat-card is-interactive" id="diag-card-err" onclick="CreatorHubDiagnostics.setFilter('error')">
+          <div class="diag-stat-head">
+            <span class="diag-stat-label">本次异常错误</span>
+            <span class="diag-mini-tag danger">ERROR</span>
+          </div>
+          <div class="diag-stat-val"><b id="diag-err-num">0</b><small>条</small></div>
+          <div class="diag-stat-sub">任务执行失败 · 未捕获异常栈</div>
+        </button>
+
+        <div class="diag-stat-card">
+          <div class="diag-stat-head">
+            <span class="diag-stat-label">本地日志占用</span>
+            <span class="diag-mini-tag muted" id="diag-file-cnt">0 个文件</span>
+          </div>
+          <div class="diag-stat-val"><b id="diag-size-val">0 KB</b></div>
+          <div class="diag-stat-actions">
+            <button type="button" class="ghost sm" onclick="CreatorHubDiagnostics.openDir()"><svg aria-hidden="true"><use href="#i-folder"/></svg>打开目录</button>
+            <button type="button" class="ghost sm danger" onclick="CreatorHubDiagnostics.clearLogs()"><svg aria-hidden="true"><use href="#i-trash"/></svg>清理日志</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. 一体化日志检视控制台 -->
+      <div class="diag-console">
+        <div class="diag-console-bar">
+          <div class="diag-console-left">
+            <div class="diag-seg" role="group" aria-label="日志级别筛选">
+              <button type="button" class="active" data-diag-lvl="warn" onclick="CreatorHubDiagnostics.setFilter('warn')">告警与错误 <span class="diag-seg-cnt" id="diag-cnt-warn">0</span></button>
+              <button type="button" data-diag-lvl="error" onclick="CreatorHubDiagnostics.setFilter('error')">仅错误 <span class="diag-seg-cnt" id="diag-cnt-err">0</span></button>
+              <button type="button" data-diag-lvl="all" onclick="CreatorHubDiagnostics.setFilter('all')">全部记录 <span class="diag-seg-cnt" id="diag-cnt-all">0</span></button>
+            </div>
+            <span class="diag-bar-sep" aria-hidden="true"></span>
+            <select id="diag-source-select" class="diag-source-select" onchange="CreatorHubDiagnostics.setSource(this.value)" aria-label="日志读取来源">
+              <option value="memory">实时内存缓冲</option>
+              <option value="error.log">error.log · 历史错误</option>
+              <option value="app.log">app.log · 历史运行</option>
+            </select>
+          </div>
+          <div class="diag-console-right">
+            <div class="diag-search-box">
+              <svg class="diag-search-ic" aria-hidden="true"><use href="#i-search"/></svg>
+              <input id="diag-search-input" type="search" placeholder="搜索模块、状态码或错误关键字…" oninput="CreatorHubDiagnostics.onSearchInput()" aria-label="搜索日志">
+              <button type="button" class="diag-search-clear" id="diag-search-clear" hidden onclick="CreatorHubDiagnostics.clearSearch()" aria-label="清除搜索"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+            </div>
+            <button type="button" class="ghost sm diag-refresh-btn" id="diag-refresh-btn" onclick="CreatorHubDiagnostics.load()"><svg aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button>
+          </div>
+        </div>
+
+        <div class="diag-log-viewport" id="diag-log-list" role="log" aria-live="off" aria-label="系统运行日志列表">
+          <div class="diag-empty-state">
+            <div class="diag-empty-title">正在读取运行日志…</div>
+          </div>
+        </div>
+
+        <div class="diag-console-foot">
+          <div class="diag-foot-path">
+            <svg aria-hidden="true"><use href="#i-folder"/></svg>
+            <code id="diag-dir-code">./logs</code>
+            <button type="button" class="diag-path-copy" id="diag-copy-path-btn" onclick="CreatorHubDiagnostics.copyDirPath()" title="复制日志目录路径" aria-label="复制日志目录路径"><svg aria-hidden="true"><use href="#i-copy"/></svg></button>
+            <span class="diag-foot-rule">app.log (≤5MB×4) · error.log (≤2MB×3) 自动滚动限容</span>
+          </div>
+          <span class="status-text" id="diag-status-msg" role="status" aria-live="polite"></span>
+        </div>
+      </div>
+    </div>
+  </div>
   </section>
 
