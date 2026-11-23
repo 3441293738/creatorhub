@@ -18,6 +18,7 @@ from app.db import get_session
 from app.models import DouyinAccount, ProxyPool
 from app.profiles import (
     assign_proxy_from_pool,
+    explain_empty_auto_proxy,
     inspect_account_proxy_risk,
     is_mainland_geo,
     resolve_pool_proxy_row,
@@ -114,7 +115,7 @@ async def assign_account_proxy(account_id: int):
             raise HTTPException(404, "账号不存在")
         p = assign_proxy_from_pool(s, app_runtime.cfg, platform=acc.platform)
         if not p:
-            raise HTTPException(400, "代理池暂无已启用且连通正常的代理节点，请先在「代理池」添加或启用节点")
+            raise HTTPException(400, explain_empty_auto_proxy(s, app_runtime.cfg, platform=acc.platform))
         warnings = inspect_account_proxy_risk(
             s,
             platform=acc.platform,
@@ -339,7 +340,12 @@ async def assign_proxies_all():
         if app_runtime.browser:
             await app_runtime.browser.close_context(aid)
     if pool_empty and assigned == 0:
-        raise HTTPException(400, "代理池为空或无已启用节点，请先在「代理池」添加并启用代理")
+        with get_session() as s:
+            sample_pf = ""
+            if remaining:
+                first_acc = s.get(DouyinAccount, remaining[0])
+                sample_pf = first_acc.platform if first_acc else ""
+            raise HTTPException(400, explain_empty_auto_proxy(s, app_runtime.cfg, platform=sample_pf))
     warning = (
         f"代理池节点少于账号数，其中 {shared_assigned} 个账号复用了已有代理（存在多号共用同一出口 IP 关联风险，建议补充独立节点）"
         if shared_assigned > 0
@@ -432,6 +438,7 @@ class PoolProxyUpdate(ProxyInputOptions):
     label: str | None = None
     note: str | None = None
     enabled: bool | None = None
+    geo: Dict[str, Any] | None = None
 
 
 def _is_mainland(country: str, region: str, city: str) -> bool:
@@ -442,15 +449,48 @@ def _geo_loc(p) -> str:
     return " · ".join([x for x in (p.country, p.region, p.city) if x])
 
 
-def _pool_dict(p: ProxyPool, used: int = 0) -> dict:
+def _safe_plan_meta(raw_url: str) -> dict:
+    try:
+        plan = ProxyPlan.parse(raw_url)
+    except Exception:
+        plan = None
+    if not plan:
+        return {"scheme": "http", "host_port": "", "user_hint": ""}
+    u = str(plan.username or "").strip()
+    if not u:
+        hint = ""
+    elif len(u) <= 4:
+        hint = u[:1] + "***"
+    elif len(u) <= 8:
+        hint = u[:2] + "…" + u[-2:]
+    else:
+        hint = u[:3] + "…" + u[-4:]
+    return {
+        "scheme": plan.scheme,
+        "host_port": f"{plan.host}:{plan.port}",
+        "user_hint": hint,
+    }
+
+
+def _pool_dict(p: ProxyPool, used: int = 0, bound_accounts: list[dict] | None = None) -> dict:
+    accounts = bound_accounts or []
+    pf_counts: dict[str, int] = {}
+    for acc in accounts:
+        pf = str(acc.get("platform") or "").lower()
+        if pf:
+            pf_counts[pf] = pf_counts.get(pf, 0) + 1
+    meta = _safe_plan_meta(p.url)
     return {
         "id": p.id, "label": p.label, "url": proxies_service._mask_proxy(p.url),
         "url_full": p.url, "enabled": p.enabled, "status": p.status,
+        "scheme": meta["scheme"], "host_port": meta["host_port"], "user_hint": meta["user_hint"],
         "note": p.note, "used_by": used,
+        "bound_accounts": accounts,
+        "same_platform_shared": any(cnt > 1 for cnt in pf_counts.values()),
         "exit_ip": p.exit_ip, "country": p.country, "region": p.region,
         "city": p.city, "isp": p.isp,
         "geo_loc": _geo_loc(p), "is_mainland": _is_mainland(p.country, p.region, p.city),
-        "geo_checked": bool(p.exit_ip),
+        "geo_checked": bool(p.exit_ip or p.country),
         "last_checked_at": p.last_checked_at.isoformat() if p.last_checked_at else None,
     }
 
@@ -461,11 +501,24 @@ async def list_proxies():
     with get_session() as s:
         rows = s.exec(select(ProxyPool).order_by(ProxyPool.id)).all()
         used: dict[str, int] = {}
+        bound_map: dict[str, list[dict]] = {}
         for a in s.exec(select(DouyinAccount)).all():
             if a.proxy:
                 np = normalize_proxy(a.proxy)
                 used[np] = used.get(np, 0) + 1
-        return [_pool_dict(p, used.get(normalize_proxy(p.url), 0)) for p in rows]
+                bound_map.setdefault(np, []).append({
+                    "id": a.id,
+                    "nickname": a.nickname or f"账号 #{a.id}",
+                    "platform": a.platform or "douyin",
+                })
+        return [
+            _pool_dict(
+                p,
+                used.get(normalize_proxy(p.url), 0),
+                bound_map.get(normalize_proxy(p.url), []),
+            )
+            for p in rows
+        ]
 
 
 @router.post("/api/proxies")
@@ -475,8 +528,11 @@ async def add_proxy(body: PoolProxyIn):
         if s.exec(select(ProxyPool).where(ProxyPool.url == url)).first():
             raise HTTPException(409, "该代理已在池中")
         g = body.geo or {}
+        has_geo = bool(g.get("ip") or g.get("country"))
         p = ProxyPool(url=url, label=body.label.strip(), note=body.note.strip(),
                       enabled=body.enabled,
+                      status="ok" if has_geo else "unknown",
+                      last_checked_at=datetime.utcnow() if has_geo else None,
                       exit_ip=g.get("ip", ""), country=g.get("country", ""),
                       region=g.get("region", ""), city=g.get("city", ""),
                       isp=g.get("isp", ""))
@@ -493,6 +549,7 @@ async def import_proxies(body: ProxyImportIn):
     """批量粘贴多行导入代理池。每行一个,支持 # 注释/空行,自动校验+去重。"""
     added = skipped = invalid = 0
     invalid_lines = []
+    created_rows: list[ProxyPool] = []
     with get_session() as s:
         existing = {p.url for p in s.exec(select(ProxyPool)).all()}
         seen = set(existing)
@@ -527,12 +584,18 @@ async def import_proxies(body: ProxyImportIn):
             if url in seen:
                 skipped += 1
                 continue
-            s.add(ProxyPool(url=url, label=label))
+            row = ProxyPool(url=url, label=label)
+            s.add(row)
+            created_rows.append(row)
             seen.add(url)
             added += 1
         if added:
             s.commit()
-    return {"ok": True, "added": added, "skipped": skipped, "invalid": invalid,
+            for row in created_rows:
+                s.refresh(row)
+        added_ids = [row.id for row in created_rows if row.id is not None]
+    return {"ok": True, "added": added, "added_ids": added_ids,
+            "skipped": skipped, "invalid": invalid,
             "invalid_samples": invalid_lines}
 
 
@@ -552,6 +615,23 @@ async def update_proxy(pid: int, body: PoolProxyUpdate):
             p.note = body.note.strip()
         if body.enabled is not None:
             p.enabled = body.enabled
+        if body.geo:
+            g = body.geo
+            p.exit_ip = g.get("ip", "") or p.exit_ip
+            p.country = g.get("country", "") or p.country
+            p.region = g.get("region", "") or p.region
+            p.city = g.get("city", "") or p.city
+            p.isp = g.get("isp", "") or p.isp
+            p.status = "ok"
+            p.last_checked_at = datetime.utcnow()
+        elif p.url != old_url:
+            p.status = "unknown"
+            p.exit_ip = ""
+            p.country = ""
+            p.region = ""
+            p.city = ""
+            p.isp = ""
+            p.last_checked_at = None
         s.add(p); s.flush()
         affected_ids = sync_proxy_pool_to_accounts(s, p, old_url=old_url)
         s.commit(); s.refresh(p)
@@ -644,13 +724,19 @@ async def proxy_options():
         return [{
             "id": p.id,
             "label": p.label or proxies_service._mask_proxy(p.url),
+            "raw_label": p.label or "",
             "url": p.url,
             "masked": proxies_service._mask_proxy(p.url),
             "status": p.status,
             "enabled": p.enabled,
+            "note": p.note or "",
             "used_by": used.get(normalize_proxy(p.url), 0),
             "used_by_platform": used_by_pf.get(normalize_proxy(p.url), {}),
-            "country": p.country,
+            "exit_ip": p.exit_ip or "",
+            "country": p.country or "",
+            "region": p.region or "",
+            "city": p.city or "",
+            "isp": p.isp or "",
             "geo_loc": _geo_loc(p),
             "is_mainland": _is_mainland(p.country, p.region, p.city),
             "geo_checked": bool(p.exit_ip or p.country),

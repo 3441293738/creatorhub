@@ -25,6 +25,8 @@ from app.platforms.rednote import parse_rednote_self_user
 from app.platforms.tiktok import parse_tiktok_app_context
 from app.platforms.xhs import parse_self_user as parse_xhs_self_user
 from app.profiles import (
+    DOMESTIC_PLATFORMS,
+    OVERSEAS_PLATFORMS,
     allocate_profile_dir,
     ensure_identity,
     inspect_account_proxy_risk,
@@ -55,6 +57,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
         account_id=account_id)
     fresh_account = account_id is None
     tmp_profile = ""
+    proxy = ""
     proxy_reservation_key = ""
     new_fields = None
     fingerprint_fields = None
@@ -89,6 +92,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     candidate_exit_ip=acc.exit_ip or "",
                 )
                 proxy_warning = "；".join(proxy_warnings)
+                proxy = acc.proxy or ""
                 s.add(acc); s.commit(); s.refresh(acc)
                 identity = app_runtime.browser.identity_for(acc)
                 acc_id = acc.id
@@ -537,11 +541,64 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             shutil.rmtree(tmp_profile, ignore_errors=True)
         app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
             status="error", platform=platform, creator=creator,
-            account_id=account_id, error=f"{type(e).__name__}: {e}",
+            account_id=account_id,
+            error=_friendly_login_error(e, platform=platform, has_proxy=bool(proxy)),
             environment=login_environment)
     finally:
         if proxy_reservation_key:
             release_proxy_reservation(proxy_reservation_key)
+
+
+def _friendly_login_error(exc: Exception, *, platform: str = "", has_proxy: bool = False) -> str:
+    """Translate raw Playwright/Chromium network errors into actionable Chinese hints."""
+    raw = str(exc or "").strip()
+    upper = raw.upper()
+    pf = str(platform or "").strip().lower()
+    domestic = pf in DOMESTIC_PLATFORMS
+    overseas = pf in OVERSEAS_PLATFORMS
+
+    if any(code in upper for code in (
+        "ERR_SOCKS_CONNECTION_FAILED",
+        "ERR_PROXY_CONNECTION_FAILED",
+        "ERR_TUNNEL_CONNECTION_FAILED",
+        "SOCKS5 上游",
+    )):
+        code_hint = (
+            "ERR_SOCKS_CONNECTION_FAILED" if "ERR_SOCKS_CONNECTION_FAILED" in upper
+            else "ERR_PROXY_CONNECTION_FAILED" if "ERR_PROXY_CONNECTION_FAILED" in upper
+            else "ERR_TUNNEL_CONNECTION_FAILED"
+        )
+        if domestic:
+            return (
+                f"代理服务器拒绝或无法访问目标站点（{code_hint}）："
+                "若使用了海外住宅代理（如 IPWO 等），服务商通常会屏蔽抖音/小红书等中国大陆域名；"
+                "请改选「本机直连」或更换中国大陆代理节点后重试。"
+            )
+        return (
+            f"代理服务器连接失败（{code_hint}）："
+            "所选代理通道不可达、账密已失效或拒绝访问目标站点，请先在「代理池」测试节点连通性或更换节点。"
+        )
+
+    if "ERR_PROXY_AUTH" in upper or "HTTP 407" in upper:
+        return "代理身份认证失败（407）：请检查该代理节点的用户名与密码是否有效。"
+
+    if any(code in upper for code in ("ERR_TIMED_OUT", "TIMEOUT")):
+        if overseas and not has_proxy:
+            return "打开海外平台登录页超时：当前为「本机直连」，可能受本地网络环境限制，建议绑定境外独立代理后重试。"
+        if has_proxy:
+            return "经代理打开登录页超时：当前代理节点延迟过高或无法直达目标平台，建议更换代理节点（国内平台也可改选本机直连）。"
+        return "打开登录页面超时，请检查本机网络连接后重试。"
+
+    if any(code in upper for code in ("ERR_CONNECTION_CLOSED", "ERR_CONNECTION_RESET", "ERR_EMPTY_RESPONSE")):
+        if has_proxy and domestic:
+            return (
+                "目标页面连接被重置或中断：所选代理可能拦截了国内站点流量或节点不稳定，"
+                "建议改选「本机直连」或更换中国大陆代理节点。"
+            )
+        if overseas and not has_proxy:
+            return "连接海外平台被重置：本机直连无法稳定访问该站点，建议绑定境外独立代理后重试。"
+
+    return f"{type(exc).__name__}: {raw}"
 
 
 def _validate_login_browser_backend(

@@ -421,48 +421,44 @@ async function refreshProfile(id) {
 }
 async function setProxy(id) {
   const a = findAnyAccount(id);
-  let opts = [];
-  try { opts = await api("/api/proxies/options"); } catch (e) { }
   const cur = a && a.has_proxy ? a.proxy : "";
+  const curId = a ? a.proxy_id : null;
   const pf = a ? a.platform : PLATFORM;
-  const options = [
-    { value: "auto", label: "🔀 自动分配（优先空闲独立节点，池满按最少占用复用）" },
-    ...opts.map(p => ({ value: p.url, label: formatProxyOptionLabel(p, pf) })),
-    { value: "__custom__", label: "✎ 手动输入地址…" },
-    { value: "", label: "⚠️ 清除代理 / 改用本机直连（允许直连，多号或海外请注意风控）" },
-  ];
-  const v = await uiSelect({
-    title: "账号代理配置",
-    hint: (a ? a.nickname + " · " : "") + "当前：" + (cur || "本机直连（未配置代理）") + "。建议尽量一号一独立代理；系统不强制拦截本机直连或多号共用代理，存在共用/直连风险时会高亮提醒。",
-    options, value: (cur && opts.some(o => o.value === cur)) ? cur : "auto",
+  const pfLabel = (typeof PF_NAME !== "undefined" && PF_NAME[pf]) ? PF_NAME[pf] : (pf || "当前平台");
+  let apiResult = null;
+  const choice = await uiProxyPicker({
+    title: `账号代理配置${a && a.nickname ? " · " + a.nickname : ""}`,
+    hint: `所属平台：${pfLabel}。建议尽量保持「一号一独立代理」；切换代理后会自动关闭该账号当前常驻浏览器上下文，下次任务使用新网络出口。`,
+    platform: pf,
+    currentProxy: cur,
+    currentProxyId: curId,
+    isAccountEdit: true,
+    okText: "保存代理配置",
+    busyText: "保存中",
+    submit: async picked => {
+      if (picked.mode === "auto") {
+        apiResult = await api("/api/accounts/" + id + "/assign-proxy", { method: "POST" });
+      } else {
+        apiResult = await api("/api/accounts/" + id + "/proxy", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ proxy: picked.proxy }),
+        });
+      }
+    },
   });
-  if (v === null) return;
-  try {
-    let r = null;
-    if (v === "auto") {
-      r = await api("/api/accounts/" + id + "/assign-proxy", { method: "POST" });
-      toast("已从代理池分配：" + r.proxy, "ok");
-    } else if (v === "__custom__") {
-      const url = await uiPrompt({
-        title: "手动输入代理", value: cur,
-        hint: "http://user:pass@host:port 或 socks5://host:port；留空=清除代理改用本机直连（允许复用同一代理，建议尽量一号一代理）",
-        placeholder: "http://user:pass@host:port" });
-      if (url === null) return;
-      r = await api("/api/accounts/" + id + "/proxy", {
-        method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ proxy: url.trim() }) });
-      toast(url.trim() ? "代理已设置：" + r.proxy : "已清除代理，当前改用本机直连", "ok");
-    } else {
-      r = await api("/api/accounts/" + id + "/proxy", {
-        method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ proxy: v }) });
-      toast(v ? "代理已设置：" + r.proxy : "已清除代理，当前改用本机直连", "ok");
-    }
-    if (r && r.warning) {
-      setTimeout(() => toast("⚠️ " + r.warning, "info", 7000), 280);
-    }
-    refreshAccounts(); refreshProxies();
-  } catch (e) { toast("设置失败:" + e.message, "err"); }
+  if (!choice || !apiResult) return;
+  if (choice.mode === "auto") {
+    toast("已从代理池分配：" + apiResult.proxy, "ok");
+  } else {
+    toast(choice.proxy ? "代理已设置：" + apiResult.proxy : "已清除代理，当前改用本机直连", "ok");
+  }
+  if (apiResult.warning) {
+    setTimeout(() => toast("⚠️ " + apiResult.warning, "info", 7000), 280);
+  }
+  refreshAccounts();
+  refreshProxies();
+  window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
 }
 
 async function setBrowserBackend(id) {

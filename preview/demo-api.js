@@ -189,7 +189,26 @@
       watch_source:watchId!==null?demoWatchSource(module,platform,watchId):null};
   }
 
-  const proxies = [{ id: 41, label: "住宅代理 · 广东", url: "http://***:***@HOST:PORT", note: "在线演示数据", status: "ok", enabled: true, used_by: 1, geo_checked: true, is_mainland: true, geo_loc: "中国 · 广东", exit_ip: "113.***.***.26", isp: "住宅网络" }];
+  const proxies = [
+    {
+      id: 41, label: "住宅代理 · 广东深圳", url: "http://***@cn-gd.demo.proxy:8080", url_full: "http://demo_cn01:pass@cn-gd.demo.proxy:8080",
+      scheme: "http", host_port: "cn-gd.demo.proxy:8080", user_hint: "dem…cn01",
+      note: "国内平台独享静态住宅（示例）", status: "ok", enabled: true, used_by: 1,
+      bound_accounts: [{ id: 1, nickname: "创作者示例号", platform: "douyin" }],
+      same_platform_shared: false,
+      geo_checked: true, is_mainland: true, country: "CN", region: "广东", city: "深圳",
+      geo_loc: "CN · 广东 · 深圳", exit_ip: "113.***.***.26", isp: "China Telecom",
+    },
+    {
+      id: 42, label: "美区静态 · 洛杉矶", url: "socks5://***@us-la.demo.proxy:1080", url_full: "socks5://zone_us_la02:pass@us-la.demo.proxy:1080",
+      scheme: "socks5", host_port: "us-la.demo.proxy:1080", user_hint: "zon…la02",
+      note: "TikTok / X / IG 海外专用（示例）", status: "ok", enabled: true, used_by: 0,
+      bound_accounts: [],
+      same_platform_shared: false,
+      geo_checked: true, is_mainland: false, country: "US", region: "California", city: "Los Angeles",
+      geo_loc: "US · California · Los Angeles", exit_ip: "75.***.***.84", isp: "Comcast Cable",
+    },
+  ];
 
   function publishTasks(platform) {
     return [{ id: 51, platform, account_id: platformAccount(platform).id, title: "夏日城市漫游", media_type: "images", media_count: 6, source_platform: "", scheduled_at: null, status: "pending", error: "", result_url: "" }];
@@ -312,7 +331,14 @@
     };
     if (path === "/api/task-queue") return taskQueue(url);
     if (path === "/api/accounts") return url.searchParams.has("platform") ? accounts.filter((item) => item.platform === platform) : accounts;
-    if (path === "/api/proxies/options") return proxies.map((item) => ({ url: item.url, label: item.label, status: item.status, used_by: item.used_by, used_by_platform: { douyin: 1 }, masked: item.url, enabled: item.enabled, geo_checked: item.geo_checked, is_mainland: item.is_mainland, geo_loc: item.geo_loc }));
+    if (path === "/api/proxies/options") return proxies.map((item) => ({
+      id: item.id, url: item.url_full || item.url, label: item.label, raw_label: item.label,
+      status: item.status, used_by: item.used_by,
+      used_by_platform: item.is_mainland ? { douyin: 1 } : {},
+      masked: item.url, enabled: item.enabled, note: item.note || "",
+      exit_ip: item.exit_ip || "", country: item.country || "", region: item.region || "", city: item.city || "", isp: item.isp || "",
+      geo_checked: item.geo_checked, is_mainland: item.is_mainland, geo_loc: item.geo_loc,
+    }));
     if (path === "/api/proxies") return proxies;
     if (path === "/api/monitors") return platform === "shipinhao" ? [] : [monitor(platform)];
     if (path === "/api/contents") {

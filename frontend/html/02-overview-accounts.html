@@ -124,59 +124,102 @@
 
     <!-- 代理池(提前配置好,账号从池里关联) -->
     <div class="card" data-section="proxies">
-      <div class="card-head">
-        <span class="card-ic"><svg><use href="#i-shield"/></svg></span>
-        <h2>代理池 <span class="sub">提前配置 · 账号关联使用</span></h2>
-      </div>
-      <p class="mut proxy-pool-intro">
-        添加后可为账号分配代理（推荐一号一独立代理；池节点不足时支持多号均衡复用或保留本机直连，不强制阻断，仅提示同 IP 关联风险）。测试仅验证网络连通性，不代表所有平台均可访问。
-      </p>
-      <div class="form-grid proxy-input-grid">
-        <div class="form-field"><label for="px-label">代理备注</label><input id="px-label" placeholder="例如：住宅-广东-01"></div>
-        <div class="form-field"><label for="px-proto">默认协议</label><select id="px-proto" title="未带协议的地址按此协议解析；已带协议时忽略">
-            <option value="http">HTTP</option><option value="socks5">SOCKS5</option>
-        </select></div>
-        <div class="form-field"><label for="px-format">输入格式</label><select id="px-format" aria-describedby="px-input-hint">
-            <option value="auto">自动识别（推荐）</option>
-            <option value="host_colon">主机:端口:用户名:密码</option>
-            <option value="host_csv">主机,端口,用户名,密码</option>
-            <option value="host_at">主机:端口@用户名:密码</option>
-            <option value="auth_colon">用户名:密码:主机:端口</option>
-            <option value="auth_at">用户名:密码@主机:端口</option>
-            <option value="host_hash">主机:端口##用户名##密码</option>
-        </select></div>
-        <div class="form-field proxy-address-field">
-          <div class="proxy-address-label">
-            <label for="px-url">代理地址</label>
-            <details class="proxy-format-disclosure" id="px-format-help" ontoggle="syncProxyFormatHelp(this)">
-              <summary id="px-format-toggle" aria-controls="px-format-panel">格式示例</summary>
-              <div class="proxy-format-panel" id="px-format-panel" role="note" aria-labelledby="px-format-title">
-                <strong id="px-format-title">代理地址格式</strong>
-                <p id="px-input-hint">任选一种粘贴，默认自动识别。有歧义时在「输入格式」中指定。</p>
-                <ul class="proxy-format-examples" id="px-format-examples" aria-label="六种代理地址格式">
-                  <li><code>主机:端口:用户名:密码</code></li>
-                  <li><code>主机,端口,用户名,密码</code></li>
-                  <li><code>主机:端口@用户名:密码</code></li>
-                  <li><code>用户名:密码:主机:端口</code></li>
-                  <li><code>用户名:密码@主机:端口</code></li>
-                  <li><code>主机:端口##用户名##密码</code></li>
-                </ul>
-                <p>无账密可只填「主机:端口」。标准地址可带 <code>http://</code> 或 <code>socks5://</code> 前缀。</p>
-              </div>
-            </details>
+      <div class="card-head px-card-head">
+        <div class="px-head-main">
+          <span class="card-ic"><svg><use href="#i-shield"/></svg></span>
+          <div>
+            <h2>代理池 <span class="sub">提前配置 · 账号关联使用</span></h2>
+            <p class="mut proxy-pool-intro">推荐一号一独立代理防多号关联；支持 HTTP / SOCKS5 及多种服务商账密导出格式自动识别。</p>
           </div>
-          <input id="px-url" aria-describedby="px-input-hint" autocomplete="off" spellcheck="false" placeholder="例：用户名:密码@主机:端口">
+        </div>
+        <div class="px-head-actions">
+          <button type="button" class="ghost sm" onclick="importProxies()" title="多行粘贴批量导入代理"><svg><use href="#i-plus"/></svg>批量导入</button>
+          <button type="button" class="ghost sm" id="px-btn-test-all" onclick="testAllProxies()" title="并发检测全部节点连通性与出口归属地"><svg><use href="#i-bolt"/></svg>全部测试</button>
+          <button type="button" class="ghost sm" onclick="assignAllProxies()" title="给所有未配置代理的账号按空闲优先自动分配"><svg><use href="#i-network"/></svg>给无代理账号分配</button>
         </div>
       </div>
-      <div class="form-actions">
-        <button class="ghost" onclick="detectProxy()" title="自动判别 HTTP/SOCKS5 与是否需要认证"><svg><use href="#i-eye"/></svg>自动判别</button>
-        <button class="ghost sm" onclick="importProxies()" title="多行粘贴批量导入">批量导入</button>
-        <button class="ghost sm" onclick="testAllProxies()" title="逐个测试池内代理连通性">全部测试</button>
-        <button class="ghost sm" onclick="assignAllProxies()" title="给所有未配代理的账号自动分配(均衡)">给账号批量分配</button>
-        <span class="actions-spacer"></span>
-        <button onclick="addProxy()"><svg><use href="#i-plus"/></svg>加入代理池</button>
+
+      <div id="px-kpi-bar" class="px-kpi-bar" role="tablist" aria-label="代理池筛选与统计"></div>
+
+      <div class="px-quick-add">
+        <div class="px-quick-grid">
+          <div class="form-field px-url-col">
+            <label for="px-url">代理地址 <span class="mut" style="font-weight:400">（自动识别协议与 6 种账密格式）</span></label>
+            <input id="px-url" aria-describedby="px-input-hint" autocomplete="off" spellcheck="false"
+                   placeholder="粘贴地址，例：socks5://user:pass@host:port 或 主机:端口:用户名:密码"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();addProxy();}">
+          </div>
+          <div class="form-field px-lbl-col">
+            <label for="px-label">节点备注 <span class="mut" style="font-weight:400">（留空按地区自动命名）</span></label>
+            <input id="px-label" placeholder="例如：美区静态-01 / 广东住宅"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();addProxy();}">
+          </div>
+          <div class="px-quick-btns">
+            <button type="button" class="ghost" id="px-btn-detect" onclick="detectProxy()" title="自动探测 HTTP/SOCKS5 协议并查询出口 IP 归属地"><svg><use href="#i-eye"/></svg>检测并识别</button>
+            <button type="button" onclick="addProxy()"><svg><use href="#i-plus"/></svg>加入代理池</button>
+          </div>
+        </div>
+
+        <div id="px-detect-banner" class="px-detect-banner" hidden></div>
+
+        <details class="px-adv-details" id="px-format-help" ontoggle="syncProxyFormatHelp(this)">
+          <summary id="px-format-toggle">解析选项、补充说明与支持格式示例</summary>
+          <div class="px-adv-body">
+            <div class="form-grid px-adv-grid">
+              <div class="form-field"><label for="px-proto">未带协议时默认按</label><select id="px-proto" title="未带协议的地址按此协议解析；已带协议时保留原值">
+                  <option value="http">HTTP</option><option value="socks5">SOCKS5</option>
+              </select></div>
+              <div class="form-field"><label for="px-format">账密分隔格式</label><select id="px-format" aria-describedby="px-input-hint">
+                  <option value="auto">自动识别（推荐）</option>
+                  <option value="host_colon">主机:端口:用户名:密码</option>
+                  <option value="host_csv">主机,端口,用户名,密码</option>
+                  <option value="host_at">主机:端口@用户名:密码</option>
+                  <option value="auth_colon">用户名:密码:主机:端口</option>
+                  <option value="auth_at">用户名:密码@主机:端口</option>
+                  <option value="host_hash">主机:端口##用户名##密码</option>
+              </select></div>
+              <div class="form-field"><label for="px-note">补充说明（可选）</label><input id="px-note" placeholder="如：独享住宅 / 2026-12 到期 / TikTok 专用"></div>
+            </div>
+            <div class="px-fmt-hint" id="px-input-hint">
+              <span>支持粘贴格式：</span>
+              <code>主机:端口:账:密</code>
+              <code>主机,端口,账,密</code>
+              <code>主机:端口@账:密</code>
+              <code>账:密:主机:端口</code>
+              <code>账:密@主机:端口</code>
+              <code>主机:端口##账##密</code>
+              <code>http/socks5://...</code>
+            </div>
+          </div>
+        </details>
       </div>
-      <div class="table-wrap mini-table"><table id="proxy-table" aria-label="代理池列表"><thead><tr><th>代理节点</th><th>归属地 / 出口 IP</th><th>分配状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table></div>
+
+      <div id="px-batch-bar" class="px-batch-bar" hidden>
+        <span class="px-batch-count">已选 <b id="px-sel-count">0</b> 个节点</span>
+        <div class="px-batch-actions">
+          <button type="button" class="ghost sm" onclick="batchTestPoolProxies()"><svg><use href="#i-bolt"/></svg>批量测试</button>
+          <button type="button" class="ghost sm" onclick="batchAutoNameProxies()" title="将已选且未命名的节点按出口归属地自动生成备注名"><svg><use href="#i-sparkles"/></svg>按地区自动命名</button>
+          <button type="button" class="ghost sm" onclick="batchTogglePoolProxies(true)">批量启用</button>
+          <button type="button" class="ghost sm" onclick="batchTogglePoolProxies(false)">批量停用</button>
+          <button type="button" class="ghost sm danger" onclick="batchDeletePoolProxies()"><svg><use href="#i-trash"/></svg>批量删除</button>
+          <button type="button" class="ghost sm" onclick="clearProxySelection()">取消选择</button>
+        </div>
+      </div>
+
+      <div class="table-wrap mini-table">
+        <table id="proxy-table" aria-label="代理池列表">
+          <thead>
+            <tr>
+              <th style="width:36px"><input type="checkbox" id="px-check-all" onchange="toggleSelectAllProxies(this.checked)" aria-label="全选当前显示代理"></th>
+              <th>代理节点</th>
+              <th>归属地 / 出口网络</th>
+              <th>关联账号</th>
+              <th style="text-align:right">操作</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </section>
 

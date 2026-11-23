@@ -293,12 +293,28 @@ def _pool_urls(session, cfg, *, platform: str = "", strict_geo: bool = True) -> 
     return urls
 
 
+def explain_empty_auto_proxy(session, cfg, *, platform: str = "") -> str:
+    """Return a clear user-facing reason when automatic proxy assignment yields nothing."""
+    any_healthy = _pool_urls(session, cfg, platform=platform, strict_geo=False)
+    pf = str(platform or "").strip().lower()
+    if any_healthy:
+        if pf in DOMESTIC_PLATFORMS:
+            return (
+                "代理池暂无中国大陆（或未测地区）节点；池内现有节点均为境外出口，"
+                "自动分配已跳过以避免海外代理拦截大陆站点（如需强行使用请手动选择节点，或改用本机直连）"
+            )
+        if pf in OVERSEAS_PLATFORMS:
+            return (
+                "代理池暂无境外（或未测地区）节点；池内现有节点均为中国大陆出口，"
+                "无法直达海外平台，请先添加境外代理节点"
+            )
+    return "代理池暂无已启用且连通正常的代理节点，请先在「代理池」添加或启用节点"
+
+
 def assign_proxy_from_pool(session, cfg, *, platform: str = "") -> str:
-    """优先分配空闲且地域匹配的独立代理；池内无空闲节点时按最少占用均衡复用。"""
+    """优先分配空闲且地域匹配的独立代理；绝不将已确认为反方向地区的节点自动错配。"""
     with _proxy_reservation_lock:
         pool = _pool_urls(session, cfg, platform=platform, strict_geo=True)
-        if not pool:
-            pool = _pool_urls(session, cfg, platform=platform, strict_geo=False)
         if not pool:
             return ""
         all_accs = session.exec(select(DouyinAccount)).all()

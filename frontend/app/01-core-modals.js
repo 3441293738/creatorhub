@@ -338,7 +338,7 @@ function _modalFocusables(el) {
 }
 
 // ─── 通用模态(替代原生 prompt / confirm:下拉 / 文本输入 / 确认)───
-let _uiResolve = null, _uiGetVal = null, _uiCancelVal = null, _uiSubmit = null, _uiBusy = false;
+let _uiResolve = null, _uiGetVal = null, _uiCancelVal = null, _uiSubmit = null, _uiBusy = false, _uiBusyText = "保存中";
 function _uiClose(val) {
   if (_uiBusy) return;
   if (typeof _openSelectClose === "function") _openSelectClose();
@@ -379,11 +379,11 @@ async function uiModalOk() {
     value = _uiGetVal ? _uiGetVal() : "";
     _uiBusy = true; body.inert = true; modal.setAttribute("aria-busy", "true");
     modal.querySelectorAll(".pv-close,#ui-actions .ghost").forEach(button => { button.disabled = true; });
-    uiEditorNotice("正在保存，请稍候…");
+    uiEditorNotice(_uiBusyText === "保存中" ? "正在保存，请稍候…" : `${_uiBusyText}，请稍候…`);
     $("ui-feedback").focus({ preventScroll: true });
-    success = await withBusy($("ui-ok"), "保存中", () => _uiSubmit(value)) !== false;
+    success = await withBusy($("ui-ok"), _uiBusyText, () => _uiSubmit(value)) !== false;
   } catch (error) {
-    uiEditorNotice(error.fieldId ? error.message : "保存未完成：" + error.message, true);
+    uiEditorNotice(error.fieldId ? error.message : (_uiBusyText === "保存中" ? "保存未完成：" : "") + error.message, true);
     body.inert = false;
     const field = error.fieldId && $(error.fieldId);
     if (field) {
@@ -402,15 +402,15 @@ async function uiModalOk() {
   }
   if (success) _uiClose(value);
 }
-function _uiOpen(title, hint, { okText = "确定", danger = false, wide = false, submit = null, icon = "i-edit" } = {}) {
+function _uiOpen(title, hint, { okText = "确定", danger = false, wide = false, submit = null, icon = "i-edit", busyText = "保存中", noticeText = undefined } = {}) {
   const previousExtraAction = $("ui-extra-action");
   if (previousExtraAction) previousExtraAction.remove();
   $("ui-title").textContent = title || "";
   $("ui-hint").textContent = hint || "";
   $("ui-hint").hidden = !hint;
   $("ui-icon").setAttribute("href", "#" + (danger ? "i-trash" : icon));
-  _uiSubmit = submit; _uiBusy = false;
-  uiEditorNotice(submit ? "更改仅在保存后生效" : "");
+  _uiSubmit = submit; _uiBusy = false; _uiBusyText = busyText || "保存中";
+  uiEditorNotice(noticeText !== undefined ? noticeText : (submit ? "更改仅在保存后生效" : ""));
   const ok = $("ui-ok");
   ok.innerHTML = `<svg aria-hidden="true"><use href="#${danger ? "i-trash" : "i-check"}"/></svg>` + esc(okText);
   ok.classList.toggle("danger", !!danger);
