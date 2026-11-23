@@ -137,13 +137,13 @@
   },
   "rednote": {
     "name": "海外小红书",
-    "intro": "严格隔离于国内版小红书，配置非中国大陆代理并区分主站与创作者登录，再使用采集、监控、本账号作品管理与发布。",
-    "login": "顶部选择海外小红书 → 账号矩阵 → 添加账号。配置非中国大陆代理出口后，扫码登录（www.rednote.com）用于主站读取与本账号作品管理；发布笔记还需独立完成创作者登录（creator.rednote.com）；也可直接导入 .rednote.com Cookie。",
+    "intro": "严格隔离于国内版小红书，推荐配置非中国大陆代理（支持本机直连并自动提示风险），区分主站与创作者登录，再使用采集、监控、本账号作品管理与发布。",
+    "login": "顶部选择海外小红书 → 账号矩阵 → 添加账号。选择境外代理或本机直连后，扫码登录（www.rednote.com）用于主站读取与本账号作品管理；发布笔记还需独立完成创作者登录（creator.rednote.com）；也可直接导入 .rednote.com Cookie。",
     "first": "完成 www.rednote.com 主站登录后，复制一条海外小红书笔记链接（含有效 xsec_token 更佳），进入链接下载提交，到下载历史确认图集或视频可正常打开。",
     "firstAnchor": "download",
     "limits": [
       "与国内版小红书（xiaohongshu.com）完全隔离，仅使用 rednote.com 四域名体系与独立 Cookie，切勿混用国内版账号态。",
-      "登录与访问需使用非中国大陆代理出口；代理池自动分配会自动跳过已验证的中国大陆节点。",
+      "强烈建议使用非中国大陆独立代理出口；系统允许本机直连或多号复用代理（仅作防关联与地区风险提醒，不强制阻断），代理池自动分配会优先匹配境外空闲节点。",
       "主站登录用于内容读取与本账号作品管理，发布笔记需额外完成独立的创作者登录（creator.rednote.com）。",
       "标题按海外版加权规则最多 20 权重（约 20 个汉字或 40 个英文字符），图文正文最多 900 UTF-16 编码单元、最多 18 张图片。",
       "不支持国内版专属的 RWP 私信长连接、私信收发、自动评论规则、关注/粉丝列表同步、短视频弹幕及千帆/蒲公英电商能力。"
@@ -337,7 +337,7 @@
   "tiktok": {
     "name": "TikTok",
     "intro": "从 Web 登录和小规模关键词采集开始，再使用作品、评论监控、本账号管理、视频发布与用户互动。",
-    "login": "顶部选择 TikTok → 账号矩阵 → TikTok 登录。按提示选择浏览器环境与可用代理，在弹出的 TikTok Web 窗口完成登录；回到列表检测状态。读取和互动复用该账号的独立 Profile，无需另做创作者登录。",
+    "login": "顶部选择 TikTok → 账号矩阵 → TikTok 登录。按提示选择浏览器环境与代理（推荐境外独立代理，也支持本机直连与多号复用），在弹出的 TikTok Web 窗口完成登录；回到列表检测状态。读取和互动复用该账号的独立 Profile，无需另做创作者登录。",
     "first": "进入关键词采集，选择刚登录的账号，输入 1 个关键词，每词作品数先设为 5，先关闭评论和媒体下载。提交后检查结果；确认成功再启用评论、二级回复与下载，并尝试 Excel 导出。",
     "firstAnchor": "collection",
     "limits": [
@@ -495,7 +495,7 @@
   "instagram": {
     "name": "Instagram",
     "intro": "从浏览器或 Cookie 登录与单帖下载开始，再使用话题/关键词采集、主页与评论监控、多模态发布及 Direct 私信管理。",
-    "login": "顶部选择 Instagram → 账号矩阵 → Instagram 登录。按提示选择浏览器环境与可用海外代理，在弹出的 Instagram Web 窗口完成登录；会话 Cookie 自动桥接到协议通道，也可粘贴含 sessionid 与 csrftoken 的完整 Cookie。",
+    "login": "顶部选择 Instagram → 账号矩阵 → Instagram 登录。按提示选择浏览器环境与代理（推荐境外独立代理，也支持本机直连），在弹出的 Instagram Web 窗口完成登录；会话 Cookie 自动桥接到协议通道，也可粘贴含 sessionid 与 csrftoken 的完整 Cookie。",
     "first": "复制一条 /p/、/reel/ 或 /tv/ 帖子链接，进入链接下载粘贴并提交，核对保存目录并打开原图、轮播图集或视频文件；或进入关键词采集输入 #话题测试小规模抓取。",
     "firstAnchor": "download",
     "limits": [
@@ -573,7 +573,7 @@
   "twitter": {
     "name": "Twitter",
     "intro": "从 X Web 窗口或 Token / Cookie 登录与单条推文下载开始，再使用关键词/创作者推文采集、主页与回复监控、多形态发推（含首评串推）及私信管理。",
-    "login": "顶部选择 Twitter → 账号矩阵 → 点击「Twitter 登录」（在弹出的 x.com 窗口完成登录及两步验证/TOTP）或「Token / Cookie 登录」（支持直接粘贴 40 位 auth_token 令牌、账号----密码----Token 文本、JSON Cookie 数组或完整 Cookie，系统自动通过账号代理换取 ct0 / twid 并补齐资料）。",
+    "login": "顶部选择 Twitter → 账号矩阵 → 点击「Twitter 登录」（按需选择境外代理或本机直连，在弹出的 x.com 窗口完成登录及两步验证/TOTP）或「Token / Cookie 登录」（支持直接粘贴 40 位 auth_token 令牌、账号----密码----Token 文本、JSON Cookie 数组或完整 Cookie，自动换取 ct0 / twid 并补齐资料）。",
     "first": "复制一条 x.com/.../status/... 或 twitter.com/.../status/... 推文链接，进入链接下载粘贴并提交，核对保存目录并打开 ?name=orig 原图或最高码率 MP4 视频文件；或进入关键词采集输入搜索词小规模抓取推文与回复。",
     "firstAnchor": "download",
     "limits": [

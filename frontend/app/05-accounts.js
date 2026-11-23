@@ -607,12 +607,23 @@ async function refreshAccounts() {
           ? `<span class="pill active has-ic ic-text" title="已完成创作者登录,可发布">${ic("i-film")}创作者号</span>`
           : `<span class="pill bare has-ic ic-text" title="仅监控/读取,未授权创作平台,不能发布">${ic("i-eye")}读取号</span>`)
       : `<span class="pill ${a.has_creator ? "active" : "bare"} has-ic ic-text" title="${a.has_creator ? "创作者登录,可用于创作中心评论模式,也可抓取" : "普通抓取账号"}">${a.has_creator ? ic("i-film") + "创作者号" : ic("i-card") + "抓取号"}</span>`;
-    // 代理(风控隔离):有代理显示脱敏地址 + 状态;无代理高亮提醒(多账号同 IP 有关联风险)
-    const pxText = { ok: "代理正常", rotating: "代理正常（轮换出口）", drifted: "代理正常（出口已变化）", bad: "代理不可用", bound: "代理已绑定（待检测）", unknown: "代理已绑定（未检测）", auth_error: "代理认证失败", blocked: "代理被拦截" };
-    const pxCls = ["ok", "rotating", "drifted"].includes(a.proxy_status) ? "active" : ["bad", "auth_error", "blocked"].includes(a.proxy_status) ? "invalid" : "bare";
+    // 代理(风控隔离):有代理显示脱敏地址 + 状态 + 共用提醒;无代理高亮提醒直连风险(均不强制拦截)
+    const pxText = { ok: "代理正常", rotating: "代理正常（轮换出口）", drifted: "代理正常（出口已变化）", bad: "代理不可用", disabled: "池节点已停用", bound: "代理已绑定（待检测）", unknown: "代理已绑定（未检测）", auth_error: "代理认证失败", blocked: "代理被拦截" };
+    const pxCls = ["ok", "rotating", "drifted"].includes(a.proxy_status) ? "active" : ["bad", "auth_error", "blocked", "disabled"].includes(a.proxy_status) ? "invalid" : "bare";
+    const pxWarnings = Array.isArray(a.proxy_warnings) ? a.proxy_warnings : [];
+    const pxWarnTitle = pxWarnings.join("；");
+    const sharedBadge = a.shared_proxy
+      ? `<span class="pill pending" title="${esc(pxWarnTitle || "同平台多账号正共用此代理或出口 IP，建议尽量一号一独立代理")}">⚠️ 共用代理(${Number(a.shared_proxy_count || 2)}号)</span>`
+      : (a.cross_platform_shared_proxy ? `<span class="pill bare" title="${esc(pxWarnTitle || "跨平台复用同一代理")}">跨平台复用</span>` : "");
+    const directPill = pxWarnings.length
+      ? `<span class="pill pending" title="${esc(pxWarnTitle)}">⚠️ 本机直连</span>`
+      : `<span class="mut" title="当前走本机真实网络，多号或海外平台建议配置独立代理">本机直连</span>`;
+    const proxyWarnDetail = pxWarnings.length
+      ? `<div class="ic-text" style="font-size:11px;margin-top:3px;color:var(--warn)">${ic("i-info")}${esc(pxWarnTitle)}</div>`
+      : "";
     const proxyLine = a.has_proxy
-      ? `<div class="mut" style="font-size:11px;margin-top:2px">代理 <code>${esc(a.proxy)}</code> <span class="pill ${pxCls}">${pxText[a.proxy_status] || a.proxy_status}</span></div>`
-      : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--warn)">${ic("i-info")}未配置代理(走本机真实 IP,多账号有关联风险)</div>`;
+      ? `<div class="mut" style="font-size:11px;margin-top:2px">代理 <code>${esc(a.proxy)}</code> <span class="pill ${pxCls}">${pxText[a.proxy_status] || a.proxy_status}</span> ${sharedBadge}</div>${proxyWarnDetail}`
+      : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--warn)">${ic("i-info")}${esc(pxWarnTitle || "未配置代理（当前走本机直连；不拦截任务，同平台多账号建议配置独立代理防关联）")}</div>`;
     const browserLine = a.environment
       ? `<div class="mut" style="font-size:11px;margin-top:2px">浏览器 ${esc(loginEnvironmentText(a.environment))}</div>`
       : "";
@@ -644,7 +655,7 @@ async function refreshAccounts() {
           <div>
             <button type="button" class="wb-account-name" data-account-detail="${a.id}" aria-haspopup="dialog">${esc(a.nickname || "未命名账号")}${ic("i-next")}</button>
             <div class="wb-account-meta">${idline || `账号 #${a.id}`} · ${a.monitor_count || 0} 个监控</div>
-            <div class="wb-account-pills">${pill}${!a.has_proxy ? '<span class="mut">本机网络</span>' : `<span class="pill ${pxCls}">${pxText[a.proxy_status] || "代理状态未知"}</span>`}</div>
+            <div class="wb-account-pills">${pill}${!a.has_proxy ? directPill : `<span class="pill ${pxCls}">${pxText[a.proxy_status] || "代理状态未知"}</span>${sharedBadge}`}</div>
           </div>
         </div>
         <div data-account-info hidden><div class="wb-inspector-block"><h3>账号资料</h3><p>${idline}</p><p>${esc(detail)}</p></div>

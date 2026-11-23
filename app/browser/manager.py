@@ -1032,10 +1032,8 @@ class BrowserManager:
                 and effective_backend != FINGERPRINT_CHROMIUM_BACKEND:
             return "write_env_blocked:未检测到系统稳定版 Chrome 或可用指纹 Chromium"
         proxy = str(getattr(account, "proxy", "") or "").strip()
-        if not self.native_write_require_verified_proxy:
+        if not proxy or not self.native_write_require_verified_proxy:
             return ""
-        if not proxy:
-            return "write_env_blocked:账号未绑定专属代理，已拦截本机真实 IP 写操作"
         if getattr(account, "proxy_status", "unknown") not in {
                 "ok", "rotating", "drifted"}:
             return "write_env_blocked:账号代理尚未通过浏览器出口验证"
@@ -1130,7 +1128,7 @@ class BrowserManager:
         if legacy:
             legacy_args = list(_LEGACY_ARGS)
             if not str(identity.proxy or "").strip():
-                legacy_args.append("--no-proxy-server")
+                legacy_args.append("--proxy-bypass-list=channels.weixin.qq.com")
             kwargs.update(
                 args=legacy_args,
                 viewport={"width": identity.viewport_w, "height": identity.viewport_h},
@@ -1157,7 +1155,7 @@ class BrowserManager:
             args.append(
                 f"--window-size={int(identity.viewport_w)},{int(identity.viewport_h)}")
             if not proxy:
-                args.append("--no-proxy-server")
+                args.append("--proxy-bypass-list=channels.weixin.qq.com")
             if str(identity.fp_webrtc_mode or "conceal") != "allow":
                 for item in _PROXY_WEBRTC_ARGS:
                     if item not in args:
@@ -1177,7 +1175,7 @@ class BrowserManager:
             kwargs["no_viewport"] = True
             native_args = list(_PROXY_WEBRTC_ARGS)
             if not proxy:
-                native_args.append("--no-proxy-server")
+                native_args.append("--proxy-bypass-list=channels.weixin.qq.com")
             loc = str(identity.locale or "").strip()
             if loc:
                 native_args.append(f"--lang={loc}")

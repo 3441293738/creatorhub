@@ -59,7 +59,7 @@
       <dl><dt>平台账号</dt><dd>你登录 CreatorHub 的抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram 或 Twitter 账号，用来执行任务。</dd><dt>监控目标</dt><dd>你想持续查看的创作者或作品，不等于登录账号。</dd><dt>任务与记录</dt><dd>任务是“准备做什么、正在做什么”；记录是“已经发现或处理的内容”。任务保存成功，不代表已经产生结果。</dd></dl>
       <h2>平台能力速查</h2>
       <div class="table-scroll"><table><caption>按当前项目实现整理；“—”表示暂无该功能，平台切换后以可见入口为准</caption><thead><tr><th scope="col">功能</th><th scope="col">抖音</th><th scope="col">小红书</th><th scope="col">海外小红书</th><th scope="col">快手</th><th scope="col">视频号</th><th scope="col">TikTok</th><th scope="col">哔哩哔哩</th><th scope="col">Instagram</th><th scope="col">Twitter</th></tr></thead><tbody>
-      <tr><th scope="row">登录入口</th><td>扫码 / 创作者 / Cookie</td><td>主站 / 创作者</td><td>主站 / 创作者 / Cookie（非大陆代理）</td><td>扫码 / 创作者</td><td>创作者助手扫码；他人内容走本机微信通道</td><td>TikTok Web 登录</td><td>扫码 / 网页 / Cookie</td><td>Instagram Web / Cookie</td><td>X Web 登录 / Token / Cookie</td></tr>
+      <tr><th scope="row">登录入口</th><td>扫码 / 创作者 / Cookie</td><td>主站 / 创作者</td><td>主站 / 创作者 / Cookie（推荐境外代理）</td><td>扫码 / 创作者</td><td>创作者助手扫码；他人内容走本机微信通道</td><td>TikTok Web 登录</td><td>扫码 / 网页 / Cookie</td><td>Instagram Web / Cookie</td><td>X Web 登录 / Token / Cookie</td></tr>
       <tr><th scope="row">作品 / 评论监控</th><td>支持</td><td>支持；作品可按关键词</td><td>支持；作品可按关键词（评论只读）</td><td>支持</td><td>支持；需连接本机微信通道</td><td>支持；需绑定账号</td><td>支持</td><td>支持</td><td>支持</td></tr>
       <tr><th scope="row">批量采集来源</th><td>关键词 / 创作者</td><td>关键词 / 创作者 / 收藏</td><td>关键词 / 创作者 / 收藏</td><td>关键词 / 创作者</td><td>关键词 / 创作者 / 本账号作品</td><td>关键词视频</td><td>关键词 / UP 主空间 / 本账号作品</td><td>关键词 / 话题 / 创作者 / 本账号作品</td><td>关键词 / 创作者 / 本账号推文</td></tr>
       <tr><th scope="row">视频弹幕</th><td>支持</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>支持（XML 时间轴弹幕）</td><td>—</td><td>—</td></tr>
@@ -122,8 +122,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
       <p class="path">入口：顶部选择平台（或全平台）→ 账号矩阵 → 添加账号</p>
       <ol><li>可在顶部选择要使用的具体平台，或在“全平台 → 账号矩阵”顶部快捷选择目标平台。</li><li>打开“账号矩阵”，点击对应平台的扫码、创作者登录或 Token / Cookie 导入入口。新手建议优先使用扫码登录。</li><li>在弹出的浏览器窗口按平台提示扫码、确认或完成验证。不要提前关闭登录窗口。</li><li>回到账号矩阵，检查昵称、健康状态与代理归属；必要时刷新资料、划入跨平台矩阵分组或设置角色标识。</li></ol>
       <div class="success"><strong>完成标志：</strong>账号出现在当前平台列表，状态检测正常，并能在创建任务时被选中。</div>
-      <div class="note"><strong>小红书与海外小红书均区分两种登录用途：</strong>主站扫码登录用来读取内容与管理本账号作品；需要发布时还要完成独立的“创作者登录”。“能查看笔记”不代表“已经能发布”。海外小红书（<code>rednote.com</code>）需配置非中国大陆代理出口，支持 <code>www.rednote.com</code> 主站扫码、<code>creator.rednote.com</code> 创作者登录与 <code>.rednote.com</code> Cookie 导入，与国内版 <code>xiaohongshu.com</code> 登录态严格隔离、不可混用。</div>
-      <div class="note"><strong>TikTok、Instagram 与 Twitter 使用独立入口：</strong>切换到对应海外平台或在“账号矩阵”快捷添加栏选中平台后，点击登录入口，按提示选择浏览器环境和可用海外代理完成登录；Instagram 支持粘贴含 <code>sessionid</code> 与 <code>csrftoken</code> 的完整 Cookie，Twitter 支持“Token / Cookie 登录”（可直接粘贴 40 位 <code>auth_token</code> 令牌、多字段导出文本、JSON 数组或完整 Cookie，自动换取 <code>ct0</code> / <code>twid</code> 并补齐账号资料）。无需另做创作者登录；后续读取、发布与互动均复用该账号的独立环境与会话。</div>
+      <div class="note"><strong>小红书与海外小红书均区分两种登录用途：</strong>主站扫码登录用来读取内容与管理本账号作品；需要发布时还要完成独立的“创作者登录”。“能查看笔记”不代表“已经能发布”。海外小红书（<code>rednote.com</code>）建议配置非中国大陆代理出口（支持本机直连或多号复用代理并自动提醒风险，不强制阻断），支持 <code>www.rednote.com</code> 主站扫码、<code>creator.rednote.com</code> 创作者登录与 <code>.rednote.com</code> Cookie 导入，与国内版 <code>xiaohongshu.com</code> 登录态严格隔离、不可混用。</div>
+      <div class="note"><strong>TikTok、Instagram 与 Twitter 使用独立入口：</strong>切换到对应海外平台或在“账号矩阵”快捷添加栏选中平台后，点击登录入口，按提示选择浏览器环境与代理（推荐绑定境外独立代理，也支持本机直连）完成登录；Instagram 支持粘贴含 <code>sessionid</code> 与 <code>csrftoken</code> 的完整 Cookie，Twitter 支持“Token / Cookie 登录”（可直接粘贴 40 位 <code>auth_token</code> 令牌、多字段导出文本、JSON 数组或完整 Cookie，自动换取 <code>ct0</code> / <code>twid</code> 并补齐账号资料）。无需另做创作者登录；后续读取、发布与互动均复用该账号的独立环境与会话。</div>
       <p>若暂时看不到账号，先检查顶部平台是否选对。登录失效时从账号列表重新登录，不要为了修复登录删除整个数据目录。</p>
       <figure><a href="images/accounts-list.png"><img src="images/accounts-list.png" alt="平台账号列表，展示账号搜索、登录状态和操作入口" width="1600" loading="lazy"></a><figcaption>先确认账号可用，再创建任务；代理池和浏览器内核属于进阶选项。</figcaption></figure>
     </section>
@@ -144,7 +144,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
       <p>当管理多个平台或多个账号时，点击顶部切换栏最左侧的<strong>「全平台」</strong>即可进入跨九大平台的全局矩阵视角（左侧菜单会自动收敛为全局汇总、矩阵运维与系统级模块）；点击任意具体平台（如抖音、小红书、Twitter）则聚焦该平台的采集、监控、单号管理与互动工具。</p>
       <h3>1. 指挥概览</h3>
       <ul>
-        <li><strong>健康与待办快筛：</strong>顶部自动汇总登录失效、代理异常或出口漂移、风控冷却、未读私信、失败/待审任务及 0 播异常作品，点击任意告警胶囊即可直达对应筛选视图处理。</li>
+        <li><strong>健康与待办快筛：</strong>顶部自动汇总登录失效、代理故障、同平台共用代理提醒、本机直连提醒、风控冷却、未读私信、失败/待审任务及 0 播异常作品，点击任意告警胶囊即可直达对应筛选视图处理。</li>
         <li><strong>九平台态势矩阵卡：</strong>一屏查看九个平台的在线账号数、粉丝净增、启用监控数、今日入库作品与评论，支持勾选「折叠空平台」精简顶部切换栏，点击卡片即可切入对应平台。</li>
         <li><strong>近期捕获与发布排期：</strong>同屏预览最新高赞入库内容、今日待发/发布中队列与近 7 日采集发布趋势。</li>
       </ul>
@@ -157,7 +157,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
       <ul>
         <li><strong>跨平台人设分组与角色：</strong>支持新建跨平台矩阵分组（如将同一 IP 下的抖音、小红书、B 站、Instagram 账号归入同一人设组，配置色标与期望代理地区），并为账号设置备注别名、常用置顶与职能角色（<strong>创作主号</strong> / <strong>采集小号</strong> / <strong>混合通用</strong>）。</li>
         <li><strong>三视图切换：</strong>提供「矩阵分组卡片」（按人设组聚合多平台账号）、「密集运维总表」（适合数十上百账号快速检索排序）与「浏览器运行墙」（集中查看正在打开的独立窗口并支持一键全关）。</li>
-        <li><strong>批量操作与连续扫码补登：</strong>勾选多个账号后可批量划入分组、设置角色、增改标签、从代理池防重分配可用代理、切换浏览器内核或顺序检测登录态；当存在多个失效账号时，点击<strong>「连续补登失效号」</strong>即可逐个唤起对应扫码流程高效恢复。</li>
+        <li><strong>批量操作与连续扫码补登：</strong>勾选多个账号后可批量划入分组、设置角色、增改标签、从代理池均衡分配代理（优先空闲节点，池余量不足时最少占用复用并提醒）、一键切换本机直连、切换浏览器内核或顺序检测登录态；当存在多个失效账号时，点击<strong>「连续补登失效号」</strong>即可逐个唤起对应扫码流程高效恢复。</li>
       </ul>
       <h3>4. 矩阵数据对比、全平台聚合私信与多号错峰群发</h3>
       <ul>
@@ -174,7 +174,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
       <p><strong>完成标志：</strong>目标出现在列表；执行后有检查状态，有符合条件的内容时出现在作品记录中。无需继续监控时，暂停目标，不要只关网页。</p>
       <p>作品、评论、弹幕监控的新建与编辑均支持秒级频率。选择“自定义”后输入数值，并选择“秒”或“分钟”；范围为 1–86400 秒，分钟允许小数但须换算为整秒（例如 1.5 分钟 = 90 秒）。切换单位保持实际间隔，弹幕仍可选择跟随全局设置。配置是期望间隔，实际执行还受任务耗时、错峰和账号限速影响。</p>
       <h3>账号、历史与下载目录</h3>
-      <ul><li><strong>海外小红书：</strong>目标支持 <code>www.rednote.com</code> 创作者主页链接或搜索关键词，需绑定主站登录有效且配置了非中国大陆代理的海外小红书账号。</li><li><strong>TikTok：</strong>目标使用创作者主页、完整分享文案或 <code>@username</code>，识别后必须绑定有效的 TikTok 登录账号。主页作品读取使用浏览器；关键词采集的 <code>native</code> 设置不代表所有功能都不打开浏览器。</li><li><strong>Instagram：</strong>目标支持创作者主页链接、<code>@username</code> 或纯数字 UID，绑定有效 Instagram 账号后默认优先通过协议接口读取主页动态与 Reels，兼容失败时按混合策略回退账号浏览器，并支持首次历史回填。</li><li><strong>Twitter：</strong>目标支持 <code>x.com/&lt;username&gt;</code> 主页链接、<code>@username</code>、数字 UID 或单条推文链接（识别自动提取作者），绑定有效 Twitter 账号后默认优先通过 GraphQL 协议直连读取时间线，兼容受阻时自动回退账号隔离浏览器，并支持首次历史回填。</li><li><strong>视频号：</strong>目标可填 <code>v2_...@finder</code> 创作者标识、主页链接，也可以直接粘贴一条 <code>weixin.qq.com/sph/...</code> 视频链接，点击“识别”会自动反查作者。视频号监控通过本机已登录的桌面微信读取，不需要也不能绑定网页账号；账号列显示“本机微信客户端”。支持首次历史回填。</li><li><strong>多账号订阅：</strong>抖音、小红书、海外小红书、快手支持不同执行账号分别订阅同一主页，各自维护扫描进度与采集策略。同账号同主页只保留一条任务，包括已暂停的任务；小红书与海外小红书关键词任务仍按关键词规则去重。</li><li><strong>历史回填：</strong>默认只关注订阅后的新内容。需要旧作品时在新建目标时选择回填数量，先用小批量验证。</li><li><strong>共享目录：</strong>多个任务写入同一路径的同一媒体时串行写入并复用已有文件；需要分开保存时，为任务配置不同目录。</li></ul>
+      <ul><li><strong>海外小红书：</strong>目标支持 <code>www.rednote.com</code> 创作者主页链接或搜索关键词，需绑定主站登录有效的海外小红书账号（推荐配置非中国大陆代理）。</li><li><strong>TikTok：</strong>目标使用创作者主页、完整分享文案或 <code>@username</code>，识别后必须绑定有效的 TikTok 登录账号。主页作品读取使用浏览器；关键词采集的 <code>native</code> 设置不代表所有功能都不打开浏览器。</li><li><strong>Instagram：</strong>目标支持创作者主页链接、<code>@username</code> 或纯数字 UID，绑定有效 Instagram 账号后默认优先通过协议接口读取主页动态与 Reels，兼容失败时按混合策略回退账号浏览器，并支持首次历史回填。</li><li><strong>Twitter：</strong>目标支持 <code>x.com/&lt;username&gt;</code> 主页链接、<code>@username</code>、数字 UID 或单条推文链接（识别自动提取作者），绑定有效 Twitter 账号后默认优先通过 GraphQL 协议直连读取时间线，兼容受阻时自动回退账号隔离浏览器，并支持首次历史回填。</li><li><strong>视频号：</strong>目标可填 <code>v2_...@finder</code> 创作者标识、主页链接，也可以直接粘贴一条 <code>weixin.qq.com/sph/...</code> 视频链接，点击“识别”会自动反查作者。视频号监控通过本机已登录的桌面微信读取，不需要也不能绑定网页账号；账号列显示“本机微信客户端”。支持首次历史回填。</li><li><strong>多账号订阅：</strong>抖音、小红书、海外小红书、快手支持不同执行账号分别订阅同一主页，各自维护扫描进度与采集策略。同账号同主页只保留一条任务，包括已暂停的任务；小红书与海外小红书关键词任务仍按关键词规则去重。</li><li><strong>历史回填：</strong>默认只关注订阅后的新内容。需要旧作品时在新建目标时选择回填数量，先用小批量验证。</li><li><strong>共享目录：</strong>多个任务写入同一路径的同一媒体时串行写入并复用已有文件；需要分开保存时，为任务配置不同目录。</li></ul>
       <figure><a href="images/monitor-create.png"><img src="images/monitor-create.png" alt="新建作品监控抽屉，包含目标、账号、检查频率与采集选项" width="1600" loading="lazy"></a><figcaption>先填目标和账号，再决定检查频率与是否下载，最后考虑高级选项。</figcaption></figure>
     </section>
 
@@ -191,7 +191,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
       <ul><li><code>native</code>（默认）：使用所选账号的 Cookie、UA 和代理进行离线签名后的网络请求，关键词、评论和二级回复不打开浏览器；失败直接显示原因，不自动切换页面。</li><li><code>auto</code>：优先直连，兼容失败时可回退到可见浏览器。</li><li><code>browser</code>：使用账号浏览器页面读取。</li></ul>
       <p>“离线签名”只是签名计算在本地完成，采集仍需要联网和有效登录态。用户搜索、主页作品读取、登录和写操作另有浏览器流程，不受“不打开浏览器”的关键词模式承诺覆盖。</p>
       <h3>海外小红书采集与读写通道</h3>
-      <p>批量采集支持关键词、创作者主页、全部收藏与指定收藏夹来源，严格限定在 <code>rednote.com</code> 四域名体系与非中国大陆代理出口下运行。“设置 → 采集与运行”中的 <code>rednote_read_mode</code> 默认采用 <code>hybrid</code>（纯 Python <code>XYS</code> / <code>XYW</code> + <code>b1</code> 签名协议直连优先，普通兼容受阻自动回退账号隔离浏览器；也可切换为 <code>api</code> 或 <code>browser</code>）。</p>
+      <p>批量采集支持关键词、创作者主页、全部收藏与指定收藏夹来源，严格限定在 <code>rednote.com</code> 四域名体系下运行（推荐配置非中国大陆代理出口，支持本机直连）。“设置 → 采集与运行”中的 <code>rednote_read_mode</code> 默认采用 <code>hybrid</code>（纯 Python <code>XYS</code> / <code>XYW</code> + <code>b1</code> 签名协议直连优先，普通兼容受阻自动回退账号隔离浏览器；也可切换为 <code>api</code> 或 <code>browser</code>）。</p>
       <h3>Instagram 采集与读写通道</h3>
       <p>批量采集支持关键词 / 话题标签（<code>#hashtag</code>）、创作者主页与本账号作品来源，支持附带顶层评论、二级回复抓取及单图、视频或混合轮播图集下载。“设置 → 采集与运行”中的 <code>instagram_read_mode</code> 与 <code>instagram_write_mode</code> 默认均为 <code>hybrid</code>（协议直连优先，确认兼容受阻时回退账号隔离浏览器，也可固定为 <code>api</code> 或 <code>browser</code>）。</p>
       <h3>Twitter (X) 采集与读写通道</h3>
@@ -290,7 +290,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
       <div class="table-scroll"><table><thead><tr><th scope="col">看到的情况</th><th scope="col">下一步</th></tr></thead><tbody><tr><td>等待 / 排队</td><td>检查调度时间、账号占用、间隔与限额。</td></tr><tr><td>待审核</td><td>到对应功能的审核页核对内容。</td></tr><tr><td>失败</td><td>先看具体原因，修复登录、网络或目标后再决定重试。</td></tr><tr><td>结果待确认</td><td>到平台核对实际结果，避免重复提交。</td></tr><tr><td>冷却 / 验证</td><td>查看风控中心；按平台提示处理并等待恢复条件。</td></tr></tbody></table></div>
       <p>重启服务不会自动消除所有冷却状态。保留默认保护设置，优先减少任务规模和频率，而不是把限制全部调为零。</p>
       <h3>默认调度与恢复规则</h3>
-      <ul><li>队列统一展示采集、发布、自动评论、账号动作和下载任务，可按平台、类型、状态与关键词筛选。</li><li>默认 <code>risk_control.mode: conservative</code>：同账号的评论、私信、关注和发布共享写间隔与额度；立即执行同样遵守检查。</li><li>默认开启活跃时段夜间静默（<code>quiet_hours_enabled: true</code>、<code>quiet_hours_include_reads: true</code>），夜间自动暂停写操作与后台定时监控、评论采集及账号探活（手动即时查看不受影响），并按账号与日期生成每日独立苏醒/入睡随机偏移（<code>quiet_hours_wake_jitter_minutes</code>），避免矩阵整点齐发。</li><li>同一网络出口的账号串行访问；未配置代理的国内单账号归入 <code>direct</code> 出口组。保守模式的写间隔、小时/每日额度与同出口并发有保护线，配置 <code>0</code> 表示沿用保护线，不代表无限制。</li><li>轻读取和重读取分别计时；命中 <code>403/429/461/471</code>、验证码或明确风险提示后按阶梯冷却。冷却结束先做轻量探测，连续成功后逐级恢复。</li><li>受时段、限额、代理或冷却影响的任务保留为等待状态，服务重启后继续恢复；登录失效先重新登录，缺少成功证据的写操作先人工核对。</li></ul>
+      <ul><li>队列统一展示采集、发布、自动评论、账号动作和下载任务，可按平台、类型、状态与关键词筛选。</li><li>默认 <code>risk_control.mode: conservative</code>：同账号的评论、私信、关注和发布共享写间隔与额度；立即执行同样遵守检查。</li><li>默认开启活跃时段夜间静默（<code>quiet_hours_enabled: true</code>、<code>quiet_hours_include_reads: true</code>），夜间自动暂停写操作与后台定时监控、评论采集及账号探活（手动即时查看不受影响），并按账号与日期生成每日独立苏醒/入睡随机偏移（<code>quiet_hours_wake_jitter_minutes</code>），避免矩阵整点齐发。</li><li>同一网络出口的账号串行访问；未配置代理的本机直连账号统一归入 <code>direct</code> 出口组，同平台多号共用同一代理或直连出口时自动串行限流并展示防关联提醒，不强制阻断任务。保守模式的写间隔、小时/每日额度与同出口并发有保护线，配置 <code>0</code> 表示沿用保护线，不代表无限制。</li><li>轻读取和重读取分别计时；命中 <code>403/429/461/471</code>、验证码或明确风险提示后按阶梯冷却。冷却结束先做轻量探测，连续成功后逐级恢复。</li><li>受时段、限额、代理故障或冷却影响的任务保留为等待状态，服务重启后继续恢复；登录失效先重新登录，缺少成功证据的写操作先人工核对。</li></ul>
       <p>风控中心展示触发原因、冷却截止、恢复进度、任务级受阻原因、出口和事件时间线。规则页可调整读取间隔、恢复探测、额度、出口组熔断与活跃时段，保存到本地数据库后立即生效；规则修改、人工解除和人工探测都会留下审计记录。完整参数见 <a href="https://github.com/3441293738/creatorhub/blob/main/config.example.yaml">config.example.yaml</a> 的 <code>risk_control</code> 段。</p>
     </section>
 
@@ -298,9 +298,9 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
       <h2>设置与账号环境</h2><p class="path">入口：系统设置；账号环境在“账号矩阵 → 浏览器内核 / 代理池”</p>
       <dl><dt>外观与体验</dt><dd>切换浅色、深色等显示选项；平台配色与主题分别控制。</dd><dt>下载设置</dt><dd>调整保存目录与默认下载选项。改动后用一条内容确认实际落盘位置。</dd><dt>AI 文案</dt><dd>按页面字段配置自己的服务地址、模型和密钥，在实际生成文案时核对效果。服务可能产生第三方费用，发送前检查生成内容；不用 AI 时可跳过。</dd><dt>采集与运行</dt><dd>调整浏览器、调度等运行参数。新手先保留默认，修改前记录原值，一次只调整一项。</dd><dt>视频号微信通道</dt><dd>连接本机已登录的桌面微信，开启视频号搜索、他人主页、评论与视频下载。只用本账号功能时可以不配置，步骤见<a href="#channels-wechat">视频号微信通道</a>。</dd></dl>
       <h3 id="browser-environment">账号隔离与代理</h3><p>每个账号有独立的持久化浏览器 Profile、底层语言首选项、确定性硬件指纹种子与 TLS 握手指纹，Cookie、缓存和本地存储互不共享，也与日常个人 Chrome 配置完全分开。浏览器环境默认阻断非代理 WebRTC UDP 旁路泄露；Profile 带有跨进程占用保护，不要让其他 Chrome 进程同时打开项目账号的 Profile，也不要随意删除它。</p>
-      <p><strong>智能独享代理策略：</strong>国内平台（抖音、小红书、快手、视频号、哔哩哔哩）仅登录<strong>单个账号</strong>时无需配置代理，可直接本机直连；当<strong>同一国内平台登录 2 个及以上账号</strong>，或使用<strong>海外平台</strong>（TikTok、海外小红书、Instagram、Twitter）时，默认开启「强制独享代理锁」（<code>strict_proxy_required</code>）与「禁止同平台共用代理 / 同出口 IP」（<code>forbid_same_platform_shared_proxy</code>）保护——未绑定有效独享代理、代理故障或同平台两号解析出相同出口 IP 时会直接阻断登录与任务，绝不静默回退暴露本机真实 IP（确需在单机测试环境放宽时，可在「设置 → 采集与运行」高级开关调整）。<code>socks5://</code> 代理在协议与下载通道会自动升级为远程 DNS 解析（<code>socks5h://</code>）以防本地 DNS 污染。</p>
+      <p><strong>弹性代理与防关联风险提醒：</strong>系统不强制要求「一号一代理」，也不阻断「本机直连」——无论是无代理直接走本机网络，还是在代理节点较少时多个账号复用同一代理，均可正常完成登录、浏览器打开与读写任务。当检测到<strong>海外平台本机直连</strong>、<strong>同平台多账号共用本机 IP</strong>或<strong>同平台多账号共用同一代理 / 出口 IP</strong>时，登录选择框、全局大盘、账号矩阵与风控中心会自动高亮防关联提醒，建议多账号矩阵与海外平台尽量配置独立住宅代理以降低同 IP 连坐风险。<code>socks5://</code> 代理在协议与下载通道会自动升级为远程 DNS 解析（<code>socks5h://</code>）以防本地 DNS 污染。</p>
       <p>支持 HTTP、HTTPS、SOCKS5 及账号密码认证。除标准代理 URL 外，添加和批量导入还支持服务商常见的六种导出格式：<code>主机:端口:用户名:密码</code>、<code>主机,端口,用户名,密码</code>、<code>主机:端口@用户名:密码</code>、<code>用户名:密码:主机:端口</code>、<code>用户名:密码@主机:端口</code>、<code>主机:端口##用户名##密码</code>。默认自动判别，无法区分时需手动选择格式；只填 <code>主机:端口</code> 时按 HTTP 处理。“测试代理”记录出口 IP、国家、ASN 与时区；需验证出口基线的写任务，在出口变化或基线过期后会等待重新验证。同出口多个账号集中触发风险时，可进入出口组熔断。不要把代理密码或账号 Profile 分享到公开反馈中。</p>
-      <h3>浏览器内核</h3><p>国内版小红书优先系统 Chrome/CDP；自动模式在未安装 Chrome 时可回退到可见 Patchright Chromium，实际后端可在账号列表确认。Fingerprint Chromium 是其他平台（含海外小红书、TikTok、Instagram、Twitter 等）的进阶可选项，国内版小红书不使用该组合；海外平台登录前与代理池自动分配会自动跳过已验证的中国大陆（<code>CN</code>）节点。普通上手无需安装额外指纹浏览器。</p>
+      <h3>浏览器内核</h3><p>国内版小红书优先系统 Chrome/CDP；自动模式在未安装 Chrome 时可回退到可见 Patchright Chromium，实际后端可在账号列表确认。Fingerprint Chromium 是其他平台（含海外小红书、TikTok、Instagram、Twitter 等）的进阶可选项，国内版小红书不使用该组合；海外平台代理池自动分配会优先挑选已验证的非中国大陆节点（池内无匹配节点时按最少占用兜底并给出地区提醒）。普通上手无需安装额外指纹浏览器。</p>
       <details><summary>小红书：登录环境与读写通道</summary>
       <ul><li><code>xhs_browser_mode: auto</code> 优先启动系统稳定版 Chrome/CDP，并长期复用账号专用 Profile；<code>cdp</code> 为严格模式，缺少 Chrome 或 Profile 冲突时直接报错；<code>patchright</code> 显式使用 Patchright Chromium。</li><li>浏览器内核与读取方式是不同设置。<code>xhs_read_mode: api</code> 是当前默认读取方式，源码运行需准备 Node.js 依赖；<code>browser</code> 复用账号浏览器页面。</li><li>页面模式加载图片、字体和媒体，复用浏览器进程与 Profile；可见操作串行执行，搜索、滚动、输入和详情读取采用有界间隔。单轮上限仍按任务配置执行。</li><li>发布和评论默认使用 <code>browser</code>。提交只点击一次；连接中断或缺少成功证据时标记“结果待确认”，先去平台核对。</li><li>设备验证出现时保留当前可见窗口，自动任务暂停，不自动刷新、跳转或重复尝试；按平台提示完成验证后再检查任务。</li></ul>
       </details>
@@ -423,7 +423,7 @@ proxies: []</code></pre>
       <details><summary>视频号提示“需要连接本机已登录微信”</summary><p>关键词搜索、他人主页、评论监控和视频下载都依赖<a href="#channels-wechat">本机微信通道</a>。到“设置 → 视频号微信通道”确认根证书已安装、代理已启动，并在桌面微信里打开过一次视频号页面；状态显示“等待模块加载”时稍等再点“检测微信连通”。读取策略设为 <code>browser</code> 时不会使用本机微信。</p></details>
       <details><summary>开启视频号代理后网页打不开 / 系统代理没恢复</summary><p>先在“视频号微信通道”点击“停止”，会恢复启动前备份的系统代理。软件异常退出时，下次启动会自动恢复。仍不正常时，到 Windows“设置 → 网络和 Internet → 代理”检查并关闭指向 <code>127.0.0.1</code> 的手动代理。</p></details>
       <details><summary>下载成功但找不到文件 / 没声音 / 画质不够</summary><p>查看下载记录与当前保存目录，默认文件在 <code>data/media/</code> 下。媒体处理异常先更新依赖；项目可使用 Python 依赖附带的 ffmpeg，也可使用加入 PATH 的系统 ffmpeg。画质还受源资源限制。</p></details>
-      <details><summary>提示“必须绑定独享代理”或“同平台共用同一出口 IP”</summary><p>为防止多号矩阵同 IP 连坐或海外平台泄露本机真实 IP，海外平台账号以及同一国内平台存在 2 个及以上账号时，默认要求一号一独享代理且同平台出口 IP 不能重复。请先在“账号矩阵 → 代理池”导入并测试可用代理，再为对应账号单独绑定（国内平台若只保留 1 个账号可免配代理直连）；仅用于本地调试且无需隔离保护时，可在“设置 → 采集与运行”高级开关中关闭对应门禁。</p></details>
+      <details><summary>看到“本机直连提醒”或“共用代理提醒”会影响任务运行吗？</summary><p>不会拦截任务。这两项属于非阻断式的防关联风险提醒，登录、浏览器与自动任务均可照常执行；仅当账号已显式绑定了代理且该代理连接故障或被停用时，任务才会暂停等待修复（也可在账号“代理”中清除代理改走本机直连）。若同平台运营多个核心账号，仍建议尽量在“代理池”配置独立住宅代理实现一号一 IP。</p></details>
       <details><summary>任务一直等待，重启后也没有立即执行</summary><p>查看“任务队列”和“风控中心”的账号状态，确认审核、活跃时段、限额、共享间隔、代理和风险冷却。等待不是卡死的充分证据，重复提交可能制造重复任务。</p></details>
       <details><summary>Windows 提示浏览器子进程错误</summary><p>先使用项目启动脚本和单 worker，不要额外添加 <code>--workers</code>。运行 <code>.\start.cmd install</code> 更新依赖，仍失败时保留完整错误日志。</p></details>
       <details><summary>macOS 安装提示 clang++ failed</summary><p>先备份数据并更新项目，停止服务，把项目内的旧 <code>.venv</code> 重命名留作排查，再执行 <code>./start.sh install</code> 重建环境。不要改动系统 Python 或误删 <code>data/</code>。</p></details>

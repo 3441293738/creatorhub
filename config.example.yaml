@@ -77,8 +77,8 @@ engine:
   scan_jitter: 0.15              # 扫描周期额外增加 0–15%；按任务和上次执行时间稳定错峰
   initial_scan_spread_seconds: 60 # 新监控/评论规则首次自动执行额外等待 0–60 秒；0 关闭
   route_download_via_proxy: true  # 媒体下载是否走账号代理(避免 CDN 拉流暴露真实 IP)
-  strict_proxy_required: true     # 强制独享代理锁(Fail-Closed):海外平台及同平台多号必须绑定有效代理,严禁回退暴露本机 IP(国内单号允许直连)
-  forbid_same_platform_shared_proxy: true # 禁止同一平台下多个账号共用同一代理地址或解析出相同出口 IP,防止矩阵连坐
+  strict_proxy_required: false    # 兼容保留字段:默认仅提醒不强拦,允许本机直连
+  forbid_same_platform_shared_proxy: false # 兼容保留字段:默认仅提醒不强拦,允许同平台复用代理
   verify_proxy_region: true       # 体检时探测代理出口国家,与账号时区(默认东八区)不一致则告警
   native_write_gate_enabled: true # 仅新建 native 账号:写操作执行前检查浏览器/代理基线
   native_write_require_system_chrome: true # 写操作必须使用系统稳定版 Chrome
@@ -158,9 +158,9 @@ risk_control:
 storage:
   db_path: ./data/creatorhub.db
 
-# 代理池:建号时一号一代理 sticky 分配(占用最少优先)。务必用住宅/4G 长效代理,
-# 一号一长效固定 IP,IP 地区与账号时区/locale 一致;切勿机房 IP、切勿多号共享一个 IP。
-# 支持 http / https / socks5(自动升级 socks5h 远程 DNS 解析),可带账号密码。国内单账号可留空直连;海外平台或同平台多账号请配置独享代理。
+# 代理池:建号或批量配代理时优先分配空闲节点,池余量不足时按最少占用均衡复用,并高亮提醒共用风险。
+# 推荐尽量使用住宅/4G 长效独立代理(一号一固定 IP,地区与平台一致),降低同 IP 矩阵关联限流概率。
+# 支持 http / https / socks5(自动升级 socks5h 远程 DNS 解析),可带账号密码;也可留空使用本机直连。
 proxies: []
   # - http://user:pass@gateway.example.com:8000
   # - socks5://user:pass@1.2.3.4:1080

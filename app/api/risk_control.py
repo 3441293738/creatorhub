@@ -98,7 +98,8 @@ def _risk_task_rollups(session, account_ids: list[int]) -> dict[int, dict[str, A
 def _account_risk_view(account: DouyinAccount, now: datetime, *,
                        state: AccountRiskState | None,
                        latest_event: RiskEvent | None,
-                       queued: dict[str, Any]) -> dict[str, Any]:
+                       queued: dict[str, Any],
+                       proxy_warning: str = "") -> dict[str, Any]:
     risk_level = state.risk_level if state else 0
     reason = state.last_risk_reason if state else ""
     cooldown_until = state.cooldown_until if state else None
@@ -195,6 +196,7 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
         "last_operation_kind": latest_event.operation_kind if latest_event else "",
         "proxy": proxies_service._mask_proxy(account.proxy),
         "proxy_status": account.proxy_status,
+        "proxy_warning": proxy_warning,
         "network_key": latest_event.network_key if latest_event else "",
         "queued_tasks": {
             key: queued[key] for key in (
@@ -219,10 +221,19 @@ def _risk_account_views(session, accounts: list[DouyinAccount],
                 RiskEvent.account_id.in_(ids)).order_by(
                     RiskEvent.occurred_at.desc())).all():
             latest_events.setdefault(event.account_id, event)
+    from app.profiles import inspect_account_proxy_risk
+
     rollups = _risk_task_rollups(session, ids)
     return [_account_risk_view(
         account, now, state=states.get(account.id),
-        latest_event=latest_events.get(account.id), queued=rollups[account.id])
+        latest_event=latest_events.get(account.id), queued=rollups[account.id],
+        proxy_warning="；".join(inspect_account_proxy_risk(
+            session,
+            platform=account.platform,
+            proxy_url=account.proxy or "",
+            exclude_account_id=account.id,
+            candidate_exit_ip=account.exit_ip or "",
+        )))
         for account in accounts]
 
 

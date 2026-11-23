@@ -223,8 +223,8 @@ def chrome_launch_args(
     if proxy_server:
         args.append(f"--proxy-server={proxy_server}")
     else:
-        # 显式直连时隔离操作系统 WinINet 代理(如 127.0.0.1:2023 视频号桥接)，避免被本机系统代理劫持
-        args.append("--no-proxy-server")
+        # 仅绕过内置视频号本地桥接拦截域名，保留宿主真实网络或本机系统代理直连能力
+        args.append("--proxy-bypass-list=channels.weixin.qq.com")
     args.extend(_WEBRTC_PROXY_ARGS)
     args.append("about:blank")
     return args

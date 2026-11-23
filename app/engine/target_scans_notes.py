@@ -348,9 +348,6 @@ class NoteTargetScanMixin:
                         identity = self.browser.identity_for(acc)
             if identity is None and not target.account_id:
                 identity, proxy = self._anon_identity_proxy("rednote", session=s)
-                if not proxy and getattr(self.cfg.engine, "strict_proxy_required", True):
-                    return self._mark_target_skip(
-                        target_id, "已启用严格代理锁，匿名监控未分配到可用池代理，已跳过以免暴露本机 IP")
             known = set(s.exec(
                 select(ContentRecord.aweme_id)
                 .where(ContentRecord.target_id == target_id)).all())

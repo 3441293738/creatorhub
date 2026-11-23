@@ -50,7 +50,7 @@ async function refreshProxies() {
         ${p.note ? `<div class="mut" style="font-size:11px">${esc(p.note)}</div>` : ""}
       </td>
       <td>${geoCell(p)}</td>
-      <td><span class="pill ${p.used_by ? "active" : "bare"}">${p.used_by} 个账号</span></td>
+      <td><span class="pill ${p.used_by > 1 ? "pending" : (p.used_by ? "active" : "bare")}" title="${p.used_by > 1 ? "多个账号正复用该代理；同平台多账号共用同一出口 IP 存在防关联风险，建议尽量一号一代理" : ""}">${p.used_by > 1 ? `⚠️ 共用 ${p.used_by} 号` : `${p.used_by} 个账号`}</span></td>
       <td class="acttd">
         <button class="ghost sm" onclick="editPoolProxy(${p.id})">编辑</button>
         <button class="ghost sm" onclick="testPoolProxy(${p.id})">测试</button>
@@ -99,8 +99,13 @@ async function addProxy() {
 }
 async function delPoolProxy(id, used) {
   if (!await uiConfirm({ title: "删除代理", okText: "删除", danger: true,
-    message: "删除该代理?" + (used ? `\n⚠️ 有 ${used} 个账号正在用它,删除后这些账号需另选代理。` : "") })) return;
-  try { await api("/api/proxies/" + id, { method: "DELETE" }); toast("已删除", "ok"); refreshProxies(); }
+    message: "删除该代理?" + (used ? `\n⚠️ 有 ${used} 个账号正在引用它，删除后建议及时核对这些账号的代理配置。` : "") })) return;
+  try {
+    const res = await api("/api/proxies/" + id, { method: "DELETE" });
+    toast("已从代理池删除", "ok");
+    if (res && res.warning) setTimeout(() => toast("⚠️ " + res.warning, "info", 6500), 260);
+    refreshProxies(); refreshAccounts();
+  }
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 async function editPoolProxy(id) {
@@ -169,8 +174,9 @@ async function assignAllProxies() {
   try {
     const r = await api("/api/accounts/assign-proxies-all", { method: "POST" });
     let msg = `已分配 ${r.assigned} 个账号`;
-    if (r.unassigned) msg += `,还有 ${r.unassigned} 个没分到(代理池不够,请再加代理)`;
+    if (r.unassigned) msg += `，还有 ${r.unassigned} 个未分到`;
     toast(msg, r.unassigned ? "info" : "ok");
+    if (r.warning) setTimeout(() => toast("⚠️ " + r.warning, "info", 7000), 280);
     refreshAccounts(); refreshProxies();
   } catch (e) { toast("分配失败:" + e.message, "err"); }
   finally { if (btn) { btn.disabled = false; btn.textContent = "给账号批量分配"; } }
@@ -211,6 +217,8 @@ function pollReloginTask(tid) {
         } else {
           const suffix = ["error", "deferred"].includes(r.profile_status) ? "（资料可稍后刷新）" : "";
           toast("重新登录成功 " + (r.nickname || "") + suffix, r.profile_status === "error" ? "info" : "ok");
+          const pxWarn = r.warning || r.environment?.proxy_warning || "";
+          if (pxWarn) setTimeout(() => toast("⚠️ " + pxWarn, "info", 6500), 320);
         }
         refreshAccounts(); return;
       } else if (r.status === "expired") {

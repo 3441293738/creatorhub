@@ -84,7 +84,6 @@ class ImReceiverManager:
         from ..risk import OperationKind
         # 等 uid(允许"先开面板后同步"):最多轮询 ~30s 读 DB,同步存下 uid 即自愈
         uid, identity, proxy, ua = "", None, "", ""
-        strict_proxy = bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True)) if app_runtime.cfg else True
         for _ in range(15):
             with get_session() as s:
                 acc = s.get(DouyinAccount, account_id)
@@ -108,18 +107,8 @@ class ImReceiverManager:
         if not uid:
             print(f"[im-ws] account {account_id} 无 uid,点一次「同步」存下 uid 即自动接上")
             return
-        must_proxy = False
-        if not proxy and app_runtime.cfg is not None:
-            from ..profiles import account_requires_dedicated_proxy
-            with get_session() as s:
-                acc_chk = s.get(DouyinAccount, account_id)
-                if acc_chk:
-                    must_proxy, _ = account_requires_dedicated_proxy(
-                        s, app_runtime.cfg, platform="douyin", account=acc_chk
-                    )
-        if must_proxy and not proxy:
-            print(f"[im-ws] account {account_id} 同平台多号需绑定专属代理，已阻断直连 WS")
-            return
+        if not proxy:
+            print(f"[im-ws] account {account_id} 未绑定代理，将使用本机直连建立实时私信连接（多号同 IP 请注意防关联风险）")
         if app_runtime.engine is not None:
             decision = app_runtime.engine.risk.preflight(account_id, OperationKind.READ_LIGHT)
             if not decision.allowed:
@@ -143,7 +132,7 @@ class ImReceiverManager:
             await receive_messages(
                 cookie, uid, on_msg, self_uid=uid,
                 should_stop=should_stop,
-                proxy=proxy, user_agent=ua, strict_proxy=bool(must_proxy),
+                proxy=proxy, user_agent=ua, strict_proxy=False,
             )
         except TypeError:
             await receive_messages(cookie, uid, on_msg, self_uid=uid,
@@ -152,7 +141,6 @@ class ImReceiverManager:
     async def _run_bilibili(self, account_id: int):
         from .. import runtime as app_runtime
         from ..risk import OperationKind
-        strict_proxy = bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True)) if app_runtime.cfg else True
         with get_session() as s:
             acc = s.get(DouyinAccount, account_id)
             if not acc or acc.platform != "bilibili":
@@ -167,17 +155,8 @@ class ImReceiverManager:
             account_seed = str(acc.fp_seed or acc.id or "")
             self_uid = str(acc.uid or acc.sec_uid or "")
             fallback_cookie = cookie_str_from_state(acc.storage_state or acc.cookie or "")
-            from ..profiles import account_requires_dedicated_proxy
-            must_proxy, _ = (
-                account_requires_dedicated_proxy(
-                    s, app_runtime.cfg, platform="bilibili", account=acc
-                )
-                if app_runtime.cfg is not None
-                else (False, "")
-            )
-        if must_proxy and not proxy:
-            print(f"[bili-im-ws] account {account_id} 同平台多号需绑定专属代理，已阻断直连 WS")
-            return
+        if not proxy:
+            print(f"[bili-im-ws] account {account_id} 未绑定代理，将使用本机直连建立实时私信连接（多号同 IP 请注意防关联风险）")
         if app_runtime.engine is not None:
             decision = app_runtime.engine.risk.preflight(account_id, OperationKind.READ_LIGHT)
             if not decision.allowed:
@@ -273,7 +252,7 @@ class ImReceiverManager:
                 should_stop=should_stop,
                 proxy=proxy,
                 account_seed=account_seed,
-                strict_proxy=bool(must_proxy),
+                strict_proxy=False,
             )
         except TypeError:
             await receive_bili_broadcast(

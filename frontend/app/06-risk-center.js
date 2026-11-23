@@ -124,7 +124,7 @@ function renderRiskAccounts() {
       <td><div class="risk-reason"><span title="${esc(reason)}">${esc(reason)}</span><small>${account.last_risk_at ? "触发于 " + esc(riskTime(account.last_risk_at)) : "暂无风险记录"}</small></div></td>
       <td><div class="risk-account">${timing}<div class="risk-progress" style="margin-top:4px"><div class="risk-progress-track"><i style="width:${progress}%"></i></div><span>${account.risk_level > 0 ? `${account.recovery_successes}/${account.recovery_target}` : "完成"}</span></div></div></td>
       <td><b class="num">${account.blocked_tasks || 0} / ${queue.total || 0}</b><div class="mut" style="font-size:11px" title="${esc(account.latest_block_reason || "")}">受阻 / 待执行${account.task_next_allowed_at ? ` · ${esc(riskRemaining(account.task_next_allowed_at))}` : ""}</div></td>
-      <td><div class="risk-account"><span>${account.proxy ? `<code>${esc(account.proxy)}</code>` : "本机直连"}</span><small>${esc(account.proxy_status || "unknown")} · ${esc(account.network_key || "—")}</small></div></td>
+      <td><div class="risk-account"><span>${account.proxy ? `<code>${esc(account.proxy)}</code>` : '<span style="color:var(--warn)">⚠️ 本机直连</span>'}</span><small>${esc(account.proxy_status || "unknown")} · ${esc(account.network_key || "—")}</small>${account.proxy_warning ? `<small style="color:var(--warn)" title="${esc(account.proxy_warning)}">⚠️ ${esc(account.proxy_warning)}</small>` : ""}</div></td>
       <td class="acttd">
         <button class="ghost sm" onclick="probeRiskAccount(${account.account_id})" ${wait.waiting ? "disabled" : ""} title="${esc(wait.title)}">${wait.manual ? "待验证" : wait.waiting ? "等待探测" : "探测"}</button>
         <button class="ghost sm" onclick="showRiskEvents(${account.account_id})">记录</button>

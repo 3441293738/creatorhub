@@ -32,7 +32,7 @@
     comment_hourly_cap_per_account: 10,
     action_daily_cap_per_account: 20, action_hourly_cap_per_account: 6,
     action_min_gap_seconds: 90, verify_proxy_region: true,
-    strict_proxy_required: true, forbid_same_platform_shared_proxy: true,
+    strict_proxy_required: false, forbid_same_platform_shared_proxy: false,
     quiet_hours_include_reads: true, quiet_hours_wake_jitter_minutes: 35,
     native_write_gate_enabled: true, native_write_require_system_chrome: true,
     native_write_require_verified_proxy: true, native_write_proxy_max_age_seconds: 86400,
@@ -291,9 +291,9 @@
     ], accounts: accounts.map(account => ({
       account_id: account.id, platform: account.platform, nickname: account.nickname,
       profile_isolated: true, credential_isolated: true, api_session_isolated: true,
-      network_isolated: !!account.has_proxy, network_scope: account.has_proxy ? "专属代理" : "共享出口",
+      network_isolated: !!account.has_proxy, network_scope: account.has_proxy ? "专属代理" : "未配代理",
       api_environment_aligned: true, environment_id: `DEMO-${account.id}`,
-      warnings: account.has_proxy ? [] : ["API 与浏览器仍共享本机/重复代理出口"],
+      warnings: account.has_proxy ? [] : ["风险提醒：未绑定代理（当前走本机直连，海外或多号同平台建议配置独立代理防关联）"],
     })) };
   }
 
@@ -312,7 +312,7 @@
     };
     if (path === "/api/task-queue") return taskQueue(url);
     if (path === "/api/accounts") return url.searchParams.has("platform") ? accounts.filter((item) => item.platform === platform) : accounts;
-    if (path === "/api/proxies/options") return proxies.map((item) => ({ url: item.url, label: item.label, status: item.status, used_by: item.used_by, masked: item.url, enabled: item.enabled }));
+    if (path === "/api/proxies/options") return proxies.map((item) => ({ url: item.url, label: item.label, status: item.status, used_by: item.used_by, used_by_platform: { douyin: 1 }, masked: item.url, enabled: item.enabled, geo_checked: item.geo_checked, is_mainland: item.is_mainland, geo_loc: item.geo_loc }));
     if (path === "/api/proxies") return proxies;
     if (path === "/api/monitors") return platform === "shipinhao" ? [] : [monitor(platform)];
     if (path === "/api/contents") {
@@ -365,7 +365,7 @@
         const pfAccs = accounts.filter(a => a.platform === pf);
         return {
           platform: pf, accounts_total: pfAccs.length, accounts_active: pfAccs.length,
-          accounts_invalid: 0, accounts_risk: 0, accounts_proxy_issue: 0, accounts_no_proxy: 0,
+          accounts_invalid: 0, accounts_risk: 0, accounts_proxy_issue: 0, accounts_shared_proxy: 0, accounts_no_proxy: 0,
           followers_total: pfAccs.reduce((s, a) => s + (a.follower_count || 1280), 0),
           fans_delta: pfAccs.length ? 48 - idx * 4 : 0,
           monitors_enabled: pf === "shipinhao" ? 0 : 1,
@@ -385,7 +385,7 @@
       return {
         scope: url.searchParams.get("platform") || "all",
         platform_strip: strip,
-        alerts: { invalid_accounts: 0, proxy_issues: 0, risk_accounts: 0, no_proxy_accounts: 0, unread_dm: 3, failed_tasks: 0, blocked_tasks: 0, active_tasks: 1, pending_reviews: 0, abnormal_works: 0 },
+        alerts: { invalid_accounts: 0, proxy_issues: 0, shared_proxy_accounts: 0, risk_accounts: 0, no_proxy_accounts: 0, unread_dm: 3, failed_tasks: 0, blocked_tasks: 0, active_tasks: 1, pending_reviews: 0, abnormal_works: 0 },
         totals: { accounts: accounts.length, active_accounts: accounts.length, followers: accounts.length * 1680, fans_delta: 186, monitors: 8, contents_total: 42, downloaded_total: 28, comments_total: 310, own_works_total: 24, today_contents: 19, today_comments: 64 },
         series_7d: { days: s7.days, contents: s7.contents, comments: s7.comments, publishes: [1, 2, 1, 3, 2, 4, 3] },
         hot_contents: hot,
@@ -399,6 +399,7 @@
         account_role: idx < 4 ? "publish" : "crawler", pinned: idx < 2, sort_order: idx,
         health_state: "healthy", follower_count: a.follower_count || 1680 + idx * 420, fans_delta: 36 - idx * 3,
         aweme_count: a.aweme_count || 28, unread_dm: idx < 2 ? 2 - idx : 0, monitor_count: 1,
+        shared_proxy: false, shared_proxy_count: a.has_proxy ? 1 : 0, cross_platform_shared: false, proxy_warnings: [],
         ip_matches_exit: true, browser_open: idx === 0, worker_running: false, profile_isolated: true,
         tasks: { total: 0, pending: 0, running: 0, blocked: 0, failed: 0 },
       }));

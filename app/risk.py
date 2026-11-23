@@ -583,33 +583,15 @@ class RiskController:
                             "auth_probe_gap",
                         )
             if kind != OperationKind.LOGIN:
-                from .profiles import (
-                    account_requires_dedicated_proxy,
-                    find_same_platform_proxy_conflict,
-                    resolve_pool_proxy_row,
-                )
+                from .profiles import resolve_pool_proxy_row
                 raw_proxy = str(account.proxy or "").strip()
-                if not raw_proxy:
-                    must_proxy, must_reason = account_requires_dedicated_proxy(
-                        session,
-                        self.cfg,
-                        platform=account.platform,
-                        account=account,
-                    )
-                    if must_proxy:
-                        return RiskDecision(
-                            False,
-                            must_reason,
-                            now + timedelta(minutes=10),
-                            "proxy_required",
-                        )
                 if raw_proxy:
                     if account.proxy_status in {
-                        "bad", "auth_error", "blocked", "drifted", "disabled"
+                        "bad", "auth_error", "blocked", "disabled"
                     }:
                         return RiskDecision(
                             False,
-                            "账号绑定代理当前不可用或已停用",
+                            "账号当前绑定的代理不可用或已停用（可修复节点、更换代理，或清除代理改用直连）",
                             now + timedelta(minutes=5),
                             "proxy_unavailable",
                         )
@@ -624,25 +606,10 @@ class RiskController:
                     ):
                         return RiskDecision(
                             False,
-                            "代理池中该节点已停用或检测异常，已阻断任务以防泄露",
+                            "代理池中该节点已停用或检测异常（可启用/修复节点，或为账号清除代理改用直连）",
                             now + timedelta(minutes=5),
                             "proxy_unavailable",
                         )
-                    if bool(getattr(self.cfg.engine, "forbid_same_platform_shared_proxy", True)):
-                        conflict = find_same_platform_proxy_conflict(
-                            session,
-                            account.platform,
-                            raw_proxy,
-                            exclude_account_id=account.id,
-                            candidate_exit_ip=account.exit_ip,
-                        )
-                        if conflict is not None:
-                            return RiskDecision(
-                                False,
-                                f"同平台账号「{conflict.nickname or conflict.id}」正共用同一代理或出口 IP，已拦截防关联风险",
-                                now + timedelta(minutes=15),
-                                "same_platform_shared_proxy",
-                            )
             state = self._state(session, account_id)
             if state.manual_review_required and kind != OperationKind.LOGIN:
                 return RiskDecision(

@@ -18,7 +18,7 @@ from app.db import get_session
 from app.models import DouyinAccount, ProxyPool
 from app.profiles import (
     assign_proxy_from_pool,
-    find_same_platform_proxy_conflict,
+    inspect_account_proxy_risk,
     is_mainland_geo,
     resolve_pool_proxy_row,
     sync_proxy_pool_to_accounts,
@@ -66,28 +66,18 @@ def _reset_account_exit_baseline(acc) -> None:
 
 @router.put("/api/accounts/{account_id}/proxy")
 async def set_account_proxy(account_id: int, body: ProxyIn):
-    """手动设置/清空账号专属代理。强制校验同平台唯一性与强制代理锁，改后关掉常驻 context。"""
+    """手动设置/清空账号代理。允许本机直连或多号复用同一代理，并返回防关联风险提醒，改后关掉常驻 context。"""
     p = _proxy_input_url(body.proxy, body, allow_empty=True)
-    strict_proxy = bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True))
-    forbid_shared = bool(getattr(app_runtime.cfg.engine, "forbid_same_platform_shared_proxy", True))
-    if not p and strict_proxy:
-        raise HTTPException(
-            400,
-            "已启用强制独享代理保护：禁止将账号设为空代理直连本机 IP（请直接绑定新代理，或在设置中关闭强制代理锁）",
-        )
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if not acc:
             raise HTTPException(404, "账号不存在")
-        if p and forbid_shared:
-            conflict = find_same_platform_proxy_conflict(
-                s, acc.platform, p, exclude_account_id=account_id
-            )
-            if conflict is not None:
-                raise HTTPException(
-                    409,
-                    f"同平台防关联拦截：该代理或出口 IP 已被同平台账号「{conflict.nickname or conflict.id}」绑定，请使用独立代理",
-                )
+        warnings = inspect_account_proxy_risk(
+            s,
+            platform=acc.platform,
+            proxy_url=p,
+            exclude_account_id=account_id,
+        )
         pool_row = resolve_pool_proxy_row(s, p) if p else None
         acc.proxy = p
         acc.proxy_id = pool_row.id if pool_row else None
@@ -100,7 +90,12 @@ async def set_account_proxy(account_id: int, body: ProxyIn):
         await app_runtime.im_receiver.stop_account(account_id)
     if app_runtime.browser:
         await app_runtime.browser.close_context(account_id)
-    return {"ok": True, "proxy": proxies_service._mask_proxy(p)}
+    return {
+        "ok": True,
+        "proxy": proxies_service._mask_proxy(p),
+        "warnings": warnings,
+        "warning": "；".join(warnings),
+    }
 
 
 @router.post("/api/accounts/{account_id}/clear-write-pause")
@@ -112,14 +107,20 @@ async def clear_account_write_pause(account_id: int, body: metadata_service.Risk
 
 @router.post("/api/accounts/{account_id}/assign-proxy")
 async def assign_account_proxy(account_id: int):
-    """从代理池(config.proxies)给该账号分配一条占用最少的代理。"""
+    """从代理池给该账号分配代理（优先空闲节点，池余量不足时按最少占用复用并返回提醒）。"""
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if not acc:
             raise HTTPException(404, "账号不存在")
         p = assign_proxy_from_pool(s, app_runtime.cfg, platform=acc.platform)
         if not p:
-            raise HTTPException(400, "代理池无适合该平台的可用空闲代理(可在「代理池」检查节点地区或状态)")
+            raise HTTPException(400, "代理池暂无已启用且连通正常的代理节点，请先在「代理池」添加或启用节点")
+        warnings = inspect_account_proxy_risk(
+            s,
+            platform=acc.platform,
+            proxy_url=p,
+            exclude_account_id=account_id,
+        )
         pool_row = resolve_pool_proxy_row(s, p)
         acc.proxy = p
         acc.proxy_id = pool_row.id if pool_row else None
@@ -128,7 +129,12 @@ async def assign_account_proxy(account_id: int):
         s.add(acc); s.commit()
     if app_runtime.browser:
         await app_runtime.browser.close_context(account_id)
-    return {"ok": True, "proxy": proxies_service._mask_proxy(p)}
+    return {
+        "ok": True,
+        "proxy": proxies_service._mask_proxy(p),
+        "warnings": warnings,
+        "warning": "；".join(warnings),
+    }
 
 
 def _proxy_probe_status(status_code: int) -> str:
@@ -302,9 +308,8 @@ async def detect_proxy(body: ProxyDetectIn):
 
 @router.post("/api/accounts/assign-proxies-all")
 async def assign_proxies_all():
-    """给所有「尚未配置代理」的账号从池里批量分配(占用最少优先,均衡)。
-    池里代理不够时,分到没有为止,返回还差多少。"""
-    assigned, names, pool_empty = 0, [], False
+    """给所有「尚未配置代理」的账号从池里批量分配(优先空闲节点,池余量不足时按最少占用均衡复用并提醒)。"""
+    assigned, shared_assigned, pool_empty = 0, 0, False
     with get_session() as s:
         accs = [a.id for a in s.exec(select(DouyinAccount)).all() if not a.proxy]
     remaining = []
@@ -319,6 +324,11 @@ async def assign_proxies_all():
                 pool_empty = True
                 remaining.append(aid)
                 continue
+            risk_warns = inspect_account_proxy_risk(
+                s, platform=acc.platform, proxy_url=p, exclude_account_id=aid
+            )
+            if any("共用" in w or "复用" in w for w in risk_warns):
+                shared_assigned += 1
             pool_row = resolve_pool_proxy_row(s, p)
             acc.proxy = p
             acc.proxy_id = pool_row.id if pool_row else None
@@ -329,8 +339,19 @@ async def assign_proxies_all():
         if app_runtime.browser:
             await app_runtime.browser.close_context(aid)
     if pool_empty and assigned == 0:
-        raise HTTPException(400, "代理池为空,请先在「代理池」添加代理")
-    return {"ok": True, "assigned": assigned, "unassigned": len(remaining)}
+        raise HTTPException(400, "代理池为空或无已启用节点，请先在「代理池」添加并启用代理")
+    warning = (
+        f"代理池节点少于账号数，其中 {shared_assigned} 个账号复用了已有代理（存在多号共用同一出口 IP 关联风险，建议补充独立节点）"
+        if shared_assigned > 0
+        else ""
+    )
+    return {
+        "ok": True,
+        "assigned": assigned,
+        "unassigned": len(remaining),
+        "shared_assigned": shared_assigned,
+        "warning": warning,
+    }
 
 
 @router.post("/api/accounts/{account_id}/test-proxy")
@@ -436,13 +457,15 @@ def _pool_dict(p: ProxyPool, used: int = 0) -> dict:
 
 @router.get("/api/proxies")
 async def list_proxies():
+    from app.browser.manager import normalize_proxy
     with get_session() as s:
         rows = s.exec(select(ProxyPool).order_by(ProxyPool.id)).all()
-        used = {}
+        used: dict[str, int] = {}
         for a in s.exec(select(DouyinAccount)).all():
             if a.proxy:
-                used[a.proxy] = used.get(a.proxy, 0) + 1
-        return [_pool_dict(p, used.get(p.url, 0)) for p in rows]
+                np = normalize_proxy(a.proxy)
+                used[np] = used.get(np, 0) + 1
+        return [_pool_dict(p, used.get(normalize_proxy(p.url), 0)) for p in rows]
 
 
 @router.post("/api/proxies")
@@ -544,6 +567,8 @@ async def update_proxy(pid: int, body: PoolProxyUpdate):
 @router.delete("/api/proxies/{pid}")
 async def del_proxy(pid: int):
     from app.browser.manager import normalize_proxy
+    warning = ""
+    bound_count = 0
     with get_session() as s:
         p = s.get(ProxyPool, pid)
         if not p:
@@ -553,14 +578,16 @@ async def del_proxy(pid: int):
             a for a in s.exec(select(DouyinAccount)).all()
             if a.proxy_id == p.id or (a.proxy and normalize_proxy(a.proxy) == norm_p)
         ]
+        bound_count = len(bound)
         if bound:
             names = "、".join(str(a.nickname or a.id) for a in bound[:4])
-            raise HTTPException(
-                409,
-                f"该代理仍被 {len(bound)} 个账号（{names}）绑定使用；为防止账号残留失效代理或泄露真实 IP，请先为相关账号更换代理后再删除",
-            )
+            for a in bound:
+                if a.proxy_id == p.id:
+                    a.proxy_id = None
+                    s.add(a)
+            warning = f"该代理此前被 {bound_count} 个账号（{names}）引用，已解除池关联（建议及时核对这些账号的代理设置）"
         s.delete(p); s.commit()
-    return {"ok": True, "still_used_by": 0}
+    return {"ok": True, "still_used_by": bound_count, "warning": warning}
 
 
 @router.post("/api/proxies/{pid}/test")
@@ -599,19 +626,32 @@ async def test_proxy_entry(pid: int):
 
 @router.get("/api/proxies/options")
 async def proxy_options():
-    """供账号/登录「选代理」下拉用:返回全部代理(启用优先,含停用并标记)。
-    手动选可选任意一条;auto/批量分配仍只用启用的(见 assign_proxy_from_pool)。"""
+    """供账号/登录「选代理」下拉用:返回全部代理(启用优先,含停用并标记及同平台占用统计)。"""
+    from app.browser.manager import normalize_proxy
     with get_session() as s:
         rows = s.exec(select(ProxyPool)
                       .order_by(ProxyPool.enabled.desc(), ProxyPool.id)).all()
-        used = {}
+        used: dict[str, int] = {}
+        used_by_pf: dict[str, dict[str, int]] = {}
         for a in s.exec(select(DouyinAccount)).all():
             if a.proxy:
-                used[a.proxy] = used.get(a.proxy, 0) + 1
-        return [{"id": p.id, "label": p.label or proxies_service._mask_proxy(p.url),
-                 "url": p.url, "masked": proxies_service._mask_proxy(p.url),
-                 "status": p.status, "enabled": p.enabled,
-                 "used_by": used.get(p.url, 0),
-                 "country": p.country, "geo_loc": _geo_loc(p),
-                 "is_mainland": _is_mainland(p.country, p.region, p.city),
-                 "geo_checked": bool(p.exit_ip or p.country)} for p in rows]
+                np = normalize_proxy(a.proxy)
+                used[np] = used.get(np, 0) + 1
+                pf = str(a.platform or "").lower()
+                if pf:
+                    used_by_pf.setdefault(np, {})
+                    used_by_pf[np][pf] = used_by_pf[np].get(pf, 0) + 1
+        return [{
+            "id": p.id,
+            "label": p.label or proxies_service._mask_proxy(p.url),
+            "url": p.url,
+            "masked": proxies_service._mask_proxy(p.url),
+            "status": p.status,
+            "enabled": p.enabled,
+            "used_by": used.get(normalize_proxy(p.url), 0),
+            "used_by_platform": used_by_pf.get(normalize_proxy(p.url), {}),
+            "country": p.country,
+            "geo_loc": _geo_loc(p),
+            "is_mainland": _is_mainland(p.country, p.region, p.city),
+            "geo_checked": bool(p.exit_ip or p.country),
+        } for p in rows]

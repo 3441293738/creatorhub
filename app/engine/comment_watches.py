@@ -103,18 +103,6 @@ class CommentWatchMixin:
             if identity is None and not w.account_id:
                 identity, anon_px = self._anon_identity_proxy(platform, session=s)
                 proxy = proxy or anon_px
-                if not proxy and platform in {"tiktok", "rednote", "instagram", "twitter"} and getattr(self.cfg.engine, "strict_proxy_required", True):
-                    msg = "已启用严格代理锁，匿名评论监控未分配到可用池代理，已跳过以免暴露本机 IP"
-                    w.last_scan_at = datetime.utcnow()
-                    w.last_error = msg
-                    s.add(w); s.commit()
-                    return {"ok": False, "new_comments": 0, "error": msg}
-                elif platform == "tiktok":
-                    msg = "绑定的 TikTok 账号不存在或登录态已失效"
-                    w.last_scan_at = datetime.utcnow()
-                    w.last_error = msg
-                    s.add(w); s.commit()
-                    return {"ok": False, "new_comments": 0, "error": msg}
             if platform == "tiktok" and not w.account_id:
                 msg = "TikTok 评论监控必须绑定已登录账号"
                 w.last_scan_at = datetime.utcnow()

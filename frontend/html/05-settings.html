@@ -303,12 +303,10 @@
         </div>
       </details>
       <details class="collection-advanced" id="engine-settings-isolation">
-        <summary>代理校验与写入门禁</summary>
+        <summary>代理防关联提醒与写入门禁</summary>
         <div class="collection-advanced-body stack">
-          <p class="field-help">用于多账号环境隔离的运行开关。新建 native 账号的写操作会按这里的门禁检查浏览器和代理基线。</p>
+          <p class="field-help">防关联提醒策略：系统不强制要求「一号一代理」，也不阻断「本机直连」——多号复用同一代理或无代理本机直连均可正常登录与运行任务，仅在登录选择、账号矩阵和风控中心高亮提示共用出口 IP / 直连风险。同平台多账号与海外平台仍强烈建议尽量配置独立住宅代理。</p>
           <div class="form-grid">
-            <div class="form-field"><label class="switch-row" for="engine-strict_proxy_required"><input id="engine-strict_proxy_required" name="strict_proxy_required" type="checkbox" disabled><span class="switch-copy"><b>强制独享代理锁（Fail-Closed）</b><span>强烈推荐开启。未绑定有效代理或代理故障时直接阻断浏览器/API/WS，严禁回退暴露宿主机真实 IP。</span></span></label></div>
-            <div class="form-field"><label class="switch-row" for="engine-forbid_same_platform_shared_proxy"><input id="engine-forbid_same_platform_shared_proxy" name="forbid_same_platform_shared_proxy" type="checkbox" disabled><span class="switch-copy"><b>禁止同平台共用代理/同出口 IP</b><span>强烈推荐开启。拦截同一平台下多个账号绑定相同代理地址或解析出相同出口 IP，防止同 IP 矩阵连坐。</span></span></label></div>
             <div class="form-field"><label class="switch-row" for="engine-quiet_hours_include_reads"><input id="engine-quiet_hours_include_reads" name="quiet_hours_include_reads" type="checkbox" disabled><span class="switch-copy"><b>夜间休眠覆盖后台监控与采集</b><span>推荐开启。活跃时段外同步静默非交互式定时监控、采集与探活，并为每个账号生成每日随机苏醒偏移。</span></span></label></div>
             <div class="form-field"><label class="switch-row" for="engine-verify_proxy_region"><input id="engine-verify_proxy_region" name="verify_proxy_region" type="checkbox" disabled><span class="switch-copy"><b>校验代理出口地区</b><span>将代理出口国家与账号时区进行比对并记录告警。</span></span></label></div>
             <div class="form-field"><label class="switch-row" for="engine-native_write_gate_enabled"><input id="engine-native_write_gate_enabled" name="native_write_gate_enabled" type="checkbox" disabled><span class="switch-copy"><b>启用 native 写入门禁</b><span>写操作前检查账号浏览器和网络基线。</span></span></label></div>

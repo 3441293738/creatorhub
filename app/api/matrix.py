@@ -17,7 +17,7 @@ from app.api.accounts import _clean_account_tags, _parse_account_tags
 from app.api.publishing import _publish_dict, _publish_title_cap, _validate_non_xhs_publish_files
 from app.browser.backends import ACCOUNT_BROWSER_BACKENDS, LOCAL_BACKEND
 from app.browser.manager import normalize_proxy
-from app.profiles import assign_proxy_from_pool, resolve_pool_proxy_row
+from app.profiles import assign_proxy_from_pool, inspect_account_proxy_risk, resolve_pool_proxy_row
 from app.db import get_session
 from app.models import (
     AccountActionTask,
@@ -176,15 +176,12 @@ def _account_health_state(
     same_platform_direct_count: int = 0,
     same_platform_total_count: int = 0,
     same_platform_shared_proxy: bool = False,
-    strict_proxy_required: bool = True,
 ) -> str:
     if acc.status == "invalid" or (not has_read_login and not has_creator):
         return "invalid"
-    if acc.proxy and acc.proxy_status in {"bad", "auth_error", "blocked", "disabled", "drifted"}:
+    if acc.proxy and acc.proxy_status in {"bad", "auth_error", "blocked", "disabled"}:
         return "proxy_issue"
     if acc.proxy and acc.fp_source_ip and acc.exit_ip and acc.fp_source_ip != acc.exit_ip:
-        return "proxy_issue"
-    if same_platform_shared_proxy:
         return "proxy_issue"
     if risk_state and (
         risk_state.manual_review_required
@@ -194,12 +191,11 @@ def _account_health_state(
         return "risk"
     if acc.write_paused_until and acc.write_paused_until > now:
         return "risk"
+    if same_platform_shared_proxy:
+        return "shared_proxy"
     if not acc.proxy and (
-        (
-            strict_proxy_required
-            and getattr(acc, "require_proxy", True)
-            and (acc.platform in {"tiktok", "rednote", "instagram", "twitter"} or same_platform_total_count > 1)
-        )
+        acc.platform in {"tiktok", "rednote", "instagram", "twitter"}
+        or same_platform_total_count > 1
         or same_platform_direct_count > 1
     ):
         return "no_proxy"
@@ -233,12 +229,11 @@ async def matrix_overview(platform: str = ""):
         fans_deltas = _compute_fans_deltas(session, all_ids)
         rollups = _compute_task_rollups(session, all_ids, now)
 
-        # 同平台未配代理计数与同平台共享代理/出口 IP 计数
+        # 同平台未配代理计数与同平台共享代理/出口 IP 计数（仅用于风险提醒，不阻断运行）
         direct_by_pf: dict[str, int] = {}
         total_by_pf: dict[str, int] = {}
         same_pf_proxy_counts: dict[tuple[str, str], int] = {}
         same_pf_exit_counts: dict[tuple[str, str], int] = {}
-        strict_proxy = bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True))
         for acc in all_accounts:
             total_by_pf[acc.platform] = total_by_pf.get(acc.platform, 0) + 1
             if not acc.proxy:
@@ -361,6 +356,7 @@ async def matrix_overview(platform: str = ""):
                 "accounts_invalid": 0,
                 "accounts_risk": 0,
                 "accounts_proxy_issue": 0,
+                "accounts_shared_proxy": 0,
                 "accounts_no_proxy": 0,
                 "followers_total": 0,
                 "fans_delta": 0,
@@ -396,7 +392,6 @@ async def matrix_overview(platform: str = ""):
                 same_platform_direct_count=direct_by_pf.get(acc.platform, 0),
                 same_platform_total_count=total_by_pf.get(acc.platform, 0),
                 same_platform_shared_proxy=shared_proxy,
-                strict_proxy_required=strict_proxy,
             )
             entry["accounts_total"] += 1
             if h_state == "invalid":
@@ -407,6 +402,8 @@ async def matrix_overview(platform: str = ""):
                 entry["accounts_risk"] += 1
             elif h_state == "proxy_issue":
                 entry["accounts_proxy_issue"] += 1
+            elif h_state == "shared_proxy":
+                entry["accounts_shared_proxy"] += 1
             elif h_state == "no_proxy":
                 entry["accounts_no_proxy"] += 1
             entry["followers_total"] += int(acc.follower_count or 0)
@@ -423,6 +420,7 @@ async def matrix_overview(platform: str = ""):
         alerts = {
             "invalid_accounts": sum(e["accounts_invalid"] for e in scoped_entries),
             "proxy_issues": sum(e["accounts_proxy_issue"] for e in scoped_entries),
+            "shared_proxy_accounts": sum(e["accounts_shared_proxy"] for e in scoped_entries),
             "risk_accounts": sum(e["accounts_risk"] for e in scoped_entries),
             "no_proxy_accounts": sum(e["accounts_no_proxy"] for e in scoped_entries),
             "unread_dm": sum(e["unread_dm"] for e in scoped_entries),
@@ -574,9 +572,9 @@ async def list_matrix_accounts(platform: str = ""):
         all_accounts = session.exec(select(DouyinAccount)).all()
         direct_by_pf: dict[str, int] = {}
         total_by_pf: dict[str, int] = {}
+        total_proxy_counts: dict[str, int] = {}
         same_pf_proxy_counts: dict[tuple[str, str], int] = {}
         same_pf_exit_counts: dict[tuple[str, str], int] = {}
-        strict_proxy = bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True))
         profile_counts: dict[str, int] = {}
         profile_keys: dict[int, str] = {}
         for acc in all_accounts:
@@ -586,6 +584,7 @@ async def list_matrix_accounts(platform: str = ""):
             else:
                 np = normalize_proxy(acc.proxy)
                 if np:
+                    total_proxy_counts[np] = total_proxy_counts.get(np, 0) + 1
                     same_pf_proxy_counts[(acc.platform, np)] = same_pf_proxy_counts.get((acc.platform, np), 0) + 1
             ex_ip = str(acc.exit_ip or "").strip()
             if ex_ip:
@@ -692,7 +691,22 @@ async def list_matrix_accounts(platform: str = ""):
                 same_platform_direct_count=direct_by_pf.get(acc.platform, 0),
                 same_platform_total_count=total_by_pf.get(acc.platform, 0),
                 same_platform_shared_proxy=shared_proxy,
-                strict_proxy_required=strict_proxy,
+            )
+            shared_count = max(
+                same_pf_proxy_counts.get((acc.platform, np), 0) if np else 0,
+                same_pf_exit_counts.get((acc.platform, ex_ip), 0) if ex_ip else 0,
+            )
+            cross_pf_shared = bool(
+                np
+                and total_proxy_counts.get(np, 0) > 1
+                and same_pf_proxy_counts.get((acc.platform, np), 0) <= 1
+            )
+            proxy_warns = inspect_account_proxy_risk(
+                session,
+                platform=acc.platform,
+                proxy_url=acc.proxy or "",
+                exclude_account_id=aid,
+                candidate_exit_ip=ex_ip,
             )
             tags = _parse_account_tags(acc.tags)
             p_key = profile_keys.get(aid, "")
@@ -724,6 +738,10 @@ async def list_matrix_accounts(platform: str = ""):
                 "has_proxy": bool(acc.proxy),
                 "proxy": proxies_service._mask_proxy(acc.proxy),
                 "proxy_status": acc.proxy_status or "unknown",
+                "shared_proxy": shared_proxy,
+                "shared_proxy_count": shared_count,
+                "cross_platform_shared": cross_pf_shared,
+                "proxy_warnings": proxy_warns,
                 "exit_ip": acc.exit_ip or "",
                 "exit_country": acc.exit_country or "",
                 "fp_country": acc.fp_country or "",
@@ -916,6 +934,7 @@ async def batch_operate_accounts(body: AccountBatchActionIn):
 
     if act == "assign_proxies":
         assigned = 0
+        shared_assigned = 0
         unassigned = 0
         skipped_has_proxy = 0
         touched_ids: list[int] = []
@@ -931,6 +950,11 @@ async def batch_operate_accounts(body: AccountBatchActionIn):
                 if not picked:
                     unassigned += 1
                     continue
+                risk_warns = inspect_account_proxy_risk(
+                    session, platform=acc.platform, proxy_url=picked, exclude_account_id=aid
+                )
+                if any("共用" in w or "复用" in w for w in risk_warns):
+                    shared_assigned += 1
                 pool_row = resolve_pool_proxy_row(session, picked)
                 acc.proxy = picked
                 acc.proxy_id = pool_row.id if pool_row else None
@@ -947,20 +971,23 @@ async def batch_operate_accounts(body: AccountBatchActionIn):
                 touched_ids.append(aid)
             if app_runtime.browser and aid in touched_ids:
                 await app_runtime.browser.close_context(aid)
+        warning = (
+            f"代理池节点少于账号数，其中 {shared_assigned} 个账号复用了已有代理（存在多号同 IP 关联风险，建议补充独立节点）"
+            if shared_assigned > 0
+            else ""
+        )
         return {
             "ok": True,
             "assigned": assigned,
+            "shared_assigned": shared_assigned,
             "unassigned": unassigned,
             "skipped_has_proxy": skipped_has_proxy,
+            "warning": warning,
         }
 
     if act == "clear_proxy":
-        if bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True)):
-            raise HTTPException(
-                400,
-                "已启用严格代理锁 (strict_proxy_required)，禁止批量清空账号代理以免多账号暴露本机真实 IP；请直接更换代理或先关闭严格代理锁",
-            )
         cleared = 0
+        cleared_ids: list[int] = []
         with get_session() as session:
             rows = session.exec(select(DouyinAccount).where(DouyinAccount.id.in_(ids))).all()
             for acc in rows:
@@ -976,11 +1003,20 @@ async def batch_operate_accounts(body: AccountBatchActionIn):
                     acc.exit_checked_at = None
                     session.add(acc)
                     cleared += 1
+                    if acc.id is not None:
+                        cleared_ids.append(acc.id)
             session.commit()
-        if app_runtime.browser:
-            for aid in ids:
+        for aid in cleared_ids:
+            if app_runtime.im_receiver:
+                await app_runtime.im_receiver.stop_account(aid)
+            if app_runtime.browser:
                 await app_runtime.browser.close_context(aid)
-        return {"ok": True, "updated": cleared}
+        warning = (
+            f"已清除 {cleared} 个账号的代理配置（后续将走本机直连；多号或海外平台请注意真实 IP 关联与网络风控风险）"
+            if cleared > 0
+            else ""
+        )
+        return {"ok": True, "updated": cleared, "warning": warning}
 
     if act == "close_browsers":
         closed = 0

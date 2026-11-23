@@ -373,11 +373,8 @@ def _candidate_proxies_for_thumb(platform: str, explicit_proxy: str = "") -> tup
                 _add(p_raw)
 
     if not cands:
-        if overseas and bool(getattr(getattr(app_runtime.cfg, "engine", None), "strict_proxy_required", True)):
-            raise HTTPException(503, "海外平台封面缓存需配置可用代理（严格代理锁已阻止本机直连）")
         return [""], ua_str
-    # 国内平台若池内代理临时超时，允许最后兜底直连公开无鉴权图片 CDN；海外平台仅走代理
-    if not overseas and "" not in cands:
+    if "" not in cands:
         return [*cands[:2], ""], ua_str
     return cands[:3], ua_str
 

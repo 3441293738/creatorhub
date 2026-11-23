@@ -112,9 +112,14 @@ export function MatrixOverviewCommand({ ctx }) {
       onClick: () => jumpAccountFilter("invalid"),
     },
     alerts.proxy_issues > 0 && {
-      key: "proxy", tone: "warn", icon: "network",
-      label: `${alerts.proxy_issues} 个代理异常 / 出口漂移`, sub: "检查节点与指纹对齐",
+      key: "proxy", tone: "danger", icon: "network",
+      label: `${alerts.proxy_issues} 个代理连接异常 / 指纹漂移`, sub: "检查节点状态或切回直连",
       onClick: () => jumpAccountFilter("proxy_issue"),
+    },
+    alerts.shared_proxy_accounts > 0 && {
+      key: "sharedproxy", tone: "warn", icon: "network",
+      label: `${alerts.shared_proxy_accounts} 个同平台账号共用代理 / IP`, sub: "不强拦 · 建议尽量一号一代理防关联",
+      onClick: () => jumpAccountFilter("shared_proxy"),
     },
     alerts.risk_accounts > 0 && {
       key: "risk", tone: "warn", icon: "shield",
@@ -122,8 +127,8 @@ export function MatrixOverviewCommand({ ctx }) {
       onClick: () => bridge?.navigate?.("risk-control", true),
     },
     alerts.no_proxy_accounts > 0 && {
-      key: "noproxy", tone: "info", icon: "globe",
-      label: `${alerts.no_proxy_accounts} 个同平台账号未配独立代理`, sub: "一键从代理池分配",
+      key: "noproxy", tone: "warn", icon: "globe",
+      label: `${alerts.no_proxy_accounts} 个账号使用本机直连（无代理）`, sub: "不强拦 · 多号或海外建议配代理",
       onClick: () => jumpAccountFilter("no_proxy"),
     },
     alerts.unread_dm > 0 && {
@@ -287,9 +292,11 @@ export function MatrixOverviewCommand({ ctx }) {
                     <div><span>监控</span><b>{item.monitors_enabled}</b></div>
                     <div><span>今日新抓</span><b>+{item.today_contents}</b></div>
                   </div>
-                  {(item.accounts_invalid > 0 || item.unread_dm > 0 || item.active_tasks > 0) && (
+                  {(item.accounts_invalid > 0 || item.accounts_shared_proxy > 0 || item.accounts_no_proxy > 0 || item.unread_dm > 0 || item.active_tasks > 0) && (
                     <div className="mx-pf-tags">
                       {item.accounts_invalid > 0 && <span className="mx-mini-tag danger">{item.accounts_invalid} 失效</span>}
+                      {item.accounts_shared_proxy > 0 && <span className="mx-mini-tag warn" title="同平台多号共用代理提醒（不阻断任务）">{item.accounts_shared_proxy} 共用代理</span>}
+                      {item.accounts_no_proxy > 0 && <span className="mx-mini-tag warn" title="本机直连提醒（不阻断任务）">{item.accounts_no_proxy} 直连</span>}
                       {item.unread_dm > 0 && <span className="mx-mini-tag accent">{item.unread_dm} 私信</span>}
                       {item.active_tasks > 0 && <span className="mx-mini-tag info">{item.active_tasks} 运行中</span>}
                     </div>

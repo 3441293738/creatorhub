@@ -27,7 +27,7 @@ from app.platforms.xhs import parse_self_user as parse_xhs_self_user
 from app.profiles import (
     allocate_profile_dir,
     ensure_identity,
-    find_same_platform_proxy_conflict,
+    inspect_account_proxy_risk,
     release_proxy_reservation,
     reserve_proxy_from_pool,
     resolve_pool_proxy_row,
@@ -70,9 +70,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
           else "TikTok账号" if platform == "tiktok"
           else "创作者账号" if creator else "扫码账号")
     try:
-        # 1) 准备画像 + identity(新建账号此时不写库,只用临时 profile)
-        strict_proxy = bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True))
-        forbid_shared = bool(getattr(app_runtime.cfg.engine, "forbid_same_platform_shared_proxy", True))
+        # 1) 准备画像 + identity(新建账号此时不写库,只用临时 profile;代理仅作风险提醒不强拦)
+        proxy_warning = ""
         if account_id:
             with get_session() as s:
                 acc = s.get(DouyinAccount, account_id)
@@ -82,29 +81,14 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                         account_id=account_id, error="账号不存在")
                     return
                 ensure_identity(acc, app_runtime.cfg, session=s, assign_proxy=False)
-                if not str(acc.proxy or "").strip():
-                    from app.profiles import account_requires_dedicated_proxy
-                    must_px, must_reason = account_requires_dedicated_proxy(
-                        s, app_runtime.cfg, platform=acc.platform, account=acc
-                    )
-                    if must_px:
-                        app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
-                            status="error", platform=platform, creator=creator,
-                            account_id=account_id,
-                            error=f"{must_reason}；请先为该账号绑定专属代理后再重新登录")
-                        return
-                if forbid_shared and acc.proxy:
-                    conflict = find_same_platform_proxy_conflict(
-                        s, acc.platform, acc.proxy,
-                        exclude_account_id=acc.id,
-                        candidate_exit_ip=acc.exit_ip,
-                    )
-                    if conflict is not None:
-                        app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
-                            status="error", platform=platform, creator=creator,
-                            account_id=account_id,
-                            error=f"同平台防关联拦截：该账号绑定的代理已与同平台账号「{conflict.nickname or conflict.id}」冲突，请更换独立代理")
-                        return
+                proxy_warnings = inspect_account_proxy_risk(
+                    s,
+                    platform=acc.platform,
+                    proxy_url=acc.proxy or "",
+                    exclude_account_id=acc.id,
+                    candidate_exit_ip=acc.exit_ip or "",
+                )
+                proxy_warning = "；".join(proxy_warnings)
                 s.add(acc); s.commit(); s.refresh(acc)
                 identity = app_runtime.browser.identity_for(acc)
                 acc_id = acc.id
@@ -123,29 +107,13 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             else:
                 from app.browser.manager import normalize_proxy
                 proxy = normalize_proxy(choice)
-                if forbid_shared and proxy:
-                    with get_session() as s:
-                        conflict = find_same_platform_proxy_conflict(
-                            s, platform, proxy
-                        )
-                        if conflict is not None:
-                            app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
-                                status="error", platform=platform, creator=creator,
-                                account_id=None,
-                                error=f"同平台防关联拦截：所选代理已被同平台账号「{conflict.nickname or conflict.id}」占用，请为新账号选择独立代理")
-                            return
-            if not proxy:
-                from app.profiles import account_requires_dedicated_proxy
-                with get_session() as s:
-                    must_px, must_reason = account_requires_dedicated_proxy(
-                        s, app_runtime.cfg, platform=platform
-                    )
-                if must_px:
-                    app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
-                        status="error", platform=platform, creator=creator,
-                        account_id=None,
-                        error=f"{must_reason}；请先在「代理池」添加可用独享代理后再扫码登录")
-                    return
+            with get_session() as s:
+                proxy_warnings = inspect_account_proxy_risk(
+                    s,
+                    platform=platform,
+                    proxy_url=proxy,
+                )
+                proxy_warning = "；".join(proxy_warnings)
             requested_backend = str(browser_backend or "default").strip().lower()
             if requested_backend not in ACCOUNT_BROWSER_BACKENDS:
                 requested_backend = "default"
@@ -160,9 +128,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     requested_backend, browser_runtime_id).get("name", "")
             is_fingerprint_environment = (
                 effective_backend == "fingerprint_chromium")
-            # 只要配置了代理，无论使用指纹内核还是系统 Chrome，均经由该代理探测真实出口归属地并对齐时区/语言/经纬度！
+            # 配置了代理或使用指纹内核时，探测真实出口归属地并对齐时区/语言/经纬度
             if proxy or is_fingerprint_environment:
-                geo = await proxies_service._proxy_geo(proxy, timeout=6) if (proxy or not strict_proxy) else None
+                geo = await proxies_service._proxy_geo(proxy, timeout=6)
                 if geo and geo.get("ip"):
                     fingerprint_fields = derive_ip_fingerprint(
                         task_id,
@@ -210,9 +178,12 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
         # 登录轮询返回可诊断但不含代理凭据的实际运行环境。浏览器或版本回退
         # 一眼可见，避免把平台验证误判成单纯的 Cookie/二维码问题。
         login_environment = app_runtime.browser.environment_snapshot(identity, headless=False)
+        if proxy_warning and isinstance(login_environment, dict):
+            login_environment = {**login_environment, "proxy_warning": proxy_warning}
         app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
             status="waiting", platform=platform, creator=creator,
-            account_id=account_id, environment=login_environment)
+            account_id=account_id, environment=login_environment,
+            warning=proxy_warning)
 
         # 2) 在统一账号/网络入口内扫码，避免与后台任务并行占用 profile。
         @asynccontextmanager
@@ -317,6 +288,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
 
         # 浏览器已经完成实际后端选择；此时快照能反映系统 Chrome 或真实回退。
         login_environment = app_runtime.browser.environment_snapshot(identity, headless=False)
+        if proxy_warning and isinstance(login_environment, dict):
+            login_environment = {**login_environment, "proxy_warning": proxy_warning}
         temporary_identity_key = identity.key
 
         # 3) 仅在成功时落库
@@ -369,7 +342,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                         profile_dir=tmp_profile,
                         proxy_id=(pool_row.id if pool_row else None),
                         proxy=identity.proxy,
-                        require_proxy=bool(identity.proxy or strict_proxy),
+                        require_proxy=False,
                         browser_backend=identity.browser_backend,
                         browser_runtime_id=identity.browser_runtime_id,
                         identity_mode="native", ua=identity.ua or "",
@@ -529,12 +502,21 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
 
             with get_session() as s:
                 acc = s.get(DouyinAccount, acc_id)
+                final_warnings = inspect_account_proxy_risk(
+                    s,
+                    platform=acc.platform if acc else platform,
+                    proxy_url=(acc.proxy or "") if acc else "",
+                    exclude_account_id=acc_id,
+                    candidate_exit_ip=(acc.exit_ip or "") if acc else "",
+                )
+                final_warning = "；".join(final_warnings) or proxy_warning
                 app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
                     status="confirmed", platform=platform, creator=creator,
                     account_id=acc_id,
                     nickname=acc.nickname if acc else (nickname or nm),
                     profile_status=profile_status,
-                    environment=login_environment)
+                    environment=login_environment,
+                    warning=final_warning)
         else:
             if fresh_account and tmp_profile:   # 没建账号,清理临时 profile
                 try:

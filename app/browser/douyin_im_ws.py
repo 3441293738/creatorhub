@@ -109,7 +109,7 @@ async def receive_messages(
     *,
     proxy: str = "",
     user_agent: str = "",
-    strict_proxy: bool = True,
+    strict_proxy: bool = False,
 ) -> str:
     """连 frontier-im WS,持续解码新消息并回调 on_message。断线指数退避重连。
     强制走账号代理与匹配 UA 的 Chrome TLS 指纹，杜绝宿主机真实 IP 与 Python TLS 指纹泄漏。"""
@@ -124,10 +124,8 @@ async def receive_messages(
     from ..netfp import curl_proxy_url, impersonate_for_ua
 
     norm_proxy = curl_proxy_url(proxy)
-    if strict_proxy and not norm_proxy:
-        err_msg = "error: proxy_required (抖音实时私信已拦截本机无代理直连)"
-        log(f"[im-ws] {err_msg}")
-        return err_msg
+    if not norm_proxy:
+        log("[im-ws] 提醒: 当前未配置代理，抖音实时私信使用本机直连（同平台多账号请注意真实 IP 关联风险）")
 
     ua = (user_agent or _UA).strip()
     impersonate = impersonate_for_ua(ua)

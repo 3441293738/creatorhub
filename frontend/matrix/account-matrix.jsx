@@ -15,9 +15,10 @@ import {
 const HEALTH_FILTERS = [
   { key: "all", label: "全部账号", tone: "neutral" },
   { key: "invalid", label: "登录失效", tone: "danger" },
-  { key: "proxy_issue", label: "代理/IP异常", tone: "warn" },
+  { key: "proxy_issue", label: "代理故障", tone: "danger" },
+  { key: "shared_proxy", label: "共用代理提醒", tone: "warn" },
+  { key: "no_proxy", label: "直连风险提醒", tone: "warn" },
   { key: "risk", label: "风控冷却", tone: "warn" },
-  { key: "no_proxy", label: "多号缺代理", tone: "info" },
   { key: "unread_dm", label: "有未读私信", tone: "accent" },
   { key: "healthy", label: "健康可用", tone: "ok" },
 ];
@@ -25,9 +26,10 @@ const HEALTH_FILTERS = [
 const HEALTH_BADGE = {
   healthy: { text: "健康正常", cls: "ok" },
   invalid: { text: "登录失效", cls: "danger" },
-  proxy_issue: { text: "代理/IP异常", cls: "warn" },
+  proxy_issue: { text: "代理故障", cls: "danger" },
+  shared_proxy: { text: "共用代理提醒", cls: "warn" },
   risk: { text: "风控/冷却", cls: "warn" },
-  no_proxy: { text: "多号共用直连", cls: "info" },
+  no_proxy: { text: "本机直连提醒", cls: "warn" },
 };
 
 export function AccountMatrixCenter({ ctx }) {
@@ -129,7 +131,7 @@ export function AccountMatrixCenter({ ctx }) {
   }, [payload.items, effectivePf]);
 
   const healthCounts = useMemo(() => {
-    const c = { all: pfScopedItems.length, invalid: 0, proxy_issue: 0, risk: 0, no_proxy: 0, unread_dm: 0, healthy: 0 };
+    const c = { all: pfScopedItems.length, invalid: 0, proxy_issue: 0, shared_proxy: 0, risk: 0, no_proxy: 0, unread_dm: 0, healthy: 0 };
     pfScopedItems.forEach(a => {
       if (c[a.health_state] !== undefined) c[a.health_state]++;
       if (a.unread_dm > 0) c.unread_dm++;
@@ -262,6 +264,9 @@ export function AccountMatrixCenter({ ctx }) {
         body: JSON.stringify({ account_ids: ids, ...body }),
       });
       matrixToast(typeof okMsg === "function" ? okMsg(res) : okMsg, "ok");
+      if (res && res.warning) {
+        setTimeout(() => matrixToast("⚠️ " + res.warning, "info", 6500), 280);
+      }
       await refreshEverything();
     } catch (e) {
       matrixToast("批量操作失败：" + e.message, "err");
@@ -710,10 +715,25 @@ export function AccountMatrixCenter({ ctx }) {
               className="ghost sm"
               onClick={() => runBatchApi(
                 { action: "assign_proxies", overwrite_existing_proxy: false },
-                r => `已为 ${r.assigned} 个无代理账号分配独享节点${r.unassigned ? `（池余量不足 ${r.unassigned} 个）` : ""}`
+                r => `已为 ${r.assigned} 个无代理账号分配池节点${r.shared_assigned ? `（含复用 ${r.shared_assigned} 个）` : ""}${r.unassigned ? `，未分配 ${r.unassigned} 个` : ""}`
               )}
             >
               <Icon name="globe" />自动配代理
+            </button>
+            <button
+              type="button"
+              className="ghost sm"
+              onClick={async () => {
+                const ok = await window.uiConfirm?.({
+                  title: `批量切换为本机直连（已选 ${selectedIds.size} 个账号）`,
+                  message: "清除所选账号代理后将改走本机直连（不拦截任务，但暴露真实 IP，多账号同平台或海外平台存在关联风控风险）。确认清除？",
+                  okText: "清除代理改直连",
+                });
+                if (!ok) return;
+                await runBatchApi({ action: "clear_proxy" }, r => `已清除 ${r.updated} 个账号代理（当前改走本机直连）`);
+              }}
+            >
+              <Icon name="x" />清除代理(直连)
             </button>
             <button type="button" className="ghost sm" onClick={handleBatchRuntime}><Icon name="settings" />切内核</button>
             <button type="button" className="ghost sm" disabled={!!batchProgress} onClick={() => handleBatchSequentialCheck("proxy")}>
@@ -871,10 +891,18 @@ export function AccountMatrixCenter({ ctx }) {
                                 </div>
 
                               <div className="mx-acc-env-line">
-                                <span title={acc.proxy || "未配置代理"}>
+                                <span title={(acc.proxy_warnings && acc.proxy_warnings.length) ? acc.proxy_warnings.join("；") : (acc.proxy || "当前走本机直连")}>
                                   <Icon name="globe" />
-                                  {acc.has_proxy ? (acc.exit_country || acc.fp_city || acc.proxy) : "本机直连"}
+                                  {acc.has_proxy ? (acc.exit_country || acc.fp_city || acc.proxy) : "⚠️ 本机直连"}
                                 </span>
+                                {acc.shared_proxy && (
+                                  <span className="mx-mini-tag warn" title={(acc.proxy_warnings || []).join("；") || "同平台多账号正共用该代理或出口 IP，建议尽量一号一代理"}>
+                                    ⚠️ 共用({acc.shared_proxy_count || 2}号)
+                                  </span>
+                                )}
+                                {!acc.shared_proxy && acc.cross_platform_shared && (
+                                  <span className="mx-mini-tag info" title={(acc.proxy_warnings || []).join("；") || "跨平台复用同一代理"}>跨平台复用</span>
+                                )}
                                 {acc.browser_open && <span className="mx-open-chip">窗口已开</span>}
                                 {(acc.tags || []).slice(0, 2).map(t => (
                                   <span key={t} className="mx-tag-chip">#{t}</span>
@@ -1006,15 +1034,19 @@ export function AccountMatrixCenter({ ctx }) {
                       </td>
                       <td>
                         {acc.has_proxy ? (
-                          <div>
+                          <div title={(acc.proxy_warnings || []).join("；")}>
                             <code style={{ fontSize: "11.5px" }}>{acc.proxy}</code>
                             <div className="mut" style={{ fontSize: "11px", display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap" }}>
                               <span>{acc.proxy_status}{acc.exit_ip ? ` · ${acc.exit_ip}` : ""}</span>
+                              {acc.shared_proxy && <span className="mx-mini-tag warn">⚠️ 共用({acc.shared_proxy_count || 2}号)</span>}
+                              {!acc.shared_proxy && acc.cross_platform_shared && <span className="mx-mini-tag info">跨平台复用</span>}
                               {!acc.ip_matches_exit && <span className="mx-mini-tag warn">出口漂移</span>}
                             </div>
                           </div>
                         ) : (
-                          <span className="mut" style={{ fontSize: "12px" }}>本机直连</span>
+                          <div title={(acc.proxy_warnings || []).join("；") || "当前走本机直连（不拦截任务，多号或海外平台建议配置代理）"}>
+                            <span className="mx-mini-tag warn">⚠️ 本机直连</span>
+                          </div>
                         )}
                       </td>
                       <td>

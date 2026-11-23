@@ -312,14 +312,14 @@ async def receive_bili_broadcast(
     should_stop: Callable[[], bool] | None = None,
     proxy: str = "",
     account_seed: str = "",
-    strict_proxy: bool = True,
+    strict_proxy: bool = False,
 ) -> None:
     """维持 B 站 Broadcast WebSocket 连接，收到 WatchNotify 时触发增量 HTTP 同步。"""
     from ...netfp import curl_proxy_url
 
     norm_proxy = curl_proxy_url(proxy)
-    if strict_proxy and not norm_proxy:
-        raise RuntimeError("B站实时私信要求绑定专属代理（已拦截本机真实 IP 直连）")
+    if not norm_proxy:
+        print("[bili-im-ws] 提醒: 当前未配置代理，B站实时私信使用本机直连（同平台多账号请注意真实 IP 关联风险）")
 
     ua = str(user_agent or "").strip() or _DEFAULT_WS_UA
     eff_seed = str(account_seed or "").strip()

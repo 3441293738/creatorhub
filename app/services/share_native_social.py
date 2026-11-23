@@ -43,16 +43,11 @@ async def _instagram_native_share(
     acc_seed = ""
     acc_tz = "America/New_York"
     if account_id:
-        from app.browser.manager import normalize_proxy
         with get_session() as session:
             acc = session.get(DouyinAccount, account_id)
             if acc is not None and acc.platform == "instagram" and acc.status == "active":
-                if proxy and normalize_proxy(proxy) != normalize_proxy(acc.proxy or ""):
-                    raise ShareDownloadError(
-                        "Instagram 账号解析必须使用该账号已绑定的专属代理，请勿临时切换代理出口"
-                    )
                 state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
-                acc_proxy = acc.proxy or ""
+                acc_proxy = proxy or (acc.proxy or "")
                 acc_ua = acc.ua or acc_ua
                 acc_seed = acc.fp_seed or acc.profile_dir or ""
                 acc_tz = acc.timezone_id or "America/New_York"
@@ -195,16 +190,11 @@ async def _twitter_native_share(
     acc_ua = user_agent
     identity = None
     if account_id:
-        from app.browser.manager import normalize_proxy
         with get_session() as session:
             acc = session.get(DouyinAccount, account_id)
             if acc is not None and acc.platform == "twitter" and acc.status == "active":
-                if proxy and normalize_proxy(proxy) != normalize_proxy(acc.proxy or ""):
-                    raise ShareDownloadError(
-                        "Twitter 账号解析必须使用该账号已绑定的专属代理，请勿临时切换代理出口"
-                    )
                 state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
-                acc_proxy = acc.proxy or ""
+                acc_proxy = proxy or (acc.proxy or "")
                 acc_ua = acc.ua or acc_ua
                 if app_runtime.browser is not None:
                     identity = app_runtime.browser.identity_for(acc)
@@ -351,12 +341,7 @@ async def _xhs_native_share(
             return None
         identity = app_runtime.browser.identity_for(account)
 
-    from app.browser.manager import normalize_proxy
-    if normalize_proxy(proxy) != normalize_proxy(identity.proxy):
-        raise ShareDownloadError(
-            "小红书链接下载必须复用账号已绑定代理；请先在账号环境中配置代理，"
-            "不要在下载页临时切换出口"
-        )
+    dl_proxy = proxy or (identity.proxy or "")
 
     async def _read_note():
         final_url = source_url
@@ -372,7 +357,7 @@ async def _xhs_native_share(
         ref = await xhs_resolve_note(
             final_url,
             account_profiles_service._direct_request_ua(identity),
-            proxy=identity.proxy or "",
+            proxy=dl_proxy,
         )
         if ref is None:
             return None, "没有从链接识别到小红书笔记 ID"
@@ -433,7 +418,7 @@ async def _xhs_native_share(
         timeout=max(30.0, app_runtime.cfg.engine.download_timeout_seconds),
     )
     ok, _local_path, error = await downloader.download_aweme(
-        aweme, base_dir=str(output_root), proxy=identity.proxy or "")
+        aweme, base_dir=str(output_root), proxy=dl_proxy)
     if not ok:
         raise ShareDownloadError(error or "小红书媒体下载失败")
 
@@ -519,13 +504,7 @@ async def _rednote_native_share(
         state = account.storage_state or account.creator_storage_state or ""
         identity = app_runtime.browser.identity_for(account) if app_runtime.browser is not None else None
 
-    from app.browser.manager import normalize_proxy
-    acc_proxy = identity.proxy if identity is not None else (account.proxy or "")
-    if normalize_proxy(proxy) != normalize_proxy(acc_proxy):
-        raise ShareDownloadError(
-            "海外小红书链接下载必须复用账号已绑定代理；请先在账号环境中配置代理，"
-            "不要在下载页临时切换出口"
-        )
+    acc_proxy = proxy or (identity.proxy if identity is not None else (account.proxy or ""))
 
     actual_ua = (
         account_profiles_service._direct_request_ua(identity)

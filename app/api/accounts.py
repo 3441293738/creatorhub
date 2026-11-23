@@ -111,12 +111,25 @@ async def update_account_meta(account_id: int, body: AccountMetaUpdateIn):
 
 @router.get("/api/accounts")
 async def list_accounts(platform: str | None = None):
+    from app.browser.manager import normalize_proxy
+    from app.profiles import inspect_account_proxy_risk
+
     risk_controller = app_runtime.engine.risk if app_runtime.engine else RiskController(app_runtime.cfg)
     with get_session() as s:
         all_accounts = s.exec(select(DouyinAccount)).all()
         profile_keys: dict[int, str] = {}
         profile_counts: dict[str, int] = {}
+        same_pf_proxy_counts: dict[tuple[str, str], int] = {}
+        same_pf_exit_counts: dict[tuple[str, str], int] = {}
+        total_proxy_counts: dict[str, int] = {}
         for account in all_accounts:
+            np = normalize_proxy(account.proxy) if account.proxy else ""
+            if np:
+                total_proxy_counts[np] = total_proxy_counts.get(np, 0) + 1
+                same_pf_proxy_counts[(account.platform, np)] = same_pf_proxy_counts.get((account.platform, np), 0) + 1
+            ex_ip = str(account.exit_ip or "").strip()
+            if ex_ip:
+                same_pf_exit_counts[(account.platform, ex_ip)] = same_pf_exit_counts.get((account.platform, ex_ip), 0) + 1
             if not account.id or not account.profile_dir:
                 continue
             normalized = os.path.normcase(str(
@@ -184,12 +197,32 @@ async def list_accounts(platform: str | None = None):
                 "has_storage": has_read_login,
                 "login_type": "cookie" if a.cookie else "scan",
                 "monitor_count": used,
-                # 风控隔离画像
+                # 风控隔离画像与非阻断风险提醒
                 "proxy_id": a.proxy_id,
-                "require_proxy": bool(getattr(a, "require_proxy", True)),
+                "require_proxy": False,
                 "proxy": proxies_service._mask_proxy(a.proxy),
                 "proxy_status": a.proxy_status,
                 "has_proxy": bool(a.proxy),
+                "shared_proxy": bool(
+                    (a.proxy and same_pf_proxy_counts.get((a.platform, normalize_proxy(a.proxy)), 0) > 1)
+                    or (a.exit_ip and same_pf_exit_counts.get((a.platform, str(a.exit_ip).strip()), 0) > 1)
+                ),
+                "shared_proxy_count": max(
+                    same_pf_proxy_counts.get((a.platform, normalize_proxy(a.proxy)), 0) if a.proxy else 0,
+                    same_pf_exit_counts.get((a.platform, str(a.exit_ip).strip()), 0) if a.exit_ip else 0,
+                ),
+                "cross_platform_shared_proxy": bool(
+                    a.proxy
+                    and total_proxy_counts.get(normalize_proxy(a.proxy), 0) > 1
+                    and same_pf_proxy_counts.get((a.platform, normalize_proxy(a.proxy)), 0) <= 1
+                ),
+                "proxy_warnings": inspect_account_proxy_risk(
+                    s,
+                    platform=a.platform,
+                    proxy_url=a.proxy or "",
+                    exclude_account_id=a.id,
+                    candidate_exit_ip=a.exit_ip or "",
+                ),
                 "exit_ip": a.exit_ip,
                 "exit_country": a.exit_country,
                 "exit_asn": a.exit_asn,

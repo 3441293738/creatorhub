@@ -93,23 +93,18 @@ async def share_download(body: ShareDownloadIn):
         from app.browser.manager import normalize_proxy
         cookie_file, account_proxy, account_ua = share_downloads_service._write_account_cookie_file(body.account_id)
         req_proxy = body.proxy.strip()
+        proxy_override_warning = ""
         if body.account_id is not None and req_proxy and normalize_proxy(req_proxy) != normalize_proxy(account_proxy):
-            raise HTTPException(
-                400,
-                "所选账号已绑定专属环境，禁止在分享下载中临时切换代理出口(防止同登录态跨 IP 关联)；请清空临时代理重试",
-            )
-        proxy = account_proxy if body.account_id is not None else req_proxy
-        if not proxy and bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True)):
+            proxy_override_warning = "提醒：本次下载使用了与所选账号绑定环境不同的临时代理出口，请注意跨 IP 登录态关联风险"
+            proxy = req_proxy
+        else:
+            proxy = account_proxy if body.account_id is not None else req_proxy
+        if not proxy:
             with get_session() as s_pool:
                 from app.profiles import _pool_urls
                 pool_candidates = _pool_urls(s_pool, app_runtime.cfg)
-                if pool_candidates:
+                if pool_candidates and body.account_id is None:
                     proxy = pool_candidates[0]
-            if not proxy:
-                raise HTTPException(
-                    400,
-                    "已启用强制代理保护：请先选择已绑定代理的账号、填写代理或在「代理池」添加可用节点",
-                )
         user_agent = account_ua or app_runtime.cfg.engine.user_agent
         downloader = ShareDownloader(
             output_root,
@@ -243,6 +238,14 @@ async def share_download(body: ShareDownloadIn):
                             link.url, proxy=proxy, cookie_file=safe_ytdlp_cookie
                         )
                     item["input_platform"] = link.platform
+                    item_warnings = list(item.get("warnings") or [])
+                    if proxy_override_warning and proxy_override_warning not in item_warnings:
+                        item_warnings.append(proxy_override_warning)
+                    if not proxy and link.platform in {"tiktok", "rednote", "instagram", "twitter"}:
+                        direct_warn = "提醒：当前未配置代理（走本机直连），海外平台若遇到连接超时建议配置代理"
+                        if direct_warn not in item_warnings:
+                            item_warnings.append(direct_warn)
+                    item["warnings"] = item_warnings
                     if fallback_error:
                         item.setdefault("warnings", []).append(
                             fallback_error + "；已改用通用提取器完成处理")

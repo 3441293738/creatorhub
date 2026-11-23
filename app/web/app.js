@@ -1853,47 +1853,67 @@ async function choosePreLoginBrowserBackend({ platform = "" } = {}) {
   return selected;
 }
 function formatProxyOptionLabel(p, platform = PLATFORM) {
-  const domestic = !["tiktok", "rednote", "instagram", "twitter"].includes(platform || "douyin");
+  const pf = platform || "douyin";
+  const domestic = !["tiktok", "rednote", "instagram", "twitter"].includes(pf);
   const geo = p.geo_loc ? ` · ${p.geo_loc}` : "";
   const overseasWarn = domestic && p.geo_checked && !p.is_mainland ? " · ⚠️非大陆(慢/高风控)" : (!domestic && p.geo_checked && p.is_mainland ? " · ⚠️大陆节点(海外平台高风控)" : "");
-  return `${p.label}${geo}${overseasWarn} · ${p.status} · 占用${p.used_by} · ${p.masked}${p.enabled ? "" : " · 已停用"}`;
+  const samePfUsed = Number((p.used_by_platform || {})[pf] || 0);
+  const totalUsed = Number(p.used_by || 0);
+  const usageTag = samePfUsed > 0
+    ? `⚠️同平台已绑${samePfUsed}号(共用有风险)`
+    : (totalUsed > 0 ? `跨平台已绑${totalUsed}号` : "空闲独立");
+  return `${p.label}${geo}${overseasWarn} · ${p.status} · ${usageTag} · ${p.masked}${p.enabled ? "" : " · 已停用"}`;
 }
 // 登录前选代理:返回 "" (不用) | "auto" | 具体url | null(取消)
 async function choosePreLoginProxy({ platform = PLATFORM } = {}) {
   let opts = [];
   try { opts = await api("/api/proxies/options"); } catch (e) { }
-  const domestic = !["tiktok", "rednote", "instagram", "twitter"].includes(platform || "douyin");
-  const usablePool = opts.filter(p => (
-    p.enabled && !["bad", "auth_error", "blocked"].includes(p.status)
-    && Number(p.used_by || 0) === 0 && (domestic ? (!p.geo_checked || p.is_mainland) : (!p.geo_checked || !p.is_mainland))
+  const pf = platform || "douyin";
+  const domestic = !["tiktok", "rednote", "instagram", "twitter"].includes(pf);
+  const enabledPool = opts.filter(p => p.enabled && !["bad", "auth_error", "blocked"].includes(p.status));
+  const idleGeoPool = enabledPool.filter(p => (
+    Number(p.used_by || 0) === 0
+    && (domestic ? (!p.geo_checked || p.is_mainland) : (!p.geo_checked || !p.is_mainland))
   ));
-  const preferDirect = opts.length > 0 && usablePool.length === 0;
   const autoLabel = !opts.length
-    ? "自动分配（池为空时不用代理）"
-    : preferDirect
-      ? (domestic ? "自动分配（仅大陆/未标注节点；当前池内无可用节点）" : "自动分配（仅海外/未标注节点；当前池内无可用节点）")
-      : "自动分配（占用最少）";
+    ? "自动分配（当前代理池为空，将使用本机直连 ⚠️建议先配代理）"
+    : !enabledPool.length
+      ? "自动分配（池内无可用节点，将使用本机直连 ⚠️）"
+      : idleGeoPool.length > 0
+        ? "自动分配（优先空闲独立节点，推荐）"
+        : "⚠️ 自动分配（池内无空闲节点，将按最少占用复用现有代理）";
   const options = [
     { value: "auto", label: autoLabel },
-    ...opts.map(p => ({ value: p.url, label: formatProxyOptionLabel(p, platform) })),
+    ...opts.map(p => ({ value: p.url, label: formatProxyOptionLabel(p, pf) })),
     { value: "__custom__", label: "✎ 手动输入指定代理…" },
-    { value: "", label: "⚠️ 不用代理（暴露本机真实 IP；开启严格代理锁时将拦截）" },
+    { value: "", label: "⚠️ 不用代理 / 本机直连（允许直连不拦截，但暴露真实 IP，多号或海外易风控）" },
   ];
+  const hint = domestic
+    ? "建议尽量保持「一号一独立代理」。系统不强制拦截本机直连或多号共用代理，但同一平台下多个账号共用相同出口 IP 容易触发关联限流或安全验证。"
+    : "⚠️ 海外平台强烈建议绑定境外独立代理；系统不强制拦截本机直连或多号共用代理，但直连可能受本机网络环境限制，多号共用同一 IP 易触发关联风控。";
   const v = await uiSelect({
     title: "选择本次登录使用的代理",
-    hint: preferDirect
-      ? (domestic ? "当前代理池无空闲大陆节点；请手动输入新代理或先扩充代理池（开启严格代理锁时禁止多号共享本机 IP）。" : "当前代理池无空闲境外节点；请手动输入新代理或先扩充代理池，避免大陆节点或本机直连触发风控。")
-      : "整个登录/扫码过程都走独立代理，从一开始锁定一号一 IP（严禁同平台共享出口）。",
-    options, value: preferDirect ? "__custom__" : "auto",
+    hint,
+    options,
+    value: enabledPool.length ? "auto" : "",
   });
   if (v === null) return null;
   if (v === "__custom__") {
     const url = await uiPrompt({
       title: "手动输入指定代理",
-      hint: "http://user:pass@host:port 或 socks5://host:port;裸 ip:port 默认 HTTP",
+      hint: "http://user:pass@host:port 或 socks5://host:port；裸 ip:port 默认 HTTP（支持多账号复用同一地址，但建议尽量一号一代理）",
       placeholder: "http://user:pass@host:port" });
     if (url === null || !url.trim()) return null;
     return url.trim();
+  }
+  if (v === "") {
+    toast("⚠️ 提醒：本次登录使用本机直连，多账号或海外平台请注意真实 IP 关联与网络风控风险", "info", 5500);
+  } else if (v !== "auto") {
+    const picked = opts.find(o => o.url === v);
+    const sameUsed = Number((picked?.used_by_platform || {})[pf] || 0);
+    if (sameUsed > 0) {
+      toast(`⚠️ 提醒：所选代理已在同平台绑定 ${sameUsed} 个账号，共用同一出口 IP 存在关联风险`, "info", 6000);
+    }
   }
   return v;
 }
@@ -1970,7 +1990,7 @@ function loginEnvironmentText(env) {
   if (!env || !env.backend_label) return "";
   let text = env.backend_label;
   if (env.runtime_version && !text.includes(env.runtime_version)) text += " · " + env.runtime_version;
-  if (env.has_proxy) text += " · 账号代理";
+  text += env.has_proxy ? " · 账号代理" : " · 本机直连";
   if (env.fallback_reason) text += "（" + env.fallback_reason + "）";
   return text;
 }
@@ -1982,11 +2002,13 @@ function pollLogin(tid) {
     try {
       const res = await api("/api/login/browser/poll?task_id=" + tid);
       const envText = loginEnvironmentText(res.environment);
+      const pxWarn = res.warning || res.environment?.proxy_warning || "";
+      const warnHtml = pxWarn ? `<div style="margin-top:6px;color:var(--warn);font-size:12px">⚠️ ${esc(pxWarn)}</div>` : "";
       if (["opening", "waiting"].includes(res.status) && envText) {
-        $("qrstatus").innerHTML = `${ic("i-eye")} 浏览器已打开 · <b>${esc(envText)}</b><br>请在可见窗口完成登录。`;
+        $("qrstatus").innerHTML = `${ic("i-eye")} 浏览器已打开 · <b>${esc(envText)}</b><br>请在可见窗口完成登录。${warnHtml}`;
       }
       if (res.status === "verification") {
-        $("qrstatus").innerHTML = `${ic("i-info")} <b>需要完成一次设备安全验证</b><br>${esc(res.hint || "请扫描浏览器中的验证二维码，验证通过后会自动继续登录。")}`;
+        $("qrstatus").innerHTML = `${ic("i-info")} <b>需要完成一次设备安全验证</b><br>${esc(res.hint || "请扫描浏览器中的验证二维码，验证通过后会自动继续登录。")}${warnHtml}`;
       } else if (res.status === "persisted") {
         $("qrstatus").textContent = "扫码已确认，正在校验登录态并同步账号资料…";
         if (!accountShown) {
@@ -2003,6 +2025,7 @@ function pollLogin(tid) {
           const suffix = ["error", "deferred"].includes(res.profile_status) ? "（资料可稍后刷新）" : "";
           $("qrstatus").textContent = "登录成功 ✓ " + (res.nickname || "") + suffix;
           toast("登录成功 " + (res.nickname || "") + suffix, res.profile_status === "error" ? "info" : "ok");
+          if (pxWarn) setTimeout(() => toast("⚠️ " + pxWarn, "info", 6500), 350);
           setTimeout(() => { $("qrbox").style.display = "none"; }, 650);
         }
         refreshAccounts();
@@ -2261,7 +2284,10 @@ async function saveCookie() {
       body: JSON.stringify({ cookie, nickname: $("ck-nick").value.trim(), platform: PLATFORM }),
     });
     $("ck-val").value = ""; $("cookiebox").style.display = "none";
-    if (res && res.warning) toast(`账号已保存(${res.nickname || ""})，但状态异常：${res.warning}`, "err"); else toast(PLATFORM === "twitter" && res && res.nickname ? `Token / Cookie 已导入：${res.nickname}` : "Cookie 已保存", "ok"); refreshAccounts();
+    if (res && res.warning) toast(`账号已保存(${res.nickname || ""})，但状态异常：${res.warning}`, "err");
+    else toast(PLATFORM === "twitter" && res && res.nickname ? `Token / Cookie 已导入：${res.nickname}` : "Cookie 已保存", "ok");
+    if (res && res.proxy_warning) setTimeout(() => toast("⚠️ " + res.proxy_warning, "info", 6500), 300);
+    refreshAccounts();
   } catch (e) { toast("保存失败:" + e.message, "err"); }
 }
 
@@ -2874,12 +2900,23 @@ async function refreshAccounts() {
           ? `<span class="pill active has-ic ic-text" title="已完成创作者登录,可发布">${ic("i-film")}创作者号</span>`
           : `<span class="pill bare has-ic ic-text" title="仅监控/读取,未授权创作平台,不能发布">${ic("i-eye")}读取号</span>`)
       : `<span class="pill ${a.has_creator ? "active" : "bare"} has-ic ic-text" title="${a.has_creator ? "创作者登录,可用于创作中心评论模式,也可抓取" : "普通抓取账号"}">${a.has_creator ? ic("i-film") + "创作者号" : ic("i-card") + "抓取号"}</span>`;
-    // 代理(风控隔离):有代理显示脱敏地址 + 状态;无代理高亮提醒(多账号同 IP 有关联风险)
-    const pxText = { ok: "代理正常", rotating: "代理正常（轮换出口）", drifted: "代理正常（出口已变化）", bad: "代理不可用", bound: "代理已绑定（待检测）", unknown: "代理已绑定（未检测）", auth_error: "代理认证失败", blocked: "代理被拦截" };
-    const pxCls = ["ok", "rotating", "drifted"].includes(a.proxy_status) ? "active" : ["bad", "auth_error", "blocked"].includes(a.proxy_status) ? "invalid" : "bare";
+    // 代理(风控隔离):有代理显示脱敏地址 + 状态 + 共用提醒;无代理高亮提醒直连风险(均不强制拦截)
+    const pxText = { ok: "代理正常", rotating: "代理正常（轮换出口）", drifted: "代理正常（出口已变化）", bad: "代理不可用", disabled: "池节点已停用", bound: "代理已绑定（待检测）", unknown: "代理已绑定（未检测）", auth_error: "代理认证失败", blocked: "代理被拦截" };
+    const pxCls = ["ok", "rotating", "drifted"].includes(a.proxy_status) ? "active" : ["bad", "auth_error", "blocked", "disabled"].includes(a.proxy_status) ? "invalid" : "bare";
+    const pxWarnings = Array.isArray(a.proxy_warnings) ? a.proxy_warnings : [];
+    const pxWarnTitle = pxWarnings.join("；");
+    const sharedBadge = a.shared_proxy
+      ? `<span class="pill pending" title="${esc(pxWarnTitle || "同平台多账号正共用此代理或出口 IP，建议尽量一号一独立代理")}">⚠️ 共用代理(${Number(a.shared_proxy_count || 2)}号)</span>`
+      : (a.cross_platform_shared_proxy ? `<span class="pill bare" title="${esc(pxWarnTitle || "跨平台复用同一代理")}">跨平台复用</span>` : "");
+    const directPill = pxWarnings.length
+      ? `<span class="pill pending" title="${esc(pxWarnTitle)}">⚠️ 本机直连</span>`
+      : `<span class="mut" title="当前走本机真实网络，多号或海外平台建议配置独立代理">本机直连</span>`;
+    const proxyWarnDetail = pxWarnings.length
+      ? `<div class="ic-text" style="font-size:11px;margin-top:3px;color:var(--warn)">${ic("i-info")}${esc(pxWarnTitle)}</div>`
+      : "";
     const proxyLine = a.has_proxy
-      ? `<div class="mut" style="font-size:11px;margin-top:2px">代理 <code>${esc(a.proxy)}</code> <span class="pill ${pxCls}">${pxText[a.proxy_status] || a.proxy_status}</span></div>`
-      : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--warn)">${ic("i-info")}未配置代理(走本机真实 IP,多账号有关联风险)</div>`;
+      ? `<div class="mut" style="font-size:11px;margin-top:2px">代理 <code>${esc(a.proxy)}</code> <span class="pill ${pxCls}">${pxText[a.proxy_status] || a.proxy_status}</span> ${sharedBadge}</div>${proxyWarnDetail}`
+      : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--warn)">${ic("i-info")}${esc(pxWarnTitle || "未配置代理（当前走本机直连；不拦截任务，同平台多账号建议配置独立代理防关联）")}</div>`;
     const browserLine = a.environment
       ? `<div class="mut" style="font-size:11px;margin-top:2px">浏览器 ${esc(loginEnvironmentText(a.environment))}</div>`
       : "";
@@ -2911,7 +2948,7 @@ async function refreshAccounts() {
           <div>
             <button type="button" class="wb-account-name" data-account-detail="${a.id}" aria-haspopup="dialog">${esc(a.nickname || "未命名账号")}${ic("i-next")}</button>
             <div class="wb-account-meta">${idline || `账号 #${a.id}`} · ${a.monitor_count || 0} 个监控</div>
-            <div class="wb-account-pills">${pill}${!a.has_proxy ? '<span class="mut">本机网络</span>' : `<span class="pill ${pxCls}">${pxText[a.proxy_status] || "代理状态未知"}</span>`}</div>
+            <div class="wb-account-pills">${pill}${!a.has_proxy ? directPill : `<span class="pill ${pxCls}">${pxText[a.proxy_status] || "代理状态未知"}</span>${sharedBadge}`}</div>
           </div>
         </div>
         <div data-account-info hidden><div class="wb-inspector-block"><h3>账号资料</h3><p>${idline}</p><p>${esc(detail)}</p></div>
@@ -3229,7 +3266,7 @@ function renderRiskAccounts() {
       <td><div class="risk-reason"><span title="${esc(reason)}">${esc(reason)}</span><small>${account.last_risk_at ? "触发于 " + esc(riskTime(account.last_risk_at)) : "暂无风险记录"}</small></div></td>
       <td><div class="risk-account">${timing}<div class="risk-progress" style="margin-top:4px"><div class="risk-progress-track"><i style="width:${progress}%"></i></div><span>${account.risk_level > 0 ? `${account.recovery_successes}/${account.recovery_target}` : "完成"}</span></div></div></td>
       <td><b class="num">${account.blocked_tasks || 0} / ${queue.total || 0}</b><div class="mut" style="font-size:11px" title="${esc(account.latest_block_reason || "")}">受阻 / 待执行${account.task_next_allowed_at ? ` · ${esc(riskRemaining(account.task_next_allowed_at))}` : ""}</div></td>
-      <td><div class="risk-account"><span>${account.proxy ? `<code>${esc(account.proxy)}</code>` : "本机直连"}</span><small>${esc(account.proxy_status || "unknown")} · ${esc(account.network_key || "—")}</small></div></td>
+      <td><div class="risk-account"><span>${account.proxy ? `<code>${esc(account.proxy)}</code>` : '<span style="color:var(--warn)">⚠️ 本机直连</span>'}</span><small>${esc(account.proxy_status || "unknown")} · ${esc(account.network_key || "—")}</small>${account.proxy_warning ? `<small style="color:var(--warn)" title="${esc(account.proxy_warning)}">⚠️ ${esc(account.proxy_warning)}</small>` : ""}</div></td>
       <td class="acttd">
         <button class="ghost sm" onclick="probeRiskAccount(${account.account_id})" ${wait.waiting ? "disabled" : ""} title="${esc(wait.title)}">${wait.manual ? "待验证" : wait.waiting ? "等待探测" : "探测"}</button>
         <button class="ghost sm" onclick="showRiskEvents(${account.account_id})">记录</button>
@@ -4430,37 +4467,42 @@ async function setProxy(id) {
   let opts = [];
   try { opts = await api("/api/proxies/options"); } catch (e) { }
   const cur = a && a.has_proxy ? a.proxy : "";
+  const pf = a ? a.platform : PLATFORM;
   const options = [
-    { value: "auto", label: "🔀 自动分配(占用最少)" },
-    ...opts.map(p => ({ value: p.url, label: formatProxyOptionLabel(p, a ? a.platform : PLATFORM) })),
+    { value: "auto", label: "🔀 自动分配（优先空闲独立节点，池满按最少占用复用）" },
+    ...opts.map(p => ({ value: p.url, label: formatProxyOptionLabel(p, pf) })),
     { value: "__custom__", label: "✎ 手动输入地址…" },
-    { value: "", label: "🚫 清除代理(走真实 IP)" },
+    { value: "", label: "⚠️ 清除代理 / 改用本机直连（允许直连，多号或海外请注意风控）" },
   ];
   const v = await uiSelect({
-    title: "账号代理",
-    hint: (a ? a.nickname + " · " : "") + "当前:" + (cur || "未配置"),
+    title: "账号代理配置",
+    hint: (a ? a.nickname + " · " : "") + "当前：" + (cur || "本机直连（未配置代理）") + "。建议尽量一号一独立代理；系统不强制拦截本机直连或多号共用代理，存在共用/直连风险时会高亮提醒。",
     options, value: (cur && opts.some(o => o.value === cur)) ? cur : "auto",
   });
   if (v === null) return;
   try {
+    let r = null;
     if (v === "auto") {
-      const r = await api("/api/accounts/" + id + "/assign-proxy", { method: "POST" });
-      toast("已从代理池分配:" + r.proxy, "ok");
+      r = await api("/api/accounts/" + id + "/assign-proxy", { method: "POST" });
+      toast("已从代理池分配：" + r.proxy, "ok");
     } else if (v === "__custom__") {
       const url = await uiPrompt({
         title: "手动输入代理", value: cur,
-        hint: "http://user:pass@host:port 或 socks5://host:port;留空=清除",
+        hint: "http://user:pass@host:port 或 socks5://host:port；留空=清除代理改用本机直连（允许复用同一代理，建议尽量一号一代理）",
         placeholder: "http://user:pass@host:port" });
       if (url === null) return;
-      const r = await api("/api/accounts/" + id + "/proxy", {
+      r = await api("/api/accounts/" + id + "/proxy", {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ proxy: url.trim() }) });
-      toast(url.trim() ? "代理已设置:" + r.proxy : "代理已清除", "ok");
+      toast(url.trim() ? "代理已设置：" + r.proxy : "已清除代理，当前改用本机直连", "ok");
     } else {
-      const r = await api("/api/accounts/" + id + "/proxy", {
+      r = await api("/api/accounts/" + id + "/proxy", {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ proxy: v }) });
-      toast(v ? "代理已设置:" + r.proxy : "代理已清除", "ok");
+      toast(v ? "代理已设置：" + r.proxy : "已清除代理，当前改用本机直连", "ok");
+    }
+    if (r && r.warning) {
+      setTimeout(() => toast("⚠️ " + r.warning, "info", 7000), 280);
     }
     refreshAccounts(); refreshProxies();
   } catch (e) { toast("设置失败:" + e.message, "err"); }
@@ -4908,7 +4950,7 @@ async function refreshProxies() {
         ${p.note ? `<div class="mut" style="font-size:11px">${esc(p.note)}</div>` : ""}
       </td>
       <td>${geoCell(p)}</td>
-      <td><span class="pill ${p.used_by ? "active" : "bare"}">${p.used_by} 个账号</span></td>
+      <td><span class="pill ${p.used_by > 1 ? "pending" : (p.used_by ? "active" : "bare")}" title="${p.used_by > 1 ? "多个账号正复用该代理；同平台多账号共用同一出口 IP 存在防关联风险，建议尽量一号一代理" : ""}">${p.used_by > 1 ? `⚠️ 共用 ${p.used_by} 号` : `${p.used_by} 个账号`}</span></td>
       <td class="acttd">
         <button class="ghost sm" onclick="editPoolProxy(${p.id})">编辑</button>
         <button class="ghost sm" onclick="testPoolProxy(${p.id})">测试</button>
@@ -4957,8 +4999,13 @@ async function addProxy() {
 }
 async function delPoolProxy(id, used) {
   if (!await uiConfirm({ title: "删除代理", okText: "删除", danger: true,
-    message: "删除该代理?" + (used ? `\n⚠️ 有 ${used} 个账号正在用它,删除后这些账号需另选代理。` : "") })) return;
-  try { await api("/api/proxies/" + id, { method: "DELETE" }); toast("已删除", "ok"); refreshProxies(); }
+    message: "删除该代理?" + (used ? `\n⚠️ 有 ${used} 个账号正在引用它，删除后建议及时核对这些账号的代理配置。` : "") })) return;
+  try {
+    const res = await api("/api/proxies/" + id, { method: "DELETE" });
+    toast("已从代理池删除", "ok");
+    if (res && res.warning) setTimeout(() => toast("⚠️ " + res.warning, "info", 6500), 260);
+    refreshProxies(); refreshAccounts();
+  }
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }
 async function editPoolProxy(id) {
@@ -5027,8 +5074,9 @@ async function assignAllProxies() {
   try {
     const r = await api("/api/accounts/assign-proxies-all", { method: "POST" });
     let msg = `已分配 ${r.assigned} 个账号`;
-    if (r.unassigned) msg += `,还有 ${r.unassigned} 个没分到(代理池不够,请再加代理)`;
+    if (r.unassigned) msg += `，还有 ${r.unassigned} 个未分到`;
     toast(msg, r.unassigned ? "info" : "ok");
+    if (r.warning) setTimeout(() => toast("⚠️ " + r.warning, "info", 7000), 280);
     refreshAccounts(); refreshProxies();
   } catch (e) { toast("分配失败:" + e.message, "err"); }
   finally { if (btn) { btn.disabled = false; btn.textContent = "给账号批量分配"; } }
@@ -5069,6 +5117,8 @@ function pollReloginTask(tid) {
         } else {
           const suffix = ["error", "deferred"].includes(r.profile_status) ? "（资料可稍后刷新）" : "";
           toast("重新登录成功 " + (r.nickname || "") + suffix, r.profile_status === "error" ? "info" : "ok");
+          const pxWarn = r.warning || r.environment?.proxy_warning || "";
+          if (pxWarn) setTimeout(() => toast("⚠️ " + pxWarn, "info", 6500), 320);
         }
         refreshAccounts(); return;
       } else if (r.status === "expired") {

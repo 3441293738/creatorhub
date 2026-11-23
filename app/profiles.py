@@ -1,7 +1,7 @@
-"""账号画像、代理池唯一性防关联校验与生命周期同步管理。
+"""账号画像、代理池均衡分配与防关联风险提醒管理。
 
-- assign_proxy_from_pool: 从代理池按「一号一代理 sticky」分配空闲且地域匹配的代理。
-- find_same_platform_proxy_conflict: 校验同平台下是否有其他账号已占用同一代理或同一真实出口 IP。
+- assign_proxy_from_pool: 优先分配空闲且地域匹配的代理；池余量不足时按最少占用均衡复用，不强制拦截。
+- find_same_platform_proxy_conflict / inspect_account_proxy_risk: 检测同平台共用代理/出口 IP 与本机直连风险并生成提醒。
 - sync_proxy_pool_to_accounts: 当代理池条目修改/停用/测速异常时，实时同步至已绑定的账号。
 - ensure_identity / migrate_identities: 补齐 profile_dir / UA / 视口 / 指纹种子及 proxy_id 关联。
 """
@@ -57,6 +57,42 @@ def resolve_pool_proxy_row(session, proxy_url: str) -> Optional[ProxyPool]:
     return None
 
 
+def find_same_platform_proxy_conflicts(
+    session,
+    platform: str,
+    proxy_url: str,
+    *,
+    exclude_account_id: int | None = None,
+    candidate_exit_ip: str = "",
+) -> list[DouyinAccount]:
+    """返回同一平台下与指定代理 URL 或真实出口 IP 共用的全部其他账号（用于风险提醒，不阻断操作）。"""
+    pf = str(platform or "").strip().lower()
+    norm = normalize_proxy(str(proxy_url or "").strip())
+    if not pf or not norm:
+        return []
+    exit_ip = str(candidate_exit_ip or "").strip()
+    if not exit_ip:
+        pool_row = resolve_pool_proxy_row(session, norm)
+        if pool_row and pool_row.exit_ip:
+            exit_ip = str(pool_row.exit_ip).strip()
+
+    conflicts: list[DouyinAccount] = []
+    accounts = session.exec(
+        select(DouyinAccount).where(DouyinAccount.platform == pf)
+    ).all()
+    for other in accounts:
+        if exclude_account_id is not None and other.id == exclude_account_id:
+            continue
+        other_norm = normalize_proxy(str(other.proxy or "").strip())
+        if other_norm and other_norm == norm:
+            conflicts.append(other)
+            continue
+        other_exit = str(other.exit_ip or "").strip()
+        if exit_ip and other_exit and other_exit == exit_ip:
+            conflicts.append(other)
+    return conflicts
+
+
 def find_same_platform_proxy_conflict(
     session,
     platform: str,
@@ -66,29 +102,93 @@ def find_same_platform_proxy_conflict(
     candidate_exit_ip: str = "",
 ) -> Optional[DouyinAccount]:
     """检查同一平台下是否已有其他账号占用相同的代理 URL 或相同的真实出口 IP。"""
+    conflicts = find_same_platform_proxy_conflicts(
+        session,
+        platform,
+        proxy_url,
+        exclude_account_id=exclude_account_id,
+        candidate_exit_ip=candidate_exit_ip,
+    )
+    return conflicts[0] if conflicts else None
+
+
+def inspect_account_proxy_risk(
+    session,
+    *,
+    platform: str,
+    proxy_url: str = "",
+    exclude_account_id: int | None = None,
+    candidate_exit_ip: str = "",
+) -> list[str]:
+    """评估账号代理配置风险并返回非阻断式提醒列表（本机直连、同平台共用代理、跨平台复用、地区不匹配）。"""
     pf = str(platform or "").strip().lower()
     norm = normalize_proxy(str(proxy_url or "").strip())
-    if not pf or not norm:
-        return None
-    exit_ip = str(candidate_exit_ip or "").strip()
-    if not exit_ip:
-        pool_row = resolve_pool_proxy_row(session, norm)
-        if pool_row and pool_row.exit_ip:
-            exit_ip = str(pool_row.exit_ip).strip()
+    warnings: list[str] = []
 
-    accounts = session.exec(
-        select(DouyinAccount).where(DouyinAccount.platform == pf)
-    ).all()
-    for other in accounts:
-        if exclude_account_id is not None and other.id == exclude_account_id:
-            continue
+    all_accounts = session.exec(select(DouyinAccount)).all()
+    others = [
+        a for a in all_accounts
+        if exclude_account_id is None or a.id != exclude_account_id
+    ]
+    same_pf_others = [a for a in others if str(a.platform or "").lower() == pf]
+
+    if not norm:
+        if pf in OVERSEAS_PLATFORMS:
+            warnings.append(
+                "本机直连提醒：当前未绑定代理，海外平台直连可能受网络环境限制或暴露真实 IP，建议配置境外住宅代理"
+            )
+        elif len(same_pf_others) >= 1:
+            same_pf_direct = [a for a in same_pf_others if not str(a.proxy or "").strip()]
+            if same_pf_direct:
+                names = "、".join(str(a.nickname or f"#{a.id}") for a in same_pf_direct[:3])
+                warnings.append(
+                    f"多号直连提醒：当前与同平台账号（{names}）共用本机真实 IP，高频操作易触发同 IP 关联限流，建议尽量一号一代理"
+                )
+            else:
+                warnings.append(
+                    "本机直连提醒：同平台已有其他账号，当前账号走本机真实 IP，建议按需绑定独立代理以降低关联风险"
+                )
+        return warnings
+
+    pool_row = resolve_pool_proxy_row(session, norm)
+    exit_ip = str(candidate_exit_ip or (pool_row.exit_ip if pool_row else "") or "").strip()
+
+    same_pf_shared: list[DouyinAccount] = []
+    cross_pf_shared: list[DouyinAccount] = []
+    for other in others:
         other_norm = normalize_proxy(str(other.proxy or "").strip())
-        if other_norm and other_norm == norm:
-            return other
         other_exit = str(other.exit_ip or "").strip()
-        if exit_ip and other_exit and other_exit == exit_ip:
-            return other
-    return None
+        shared = bool(
+            (other_norm and other_norm == norm)
+            or (exit_ip and other_exit and other_exit == exit_ip)
+        )
+        if not shared:
+            continue
+        if str(other.platform or "").lower() == pf:
+            same_pf_shared.append(other)
+        else:
+            cross_pf_shared.append(other)
+
+    if same_pf_shared:
+        names = "、".join(str(a.nickname or f"#{a.id}") for a in same_pf_shared[:3])
+        suffix = f" 等 {len(same_pf_shared)} 个账号" if len(same_pf_shared) > 3 else ""
+        warnings.append(
+            f"一号多用提醒：该代理或出口 IP 正与同平台账号「{names}」{suffix}共用，存在同 IP 关联风控风险，建议尽量一号一独立代理"
+        )
+    elif cross_pf_shared:
+        names = "、".join(str(a.nickname or f"#{a.id}") for a in cross_pf_shared[:3])
+        warnings.append(
+            f"跨平台复用提醒：该代理同时被其他平台 {len(cross_pf_shared)} 个账号（{names}）复用"
+        )
+
+    if pool_row is not None and (pool_row.exit_ip or pool_row.country):
+        mainland = is_mainland_geo(pool_row.country, pool_row.region, pool_row.city)
+        if pf in DOMESTIC_PLATFORMS and not mainland:
+            warnings.append("代理地区提醒：国内平台账号绑定了非中国大陆节点，可能触发异地验证或限流")
+        elif pf in OVERSEAS_PLATFORMS and mainland:
+            warnings.append("代理地区提醒：海外平台账号绑定了中国大陆节点，可能导致无法连接或风控异常")
+
+    return warnings
 
 
 def account_requires_dedicated_proxy(
@@ -98,31 +198,16 @@ def account_requires_dedicated_proxy(
     platform: str,
     account: Optional[DouyinAccount] = None,
 ) -> tuple[bool, str]:
-    """判定指定账号或拟登录的新账号是否必须绑定独立代理。
-
-    规则：
-    1. 全局关闭 `strict_proxy_required` 或单号关闭 `require_proxy` -> 不强制。
-    2. 海外平台（tiktok/rednote/instagram/twitter） -> 必须绑定独立境外代理。
-    3. 国内平台且同平台已存在其他账号（即同平台 >=2 个账号） -> 必须各自绑定独立代理，严禁共享本机 IP。
-    4. 国内平台且全库仅有这 1 个账号 -> 允许安全使用本机真实宽带环境。
-    """
-    if not bool(getattr(cfg.engine, "strict_proxy_required", True)):
-        return False, ""
-    if account is not None and not bool(getattr(account, "require_proxy", True)):
-        return False, ""
+    """评估无代理直连风险并返回 (False, 提醒文案)。不再强制拦截本机直连或多号无代理。"""
     pf = str(platform or (account.platform if account else "") or "").strip().lower()
-    if pf in OVERSEAS_PLATFORMS:
-        return True, "海外平台账号必须绑定独立境外代理，已拦截本机直连以免网络不通或暴露境内环境"
     exclude_id = account.id if account is not None else None
-    others = [
-        row for row in session.exec(
-            select(DouyinAccount).where(DouyinAccount.platform == pf)
-        ).all()
-        if (exclude_id is None or row.id != exclude_id)
-    ]
-    if len(others) >= 1:
-        return True, "同平台存在多个账号，防关联策略要求每个账号必须绑定独立代理，禁止共享本机真实 IP"
-    return False, ""
+    warnings = inspect_account_proxy_risk(
+        session,
+        platform=pf,
+        proxy_url="",
+        exclude_account_id=exclude_id,
+    )
+    return False, ("；".join(warnings) if warnings else "")
 
 
 def sync_proxy_pool_to_accounts(
@@ -175,7 +260,7 @@ def sync_proxy_pool_to_accounts(
     return affected
 
 
-def _pool_urls(session, cfg, *, platform: str = "") -> list:
+def _pool_urls(session, cfg, *, platform: str = "", strict_geo: bool = True) -> list:
     """Return normalized, unique proxies eligible for automatic assignment."""
     rows = session.exec(select(ProxyPool)).all()
     if rows:
@@ -183,22 +268,17 @@ def _pool_urls(session, cfg, *, platform: str = "") -> list:
         domestic = pf in DOMESTIC_PLATFORMS
         overseas = pf in OVERSEAS_PLATFORMS
         sources = []
-        seen_exit_ips: set[str] = set()
         for p in rows:
             if not p.enabled or p.status in {"bad", "auth_error", "blocked", "disabled"}:
                 continue
-            geo_known = bool((p.exit_ip or "").strip() or (p.country or "").strip())
-            if domestic and geo_known and not is_mainland_geo(
-                    p.country, p.region, p.city):
-                continue
-            if overseas and geo_known and is_mainland_geo(
-                    p.country, p.region, p.city):
-                continue
-            exit_ip = (p.exit_ip or "").strip()
-            if exit_ip and exit_ip in seen_exit_ips:
-                continue
-            if exit_ip:
-                seen_exit_ips.add(exit_ip)
+            if strict_geo:
+                geo_known = bool((p.exit_ip or "").strip() or (p.country or "").strip())
+                if domestic and geo_known and not is_mainland_geo(
+                        p.country, p.region, p.city):
+                    continue
+                if overseas and geo_known and is_mainland_geo(
+                        p.country, p.region, p.city):
+                    continue
             sources.append(p.url)
     else:
         sources = list(cfg.proxies or [])
@@ -214,37 +294,48 @@ def _pool_urls(session, cfg, *, platform: str = "") -> list:
 
 
 def assign_proxy_from_pool(session, cfg, *, platform: str = "") -> str:
-    """Return one unoccupied usable proxy whose exit IP is also unshared on the platform."""
+    """优先分配空闲且地域匹配的独立代理；池内无空闲节点时按最少占用均衡复用。"""
     with _proxy_reservation_lock:
-        pool = _pool_urls(session, cfg, platform=platform)
+        pool = _pool_urls(session, cfg, platform=platform, strict_geo=True)
+        if not pool:
+            pool = _pool_urls(session, cfg, platform=platform, strict_geo=False)
         if not pool:
             return ""
         all_accs = session.exec(select(DouyinAccount)).all()
-        occupied = {
-            normalize_proxy(a.proxy)
-            for a in all_accs
-            if a.proxy
-        }
-        occupied.update(_proxy_reservations.values())
         pf = str(platform or "").strip().lower()
-        same_pf_exit_ips = {
-            str(a.exit_ip or "").strip()
-            for a in all_accs
-            if pf and str(a.platform or "").lower() == pf and str(a.exit_ip or "").strip()
-        }
+        total_counts: dict[str, int] = {}
+        same_pf_counts: dict[str, int] = {}
+        same_pf_exit_ips: set[str] = set()
+        for a in all_accs:
+            ap = normalize_proxy(a.proxy) if a.proxy else ""
+            if ap:
+                total_counts[ap] = total_counts.get(ap, 0) + 1
+                if pf and str(a.platform or "").lower() == pf:
+                    same_pf_counts[ap] = same_pf_counts.get(ap, 0) + 1
+            if pf and str(a.platform or "").lower() == pf and str(a.exit_ip or "").strip():
+                same_pf_exit_ips.add(str(a.exit_ip or "").strip())
+        for reserved_url in _proxy_reservations.values():
+            rp = normalize_proxy(reserved_url)
+            if rp:
+                total_counts[rp] = total_counts.get(rp, 0) + 1
+                if pf:
+                    same_pf_counts[rp] = same_pf_counts.get(rp, 0) + 1
         pool_exit_by_url = {
             normalize_proxy(r.url): str(r.exit_ip or "").strip()
             for r in session.exec(select(ProxyPool)).all()
             if r.url
         }
-        for url in pool:
-            if url in occupied:
-                continue
+
+        def _rank(item: tuple[int, str]) -> tuple[int, int, int, int]:
+            idx, url = item
+            sp_cnt = same_pf_counts.get(url, 0)
+            tot_cnt = total_counts.get(url, 0)
             cand_exit = pool_exit_by_url.get(url, "")
-            if cand_exit and cand_exit in same_pf_exit_ips:
-                continue
-            return url
-        return ""
+            same_pf_shared = 1 if (sp_cnt > 0 or (cand_exit and cand_exit in same_pf_exit_ips)) else 0
+            return (same_pf_shared, sp_cnt, tot_cnt, idx)
+
+        _, chosen = min(enumerate(pool), key=_rank)
+        return chosen
 
 
 def reserve_proxy_from_pool(
@@ -283,18 +374,20 @@ def pick_ephemeral_proxy(
         if acc and acc.proxy and acc.proxy_status not in {"bad", "auth_error", "blocked", "disabled"}:
             return normalize_proxy(acc.proxy)
 
-    free = assign_proxy_from_pool(session, cfg, platform=platform)
-    if free:
-        return free
-
     pool = _pool_urls(session, cfg, platform=platform)
     if not pool:
         return ""
 
+    all_accs = session.exec(select(DouyinAccount)).all()
+    occupied = {normalize_proxy(a.proxy) for a in all_accs if a.proxy}
+    idle = [u for u in pool if u not in occupied]
+    if idle:
+        return idle[0]
+
     pf = str(platform or "").strip().lower()
     publish_proxies = {
         normalize_proxy(a.proxy)
-        for a in session.exec(select(DouyinAccount)).all()
+        for a in all_accs
         if a.proxy
         and str(a.account_role or "hybrid").lower() == "publish"
         and (not pf or str(a.platform or "").lower() == pf)

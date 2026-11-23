@@ -383,18 +383,9 @@ class MonitorEngine(
         return proxy if self.cfg.engine.route_download_via_proxy else ""
 
     def _proxy_bad(self, acc) -> bool:
-        if not acc:
+        if not acc or not acc.proxy:
             return False
-        if not acc.proxy:
-            try:
-                with get_session() as s:
-                    must_px, _ = account_requires_dedicated_proxy(
-                        s, self.cfg, platform=acc.platform, account=acc
-                    )
-                    return must_px
-            except Exception:
-                return False
-        if acc.proxy_status in {"bad", "auth_error", "blocked", "disabled", "drifted"}:
+        if acc.proxy_status in {"bad", "auth_error", "blocked", "disabled"}:
             return True
         try:
             with get_session() as s:

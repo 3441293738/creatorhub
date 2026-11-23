@@ -88,8 +88,8 @@ class DouyinAccount(SQLModel, table=True):
     # ── 设备/网络画像(防多账号关联风控:登录时生成一次,之后永久固定)──
     profile_dir: str = ""          # 独立持久化用户目录(Chromium user-data-dir)
     proxy_id: Optional[int] = Field(default=None, index=True)  # 关联 ProxyPool.id(支持停用/改址同步)
-    proxy: str = ""               # 该账号专属代理 http://user:pass@host:port / socks5://...
-    require_proxy: bool = True    # 账号级强制代理锁(True=无代理严禁执行任何联网动作)
+    proxy: str = ""               # 该账号绑定代理 http://user:pass@host:port / socks5://...（留空走本机直连）
+    require_proxy: bool = False   # 兼容保留列（默认不强制拦截无代理直连，仅作提醒参考）
     ua: str = ""                  # 该账号固定 User-Agent
     viewport_w: int = 1280
     viewport_h: int = 800

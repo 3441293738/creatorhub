@@ -331,11 +331,6 @@ def resolve_transport(cfg: Any, platform: str, operation: str,
             and configured == "api"):
         effective = "browser"
         reason = "原生身份账号固定使用浏览器通道"
-    elif (platform == "xhs" and operation == "publish"
-          and configured == "api"
-          and bool(_setting_value(cfg, "forbid_same_platform_shared_proxy", True))):
-        effective = "browser"
-        reason = "多账号防关联策略已锁定小红书发布走专属浏览器（避免共享静态签名 b1）"
     elif configured in {"protocol", "native"}:
         if spec.get("api"):
             effective = "api"
@@ -488,11 +483,11 @@ def build_transport_matrix(cfg: Any, accounts: Iterable[Any]) -> dict[str, Any]:
         if not credential_isolated:
             warnings.append("登录态缺失或与其他账号重复")
         if not proxy_key:
-            warnings.append("未绑定独立代理（直连暴露宿主机真实出口 IP）")
+            warnings.append("风险提醒：未绑定代理（当前走本机直连，海外或多号同平台建议配置独立代理防关联）")
         elif same_pf_shared:
-            warnings.append("同平台存在多个账号共用同一代理或相同出口 IP")
+            warnings.append("风险提醒：同平台多个账号正共用同一代理或相同出口 IP（未拦截，建议尽量一号一代理）")
         elif not network_isolated:
-            warnings.append("跨平台共享同一代理或出口 IP")
+            warnings.append("提醒：跨平台多个账号复用同一代理或出口 IP")
         isolation.append({
             "account_id": getattr(account, "id", None),
             "platform": pf,

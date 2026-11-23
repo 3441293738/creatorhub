@@ -15,7 +15,7 @@ from app.browser import cookie_string_to_state
 from app.db import get_session
 from app.models import DouyinAccount
 from app.platforms.twitter import TwitterClient, build_twitter_storage_state, parse_twitter_credential_input, cookie_str_from_state as twitter_cookie_str_from_state
-from app.profiles import assign_proxy_from_pool, ensure_identity
+from app.profiles import assign_proxy_from_pool, ensure_identity, inspect_account_proxy_risk
 from app.services import login_flows as login_flows_service
 from app.services import login_sessions as login_sessions_service
 
@@ -396,7 +396,6 @@ async def login_cookie(body: CookieIn):
                 "未识别到有效的 Twitter Token (auth_token)，可直接粘贴 40 位 Token、账号----密码----Token 文本或完整 Cookie",
             )
         initial_state = build_twitter_storage_state(tw_cookies)
-        strict_proxy = bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True))
         with get_session() as s:
             existing_acc = None
             if hint_user:
@@ -411,11 +410,6 @@ async def login_cookie(body: CookieIn):
                 if existing_acc and existing_acc.proxy
                 else assign_proxy_from_pool(s, app_runtime.cfg, platform="twitter")
             )
-            if strict_proxy and not probe_proxy:
-                raise HTTPException(
-                    400,
-                    "已开启强制独享代理保护：代理池暂无适合 Twitter 的空闲海外节点，请先在「代理池」添加节点后再导入登录",
-                )
             probe_ua = (
                 existing_acc.ua
                 if existing_acc and existing_acc.ua
@@ -497,31 +491,40 @@ async def login_cookie(body: CookieIn):
             s.add(acc); s.commit(); s.refresh(acc)
             ensure_identity(acc, app_runtime.cfg, session=s, assign_proxy=True)
             s.add(acc); s.commit(); s.refresh(acc)
+            proxy_warns = inspect_account_proxy_risk(
+                s,
+                platform="twitter",
+                proxy_url=acc.proxy or "",
+                exclude_account_id=acc.id,
+                candidate_exit_ip=acc.exit_ip or "",
+            )
             return {
                 "account_id": acc.id,
                 "nickname": acc.nickname,
                 "warning": err if err.startswith("verification_required:") else "",
+                "proxy_warning": "；".join(proxy_warns),
             }
 
     state = cookie_string_to_state(body.cookie, platform)
     with get_session() as s:
-        from app.profiles import account_requires_dedicated_proxy
         allocated_proxy = assign_proxy_from_pool(s, app_runtime.cfg, platform=platform)
-        if not allocated_proxy:
-            must_px, must_reason = account_requires_dedicated_proxy(
-                s, app_runtime.cfg, platform=platform
-            )
-            if must_px:
-                raise HTTPException(
-                    400,
-                    f"{must_reason}；请先在「代理池」添加适合 {platform} 的空闲节点后再导入 Cookie",
-                )
         acc = DouyinAccount(
             nickname=body.nickname or "Cookie账号", platform=platform,
             identity_mode="native", cookie=body.cookie.strip(), storage_state=state,
             proxy=allocated_proxy,
+            require_proxy=False,
             creator_storage_state=(state if platform in {"bilibili", "rednote", "instagram", "twitter"} else ""))
         s.add(acc); s.commit(); s.refresh(acc)
         ensure_identity(acc, app_runtime.cfg, session=s, assign_proxy=True)
         s.add(acc); s.commit(); s.refresh(acc)
-        return {"account_id": acc.id, "nickname": acc.nickname}
+        proxy_warns = inspect_account_proxy_risk(
+            s,
+            platform=platform,
+            proxy_url=acc.proxy or "",
+            exclude_account_id=acc.id,
+        )
+        return {
+            "account_id": acc.id,
+            "nickname": acc.nickname,
+            "proxy_warning": "；".join(proxy_warns),
+        }

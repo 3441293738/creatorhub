@@ -137,9 +137,9 @@ class EngineConfig:
     active_hours_start: int = 8              # 活跃起点小时(含),0-23
     active_hours_end: int = 24               # 活跃止点小时(不含);可 >24 表示跨零点(如 25=次日 1 点)
     verify_proxy_region: bool = True         # 体检时探测代理出口国家,与账号时区不一致则告警
-    # ── 强制独享代理与同平台防关联门禁(Fail-Closed)──
-    strict_proxy_required: bool = True       # 未绑定代理或代理不可用时一律阻断登录与任务，严禁回退本机真实 IP
-    forbid_same_platform_shared_proxy: bool = True  # 禁止同一平台下多个账号共用同一代理或同一出口 IP
+    # ── 代理防关联提醒策略（默认仅提醒不强拦，允许本机直连与多号共用代理）──
+    strict_proxy_required: bool = False      # 兼容保留字段；已改为非阻断式风险提醒，不再强制拦截本机直连
+    forbid_same_platform_shared_proxy: bool = False  # 兼容保留字段；已改为非阻断式风险提醒，不再强制拦截一号多绑
     # 新建 native 账号的写操作环境门禁。存量 legacy 账号不受这组开关影响。
     native_write_gate_enabled: bool = True
     native_write_require_system_chrome: bool = True
