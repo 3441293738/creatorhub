@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Awaitable, Callable, Iterable, List, Tuple
 
+from ...browser.human_interaction import DEFAULT_HUMAN_ENGINE, human_wait
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
 from .._submit import notify_stage as _notify_stage, notify_submit as _notify_submit
@@ -204,7 +205,7 @@ async def _wait_for_upload_input(page, timeout_seconds: int):
         state, detail = _page_state(str(page.url or ""), body_text)
         if state != "loading":
             return None, state, detail
-        await page.wait_for_timeout(750)
+        await human_wait(page, 750)
     return None, state, detail
 
 
@@ -238,13 +239,9 @@ async def _set_caption(page, text: str) -> bool:
     if editor is None:
         return False
     try:
-        await editor.click(timeout=3000)
-        try:
-            await editor.fill(text, timeout=5000)
-        except Exception:
-            await page.keyboard.press("Control+A")
-            await page.keyboard.press("Backspace")
-            await page.keyboard.insert_text(text)
+        await DEFAULT_HUMAN_ENGINE.type_text(
+            editor, text, page=page, clear=True, timeout=5000
+        )
         return True
     except Exception:
         return False
@@ -272,8 +269,10 @@ async def _dismiss_upload_dialogs(page) -> int:
                         button = buttons.nth(button_index)
                         if not await button.is_visible():
                             continue
-                        await button.click(timeout=2500)
-                        await page.wait_for_timeout(400)
+                        await DEFAULT_HUMAN_ENGINE.click_locator(
+                            button, page=page, timeout=2500
+                        )
+                        await human_wait(page, 400)
                         dismissed += 1
                         clicked = True
                         break
@@ -332,21 +331,25 @@ async def _set_visibility(page, visibility: str) -> bool:
     if button is None or not labels:
         return False
     try:
-        await button.click(timeout=3000)
-        await page.wait_for_timeout(400)
+        await DEFAULT_HUMAN_ENGINE.click_locator(button, page=page, timeout=3000)
+        await human_wait(page, 400)
         for label in labels:
             for role in ("option", "radio", "menuitem"):
                 options = page.get_by_role(role, name=label, exact=False)
                 for index in range(await options.count()):
                     option = options.nth(index)
                     if await option.is_visible():
-                        await option.click(timeout=3000)
+                        await DEFAULT_HUMAN_ENGINE.click_locator(
+                            option, page=page, timeout=3000
+                        )
                         return True
             options = page.get_by_text(label, exact=False)
             for index in range(await options.count()):
                 option = options.nth(index)
                 if await option.is_visible():
-                    await option.click(timeout=3000)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(
+                        option, page=page, timeout=3000
+                    )
                     return True
     except Exception:
         pass
@@ -367,7 +370,9 @@ async def _set_toggle(page, labels, desired: bool) -> bool:
                     except Exception:
                         checked = await option.get_attribute("aria-checked") == "true"
                     if checked != desired:
-                        await option.click(timeout=2500)
+                        await DEFAULT_HUMAN_ENGINE.click_locator(
+                            option, page=page, timeout=2500
+                        )
                     return True
             except Exception:
                 continue
@@ -475,7 +480,7 @@ async def publish_tiktok(
             if rejected:
                 await _dump(page, "upload-rejected")
                 return False, "", f"TikTok 拒绝上传:{rejected}"
-            await page.wait_for_timeout(750)
+            await human_wait(page, 750)
         if editor is None:
             png = await _dump(page, "no-editor")
             return False, "", ("视频已选择，但上传后未进入编辑状态；请核对格式、时长或转码状态。"
@@ -507,16 +512,15 @@ async def publish_tiktok(
             rejected = await _visible_text(page, _REJECT_TEXT)
             if rejected:
                 return False, "", f"TikTok 拒绝上传:{rejected}"
-            await page.wait_for_timeout(1000)
+            await human_wait(page, 1000)
         if button is None:
             png = await _dump(page, "not-ready")
             return False, "", ("视频转码后仍未出现可用的发布按钮。"
                                 f"诊断截图:{png or 'data/debug'}")
 
-        await button.scroll_into_view_if_needed(timeout=3000)
         await _notify_submit(on_submit)
         clicked = True
-        await button.click(timeout=5000)
+        await DEFAULT_HUMAN_ENGINE.click_locator(button, page=page, timeout=5000)
         _log("已点击发布，等待平台确认")
         await _notify_stage(on_stage, "已点击「发布」，等待 TikTok 确认…")
 
@@ -550,7 +554,7 @@ async def publish_tiktok(
                     f"需要人工安全验证（页面提示「{verification}」），请在弹出的 TikTok 窗口里完成验证",
                 )
                 _log(f"等待用户在可见窗口完成“{verification}”")
-            await page.wait_for_timeout(1000)
+            await human_wait(page, 1000)
 
         png = await _dump(page, "unconfirmed")
         return False, "", ("write_uncertain:已点击 TikTok 发布，但未收到最终确认；"

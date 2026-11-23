@@ -19,6 +19,7 @@ from typing import Dict, Optional
 
 from curl_cffi.requests import AsyncSession
 
+from ...browser.manager import normalize_proxy
 from ...netfp import impersonate_for_ua
 
 SSO = "https://sso.douyin.com"
@@ -48,8 +49,10 @@ def gen_verify_fp() -> str:
 class QRLoginSession:
     """一次扫码会话,持有独立 cookie jar。"""
 
-    def __init__(self, user_agent: str):
+    def __init__(self, user_agent: str, proxy: str = ""):
+        from ...netfp import curl_proxy_url
         self.ua = user_agent
+        self.proxy = curl_proxy_url(proxy) or None
         self.verify_fp = gen_verify_fp()
         # curl_cffi 持久会话:对齐浏览器 TLS 握手指纹,沿用 cookie jar 收集登录态
         self.client = AsyncSession(
@@ -57,6 +60,8 @@ class QRLoginSession:
             impersonate=impersonate_for_ua(user_agent),
             headers={"User-Agent": user_agent},
             cookies={"s_v_web_id": self.verify_fp},
+            proxy=self.proxy,
+            trust_env=False,
         )
         self.token: Optional[str] = None
         self.status: str = "new"           # new | scanned | confirmed | expired | error

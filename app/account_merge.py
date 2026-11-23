@@ -1,11 +1,12 @@
-"""按平台强身份标识合并账号登录记录。
+"""按平台强身份标识合并重复账号登录记录并回收孤儿 Profile 目录。
 
-小红书主站与创作平台使用两套独立登录流程，因此同一个平台账号可能被保存成
-两条新记录。取得可信的 ``user_id`` 或 ``red_id`` 后，本模块会把两条记录及其
-读取、创作登录态合并为一个持久账号。
+支持全部 9 大平台：当同一平台内两个账号记录拥有相同的非空 ``sec_uid``、``uid`` 或
+``douyin_id``（平台唯一账号标识）时，将登录态快照、任务外键与完整风控状态合并至最早
+创建的稳定账号记录，避免同一平台账号被拆成两个并发轮询的影子环境。
 """
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,25 +24,34 @@ class AccountMerge:
     removed_profile_dir: str = ""
 
 
-def _identity_tokens(account: DouyinAccount) -> set[tuple[str, str]]:
-    """只返回平台内唯一且可信的身份标识。"""
-    if str(account.platform or "").lower() != "xhs":
+def _identity_tokens(account: DouyinAccount) -> set[tuple[str, str, str]]:
+    """返回 (platform, token_type, normalized_value) 强身份三元组集合。"""
+    pf = str(account.platform or "").strip().lower()
+    if not pf:
         return set()
-    tokens: set[tuple[str, str]] = set()
-    user_id = str(account.sec_uid or "").strip()
-    red_id = str(account.douyin_id or "").strip()
-    if user_id:
-        tokens.add(("user_id", user_id))
-    if red_id:
-        tokens.add(("red_id", red_id.casefold()))
+    tokens: set[tuple[str, str, str]] = set()
+    sec_uid = str(account.sec_uid or "").strip()
+    uid = str(account.uid or "").strip()
+    handle_id = str(account.douyin_id or "").strip()
+    if sec_uid:
+        tokens.add((pf, "sec_uid", sec_uid))
+    if uid:
+        tokens.add((pf, "uid", uid))
+    if handle_id:
+        tokens.add((pf, "handle_id", handle_id.casefold()))
     return tokens
 
 
-def duplicate_xhs_account_ids(
-        session: Session, account_id: int) -> list[int]:
-    """查找包含 ``account_id`` 的传递性重复账号组。"""
+def duplicate_platform_account_ids(
+    session: Session, account_id: int
+) -> list[int]:
+    """查找同平台内包含 ``account_id`` 的传递性重复账号组。"""
+    seed_acc = session.get(DouyinAccount, account_id)
+    if seed_acc is None or not seed_acc.platform:
+        return []
+    pf = str(seed_acc.platform).strip().lower()
     accounts = session.exec(
-        select(DouyinAccount).where(DouyinAccount.platform == "xhs")
+        select(DouyinAccount).where(DouyinAccount.platform == pf)
     ).all()
     by_id = {int(account.id): account for account in accounts if account.id}
     if account_id not in by_id or not _identity_tokens(by_id[account_id]):
@@ -63,20 +73,29 @@ def duplicate_xhs_account_ids(
     return sorted(selected)
 
 
+def duplicate_xhs_account_ids(
+    session: Session, account_id: int
+) -> list[int]:
+    """兼容旧接口：查找小红书重复账号组。"""
+    acc = session.get(DouyinAccount, account_id)
+    if acc is None or str(acc.platform or "").lower() != "xhs":
+        return []
+    return duplicate_platform_account_ids(session, account_id)
+
+
 def _later(left: datetime | None, right: datetime | None) -> datetime | None:
     values = [value for value in (left, right) if value is not None]
     return max(values) if values else None
 
 
 def _merge_risk_state(
-        session: Session, kept_id: int, removed_id: int) -> None:
+    session: Session, kept_id: int, removed_id: int
+) -> None:
     kept = session.get(AccountRiskState, kept_id)
     removed = session.get(AccountRiskState, removed_id)
     if removed is None:
         return
     if kept is None:
-        # 目标账号尚无风控状态，直接迁移主键即可完整保留原有风控历史，
-        # 无需重新构造状态对象。
         session.exec(
             AccountRiskState.__table__.update()
             .where(AccountRiskState.__table__.c.account_id == removed_id)
@@ -87,7 +106,7 @@ def _merge_risk_state(
     kept_updated_at = kept.updated_at
     for name in (
         "risk_level", "consecutive_risk", "consecutive_network_failures",
-        "recovery_successes",
+        "recovery_successes", "session_operation_count",
     ):
         setattr(kept, name, max(
             int(getattr(kept, name, 0) or 0),
@@ -96,14 +115,22 @@ def _merge_risk_state(
     for name in (
         "cooldown_until", "probe_only_until", "last_risk_at",
         "last_operation_at", "last_write_at", "last_heavy_read_at",
-        "last_recovery_at", "updated_at",
+        "last_recovery_at", "retry_not_before", "operation_not_before",
+        "session_rest_until", "updated_at",
     ):
         setattr(kept, name, _later(
             getattr(kept, name, None), getattr(removed, name, None)))
+    if removed.manual_review_required and not kept.manual_review_required:
+        kept.manual_review_required = True
+        kept.manual_review_reason = (
+            removed.manual_review_reason or kept.manual_review_reason
+        )
     if (removed.updated_at or datetime.min) >= (kept_updated_at or datetime.min):
         kept.network_failure_key = (
             removed.network_failure_key or kept.network_failure_key)
         kept.last_risk_reason = removed.last_risk_reason or kept.last_risk_reason
+        if removed.manual_review_reason:
+            kept.manual_review_reason = removed.manual_review_reason
     session.add(kept)
     session.delete(removed)
     session.flush()
@@ -146,16 +173,20 @@ def _copy_account_data(kept: DouyinAccount, accounts: list[DouyinAccount]) -> No
         reverse=True,
     )
 
-    # 主站读取登录与创作平台登录分别保留各自最新的快照，
-    # 这是合并两套登录态的核心逻辑。
     for name in ("storage_state", "creator_storage_state", "cookie"):
         value = next((str(getattr(row, name, "") or "")
                       for row in newest_first if getattr(row, name, "")), "")
         if value:
             setattr(kept, name, value)
 
-    # 身份与公开资料使用最新的非空值补齐；稳定账号原有的 Profile 目录、
-    # 代理和浏览器指纹保持不变，避免环境发生漂移。
+    # 若保留记录尚未绑定代理而新记录已绑定代理，补齐代理与 proxy_id(不覆盖既有固定代理)
+    if not kept.proxy:
+        donor = next((row for row in newest_first if row.proxy), None)
+        if donor is not None:
+            kept.proxy = donor.proxy
+            kept.proxy_id = donor.proxy_id
+            kept.proxy_status = donor.proxy_status
+
     for name in ("nickname", "sec_uid", "douyin_id", "avatar", "uid"):
         value = next((getattr(row, name, "") for row in newest_first
                       if getattr(row, name, "")), "")
@@ -176,8 +207,8 @@ def _copy_account_data(kept: DouyinAccount, accounts: list[DouyinAccount]) -> No
 
 
 def _merge_one(
-        session: Session, kept: DouyinAccount,
-        removed: DouyinAccount) -> AccountMerge:
+    session: Session, kept: DouyinAccount, removed: DouyinAccount
+) -> AccountMerge:
     kept_id, removed_id = int(kept.id), int(removed.id)
     removed_profile = str(removed.profile_dir or "")
     _copy_account_data(kept, [kept, removed])
@@ -185,8 +216,6 @@ def _merge_one(
     session.flush()
 
     _merge_risk_state(session, kept_id, removed_id)
-    # 把所有持久化账号关联统一迁移到保留账号。以模型元数据作为唯一表清单，
-    # 后续新增包含 account_id 的业务表也会自动继承该迁移行为。
     for table in SQLModel.metadata.sorted_tables:
         if table.name in {
                 DouyinAccount.__table__.name,
@@ -205,28 +234,31 @@ def _merge_one(
     return AccountMerge(kept_id, removed_id, removed_profile)
 
 
-def reconcile_xhs_accounts(
-        session: Session, account_id: int | None = None) -> list[AccountMerge]:
-    """自动合并重复的小红书账号记录，并以事务方式提交。
-
-    保留最早创建的账号 id，使已有页面选择和任务引用保持稳定。传入
-    ``account_id`` 时，只处理该账号所属的重复账号组。
-    """
-    accounts = session.exec(
-        select(DouyinAccount).where(DouyinAccount.platform == "xhs")
-        .order_by(DouyinAccount.id)
-    ).all()
+def reconcile_platform_accounts(
+    session: Session,
+    *,
+    platform: str | None = None,
+    account_id: int | None = None,
+) -> list[AccountMerge]:
+    """自动合并同平台重复账号记录，并以事务方式提交。"""
+    query = select(DouyinAccount).order_by(DouyinAccount.id)
+    if platform:
+        query = query.where(DouyinAccount.platform == str(platform).strip().lower())
+    accounts = session.exec(query).all()
     by_id = {int(row.id): row for row in accounts if row.id}
     pending_ids = set(by_id)
     if account_id is not None:
         pending_ids.intersection_update(
-            duplicate_xhs_account_ids(session, account_id))
+            duplicate_platform_account_ids(session, account_id)
+        )
 
     merges: list[AccountMerge] = []
     while pending_ids:
         seed_id = min(pending_ids)
-        group_ids = [item for item in duplicate_xhs_account_ids(session, seed_id)
-                     if item in pending_ids]
+        group_ids = [
+            item for item in duplicate_platform_account_ids(session, seed_id)
+            if item in pending_ids
+        ]
         if len(group_ids) < 2:
             pending_ids.discard(seed_id)
             continue
@@ -243,8 +275,18 @@ def reconcile_xhs_accounts(
     return merges
 
 
+def reconcile_xhs_accounts(
+    session: Session, account_id: int | None = None
+) -> list[AccountMerge]:
+    """兼容接口：自动合并重复的小红书账号记录。"""
+    return reconcile_platform_accounts(
+        session, platform="xhs", account_id=account_id
+    )
+
+
 def cleanup_merged_profiles(
-        merges: list[AccountMerge], profiles_root: str) -> list[str]:
+    merges: list[AccountMerge], profiles_root: str
+) -> list[str]:
     """只清理受管目录内、合并后不再使用的浏览器 Profile。"""
     root = Path(profiles_root).expanduser().resolve()
     removed: list[str] = []
@@ -263,7 +305,37 @@ def cleanup_merged_profiles(
                 shutil.rmtree(candidate)
             removed.append(str(candidate))
         except OSError:
-            # 外部遗留的 Chrome 进程可能仍占用文件。数据库合并已经完成，
-            # 后续维护或删除流程可再次回收该目录。
             continue
     return removed
+
+
+def cleanup_orphan_profiles(session: Session, profiles_root: str) -> int:
+    """启动时清理上次因 Windows 句柄未释放而残留的孤儿 account_<uuid> 目录。"""
+    from .browser.cdp import profile_is_locked
+
+    root = Path(profiles_root).expanduser().resolve()
+    if not root.is_dir():
+        return 0
+    active_dirs = {
+        os.path.normcase(str(Path(acc.profile_dir).expanduser().resolve()))
+        for acc in session.exec(select(DouyinAccount)).all()
+        if acc.profile_dir
+    }
+    cleaned = 0
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name == "_anon":
+            shutil.rmtree(child, ignore_errors=True)
+            continue
+        if not child.name.startswith("account_"):
+            continue
+        norm = os.path.normcase(str(child.resolve()))
+        if norm in active_dirs or profile_is_locked(child):
+            continue
+        try:
+            shutil.rmtree(child)
+            cleaned += 1
+        except OSError:
+            continue
+    return cleaned

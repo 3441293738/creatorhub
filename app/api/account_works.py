@@ -17,6 +17,7 @@ from app.platforms.douyin import cookie_from_state as douyin_cookie_from_state
 from app.platforms.instagram import InstagramClient
 from app.platforms.rednote import delete_rednote_work, update_rednote_visibility
 from app.risk import OperationKind
+from app.services import thumb_cache
 from app.services import watch_records as watch_records_service
 from app.transport_matrix import douyin_client_environment, resolve_transport
 
@@ -28,7 +29,9 @@ def _work_dict(w: AccountWork) -> dict:
     return {
         "id": w.id, "platform": w.platform, "account_id": w.account_id,
         "item_id": w.item_id, "desc": w.desc, "media_type": w.media_type,
-        "cover_url": w.cover_url, "create_time": w.create_time,
+        "cover_url": thumb_cache.local_thumb_api_url(w.cover_url, platform=w.platform),
+        "remote_cover_url": w.cover_url or "",
+        "create_time": w.create_time,
         "like_count": w.like_count, "comment_count": w.comment_count,
         "collect_count": w.collect_count, "share_count": w.share_count,
         "play_count": w.play_count, "status": w.status,
@@ -186,6 +189,11 @@ async def sync_account_works(account_id: int):
                                   fetched_at=now, **w))
                 added += 1
         s.commit()
+    thumb_cache.schedule_thumb_prewarm(
+        [str(w.get("cover_url") or "") for w in items],
+        platform=platform,
+        proxy=(bili_proxy or ig_proxy or (acc.proxy if acc else "") or ""),
+    )
     return {"ok": True, "fetched": len(items), "added": added,
             "source": source,
             "configured_mode": (transport["configured_mode"]

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 from contextlib import asynccontextmanager
@@ -20,19 +21,79 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from ...netfp import impersonate_for_ua
-from .cookies import cookie_str_from_state, has_a1, has_creator_cookies
+from .cookies import (
+    cookie_str_from_state,
+    extract_b1_from_state,
+    has_a1,
+    has_creator_cookies,
+)
 from .responses import XhsApiError, parse_response
 
 _HOST = "https://edith.xiaohongshu.com"
 _SEARCH_HOST = "https://so.xiaohongshu.com"
 _DOMAIN = "https://www.xiaohongshu.com"
+_DEFAULT_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+)
+_STANDARD_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+_CUSTOM_B64 = "ZmserbBoHQtNP+wOcza/LpngG8yJq42KWYj0DSfdikx3VT16IlUAFM97hECvuRX5"
+_CUSTOM_B64_TRANS = str.maketrans(_STANDARD_B64, _CUSTOM_B64)
+
+
+def _x2_for_ua(user_agent: str) -> str:
+    ua = str(user_agent or "")
+    if "Mac OS" in ua or "Macintosh" in ua:
+        return "Mac OS"
+    if "Linux" in ua and "Android" not in ua:
+        return "Linux"
+    return "Windows"
+
+
+def _crc32_js_int(text: str) -> int:
+    crc = 0xFFFFFFFF
+    for ch in text:
+        t = (crc & 0xFF) ^ (ord(ch) & 0xFF)
+        for _ in range(8):
+            t = ((t >> 1) ^ 0xEDB88320) if (t & 1) else (t >> 1)
+        crc = (t ^ (crc >> 8)) & 0xFFFFFFFF
+    u = (0xFFFFFFFF ^ crc ^ 0xEDB88320) & 0xFFFFFFFF
+    return u - 0x100000000 if (u & 0x80000000) else u
+
+
+def _build_xs_common_with_b1(cookie_str: str, b1: str, *, x2: str = "Windows") -> str:
+    a1 = ""
+    for part in str(cookie_str or "").split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            if k.strip() == "a1":
+                a1 = v.strip()
+                break
+    struct_obj = {
+        "s0": 5,
+        "s1": "",
+        "x0": "1",
+        "x1": "4.3.5",
+        "x2": x2,
+        "x3": "xhs-pc-web",
+        "x4": "4.86.0",
+        "x5": a1,
+        "x6": "",
+        "x7": "",
+        "x8": b1,
+        "x9": _crc32_js_int(b1),
+        "x10": 0,
+        "x11": "normal",
+    }
+    raw_json = json.dumps(struct_obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return base64.b64encode(raw_json).decode("ascii").translate(_CUSTOM_B64_TRANS)
 
 
 def _coherent_direct_headers(user_agent: str, impersonate: str) -> dict[str, str]:
     """Keep UA, Client Hints and curl_cffi's TLS target on one major."""
     target = re.search(r"chrome(\d+)", str(impersonate or ""), re.IGNORECASE)
-    major = int(target.group(1)) if target else 0
-    ua = str(user_agent or "").strip()
+    major = int(target.group(1)) if target else 136
+    ua = str(user_agent or "").strip() or _DEFAULT_CHROME_UA
     if major and ua:
         ua = re.sub(
             r"Chrome/\d+(?:\.\d+){0,3}",
@@ -41,7 +102,7 @@ def _coherent_direct_headers(user_agent: str, impersonate: str) -> dict[str, str
             r"Edg/\d+(?:\.\d+){0,3}",
             f"Edg/{major}.0.0.0", ua)
     platform = (
-        '"macOS"' if "Mac OS" in ua
+        '"macOS"' if ("Mac OS" in ua or "Macintosh" in ua)
         else '"Linux"' if "Linux" in ua and "Android" not in ua
         else '"Windows"')
     brand = "Microsoft Edge" if "Edg/" in ua else "Google Chrome"
@@ -56,21 +117,36 @@ def _coherent_direct_headers(user_agent: str, impersonate: str) -> dict[str, str
 
 
 class XhsApiClient:
-    def __init__(self, cookie_str: str, user_agent: str, timeout: float = 30.0,
-                 proxy: str = ""):
+    def __init__(self, cookie_str: str, user_agent: str = "", timeout: float = 30.0,
+                 proxy: str = "", *, storage_state: str = "", b1: str = ""):
         from xhshow import Xhshow            # 延迟导入,未装库时也能加载本模块
+        from xhshow.config import CryptoConfig
         from curl_cffi.requests import AsyncSession
         from ...browser.manager import normalize_proxy
         self._session_cls = AsyncSession
         self._session = None
         self._session_owner = None
-        self.cookie_str = cookie_str or ""
+        self.storage_state = storage_state or ""
+        self.cookie_str = cookie_str or (
+            cookie_str_from_state(self.storage_state) if self.storage_state else ""
+        )
+        self.b1 = str(b1 or "").strip() or extract_b1_from_state(self.storage_state)
         self.timeout = timeout
-        # 规范化:裸 host:port 补成 http://...(curl_cffi 必须带 scheme)
-        self.proxy = normalize_proxy(proxy) or None  # 该账号专属代理(防多账号同 IP 关联)
-        self.impersonate = impersonate_for_ua(user_agent)  # TLS/HTTP2 浏览器特征目标
-        coherent = _coherent_direct_headers(user_agent, self.impersonate)
-        self._signer = Xhshow()
+        from ...netfp import curl_proxy_url
+        # 规范化:裸 host:port 补成 http://...; socks5 自动转 socks5h 远端 DNS
+        self.proxy = curl_proxy_url(proxy) or None  # 该账号专属代理(防多账号同 IP 关联)
+        raw_ua = str(user_agent or "").strip() or _DEFAULT_CHROME_UA
+        self.impersonate = impersonate_for_ua(raw_ua)  # TLS/HTTP2 浏览器特征目标
+        coherent = _coherent_direct_headers(raw_ua, self.impersonate)
+        self.user_agent = coherent["user-agent"]
+        self.x2 = _x2_for_ua(self.user_agent)
+        cfg = CryptoConfig()
+        cfg = cfg.with_overrides(
+            PUBLIC_USERAGENT=self.user_agent,
+            SIGNATURE_DATA_TEMPLATE={**cfg.SIGNATURE_DATA_TEMPLATE, "x2": self.x2},
+            SIGNATURE_XSCOMMON_TEMPLATE={**cfg.SIGNATURE_XSCOMMON_TEMPLATE, "x2": self.x2},
+        )
+        self._signer = Xhshow(cfg)
         self.base_headers = {
             "accept": "application/json, text/plain, */*",
             "accept-language": "zh-CN,zh;q=0.9",
@@ -101,7 +177,7 @@ class XhsApiClient:
         # Reserve ownership before entering a transport that may suspend.
         self._session_owner = owner
         try:
-            async with self._session_cls(discard_cookies=True) as session:
+            async with self._session_cls(discard_cookies=True, trust_env=False) as session:
                 self._session = session
                 try:
                     yield self
@@ -120,7 +196,7 @@ class XhsApiClient:
             return await send(self._session)
         # A one-shot request owns only its own transport. Concurrent unscoped
         # requests must not borrow a session that another request will close.
-        async with self._session_cls(discard_cookies=True) as session:
+        async with self._session_cls(discard_cookies=True, trust_env=False) as session:
             return await send(session)
 
     def _query(self, params: Dict[str, Any]) -> str:
@@ -140,12 +216,20 @@ class XhsApiClient:
             # 网页主签名(xhs_main_260411.js)+ method=GET,对"路径?query"签名
             spliced = creator_sign.splice_str(uri, params)
             a1 = creator_sign.trans_cookies(self.cookie_str).get("a1", "")
-            headers = {**self.base_headers,
-                       **creator_sign.generate_xsc_main(a1, spliced, "", "GET"),
-                       "Cookie": self.cookie_str}
+            headers = {
+                **self.base_headers,
+                **creator_sign.generate_xsc_main(
+                    a1, spliced, "", "GET", b1=self.b1, user_agent=self.user_agent
+                ),
+                "Cookie": self.cookie_str,
+            }
             url = _HOST + spliced
         else:
             sign = self._signer.sign_headers_get(uri, self.cookie_str, params=params or {})
+            if self.b1:
+                sign["x-s-common"] = _build_xs_common_with_b1(
+                    self.cookie_str, self.b1, x2=self.x2
+                )
             headers = {**self.base_headers, **sign, "Cookie": self.cookie_str}
             url = _HOST + (self._signer.build_url(uri, params) if params else uri)
         r = await self._request("get", url, headers=headers)
@@ -154,6 +238,10 @@ class XhsApiClient:
     async def _post(self, uri: str, data: Dict[str, Any], *,
                     host: str = _HOST) -> dict:
         sign = self._signer.sign_headers_post(uri, self.cookie_str, payload=data or {})
+        if self.b1:
+            sign["x-s-common"] = _build_xs_common_with_b1(
+                self.cookie_str, self.b1, x2=self.x2
+            )
         headers = {**self.base_headers, **sign, "Cookie": self.cookie_str}
         body = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
         r = await self._request(

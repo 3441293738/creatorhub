@@ -22,7 +22,7 @@ from urllib.parse import quote, urlencode
 from curl_cffi.requests import AsyncSession
 
 from ...browser.manager import normalize_proxy
-from ...netfp import impersonate_for_ua
+from ...netfp import curl_proxy_url, impersonate_for_ua
 from .._submit import notify_submit
 from .extract import (
     Aweme,
@@ -166,22 +166,21 @@ class InstagramClient:
         new_domain: bool = False,
         transport: Optional[TransportCallable] = None,
     ):
-        cookies = cookie_map_from_state(storage_state)
-        seed = account_seed or cookies.get("ds_user_id") or cookies.get("mid") or "ig-default"
         self.web_user_agent = str(user_agent or DEFAULT_WEB_UA)
-        self.proxy = normalize_proxy(proxy) or None
+        self.proxy = curl_proxy_url(proxy) or None
         self.timeout = float(timeout)
         self.impersonate = impersonate_for_ua(self.web_user_agent)
-        self.session = InstagramSessionState(
-            seed=str(seed),
+        self.session = InstagramSessionState.from_storage_state(
+            storage_state,
+            account_seed=account_seed,
+            timezone_id=timezone_id,
             android_device_ua=android_device_ua,
             web_user_agent=self.web_user_agent,
-            timezone_offset=timezone_offset_seconds(timezone_id),
             new_domain=new_domain,
         )
-        self.session.import_browser_cookies(cookies)
         self.last_error: str = ""
-        self._http: Optional[AsyncSession] = None
+        self._web_http: Optional[AsyncSession] = None
+        self._mobile_http: Optional[AsyncSession] = None
         self._transport = transport
 
     @property
@@ -194,15 +193,22 @@ class InstagramClient:
 
     @asynccontextmanager
     async def session_scope(self):
-        if self._transport is not None or self._http is not None:
+        if self._transport is not None or (
+            self._web_http is not None and self._mobile_http is not None
+        ):
             yield self
             return
-        async with AsyncSession(impersonate=self.impersonate) as sess:
-            self._http = sess
+        async with (
+            AsyncSession(impersonate=self.impersonate, trust_env=False) as web_sess,
+            AsyncSession(impersonate=self.impersonate, trust_env=False) as mob_sess,
+        ):
+            self._web_http = web_sess
+            self._mobile_http = mob_sess
             try:
                 yield self
             finally:
-                self._http = None
+                self._web_http = None
+                self._mobile_http = None
 
     async def _send_raw(
         self,
@@ -212,13 +218,15 @@ class InstagramClient:
         body: Optional[bytes] = None,
         *,
         long_request: bool = False,
+        web: bool = False,
     ) -> IgHttpResponse:
         req_timeout = max(self.timeout, 300.0) if long_request else self.timeout
         if self._transport is not None:
             return await self._transport(method.upper(), url, headers, body, req_timeout)
 
-        if self._http is not None:
-            resp = await self._http.request(
+        active_http = self._web_http if web else self._mobile_http
+        if active_http is not None:
+            resp = await active_http.request(
                 method.upper(),
                 url,
                 data=body,
@@ -227,7 +235,7 @@ class InstagramClient:
                 timeout=req_timeout,
             )
         else:
-            async with AsyncSession(impersonate=self.impersonate) as sess:
+            async with AsyncSession(impersonate=self.impersonate, trust_env=False) as sess:
                 resp = await sess.request(
                     method.upper(),
                     url,
@@ -266,7 +274,9 @@ class InstagramClient:
         resp: Optional[IgHttpResponse] = None
         for attempt in range(attempts):
             try:
-                resp = await self._send_raw(method, url, hdrs, body, long_request=long_request)
+                resp = await self._send_raw(
+                    method, url, hdrs, body, long_request=long_request, web=False
+                )
             except Exception as exc:
                 err = f"network_error:{type(exc).__name__}:{exc}"
                 self.last_error = err
@@ -319,7 +329,7 @@ class InstagramClient:
         resp: Optional[IgHttpResponse] = None
         for attempt in range(attempts):
             try:
-                resp = await self._send_raw(method, url, hdrs, body)
+                resp = await self._send_raw(method, url, hdrs, body, web=True)
             except Exception as exc:
                 err = f"network_error:{type(exc).__name__}:{exc}"
                 self.last_error = err

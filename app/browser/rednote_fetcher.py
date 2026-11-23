@@ -20,6 +20,13 @@ from ..platforms.rednote.resolve import (
     build_rednote_note_url,
     build_rednote_profile_url,
 )
+from .human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from .identity import Identity
 from .manager import BrowserManager
 from .xhs_fetcher import (
@@ -440,7 +447,7 @@ async def fetch_rednote_favorite_boards(
                 try:
                     control = page.get_by_text(label, exact=True).first
                     if await control.is_visible(timeout=1000):
-                        await control.click()
+                        await DEFAULT_HUMAN_ENGINE.click_locator(control, page=page, timeout=3000)
                         break
                 except Exception:
                     continue
@@ -502,7 +509,7 @@ async def fetch_rednote_favorites(
                 try:
                     control = page.get_by_text(label, exact=True).first
                     if await control.is_visible(timeout=1000):
-                        await control.click()
+                        await DEFAULT_HUMAN_ENGINE.click_locator(control, page=page, timeout=3000)
                         break
                 except Exception:
                     continue
@@ -512,7 +519,7 @@ async def fetch_rednote_favorites(
                     try:
                         board = page.get_by_text(board_name, exact=True).first
                         if await board.is_visible(timeout=2500):
-                            await board.click()
+                            await DEFAULT_HUMAN_ENGINE.click_locator(board, page=page, timeout=3000)
                             opened = True
                     except Exception:
                         pass
@@ -521,7 +528,7 @@ async def fetch_rednote_favorites(
                         try:
                             board = page.locator(selector).first
                             if await board.is_visible(timeout=1200):
-                                await board.click()
+                                await DEFAULT_HUMAN_ENGINE.click_locator(board, page=page, timeout=3000)
                                 break
                         except Exception:
                             continue
@@ -606,7 +613,7 @@ async def fetch_rednote_note_detail(
 
 
 async def _focus_note_comment_pane(page) -> bool:
-    """Hover the right-hand scrollable pane of `#noteContainer` so mouse wheel scrolls comments."""
+    """Move cursor smoothly into the right-hand scrollable pane of `#noteContainer`."""
     for sel in (
         "#noteContainer .note-scroller",
         ".note-scroller",
@@ -618,38 +625,46 @@ async def _focus_note_comment_pane(page) -> bool:
         try:
             loc = page.locator(sel).first
             if await loc.is_visible(timeout=400):
-                await loc.hover(timeout=1000)
-                return True
+                box = await loc.bounding_box()
+                if isinstance(box, dict) and box.get("width") and box.get("height"):
+                    tx, ty = DEFAULT_HUMAN_ENGINE.sample_box_point(box)
+                    await DEFAULT_HUMAN_ENGINE.move_mouse(page, tx, ty)
+                    return True
         except Exception:
             continue
     return False
 
 
 async def _nudge_note_scroller_js(page) -> bool:
-    """Fallback scroll on `.note-scroller` when mouse wheel lands outside or caption is tall."""
+    """Scroll `.note-scroller` via human inertia wheel after aiming cursor over the scroller."""
     try:
-        return bool(
-            await page.evaluate(
-                """() => {
-                  const sels = [
-                    '#noteContainer .note-scroller',
-                    '.note-scroller',
-                    '#noteContainer .interaction-container',
-                    '.interaction-container',
-                    '.comments-container'
-                  ];
-                  for (const sel of sels) {
-                    const el = document.querySelector(sel);
-                    if (el && el.scrollHeight > el.clientHeight + 8) {
-                      const before = el.scrollTop;
-                      el.scrollTop = Math.min(el.scrollHeight, before + 560);
-                      if (el.scrollTop !== before) return true;
-                    }
+        box = await page.evaluate(
+            """() => {
+              const sels = [
+                '#noteContainer .note-scroller',
+                '.note-scroller',
+                '#noteContainer .interaction-container',
+                '.interaction-container',
+                '.comments-container'
+              ];
+              for (const sel of sels) {
+                const el = document.querySelector(sel);
+                if (el && el.scrollHeight > el.clientHeight + 8) {
+                  const r = el.getBoundingClientRect();
+                  if (r.width > 40 && r.height > 40) {
+                    return { x: r.x, y: r.y, width: r.width, height: r.height };
                   }
-                  return false;
-                }"""
-            )
+                }
+              }
+              return null;
+            }"""
         )
+        if not isinstance(box, dict) or not box.get("width"):
+            return False
+        tx, ty = DEFAULT_HUMAN_ENGINE.sample_box_point(box)
+        await DEFAULT_HUMAN_ENGINE.move_mouse(page, tx, ty)
+        await human_scroll(page, distance=560, settle=False)
+        return True
     except Exception:
         return False
 
@@ -787,7 +802,7 @@ async def fetch_rednote_comments(
                             for idx in range(min(cnt, 4)):
                                 btn = more_btns.nth(idx)
                                 if await btn.is_visible(timeout=300):
-                                    await btn.click(timeout=1000)
+                                    await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=page, timeout=2000)
                                     clicked_any = True
                                     await mgr.xhs_interaction.pause(0.35, 0.65)
                             if not clicked_any:

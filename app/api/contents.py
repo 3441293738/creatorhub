@@ -20,17 +20,21 @@ from app.platforms.xhs import has_creator_cookies
 from app.services import contents as contents_service
 from app.services import metadata as metadata_service
 from app.services import share_downloads as share_downloads_service
+from app.services import thumb_cache
 from app.submissions import submit_once
 
 router = APIRouter()
 
 
-@router.get("/api/ig-media-thumb")
-async def instagram_media_thumb_proxy(url: str):
-    """本地只读代理 Instagram CDN 头像与封面，规避 Cross-Origin-Resource-Policy: same-origin 拦截并自动复用代理。"""
-    import httpx
-    from app.browser.manager import normalize_proxy
+@router.api_route("/api/thumb", methods=["GET", "HEAD"])
+async def universal_media_thumb(url: str, pf: str = ""):
+    """全平台通用封面与头像本地磁盘持久化缓存接口（首次拉取落盘，后续 <1ms 本地直返）。"""
+    return await thumb_cache.serve_cached_thumb(url, platform=pf)
 
+
+@router.api_route("/api/ig-media-thumb", methods=["GET", "HEAD"])
+async def instagram_media_thumb_proxy(url: str):
+    """本地持久化缓存代理 Instagram CDN 头像与封面，规避 CORP 拦截并复用海外代理。"""
     raw = str(url or "").strip()
     if not raw or len(raw) > 4096:
         raise HTTPException(400, "无效的媒体地址")
@@ -44,65 +48,12 @@ async def instagram_media_thumb_proxy(url: str):
         or not (host.endswith(".cdninstagram.com") or host.endswith(".fbcdn.net"))
     ):
         raise HTTPException(400, "仅允许 Instagram 官方图片 CDN 域名")
-
-    proxy_url = ""
-    ua_str = app_runtime.cfg.engine.user_agent
-    with get_session() as s:
-        ig_acc = s.exec(
-            select(DouyinAccount)
-            .where(DouyinAccount.platform == "instagram")
-            .order_by(DouyinAccount.id.desc())
-        ).first()
-        if ig_acc:
-            if ig_acc.proxy:
-                proxy_url = normalize_proxy(ig_acc.proxy)
-            if ig_acc.ua:
-                ua_str = ig_acc.ua
-    if not proxy_url and app_runtime.cfg.engine.route_download_via_proxy and app_runtime.cfg.proxies:
-        proxy_url = normalize_proxy(app_runtime.cfg.proxies[0])
-
-    headers = {
-        "User-Agent": ua_str,
-        "Referer": "https://www.instagram.com/",
-        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-    }
-    try:
-        async with httpx.AsyncClient(
-            timeout=15.0,
-            follow_redirects=False,
-            headers=headers,
-            proxy=proxy_url or None,
-        ) as http:
-            async with http.stream("GET", raw) as resp:
-                if resp.status_code != 200:
-                    raise HTTPException(resp.status_code if 400 <= resp.status_code < 600 else 502, "上游图片不可用")
-                ctype = (resp.headers.get("content-type") or "image/jpeg").split(";", 1)[0].strip().lower()
-                if not ctype.startswith("image/"):
-                    raise HTTPException(415, "上游响应不是图片")
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in resp.aiter_bytes(65536):
-                    total += len(chunk)
-                    if total > 8 * 1024 * 1024:
-                        raise HTTPException(413, "图片体积超出预览上限")
-                    chunks.append(chunk)
-                return Response(
-                    content=b"".join(chunks),
-                    media_type=ctype,
-                    headers={"Cache-Control": "private, max-age=3600"},
-                )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(502, f"Instagram 图片代理拉取失败: {type(exc).__name__}") from exc
+    return await thumb_cache.serve_cached_thumb(raw, platform="instagram")
 
 
-@router.get("/api/tw-media-thumb")
+@router.api_route("/api/tw-media-thumb", methods=["GET", "HEAD"])
 async def twitter_media_thumb_proxy(url: str):
-    """本地只读代理 X (Twitter) 官方图片 CDN (`pbs.twimg.com` / `abs.twimg.com`)，自动复用海外代理。"""
-    import httpx
-    from app.browser.manager import normalize_proxy
-
+    """本地持久化缓存代理 X (Twitter) 官方图片 CDN (`pbs.twimg.com` / `abs.twimg.com`)。"""
     raw = str(url or "").strip()
     if not raw or len(raw) > 4096:
         raise HTTPException(400, "无效的媒体地址")
@@ -116,57 +67,7 @@ async def twitter_media_thumb_proxy(url: str):
         or not (host == "twimg.com" or host.endswith(".twimg.com"))
     ):
         raise HTTPException(400, "仅允许 X (Twitter) 官方图片 CDN 域名(twimg.com)")
-
-    proxy_url = ""
-    ua_str = app_runtime.cfg.engine.user_agent
-    with get_session() as s:
-        tw_acc = s.exec(
-            select(DouyinAccount)
-            .where(DouyinAccount.platform == "twitter")
-            .order_by(DouyinAccount.id.desc())
-        ).first()
-        if tw_acc:
-            if tw_acc.proxy:
-                proxy_url = normalize_proxy(tw_acc.proxy)
-            if tw_acc.ua:
-                ua_str = tw_acc.ua
-    if not proxy_url and app_runtime.cfg.engine.route_download_via_proxy and app_runtime.cfg.proxies:
-        proxy_url = normalize_proxy(app_runtime.cfg.proxies[0])
-
-    headers = {
-        "User-Agent": ua_str,
-        "Referer": "https://x.com/",
-        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-    }
-    try:
-        async with httpx.AsyncClient(
-            timeout=15.0,
-            follow_redirects=False,
-            headers=headers,
-            proxy=proxy_url or None,
-        ) as http:
-            async with http.stream("GET", raw) as resp:
-                if resp.status_code != 200:
-                    raise HTTPException(resp.status_code if 400 <= resp.status_code < 600 else 502, "上游图片不可用")
-                ctype = (resp.headers.get("content-type") or "image/jpeg").split(";", 1)[0].strip().lower()
-                if not ctype.startswith("image/"):
-                    raise HTTPException(415, "上游响应不是图片")
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in resp.aiter_bytes(65536):
-                    total += len(chunk)
-                    if total > 8 * 1024 * 1024:
-                        raise HTTPException(413, "图片体积超出预览上限")
-                    chunks.append(chunk)
-                return Response(
-                    content=b"".join(chunks),
-                    media_type=ctype,
-                    headers={"Cache-Control": "private, max-age=3600"},
-                )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(502, f"Twitter 图片代理拉取失败: {type(exc).__name__}") from exc
+    return await thumb_cache.serve_cached_thumb(raw, platform="twitter")
 
 
 @router.get("/api/contents")
@@ -264,23 +165,65 @@ def _content_local_media_path(rec: ContentRecord) -> Path | None:
         return None
 
 
+@router.api_route("/api/contents/{cid}/cover", methods=["GET", "HEAD"])
+async def content_cover(cid: int):
+    """优先直接返回监控作品已下载的本地封面或图集首图；未下载则持久化缓存到本地磁盘后返回。"""
+    with get_session() as s:
+        rec = s.get(ContentRecord, cid)
+        if not rec:
+            raise HTTPException(404, "记录不存在")
+        local_path = rec.local_path
+        aweme_id = rec.aweme_id
+        raw_cover = rec.cover_url
+        platform = rec.platform
+    local_cover = thumb_cache.find_work_local_cover(local_path, aweme_id)
+    if local_cover is not None:
+        return thumb_cache.file_thumb_response(local_cover)
+    if raw_cover:
+        return await thumb_cache.serve_cached_thumb(raw_cover, platform=platform)
+    raise HTTPException(404, "封面不存在")
+
+
 @router.get("/api/contents/{cid}/media")
 async def content_media(cid: int):
-    """返回一条作品/笔记的媒体直链列表,供前端预览(图集/视频)。"""
+    """返回一条作品/笔记的媒体直链列表（本地已下载媒体优先）,供前端预览与转发缩略图使用。"""
     with get_session() as s:
         rec = s.get(ContentRecord, cid)
         if not rec:
             raise HTTPException(404, "记录不存在")
         try:
-            medias = json.loads(rec.media_json or "[]")
+            raw_medias = json.loads(rec.media_json or "[]")
         except Exception:
-            medias = []
-        local_media = _content_local_media_path(rec)
+            raw_medias = []
+        local_paths = contents_service._content_local_media_paths(rec)
+        local_medias = [
+            {
+                "kind": "image" if p.suffix.lower() in contents_service._CONTENT_IMAGE_EXTS else "video",
+                "url": f"/api/contents/{rec.id}/local-media/{idx}",
+            }
+            for idx, p in enumerate(local_paths)
+        ]
+        local_video = next((item for item in local_medias if item["kind"] == "video"), None)
+        remote_medias = [
+            {
+                **{k: v for k, v in item.items() if k != "decode_key"},
+                "url": (
+                    thumb_cache.local_thumb_api_url(str(item.get("url") or ""), platform=rec.platform)
+                    if isinstance(item, dict) and item.get("kind") == "image"
+                    else item.get("url", "")
+                ),
+            }
+            for item in (raw_medias if isinstance(raw_medias, list) else [])
+            if isinstance(item, dict) and not item.get("decode_key")
+        ]
+        medias = local_medias if local_medias else remote_medias
+        has_cover = bool(thumb_cache.find_work_local_cover(rec.local_path, rec.aweme_id) or rec.cover_url)
         return {
             "id": rec.id, "platform": rec.platform, "desc": rec.desc,
-            "media_type": rec.media_type, "cover_url": rec.cover_url,
+            "media_type": rec.media_type,
+            "cover_url": f"/api/contents/{rec.id}/cover" if has_cover else "",
             "local_path": rec.local_path, "medias": medias,
-            "local_url": f"/api/contents/{rec.id}/local-media" if local_media else "",
+            "local_url": local_video["url"] if local_video else "",
         }
 
 
@@ -291,14 +234,34 @@ async def content_local_media(cid: int):
         rec = s.get(ContentRecord, cid)
         if not rec:
             raise HTTPException(404, "记录不存在")
-        path = _content_local_media_path(rec)
+        paths = contents_service._content_local_media_paths(rec)
+        path = paths[0] if paths else _content_local_media_path(rec)
     if not path:
         raise HTTPException(404, "本地媒体不存在")
     return FileResponse(
         path,
         filename=path.name,
         content_disposition_type="inline",
-        headers={"Cache-Control": "private, no-cache"},
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@router.api_route("/api/contents/{cid}/local-media/{media_index}", methods=["GET", "HEAD"])
+async def content_local_media_indexed(cid: int, media_index: int):
+    """按序号返回监控作品已下载的本地图集或视频文件。"""
+    with get_session() as s:
+        rec = s.get(ContentRecord, cid)
+        if not rec:
+            raise HTTPException(404, "记录不存在")
+        paths = contents_service._content_local_media_paths(rec)
+    if media_index < 0 or media_index >= len(paths):
+        raise HTTPException(404, "本地媒体不存在")
+    path = paths[media_index]
+    return FileResponse(
+        path,
+        filename=path.name,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 

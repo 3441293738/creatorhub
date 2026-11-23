@@ -10,10 +10,23 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
+import random
 import struct
 import time
 from typing import Any, Awaitable, Callable, Mapping
+
+from curl_cffi import CurlWsFlag
+from curl_cffi.requests import AsyncSession, WebSocketClosed, WebSocketTimeout
+
+from ...browser.manager import normalize_proxy
+from ...netfp import impersonate_for_ua
+
+_DEFAULT_WS_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 
 BILI_WS_METHODS: dict[str, str] = {
     "AUTH": "/bilibili.broadcast.v1.Broadcast/Auth",
@@ -240,6 +253,7 @@ def decode_rpc_frame(raw: bytes | bytearray | memoryview) -> dict[str, Any]:
 
 def create_uuid_v1_factory(
     *,
+    account_seed: str = "",
     now_ms_fn: Callable[[], int] | None = None,
     random_bytes_fn: Callable[[int], bytes] | None = None,
 ) -> Callable[[], str]:
@@ -248,9 +262,16 @@ def create_uuid_v1_factory(
     rand_fn = random_bytes_fn or os.urandom
     last_ms = 0
     last_ns = 0
-    clock_seq = struct.unpack(">H", rand_fn(2))[0] & 0x3FFF
-    node_arr = bytearray(rand_fn(6))
-    node_arr[0] |= 0x01
+    seed_str = str(account_seed or "").strip()
+    if seed_str:
+        digest = hashlib.sha256(f"bili-mac|{seed_str}".encode("utf-8")).digest()
+        node_arr = bytearray(digest[:6])
+        node_arr[0] |= 0x01
+        clock_seq = struct.unpack(">H", digest[6:8])[0] & 0x3FFF
+    else:
+        clock_seq = struct.unpack(">H", rand_fn(2))[0] & 0x3FFF
+        node_arr = bytearray(rand_fn(6))
+        node_arr[0] |= 0x01
     node_hex = bytes(node_arr).hex()
 
     def _next_uuid() -> str:
@@ -290,13 +311,25 @@ async def receive_bili_broadcast(
     subscribe_path: str = BILI_WS_DEFAULT_SUBSCRIBE_PATH,
     should_stop: Callable[[], bool] | None = None,
     proxy: str = "",
+    account_seed: str = "",
+    strict_proxy: bool = True,
 ) -> None:
     """维持 B 站 Broadcast WebSocket 连接，收到 WatchNotify 时触发增量 HTTP 同步。"""
-    import websockets
+    from ...netfp import curl_proxy_url
 
-    token = auth_token or create_uuid_v1()
+    norm_proxy = curl_proxy_url(proxy)
+    if strict_proxy and not norm_proxy:
+        raise RuntimeError("B站实时私信要求绑定专属代理（已拦截本机真实 IP 直连）")
+
+    ua = str(user_agent or "").strip() or _DEFAULT_WS_UA
+    eff_seed = str(account_seed or "").strip()
+    if not eff_seed and cookie:
+        eff_seed = hashlib.sha256(cookie.encode("utf-8")).hexdigest()[:24]
+    uuid_gen = create_uuid_v1_factory(account_seed=eff_seed) if eff_seed else create_uuid_v1
+    token = auth_token or uuid_gen()
     stop_check = should_stop or (lambda: False)
     sync_lock = asyncio.Lock()
+    attempt = 0
 
     async def _trigger_sync() -> None:
         if sync_lock.locked():
@@ -306,7 +339,7 @@ async def receive_bili_broadcast(
                 await on_watch_notify()
             except Exception as exc:
                 print(f"[bili-im-ws] WatchNotify sync failed: {exc!r}")
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(random.uniform(0.85, 1.35))
 
     while not stop_check():
         req_id = 1
@@ -319,88 +352,90 @@ async def receive_bili_broadcast(
         heartbeat_task: asyncio.Task | None = None
         try:
             headers = {
-                "User-Agent": user_agent,
+                "User-Agent": ua,
                 "Cookie": cookie,
                 "Origin": "https://message.bilibili.com",
+                "Sec-WebSocket-Protocol": "proto",
             }
-            connect_kwargs: dict[str, Any] = {
-                "subprotocols": ["proto"],
-                "additional_headers": headers,
-                "open_timeout": 15,
-                "close_timeout": 5,
-            }
-            if proxy:
-                connect_kwargs["proxy"] = proxy
-            try:
-                conn_ctx = websockets.connect(WS_URL, **connect_kwargs)
-            except TypeError:
-                connect_kwargs.pop("proxy", None)
-                headers_legacy = connect_kwargs.pop("additional_headers", headers)
-                connect_kwargs["extra_headers"] = headers_legacy
-                conn_ctx = websockets.connect(WS_URL, **connect_kwargs)
+            async with AsyncSession(
+                impersonate=impersonate_for_ua(ua), trust_env=False
+            ) as session:
+                async with session.ws_connect(
+                    WS_URL,
+                    proxy=(norm_proxy or None),
+                    headers=headers,
+                    timeout=15,
+                ) as ws:
+                    subscribed = False
+                    auth_frame = encode_rpc_frame(
+                        BILI_WS_METHODS["AUTH"],
+                        f"{_NS}AuthReq",
+                        {"token": token},
+                        _next_id(),
+                    )
+                    await ws.send_bytes(auth_frame["buffer"])
 
-            async with conn_ctx as ws:
-                subscribed = False
-                auth_frame = encode_rpc_frame(
-                    BILI_WS_METHODS["AUTH"],
-                    f"{_NS}AuthReq",
-                    {"token": token},
-                    _next_id(),
-                )
-                await ws.send(auth_frame["buffer"])
-
-                async def _heartbeat_loop() -> None:
-                    while not stop_check():
-                        await asyncio.sleep(25.0)
-                        hb = encode_rpc_frame(
-                            BILI_WS_METHODS["HEARTBEAT"],
-                            f"{_NS}HeartbeatResp",
-                            {},
-                            _next_id(),
-                        )
-                        await ws.send(hb["buffer"])
-
-                while not stop_check():
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=30.0)
-                    except asyncio.TimeoutError:
-                        continue
-                    if not isinstance(raw, (bytes, bytearray)):
-                        continue
-                    try:
-                        frame = decode_rpc_frame(raw)
-                    except Exception:
-                        continue
-                    method = frame.get("method") or ""
-                    if method == BILI_WS_METHODS["AUTH"]:
-                        if not subscribed:
-                            sub_frame = encode_rpc_frame(
-                                BILI_WS_METHODS["SUBSCRIBE"],
-                                f"{_NS}TargetPath",
-                                {"path": subscribe_path},
+                    async def _heartbeat_loop() -> None:
+                        while not stop_check():
+                            await asyncio.sleep(random.uniform(22.0, 28.0))
+                            hb = encode_rpc_frame(
+                                BILI_WS_METHODS["HEARTBEAT"],
+                                f"{_NS}HeartbeatResp",
+                                {},
                                 _next_id(),
                             )
-                            await ws.send(sub_frame["buffer"])
-                    elif method == BILI_WS_METHODS["SUBSCRIBE"]:
-                        subscribed = True
-                        hb = encode_rpc_frame(
-                            BILI_WS_METHODS["HEARTBEAT"],
-                            f"{_NS}HeartbeatResp",
-                            {},
-                            _next_id(),
-                        )
-                        await ws.send(hb["buffer"])
-                        if heartbeat_task is None or heartbeat_task.done():
-                            heartbeat_task = asyncio.create_task(_heartbeat_loop())
-                    elif "WatchNotify" in method:
-                        asyncio.create_task(_trigger_sync())
+                            await ws.send_bytes(hb["buffer"])
+
+                    while not stop_check():
+                        try:
+                            raw, flags = await ws.recv(timeout=30.0)
+                        except (WebSocketTimeout, asyncio.TimeoutError):
+                            continue
+                        if flags & CurlWsFlag.CLOSE:
+                            raise WebSocketClosed("Server closed broadcast WebSocket")
+                        if (
+                            not (flags & CurlWsFlag.BINARY)
+                            or not isinstance(raw, (bytes, bytearray))
+                            or not raw
+                        ):
+                            continue
+                        try:
+                            frame = decode_rpc_frame(raw)
+                        except Exception:
+                            continue
+                        method = frame.get("method") or ""
+                        if method == BILI_WS_METHODS["AUTH"]:
+                            if not subscribed:
+                                sub_frame = encode_rpc_frame(
+                                    BILI_WS_METHODS["SUBSCRIBE"],
+                                    f"{_NS}TargetPath",
+                                    {"path": subscribe_path},
+                                    _next_id(),
+                                )
+                                await ws.send_bytes(sub_frame["buffer"])
+                        elif method == BILI_WS_METHODS["SUBSCRIBE"]:
+                            subscribed = True
+                            attempt = 0
+                            hb = encode_rpc_frame(
+                                BILI_WS_METHODS["HEARTBEAT"],
+                                f"{_NS}HeartbeatResp",
+                                {},
+                                _next_id(),
+                            )
+                            await ws.send_bytes(hb["buffer"])
+                            if heartbeat_task is None or heartbeat_task.done():
+                                heartbeat_task = asyncio.create_task(_heartbeat_loop())
+                        elif "WatchNotify" in method:
+                            asyncio.create_task(_trigger_sync())
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             if stop_check():
                 break
-            print(f"[bili-im-ws] disconnected ({exc!r}), reconnecting in 15s...")
-            await asyncio.sleep(15.0)
+            backoff = min(60.0, 4.0 * (2 ** min(attempt, 4))) * random.uniform(0.85, 1.25)
+            attempt += 1
+            print(f"[bili-im-ws] disconnected ({exc!r}), reconnecting in {backoff:.1f}s...")
+            await asyncio.sleep(backoff)
         finally:
             if heartbeat_task is not None and not heartbeat_task.done():
                 heartbeat_task.cancel()

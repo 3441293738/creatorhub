@@ -122,7 +122,7 @@ class ModelSession:
         stream, decoder = NativeStream(self.settings.provider), SSEDecoder()
         try:
             async with httpx.AsyncClient(timeout=self.settings.timeout_seconds,
-                                         follow_redirects=False) as client:
+                                         follow_redirects=False, trust_env=False) as client:
                 async with client.stream("POST", url, headers=headers, json=body) as response:
                     if response.status_code != 200:
                         # Vendor errors often include request bodies and credentials.

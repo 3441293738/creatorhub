@@ -1,7 +1,9 @@
 """新作品/评论/弹幕通知推送、媒体文件下载及失败重试。"""
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import json
+import random
 
 from sqlmodel import select
 
@@ -169,21 +171,32 @@ class MediaDownloadMixin:
             s.add(rec); s.commit()
 
         if platform == "twitter" and (not media_json or not aw.medias):
-            tcli = TwitterClient(
-                acc_state,
-                (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
-                proxy=acc_proxy,
-                timeout=self.cfg.engine.request_timeout_seconds,
-            )
-            async with tcli.session_scope():
-                aw2, _raw_t, tw_err = await tcli.fetch_tweet_syndication(note_id)
-            if (aw2 is None or not aw2.medias) and identity is not None:
-                raw_node, b_err = await fetch_twitter_tweet_detail(
-                    self.browser, identity, note_id, block_media=self.cfg.engine.block_media_resources
+            async def _refetch_tw():
+                tcli = TwitterClient(
+                    acc_state,
+                    (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
+                    proxy=acc_proxy,
+                    timeout=self.cfg.engine.request_timeout_seconds,
                 )
-                if raw_node:
-                    aw2 = parse_twitter_aweme(raw_node)
-                tw_err = tw_err or b_err
+                async with tcli.session_scope():
+                    aw_t, _raw_t, err_t = await tcli.fetch_tweet_syndication(note_id)
+                if (aw_t is None or not aw_t.medias) and identity is not None:
+                    raw_node, b_err = await fetch_twitter_tweet_detail(
+                        self.browser, identity, note_id, block_media=self.cfg.engine.block_media_resources
+                    )
+                    if raw_node:
+                        aw_t = parse_twitter_aweme(raw_node)
+                    err_t = err_t or b_err
+                return aw_t, err_t or ""
+
+            if account_id:
+                aw2, tw_err = await self.guarded_read_pair(
+                    account_id, OperationKind.READ_HEAVY,
+                    f"retry-download:{record_id}", _refetch_tw,
+                    empty_result=None,
+                )
+            else:
+                aw2, tw_err = await _refetch_tw()
             if aw2 and aw2.medias:
                 aw = aw2
                 media_json = json.dumps([
@@ -212,24 +225,35 @@ class MediaDownloadMixin:
                 return {"ok": False, "error": tw_err or "重拉 Twitter 推文详情仍无可用媒体直链"}
 
         if platform == "instagram" and (not media_json or not aw.medias):
-            icli = InstagramClient(
-                acc_state,
-                (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
-                proxy=acc_proxy,
-                timeout=self.cfg.engine.request_timeout_seconds,
-                account_seed=(
-                    (getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""))
-                    if identity is not None
-                    else (acc.fp_seed or acc.profile_dir or "" if acc else "")
-                ),
-                timezone_id=(
-                    getattr(identity, "timezone_id", "Asia/Shanghai")
-                    if identity is not None
-                    else (acc.timezone_id or "Asia/Shanghai" if acc else "Asia/Shanghai")
-                ),
-            )
-            async with icli.session_scope():
-                aw2, _raw_m, ig_err = await icli.fetch_media_info(note_id)
+            async def _refetch_ig():
+                icli = InstagramClient(
+                    acc_state,
+                    (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
+                    proxy=acc_proxy,
+                    timeout=self.cfg.engine.request_timeout_seconds,
+                    account_seed=(
+                        (getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""))
+                        if identity is not None
+                        else (acc.fp_seed or acc.profile_dir or "" if acc else "")
+                    ),
+                    timezone_id=(
+                        getattr(identity, "timezone_id", "America/New_York")
+                        if identity is not None
+                        else (acc.timezone_id or "America/New_York" if acc else "America/New_York")
+                    ),
+                )
+                async with icli.session_scope():
+                    aw_i, _raw_m, err_i = await icli.fetch_media_info(note_id)
+                return aw_i, err_i or ""
+
+            if account_id:
+                aw2, ig_err = await self.guarded_read_pair(
+                    account_id, OperationKind.READ_HEAVY,
+                    f"retry-download:{record_id}", _refetch_ig,
+                    empty_result=None,
+                )
+            else:
+                aw2, ig_err = await _refetch_ig()
             if aw2 and aw2.medias:
                 aw = aw2
                 media_json = json.dumps([
@@ -258,14 +282,24 @@ class MediaDownloadMixin:
                 return {"ok": False, "error": ig_err or "重拉 Instagram 作品详情仍无可用媒体直链"}
 
         if platform == "bilibili" and (not media_json or not aw.medias):
-            bcli = BilibiliClient(
-                acc_state,
-                (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
-                proxy=acc_proxy,
-                timeout=self.cfg.engine.request_timeout_seconds,
-            )
-            async with bcli.session_scope():
-                aw2, berr = await bcli.fetch_aweme_by_work(note_id, with_play_url=True)
+            async def _refetch_bili():
+                bcli = BilibiliClient(
+                    acc_state,
+                    (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
+                    proxy=acc_proxy,
+                    timeout=self.cfg.engine.request_timeout_seconds,
+                )
+                async with bcli.session_scope():
+                    return await bcli.fetch_aweme_by_work(note_id, with_play_url=True)
+
+            if account_id:
+                aw2, berr = await self.guarded_read_pair(
+                    account_id, OperationKind.READ_HEAVY,
+                    f"retry-download:{record_id}", _refetch_bili,
+                    empty_result=None,
+                )
+            else:
+                aw2, berr = await _refetch_bili()
             if aw2 and aw2.medias:
                 aw = aw2
                 media_json = json.dumps([
@@ -509,16 +543,19 @@ class MediaDownloadMixin:
                 rec.download_status = "done" if ok else "failed"
                 rec.local_path = path
                 rec.error = err
+                if ok:
+                    rec.next_retry_at = None
+                else:
+                    backoff_sec = min(1800.0, 120.0 * (2 ** max(0, int(rec.retry_count or 1) - 1)))
+                    rec.next_retry_at = datetime.utcnow() + timedelta(
+                        seconds=backoff_sec * random.uniform(0.85, 1.35)
+                    )
                 s.add(rec); s.commit()
         return {"ok": ok, "error": err}
 
     async def _retry_failed(self):
-        """自动重试可安全复用媒体快照的失败作品。
-
-        小红书详情首抓未得到媒体时，继续自动打开详情页会反复消耗过期
-        xsec_token，并可能连续弹出平台安全验证。此类记录保留给用户单次
-        手动重试或目标下一轮刷新，不进入后台自动重试风暴。
-        """
+        """自动重试可安全复用媒体快照的失败作品(带指数退避与单轮并发限流)。"""
+        now = datetime.utcnow()
         with get_session() as s:
             rows = list(s.exec(
                 select(ContentRecord.id)
@@ -529,6 +566,8 @@ class MediaDownloadMixin:
                 record = s.get(ContentRecord, rid)
                 if record is None:
                     continue
+                if record.next_retry_at and record.next_retry_at > now:
+                    continue
                 if record.platform in {"xhs", "rednote"}:
                     media = _loads(record.media_json)
                     if not isinstance(media, list) or not any(
@@ -536,5 +575,7 @@ class MediaDownloadMixin:
                             and item["url"].strip() for item in media):
                         continue
                 ids.append(rid)
+                if len(ids) >= 3:
+                    break
         for rid in ids:
             await self.retry_download(rid)

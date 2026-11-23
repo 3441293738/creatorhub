@@ -236,15 +236,35 @@ def build_twitter_web_headers(
     user_agent: str = "",
     referer: str = "https://x.com/",
 ) -> Dict[str, str]:
-    """构造 X Web Session API 请求头（自动注入 `Bearer` 与 `x-csrf-token`）。"""
+    """构造 X Web Session API 请求头（自动注入 `Bearer`、`x-csrf-token` 与一致的 Client Hints）。"""
     ua = (user_agent or DEFAULT_TWITTER_UA).strip()
+    m = re.search(r"Chrome/(\d+)", ua)
+    major = int(m.group(1)) if m else 131
+    brands = (
+        f'"Chromium";v="{major}", "Microsoft Edge";v="{major}", "Not?A_Brand";v="99"'
+        if "Edg/" in ua
+        else f'"Chromium";v="{major}", "Google Chrome";v="{major}", "Not?A_Brand";v="99"'
+    )
+    platform = (
+        '"macOS"'
+        if ("Mac OS" in ua or "Macintosh" in ua)
+        else '"Linux"'
+        if ("Linux" in ua and "Android" not in ua)
+        else '"Windows"'
+    )
     headers: Dict[str, str] = {
         "User-Agent": ua,
         "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
         "Authorization": f"Bearer {TWITTER_WEB_BEARER_DECODED}",
         "Origin": "https://x.com",
         "Referer": referer or "https://x.com/",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "sec-ch-ua": brands,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": platform,
         "x-twitter-active-user": "yes",
         "x-twitter-client-language": "en",
     }

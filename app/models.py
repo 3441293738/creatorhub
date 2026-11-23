@@ -87,7 +87,9 @@ class DouyinAccount(SQLModel, table=True):
     status: str = "active"         # active | invalid
     # ── 设备/网络画像(防多账号关联风控:登录时生成一次,之后永久固定)──
     profile_dir: str = ""          # 独立持久化用户目录(Chromium user-data-dir)
+    proxy_id: Optional[int] = Field(default=None, index=True)  # 关联 ProxyPool.id(支持停用/改址同步)
     proxy: str = ""               # 该账号专属代理 http://user:pass@host:port / socks5://...
+    require_proxy: bool = True    # 账号级强制代理锁(True=无代理严禁执行任何联网动作)
     ua: str = ""                  # 该账号固定 User-Agent
     viewport_w: int = 1280
     viewport_h: int = 800
@@ -325,6 +327,7 @@ class ContentRecord(SQLModel, table=True):
     xsec_source: str = ""              # 与令牌配套的来源；旧记录为空时按监控类型处理
     download_status: str = "pending"   # pending | downloading | done | failed
     retry_count: int = 0               # 已重试次数
+    next_retry_at: Optional[datetime] = None  # 指数退避下次允许重试时间(UTC)
     local_path: str = ""
     error: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)

@@ -10,6 +10,13 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Set, Tuple
 
+from .human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from .identity import Identity
 from .manager import BrowserManager
 
@@ -94,8 +101,8 @@ async def _click_in_frames(page, selectors: List[str], timeout: int = 3000) -> b
         for sel in selectors:
             try:
                 loc = frame.locator(sel).first
-                if await loc.count():
-                    await loc.click(timeout=timeout)
+                if await loc.count() and await loc.is_visible():
+                    await DEFAULT_HUMAN_ENGINE.click_locator(loc, page=page, timeout=timeout)
                     return True
             except Exception:
                 continue
@@ -103,28 +110,22 @@ async def _click_in_frames(page, selectors: List[str], timeout: int = 3000) -> b
 
 
 async def _scroll_all_frames(page, delta_y: int = 3000) -> None:
-    try:
-        await page.mouse.wheel(0, delta_y)
-    except Exception:
-        pass
     for frame in page.frames:
         try:
-            await frame.evaluate(
-                """(dy) => {
-                    window.scrollBy(0, dy);
-                    const nodes = document.querySelectorAll(
-                        '[class*="scroll"], [class*="list"], [class*="comment"], main'
-                    );
-                    for (const el of nodes) {
-                        if (el.scrollHeight > el.clientHeight + 20) {
-                            el.scrollTop += dy;
-                        }
-                    }
-                }""",
-                delta_y,
-            )
+            loc = frame.locator('[class*="scroll"], [class*="list"], [class*="comment"], main').first
+            if await loc.count() and await loc.is_visible():
+                box = await loc.bounding_box()
+                if isinstance(box, dict) and box.get("width") and box.get("height"):
+                    tx, ty = DEFAULT_HUMAN_ENGINE.sample_box_point(box)
+                    await DEFAULT_HUMAN_ENGINE.move_mouse(page, tx, ty)
+                    break
         except Exception:
             continue
+    await human_scroll(
+        page,
+        distance=min(920, max(450, int(delta_y // 4))),
+        settle=False,
+    )
 
 
 async def fetch_channels_self_profile(
@@ -158,7 +159,7 @@ async def fetch_channels_self_profile(
     has_login_btn = None
     try:
         await page.goto(PLATFORM_URL, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(3500)
+        await human_wait(page, 3500)
         final_url = page.url
         if "/login" in final_url or "login.html" in final_url:
             error = "logged_out"
@@ -248,12 +249,12 @@ async def fetch_channels_works(
         for list_url in POST_LIST_URLS:
             try:
                 await page.goto(list_url, wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_timeout(settle_ms)
+                await human_wait(page, settle_ms)
                 stagnant = 0
                 for _ in range(max_scrolls):
                     before = len(collected)
                     await _scroll_all_frames(page, 4000)
-                    await page.wait_for_timeout(settle_ms)
+                    await human_wait(page, settle_ms)
                     if len(collected) == before:
                         stagnant += 1
                         if stagnant >= 2:
@@ -358,18 +359,18 @@ async def fetch_channels_comments(
         )
         for nav_url in candidate_urls:
             await page.goto(nav_url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(settle_ms)
+            await human_wait(page, settle_ms)
             if "/login" in page.url or "login.html" in page.url:
                 error = "logged_out:视频号登录态已失效,请重新登录"
                 break
             if not collected:
                 await _click_in_frames(page, _OPEN_COMMENT_DRAWER_SEL, timeout=2500)
-                await page.wait_for_timeout(settle_ms)
+                await human_wait(page, settle_ms)
             stagnant = 0
             for _ in range(max_scrolls):
                 before = len(collected)
                 await _scroll_all_frames(page, 3000)
-                await page.wait_for_timeout(settle_ms)
+                await human_wait(page, settle_ms)
                 if len(collected) == before:
                     stagnant += 1
                     if stagnant >= 2:
@@ -433,7 +434,7 @@ async def post_channels_comment(
             wait_until="domcontentloaded",
             timeout=30000,
         )
-        await page.wait_for_timeout(settle_ms)
+        await human_wait(page, settle_ms)
         if "/login" in page.url or "login.html" in page.url:
             return False, "logged_out:视频号未登录,无法回复评论"
 
@@ -445,8 +446,8 @@ async def post_channels_comment(
                     if await row.count():
                         reply_btn = row.locator('xpath=ancestor::*[self::li or self::div][1]//button[contains(.,"回复")]').first
                         if await reply_btn.count():
-                            await reply_btn.click(timeout=2500)
-                            await page.wait_for_timeout(500)
+                            await DEFAULT_HUMAN_ENGINE.click_locator(reply_btn, page=page, timeout=2500)
+                            await human_wait(page, 500)
                             break
                 except Exception:
                     continue
@@ -454,9 +455,8 @@ async def post_channels_comment(
         editor, _ = await _find_in_frames(page, _COMMENT_INPUT)
         if editor is None:
             return False, "未找到评论回复框(评论管理页选择器需校准)"
-        await editor.click(timeout=timeout_ms)
-        await page.keyboard.type(content, delay=40)
-        await page.wait_for_timeout(500)
+        await DEFAULT_HUMAN_ENGINE.type_text(editor, content, page=page, timeout=timeout_ms)
+        await human_wait(page, 500)
 
         sent = False
         for frame in page.frames:
@@ -464,7 +464,7 @@ async def post_channels_comment(
                 try:
                     btn = frame.locator(sel).first
                     if await btn.count() and await btn.is_enabled():
-                        await btn.click(timeout=3000)
+                        await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=page, timeout=3000)
                         sent = True
                         break
                 except Exception:
@@ -473,15 +473,13 @@ async def post_channels_comment(
                 break
         if not sent:
             return False, "未找到发送按钮(选择器需校准)"
-        await page.wait_for_timeout(1500)
+        await human_wait(page, 1500)
         return True, ""
     except Exception as e:
         return False, f"回复评论异常: {e!r}"
     finally:
         try:
-            if ctx is not None:
-                await ctx.close()
-            else:
+            if page is not None and not page.is_closed():
                 await page.close()
         except Exception:
             pass

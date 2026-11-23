@@ -9,6 +9,13 @@ import re
 import inspect
 
 from app.browser.hub_common import _bili_cookie_str, _console_safe, _harvest_user_lists, _ig_cookie_str, _norm_follow_user, _self_profile_link
+from app.browser.human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from app.browser.ks_fetcher import fetch_ks_self_profile
 from app.browser.manager import BrowserManager
 from app.platforms.kuaishou import parse_self_user as parse_ks_self_user
@@ -46,27 +53,31 @@ _FOLLOW_NAV = {
 # 再在容器内点目标项。顶栏的「关注」导航不在这个容器里,天然被排除。
 _DOUYIN_OPEN_STAT_JS = """(label) => {
   const anchor = document.querySelector('[data-e2e="user-info-fans"]');
-  if (!anchor) return '';
+  if (!anchor) return null;
   // 向上找最小的、同时包含「关注」和「粉丝」的祖先 —— 那就是统计区
   let box = anchor;
   for (let d = 0; d < 6 && box; d++, box = box.parentElement) {
     const t = box.textContent || '';
     if (t.includes('关注') && t.includes('粉丝')) break;
   }
-  if (!box) return '';
+  if (!box) return null;
   // 容器内找目标项:文本形如「关注22」/「22关注」
   const re = new RegExp('^(' + label + '\\\\s*[\\\\d.万亿]*|[\\\\d.万亿]+\\\\s*' + label + ')$');
   const hits = [...box.querySelectorAll('div,span,a')]
     .filter(e => re.test((e.textContent || '').trim()))
     .filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
-  if (!hits.length) return '';
-  // 「关注」这个纯文本标签也会匹配(数字部分可为空),它只是 label,handler 在带数字的
-  // 统计项上。优先带数字的最内层;真没有数字(计数为 0 被隐藏)才退回最内层。
+  if (!hits.length) return null;
   const withNum = hits.filter(e => /\\d/.test(e.textContent || ''));
   const pool = withNum.length ? withNum : hits;
-  const el = pool[pool.length - 1];          // 最内层
-  el.click();
-  return (el.tagName + ':' + (el.textContent || '').trim()).slice(0, 40);
+  const el = pool[pool.length - 1];          // 最内层（严禁在此处调用合成 el.click()）
+  const r = el.getBoundingClientRect();
+  return {
+    x: r.x,
+    y: r.y,
+    width: r.width,
+    height: r.height,
+    desc: (el.tagName + ':' + (el.textContent || '').trim()).slice(0, 40),
+  };
 }"""
 
 
@@ -112,7 +123,7 @@ async def _click_ks_profile_stat(page, label: str) -> bool:
             text = re.sub(r"\s+", "", await item.inner_text())
             if label not in text:
                 continue
-            await item.click(timeout=4000)
+            await DEFAULT_HUMAN_ENGINE.click_locator(item, page=page, timeout=4000)
             return True
         except Exception:
             continue
@@ -262,19 +273,12 @@ _SCROLL_FOLLOW_LIST_JS = """() => {
     }
     const target = best || root;
     const tr = target.getBoundingClientRect();
-    if (best) {
-      best.scrollTop = best.scrollHeight;
-      best.dispatchEvent(new Event('scroll', { bubbles: true }));
-      const items = best.querySelectorAll('a[href*="/user/"], li, [class*="item"], [class*="Item"]');
-      if (items.length) {
-        try { items[items.length - 1].scrollIntoView({ block: 'end' }); } catch (_) {}
-      }
-    }
     return {
       inModal: true,
-      scrolled: !!best,
-      x: Math.max(10, Math.min(window.innerWidth - 10, Math.round(tr.left + tr.width / 2))),
-      y: Math.max(10, Math.min(window.innerHeight - 10, Math.round(tr.top + tr.height / 2))),
+      x: Math.max(8, tr.left),
+      y: Math.max(8, tr.top),
+      width: Math.max(20, Math.min(window.innerWidth - 16, tr.width)),
+      height: Math.max(20, Math.min(window.innerHeight - 16, tr.height)),
     };
   }
   let best = null, bh = 0;
@@ -285,15 +289,23 @@ _SCROLL_FOLLOW_LIST_JS = """() => {
     }
   });
   if (best) {
-    best.scrollTop = best.scrollHeight;
-    best.dispatchEvent(new Event('scroll', { bubbles: true }));
+    const tr = best.getBoundingClientRect();
+    if (tr.width > 100 && tr.height > 80) {
+      return {
+        inModal: false,
+        x: Math.max(8, tr.left),
+        y: Math.max(8, tr.top),
+        width: Math.max(20, Math.min(window.innerWidth - 16, tr.width)),
+        height: Math.max(20, Math.min(window.innerHeight - 16, tr.height)),
+      };
+    }
   }
-  window.scrollBy(0, 3000);
   return {
     inModal: false,
-    scrolled: !!best,
-    x: Math.round(window.innerWidth / 2),
-    y: Math.round(window.innerHeight / 2),
+    x: Math.round(window.innerWidth * 0.25),
+    y: Math.round(window.innerHeight * 0.25),
+    width: Math.round(window.innerWidth * 0.5),
+    height: Math.round(window.innerHeight * 0.5),
   };
 }"""
 
@@ -342,8 +354,9 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         cookie_s = await _bili_cookie_str(mgr, identity)
         client = BilibiliClient(
             cookie_s,
-            getattr(identity, "user_agent", ""),
+            getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
             proxy=getattr(identity, "proxy", ""),
+            account_seed=getattr(identity, "fp_seed", ""),
         )
         kind = "followers" if direction == "fan" else "following"
         out_users: List[dict] = []
@@ -544,7 +557,7 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         if platform == "xhs":
             await mgr.xhs_interaction.pause(0.25, 0.55)
         else:
-            await page.wait_for_timeout(settle_ms)
+            await human_wait(page, settle_ms)
         if platform == "douyin":
             # 标定:hydrate 后把关注/粉丝入口的真实标记打出来,别再盲猜选择器
             try:
@@ -558,11 +571,14 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         for cand in openers:
             try:
                 if cand.startswith("dyjs:"):
-                    # 抖音:锚定 user-info-fans 反查统计区,只在区内点(避开顶栏「关注」导航)
-                    clicked = await page.evaluate(_DOUYIN_OPEN_STAT_JS, cand[5:])
-                    print(f"[follow] douyin stat click {cand[5:]} → {clicked!r}")
-                    if not clicked:
+                    # 抖音:锚定 user-info-fans 反查统计区,定位真实包围盒并走拟人鼠标点击(严禁 JS el.click)
+                    stat_box = await page.evaluate(_DOUYIN_OPEN_STAT_JS, cand[5:])
+                    if not isinstance(stat_box, dict) or not stat_box.get("width"):
                         continue
+                    tx, ty = DEFAULT_HUMAN_ENGINE.sample_box_point(stat_box)
+                    await DEFAULT_HUMAN_ENGINE.click_point(page, tx, ty)
+                    clicked = stat_box.get("desc") or cand[5:]
+                    print(f"[follow] douyin stat click {cand[5:]} → {clicked!r}")
                 elif cand.startswith("xhs:"):
                     clicked = await _click_xhs_profile_stat(
                         mgr, page, cand[4:])
@@ -576,12 +592,12 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                     el = page.get_by_text(cand[5:], exact=False).first
                     if not await el.count():
                         continue
-                    await el.click(timeout=4000)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(el, page=page, timeout=4000)
                 else:
                     el = page.locator(cand).first
                     if not await el.count():
                         continue
-                    await el.click(timeout=4000)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(el, page=page, timeout=4000)
             except Exception:
                 continue
             if platform == "xhs":
@@ -596,13 +612,13 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                 except Exception:
                     continue    # 这个入口没触发对的接口,换下一个候选
             else:
-                await page.wait_for_timeout(settle_ms)
+                await human_wait(page, settle_ms)
                 opened = True
                 break
         if platform == "xhs":
             await mgr.xhs_interaction.pause(0.25, 0.55)
         else:
-            await page.wait_for_timeout(settle_ms)
+            await human_wait(page, settle_ms)
         # 小红书:边滚边从弹层 DOM 抽用户(数据不发独立 XHR);其余平台仍靠 XHR 拦截
         async def _xhs_scrape():
             nonlocal modal_seen, xhs_dbg
@@ -632,6 +648,7 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         scroll_limit = (max(max_scrolls, 500)
                         if platform == "douyin" and max_scrolls == 40
                         else max_scrolls)
+        cursor_in_modal = False
         for _ in range(scroll_limit):
             if platform == "douyin" and douyin_has_more is False:
                 break
@@ -643,14 +660,20 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                         '[role="dialog"],[class*="modal"],'
                         '[class*="drawer"],[class*="user-list"]').first
                     if await drawer.count() and await drawer.is_visible():
-                        await drawer.hover()
+                        dbox = await drawer.bounding_box()
+                        if isinstance(dbox, dict) and dbox.get("width") and dbox.get("height"):
+                            dx, dy = DEFAULT_HUMAN_ENGINE.sample_box_point(dbox)
+                            await DEFAULT_HUMAN_ENGINE.move_mouse(page, dx, dy)
                     await mgr.xhs_interaction.scroll_step(page)
                 else:
-                    # 优先定位关注/粉丝弹窗容器并在弹窗中心触发滚轮，避免主页作品区高度更大而滚错底层页面。
+                    # 定位关注/粉丝弹窗容器，平滑移入光标后执行多帧惯性滚轮滚动
                     pos = await page.evaluate(_SCROLL_FOLLOW_LIST_JS)
-                    if isinstance(pos, dict) and pos.get("x") and pos.get("y"):
-                        await page.mouse.move(int(pos["x"]), int(pos["y"]))
-                    await page.mouse.wheel(0, 2600)
+                    if isinstance(pos, dict) and pos.get("width") and pos.get("height"):
+                        if not cursor_in_modal:
+                            sx, sy = DEFAULT_HUMAN_ENGINE.sample_box_point(pos)
+                            await DEFAULT_HUMAN_ENGINE.move_mouse(page, sx, sy)
+                            cursor_in_modal = bool(pos.get("inModal"))
+                    await DEFAULT_HUMAN_ENGINE.scroll_wheel(page, settle=False)
             except Exception:
                 pass
             if platform == "douyin":
@@ -658,11 +681,11 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
                     await asyncio.wait_for(
                         precise_response_event.wait(),
                         timeout=max(1.5, settle_ms / 1000.0))
-                    await page.wait_for_timeout(180)
+                    await human_wait(page, 220)
                 except Exception:
                     pass
             elif platform != "xhs":
-                await page.wait_for_timeout(settle_ms)
+                await human_wait(page, settle_ms)
             await _xhs_scrape()
             if (len(collected) + len(broad) + len(scraped)) == before:
                 stagnant += 1

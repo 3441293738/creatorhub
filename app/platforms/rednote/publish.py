@@ -25,6 +25,12 @@ import threading
 from typing import Any, List, Sequence, Tuple
 from urllib.parse import urlsplit
 
+from ...browser.human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_wait,
+)
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
 from ...browser.xhs_selectors import (
@@ -38,6 +44,7 @@ from ..xhs.browser_writes import (
     XhsWriteOutcome as RednoteWriteOutcome,
     _PublishWebComponentLocator,
     _SubmitLocator,
+    _click_closed_shadow_publish_button,
     _extract_publish_note_id,
     _publish_payload_accepted,
     _wait_until_enabled,
@@ -294,6 +301,33 @@ def _looks_like_any_visibility_label(text: str) -> bool:
     return any(_matches_visibility_group(cleaned, k) for k in ("public", "private", "friends"))
 
 
+async def _click_rednote_closed_shadow_publish_button(page: Any) -> None:
+    """Dispatch one trusted human-curved click to Rednote's closed-shadow publish button."""
+    await _click_closed_shadow_publish_button(page)
+
+
+_VISIBILITY_OPTION_SELECTORS: tuple[str, ...] = (
+    '.d-popover [role="option"]',
+    '.d-popover .d-option',
+    '.d-popover .d-select-option',
+    '.d-popover .d-grid-item',
+    '.d-popover .custom-option',
+    '.d-select-dropdown [role="option"]',
+    '.d-select-dropdown .d-option',
+    '.d-select-dropdown .d-select-option',
+    '[role="listbox"] [role="option"]',
+    '.reds-popover [role="option"]',
+    '.reds-popover .d-option',
+    '[role="option"]',
+    '.d-option',
+    '.d-select-option',
+    '.d-grid-item',
+    '.custom-option',
+    '.d-radio',
+    '[role="radio"]',
+)
+
+
 async def _try_click_dropdown_option(
     page: Any,
     interaction: Any,
@@ -319,72 +353,49 @@ async def _try_click_dropdown_option(
                     cls = str(await option.get_attribute("class") or "")
                     if "d-select-description" in cls.split():
                         continue
+                    opt_txt = str(await option.inner_text() or "").strip()
+                    if trigger_text and opt_txt == trigger_text and exact is False:
+                        continue
                     if not exact:
-                        opt_txt = str(await option.inner_text() or "").strip()
                         if not _matches_visibility_group(opt_txt, vis_key):
                             continue
                         if len(opt_txt) > 60:
                             continue
-                    await interaction.click_visible(option)
+                    with suppress(Exception):
+                        await option.scroll_into_view_if_needed(timeout=1500)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(option, page=page, timeout=3000)
                     await interaction.pause(0.18, 0.35)
                     return True
                 except Exception:
                     continue
 
-    # 2) Fallback: DOM evaluation inside `.d-popover` / `.d-select-dropdown` / `[role="listbox"]` / `.d-radio`
-    if not hasattr(page, "evaluate"):
-        return False
-    try:
-        clicked = await page.evaluate(
-            """({ labels, keywords, triggerText }) => {
-              const isVis = el => {
-                if (!el) return false;
-                const st = window.getComputedStyle(el);
-                if (!st || st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
-                const r = el.getBoundingClientRect();
-                return r.width > 4 && r.height > 4;
-              };
-              const lowerLabels = labels.map(x => x.toLowerCase());
-              const lowerKw = keywords.map(x => x.toLowerCase());
-              const roots = [
-                ...document.querySelectorAll(
-                  '.d-popover, .d-select-dropdown, .d-dropdown, [role="listbox"], .reds-popover, .permission-setting, .more-setting'
-                ),
-                document.body,
-              ];
-              for (const root of roots) {
-                if (!root) continue;
-                const nodes = root.querySelectorAll(
-                  '[role="option"], .d-option, .d-select-option, .d-grid-item, .custom-option, .d-radio, [role="radio"], li, .item, span, div'
-                );
-                for (let i = nodes.length - 1; i >= 0; i--) {
-                  const el = nodes[i];
-                  if (!isVis(el)) continue;
-                  if (el.classList && el.classList.contains('d-select-description')) continue;
-                  if (el.closest && el.closest('.d-select-wrapper, .d-select-main') && root === document.body) continue;
-                  const raw = (el.innerText || el.textContent || '').trim();
-                  if (!raw || raw.length > 48 || raw === triggerText) continue;
-                  const first = raw.split(/\\r?\\n/)[0].trim().toLowerCase();
-                  const full = raw.replace(/\\s+/g, ' ').toLowerCase();
-                  if (lowerLabels.includes(first) || lowerLabels.includes(full) || lowerKw.some(k => first.includes(k))) {
-                    el.click();
-                    return true;
-                  }
-                }
-              }
-              return false;
-            }""",
-            {
-                "labels": list(desired_labels),
-                "keywords": list(_VISIBILITY_KEYWORDS.get(vis_key, ())),
-                "triggerText": trigger_text,
-            },
-        )
-        if clicked:
-            await interaction.pause(0.18, 0.35)
-            return True
-    except Exception:
-        pass
+    # 2) Fallback: structured Playwright locators inside popover/dropdown/radio containers
+    #    (strictly hardware-dispatched via click_locator — never untrusted JS el.click)
+    for selector in _VISIBILITY_OPTION_SELECTORS:
+        try:
+            nodes = page.locator(selector)
+            total = int(await nodes.count())
+        except Exception:
+            continue
+        for index in range(total - 1, -1, -1):
+            cand = nodes.nth(index)
+            try:
+                if not await cand.is_visible():
+                    continue
+                cls = str(await cand.get_attribute("class") or "")
+                if "d-select-description" in cls.split():
+                    continue
+                raw = str(await cand.inner_text() or "").strip()
+                if not raw or len(raw) > 48 or raw == trigger_text:
+                    continue
+                if _matches_visibility_group(raw, vis_key):
+                    with suppress(Exception):
+                        await cand.scroll_into_view_if_needed(timeout=1500)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(cand, page=page, timeout=3000)
+                    await interaction.pause(0.18, 0.35)
+                    return True
+            except Exception:
+                continue
     return False
 
 
@@ -397,20 +408,14 @@ async def _set_publish_visibility(page: Any, interaction: Any, visibility: str) 
         with suppress(Exception):
             await page.keyboard.press("Escape")
             await interaction.pause(0.08, 0.16)
-    if hasattr(page, "evaluate"):
-        with suppress(Exception):
-            await page.evaluate(
-                """() => {
-                  const labels = ['权限设置', '可见范围', '谁可以看', 'Visibility', 'Who can view', 'Privacy'];
-                  for (const el of document.querySelectorAll('div, span, label, p')) {
-                    const t = (el.textContent || '').trim();
-                    if (labels.includes(t) && el.scrollIntoView) {
-                      el.scrollIntoView({ block: 'center' });
-                      break;
-                    }
-                  }
-                }"""
-            )
+    for section_label in ("权限设置", "可见范围", "谁可以看", "Visibility", "Who can view", "Privacy"):
+        try:
+            sec_loc = page.get_by_text(section_label, exact=True)
+            if int(await sec_loc.count()) > 0:
+                await sec_loc.first.scroll_into_view_if_needed(timeout=1200)
+                break
+        except Exception:
+            continue
 
     # Case A: Inline radio buttons where both public & private options are already visible on the form
     try:
@@ -1150,7 +1155,7 @@ async def publish_rednote(
 
 _LIST_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
 
 

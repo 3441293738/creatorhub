@@ -14,7 +14,7 @@ function danmakuWatchRow(w) {
   const error = w.last_error
     ? ' <span class="warn-ic" title="' + esc(w.last_error) + '">' + ic("i-info") + "</span>" : "";
   const avatar = w.avatar
-    ? '<img class="avatar" src="' + esc(w.avatar) + '" referrerpolicy="no-referrer">' : "";
+    ? '<img class="avatar" src="' + esc(safeMediaUrl(w.avatar)) + '" referrerpolicy="no-referrer">' : "";
   const alias = w.alias ? '<div class="alias-line">' + esc(w.alias) + "</div>" : "";
   const interval = w.interval_seconds
     ? monitorIntervalText(w.interval_seconds)
@@ -685,7 +685,7 @@ function _pvRender(d) {
   const vid = (d.medias || []).find(m => m.kind === "video");
   if (d.media_type === "video" && (d.local_url || vid)) {
     const videoUrl = d.local_url || vid.url;
-    box.innerHTML = `<video src="${esc(videoUrl)}" controls autoplay playsinline preload="metadata" poster="${esc(d.cover_url || "")}" referrerpolicy="no-referrer"></video>`;
+    box.innerHTML = `<video src="${esc(videoUrl)}" controls autoplay playsinline preload="metadata" poster="${esc(safeMediaUrl(d.cover_url || ""))}" referrerpolicy="no-referrer"></video>`;
     const video = box.querySelector("video");
     let triedRemote = !d.local_url || !vid || !vid.url;
     video.addEventListener("error", () => {

@@ -115,6 +115,16 @@ _SIGN_DATA_TEMPLATE: Dict[str, Any] = {
     "x4": "object",
 }
 
+
+def platform_x2_for_ua(user_agent: str) -> str:
+    """Derive ``x2`` OS string (`Mac OS`, `Linux`, or `Windows`) from `user_agent`."""
+    ua = str(user_agent or "")
+    if "Mac OS" in ua or "Macintosh" in ua:
+        return "Mac OS"
+    if "Linux" in ua and "Android" not in ua:
+        return "Linux"
+    return "Windows"
+
 # Live www.rednote.com (v4.3.9+) signs both GET and POST endpoints with XYS_.
 # Explicit sign_format="xyw" remains available for callers/tests that request it.
 XYW_DATA_URIS: frozenset[str] = frozenset()
@@ -420,6 +430,7 @@ class RednoteSignContext:
     dsl_pair: str = ""
     sign_count: int | None = None
     user_id: str = ""
+    user_agent: str = ""
     source: str = "none"
     updated_at: float = field(default_factory=time.time)
 
@@ -527,8 +538,14 @@ def synthesize_rednote_b1(
     from xhshow.generators.fingerprint import FingerprintGenerator
 
     cfg = CryptoConfig()
-    gen = FingerprintGenerator(cfg)
     ua = str(user_agent or cfg.PUBLIC_USERAGENT).strip()
+    x2 = platform_x2_for_ua(ua)
+    cfg = cfg.with_overrides(
+        PUBLIC_USERAGENT=ua,
+        SIGNATURE_DATA_TEMPLATE={**cfg.SIGNATURE_DATA_TEMPLATE, "x2": x2},
+        SIGNATURE_XSCOMMON_TEMPLATE={**cfg.SIGNATURE_XSCOMMON_TEMPLATE, "x2": x2},
+    )
+    gen = FingerprintGenerator(cfg)
     fp = gen.generate(cookies=dict(cookies), user_agent=ua)
     fp["x1"] = ua
     fp["x3"] = str(locale or "en-US")
@@ -552,6 +569,8 @@ def resolve_rednote_sign_context(
 ) -> RednoteSignContext:
     """Return cached or freshly built ``RednoteSignContext`` (300s TTL per ``a1``)."""
     if explicit_context is not None and explicit_context.b1:
+        if user_agent and not explicit_context.user_agent:
+            explicit_context.user_agent = user_agent
         return explicit_context
 
     cookies = parse_cookie_header(cookie_str)
@@ -571,6 +590,7 @@ def resolve_rednote_sign_context(
                     if from_state.sign_count is not None
                     else (cached.sign_count if cached and cached.sign_count is not None else 0)
                 ),
+                user_agent=user_agent,
                 source="storage_state",
                 updated_at=now,
             )
@@ -579,6 +599,8 @@ def resolve_rednote_sign_context(
         if cached is not None and (now - cached.updated_at) < SIGN_CONTEXT_TTL_SECONDS:
             if from_state.dsl_pair and not cached.dsl_pair:
                 cached.dsl_pair = from_state.dsl_pair
+            if user_agent and not cached.user_agent:
+                cached.user_agent = user_agent
             return cached
 
     b1 = synthesize_rednote_b1(
@@ -591,6 +613,7 @@ def resolve_rednote_sign_context(
         b1=b1,
         dsl_pair=from_state.dsl_pair,
         sign_count=from_state.sign_count if from_state.sign_count is not None else 0,
+        user_agent=user_agent,
         source="synthesized_rednote_fp" if not from_state.dsl_pair else "hybrid_state_fp",
         updated_at=now,
     )
@@ -678,6 +701,7 @@ async def refresh_rednote_sign_context(
             b1=b1_val,
             dsl_pair=dsllt_val,
             sign_count=sc_val,
+            user_agent=ua,
             source="live_browser",
             updated_at=now,
         )
@@ -716,10 +740,12 @@ class RednoteSigner:
     def __init__(
         self,
         *,
+        user_agent: str = "",
         now: Callable[[], float] = time.time,
         rng: Callable[[], float] = random.random,
         random_bytes: Callable[[int], bytes] = os.urandom,
     ):
+        self.user_agent = user_agent
         self.now = now
         self.rng = rng
         self.random_bytes = random_bytes
@@ -758,6 +784,8 @@ class RednoteSigner:
         payload: Mapping[str, Any] | None = None,
         timestamp: float | None = None,
         session: RednoteSessionManager | None = None,
+        *,
+        user_agent: str = "",
     ) -> str:
         path = extract_uri(url)
         normalized = canonical_request(method, path, payload)
@@ -778,7 +806,8 @@ class RednoteSigner:
         )
         transformed = xor_transform_array(payload_bytes)[:_PAYLOAD_LENGTH]
         inner = _X3_PREFIX + encode_x3(transformed)
-        obj = {**_SIGN_DATA_TEMPLATE, "x3": inner}
+        x2 = platform_x2_for_ua(user_agent or self.user_agent)
+        obj = {**_SIGN_DATA_TEMPLATE, "x2": x2, "x3": inner}
         return _XYS_PREFIX + encode_custom_b64(
             json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
         )
@@ -790,14 +819,17 @@ class RednoteSigner:
         b1: str,
         dsl_pair: str = "",
         sign_count: int | None = None,
+        user_agent: str = "",
     ) -> Dict[str, Any]:
         parsed = parse_cookie_header(cookies) if isinstance(cookies, str) else dict(cookies)
         if "a1" not in parsed:
             raise ValueError("Missing 'a1' in cookies")
         if not isinstance(b1, str) or not b1:
             raise ValueError("Non-empty 'b1' is required for x-s-common")
+        x2 = platform_x2_for_ua(user_agent or self.user_agent)
         obj: Dict[str, Any] = {
             **_XSCOMMON_TEMPLATE,
+            "x2": x2,
             "x5": parsed["a1"],
             "x8": b1,
             "x9": common_checksum(b1),
@@ -815,9 +847,14 @@ class RednoteSigner:
         b1: str,
         dsl_pair: str = "",
         sign_count: int | None = None,
+        user_agent: str = "",
     ) -> str:
         obj = self.common_object(
-            cookies, b1=b1, dsl_pair=dsl_pair, sign_count=sign_count
+            cookies,
+            b1=b1,
+            dsl_pair=dsl_pair,
+            sign_count=sign_count,
+            user_agent=user_agent,
         )
         return encode_custom_b64(json.dumps(obj, separators=(",", ":"), ensure_ascii=False))
 
@@ -852,6 +889,7 @@ class RednoteSigner:
         b1: str = "",
         dsl_pair: str = "",
         sign_count: int | None = None,
+        user_agent: str = "",
     ) -> Dict[str, str]:
         upper = method.upper()
         if upper == "GET":
@@ -876,12 +914,14 @@ class RednoteSigner:
         if not a1:
             raise ValueError("Missing 'a1' in cookies")
 
+        eff_ua = user_agent or self.user_agent
         ts = self.now() if timestamp is None else timestamp
         sess = session if session is not None else _session_for_key(a1)
         resolved_b1 = b1
         if not resolved_b1:
             ctx = resolve_rednote_sign_context(
-                "; ".join(f"{k}={v}" for k, v in parsed.items())
+                "; ".join(f"{k}={v}" for k, v in parsed.items()),
+                user_agent=eff_ua,
             )
             resolved_b1 = ctx.b1
             if not dsl_pair:
@@ -892,10 +932,16 @@ class RednoteSigner:
         if fmt == "xyw":
             xs = self.sign_xyw(upper, uri, a1, xsec_appid, chosen, ts)
         else:
-            xs = self.sign_xs(upper, uri, a1, xsec_appid, chosen, ts, sess)
+            xs = self.sign_xs(
+                upper, uri, a1, xsec_appid, chosen, ts, sess, user_agent=eff_ua
+            )
 
         xs_common = self.sign_xs_common(
-            parsed, b1=resolved_b1, dsl_pair=dsl_pair, sign_count=sign_count
+            parsed,
+            b1=resolved_b1,
+            dsl_pair=dsl_pair,
+            sign_count=sign_count,
+            user_agent=eff_ua,
         )
         xt = self.get_xt(ts)
         headers: Dict[str, str] = {
@@ -933,6 +979,7 @@ __all__ = [
     "extract_uri",
     "generate_rednote_x_rap_param",
     "get_xt",
+    "platform_x2_for_ua",
     "refresh_rednote_sign_context",
     "resolve_rednote_sign_context",
     "synthesize_rednote_b1",

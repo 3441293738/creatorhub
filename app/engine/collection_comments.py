@@ -19,6 +19,7 @@ from app.platforms.kuaishou import flatten_ks_comments, parse_ks_comment
 from app.platforms.tiktok import parse_tiktok_comment
 from app.platforms.tiktok.client import TikTokNativeClient
 from app.platforms.xhs import XhsApiClient, flatten_comments as flatten_xhs_comments, parse_comment as parse_xhs_comment
+from app.services import thumb_cache
 
 
 class CollectionCommentsMixin:
@@ -70,7 +71,9 @@ class CollectionCommentsMixin:
             session.add(row)
             session.commit()
             session.refresh(row)
-            return row
+        if aweme.cover and not (job.download_media and aweme.medias):
+            thumb_cache.schedule_thumb_prewarm([aweme.cover], platform=job.platform)
+        return row
 
     async def _download(self, job: KeywordCollectionJob,
                         content: KeywordCollectionContent, aweme: Aweme,
@@ -123,6 +126,8 @@ class CollectionCommentsMixin:
                 session.add(row)
                 session.commit()
         if not ok:
+            if aweme.cover:
+                thumb_cache.schedule_thumb_prewarm([aweme.cover], platform=job.platform, proxy=routed_proxy)
             self._record_error(
                 job.id,
                 f"{content.keyword}/{content.aweme_id}: 媒体下载失败: "

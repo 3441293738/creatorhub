@@ -180,10 +180,11 @@ class ProxyPlan:
         return result
 
     def chrome_server(self, relay_port: int | None = None) -> str:
-        if self.scheme == "socks5" and self.authenticated:
+        if self.authenticated:
             if relay_port is None or not (1 <= int(relay_port) <= 65535):
-                raise ProxyConfigError("认证 SOCKS5 需要已启动的本地转发器")
-            return f"socks5://127.0.0.1:{int(relay_port)}"
+                raise ProxyConfigError("认证代理需要已启动的本地转发器")
+            scheme = "socks5" if self.scheme == "socks5" else "http"
+            return f"{scheme}://127.0.0.1:{int(relay_port)}"
         return self.server
 
 
@@ -267,14 +268,19 @@ class HttpProxyAuthRelay:
             parts = first_line.split(b" ", 2)
             if len(parts) != 3:
                 return
+            is_connect = parts[0].upper() == b"CONNECT"
             filtered = [
                 line for line in lines
                 if line and not line.lower().startswith(b"proxy-authorization:")
+                and (is_connect or not line.lower().startswith((b"connection:", b"proxy-connection:")))
             ]
+            extra_headers = [b"Proxy-Authorization: " + self._authorization()]
+            if not is_connect:
+                extra_headers.extend((b"Connection: close", b"Proxy-Connection: close"))
             outbound = b"\r\n".join([
                 first_line,
                 *filtered,
-                b"Proxy-Authorization: " + self._authorization(),
+                *extra_headers,
                 b"",
                 b"",
             ])

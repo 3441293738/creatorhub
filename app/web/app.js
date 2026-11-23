@@ -62,11 +62,23 @@ function localDateTimeValue(value) {
   const pad = n => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
-function safeMediaUrl(value) {
+function safeHttpUrl(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
   try {
     const url = new URL(raw, typeof location === "undefined" ? "http://localhost" : location.href);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    return url.href;
+  } catch (_) { return ""; }
+}
+function safeMediaUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("/api/") || raw.startsWith("blob:") || raw.startsWith("data:image/")) return raw;
+  try {
+    const baseHref = typeof location === "undefined" ? "http://localhost" : location.href;
+    const pageOrigin = typeof location === "undefined" ? "http://localhost" : location.origin;
+    const url = new URL(raw, baseHref);
     if (!["http:", "https:"].includes(url.protocol)) return "";
     const host = (url.hostname || "").toLowerCase();
     const isPreview = typeof document !== "undefined" && document.documentElement?.dataset?.preview === "true";
@@ -76,8 +88,20 @@ function safeMediaUrl(value) {
     if (!isPreview && url.protocol === "https:" && (host.endsWith(".cdninstagram.com") || host.endsWith(".fbcdn.net"))) {
       return `/api/ig-media-thumb?url=${encodeURIComponent(url.href)}`;
     }
+    if (!isPreview && url.origin !== pageOrigin) {
+      return `/api/thumb?url=${encodeURIComponent(url.href)}`;
+    }
     return url.href;
   } catch (_) { return ""; }
+}
+function setHtmlIfChanged(el, nextHtml) {
+  if (!el) return false;
+  const html = String(nextHtml ?? "");
+  if (el._lastHtml === html && el._lastDomHtml === el.innerHTML && el.childNodes.length > 0) return false;
+  el._lastHtml = html;
+  el.innerHTML = html;
+  el._lastDomHtml = el.innerHTML;
+  return true;
 }
 // JSON encoding handles the JS string, then HTML encoding handles the attribute.
 function jsArg(value) { return esc(JSON.stringify(String(value ?? ""))); }
@@ -1815,15 +1839,15 @@ async function choosePreLoginBrowserBackend({ platform = "" } = {}) {
     toast("读取登录环境失败：" + e.message, "err");
     return null;
   }
-  const localOnly = platform === "xhs";
-  const options = browserChoiceOptions(catalog, { localOnly });
+  const isXhs = platform === "xhs";
+  const options = browserChoiceOptions(catalog, { localOnly: false });
   const selected = await uiSelect({
     title: "选择扫码登录环境",
-    hint: localOnly
-      ? "小红书固定使用系统 Chrome/CDP 原生环境；扫码、Cookie 和后续任务共用同一持久 Profile。"
+    hint: isXhs
+      ? "单号推荐使用系统 Chrome/CDP 原生环境；同机运营多个小红书号时可选 Fingerprint Chromium 实现底层硬件指纹隔离。"
       : "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。新的指纹环境会同时打开环境体检标签。",
     options,
-    value: localOnly ? "local" : preLoginBrowserBackend,
+    value: isXhs && preLoginBrowserBackend === "default" ? "local" : preLoginBrowserBackend,
   });
   if (selected !== null) preLoginBrowserBackend = selected;
   return selected;
@@ -1853,14 +1877,14 @@ async function choosePreLoginProxy({ platform = PLATFORM } = {}) {
     { value: "auto", label: autoLabel },
     ...opts.map(p => ({ value: p.url, label: formatProxyOptionLabel(p, platform) })),
     { value: "__custom__", label: "✎ 手动输入指定代理…" },
-    { value: "", label: "不用代理（使用本机网络）" },
+    { value: "", label: "⚠️ 不用代理（暴露本机真实 IP；开启严格代理锁时将拦截）" },
   ];
   const v = await uiSelect({
     title: "选择本次登录使用的代理",
     hint: preferDirect
-      ? (domestic ? "当前代理池无可用大陆节点；默认改用本机网络，避免境外代理导致国内平台加载慢或白屏。" : "当前代理池仅有大陆节点；请改选境外代理或手动输入，避免大陆节点导致海外平台连接失败或风控。")
-      : "整个登录/扫码过程都走它,从一开始就绑定这条 IP(最稳)。",
-    options, value: preferDirect ? "" : "auto",
+      ? (domestic ? "当前代理池无空闲大陆节点；请手动输入新代理或先扩充代理池（开启严格代理锁时禁止多号共享本机 IP）。" : "当前代理池无空闲境外节点；请手动输入新代理或先扩充代理池，避免大陆节点或本机直连触发风控。")
+      : "整个登录/扫码过程都走独立代理，从一开始锁定一号一 IP（严禁同平台共享出口）。",
+    options, value: preferDirect ? "__custom__" : "auto",
   });
   if (v === null) return null;
   if (v === "__custom__") {
@@ -1873,7 +1897,7 @@ async function choosePreLoginProxy({ platform = PLATFORM } = {}) {
   }
   return v;
 }
-function freshPreLoginFingerprint(browserBackend) {
+function freshPreLoginFingerprint(browserBackend, platform = PLATFORM) {
   const choice = browserChoiceParts(browserBackend);
   const runtimes = (preLoginBrowserCatalog || {}).runtimes || [];
   const runtime = runtimes.find(item => item.runtime_id === choice.runtimeId)
@@ -1881,10 +1905,13 @@ function freshPreLoginFingerprint(browserBackend) {
   const seed = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
     ? globalThis.crypto.randomUUID().replaceAll("-", "")
     : `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+  const overseas = ["tiktok", "rednote", "instagram", "twitter"].includes(platform || "");
   return {
     seed, engine_seed: "", fingerprint_id: seed.slice(0, 12),
     source_ip: "", country: "", region: "", city: "",
-    timezone: "Asia/Shanghai", locale: "zh-CN", accept_languages: "",
+    timezone: overseas ? "America/New_York" : "Asia/Shanghai",
+    locale: overseas ? "en-US" : "zh-CN",
+    accept_languages: "",
     viewport_w: 1280, viewport_h: 800, geo_lat: 0, geo_lon: 0,
     platform: "", platform_version: "", brand: "", brand_version: "",
     hardware_concurrency: 0, gpu_vendor: "", gpu_renderer: "",
@@ -4198,10 +4225,10 @@ function markDmRead(convId) {
 function dmVideoCard(c) {
   const url = c.item_id ? `https://www.douyin.com/video/${encodeURIComponent(c.item_id)}` : "#";
   const cover = c.cover
-    ? `<img src="${esc(c.cover)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
+    ? `<img src="${esc(safeMediaUrl(c.cover))}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
     : "";
   const avatar = c.avatar
-    ? `<img class="av" src="${esc(c.avatar)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
+    ? `<img class="av" src="${esc(safeMediaUrl(c.avatar))}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
     : "";
   return `<a class="dm-vcard" href="${url}" target="_blank" rel="noopener">
     <div class="cov">${cover}<span class="play">▶</span></div>
@@ -4449,16 +4476,15 @@ async function setBrowserBackend(id) {
     toast("读取浏览器环境失败:" + e.message, "err");
     return;
   }
-  const localOnly = account.platform === "xhs";
-  const options = browserChoiceOptions(catalog, { localOnly });
-  const currentChoice = localOnly ? "local"
-    : account.browser_backend === "fingerprint_chromium" && account.browser_runtime_id
+  const isXhs = account.platform === "xhs";
+  const options = browserChoiceOptions(catalog, { localOnly: false });
+  const currentChoice = account.browser_backend === "fingerprint_chromium" && account.browser_runtime_id
     ? `fingerprint_chromium::${account.browser_runtime_id}`
-    : (account.browser_backend || "default");
+    : (account.browser_backend || (isXhs ? "local" : "default"));
   const selected = await uiSelect({
     title: "账号浏览器环境",
-    hint: localOnly
-      ? `${account.nickname} · 小红书固定使用系统 Chrome/CDP 原生环境。`
+    hint: isXhs
+      ? `${account.nickname} · 单号推荐系统 Chrome/CDP；同机多小红书号推荐切换至 Fingerprint Chromium 隔离硬件指纹。`
       : `${account.nickname} · 切换时会关闭该账号当前浏览器，下次任务使用新内核。`,
     options,
     value: currentChoice,
@@ -6431,7 +6457,7 @@ function shareHistoryRow(row) {
   const specSub = [quality, mediaCount > 1 ? `${mediaCount} 媒体` : (duration ? fmtDur(duration) : "")].filter(Boolean).join(" · ");
   return `<tr>
     <td class="content-check-cell"><input type="checkbox" data-id="${Number(row.id)}" onchange="shareHistoryToggleOne(${Number(row.id)},this.checked)" ${selShareHistory.has(row.id) ? "checked" : ""} aria-label="选择下载记录"></td>
-    <td class="content-cover-cell"><span class="content-cover-box" onclick="openShareHistoryPreview(${Number(row.id)})" title="点击站内预览">${cover ? `<img class="thumb" src="${esc(cover)}" alt="${esc(title.slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy">` : `<span class="content-cover-empty">${ic(type === "images" ? "i-image" : "i-film")}</span>`}${durBadge}</span></td>
+    <td class="content-cover-cell"><span class="content-cover-box" onclick="openShareHistoryPreview(${Number(row.id)})" title="点击站内预览">${cover ? `<img class="thumb" src="${esc(safeMediaUrl(cover))}" alt="${esc(title.slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy">` : `<span class="content-cover-empty">${ic(type === "images" ? "i-image" : "i-film")}</span>`}${durBadge}</span></td>
     <td class="content-desc-cell"><div class="content-desc-text clickable" title="${esc(title)}" onclick="openShareHistoryPreview(${Number(row.id)})">${esc(title)}</div>${descriptionMeta}</td>
     <td><span class="content-kind">${esc(typeName)}</span>${specSub ? `<span class="content-quality">${esc(specSub)}</span>` : ""}</td>
     <td class="mut num">${contentTimeCell(createTime)}</td>
@@ -7102,9 +7128,23 @@ function openCollectionVerifyBrowser(jobId) {
   }
   openAccountBrowser(job.account_id, targetUrl);
 }
+let COLLECTION_RENDERED_JOB_ID = 0;
+let COLLECTION_RENDERED_SIG = "";
+function collectionJobResultSig(job, page = COLLECTION_PAGE) {
+  if (!job) return "";
+  return [
+    job.id,
+    Math.max(1, Number(page) || 1),
+    job.status,
+    Number(job.content_count || 0),
+    Number(job.comment_count || 0),
+    Number(job.error_count || 0),
+    Number(job.current_item_index || 0),
+  ].join(":");
+}
 function renderCollectionJobs() {
   const body = $("collection-job-table"); if (!body) return;
-  body.innerHTML = COLLECTION_JOBS.map(job => {
+  const html = COLLECTION_JOBS.map(job => {
     const status = collectionStatus(job.status);
     const percent = collectionProgress(job);
     const sourceLabel = job.source_type === "keyword" ? "关键词" : "来源";
@@ -7140,6 +7180,7 @@ function renderCollectionJobs() {
       </div>
     </article>`;
   }).join("") || collectionTaskEmpty();
+  setHtmlIfChanged(body, html);
 }
 async function refreshCollections() {
   const isCurrent = beginViewRequest("collections");
@@ -7158,7 +7199,10 @@ async function refreshCollections() {
       const job = COLLECTION_JOBS.find(j => j.id === COLLECTION_JOB_ID);
       if (job) {
         updateCollectionResultStats(job);
-        if (CURRENT_TAB === "collections") await loadCollectionContents(COLLECTION_PAGE, true);
+        const nextSig = collectionJobResultSig(job, COLLECTION_PAGE);
+        if (CURRENT_TAB === "collections" && nextSig !== COLLECTION_RENDERED_SIG) {
+          await loadCollectionContents(COLLECTION_PAGE, true);
+        }
       }
       else closeCollectionResults();
     }
@@ -7285,14 +7329,24 @@ function updateCollectionResultStats(job) {
 }
 async function openCollectionResults(jobId) {
   const btn = evtBtn();
-  COLLECTION_JOB_ID = Number(jobId); COLLECTION_PAGE = 1;
+  const nextJobId = Number(jobId);
+  const sameRenderedJob = COLLECTION_RENDERED_JOB_ID === nextJobId;
+  COLLECTION_JOB_ID = nextJobId; COLLECTION_PAGE = 1;
   window.dispatchEvent(new Event("creatorhub:agent-context"));
   const job = COLLECTION_JOBS.find(j => j.id === COLLECTION_JOB_ID);
   if (job) updateCollectionResultStats(job);
   $("collection-results-card").style.display = "";
   globalThis.CreatorHubWorkbench?.collectionDetail?.(true);
+  const targetSig = collectionJobResultSig(job, 1);
+  const hasCachedDom = sameRenderedJob && targetSig && targetSig === COLLECTION_RENDERED_SIG
+    && Boolean($("collection-content-list")?.querySelector(".collection-result-item"));
+  if (hasCachedDom) {
+    const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    $("collection-results-card").scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
+    return;
+  }
   await withBusy(btn, "加载中", async () => {
-    await loadCollectionContents(1);
+    await loadCollectionContents(1, sameRenderedJob);
     const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     $("collection-results-card").scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
   });
@@ -7409,22 +7463,28 @@ function copyCollectionPath(button) {
 }
 async function loadCollectionContents(page = COLLECTION_PAGE, quiet = false) {
   if (!COLLECTION_JOB_ID) return;
+  const targetJobId = COLLECTION_JOB_ID;
   COLLECTION_PAGE = Math.max(1, Number(page) || 1);
   const isCurrent = beginViewRequest("collection-contents", () => `${COLLECTION_JOB_ID}:${COLLECTION_PAGE}`);
   const body = $("collection-content-list");
-  if (!quiet) body.innerHTML = collectionResultSkeleton(4);
+  if (!quiet) setHtmlIfChanged(body, collectionResultSkeleton(4));
   try {
-    const result = await api(`/api/collections/${COLLECTION_JOB_ID}/contents?page=${COLLECTION_PAGE}&page_size=20`);
+    const result = await api(`/api/collections/${targetJobId}/contents?page=${COLLECTION_PAGE}&page_size=20`);
     if (!isCurrent()) return;
     COLLECTION_PAGE = result.page;
-    body.innerHTML = (result.items || []).map(collectionResultCard).join("") || collectionEmpty("任务暂时没有作品结果", "采集中可稍后刷新；失败任务可查看错误并续跑");
+    const html = (result.items || []).map(collectionResultCard).join("") || collectionEmpty("任务暂时没有作品结果", "采集中可稍后刷新；失败任务可查看错误并续跑");
+    setHtmlIfChanged(body, html);
+    const job = COLLECTION_JOBS.find(j => j.id === targetJobId);
+    COLLECTION_RENDERED_JOB_ID = targetJobId;
+    COLLECTION_RENDERED_SIG = collectionJobResultSig(job, COLLECTION_PAGE);
     $("collection-result-count").textContent = `共 ${fmtNum(result.total)} 个作品`;
     const pager = $("collection-pager");
-    pager.innerHTML = `<button class="ghost sm" onclick="loadCollectionContents(${result.page - 1})"${result.page <= 1 ? " disabled" : ""}>${ic("i-prev")}上一页</button><span class="mut">第 ${result.page} / ${result.pages} 页 · 共 ${fmtNum(result.total)} 条</span><button class="ghost sm" onclick="loadCollectionContents(${result.page + 1})"${result.page >= result.pages ? " disabled" : ""}>下一页${ic("i-next")}</button>`;
+    setHtmlIfChanged(pager, `<button class="ghost sm" onclick="loadCollectionContents(${result.page - 1})"${result.page <= 1 ? " disabled" : ""}>${ic("i-prev")}上一页</button><span class="mut">第 ${result.page} / ${result.pages} 页 · 共 ${fmtNum(result.total)} 条</span><button class="ghost sm" onclick="loadCollectionContents(${result.page + 1})"${result.page >= result.pages ? " disabled" : ""}>下一页${ic("i-next")}</button>`);
     pager.hidden = result.pages <= 1;
   } catch (e) {
     if (!isCurrent()) return;
-    body.innerHTML = collectionEmpty("结果加载失败", e.message);
+    COLLECTION_RENDERED_SIG = "";
+    setHtmlIfChanged(body, collectionEmpty("结果加载失败", e.message));
     $("collection-result-count").textContent = "";
   }
 }
@@ -7543,7 +7603,7 @@ async function deleteCollection(jobId) {
   const btn = evtBtn();
   if (!await uiConfirm({ title: "删除采集任务", message: "将删除任务及其作品、评论记录；本地已下载文件不会被删除。", okText: "删除", danger: true })) return;
   await withBusy(btn, "删除中", async () => {
-    try { await api(`/api/collections/${jobId}`, { method: "DELETE" }); if (COLLECTION_JOB_ID === jobId) closeCollectionResults(); toast("任务记录已删除，本地文件已保留", "ok"); await refreshCollections(); }
+    try { await api(`/api/collections/${jobId}`, { method: "DELETE" }); if (COLLECTION_RENDERED_JOB_ID === Number(jobId)) { COLLECTION_RENDERED_JOB_ID = 0; COLLECTION_RENDERED_SIG = ""; } if (COLLECTION_JOB_ID === jobId) closeCollectionResults(); toast("任务记录已删除，本地文件已保留", "ok"); await refreshCollections(); }
     catch (e) { toast("删除失败：" + e.message, "err"); }
   });
 }
@@ -8212,12 +8272,12 @@ async function refreshContents(resetPage = false) {
   $("content-table-wrap").style.display = useCards ? "none" : "";
   $("content-cards").style.display = useCards ? "" : "none";
   if (useCards) {
-    $("content-cards").innerHTML = rows.map(noteCard).join("")
-      || `<div class="empty" style="columns:1">${ic("i-image")}<div class="empty-t">暂无作品记录</div></div>`;
+    setHtmlIfChanged($("content-cards"), rows.map(noteCard).join("")
+      || `<div class="empty" style="columns:1">${ic("i-image")}<div class="empty-t">暂无作品记录</div></div>`);
     updateContentSelBar(); renderContentPager(meta);
     return;
   }
-  $("content-table").innerHTML = rows.map(r => {
+  const tableHtml = rows.map(r => {
     const description = esc(r.desc || "（未填写作品文案）");
     const durText = r.duration ? (typeof fmtDur === "function" ? fmtDur(r.duration) : String(r.duration)) : "";
     const durBadge = durText ? `<span class="thumb-dur">${esc(durText)}</span>` : "";
@@ -8225,7 +8285,7 @@ async function refreshContents(resetPage = false) {
     const hasLocal = Boolean(String(r.local_path || "").trim());
     return `<tr>
       <td class="content-check-cell"><label class="content-selection" title="选择这条作品"><input type="checkbox" data-id="${r.id}" aria-label="选择这条作品" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></label></td>
-      <td class="content-cover-cell"><span class="content-cover-box" onclick="openPreview(${r.id})" title="点击站内预览">${r.cover_url ? `<img class="thumb" src="${esc(safeMediaUrl(r.cover_url))}" alt="封面" referrerpolicy="no-referrer">` : `<span class="content-cover-empty">${ic(r.media_type === "images" ? "i-image" : "i-film")}</span>`}${durBadge}</span></td>
+      <td class="content-cover-cell"><span class="content-cover-box" onclick="openPreview(${r.id})" title="点击站内预览">${r.cover_url ? `<img class="thumb" src="${esc(safeMediaUrl(r.cover_url))}" alt="封面" loading="lazy" referrerpolicy="no-referrer">` : `<span class="content-cover-empty">${ic(r.media_type === "images" ? "i-image" : "i-film")}</span>`}${durBadge}</span></td>
       <td class="content-desc-cell">
         <div class="content-desc-text clickable" title="${description}" onclick="openPreview(${r.id})">${description}</div>
         ${contentSourceMarkup(r)}
@@ -8249,6 +8309,7 @@ async function refreshContents(resetPage = false) {
       </td>
     </tr>`;
   }).join("") || empty(8, "暂无作品", "i-film", "监控目标有新作品时会自动抓取并下载,显示在这里");
+  setHtmlIfChanged($("content-table"), tableHtml);
   updateContentSelBar(); renderContentPager(meta);
 }
 async function retryDl(id) {
@@ -8284,7 +8345,7 @@ function danmakuWatchRow(w) {
   const error = w.last_error
     ? ' <span class="warn-ic" title="' + esc(w.last_error) + '">' + ic("i-info") + "</span>" : "";
   const avatar = w.avatar
-    ? '<img class="avatar" src="' + esc(w.avatar) + '" referrerpolicy="no-referrer">' : "";
+    ? '<img class="avatar" src="' + esc(safeMediaUrl(w.avatar)) + '" referrerpolicy="no-referrer">' : "";
   const alias = w.alias ? '<div class="alias-line">' + esc(w.alias) + "</div>" : "";
   const interval = w.interval_seconds
     ? monitorIntervalText(w.interval_seconds)
@@ -8955,7 +9016,7 @@ function _pvRender(d) {
   const vid = (d.medias || []).find(m => m.kind === "video");
   if (d.media_type === "video" && (d.local_url || vid)) {
     const videoUrl = d.local_url || vid.url;
-    box.innerHTML = `<video src="${esc(videoUrl)}" controls autoplay playsinline preload="metadata" poster="${esc(d.cover_url || "")}" referrerpolicy="no-referrer"></video>`;
+    box.innerHTML = `<video src="${esc(videoUrl)}" controls autoplay playsinline preload="metadata" poster="${esc(safeMediaUrl(d.cover_url || ""))}" referrerpolicy="no-referrer"></video>`;
     const video = box.querySelector("video");
     let triedRemote = !d.local_url || !vid || !vid.url;
     video.addEventListener("error", () => {
@@ -9418,7 +9479,7 @@ async function refreshPublish() {
     <td>${t.platform === "twitter" && !(t.media_count || 0) ? "纯文本" : `${t.media_type === "video" ? "视频" : "图文"} · <span class="mut num">${t.media_count || 0}</span>`}</td>
     <td>${t.source_platform ? esc(PF_NAME[t.source_platform] || t.source_platform) + " 转发" : "手动"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>
-    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ((["kuaishou", "shipinhao", "tiktok"].includes(t.platform) || (t.platform === "bilibili" && String(t.result_url).includes("member.bilibili.com"))) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeMediaUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}${t.status === "publishing" ? `<div class="mut" id="pub-stage-${t.id}" style="margin-top:4px;white-space:normal;max-width:200px">${esc(t.live_stage || "执行中，请等待结果")}</div>` : ""}</td>
+    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ((["kuaishou", "shipinhao", "tiktok"].includes(t.platform) || (t.platform === "bilibili" && String(t.result_url).includes("member.bilibili.com"))) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeHttpUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}${t.status === "publishing" ? `<div class="mut" id="pub-stage-${t.id}" style="margin-top:4px;white-space:normal;max-width:200px">${esc(t.live_stage || "执行中，请等待结果")}</div>` : ""}</td>
     <td class="acttd">
       ${["pending", "failed"].includes(t.status) ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
       ${["draft", "pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">${t.schedule_needs_confirmation ? "确认预约时间" : "编辑"}</button>` : ""}
@@ -9649,7 +9710,7 @@ function rpDrawThumbs() {
     <div class="rp-th" draggable="true" data-pos="${pos}"
          ondragstart="rpDragStart(${pos},event)" ondragover="rpDragOver(${pos},event)"
          ondragleave="rpDragLeave(event)" ondrop="rpDrop(${pos},event)" ondragend="rpDragEnd()">
-      <img src="${esc(m.url)}" referrerpolicy="no-referrer" draggable="false" alt="" title="点击看大图" onclick="openPreview(${REPOST_ID},${m.idx})">
+      <img src="${esc(safeMediaUrl(m.url))}" referrerpolicy="no-referrer" draggable="false" alt="" title="点击看大图" onclick="openPreview(${REPOST_ID},${m.idx})">
       <span class="rp-th-badge${pos === 0 ? " cover" : ""}">${pos === 0 ? "封面" : pos + 1}</span>
       <button type="button" class="rp-th-x" title="移除这张" aria-label="移除这张" onclick="rpImgRemove(${pos})">${ic("i-x")}</button>
       <div class="rp-th-mv">

@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from ...browser.human_interaction import DEFAULT_HUMAN_ENGINE, human_wait
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
 from ...media_tools import MediaToolError, video_cover_and_meta
@@ -371,6 +372,70 @@ async def publish_instagram_browser(
                     captured_url = f"https://www.instagram.com/{kind}/{code}/"
                     return
 
+    async def _click_create_entry(active_page) -> bool:
+        svg_selectors = (
+            'svg[aria-label*="New post" i]',
+            'svg[aria-label*="Create" i]',
+            'svg[aria-label*="新帖子"]',
+            'svg[aria-label*="创建"]',
+            'svg[aria-label*="建立"]',
+            'svg[aria-label*="新貼文"]',
+            'svg[aria-label*="Plus icon" i]',
+        )
+        for sel in svg_selectors:
+            try:
+                svgs = active_page.locator(sel)
+                for idx in range(min(await svgs.count(), 8)):
+                    svg = svgs.nth(idx)
+                    if not await svg.is_visible():
+                        continue
+                    anc = svg.locator(
+                        "xpath=ancestor::*[self::a or self::button or @role='button' or @role='link'][1]"
+                    )
+                    target = anc if await anc.count() else svg
+                    if await target.is_visible():
+                        await DEFAULT_HUMAN_ENGINE.click_locator(
+                            target, page=active_page, timeout=3000
+                        )
+                        return True
+            except Exception:
+                continue
+
+        exact_texts = {"Create", "创建", "新帖子", "建立", "新貼文"}
+        try:
+            links = active_page.locator('a, [role="link"], [role="button"], button')
+            for idx in range(min(await links.count(), 30)):
+                cand = links.nth(idx)
+                if not await cand.is_visible():
+                    continue
+                txt = ((await cand.inner_text()) or "").strip()
+                if txt in exact_texts:
+                    await DEFAULT_HUMAN_ENGINE.click_locator(
+                        cand, page=active_page, timeout=3000
+                    )
+                    return True
+        except Exception:
+            pass
+        return False
+
+    async def _click_post_submenu_if_present(active_page) -> bool:
+        exact_post = {"post", "帖子", "貼文", "发布"}
+        try:
+            nodes = active_page.locator('a, [role="link"], [role="menuitem"], [role="button"]')
+            for idx in range(min(await nodes.count(), 30)):
+                cand = nodes.nth(idx)
+                if not await cand.is_visible():
+                    continue
+                txt = ((await cand.inner_text()) or "").strip().lower()
+                if txt in exact_post:
+                    await DEFAULT_HUMAN_ENGINE.click_locator(
+                        cand, page=active_page, timeout=3000
+                    )
+                    return True
+        except Exception:
+            pass
+        return False
+
     async def _drive(active_page) -> Tuple[bool, str, str]:
         nonlocal submitted
         active_page.on("response", _on_response)
@@ -393,75 +458,29 @@ async def publish_instagram_browser(
                     ).first
                     try:
                         if await btn.count() and await btn.is_visible():
-                            await btn.click(timeout=1500)
-                            await active_page.wait_for_timeout(600)
+                            await DEFAULT_HUMAN_ENGINE.click_locator(
+                                btn, page=active_page, timeout=1500
+                            )
+                            await human_wait(active_page, 600)
                     except Exception:
                         pass
 
-                clicked_create = bool(
-                    await active_page.evaluate(
-                        """() => {
-                            const labels = ['new post', 'create', '新帖子', '创建', '建立', '新貼文', 'plus icon'];
-                            const svgs = Array.from(document.querySelectorAll('svg[aria-label]'));
-                            for (const svg of svgs) {
-                                const al = (svg.getAttribute('aria-label') || '').trim().toLowerCase();
-                                if (labels.some(k => al.includes(k))) {
-                                    const target = svg.closest('a,button,[role="button"],[role="link"]') || svg.parentElement || svg;
-                                    const r = target.getBoundingClientRect();
-                                    if (r.width > 0 && r.height > 0) {
-                                        target.click();
-                                        return true;
-                                    }
-                                }
-                            }
-                            const texts = ['Create', '创建', '新帖子', '建立'];
-                            const links = Array.from(document.querySelectorAll('a,[role="link"],[role="button"],button'));
-                            for (const el of links) {
-                                const txt = (el.innerText || el.textContent || '').trim();
-                                if (texts.includes(txt)) {
-                                    const r = el.getBoundingClientRect();
-                                    if (r.width > 0 && r.height > 0) {
-                                        el.click();
-                                        return true;
-                                    }
-                                }
-                            }
-                            return false;
-                        }"""
-                    )
-                )
+                clicked_create = await _click_create_entry(active_page)
                 if clicked_create:
                     break
-                await active_page.wait_for_timeout(800)
+                await human_wait(active_page, 800)
 
             if not clicked_create:
                 return False, "", "未找到 Instagram 网页端「创建(Create)」入口按钮"
 
-            await active_page.wait_for_timeout(1200)
+            await human_wait(active_page, 1200)
             # 仅当创作弹窗尚未打开（即点击 Create 弹出的是 Post/Live 二级菜单）时，才点击精确匹配的 Post/帖子 菜单项
             dialog_ready = bool(
                 await active_page.locator('div[role="dialog"] input[type="file"], div[role="dialog"]').count()
             )
             if not dialog_ready:
-                await active_page.evaluate(
-                    """() => {
-                        const exact = new Set(['post', '帖子', '貼文', '发布']);
-                        const nodes = Array.from(document.querySelectorAll('a,[role="link"],[role="menuitem"],[role="button"],span'));
-                        for (const el of nodes) {
-                            const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-                            if (exact.has(txt)) {
-                                const target = el.closest('a,[role="link"],[role="menuitem"],[role="button"]') || el;
-                                const r = target.getBoundingClientRect();
-                                if (r.width > 0 && r.height > 0) {
-                                    target.click();
-                                    return true;
-                                }
-                            }
-                        }
-                        return false;
-                    }"""
-                )
-                await active_page.wait_for_timeout(1200)
+                if await _click_post_submenu_if_present(active_page):
+                    await human_wait(active_page, 1200)
 
             await _notify_stage(on_stage, "正在注入本地媒体文件…")
             dialog_file = active_page.locator('div[role="dialog"] input[type="file"]').first
@@ -479,10 +498,12 @@ async def publish_instagram_browser(
                     'div[role="dialog"] div[role="button"]:has-text("从电脑中选择")'
                 ).first
                 async with active_page.expect_file_chooser(timeout=15000) as fc_info:
-                    await pick_btn.click(timeout=5000)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(
+                        pick_btn, page=active_page, timeout=5000
+                    )
                 chooser = await fc_info.value
                 await chooser.set_files([str(p) for p in paths])
-            await active_page.wait_for_timeout(2500)
+            await human_wait(active_page, 2500)
 
             share_sel = (
                 'div[role="dialog"] div[role="button"]:text-is("Share"), '
@@ -503,8 +524,10 @@ async def publish_instagram_browser(
                     ok_btn = active_page.locator(f'div[role="dialog"] button:text-is("{ok_txt}")').first
                     try:
                         if await ok_btn.count() and await ok_btn.is_visible():
-                            await ok_btn.click(timeout=1500)
-                            await active_page.wait_for_timeout(600)
+                            await DEFAULT_HUMAN_ENGINE.click_locator(
+                                ok_btn, page=active_page, timeout=1500
+                            )
+                            await human_wait(active_page, 600)
                     except Exception:
                         pass
                 share_check = active_page.locator(share_sel).first
@@ -513,8 +536,10 @@ async def publish_instagram_browser(
                 await _notify_stage(on_stage, "正在推进裁切与滤镜步骤…")
                 next_btn = active_page.locator(next_sel).first
                 await next_btn.wait_for(state="visible", timeout=20000)
-                await next_btn.click(timeout=5000)
-                await active_page.wait_for_timeout(1500)
+                await DEFAULT_HUMAN_ENGINE.click_locator(
+                    next_btn, page=active_page, timeout=5000
+                )
+                await human_wait(active_page, 1500)
 
             if caption:
                 await _notify_stage(on_stage, "正在填写帖子文案与话题…")
@@ -526,9 +551,10 @@ async def publish_instagram_browser(
                     'div[role="dialog"] textarea'
                 ).first
                 await cap_box.wait_for(state="visible", timeout=10000)
-                await cap_box.click(timeout=3000)
-                await active_page.keyboard.insert_text(caption)
-                await active_page.wait_for_timeout(500)
+                await DEFAULT_HUMAN_ENGINE.type_text(
+                    cap_box, caption, page=active_page, clear=False, timeout=5000
+                )
+                await human_wait(active_page, 500)
 
             if not allow_comment:
                 adv = active_page.locator(
@@ -537,11 +563,15 @@ async def publish_instagram_browser(
                 ).first
                 try:
                     if await adv.count() and await adv.is_visible():
-                        await adv.click(timeout=2000)
-                        await active_page.wait_for_timeout(500)
+                        await DEFAULT_HUMAN_ENGINE.click_locator(
+                            adv, page=active_page, timeout=2500
+                        )
+                        await human_wait(active_page, 500)
                         toggle = active_page.locator('div[role="dialog"] input[type="checkbox"]').first
-                        if await toggle.count():
-                            await toggle.check(timeout=2000)
+                        if await toggle.count() and not await toggle.is_checked():
+                            await DEFAULT_HUMAN_ENGINE.click_locator(
+                                toggle, page=active_page, timeout=2500
+                            )
                 except Exception:
                     pass
 
@@ -551,7 +581,9 @@ async def publish_instagram_browser(
             await _notify_stage(on_stage, "正在点击 Share 提交发布…")
             await _notify_submit(on_submit)
             submitted = True
-            await share_btn.click(timeout=5000)
+            await DEFAULT_HUMAN_ENGINE.click_locator(
+                share_btn, page=active_page, timeout=5000
+            )
 
             deadline = asyncio.get_running_loop().time() + max(30, int(timeout_seconds))
             success_markers = (
@@ -581,7 +613,7 @@ async def publish_instagram_browser(
                 )
                 if any(m.lower() in str(body_txt).lower() for m in success_markers):
                     return True, captured_url or INSTAGRAM_HOME_URL, ""
-                await active_page.wait_for_timeout(1500)
+                await human_wait(active_page, 1500)
 
             return False, "", "write_uncertain:已点击 Share 提交，但等待 Instagram 发布完成确认超时，请前往主页核对"
         finally:

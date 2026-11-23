@@ -10,6 +10,7 @@ import string
 
 from curl_cffi.requests import AsyncSession
 
+from ....browser.manager import normalize_proxy
 from ....netfp import impersonate_for_ua
 
 _CHARSET = string.ascii_letters + string.digits + "=_-"
@@ -39,9 +40,15 @@ async def gen_real_ms_token(user_agent: str, timeout: float = 10.0,
         "strData": gen_false_ms_token(172),
         "tspFromClient": 0,
     }
+    from ....netfp import curl_proxy_url
+    norm_proxy = curl_proxy_url(proxy) or None
     try:
         # 用 session 读 cookie jar(curl_cffi 的响应级 cookies 不可靠,set-cookie 进 session jar)
-        async with AsyncSession(impersonate=impersonate_for_ua(user_agent)) as cli:
+        async with AsyncSession(
+            impersonate=impersonate_for_ua(user_agent),
+            proxy=norm_proxy,
+            trust_env=False,
+        ) as cli:
             response = await cli.post(
                 _REAL_URL,
                 params={"msToken": gen_false_ms_token()},
@@ -50,7 +57,7 @@ async def gen_real_ms_token(user_agent: str, timeout: float = 10.0,
                          "Cookie": cookie} if cookie else
                         {"User-Agent": user_agent, "Content-Type": "application/json"},
                 timeout=timeout,
-                proxy=proxy or None,
+                proxy=norm_proxy,
             )
             for c in cli.cookies.jar:
                 if response.status_code == 200 and c.name == "msToken" and c.value:

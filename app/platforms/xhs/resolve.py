@@ -10,6 +10,7 @@ from typing import Optional
 
 from curl_cffi.requests import AsyncSession
 
+from ...browser.manager import normalize_proxy
 from ...netfp import impersonate_for_ua
 
 _ID_RE = r"[0-9a-fA-F]{24}"
@@ -44,21 +45,27 @@ def _tok(text: str) -> tuple[str, str]:
             up.unquote(s.group(1)) if s else "")
 
 
-async def _follow_short(text: str, user_agent: str) -> Optional[str]:
+async def _follow_short(text: str, user_agent: str, proxy: str = "") -> Optional[str]:
     """跟随 xhslink.com 短链拿到最终 xiaohongshu.com URL。"""
     short = _SHORT_RE.search(text)
     if not short:
         return None
+    from ...netfp import curl_proxy_url
+    norm_proxy = curl_proxy_url(proxy) or None
     try:
-        async with AsyncSession(impersonate=impersonate_for_ua(user_agent)) as cli:
+        async with AsyncSession(
+            impersonate=impersonate_for_ua(user_agent),
+            proxy=norm_proxy,
+            trust_env=False,
+        ) as cli:
             r = await cli.get(short.group(0), headers={"User-Agent": user_agent},
-                              timeout=15)
+                              timeout=15, proxy=norm_proxy)
             return str(r.url)
     except Exception:
         return None
 
 
-async def resolve_note(text: str, user_agent: str) -> Optional[NoteRef]:
+async def resolve_note(text: str, user_agent: str, proxy: str = "") -> Optional[NoteRef]:
     """支持:explore/discovery 链接、xhslink 短链、纯 24 位 note_id。"""
     text = text.strip()
     if _BARE_ID_RE.match(text):
@@ -67,7 +74,7 @@ async def resolve_note(text: str, user_agent: str) -> Optional[NoteRef]:
     if m:
         tok, src = _tok(text)
         return NoteRef(note_id=m.group(1), xsec_token=tok, xsec_source=src or "pc_feed")
-    final = await _follow_short(text, user_agent)
+    final = await _follow_short(text, user_agent, proxy=proxy)
     if final:
         m = _NOTE_PATH_RE.search(final)
         if m:
@@ -76,7 +83,7 @@ async def resolve_note(text: str, user_agent: str) -> Optional[NoteRef]:
     return None
 
 
-async def resolve_user(text: str, user_agent: str) -> Optional[UserRef]:
+async def resolve_user(text: str, user_agent: str, proxy: str = "") -> Optional[UserRef]:
     """支持:user/profile 链接、xhslink 短链、纯 24 位 user_id。"""
     text = text.strip()
     if _BARE_ID_RE.match(text):
@@ -85,7 +92,7 @@ async def resolve_user(text: str, user_agent: str) -> Optional[UserRef]:
     if m:
         tok, src = _tok(text)
         return UserRef(user_id=m.group(1), xsec_token=tok, xsec_source=src or "pc_search")
-    final = await _follow_short(text, user_agent)
+    final = await _follow_short(text, user_agent, proxy=proxy)
     if final:
         m = _USER_PATH_RE.search(final)
         if m:

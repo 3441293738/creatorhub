@@ -243,11 +243,15 @@ class DanmakuWatchMixin:
                         else None
                     )
             if identity is None and not watch.account_id:
-                identity = (
-                self.browser.anon_identity()
-                if callable(getattr(self.browser, "anon_identity", None))
-                else None
-            )
+                identity, anon_px = self._anon_identity_proxy(watch.platform, session=s)
+                proxy = proxy or anon_px
+                if not proxy and watch.platform in {"tiktok", "rednote", "instagram", "twitter"} and getattr(self.cfg.engine, "strict_proxy_required", True):
+                    msg = "已启用严格代理锁，匿名弹幕监控未分配到可用池代理，已跳过以免暴露本机 IP"
+                    watch.last_scan_at = datetime.utcnow()
+                    watch.last_error = msg
+                    s.add(watch)
+                    s.commit()
+                    return {"ok": False, "new_danmaku": 0, "error": msg, "skipped": True}
 
         if mode == "creator" and watch.account_id:
             creator_transport = resolve_transport(

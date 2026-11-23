@@ -41,21 +41,21 @@ async def _instagram_native_share(
     acc_proxy = proxy
     acc_ua = user_agent
     acc_seed = ""
-    acc_tz = "Asia/Shanghai"
-    with get_session() as session:
-        acc = session.get(DouyinAccount, account_id) if account_id else None
-        if acc is None or acc.platform != "instagram":
-            acc = session.exec(
-                select(DouyinAccount)
-                .where(DouyinAccount.platform == "instagram")
-                .where(DouyinAccount.status == "active")
-            ).first()
-        if acc is not None:
-            state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
-            acc_proxy = acc_proxy or acc.proxy or ""
-            acc_ua = acc.ua or acc_ua
-            acc_seed = acc.fp_seed or acc.profile_dir or ""
-            acc_tz = acc.timezone_id or "Asia/Shanghai"
+    acc_tz = "America/New_York"
+    if account_id:
+        from app.browser.manager import normalize_proxy
+        with get_session() as session:
+            acc = session.get(DouyinAccount, account_id)
+            if acc is not None and acc.platform == "instagram" and acc.status == "active":
+                if proxy and normalize_proxy(proxy) != normalize_proxy(acc.proxy or ""):
+                    raise ShareDownloadError(
+                        "Instagram 账号解析必须使用该账号已绑定的专属代理，请勿临时切换代理出口"
+                    )
+                state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
+                acc_proxy = acc.proxy or ""
+                acc_ua = acc.ua or acc_ua
+                acc_seed = acc.fp_seed or acc.profile_dir or ""
+                acc_tz = acc.timezone_id or "America/New_York"
 
     if not state_text:
         raise ShareDownloadFallback("未找到已登录的 Instagram 账号，回退通用下载器")
@@ -134,17 +134,19 @@ async def _instagram_native_share(
             encoding="utf-8",
         )
     if save_thumbnail and aweme.media_type == "video" and aweme.cover:
-        import httpx
-        from app.browser.manager import normalize_proxy
+        from curl_cffi.requests import AsyncSession
+        from app.netfp import curl_proxy_url, impersonate_for_ua
 
         cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
         headers = {"User-Agent": dl_ua, "Referer": "https://www.instagram.com/"}
         try:
-            async with httpx.AsyncClient(
+            async with AsyncSession(
                 timeout=dl_timeout,
-                follow_redirects=True,
+                allow_redirects=True,
                 headers=headers,
-                proxy=normalize_proxy(acc_proxy) or None,
+                proxy=curl_proxy_url(acc_proxy) or None,
+                impersonate=impersonate_for_ua(dl_ua),
+                trust_env=False,
             ) as http:
                 await downloader._download_one(http, aweme.cover, cover_path)
         except Exception:
@@ -192,20 +194,20 @@ async def _twitter_native_share(
     acc_proxy = proxy
     acc_ua = user_agent
     identity = None
-    with get_session() as session:
-        acc = session.get(DouyinAccount, account_id) if account_id else None
-        if acc is None or acc.platform != "twitter":
-            acc = session.exec(
-                select(DouyinAccount)
-                .where(DouyinAccount.platform == "twitter")
-                .where(DouyinAccount.status == "active")
-            ).first()
-        if acc is not None:
-            state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
-            acc_proxy = acc_proxy or acc.proxy or ""
-            acc_ua = acc.ua or acc_ua
-            if app_runtime.browser is not None:
-                identity = app_runtime.browser.identity_for(acc)
+    if account_id:
+        from app.browser.manager import normalize_proxy
+        with get_session() as session:
+            acc = session.get(DouyinAccount, account_id)
+            if acc is not None and acc.platform == "twitter" and acc.status == "active":
+                if proxy and normalize_proxy(proxy) != normalize_proxy(acc.proxy or ""):
+                    raise ShareDownloadError(
+                        "Twitter 账号解析必须使用该账号已绑定的专属代理，请勿临时切换代理出口"
+                    )
+                state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
+                acc_proxy = acc.proxy or ""
+                acc_ua = acc.ua or acc_ua
+                if app_runtime.browser is not None:
+                    identity = app_runtime.browser.identity_for(acc)
 
     tcli = TwitterClient(
         state_text,
@@ -286,17 +288,19 @@ async def _twitter_native_share(
             encoding="utf-8",
         )
     if save_thumbnail and aweme.media_type == "video" and aweme.cover:
-        import httpx
-        from app.browser.manager import normalize_proxy
+        from curl_cffi.requests import AsyncSession
+        from app.netfp import curl_proxy_url, impersonate_for_ua
 
         cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
         headers = {"User-Agent": dl_ua, "Referer": "https://x.com/"}
         try:
-            async with httpx.AsyncClient(
+            async with AsyncSession(
                 timeout=dl_timeout,
-                follow_redirects=True,
+                allow_redirects=True,
                 headers=headers,
-                proxy=normalize_proxy(acc_proxy) or None,
+                proxy=curl_proxy_url(acc_proxy) or None,
+                impersonate=impersonate_for_ua(dl_ua),
+                trust_env=False,
             ) as http:
                 await downloader._download_one(http, aweme.cover, cover_path)
         except Exception:
@@ -365,7 +369,11 @@ async def _xhs_native_share(
                     final_url = str(page.url or source_url)
             except Exception as exc:
                 return None, f"小红书短链解析失败: {exc}"
-        ref = await xhs_resolve_note(final_url, account_profiles_service._direct_request_ua(identity))
+        ref = await xhs_resolve_note(
+            final_url,
+            account_profiles_service._direct_request_ua(identity),
+            proxy=identity.proxy or "",
+        )
         if ref is None:
             return None, "没有从链接识别到小红书笔记 ID"
         card, read_error = await fetch_xhs_note_detail(
@@ -447,17 +455,20 @@ async def _xhs_native_share(
         )
 
     if save_thumbnail and aweme.media_type == "video" and aweme.cover:
-        import httpx
+        from curl_cffi.requests import AsyncSession
+        from app.netfp import curl_proxy_url, impersonate_for_ua
         cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
         try:
-            async with httpx.AsyncClient(
+            async with AsyncSession(
                     timeout=max(30.0, app_runtime.cfg.engine.download_timeout_seconds),
-                    follow_redirects=True,
+                    allow_redirects=True,
                     headers={
                         "User-Agent": actual_ua,
                         "Referer": "https://www.xiaohongshu.com/",
                     },
-                    proxy=normalize_proxy(identity.proxy) or None) as http:
+                    proxy=curl_proxy_url(identity.proxy) or None,
+                    impersonate=impersonate_for_ua(actual_ua),
+                    trust_env=False) as http:
                 await downloader._download_one(http, aweme.cover, cover_path)
         except Exception:
             pass
@@ -525,7 +536,7 @@ async def _rednote_native_share(
     rn_cookie = rednote_cookie_str_from_state(state)
 
     async def _read_note():
-        ref = await resolve_rednote_note(source_url, actual_ua)
+        ref = await resolve_rednote_note(source_url, actual_ua, proxy=acc_proxy or "")
         if ref is None:
             return None, "没有从链接识别到海外小红书笔记 ID"
         if rmode in {"api", "hybrid"} and rn_cookie and rednote_has_a1(rn_cookie):
@@ -622,17 +633,20 @@ async def _rednote_native_share(
         )
 
     if save_thumbnail and aweme.media_type == "video" and aweme.cover:
-        import httpx
+        from curl_cffi.requests import AsyncSession
+        from app.netfp import curl_proxy_url, impersonate_for_ua
         cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
         try:
-            async with httpx.AsyncClient(
+            async with AsyncSession(
                     timeout=max(30.0, app_runtime.cfg.engine.download_timeout_seconds),
-                    follow_redirects=True,
+                    allow_redirects=True,
                     headers={
                         "User-Agent": actual_ua,
                         "Referer": "https://www.rednote.com/",
                     },
-                    proxy=normalize_proxy(acc_proxy) or None) as http:
+                    proxy=curl_proxy_url(acc_proxy) or None,
+                    impersonate=impersonate_for_ua(actual_ua),
+                    trust_env=False) as http:
                 await downloader._download_one(http, aweme.cover, cover_path)
         except Exception:
             pass

@@ -32,6 +32,8 @@
     comment_hourly_cap_per_account: 10,
     action_daily_cap_per_account: 20, action_hourly_cap_per_account: 6,
     action_min_gap_seconds: 90, verify_proxy_region: true,
+    strict_proxy_required: true, forbid_same_platform_shared_proxy: true,
+    quiet_hours_include_reads: true, quiet_hours_wake_jitter_minutes: 35,
     native_write_gate_enabled: true, native_write_require_system_chrome: true,
     native_write_require_verified_proxy: true, native_write_proxy_max_age_seconds: 86400,
   };

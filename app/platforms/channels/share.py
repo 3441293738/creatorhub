@@ -17,10 +17,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
+from curl_cffi.requests import AsyncSession
 
 from ...engine.downloader import Downloader
 from ...engine.share_downloader import ShareDownloadError, ShareDownloadFallback
+from ...netfp import impersonate_for_ua
 from .client import ChannelsProtocolClient
 from .extract import Aweme, parse_channels_feed, safe_title
 from .resolve import (
@@ -141,6 +142,7 @@ async def inspect_or_download_channels_share(
                     object_nonce_id=ref.object_nonce_id,
                     export_id=ref.export_id,
                     share_url=source_url,
+                    proxy=proxy,
                 )
             if obj:
                 raw_source = obj
@@ -277,16 +279,26 @@ async def inspect_or_download_channels_share(
         from ...browser.manager import normalize_proxy
 
         cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
-        try:
-            async with httpx.AsyncClient(
-                timeout=dl_timeout,
-                follow_redirects=True,
-                headers={"User-Agent": ua, "Referer": "https://channels.weixin.qq.com/"},
-                proxy=normalize_proxy(proxy) if proxy else None,
-            ) as http_cli:
-                await downloader._download_one(http_cli, aweme.cover, cover_path)
-        except Exception:
-            pass
+        if not cover_path.exists():
+            try:
+                from ...netfp import curl_proxy_url
+                norm_proxy = curl_proxy_url(proxy) or None
+                async with AsyncSession(
+                    impersonate=impersonate_for_ua(ua),
+                    trust_env=False,
+                    timeout=dl_timeout,
+                    allow_redirects=True,
+                    proxy=norm_proxy,
+                    headers={"User-Agent": ua, "Referer": "https://channels.weixin.qq.com/"},
+                ) as http_cli:
+                    resp = await http_cli.get(aweme.cover)
+                    if resp.status_code == 200 and resp.content:
+                        cover_path.parent.mkdir(parents=True, exist_ok=True)
+                        tmp_cover = cover_path.with_suffix(cover_path.suffix + ".part")
+                        tmp_cover.write_bytes(resp.content)
+                        tmp_cover.replace(cover_path)
+            except Exception:
+                pass
 
     files: list[dict[str, Any]] = []
     for path in sorted(target_dir.glob(f"{aweme.aweme_id}_*")):

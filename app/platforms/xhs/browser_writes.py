@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 import inspect
+import math
+import random
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Sequence
 from urllib.parse import urlencode, urlsplit
 
+from ...browser.human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_wait,
+)
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
 from .._submit import notify_stage as _notify_stage
@@ -57,7 +65,10 @@ def _find_publish_component_button(root: dict) -> dict | None:
     hosts: list[dict] = []
 
     def collect(node: dict) -> None:
-        if str(node.get("nodeName") or "").upper() == "XHS-PUBLISH-BTN":
+        if str(node.get("nodeName") or "").upper() in {
+            "XHS-PUBLISH-BTN",
+            "REDNOTE-PUBLISH-BTN",
+        }:
             hosts.append(node)
         for child in _node_children(node):
             collect(child)
@@ -81,7 +92,8 @@ def _find_publish_component_button(root: dict) -> dict | None:
             if "disabled" not in _node_attributes(button)
         ] or buttons
         for button in enabled:
-            if "发布" in _node_text(button):
+            txt_low = _node_text(button).strip().lower()
+            if "发布" in txt_low or "publish" in txt_low or "post" in txt_low:
                 return button
         return enabled[0]
     return None
@@ -97,8 +109,35 @@ def _quad_center(model: dict) -> tuple[float, float] | None:
     return sum(xs) / 4, sum(ys) / 4
 
 
+def _sample_quad_point(
+    model: dict,
+    rng: random.Random | None = None,
+) -> tuple[float, float] | None:
+    """Sample a 2D truncated Gaussian landing point within the inner 50% of the quad."""
+    box = model.get("model") or {}
+    quad = box.get("border") or box.get("content") or ()
+    if len(quad) < 8:
+        return None
+    xs = [float(quad[index]) for index in range(0, 8, 2)]
+    ys = [float(quad[index]) for index in range(1, 8, 2)]
+    cx = sum(xs) / 4.0
+    cy = sum(ys) / 4.0
+    w = max(0.0, max(xs) - min(xs))
+    h = max(0.0, max(ys) - min(ys))
+    half_w = w * 0.25
+    half_h = h * 0.25
+    if half_w < 0.5 or half_h < 0.5:
+        return round(cx, 2), round(cy, 2)
+    r = rng or DEFAULT_HUMAN_ENGINE.rng
+    px = r.gauss(cx, max(0.6, w * 0.10))
+    py = r.gauss(cy, max(0.6, h * 0.10))
+    px = max(cx - half_w, min(cx + half_w, px))
+    py = max(cy - half_h, min(cy + half_h, py))
+    return round(px, 2), round(py, 2)
+
+
 async def _click_closed_shadow_publish_button(page: Any) -> None:
-    """Dispatch one trusted click to the closed-shadow publish button."""
+    """Dispatch one trusted human-curved click to the closed-shadow publish button."""
     session = await page.context.new_cdp_session(page)
     try:
         await session.send("DOM.enable")
@@ -115,20 +154,68 @@ async def _click_closed_shadow_publish_button(page: Any) -> None:
                 "DOM.scrollIntoViewIfNeeded",
                 {"backendNodeId": backend_node_id},
             )
-        center = _quad_center(await session.send(
-            "DOM.getBoxModel", {"backendNodeId": backend_node_id}))
-        if center is None:
+        rng = DEFAULT_HUMAN_ENGINE.rng
+        target = _sample_quad_point(
+            await session.send("DOM.getBoxModel", {"backendNodeId": backend_node_id}),
+            rng=rng,
+        )
+        if target is None:
             raise RuntimeError("新版发布按钮当前没有可见点击区域")
-        x, y = center
+        tx, ty = target
+        sx, sy = DEFAULT_HUMAN_ENGINE._get_cursor(page)
+        if math.hypot(tx - sx, ty - sy) < 12.0:
+            sx = max(8.0, tx + rng.choice((-1.0, 1.0)) * rng.uniform(48.0, 140.0))
+            sy = max(8.0, ty + rng.choice((-1.0, 1.0)) * rng.uniform(24.0, 90.0))
+
+        steps = int(rng.randint(6, 10))
+        dx, dy = tx - sx, ty - sy
+        dist = max(1.0, math.hypot(dx, dy))
+        perp_x, perp_y = -dy / dist, dx / dist
+        arc = (
+            min(65.0, max(6.0, dist * rng.uniform(0.10, 0.24)))
+            * (1.0 if rng.random() < 0.5 else -1.0)
+        )
+        c1x = sx + dx * rng.uniform(0.24, 0.40) + perp_x * arc
+        c1y = sy + dy * rng.uniform(0.24, 0.40) + perp_y * arc
+        c2x = sx + dx * rng.uniform(0.64, 0.82) + perp_x * arc * rng.uniform(-0.30, 0.65)
+        c2y = sy + dy * rng.uniform(0.64, 0.82) + perp_y * arc * rng.uniform(-0.30, 0.65)
+
+        for step_idx in range(1, steps + 1):
+            u = step_idx / steps
+            s = u * u * u * (10.0 + u * (-15.0 + 6.0 * u))
+            inv = 1.0 - s
+            px = (
+                inv * inv * inv * sx
+                + 3.0 * inv * inv * s * c1x
+                + 3.0 * inv * s * s * c2x
+                + s * s * s * tx
+            )
+            py = (
+                inv * inv * inv * sy
+                + 3.0 * inv * inv * s * c1y
+                + 3.0 * inv * s * s * c2y
+                + s * s * s * ty
+            )
+            if step_idx < steps:
+                jitter = (1.0 - s) * 0.9
+                px += rng.uniform(-jitter, jitter)
+                py += rng.uniform(-jitter, jitter)
+            else:
+                px, py = tx, ty
+            await session.send("Input.dispatchMouseEvent", {
+                "type": "mouseMoved", "x": round(px, 2), "y": round(py, 2),
+            })
+            await DEFAULT_HUMAN_ENGINE.pause(0.006, 0.018)
+
+        DEFAULT_HUMAN_ENGINE._set_cursor(page, (tx, ty))
+        await DEFAULT_HUMAN_ENGINE.pause(0.090, 0.220)
         await session.send("Input.dispatchMouseEvent", {
-            "type": "mouseMoved", "x": x, "y": y,
-        })
-        await session.send("Input.dispatchMouseEvent", {
-            "type": "mousePressed", "x": x, "y": y,
+            "type": "mousePressed", "x": tx, "y": ty,
             "button": "left", "clickCount": 1,
         })
+        await DEFAULT_HUMAN_ENGINE.pause(0.055, 0.135)
         await session.send("Input.dispatchMouseEvent", {
-            "type": "mouseReleased", "x": x, "y": y,
+            "type": "mouseReleased", "x": tx, "y": ty,
             "button": "left", "clickCount": 1,
         })
     finally:

@@ -6,6 +6,11 @@ import asyncio
 import json
 
 from app.browser.douyin_auth import douyin_login_prompt_visible
+from app.browser.human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_wait,
+)
 from app.browser.identity import Identity
 from app.browser.login_common import _LOGIN_COOKIES, _focus, _open_first_environment_check, _read_ks_nickname, _read_nickname
 from app.browser.manager import BrowserManager
@@ -38,12 +43,11 @@ async def interactive_login(mgr: BrowserManager, identity: Identity,
         await page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
         await _focus(page)
         # 尝试自动弹出登录框(失败也没关系,用户可自行点“登录”)
-        for sel in ('text=登录', '[data-e2e="login-button"]', 'button:has-text("登录")'):
-            try:
-                await page.click(sel, timeout=2500)
-                break
-            except Exception:
-                continue
+        await human_click_first(
+            page,
+            ('text=登录', '[data-e2e="login-button"]', 'button:has-text("登录")'),
+            timeout=2500,
+        )
 
         # 轮询登录态(用户关窗 -> 立即视为未登录,不抛错)
         waited = 0.0
@@ -68,7 +72,7 @@ async def interactive_login(mgr: BrowserManager, identity: Identity,
             waited += 0.5
 
         if logged:
-            await page.wait_for_timeout(800)   # 给登录跳转/localStorage 一次落盘机会
+            await human_wait(page, 800)   # 给登录跳转/localStorage 一次落盘机会
             state = await ctx.storage_state()
             state_json = json.dumps(state)
             nickname = await _read_nickname(page)
@@ -147,7 +151,7 @@ async def _click_ks_login_button(page, selectors) -> bool:
                 candidate = loc.nth(index)
                 if not await candidate.is_visible():
                     continue
-                await candidate.click(timeout=3000)
+                await DEFAULT_HUMAN_ENGINE.click_locator(candidate, page=page, timeout=3000)
                 return True
         except Exception:
             continue
@@ -193,7 +197,7 @@ async def interactive_ks_login(mgr: BrowserManager, identity: Identity,
             await asyncio.sleep(0.5)
             waited += 0.5
         if logged:
-            await page.wait_for_timeout(1500)
+            await human_wait(page, 1500)
             state_json = json.dumps(await ctx.storage_state())
             nickname = await _read_ks_nickname(page)
     finally:
@@ -236,7 +240,7 @@ async def interactive_ks_creator_login(mgr: BrowserManager, identity: Identity,
             on_cp = "cp.kuaishou.com" in page.url and "/passport" not in page.url
             if (names & _KS_CREATOR_COOKIES) or (
                     on_cp and _ks_web_login_ready(names)):
-                await page.wait_for_timeout(1500)
+                await human_wait(page, 1500)
                 try:
                     state_json = json.dumps(await ctx.storage_state())
                     logged = True
@@ -269,14 +273,15 @@ async def interactive_tiktok_login(
     try:
         await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=30000)
         await _focus(page)
-        for selector in ('[data-e2e="top-login-button"]',
-                         'button[data-e2e="login-button"]',
-                         'button:has-text("Log in")'):
-            try:
-                await page.locator(selector).first.click(timeout=2000)
-                break
-            except Exception:
-                continue
+        await human_click_first(
+            page,
+            (
+                '[data-e2e="top-login-button"]',
+                'button[data-e2e="login-button"]',
+                'button:has-text("Log in")',
+            ),
+            timeout=2000,
+        )
         waited = 0.0
         while waited < timeout_seconds:
             if page.is_closed():
@@ -302,7 +307,7 @@ async def interactive_tiktok_login(
             await asyncio.sleep(0.5)
             waited += 0.5
         if logged:
-            await page.wait_for_timeout(800)
+            await human_wait(page, 800)
             state_json = json.dumps(await ctx.storage_state())
     finally:
         try:
@@ -424,7 +429,7 @@ async def interactive_channels_login(mgr: BrowserManager, identity: Identity,
             await asyncio.sleep(2)
             waited += 2
         if logged:
-            await page.wait_for_timeout(2500)   # 等登录态/跳转写全
+            await human_wait(page, 2500)   # 等登录态/跳转写全
             # 落库前再确认页面没有回跳登录页，过滤授权过程中的瞬时假成功。
             names = {c["name"] for c in await ctx.cookies()}
             still_on_platform = "channels.weixin.qq.com" in page.url \
@@ -512,7 +517,7 @@ async def interactive_bilibili_login(
                         probe = await page.evaluate(
                             """async () => {
                                 try {
-                                    const r = await fetch('https://api.bilibili.com/x/web-interface/nav?_t=' + Date.now(), {
+                                    const r = await fetch('https://api.bilibili.com/x/web-interface/nav', {
                                         credentials: 'include'
                                     });
                                     return await r.json();
@@ -536,7 +541,7 @@ async def interactive_bilibili_login(
             waited += 1.0
 
         if logged:
-            await page.wait_for_timeout(1200)
+            await human_wait(page, 1200)
             state_json = json.dumps(await ctx.storage_state())
     finally:
         try:
@@ -614,7 +619,7 @@ async def interactive_instagram_login(
             waited += 1.5
 
         if logged:
-            await page.wait_for_timeout(1500)
+            await human_wait(page, 1500)
             cur_url = str(page.url or "").lower()
             cookies = await ctx.cookies(["https://www.instagram.com", "https://i.instagram.com"])
             cmap = {c.get("name"): c.get("value") for c in cookies if c.get("name")}
@@ -623,12 +628,16 @@ async def interactive_instagram_login(
                     probe = await page.evaluate(
                         """async () => {
                             try {
+                                const csrfMatch = document.cookie.match(/(?:^|;\\s*)csrftoken=([^;]+)/);
+                                const csrfToken = csrfMatch ? decodeURIComponent(csrfMatch[1]) : '';
+                                const headers = {
+                                    'X-IG-App-ID': '936619743392459',
+                                    'X-Requested-With': 'XMLHttpRequest'
+                                };
+                                if (csrfToken) headers['X-CSRFToken'] = csrfToken;
                                 const r = await fetch('https://www.instagram.com/api/v1/accounts/edit/web_form_data/', {
                                     credentials: 'include',
-                                    headers: {
-                                        'X-IG-App-ID': '936619743392459',
-                                        'X-Requested-With': 'XMLHttpRequest'
-                                    }
+                                    headers
                                 });
                                 if (!r.ok) return null;
                                 return await r.json();
@@ -724,7 +733,7 @@ async def interactive_twitter_login(
             waited += 1.5
 
         if logged:
-            await page.wait_for_timeout(1500)
+            await human_wait(page, 1500)
             cur_url = str(page.url or "").lower()
             cookies = await ctx.cookies(["https://x.com", "https://twitter.com"])
             cmap = {c.get("name"): c.get("value") for c in cookies if c.get("name")}

@@ -290,15 +290,15 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
       <div class="table-scroll"><table><thead><tr><th scope="col">看到的情况</th><th scope="col">下一步</th></tr></thead><tbody><tr><td>等待 / 排队</td><td>检查调度时间、账号占用、间隔与限额。</td></tr><tr><td>待审核</td><td>到对应功能的审核页核对内容。</td></tr><tr><td>失败</td><td>先看具体原因，修复登录、网络或目标后再决定重试。</td></tr><tr><td>结果待确认</td><td>到平台核对实际结果，避免重复提交。</td></tr><tr><td>冷却 / 验证</td><td>查看风控中心；按平台提示处理并等待恢复条件。</td></tr></tbody></table></div>
       <p>重启服务不会自动消除所有冷却状态。保留默认保护设置，优先减少任务规模和频率，而不是把限制全部调为零。</p>
       <h3>默认调度与恢复规则</h3>
-      <ul><li>队列统一展示采集、发布、自动评论、账号动作和下载任务，可按平台、类型、状态与关键词筛选。</li><li>默认 <code>risk_control.mode: conservative</code>：同账号的评论、私信、关注和发布共享写间隔与额度；立即执行同样遵守检查。</li><li>同一网络出口的账号串行访问；未配置代理的账号归入 <code>direct</code> 出口组。保守模式的写间隔、小时/每日额度与同出口并发有保护线，配置 <code>0</code> 表示沿用保护线，不代表无限制。</li><li>轻读取和重读取分别计时；命中 <code>403/429/461/471</code>、验证码或明确风险提示后按阶梯冷却。冷却结束先做轻量探测，连续成功后逐级恢复。</li><li>受时段、限额、代理或冷却影响的任务保留为等待状态，服务重启后继续恢复；登录失效先重新登录，缺少成功证据的写操作先人工核对。</li></ul>
+      <ul><li>队列统一展示采集、发布、自动评论、账号动作和下载任务，可按平台、类型、状态与关键词筛选。</li><li>默认 <code>risk_control.mode: conservative</code>：同账号的评论、私信、关注和发布共享写间隔与额度；立即执行同样遵守检查。</li><li>默认开启活跃时段夜间静默（<code>quiet_hours_enabled: true</code>、<code>quiet_hours_include_reads: true</code>），夜间自动暂停写操作与后台定时监控、评论采集及账号探活（手动即时查看不受影响），并按账号与日期生成每日独立苏醒/入睡随机偏移（<code>quiet_hours_wake_jitter_minutes</code>），避免矩阵整点齐发。</li><li>同一网络出口的账号串行访问；未配置代理的国内单账号归入 <code>direct</code> 出口组。保守模式的写间隔、小时/每日额度与同出口并发有保护线，配置 <code>0</code> 表示沿用保护线，不代表无限制。</li><li>轻读取和重读取分别计时；命中 <code>403/429/461/471</code>、验证码或明确风险提示后按阶梯冷却。冷却结束先做轻量探测，连续成功后逐级恢复。</li><li>受时段、限额、代理或冷却影响的任务保留为等待状态，服务重启后继续恢复；登录失效先重新登录，缺少成功证据的写操作先人工核对。</li></ul>
       <p>风控中心展示触发原因、冷却截止、恢复进度、任务级受阻原因、出口和事件时间线。规则页可调整读取间隔、恢复探测、额度、出口组熔断与活跃时段，保存到本地数据库后立即生效；规则修改、人工解除和人工探测都会留下审计记录。完整参数见 <a href="https://github.com/3441293738/creatorhub/blob/main/config.example.yaml">config.example.yaml</a> 的 <code>risk_control</code> 段。</p>
     </section>
 
     <section id="settings">
       <h2>设置与账号环境</h2><p class="path">入口：系统设置；账号环境在“账号矩阵 → 浏览器内核 / 代理池”</p>
       <dl><dt>外观与体验</dt><dd>切换浅色、深色等显示选项；平台配色与主题分别控制。</dd><dt>下载设置</dt><dd>调整保存目录与默认下载选项。改动后用一条内容确认实际落盘位置。</dd><dt>AI 文案</dt><dd>按页面字段配置自己的服务地址、模型和密钥，在实际生成文案时核对效果。服务可能产生第三方费用，发送前检查生成内容；不用 AI 时可跳过。</dd><dt>采集与运行</dt><dd>调整浏览器、调度等运行参数。新手先保留默认，修改前记录原值，一次只调整一项。</dd><dt>视频号微信通道</dt><dd>连接本机已登录的桌面微信，开启视频号搜索、他人主页、评论与视频下载。只用本账号功能时可以不配置，步骤见<a href="#channels-wechat">视频号微信通道</a>。</dd></dl>
-      <h3 id="browser-environment">账号隔离与代理</h3><p>每个账号有独立浏览器 Profile，Cookie、缓存和本地存储不共享，和日常个人 Chrome 配置分开。Profile 有跨进程占用保护，不要让其他 Chrome 进程同时打开项目账号的 Profile，也不要随意删除它。</p>
-      <p>代理是可选项，不是安装前置条件。确有需要时，在“代理池”填写自己的代理并测试，再为账号关联；保持稳定出口。已配置的代理连接失败时会报错，不会静默改用直连。</p>
+      <h3 id="browser-environment">账号隔离与代理</h3><p>每个账号有独立的持久化浏览器 Profile、底层语言首选项、确定性硬件指纹种子与 TLS 握手指纹，Cookie、缓存和本地存储互不共享，也与日常个人 Chrome 配置完全分开。浏览器环境默认阻断非代理 WebRTC UDP 旁路泄露；Profile 带有跨进程占用保护，不要让其他 Chrome 进程同时打开项目账号的 Profile，也不要随意删除它。</p>
+      <p><strong>智能独享代理策略：</strong>国内平台（抖音、小红书、快手、视频号、哔哩哔哩）仅登录<strong>单个账号</strong>时无需配置代理，可直接本机直连；当<strong>同一国内平台登录 2 个及以上账号</strong>，或使用<strong>海外平台</strong>（TikTok、海外小红书、Instagram、Twitter）时，默认开启「强制独享代理锁」（<code>strict_proxy_required</code>）与「禁止同平台共用代理 / 同出口 IP」（<code>forbid_same_platform_shared_proxy</code>）保护——未绑定有效独享代理、代理故障或同平台两号解析出相同出口 IP 时会直接阻断登录与任务，绝不静默回退暴露本机真实 IP（确需在单机测试环境放宽时，可在「设置 → 采集与运行」高级开关调整）。<code>socks5://</code> 代理在协议与下载通道会自动升级为远程 DNS 解析（<code>socks5h://</code>）以防本地 DNS 污染。</p>
       <p>支持 HTTP、HTTPS、SOCKS5 及账号密码认证。除标准代理 URL 外，添加和批量导入还支持服务商常见的六种导出格式：<code>主机:端口:用户名:密码</code>、<code>主机,端口,用户名,密码</code>、<code>主机:端口@用户名:密码</code>、<code>用户名:密码:主机:端口</code>、<code>用户名:密码@主机:端口</code>、<code>主机:端口##用户名##密码</code>。默认自动判别，无法区分时需手动选择格式；只填 <code>主机:端口</code> 时按 HTTP 处理。“测试代理”记录出口 IP、国家、ASN 与时区；需验证出口基线的写任务，在出口变化或基线过期后会等待重新验证。同出口多个账号集中触发风险时，可进入出口组熔断。不要把代理密码或账号 Profile 分享到公开反馈中。</p>
       <h3>浏览器内核</h3><p>国内版小红书优先系统 Chrome/CDP；自动模式在未安装 Chrome 时可回退到可见 Patchright Chromium，实际后端可在账号列表确认。Fingerprint Chromium 是其他平台（含海外小红书、TikTok、Instagram、Twitter 等）的进阶可选项，国内版小红书不使用该组合；海外平台登录前与代理池自动分配会自动跳过已验证的中国大陆（<code>CN</code>）节点。普通上手无需安装额外指纹浏览器。</p>
       <details><summary>小红书：登录环境与读写通道</summary>
@@ -346,7 +346,8 @@ proxies: []</code></pre>
       <p>默认数据布局如下；若配置了自定义路径，以实际目录为准。配置文件、数据库、登录态与媒体默认不提交到 Git。</p>
       <pre><code>data/
 ├─ creatorhub.db   # SQLite 数据库
-├─ media/          # 下载内容
+├─ media/          # 下载内容（含视频旁路 .cover.jpg 封面）
+├─ thumbs/         # 全平台封面与头像本地持久化缓存
 └─ profiles/       # 账号浏览器配置与登录态</code></pre>
       <p>完整配置字段见 <a href="https://github.com/3441293738/creatorhub/blob/main/config.example.yaml">config.example.yaml</a>。需要手动改配置时先停止服务并备份 <code>config.yaml</code>，注意 YAML 缩进，用空格而不是 Tab，保存后重启验证。</p>
     </section>
@@ -422,6 +423,7 @@ proxies: []</code></pre>
       <details><summary>视频号提示“需要连接本机已登录微信”</summary><p>关键词搜索、他人主页、评论监控和视频下载都依赖<a href="#channels-wechat">本机微信通道</a>。到“设置 → 视频号微信通道”确认根证书已安装、代理已启动，并在桌面微信里打开过一次视频号页面；状态显示“等待模块加载”时稍等再点“检测微信连通”。读取策略设为 <code>browser</code> 时不会使用本机微信。</p></details>
       <details><summary>开启视频号代理后网页打不开 / 系统代理没恢复</summary><p>先在“视频号微信通道”点击“停止”，会恢复启动前备份的系统代理。软件异常退出时，下次启动会自动恢复。仍不正常时，到 Windows“设置 → 网络和 Internet → 代理”检查并关闭指向 <code>127.0.0.1</code> 的手动代理。</p></details>
       <details><summary>下载成功但找不到文件 / 没声音 / 画质不够</summary><p>查看下载记录与当前保存目录，默认文件在 <code>data/media/</code> 下。媒体处理异常先更新依赖；项目可使用 Python 依赖附带的 ffmpeg，也可使用加入 PATH 的系统 ffmpeg。画质还受源资源限制。</p></details>
+      <details><summary>提示“必须绑定独享代理”或“同平台共用同一出口 IP”</summary><p>为防止多号矩阵同 IP 连坐或海外平台泄露本机真实 IP，海外平台账号以及同一国内平台存在 2 个及以上账号时，默认要求一号一独享代理且同平台出口 IP 不能重复。请先在“账号矩阵 → 代理池”导入并测试可用代理，再为对应账号单独绑定（国内平台若只保留 1 个账号可免配代理直连）；仅用于本地调试且无需隔离保护时，可在“设置 → 采集与运行”高级开关中关闭对应门禁。</p></details>
       <details><summary>任务一直等待，重启后也没有立即执行</summary><p>查看“任务队列”和“风控中心”的账号状态，确认审核、活跃时段、限额、共享间隔、代理和风险冷却。等待不是卡死的充分证据，重复提交可能制造重复任务。</p></details>
       <details><summary>Windows 提示浏览器子进程错误</summary><p>先使用项目启动脚本和单 worker，不要额外添加 <code>--workers</code>。运行 <code>.\start.cmd install</code> 更新依赖，仍失败时保留完整错误日志。</p></details>
       <details><summary>macOS 安装提示 clang++ failed</summary><p>先备份数据并更新项目，停止服务，把项目内的旧 <code>.venv</code> 重命名留作排查，再执行 <code>./start.sh install</code> 重建环境。不要改动系统 Python 或误删 <code>data/</code>。</p></details>

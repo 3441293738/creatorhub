@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 import asyncio
+import inspect
 import json
 import os
 import secrets
@@ -14,10 +15,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app import runtime as app_runtime
+from app.db import get_session
 from app.engine.share_downloader import clean_platform_share_target
 from app.models import CommentTask, CommentWatch, MonitorTarget
 from app.platforms.channels import ChannelsProxyManager, get_system_proxy_state
 from app.platforms.tiktok.urls import parse_profile_reference, parse_video_reference
+from app.profiles import pick_ephemeral_proxy
 from app.scheduling import parse_schedule, utc_iso
 
 
@@ -164,19 +167,55 @@ def _clean_platform_target_input(value: str, platform: str) -> str:
     return target_input
 
 
-async def _resolve_tiktok_target(value: str) -> tuple[str, object | None, str]:
-    """Resolve TikTok short links and return input, video ref and profile ID."""
+def _resolve_ephemeral_proxy(platform: str, account_id: int | None = None) -> str:
+    """为短链展开或目标解析获取安全的代理出口，绝不默认走本机直连或系统代理。"""
+    try:
+        with get_session() as s:
+            return pick_ephemeral_proxy(
+                s, app_runtime.cfg, platform=platform, account_id=account_id
+            )
+    except Exception:
+        return ""
+
+
+async def _call_resolver(fn, *args, proxy: str = "", **kwargs):
+    """兼容各平台解析函数签名，若支持 proxy 参数则自动注入代理出口。"""
+    call_kwargs = dict(kwargs)
+    if proxy:
+        try:
+            params = inspect.signature(fn).parameters
+            if "proxy" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            ):
+                call_kwargs["proxy"] = proxy
+        except Exception:
+            pass
+    return await fn(*args, **call_kwargs)
+
+
+async def _resolve_tiktok_target(
+    value: str, *, proxy: str = "", account_id: int | None = None
+) -> tuple[str, object | None, str]:
+    """Resolve TikTok short links via Chrome-impersonated session without system env leaks."""
     target = str(value or "").strip()
     video_ref = parse_video_reference(target)
     unique_id = parse_profile_reference(target)
     if video_ref or unique_id or "://" not in target:
         return target, video_ref, unique_id
+    eff_proxy = proxy or _resolve_ephemeral_proxy("tiktok", account_id=account_id)
     try:
-        import httpx
-        async with httpx.AsyncClient(
-                follow_redirects=True, timeout=15,
-                headers={"User-Agent": app_runtime.cfg.engine.user_agent}) as client:
-            async with client.stream("GET", target) as response:
+        from curl_cffi.requests import AsyncSession
+        from app.netfp import curl_proxies
+
+        async with AsyncSession(
+            impersonate="chrome136",
+            trust_env=False,
+            proxies=curl_proxies(eff_proxy),
+            timeout=15,
+            headers={"User-Agent": app_runtime.cfg.engine.user_agent},
+        ) as client:
+            response = await client.get(target, allow_redirects=True)
+            if getattr(response, "url", None):
                 target = str(response.url)
     except Exception:
         pass

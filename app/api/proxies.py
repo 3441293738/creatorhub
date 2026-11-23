@@ -16,7 +16,13 @@ from app.api import risk_control as risk_control_api
 from app.browser.proxy import ProxyConfigError, ProxyInputFormat, ProxyPlan, ProxyScheme
 from app.db import get_session
 from app.models import DouyinAccount, ProxyPool
-from app.profiles import assign_proxy_from_pool, is_mainland_geo
+from app.profiles import (
+    assign_proxy_from_pool,
+    find_same_platform_proxy_conflict,
+    is_mainland_geo,
+    resolve_pool_proxy_row,
+    sync_proxy_pool_to_accounts,
+)
 from app.services import metadata as metadata_service
 from app.services import proxies as proxies_service
 
@@ -60,16 +66,38 @@ def _reset_account_exit_baseline(acc) -> None:
 
 @router.put("/api/accounts/{account_id}/proxy")
 async def set_account_proxy(account_id: int, body: ProxyIn):
-    """手动设置/清空账号专属代理。改后会关掉该账号常驻 context,下次用新代理重开。"""
+    """手动设置/清空账号专属代理。强制校验同平台唯一性与强制代理锁，改后关掉常驻 context。"""
     p = _proxy_input_url(body.proxy, body, allow_empty=True)
+    strict_proxy = bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True))
+    forbid_shared = bool(getattr(app_runtime.cfg.engine, "forbid_same_platform_shared_proxy", True))
+    if not p and strict_proxy:
+        raise HTTPException(
+            400,
+            "已启用强制独享代理保护：禁止将账号设为空代理直连本机 IP（请直接绑定新代理，或在设置中关闭强制代理锁）",
+        )
     with get_session() as s:
         acc = s.get(DouyinAccount, account_id)
         if not acc:
             raise HTTPException(404, "账号不存在")
+        if p and forbid_shared:
+            conflict = find_same_platform_proxy_conflict(
+                s, acc.platform, p, exclude_account_id=account_id
+            )
+            if conflict is not None:
+                raise HTTPException(
+                    409,
+                    f"同平台防关联拦截：该代理或出口 IP 已被同平台账号「{conflict.nickname or conflict.id}」绑定，请使用独立代理",
+                )
+        pool_row = resolve_pool_proxy_row(s, p) if p else None
         acc.proxy = p
-        acc.proxy_status = "unknown"
+        acc.proxy_id = pool_row.id if pool_row else None
+        acc.proxy_status = (
+            "disabled" if (pool_row and not pool_row.enabled) else "unknown"
+        )
         _reset_account_exit_baseline(acc)
         s.add(acc); s.commit()
+    if app_runtime.im_receiver:
+        await app_runtime.im_receiver.stop_account(account_id)
     if app_runtime.browser:
         await app_runtime.browser.close_context(account_id)
     return {"ok": True, "proxy": proxies_service._mask_proxy(p)}
@@ -92,7 +120,9 @@ async def assign_account_proxy(account_id: int):
         p = assign_proxy_from_pool(s, app_runtime.cfg, platform=acc.platform)
         if not p:
             raise HTTPException(400, "代理池无适合该平台的可用空闲代理(可在「代理池」检查节点地区或状态)")
+        pool_row = resolve_pool_proxy_row(s, p)
         acc.proxy = p
+        acc.proxy_id = pool_row.id if pool_row else None
         acc.proxy_status = "unknown"
         _reset_account_exit_baseline(acc)
         s.add(acc); s.commit()
@@ -249,15 +279,15 @@ async def _detect_proxy(raw: str, options: ProxyInputOptions | None = None) -> d
 
     sch, auth_mode, url = found
     is_socks = sch.startswith("socks")
-    browser_ok = not (is_socks and auth_mode == "required")  # Patchright 不支持带密 SOCKS5
+    browser_ok = True  # 内置 Socks5AuthRelay 与 HttpProxyAuthRelay 原生支持带账密 SOCKS5 / HTTP 代理
     geo = await proxies_service._proxy_geo(url)              # 经该代理查出口 IP 归属地
     return {
         "ok": True, "scheme": sch, "auth": auth_mode,
         "recommend": url, "browser_ok": browser_ok, "tried": tried,
         "geo": geo, "geo_text": _geo_text(geo),
-        "note": ("HTTP 代理,浏览器与直连都支持" if not is_socks
-                 else ("免密 SOCKS5,浏览器与直连都支持" if browser_ok
-                       else "带密 SOCKS5:小红书直连/下载可用,但浏览器抓取/登录不支持(建议改用该节点的 HTTP 端口)")),
+        "note": ("HTTP 代理，浏览器与直连全链路支持（含本地无感认证中继）" if not is_socks
+                 else ("免密 SOCKS5，浏览器与直连全链路支持" if auth_mode != "required"
+                       else "带密 SOCKS5，已由内置本地 SOCKS5 认证中继提供浏览器与直连全链路支持（远端 DNS 防泄露）")),
     }
 
 
@@ -289,7 +319,9 @@ async def assign_proxies_all():
                 pool_empty = True
                 remaining.append(aid)
                 continue
+            pool_row = resolve_pool_proxy_row(s, p)
             acc.proxy = p
+            acc.proxy_id = pool_row.id if pool_row else None
             acc.proxy_status = "unknown"
             _reset_account_exit_baseline(acc)
             s.add(acc); s.commit()
@@ -483,10 +515,12 @@ async def import_proxies(body: ProxyImportIn):
 
 @router.put("/api/proxies/{pid}")
 async def update_proxy(pid: int, body: PoolProxyUpdate):
+    affected_ids: list[int] = []
     with get_session() as s:
         p = s.get(ProxyPool, pid)
         if not p:
             raise HTTPException(404, "代理不存在")
+        old_url = p.url
         if body.url is not None:
             p.url = _proxy_input_url(body.url, body)
         if body.label is not None:
@@ -495,20 +529,38 @@ async def update_proxy(pid: int, body: PoolProxyUpdate):
             p.note = body.note.strip()
         if body.enabled is not None:
             p.enabled = body.enabled
-        s.add(p); s.commit(); s.refresh(p)
-        return _pool_dict(p)
+        s.add(p); s.flush()
+        affected_ids = sync_proxy_pool_to_accounts(s, p, old_url=old_url)
+        s.commit(); s.refresh(p)
+        result = _pool_dict(p)
+    for aid in affected_ids:
+        if app_runtime.im_receiver:
+            await app_runtime.im_receiver.stop_account(aid)
+        if app_runtime.browser:
+            await app_runtime.browser.close_context(aid)
+    return result
 
 
 @router.delete("/api/proxies/{pid}")
 async def del_proxy(pid: int):
+    from app.browser.manager import normalize_proxy
     with get_session() as s:
         p = s.get(ProxyPool, pid)
         if not p:
             return {"ok": True}
-        used = len(s.exec(select(DouyinAccount.id)
-                          .where(DouyinAccount.proxy == p.url)).all())
+        norm_p = normalize_proxy(p.url)
+        bound = [
+            a for a in s.exec(select(DouyinAccount)).all()
+            if a.proxy_id == p.id or (a.proxy and normalize_proxy(a.proxy) == norm_p)
+        ]
+        if bound:
+            names = "、".join(str(a.nickname or a.id) for a in bound[:4])
+            raise HTTPException(
+                409,
+                f"该代理仍被 {len(bound)} 个账号（{names}）绑定使用；为防止账号残留失效代理或泄露真实 IP，请先为相关账号更换代理后再删除",
+            )
         s.delete(p); s.commit()
-    return {"ok": True, "still_used_by": used}
+    return {"ok": True, "still_used_by": 0}
 
 
 @router.post("/api/proxies/{pid}/test")
@@ -521,18 +573,27 @@ async def test_proxy_entry(pid: int):
     ok, detail = await _probe_proxy(url)
     geo = await proxies_service._proxy_geo(url) if ok else None
     geo_text = _geo_text(geo)
+    affected_ids: list[int] = []
     with get_session() as s:
         p = s.get(ProxyPool, pid)
         if p:
             p.status = _proxy_status_from_detail(ok, detail)
             p.last_checked_at = datetime.utcnow()
-            if geo:                            # 归属地写入结构化字段(供「地区」列展示)
+            if geo:
                 p.exit_ip = geo.get("ip", "") or p.exit_ip
                 p.country = geo.get("country", "") or p.country
                 p.region = geo.get("region", "") or p.region
                 p.city = geo.get("city", "") or p.city
                 p.isp = geo.get("isp", "") or p.isp
-            s.add(p); s.commit()
+            s.add(p); s.flush()
+            affected_ids = sync_proxy_pool_to_accounts(s, p)
+            s.commit()
+    if not ok:
+        for aid in affected_ids:
+            if app_runtime.im_receiver:
+                await app_runtime.im_receiver.stop_account(aid)
+            if app_runtime.browser:
+                await app_runtime.browser.close_context(aid)
     return {"ok": ok, "detail": detail, "geo": geo, "geo_text": geo_text}
 
 

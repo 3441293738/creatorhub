@@ -1,11 +1,27 @@
 """本账号关注/取关与私信发送（API 优先 + 浏览器回退）执行器。"""
 from __future__ import annotations
 
+import inspect
 from typing import Any, Tuple
 
 from app.browser.hub_common import _bili_cookie_str, _ig_cookie_str
+from app.browser.human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from app.browser.manager import BrowserManager
 from app.browser.xhs_dm import send_xhs_dm_page
+
+
+async def _notify_submit_hook(on_submit: Any) -> None:
+    if on_submit is None:
+        return
+    res = on_submit()
+    if inspect.isawaitable(res):
+        await res
 
 
 # ═══════════ 写操作(无公开接口:登录态浏览器 UI 自动化) ═══════════
@@ -54,7 +70,7 @@ async def _open_target_profile(mgr, identity, platform, target_uid, target_sec_u
             pass
         await mgr.xhs_interaction.pause(0.25, 0.55)
     else:
-        await page.wait_for_timeout(1800)
+        await human_wait(page, 1800)
     return ctx, page
 
 
@@ -106,7 +122,7 @@ async def _await_follow_button(page, timeout_ms: int = 12000,
         if waited >= timeout_ms:
             return btn, text
         if interaction is None:
-            await page.wait_for_timeout(500)
+            await human_wait(page, 500)
         else:
             await interaction.pause(0.2, 0.45)
         waited += 500
@@ -118,7 +134,7 @@ async def _wait_flip(page, want_following: bool, timeout_ms: int = 6000,
     waited, text = 0, ""
     while waited < timeout_ms:
         if interaction is None:
-            await page.wait_for_timeout(400)
+            await human_wait(page, 400)
         else:
             await interaction.pause(0.18, 0.38)
         waited += 400
@@ -136,7 +152,7 @@ async def _dismiss_confirm(page, interaction=None) -> bool:
         if cc is not None:
             try:
                 if interaction is None:
-                    await cc.click(timeout=2500)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(cc, page=page, timeout=2500)
                 else:
                     await interaction.click_visible(cc)
                 return True
@@ -188,8 +204,9 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
             return False, "logged_out:账号未登录"
         client = BilibiliClient(
             cookie_s,
-            getattr(identity, "user_agent", ""),
+            getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
             proxy=getattr(identity, "proxy", ""),
+            account_seed=getattr(identity, "fp_seed", ""),
         )
         async with client.session_scope():
             return await client.modify_follow(
@@ -235,14 +252,14 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
                            "为避免重复操作，本次不再点击")
         for attempt in range(3):
             try:
-                await btn.click(timeout=4000)
+                await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=page, timeout=4000)
             except Exception as e:
                 if attempt == 2:
                     return False, f"{want}点击失败: {e!r}"
-                await page.wait_for_timeout(800)
+                await human_wait(page, 800)
                 continue
             if unfollow:
-                await page.wait_for_timeout(600)
+                await human_wait(page, 600)
                 await _dismiss_confirm(page)
             after = await _wait_flip(page, want_following)
             if after and _is_following(after) == want_following:
@@ -257,10 +274,8 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
         return False, f"{want}异常: {e!r}"
     finally:
         try:
-            if page is not None:
+            if page is not None and not page.is_closed():
                 await page.close()
-            if ctx is not None and platform != "xhs":
-                await ctx.close()
         except Exception:
             pass
 
@@ -368,8 +383,9 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
             return False, "logged_out:缺少 B 站登录 Cookie"
         client = BilibiliClient(
             cookie_s,
-            getattr(identity, "user_agent", ""),
+            getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
             proxy=getattr(identity, "proxy", ""),
+            account_seed=getattr(identity, "fp_seed", ""),
         )
         async with client.session_scope():
             ok, err, _meta = await client.send_dm(
@@ -428,7 +444,7 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
                 pass
             await mgr.xhs_interaction.pause(0.25, 0.55)
         else:
-            await page.wait_for_timeout(1800)
+            await human_wait(page, 1800)
         if "passport" in page.url or "/login" in page.url:
             return False, "logged_out:账号未登录"
         if platform == "xhs":
@@ -443,12 +459,12 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
                     if platform == "xhs":
                         await mgr.xhs_interaction.click_visible(el)
                     else:
-                        await el.click(timeout=4000)
+                        await DEFAULT_HUMAN_ENGINE.click_locator(el, page=page, timeout=4000)
                     opened = True
                     if platform == "xhs":
                         await mgr.xhs_interaction.pause(0.25, 0.55)
                     else:
-                        await page.wait_for_timeout(1500)
+                        await human_wait(page, 1500)
                     break
             except Exception:
                 continue
@@ -471,24 +487,25 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
                 await mgr.xhs_interaction.insert_long(
                     editor, text, page=page)
         else:
-            await editor.click(timeout=8000)
-            await page.keyboard.type(text, delay=35)
-            await page.wait_for_timeout(500)
+            await DEFAULT_HUMAN_ENGINE.type_text(editor, text, page=page, timeout=8000)
+            await human_wait(page, 450)
         sent = False
         for sel in _DM_SEND:
             try:
                 btn = page.locator(sel).first
                 if await btn.count() and await btn.is_enabled():
+                    await _notify_submit_hook(on_submit)
                     if platform == "xhs":
                         await mgr.xhs_interaction.click_visible(btn)
                     else:
-                        await btn.click(timeout=3000)
+                        await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=page, timeout=3000)
                     sent = True
                     break
             except Exception:
                 continue
         if not sent:
             try:
+                await _notify_submit_hook(on_submit)
                 await page.keyboard.press("Enter")
                 sent = True
             except Exception:
@@ -496,15 +513,13 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
         if platform == "xhs":
             await mgr.xhs_interaction.pause(0.25, 0.55)
         else:
-            await page.wait_for_timeout(1200)
+            await human_wait(page, 1200)
         return (sent, "" if sent else "未找到发送方式")
     except Exception as e:
         return False, f"发私信异常: {e!r}"
     finally:
         try:
-            if page is not None:
+            if page is not None and not page.is_closed():
                 await page.close()
-            if ctx is not None and platform != "xhs":
-                await ctx.close()
         except Exception:
             pass

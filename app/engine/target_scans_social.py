@@ -15,6 +15,7 @@ from app.platforms.douyin.extract import Aweme
 from app.platforms.instagram import InstagramClient, parse_ig_aweme
 from app.platforms.twitter import TwitterClient, parse_twitter_aweme
 from app.risk import RiskCategory, classify_platform_error
+from app.services import thumb_cache
 from app.settings import get_setting
 
 
@@ -34,16 +35,15 @@ class SocialTargetScanMixin:
                 return self._mark_target_skip(
                     target_id, "账号代理标记为不可用(proxy bad)，已跳过以免暴露真实 IP"
                 )
-            identity = (
-                self.browser.identity_for(acc)
-                if (acc is not None and callable(getattr(self.browser, "identity_for", None)))
-                else (
-                    self.browser.anon_identity()
-                    if callable(getattr(self.browser, "anon_identity", None))
+            if acc is not None:
+                identity = (
+                    self.browser.identity_for(acc)
+                    if callable(getattr(self.browser, "identity_for", None))
                     else None
                 )
-            )
-            proxy = (acc.proxy or "") if acc is not None else ""
+                proxy = acc.proxy or ""
+            else:
+                identity, proxy = self._anon_identity_proxy("bilibili", session=s)
             state = (acc.storage_state or acc.cookie or "") if acc is not None else ""
             ua = (acc.ua if acc and acc.ua else self.cfg.engine.user_agent)
             known = set(
@@ -204,10 +204,19 @@ class SocialTargetScanMixin:
                     if author_avatar and not t.avatar:
                         t.avatar = author_avatar
                 target_name = t.nickname or t.keyword or t.sec_uid
+                target_avatar = t.avatar or ""
                 s.add(t)
+            else:
+                target_avatar = ""
             s.commit()
             for rec, _, _ in new_records:
                 s.refresh(rec)
+
+        thumb_cache.schedule_thumb_prewarm(
+            [target_avatar, *(aw.cover for _, aw, dl in new_records if aw.cover and not dl)],
+            platform="bilibili",
+            proxy=proxy,
+        )
 
         dl_cookies = bili_cookie_map(state) if state else None
         for rec, aw, should_download in new_records:
@@ -231,7 +240,7 @@ class SocialTargetScanMixin:
                     s.commit()
 
         if not first_scan and new_records:
-            await self._notify_new_works(target_name, [aw for _, aw, _ in new_records])
+            await self._notify_new(target_name, [aw for _, aw, _ in new_records])
         return {
             "ok": not error,
             "new": len(new_records),
@@ -454,10 +463,19 @@ class SocialTargetScanMixin:
                     if author_avatar and not t.avatar:
                         t.avatar = author_avatar
                 target_name = t.nickname or t.keyword or t.sec_uid
+                target_avatar = t.avatar or ""
                 s.add(t)
+            else:
+                target_avatar = ""
             s.commit()
             for rec, _, _ in new_records:
                 s.refresh(rec)
+
+        thumb_cache.schedule_thumb_prewarm(
+            [target_avatar, *(aw.cover for _, aw, dl in new_records if aw.cover and not dl)],
+            platform="instagram",
+            proxy=proxy,
+        )
 
         for rec, aw, should_download in new_records:
             if not should_download:
@@ -479,7 +497,7 @@ class SocialTargetScanMixin:
                     s.commit()
 
         if not first_scan and new_records:
-            await self._notify_new_works(target_name, [aw for _, aw, _ in new_records])
+            await self._notify_new(target_name, [aw for _, aw, _ in new_records])
         return {
             "ok": not error,
             "new": len(new_records),
@@ -768,10 +786,19 @@ class SocialTargetScanMixin:
                     if author_avatar and not t.avatar:
                         t.avatar = author_avatar
                 target_name = t.nickname or t.keyword or t.sec_uid
+                target_avatar = t.avatar or ""
                 s.add(t)
+            else:
+                target_avatar = ""
             s.commit()
             for rec, _, _ in new_records:
                 s.refresh(rec)
+
+        thumb_cache.schedule_thumb_prewarm(
+            [target_avatar, *(aw.cover for _, aw, dl in new_records if aw.cover and not dl)],
+            platform="twitter",
+            proxy=proxy,
+        )
 
         for rec, aw, should_download in new_records:
             if not should_download:
@@ -793,7 +820,7 @@ class SocialTargetScanMixin:
                     s.commit()
 
         if not first_scan and new_records:
-            await self._notify_new_works(target_name, [aw for _, aw, _ in new_records])
+            await self._notify_new(target_name, [aw for _, aw, _ in new_records])
         return {
             "ok": not error,
             "new": len(new_records),

@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlparse
 import asyncio
 import json
 
+from app.browser.human_interaction import DEFAULT_HUMAN_ENGINE
 from app.browser.identity import Identity
 from app.browser.login_common import _LOG, _focus, _open_first_environment_check, _read_xhs_nickname
 from app.browser.login_xhs import _XHS_IDENTITY_RECHECK_DELAY_SECONDS, _XHS_PAGE_IDENTITY_POLL_SECONDS, _XHS_QRCODE_STATUS_API, _XHS_USER_ME_API, _xhs_page_identity
@@ -201,7 +202,7 @@ async def interactive_rednote_login(
             btn = locator_fn(".login-btn").first
             if await btn.is_visible(timeout=500):
                 next_login_btn_click_at = now + 3.0
-                await btn.click(timeout=1500)
+                await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=target_page, timeout=2000)
         except Exception:
             pass
         return False

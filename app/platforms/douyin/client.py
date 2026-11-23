@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import random
@@ -32,7 +33,8 @@ from .web_session import (
     DETAIL_ORIGINS, DETAIL_PATH, cookie_header, cookie_value,
     observed_detail_context, read_state,
 )
-from ...netfp import impersonate_for_ua
+from ...browser.manager import normalize_proxy
+from ...netfp import curl_proxy_url, impersonate_for_ua
 
 BASE = "https://www.douyin.com"
 WRITE_BASE = "https://www-hj.douyin.com"
@@ -97,6 +99,59 @@ DEFAULT_PARAMS = {
 }
 
 
+def _ua_client_params(ua: str) -> Dict[str, str]:
+    """Derive coherent OS, browser, Client-Hints, and pc_libra_divert params from UA."""
+    s = str(ua or "")
+    is_mac = "Macintosh" in s or "Mac OS" in s
+    is_linux = not is_mac and ("Linux" in s and "Android" not in s)
+    if is_mac:
+        browser_platform = "MacIntel"
+        os_name = "Mac OS"
+        m_mac = re.search(r"Mac OS X (\d+[._]\d+(?:[._]\d+)?)", s)
+        os_version = m_mac.group(1).replace(".", "_") if m_mac else "10_15_7"
+        pc_libra_divert = "Mac"
+        ch_platform = '"macOS"'
+    elif is_linux:
+        browser_platform = "Linux x86_64"
+        os_name = "Linux"
+        os_version = ""
+        pc_libra_divert = "Windows"
+        ch_platform = '"Linux"'
+    else:
+        browser_platform = "Win32"
+        os_name = "Windows"
+        os_version = "10"
+        pc_libra_divert = "Windows"
+        ch_platform = '"Windows"'
+
+    is_edge = "Edg/" in s
+    browser_name = "Edge" if is_edge else "Chrome"
+    m_chr = re.search(r"Chrome/(\d+)", s)
+    m_edg = re.search(r"Edg/(\d+)", s)
+    browser_major = (
+        int(m_edg.group(1))
+        if (is_edge and m_edg)
+        else (int(m_chr.group(1)) if m_chr else 130)
+    )
+    engine_major = int(m_chr.group(1)) if m_chr else browser_major
+    brand = "Microsoft Edge" if is_edge else "Google Chrome"
+    return {
+        "browser_platform": browser_platform,
+        "browser_name": browser_name,
+        "browser_version": f"{browser_major}.0.0.0",
+        "engine_version": f"{engine_major}.0.0.0",
+        "os_name": os_name,
+        "os_version": os_version,
+        "pc_libra_divert": pc_libra_divert,
+        "sec-ch-ua": (
+            f'"Chromium";v="{engine_major}", "{brand}";v="{browser_major}", '
+            '"Not_A Brand";v="99"'
+        ),
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": ch_platform,
+    }
+
+
 class DouyinClient:
     def __init__(self, cookie: str, user_agent: str, timeout: float = 20.0,
                  proxy: str = "", *, locale: str = "zh-CN",
@@ -106,13 +161,14 @@ class DouyinClient:
         self.cookie = cookie or ""
         self.ua = user_agent
         self.timeout = timeout
-        self.proxy = (proxy or "").strip()
+        self.proxy = curl_proxy_url(proxy) if proxy else ""
         self.locale = str(locale or "zh-CN")
         self.accept_language = (str(accept_language or "").strip()
                                 or f"{self.locale},{self.locale.split('-', 1)[0]};q=0.9")
         self.screen_width = max(320, int(screen_width or 1536))
         self.screen_height = max(240, int(screen_height or 864))
         self.impersonate = impersonate_for_ua(user_agent)  # 对齐浏览器 TLS 握手指纹
+        self._ua_params = _ua_client_params(self.ua)
         self._session: AsyncSession | None = None
         self._ms_token: str | None = None
         self._token_source = ""
@@ -149,7 +205,7 @@ class DouyinClient:
         if self._session is not None:
             yield self
             return
-        self._session = AsyncSession(impersonate=self.impersonate)
+        self._session = AsyncSession(impersonate=self.impersonate, trust_env=False)
         try:
             yield self
         finally:
@@ -164,6 +220,9 @@ class DouyinClient:
             "Referer": referer,
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": self.accept_language,
+            "sec-ch-ua": self._ua_params["sec-ch-ua"],
+            "sec-ch-ua-mobile": self._ua_params["sec-ch-ua-mobile"],
+            "sec-ch-ua-platform": self._ua_params["sec-ch-ua-platform"],
             "Cookie": cookie_header(self._cookies, url),
         }
         parsed = urllib.parse.urlsplit(url)
@@ -244,6 +303,11 @@ class DouyinClient:
                 if webid.isdigit() and len(webid) <= 32:
                     result["webid"] = webid
             break
+        if "webid" not in result:
+            seed_cookie = self.cookie or cookie_header(self._cookies, BASE + "/")
+            digest = hashlib.sha256(f"{seed_cookie}|{self.ua}".encode("utf-8")).digest()
+            tail = int.from_bytes(digest[:16], "big") % (10 ** 17)
+            result["webid"] = f"73{tail:017d}"
         visitor = cookie_value(self._cookies, BASE + "/", "s_v_web_id")
         if visitor and len(visitor) <= 256 and not re.search(r"[\s;&]", visitor):
             result.update(verifyFp=visitor, fp=visitor)
@@ -376,22 +440,23 @@ class DouyinClient:
             q = dict(self.detail_context.get("params") or {})
         else:
             q = dict(DEFAULT_PARAMS)
+            ua_info = _ua_client_params(self.ua)
             # Cookie, UA, locale and viewport belong to the same account.
             q.update({
                 "screen_width": str(self.screen_width),
                 "screen_height": str(self.screen_height),
                 "browser_language": self.locale,
+                "browser_platform": ua_info["browser_platform"],
+                "browser_name": ua_info["browser_name"],
+                "browser_version": ua_info["browser_version"],
+                "engine_version": ua_info["engine_version"],
+                "os_name": ua_info["os_name"],
+                "os_version": ua_info["os_version"],
             })
-            # Keep query browser versions aligned with the account's UA.
-            m = re.search(r"Chrome/(\d+)", self.ua or "")
-            if m:
-                ver = f"{m.group(1)}.0.0.0"
-                q["browser_version"] = ver
-                q["engine_version"] = ver
             q.update(self._account_query)
             if self._normalized_path(path) in SECURE_SDK_WRITE_PATHS:
                 q.update({
-                    "pc_libra_divert": "Windows",
+                    "pc_libra_divert": ua_info["pc_libra_divert"],
                     "update_version_code": "170400",
                     "support_h265": "0",
                     "support_dash": "0",
@@ -428,7 +493,7 @@ class DouyinClient:
     def _abogus_fingerprint(self) -> str:
         """Build the signer fingerprint from the account's stable viewport."""
         width, height = self.screen_width, self.screen_height
-        platform = "MacIntel" if "Macintosh" in self.ua else "Win32"
+        platform = _ua_client_params(self.ua)["browser_platform"]
         return (
             f"{width}|{height}|{width + 24}|{height + 80}|0|0|0|0|"
             f"{width}|{height}|{width}|{height}|{width}|{height}|24|24|"
@@ -445,7 +510,7 @@ class DouyinClient:
                                   "rejection_reason": "missing_uifid", "request_sent": False}
             return []
         owned = self._session is None
-        cli = self._session or AsyncSession(impersonate=self.impersonate)
+        cli = self._session or AsyncSession(impersonate=self.impersonate, trust_env=False)
         try:
             await self._prepare_ms_token(self._api_origin(path) + path)
             url = self._build_url(path, params)
@@ -525,7 +590,7 @@ class DouyinClient:
         self.last_response = {}
         self.last_write_uncertain = False
         owned = self._session is None
-        cli = self._session or AsyncSession(impersonate=self.impersonate)
+        cli = self._session or AsyncSession(impersonate=self.impersonate, trust_env=False)
         try:
             await self._prepare_ms_token(self._api_origin(path) + path)
             # a_bogus hashes the exact application/x-www-form-urlencoded body.
@@ -715,7 +780,7 @@ class DouyinClient:
         self.last_error = ""
         self.last_write_uncertain = False
         owned = self._session is None
-        cli = self._session or AsyncSession(impersonate=self.impersonate)
+        cli = self._session or AsyncSession(impersonate=self.impersonate, trust_env=False)
         referer = f"{BASE}/user/{target_sec_uid or target_uid}"
         try:
             body = build_create_conversation_request(
@@ -768,7 +833,7 @@ class DouyinClient:
         self.last_error = ""
         self.last_write_uncertain = False
         owned = self._session is None
-        cli = self._session or AsyncSession(impersonate=self.impersonate)
+        cli = self._session or AsyncSession(impersonate=self.impersonate, trust_env=False)
         try:
             body = build_send_request(
                 str(conv_id), int(conv_type or 1), int(conv_short_id), str(ticket),
@@ -861,7 +926,7 @@ class DouyinClient:
 
         self.last_error = ""
         owned = self._session is None
-        cli = self._session or AsyncSession(impersonate=self.impersonate)
+        cli = self._session or AsyncSession(impersonate=self.impersonate, trust_env=False)
         try:
             body = build_init_request(
                 int(time.time() * 1_000_000), **self._im_request_options())

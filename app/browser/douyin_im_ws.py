@@ -7,32 +7,46 @@
   Response.body(6).500 = NewMessageNotify; .5 = MessageBody(同历史消息结构)。
 access_key = md5(fpid + appKey + device_id + salt),device_id 实测 == 账号自身 uid。
 """
+from __future__ import annotations
+
 import gzip
 import hashlib
-from typing import Callable, Dict, List, Optional
+import random
+from typing import Callable, List, Optional
 
-from .douyin_im_pb import (_get_fields, _first, _s, _preview_text,
-                           _msg_create_ts, peer_uid_from_conv_id,
-                           share_video_card)
+from .douyin_im_pb import (
+    _first,
+    _get_fields,
+    _msg_create_ts,
+    _preview_text,
+    _s,
+    peer_uid_from_conv_id,
+    share_video_card,
+)
 
 _APP_KEY = "e1bd35ec9db7b8d846de66ed140b1ad9"
 _FPID = "9"
 _SALT = "f8a69f1719916z"
-_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-       "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 
 
 def compute_access_key(device_id: str) -> str:
     return hashlib.md5(
-        (_FPID + _APP_KEY + str(device_id) + _SALT).encode()).hexdigest()
+        (_FPID + _APP_KEY + str(device_id) + _SALT).encode()
+    ).hexdigest()
 
 
 def build_ws_url(device_id: str) -> str:
     ak = compute_access_key(device_id)
-    return (f"wss://frontier-im.douyin.com/ws/v2?aid=6383&fpid={_FPID}"
-            f"&device_id={device_id}&access_key={ak}"
-            f"&device_platform=douyin_pc&version_code=360000"
-            f"&xsack=0&xaack=0&xsqos=0&qos_sdk_version=2")
+    return (
+        f"wss://frontier-im.douyin.com/ws/v2?aid=6383&fpid={_FPID}"
+        f"&device_id={device_id}&access_key={ak}"
+        f"&device_platform=douyin_pc&version_code=360000"
+        f"&xsack=0&xaack=0&xsqos=0&qos_sdk_version=2"
+    )
 
 
 def decode_push_frame(raw: bytes, self_uid: str = "") -> List[dict]:
@@ -59,7 +73,7 @@ def decode_push_frame(raw: bytes, self_uid: str = "") -> List[dict]:
     if not isinstance(notify_raw, bytes):
         return []
     notify = _get_fields(notify_raw)
-    mb_raw = _first(notify, 5)                    # MessageBody
+    mb_raw = _first(notify, 5)                   # MessageBody
     if not isinstance(mb_raw, bytes):
         return []
     m = _get_fields(mb_raw)
@@ -84,58 +98,116 @@ def decode_push_frame(raw: bytes, self_uid: str = "") -> List[dict]:
     }]
 
 
-async def receive_messages(cookie_str: str, device_id: str,
-                           on_message: Callable[[dict], None],
-                           self_uid: str = "",
-                           stop_after: Optional[float] = None,
-                           should_stop: Optional[Callable[[], bool]] = None,
-                           log=print) -> str:
-    """连 frontier-im WS,持续解码新消息并回调 on_message。断线自动重连。
-    stop_after: 秒(测试用,到点返回);should_stop: 返回 True 则优雅退出。"""
+async def receive_messages(
+    cookie_str: str,
+    device_id: str,
+    on_message: Callable[[dict], None],
+    self_uid: str = "",
+    stop_after: Optional[float] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+    log=print,
+    *,
+    proxy: str = "",
+    user_agent: str = "",
+    strict_proxy: bool = True,
+) -> str:
+    """连 frontier-im WS,持续解码新消息并回调 on_message。断线指数退避重连。
+    强制走账号代理与匹配 UA 的 Chrome TLS 指纹，杜绝宿主机真实 IP 与 Python TLS 指纹泄漏。"""
     import asyncio
-    import websockets
+    import time as _t
+    from curl_cffi.requests import AsyncSession
+    from curl_cffi.requests.websockets import (
+        CurlWsFlag,
+        WebSocketClosed,
+        WebSocketTimeout,
+    )
+    from ..netfp import curl_proxy_url, impersonate_for_ua
 
+    norm_proxy = curl_proxy_url(proxy)
+    if strict_proxy and not norm_proxy:
+        err_msg = "error: proxy_required (抖音实时私信已拦截本机无代理直连)"
+        log(f"[im-ws] {err_msg}")
+        return err_msg
+
+    ua = (user_agent or _UA).strip()
+    impersonate = impersonate_for_ua(ua)
     url = build_ws_url(device_id)
     headers = {
         "Cookie": cookie_str,
-        "User-Agent": _UA,
+        "User-Agent": ua,
         "Origin": "https://www.douyin.com",
+        "Sec-WebSocket-Protocol": "binary, base64, pbbp2",
     }
-    start = [0.0]
+    start = [_t.monotonic()]
     frames = [0]
+    failures = 0
+
+    def _stopping() -> bool:
+        if should_stop and should_stop():
+            return True
+        if stop_after and (_t.monotonic() - start[0]) > stop_after:
+            return True
+        return False
+
     try:
-        import time as _t
-        start[0] = _t.monotonic()
+        async def _run_once() -> None:
+            nonlocal failures
+            async with AsyncSession(
+                impersonate=impersonate,
+                trust_env=False,
+            ) as session:
+                async with session.ws_connect(
+                    url,
+                    proxy=(norm_proxy or None),
+                    headers=headers,
+                    timeout=20,
+                ) as ws:
+                    log(f"[im-ws] connected device_id={device_id} impersonate={impersonate}")
+                    last_ping = _t.monotonic()
+                    while not _stopping():
+                        try:
+                            raw, flags = await ws.recv(timeout=2.0)
+                        except WebSocketTimeout:
+                            now_m = _t.monotonic()
+                            if now_m - last_ping >= 20.0:
+                                last_ping = now_m
+                                try:
+                                    await ws.ping(b"")
+                                except Exception:
+                                    break
+                            continue
+                        except WebSocketClosed:
+                            break
+                        if flags & int(CurlWsFlag.CLOSE):
+                            break
+                        frames[0] += 1
+                        failures = 0
+                        if (
+                            isinstance(raw, (bytes, bytearray))
+                            and raw
+                            and not (flags & int(CurlWsFlag.TEXT))
+                        ):
+                            for msg in decode_push_frame(bytes(raw), self_uid):
+                                try:
+                                    on_message(msg)
+                                except Exception as e:
+                                    log(f"[im-ws] on_message err: {e!r}")
 
-        async def _run_once():
-            async with websockets.connect(
-                    url, additional_headers=headers,
-                    subprotocols=["binary", "base64", "pbbp2"],
-                    max_size=None, ping_interval=20, ping_timeout=20) as ws:
-                log(f"[im-ws] connected device_id={device_id}")
-                async for raw in ws:
-                    frames[0] += 1
-                    if isinstance(raw, (bytes, bytearray)):
-                        for msg in decode_push_frame(bytes(raw), self_uid):
-                            try:
-                                on_message(msg)
-                            except Exception as e:
-                                log(f"[im-ws] on_message err: {e!r}")
-                    if should_stop and should_stop():
-                        return
-                    if stop_after and (_t.monotonic() - start[0]) > stop_after:
-                        return
-
-        while True:
+        while not _stopping():
             try:
                 await _run_once()
             except Exception as e:
                 log(f"[im-ws] conn drop: {e!r}")
-            if should_stop and should_stop():
+            if _stopping():
                 break
-            if stop_after and (_t.monotonic() - start[0]) > stop_after:
-                break
-            await asyncio.sleep(3)          # 重连退避
+            delay = min(60.0, 3.0 * (2 ** min(failures, 4))) * random.uniform(0.82, 1.25)
+            failures += 1
+            if should_stop is None and stop_after is None:
+                await asyncio.sleep(delay)
+            else:
+                deadline = _t.monotonic() + delay
+                while _t.monotonic() < deadline and not _stopping():
+                    await asyncio.sleep(min(0.5, max(0.05, deadline - _t.monotonic())))
         return f"frames={frames[0]}"
     except Exception as e:
         return f"error: {e!r} frames={frames[0]}"

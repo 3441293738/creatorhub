@@ -21,6 +21,12 @@ from pathlib import Path
 from typing import Awaitable, Callable, List, Tuple
 from urllib.parse import urlparse
 
+from ...browser.human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_wait,
+)
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
 from .._submit import notify_stage as _notify_stage, notify_submit as _notify_submit
@@ -114,38 +120,14 @@ async def _dump(page, tag: str) -> str:
 
 
 async def _click_first(page, selectors, timeout=2500) -> bool:
-    for sel in selectors:
-        try:
-            await page.click(sel, timeout=timeout)
-            return True
-        except Exception:
-            continue
-    return False
+    return await human_click_first(page, selectors, timeout=timeout)
 
 
 async def _fill_first(page, selectors, text, timeout=3000) -> bool:
-    for sel in selectors:
-        try:
-            el = page.locator(sel).first
-            await el.wait_for(state="visible", timeout=timeout)
-            await el.click(timeout=timeout)
-            try:
-                await el.fill(text, timeout=timeout)
-            except Exception:
-                # contenteditable 富文本 fill 不一定支持,清空后退回插入/键入
-                try:
-                    await page.keyboard.press("Control+A")
-                    await page.keyboard.press("Backspace")
-                except Exception:
-                    pass
-                try:
-                    await page.keyboard.insert_text(text)
-                except Exception:
-                    await page.keyboard.type(text)
-            _log(f"填入文本用选择器 {sel!r}")
-            return True
-        except Exception:
-            continue
+    sel = await human_fill_first(page, selectors, text, clear=True, timeout=timeout)
+    if sel:
+        _log(f"填入文本用选择器 {sel!r}")
+        return True
     return False
 
 
@@ -160,7 +142,7 @@ async def _wait_editor(page, timeout_ms: int) -> bool:
                     return True
             except Exception:
                 continue
-        await page.wait_for_timeout(500)
+        await human_wait(page, 500)
     return False
 
 
@@ -201,7 +183,7 @@ async def _wait_upload_complete(page, timeout_ms: int, on_stage=None) -> str:
             await _notify_stage(on_stage, f"正在{busy_kw}…")
         if not prog_busy and not busy_kw:
             return ""
-        await page.wait_for_timeout(1500)
+        await human_wait(page, 1500)
     return "抖音视频上传或转码超时，请检查文件后重试"
 
 
@@ -217,8 +199,8 @@ async def _dismiss_guides(page) -> None:
                 for idx in range(await loc.count()):
                     b = loc.nth(idx)
                     if await b.is_visible():
-                        await b.click(timeout=1500)
-                        await page.wait_for_timeout(300)
+                        await DEFAULT_HUMAN_ENGINE.click_locator(b, page=page, timeout=1500)
+                        await human_wait(page, 300)
                         return
             except Exception:
                 continue
@@ -257,36 +239,6 @@ async def _primary_publish_button(page):
     return None
 
 
-async def _retry_dom_publish_click(page) -> bool:
-    """20s 未收到提交响应时的兜底点击(仅点精确且可用的发布按钮)。"""
-    btn = await _primary_publish_button(page)
-    if btn is not None:
-        try:
-            await btn.click(timeout=4000)
-            return True
-        except Exception:
-            pass
-    try:
-        return bool(await page.evaluate("""() => {
-            const labels = new Set(["发布", "发布作品", "发布视频", "发布图文"]);
-            for (const sel of ['div[class*="form-container"] div[class*="container-"] button', 'button']) {
-                const btns = [...document.querySelectorAll(sel)];
-                for (let i = btns.length - 1; i >= 0; i--) {
-                    const b = btns[i];
-                    if (b.disabled || b.getAttribute("aria-disabled") === "true" ||
-                        String(b.className || "").toLowerCase().includes("disabled")) continue;
-                    if (labels.has(String(b.innerText || "").trim())) {
-                        b.click();
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }"""))
-    except Exception:
-        return False
-
-
 async def _confirm_published_on_manage(page, title: str, *, attempts: int = 4) -> bool:
     """当只看到 toast 而未收到 create_v2/跳转时，进作品管理页核实是否真实入库。"""
     needle = str(title or "").strip()[:30]
@@ -304,7 +256,7 @@ async def _confirm_published_on_manage(page, title: str, *, attempts: int = 4) -
         except Exception:
             pass
         if index + 1 < attempts:
-            await page.wait_for_timeout(2000)
+            await human_wait(page, 2000)
     return False
 
 
@@ -326,15 +278,19 @@ async def _dump_radios(page) -> None:
 async def _choose_radio(page, label: str) -> bool:
     """点一个单选项。**只走安全精确策略**,绝不 force / 不点任意祖先 ——
     否则可能误点「继续添加/封面」等触发系统选图框的按钮,卡死自动化。"""
-    # 1) 无障碍 role=radio(Semi 给单选组件挂 role),用 check() 语义最稳
+    # 1) 无障碍 role=radio(Semi 给单选组件挂 role)
     try:
         loc = page.get_by_role("radio", name=label, exact=True)
         if await loc.count():
-            await loc.first.scroll_into_view_if_needed(timeout=2000)
+            first_radio = loc.first
+            await first_radio.scroll_into_view_if_needed(timeout=2000)
             try:
-                await loc.first.check(timeout=2500)
+                if await first_radio.is_checked():
+                    _log(f"已选发布设置「{label}」(role-checked)")
+                    return True
             except Exception:
-                await loc.first.click(timeout=2500)
+                pass
+            await DEFAULT_HUMAN_ENGINE.click_locator(first_radio, page=page, timeout=2500)
             _log(f"已选发布设置「{label}」(role)")
             return True
     except Exception:
@@ -351,7 +307,7 @@ async def _choose_radio(page, label: str) -> bool:
                 continue
             if txt == label:
                 await r.scroll_into_view_if_needed(timeout=2000)
-                await r.click(timeout=2000)
+                await DEFAULT_HUMAN_ENGINE.click_locator(r, page=page, timeout=2000)
                 _log(f"已选发布设置「{label}」(semi-radio)")
                 return True
     except Exception:
@@ -557,14 +513,14 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
         url = IMAGE_URL if media_type == "images" else UPLOAD_URL
         _log(f"打开发布页 {url} (media_type={media_type}, files={len(files)})")
         await page.goto(url, wait_until="domcontentloaded", timeout=40000)
-        await page.wait_for_timeout(3000)
+        await human_wait(page, 3000)
         if "passport" in page.url or "/login" in page.url:
             await _dump(page, "loggedout")
             return False, "", "logged_out:抖音创作平台未登录,请先在账号页点「创作者登录」"
         await _notify_stage(on_stage, "正在打开发布页并上传媒体…")
         if media_type == "images":
             await _click_first(page, _TAB_IMAGE, timeout=2000)
-            await page.wait_for_timeout(1200)
+            await human_wait(page, 1200)
         try:
             await _set_upload_files(page, media_type, files if media_type == "images" else files[:1])
             _log("已提交文件,等待上传/转码…")
@@ -581,24 +537,24 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
                                "请在弹出的窗口里查看,或到抖音创作平台重试。")
         _log(f"已进入编辑页 url={page.url}")
         await _notify_stage(on_stage, "正在填写作品标题、简介与发布设置…")
-        await page.wait_for_timeout(800)
+        await human_wait(page, 800)
         await _dismiss_guides(page)
 
         if title:
             await _fill_first(page, _TITLE_SEL, title.strip()[:30])
-            await page.wait_for_timeout(400)
+            await human_wait(page, 400)
         if body:
             if not await _fill_first(page, _DESC_SEL, body):
                 await _dump(page, "nodesc")
                 return False, "", "已进入发布页，但未能填入作品简介(选择器可能改版)"
-        await page.wait_for_timeout(800)
+        await human_wait(page, 800)
 
         # 发布设置:谁可以看 / 保存权限(非默认设置失败时阻止提交，防止隐私外泄)
         setting_err = await _apply_publish_settings(page, visibility, allow_save)
         if setting_err:
             await _dump(page, "settingsfail")
             return False, "", setting_err
-        await page.wait_for_timeout(600)
+        await human_wait(page, 600)
 
         upload_err = await _wait_upload_complete(page, edit_timeout, on_stage=on_stage)
         if upload_err:
@@ -614,7 +570,7 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
             btn = await _primary_publish_button(page)
             if btn is not None:
                 break
-            await page.wait_for_timeout(2000)
+            await human_wait(page, 2000)
         if btn is None:
             await _dump(page, "nobtn")
             return False, "", "未找到可用的发布按钮(可能仍在上传或发布页改版)。已存诊断截图到 data/debug/。"
@@ -625,22 +581,19 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
         await _notify_submit(on_submit)
         submitted["clicked"] = True
         try:
-            await btn.click(timeout=5000)
+            await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=page, timeout=5000)
             _log("已点击发布按钮")
             await _notify_stage(on_stage, "已点击「发布」，等待抖音确认…")
         except Exception:
-            # 兜底:用文本选择器再点一次
-            if not await _click_first(page, _PUBLISH_BTN, timeout=4000):
-                await _dump(page, "clickfail")
-                return False, "", ("write_uncertain:发布按钮点击状态未知(可能已被触发或被弹层遮挡)，"
-                                   "请先到抖音创作平台核对，系统不会自动重发。")
-            await _notify_stage(on_stage, "已点击「发布」，等待抖音确认…")
+            await _dump(page, "clickfail")
+            return False, "", ("write_uncertain:发布按钮点击状态未知(可能已被触发或被弹层遮挡)，"
+                               "请先到抖音创作平台核对，系统不会自动重发。")
 
         # 成功判定 + 风控验证等待:必须依赖服务端 create_v2/item_id、页面真实跳转 /content/manage，
         # 或严格成功文案+管理页实查，绝不单靠页面宽泛文本("已发布/审核中")假阳性结束。
         ok = False
-        deadline = max(1, int(timeout_seconds))
-        waited, verify_notified, toast_seen_at, retried_click = 0, False, None, False
+        deadline = float(max(1, int(timeout_seconds)))
+        waited, verify_notified, toast_seen_at = 0.0, False, None
         while waited < deadline:
             if create_state["accepted"] and create_state["post_id"]:
                 ok = True
@@ -648,7 +601,7 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
                 break
             if "/content/manage" in str(page.url or ""):
                 # 留短窗口让同批 response.json() 完成读取，避免误判或丢失 postId
-                await page.wait_for_timeout(500)
+                await human_wait(page, 500)
                 if not create_state["rejected"]:
                     ok = True
                     _log(f"页面已跳转管理页 url={page.url}")
@@ -669,7 +622,7 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
                     f"需要人工安全验证（页面提示「{vkw}」），请在弹出的浏览器窗口里完成短信验证码或原设备扫码",
                 )
                 _log(f"⚠️ 抖音要求人工验证「{vkw}」—— 请在弹出的浏览器窗口里完成"
-                     f"(输入短信验证码 / 扫码 / 滑块),完成后本流程会自动继续,最多等 {deadline}s")
+                     f"(输入短信验证码 / 扫码 / 滑块),完成后本流程会自动继续,最多等 {int(deadline)}s")
             if create_state["rejected"] and not verify_notified and not create_state["verify_hint"]:
                 await _dump(page, "rejected")
                 error = (f"write_uncertain:抖音返回发布异常({create_state['rejected']})，"
@@ -702,15 +655,7 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
                                  "请到抖音「作品管理」手动核对（系统不会自动重发）。"
                                  + (f"诊断截图: {png}" if png else ""))
                     break
-            # 20s 仍未见接口响应/弹窗/跳转时，兜底触发一次 DOM 发布点击
-            if (not retried_click and waited >= 20 and not create_state["seen"]
-                    and not verify_notified and not create_state["verify_hint"]
-                    and toast_seen_at is None):
-                retried_click = True
-                if await _retry_dom_publish_click(page):
-                    _log("20s 未收到 create 响应，兜底重试点击发布")
-            await page.wait_for_timeout(2000)
-            waited += 2
+            waited += await human_wait(page, 2000)
         if ok:
             if create_state["post_id"].isdigit() and visibility != "private":
                 result_url = f"https://www.douyin.com/video/{create_state['post_id']}"

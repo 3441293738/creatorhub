@@ -190,6 +190,11 @@ async def add_publish(body: PublishIn, request: Request = None):
                     "xhs", "rednote", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"):
                 raise HTTPException(
                     400, "请选择一个已登录的抖音 / 小红书 / 海外小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩 / Instagram / Twitter 账号")
+            if str(acc.account_role or "hybrid").strip().lower() == "crawler":
+                raise HTTPException(
+                    400,
+                    "该账号角色设为「仅采集号 (crawler)」，已物理禁止执行作品发布以隔离主号风控；请改选「发布主号 (publish)」或「混合号 (hybrid)」",
+                )
             if acc.platform in ("xhs", "rednote"):
                 from app.platforms.xhs.media import validate_publish_files
                 try:
@@ -255,6 +260,11 @@ async def update_publish(tid: int, body: PublishUpdate):
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != t.platform or acc.status != "active":
                 raise HTTPException(400, "发布账号不存在、登录态失效或与任务平台不匹配")
+            if str(acc.account_role or "hybrid").strip().lower() == "crawler":
+                raise HTTPException(
+                    400,
+                    "该账号角色设为「仅采集号 (crawler)」，禁止绑定发布任务",
+                )
             t.account_id = body.account_id
         if body.title is not None:
             t.title = (

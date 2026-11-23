@@ -47,7 +47,8 @@ class PublishJobMixin:
             tail = f.stem.rsplit("_", 1)[-1]
             return (0, int(tail)) if tail.isdigit() else (1, f.name)
         cands = [f for f in folder.glob(f"{rec.aweme_id}_*")
-                 if f.is_file() and not f.name.endswith(".part")]
+                 if f.is_file() and not f.name.endswith(".part")
+                 and ".cover." not in f.name.lower()]
         return [str(f) for f in sorted(cands, key=_idx_key)]
 
     def create_relay_publish(self, content_id: int, account_id: int,
@@ -66,6 +67,9 @@ class PublishJobMixin:
         title/desc/topics 为 None 时沿用作品原始内容;传了则用编辑后的值(发布前可改)。
         """
         with (nullcontext(session) if session is not None else get_session()) as s:
+            acc_row = s.get(DouyinAccount, account_id) if account_id else None
+            if acc_row and str(acc_row.account_role or "hybrid").strip().lower() == "crawler":
+                raise ValueError("所选账号角色为「仅采集号 (crawler)」，禁止用于跨平台转发发布")
             rec = s.get(ContentRecord, content_id)
             if not rec:
                 return None
@@ -173,6 +177,11 @@ class PublishJobMixin:
                 t.error = "绑定账号不存在(可能已删除/重登成新号)"
                 s.add(t); s.commit()
                 return {"ok": False, "error": "account_missing"}
+            if str(acc.account_role or "hybrid").strip().lower() == "crawler":
+                t.status = "failed"
+                t.error = "账号角色设为「仅采集号 (crawler)」，已拦截作品发布"
+                s.add(t); s.commit()
+                return {"ok": False, "error": "role_forbidden_crawler"}
             if acc.status == "invalid":
                 self._defer_row(t, "账号登录态已失效，等待重新登录", fallback_seconds=900)
                 s.add(t); s.commit()

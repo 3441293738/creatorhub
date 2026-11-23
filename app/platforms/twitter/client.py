@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import hashlib
 import json
 import re
 import secrets
@@ -23,7 +24,8 @@ from urllib.parse import urlencode
 
 from curl_cffi.requests import AsyncSession
 
-from ...netfp import impersonate_for_ua
+from ...browser.manager import normalize_proxy
+from ...netfp import curl_proxies, impersonate_for_ua
 from .extract import (
     Aweme,
     extract_graphql_comments,
@@ -52,15 +54,6 @@ from .resolve import (
     resolve_twitter_tweet_ref,
     resolve_twitter_user_target,
 )
-
-
-def _normalize_proxy_url(proxy: str) -> str:
-    raw = str(proxy or "").strip()
-    if not raw:
-        return ""
-    if "://" not in raw:
-        return f"http://{raw}"
-    return raw
 
 
 class TwitterApiError(RuntimeError):
@@ -177,12 +170,15 @@ _FALLBACK_GQL_SPECS: Dict[str, Tuple[str, Dict[str, bool]]] = {
     "GlobalCommunitiesLatestPostSearchTimeline": ("60lEf-uOZXGMD_KQoO1WSw", _COMMON_TWEET_FEATURES),
 }
 
-_GQL_CACHE: Dict[str, Tuple[str, Dict[str, bool]]] = {}
-_GQL_CACHE_AT: float = 0.0
+_GQL_CACHE_BY_ACCOUNT: Dict[str, Tuple[float, Dict[str, Tuple[str, Dict[str, bool]]]]] = {}
 _GQL_CACHE_TTL: float = 1800.0
+_GQL_CACHE_MAX_ACCOUNTS: int = 128
 _MAIN_JS_RE = re.compile(r"https://abs\.twimg\.com/responsive-web/client-web/main\.[0-9a-zA-Z_-]+\.js")
 _GQL_SPEC_RE = re.compile(
     r'queryId:"([^"]+)",operationName:"([^"]+)",operationType:"query",metadata:\{featureSwitches:\[([^\]]*)\]'
+)
+_FEATURE_SWITCH_VAL_RE = re.compile(
+    r'"([A-Za-z0-9_]+)"\s*:\s*\{\s*"value"\s*:\s*(true|false)\s*\}'
 )
 
 
@@ -199,11 +195,16 @@ class TwitterClient:
     ):
         self.cookies = cookie_map_from_state(storage_state)
         self.user_agent = (user_agent or DEFAULT_TWITTER_UA).strip()
-        self.proxy = _normalize_proxy_url(proxy)
+        self.proxy = normalize_proxy(proxy) or ""
         self.timeout = max(5.0, float(timeout or 25.0))
         self.self_uid = extract_twid_uid(self.cookies)
         self._session: Optional[AsyncSession] = None
         self._session_bootstrapped = False
+
+    def _gql_cache_key(self) -> str:
+        return hashlib.sha256(
+            (self.cookies.get("auth_token") or "anon").encode("utf-8")
+        ).hexdigest()[:16]
 
     @property
     def has_auth(self) -> bool:
@@ -214,8 +215,9 @@ class TwitterClient:
         imp = impersonate_for_ua(self.user_agent)
         session = AsyncSession(
             impersonate=imp,
-            proxies={"http": self.proxy, "https": self.proxy} if self.proxy else None,
+            proxies=curl_proxies(self.proxy),
             timeout=self.timeout,
+            trust_env=False,
         )
         self._session = session
         try:
@@ -234,8 +236,9 @@ class TwitterClient:
         if own_session:
             sess = AsyncSession(
                 impersonate=impersonate_for_ua(self.user_agent),
-                proxies={"http": self.proxy, "https": self.proxy} if self.proxy else None,
+                proxies=curl_proxies(self.proxy),
                 timeout=self.timeout,
+                trust_env=False,
             )
         assert sess is not None
         try:
@@ -264,31 +267,47 @@ class TwitterClient:
                     pass
 
     async def _ensure_graphql_specs(self, *, force_refresh: bool = False) -> Dict[str, Tuple[str, Dict[str, bool]]]:
-        global _GQL_CACHE, _GQL_CACHE_AT
+        cache_key = self._gql_cache_key()
         now = time.monotonic()
-        if not force_refresh and _GQL_CACHE and (now - _GQL_CACHE_AT) < _GQL_CACHE_TTL:
-            return _GQL_CACHE
+        cached = _GQL_CACHE_BY_ACCOUNT.get(cache_key)
+        if not force_refresh and cached is not None and cached[1] and (now - cached[0]) < _GQL_CACHE_TTL:
+            return cached[1]
 
         st, html = await self._raw_get_text("https://x.com/home", with_cookies=self.has_auth)
+        cache_key = self._gql_cache_key()
         if st == 200 and html:
+            account_switches = {
+                m_sw.group(1): (m_sw.group(2) == "true")
+                for m_sw in _FEATURE_SWITCH_VAL_RE.finditer(html)
+            }
             m_js = _MAIN_JS_RE.search(html)
             if m_js:
                 st_js, js_text = await self._raw_get_text(m_js.group(0), with_cookies=False)
                 if st_js == 200 and js_text:
-                    discovered: Dict[str, Tuple[str, Dict[str, bool]]] = dict(_FALLBACK_GQL_SPECS)
+                    discovered: Dict[str, Tuple[str, Dict[str, bool]]] = {
+                        op: (qid, dict(fmap))
+                        for op, (qid, fmap) in _FALLBACK_GQL_SPECS.items()
+                    }
                     for m in _GQL_SPEC_RE.finditer(js_text):
                         qid, op_name, raw_switches = m.group(1), m.group(2), m.group(3)
                         switches = re.findall(r'"([^"]+)"', raw_switches)
-                        feats = {k: True for k in switches}
+                        feats = {k: account_switches.get(k, True) for k in switches}
                         discovered[op_name] = (qid, feats)
-                    _GQL_CACHE = discovered
-                    _GQL_CACHE_AT = now
-                    return _GQL_CACHE
+                    if len(_GQL_CACHE_BY_ACCOUNT) >= _GQL_CACHE_MAX_ACCOUNTS and cache_key not in _GQL_CACHE_BY_ACCOUNT:
+                        for old_k in list(_GQL_CACHE_BY_ACCOUNT)[:16]:
+                            _GQL_CACHE_BY_ACCOUNT.pop(old_k, None)
+                    _GQL_CACHE_BY_ACCOUNT[cache_key] = (now, discovered)
+                    return discovered
 
-        if not _GQL_CACHE:
-            _GQL_CACHE = dict(_FALLBACK_GQL_SPECS)
-            _GQL_CACHE_AT = now
-        return _GQL_CACHE
+        existing = _GQL_CACHE_BY_ACCOUNT.get(cache_key)
+        if existing is not None and existing[1]:
+            return existing[1]
+        fallback_copy: Dict[str, Tuple[str, Dict[str, bool]]] = {
+            op: (qid, dict(fmap))
+            for op, (qid, fmap) in _FALLBACK_GQL_SPECS.items()
+        }
+        _GQL_CACHE_BY_ACCOUNT[cache_key] = (now, fallback_copy)
+        return fallback_copy
 
     async def ensure_session_cookies(self) -> Dict[str, str]:
         """当仅提供 `auth_token` 而缺少 `ct0` / `twid` 时，自动向 `x.com/home` 换取完整会话 Cookie。"""
@@ -296,7 +315,7 @@ class TwitterClient:
             return self.cookies
         if (not self.cookies.get("ct0") or not self.self_uid) and not self._session_bootstrapped:
             self._session_bootstrapped = True
-            if not _GQL_CACHE:
+            if self._gql_cache_key() not in _GQL_CACHE_BY_ACCOUNT:
                 await self._ensure_graphql_specs(force_refresh=True)
             else:
                 await self._raw_get_text("https://x.com/home", with_cookies=True)
@@ -335,8 +354,9 @@ class TwitterClient:
             imp = impersonate_for_ua(self.user_agent)
             sess = AsyncSession(
                 impersonate=imp,
-                proxies={"http": self.proxy, "https": self.proxy} if self.proxy else None,
+                proxies=curl_proxies(self.proxy),
                 timeout=self.timeout,
+                trust_env=False,
             )
         assert sess is not None
         try:

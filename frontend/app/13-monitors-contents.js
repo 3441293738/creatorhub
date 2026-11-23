@@ -656,12 +656,12 @@ async function refreshContents(resetPage = false) {
   $("content-table-wrap").style.display = useCards ? "none" : "";
   $("content-cards").style.display = useCards ? "" : "none";
   if (useCards) {
-    $("content-cards").innerHTML = rows.map(noteCard).join("")
-      || `<div class="empty" style="columns:1">${ic("i-image")}<div class="empty-t">暂无作品记录</div></div>`;
+    setHtmlIfChanged($("content-cards"), rows.map(noteCard).join("")
+      || `<div class="empty" style="columns:1">${ic("i-image")}<div class="empty-t">暂无作品记录</div></div>`);
     updateContentSelBar(); renderContentPager(meta);
     return;
   }
-  $("content-table").innerHTML = rows.map(r => {
+  const tableHtml = rows.map(r => {
     const description = esc(r.desc || "（未填写作品文案）");
     const durText = r.duration ? (typeof fmtDur === "function" ? fmtDur(r.duration) : String(r.duration)) : "";
     const durBadge = durText ? `<span class="thumb-dur">${esc(durText)}</span>` : "";
@@ -669,7 +669,7 @@ async function refreshContents(resetPage = false) {
     const hasLocal = Boolean(String(r.local_path || "").trim());
     return `<tr>
       <td class="content-check-cell"><label class="content-selection" title="选择这条作品"><input type="checkbox" data-id="${r.id}" aria-label="选择这条作品" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></label></td>
-      <td class="content-cover-cell"><span class="content-cover-box" onclick="openPreview(${r.id})" title="点击站内预览">${r.cover_url ? `<img class="thumb" src="${esc(safeMediaUrl(r.cover_url))}" alt="封面" referrerpolicy="no-referrer">` : `<span class="content-cover-empty">${ic(r.media_type === "images" ? "i-image" : "i-film")}</span>`}${durBadge}</span></td>
+      <td class="content-cover-cell"><span class="content-cover-box" onclick="openPreview(${r.id})" title="点击站内预览">${r.cover_url ? `<img class="thumb" src="${esc(safeMediaUrl(r.cover_url))}" alt="封面" loading="lazy" referrerpolicy="no-referrer">` : `<span class="content-cover-empty">${ic(r.media_type === "images" ? "i-image" : "i-film")}</span>`}${durBadge}</span></td>
       <td class="content-desc-cell">
         <div class="content-desc-text clickable" title="${description}" onclick="openPreview(${r.id})">${description}</div>
         ${contentSourceMarkup(r)}
@@ -693,6 +693,7 @@ async function refreshContents(resetPage = false) {
       </td>
     </tr>`;
   }).join("") || empty(8, "暂无作品", "i-film", "监控目标有新作品时会自动抓取并下载,显示在这里");
+  setHtmlIfChanged($("content-table"), tableHtml);
   updateContentSelBar(); renderContentPager(meta);
 }
 async function retryDl(id) {

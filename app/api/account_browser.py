@@ -337,9 +337,12 @@ async def open_account_browser(
         ctx = await app_runtime.browser.open_headed(identity)
         if cookies:
             try:
-                await ctx.add_cookies(_sanitize_cookies(cookies))
+                # 仅补齐磁盘中缺失的登录 Cookie，绝不用旧数据库快照覆盖浏览器已轮换的新 Cookie
+                await app_runtime.browser._bridge_identity_cookies(
+                    ctx, identity, assume_empty=False, overwrite=False
+                )
             except Exception as e:
-                print(f"[open-browser] 注入 Cookie 失败: {e!r}")
+                print(f"[open-browser] 桥接缺失 Cookie 失败: {e!r}")
         check_opener = getattr(app_runtime.browser, "open_environment_check", None)
         if environment_check:
             if not callable(check_opener):
@@ -417,7 +420,8 @@ async def open_account_browser(
     # the next background read cannot reuse an already-closed context.
     close_callback = lambda: app_runtime.browser.close_context(identity.key)
     lease = login_sessions_service._OpenBrowserLease(
-        ctx, guard, close_callback=close_callback, page=page)
+        ctx, guard, close_callback=close_callback, page=page,
+        account_id=account_id, open_scope=open_scope)
     app_runtime.open_browsers[account_id] = lease
     try:                       # 用户手动关窗后,从登记表移除
         ctx.on("close", lambda *_: asyncio.create_task(

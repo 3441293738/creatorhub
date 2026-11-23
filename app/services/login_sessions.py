@@ -109,11 +109,14 @@ async def _reuse_or_reject_interactive_login(
 class _OpenBrowserLease:
     """Keep the unified account/network guard until a headed context closes."""
 
-    def __init__(self, context, guard, close_callback=None, page=None):
+    def __init__(self, context, guard, close_callback=None, page=None,
+                 *, account_id: int | None = None, open_scope: str = "read"):
         self.context = context
         self.guard = guard
         self.close_callback = close_callback
         self.page = page
+        self.account_id = account_id
+        self.open_scope = open_scope
         self._released = False
         self._closed = False
         self._release_lock = asyncio.Lock()
@@ -122,6 +125,33 @@ class _OpenBrowserLease:
     @property
     def active(self) -> bool:
         return not self._released and not self._closed
+
+    async def _persist_context_state(self) -> None:
+        if not self.account_id or self.context is None:
+            return
+        storage_fn = getattr(self.context, "storage_state", None)
+        if not callable(storage_fn):
+            return
+        try:
+            state_obj = await storage_fn()
+            if not isinstance(state_obj, dict) or not state_obj.get("cookies"):
+                return
+            state_json = json.dumps(state_obj, ensure_ascii=False)
+            with get_session() as session:
+                account = session.get(DouyinAccount, self.account_id)
+                if account is None:
+                    return
+                if self.open_scope == "creator" and account.platform in {"xhs", "rednote"}:
+                    account.creator_storage_state = state_json
+                else:
+                    account.storage_state = state_json
+                    if account.platform in {"kuaishou", "shipinhao", "bilibili", "instagram", "twitter"}:
+                        account.creator_storage_state = state_json
+                session.add(account)
+                session.commit()
+        except Exception:
+            # 窗口若已被用户直接点 X 关闭，storage_state() 可能抛 TargetClosedError；静默跳过即可
+            pass
 
     async def release(self) -> None:
         async with self._release_lock:
@@ -136,6 +166,7 @@ class _OpenBrowserLease:
                 return
             self._closed = True
             try:
+                await self._persist_context_state()
                 if self.close_callback is not None:
                     await self.close_callback()
                 else:

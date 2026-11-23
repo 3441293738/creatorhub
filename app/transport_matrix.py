@@ -331,6 +331,11 @@ def resolve_transport(cfg: Any, platform: str, operation: str,
             and configured == "api"):
         effective = "browser"
         reason = "原生身份账号固定使用浏览器通道"
+    elif (platform == "xhs" and operation == "publish"
+          and configured == "api"
+          and bool(_setting_value(cfg, "forbid_same_platform_shared_proxy", True))):
+        effective = "browser"
+        reason = "多账号防关联策略已锁定小红书发布走专属浏览器（避免共享静态签名 b1）"
     elif configured in {"protocol", "native"}:
         if spec.get("api"):
             effective = "api"
@@ -430,25 +435,49 @@ def _state_fingerprint(account: Any) -> str:
 
 
 def build_transport_matrix(cfg: Any, accounts: Iterable[Any]) -> dict[str, Any]:
+    from app.browser.manager import normalize_proxy
+
     accounts = list(accounts)
     rows = [resolve_transport(cfg, spec["platform"], spec["operation"])
             for spec in TRANSPORT_SPECS]
     profile_keys = [_normalized_path(str(getattr(a, "profile_dir", "") or ""))
                     for a in accounts]
-    proxy_keys = [str(getattr(a, "proxy", "") or "").strip() for a in accounts]
+    proxy_keys = [normalize_proxy(str(getattr(a, "proxy", "") or "").strip()) for a in accounts]
+    exit_keys = [str(getattr(a, "exit_ip", "") or "").strip() for a in accounts]
     state_keys = [_state_fingerprint(a) for a in accounts]
     profile_counts = Counter(value for value in profile_keys if value)
     proxy_counts = Counter(value for value in proxy_keys if value)
+    exit_counts = Counter(value for value in exit_keys if value)
+    same_pf_proxy_counts = Counter(
+        (str(getattr(a, "platform", "") or ""), p)
+        for a, p in zip(accounts, proxy_keys)
+        if p
+    )
+    same_pf_exit_counts = Counter(
+        (str(getattr(a, "platform", "") or ""), ip)
+        for a, ip in zip(accounts, exit_keys)
+        if ip
+    )
     state_counts = Counter(value for value in state_keys if value)
     isolation = []
-    for account, profile_key, proxy_key, state_key in zip(
-            accounts, profile_keys, proxy_keys, state_keys):
+    for account, profile_key, proxy_key, exit_key, state_key in zip(
+            accounts, profile_keys, proxy_keys, exit_keys, state_keys):
+        pf = str(getattr(account, "platform", "") or "")
         profile_isolated = bool(profile_key and profile_counts[profile_key] == 1)
         credential_isolated = bool(state_key and state_counts[state_key] == 1)
-        network_isolated = bool(proxy_key and proxy_counts[proxy_key] == 1)
+        same_pf_shared = bool(
+            (proxy_key and same_pf_proxy_counts[(pf, proxy_key)] > 1)
+            or (exit_key and same_pf_exit_counts[(pf, exit_key)] > 1)
+        )
+        network_isolated = bool(
+            proxy_key
+            and proxy_counts[proxy_key] == 1
+            and (not exit_key or exit_counts[exit_key] == 1)
+            and not same_pf_shared
+        )
         environment_seed = "|".join((
             str(getattr(account, "id", "") or ""), state_key,
-            str(getattr(account, "ua", "") or ""), proxy_key,
+            str(getattr(account, "ua", "") or ""), proxy_key, exit_key,
             str(getattr(account, "locale", "") or ""),
             str(getattr(account, "viewport_w", "") or ""),
             str(getattr(account, "viewport_h", "") or ""),
@@ -458,18 +487,27 @@ def build_transport_matrix(cfg: Any, accounts: Iterable[Any]) -> dict[str, Any]:
             warnings.append("浏览器 Profile 缺失或重复")
         if not credential_isolated:
             warnings.append("登录态缺失或与其他账号重复")
-        if not network_isolated:
-            warnings.append("API 与浏览器仍共享本机/重复代理出口")
+        if not proxy_key:
+            warnings.append("未绑定独立代理（直连暴露宿主机真实出口 IP）")
+        elif same_pf_shared:
+            warnings.append("同平台存在多个账号共用同一代理或相同出口 IP")
+        elif not network_isolated:
+            warnings.append("跨平台共享同一代理或出口 IP")
         isolation.append({
             "account_id": getattr(account, "id", None),
-            "platform": str(getattr(account, "platform", "") or ""),
+            "platform": pf,
             "nickname": str(getattr(account, "nickname", "") or ""),
             "status": str(getattr(account, "status", "") or ""),
             "profile_isolated": profile_isolated,
             "credential_isolated": credential_isolated,
             "api_session_isolated": True,
             "network_isolated": network_isolated,
-            "network_scope": "专属代理" if network_isolated else "共享出口",
+            "network_scope": (
+                "专属代理" if network_isolated
+                else "未配代理" if not proxy_key
+                else "同平台共享出口" if same_pf_shared
+                else "跨平台复用代理"
+            ),
             "api_environment_aligned": bool(
                 getattr(account, "ua", "") and getattr(account, "locale", "")
                 and getattr(account, "viewport_w", 0)

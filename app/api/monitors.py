@@ -133,18 +133,25 @@ async def add_monitor(body: TargetIn, request: Request = None):
     else:
         target_input = metadata_service._clean_platform_target_input(body.url_or_secuid, platform)
 
+    eff_proxy = metadata_service._resolve_ephemeral_proxy(platform, body.account_id)
     if platform == "xhs" and kind != "keyword":
-        ref = await xhs_resolve_user(target_input, app_runtime.cfg.engine.user_agent)
+        ref = await metadata_service._call_resolver(
+            xhs_resolve_user, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+        )
         if not ref:
             raise HTTPException(400, "无法解析小红书 user_id,请粘贴完整分享文案、创作者主页链接 / xhslink 短链 / 24 位 user_id")
         sec_uid, xsec_token = ref.user_id, ref.xsec_token
     elif platform == "rednote" and kind != "keyword":
-        ref = await resolve_rednote_user(target_input, app_runtime.cfg.engine.user_agent)
+        ref = await metadata_service._call_resolver(
+            resolve_rednote_user, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+        )
         if not ref:
             raise HTTPException(400, "无法解析海外小红书 user_id,请粘贴 www.rednote.com/zh/user/profile/... 主页链接或 24 位 user_id")
         sec_uid, xsec_token = ref.user_id, ref.xsec_token
     elif platform == "kuaishou":
-        sec_uid = await resolve_ks_user_id(target_input, app_runtime.cfg.engine.user_agent)
+        sec_uid = await metadata_service._call_resolver(
+            resolve_ks_user_id, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+        )
         if not sec_uid:
             raise HTTPException(400, "无法解析快手 user_id,请粘贴完整分享文案、创作者主页链接 / v.kuaishou.com 短链 / user_id")
     elif platform == "shipinhao":
@@ -153,12 +160,16 @@ async def add_monitor(body: TargetIn, request: Request = None):
         nickname = channels_res.nickname
         avatar = channels_res.avatar
     elif platform == "tiktok":
-        target_input, video_ref, profile_id = await metadata_service._resolve_tiktok_target(target_input)
+        target_input, video_ref, profile_id = await metadata_service._resolve_tiktok_target(
+            target_input, proxy=eff_proxy, account_id=body.account_id
+        )
         sec_uid = profile_id or (video_ref.author_unique_id if video_ref else "")
         if not sec_uid:
             raise HTTPException(400, "无法解析 TikTok @username，请粘贴完整主页/作品链接、短链或 @username")
     elif platform == "bilibili":
-        sec_uid = await resolve_bili_mid(target_input, app_runtime.cfg.engine.user_agent)
+        sec_uid = await metadata_service._call_resolver(
+            resolve_bili_mid, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+        )
         if not sec_uid:
             raise HTTPException(400, "无法解析哔哩哔哩 UP 主 UID，请粘贴空间链接 space.bilibili.com/<mid>、b23.tv 短链或纯数字 UID")
     elif platform == "instagram" and kind != "keyword":
@@ -170,7 +181,12 @@ async def add_monitor(body: TargetIn, request: Request = None):
         if not sec_uid.isdigit():
             nickname = f"@{sec_uid}"
     elif platform == "twitter" and kind != "keyword":
-        expanded_tw = await resolve_twitter_short_url(target_input, user_agent=app_runtime.cfg.engine.user_agent)
+        expanded_tw = await metadata_service._call_resolver(
+            resolve_twitter_short_url,
+            target_input,
+            user_agent=app_runtime.cfg.engine.user_agent,
+            proxy=eff_proxy,
+        )
         if looks_like_twitter_tweet(expanded_tw):
             raise HTTPException(400, "检测到 X (Twitter) 单条推文链接；作品监控请填写创作者 @username、x.com/<username> 主页链接或切换为关键词监控")
         sec_uid = resolve_twitter_user_target(expanded_tw)
@@ -179,7 +195,9 @@ async def add_monitor(body: TargetIn, request: Request = None):
         if not sec_uid.isdigit():
             nickname = f"@{sec_uid}"
     elif platform == "douyin":
-        sec_uid = await resolve_sec_uid(target_input, app_runtime.cfg.engine.user_agent)
+        sec_uid = await metadata_service._call_resolver(
+            resolve_sec_uid, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+        )
         if not sec_uid:
             raise HTTPException(400, "无法解析 sec_uid,请粘贴完整分享文案、主页链接 / v.douyin.com 短链 / sec_uid")
 
@@ -225,6 +243,24 @@ async def add_monitor(body: TargetIn, request: Request = None):
                 monitor_acc = s.get(DouyinAccount, body.account_id)
                 if not monitor_acc or monitor_acc.platform != platform:
                     raise HTTPException(400, "所选账号不存在或与监控平台不匹配")
+            else:
+                monitor_acc = None
+            if (
+                monitor_acc is not None
+                and str(monitor_acc.account_role or "hybrid").strip().lower() == "publish"
+                and (
+                    kind == "keyword"
+                    or not (
+                        (monitor_acc.sec_uid and monitor_acc.sec_uid == sec_uid)
+                        or (monitor_acc.uid and monitor_acc.uid == sec_uid)
+                        or (monitor_acc.douyin_id and monitor_acc.douyin_id == sec_uid)
+                    )
+                )
+            ):
+                raise HTTPException(
+                    400,
+                    "该账号角色设为「发布主号 (publish)」，禁止绑定外部竞品或关键词监控以免高频巡检牵连主号；请改选「仅采集号 (crawler)」或「混合号 (hybrid)」",
+                )
             if kind == "keyword":
                 dup = s.exec(select(MonitorTarget).where(MonitorTarget.platform == platform)
                              .where(MonitorTarget.keyword == keyword)).first()

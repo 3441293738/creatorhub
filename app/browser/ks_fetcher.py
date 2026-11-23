@@ -16,6 +16,13 @@ import re
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 
+from .human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from .identity import Identity
 from .manager import BrowserManager
 
@@ -29,19 +36,35 @@ PROFILE_URL = "https://www.kuaishou.com/profile/{uid}"
 PHOTO_URL = "https://www.kuaishou.com/short-video/{pid}"
 SEARCH_URL = "https://www.kuaishou.com/search/video?searchKey={keyword}"
 
-# 快手新版页面把作品流/评论区放在可滚容器里,滚 window 不会触发翻页;
-# 统一滚动所有真正可滚的容器(window 兜底),否则 /rest/v/profile/feed
-# 只会发首页请求,单轮永远停在 ~20 条。
-_SCROLL_ALL_JS = """() => {
-  window.scrollTo(0, document.body.scrollHeight);
-  for (const el of document.querySelectorAll('*')) {
+# 快手新版页面把作品流/评论区放在可滚容器里；只读定位最大可滚容器包围盒，
+# 随后将鼠标移入容器并触发拟人惯性滚轮滚动，杜绝 scrollTo / scrollTop 机械跳变。
+_FIND_KS_SCROLL_BOX_JS = """() => {
+  let best = null;
+  let bestRange = 0;
+  for (const el of document.querySelectorAll('main,section,div,ul')) {
     const style = getComputedStyle(el);
-    if ((style.overflowY === 'auto' || style.overflowY === 'scroll')
-        && el.scrollHeight > el.clientHeight + 20) {
-      el.scrollTop = el.scrollHeight;
+    if (style.overflowY !== 'auto' && style.overflowY !== 'scroll' && style.overflowY !== 'overlay') continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 140 || r.height < 140) continue;
+    const range = (el.scrollHeight || 0) - (el.clientHeight || 0);
+    if (range > 20 && range > bestRange) {
+      best = r;
+      bestRange = range;
     }
   }
+  return best ? { x: best.x, y: best.y, width: best.width, height: best.height } : null;
 }"""
+
+
+async def _ks_human_scroll(page) -> None:
+    try:
+        box = await page.evaluate(_FIND_KS_SCROLL_BOX_JS)
+        if isinstance(box, dict) and box.get("width") and box.get("height"):
+            tx, ty = DEFAULT_HUMAN_ENGINE.sample_box_point(box)
+            await DEFAULT_HUMAN_ENGINE.move_mouse(page, tx, ty)
+    except Exception:
+        pass
+    await human_scroll(page, settle=False)
 
 
 def _rf(d: dict, *keys, default=""):
@@ -263,16 +286,12 @@ async def fetch_ks_search(mgr: BrowserManager, identity: Identity, keyword: str,
         await page.goto(
             SEARCH_URL.format(keyword=quote(keyword, safe="")),
             wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(settle_ms)
+        await human_wait(page, settle_ms)
         stagnant = 0
         for _ in range(max(1, min(40, int(max_scrolls or 1)))):
             before = len(collected)
-            try:
-                await page.evaluate(_SCROLL_ALL_JS)
-            except Exception:
-                pass
-            await page.mouse.wheel(0, 4200)
-            await page.wait_for_timeout(settle_ms)
+            await _ks_human_scroll(page)
+            await human_wait(page, settle_ms)
             if len(collected) == before:
                 stagnant += 1
                 if collected and stagnant >= max(
@@ -390,20 +409,14 @@ async def fetch_ks_videos(mgr: BrowserManager, identity: Identity, user_id: str,
     try:
         await page.goto(open_url or PROFILE_URL.format(uid=user_id),
                         wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(settle_ms)
+        await human_wait(page, settle_ms)
         stagnant = 0
         min_scrolls = max(1, min(min_scrolls, max_scrolls))
         for scroll_index in range(max_scrolls):
             before = len(collected)
             pages_before = len(pages)
-            # 作品流在可滚容器里,仅 mouse.wheel 滚 window 无法触发下一页
-            # /rest/v/profile/feed;先滚容器再兜底滚 window。
-            try:
-                await page.evaluate(_SCROLL_ALL_JS)
-            except Exception:
-                pass
-            await page.mouse.wheel(0, 4000)
-            await page.wait_for_timeout(settle_ms)
+            await _ks_human_scroll(page)
+            await human_wait(page, settle_ms)
             fresh_pages = pages[pages_before:]
             boundary = any(_ks_page_reaches_boundary(p, known_ids, stop_before)
                            for p in fresh_pages)
@@ -502,20 +515,13 @@ async def fetch_ks_comments(mgr: BrowserManager, identity: Identity, photo_id: s
     try:
         await page.goto(PHOTO_URL.format(pid=photo_id),
                         wait_until="domcontentloaded", timeout=30000)
-        # 详情页比主页重(视频播放器 + 评论区异步渲染),多等一拍让首屏评论请求
-        # 发出;有视频流时 networkidle 不可靠,用固定延时兜底。
-        await page.wait_for_timeout(settle_ms)
-        await page.wait_for_timeout(1200)
+        # 详情页比主页重(视频播放器 + 评论区异步渲染),多等一拍让首屏评论请求发出
+        await human_wait(page, settle_ms + 1200)
         stagnant = 0
         for _ in range(max_scrolls):
             before = len(collected)
-            try:
-                # 新版详情页评论区是固定面板，滚 window 不会翻页；同时滚动所有
-                # 真正可滚容器，旧版页面则继续由 window.scrollTo 兜底。
-                await page.evaluate(_SCROLL_ALL_JS)
-            except Exception:
-                pass
-            await page.wait_for_timeout(settle_ms)
+            await _ks_human_scroll(page)
+            await human_wait(page, settle_ms)
             if len(collected) == before:
                 stagnant += 1
                 if stagnant >= 2:
@@ -776,7 +782,7 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
         try:
             await asyncio.wait_for(profile_seen.wait(), timeout=4.0)
         except asyncio.TimeoutError:
-            await page.wait_for_timeout(500)
+            await human_wait(page, 500)
         try:
             has_login_btn = await page.locator(
                 '[role="button"].sidebar-login-button').first.is_visible(
@@ -921,12 +927,12 @@ async def post_ks_comment(mgr: BrowserManager, identity: Identity, photo_id: str
     try:
         await page.goto(PHOTO_URL.format(pid=photo_id),
                         wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(settle_ms)
+        await human_wait(page, settle_ms)
         if "passport" in page.url or "/login" in page.url:
             return False, "logged_out:账号未登录,无法发评论"
 
         try:
-            await page.evaluate("() => window.scrollBy(0, 600)")
+            await human_scroll(page, distance=520, settle=False)
             await page.wait_for_selector(",".join(_COMMENT_INPUT), timeout=8000,
                                          state="attached")
         except Exception:
@@ -944,17 +950,15 @@ async def post_ks_comment(mgr: BrowserManager, identity: Identity, photo_id: str
         if editor is None:
             return False, "未找到评论输入框(评论区可能未加载/被关闭/页面改版)"
 
-        await editor.click(timeout=timeout_ms)
-        await page.wait_for_timeout(300)
-        await page.keyboard.type(content, delay=40)
-        await page.wait_for_timeout(600)
+        await DEFAULT_HUMAN_ENGINE.type_text(editor, content, page=page, timeout=timeout_ms)
+        await human_wait(page, 500)
 
         sent = False
         for sel in _COMMENT_SUBMIT:
             try:
                 btn = page.locator(sel).first
                 if await btn.count() and await btn.is_enabled():
-                    await btn.click(timeout=3000)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=page, timeout=3000)
                     sent = True
                     break
             except Exception:
@@ -971,7 +975,7 @@ async def post_ks_comment(mgr: BrowserManager, identity: Identity, photo_id: str
         for _ in range(27):       # 等提交接口回包,最多 ~8s
             if pub["seen"]:
                 break
-            await page.wait_for_timeout(300)
+            await human_wait(page, 300)
 
         if pub["seen"]:
             if pub["ok"]:
@@ -983,9 +987,7 @@ async def post_ks_comment(mgr: BrowserManager, identity: Identity, photo_id: str
         return False, f"发评论异常: {e!r}"
     finally:
         try:
-            if ctx is not None:
-                await ctx.close()
-            else:
+            if page is not None and not page.is_closed():
                 await page.close()
         except Exception:
             pass

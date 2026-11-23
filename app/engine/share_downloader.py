@@ -582,8 +582,9 @@ class ShareDownloader:
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6",
             },
         }
-        if proxy:
-            options["proxy"] = proxy
+        from app.netfp import curl_proxy_url
+        # 显式传入空字符串可禁止 yt-dlp 隐式读取系统注册表/环境变量代理；socks5 自动转 socks5h 走远端 DNS
+        options["proxy"] = curl_proxy_url(proxy) if proxy else ""
         if cookie_file:
             options["cookiefile"] = cookie_file
         return options

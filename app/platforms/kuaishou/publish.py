@@ -14,6 +14,12 @@ from pathlib import Path
 from typing import Awaitable, Callable, List, Tuple
 from urllib.parse import urlparse
 
+from ...browser.human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_wait,
+)
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
 from .._submit import notify_stage as _notify_stage, notify_submit as _notify_submit
@@ -114,35 +120,11 @@ async def _dump(page, tag: str) -> str:
 
 
 async def _click_first_visible(page, selectors, timeout=3000) -> bool:
-    for selector in selectors:
-        try:
-            loc = page.locator(selector)
-            for index in range(await loc.count()):
-                candidate = loc.nth(index)
-                if not await candidate.is_visible():
-                    continue
-                await candidate.click(timeout=timeout)
-                return True
-        except Exception:
-            continue
-    return False
+    return await human_click_first(page, selectors, timeout=timeout)
 
 
 async def _fill_first(page, selectors, text, timeout=4000) -> bool:
-    for selector in selectors:
-        try:
-            editor = page.locator(selector).first
-            await editor.wait_for(state="visible", timeout=timeout)
-            await editor.click(timeout=timeout)
-            try:
-                await editor.fill(text, timeout=timeout)
-            except Exception:
-                await page.keyboard.press("Control+A")
-                await page.keyboard.type(text, delay=15)
-            return True
-        except Exception:
-            continue
-    return False
+    return bool(await human_fill_first(page, selectors, text, clear=True, timeout=timeout))
 
 
 async def _visible_text(page, keywords) -> str:
@@ -168,7 +150,7 @@ async def _upload_files(page, media_type: str, files: List[str]) -> bool:
             for index in range(await button.count()):
                 candidate = button.nth(index)
                 if await candidate.is_visible():
-                    await candidate.click(timeout=4000)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(candidate, page=page, timeout=4000)
                     clicked = True
                     break
             if not clicked:
@@ -194,17 +176,8 @@ async def _upload_files(page, media_type: str, files: List[str]) -> bool:
 
 async def _dismiss_guides(page) -> None:
     """跳过快手新手引导气泡，防止遮挡编辑区或发布按钮。"""
-    for sel in _JOYRIDE_SKIP:
-        try:
-            loc = page.locator(sel)
-            for idx in range(await loc.count()):
-                b = loc.nth(idx)
-                if await b.is_visible():
-                    await b.click(timeout=1500)
-                    await page.wait_for_timeout(250)
-                    return
-        except Exception:
-            continue
+    if await human_click_first(page, _JOYRIDE_SKIP, timeout=1500):
+        await human_wait(page, 250)
 
 
 async def _upload_error_message(page) -> str:
@@ -245,7 +218,7 @@ async def _wait_upload_complete(page, timeout_ms: int, on_stage=None) -> str:
         if busy_prog != last_prog:
             last_prog = busy_prog
             await _notify_stage(on_stage, f"正在上传媒体（{busy_prog}）…")
-        await page.wait_for_timeout(1200)
+        await human_wait(page, 1200)
     return "快手媒体上传超时，请检查视频格式/大小后重试"
 
 
@@ -259,7 +232,7 @@ async def _wait_editor(page, timeout_ms: int) -> bool:
                     return True
             except Exception:
                 continue
-        await page.wait_for_timeout(500)
+        await human_wait(page, 500)
     return False
 
 
@@ -310,7 +283,8 @@ async def _choose_visibility(page, visibility: str) -> bool:
         for index in range(await choices.count() - 1, -1, -1):
             choice = choices.nth(index)
             if await choice.is_visible():
-                await choice.click(timeout=2500)
+                await choice.scroll_into_view_if_needed(timeout=2000)
+                await DEFAULT_HUMAN_ENGINE.click_locator(choice, page=page, timeout=2500)
                 return True
     except Exception:
         pass
@@ -387,7 +361,7 @@ async def publish_kuaishou(mgr: BrowserManager, identity: Identity,
         _log(f"打开统一发布页 media_type={media_type}, files={len(files)}")
         await _notify_stage(on_stage, "正在打开快手发布页并上传媒体…")
         await page.goto(PUBLISH_URL, wait_until="domcontentloaded", timeout=40000)
-        await page.wait_for_timeout(3500)
+        await human_wait(page, 3500)
         body_text = ""
         try:
             body_text = await page.locator("body").inner_text()
@@ -403,7 +377,7 @@ async def publish_kuaishou(mgr: BrowserManager, identity: Identity,
             if not await _click_first_visible(page, _IMAGE_TAB, timeout=3500):
                 await _dump(page, "no-image-tab")
                 return False, "", "未找到“上传图文”标签(发布页可能改版)"
-            await page.wait_for_timeout(700)
+            await human_wait(page, 700)
 
         if not await _upload_files(page, media_type, files):
             await _dump(page, "upload-failed")
@@ -426,7 +400,7 @@ async def publish_kuaishou(mgr: BrowserManager, identity: Identity,
             return False, "", f"未能设置快手查看权限({visibility})，已停止提交以保留你的权限设置"
         # 当前快手图文页未提供稳定的“允许下载”控件；保留参数兼容队列模型。
         _ = allow_save
-        await page.wait_for_timeout(700)
+        await human_wait(page, 700)
 
         upload_err = await _wait_upload_complete(page, editor_timeout, on_stage=on_stage)
         if upload_err:
@@ -440,19 +414,19 @@ async def publish_kuaishou(mgr: BrowserManager, identity: Identity,
             button = await _primary_publish_button(page)
             if button is not None:
                 break
-            await page.wait_for_timeout(1000)
+            await human_wait(page, 1000)
         if button is None:
             await _dump(page, "no-publish-button")
             return False, "", "未找到可用的“发布”按钮(已保存 data/debug 诊断快照)"
         await button.scroll_into_view_if_needed(timeout=3000)
         await _notify_submit(on_submit)
         submitted["clicked"] = True
-        await button.click(timeout=5000)
+        await DEFAULT_HUMAN_ENGINE.click_locator(button, page=page, timeout=5000)
         _log("已点击发布，等待平台确认")
         await _notify_stage(on_stage, "已点击「发布」，等待快手确认…")
 
-        waited, verify_notified, retried_click = 0, False, False
-        deadline = max(1, int(timeout_seconds))
+        waited, verify_notified = 0.0, False
+        deadline = float(max(1, int(timeout_seconds)))
         while waited < deadline:
             url_lower = str(page.url or "").lower()
             if publish_response["seen"]:
@@ -479,17 +453,7 @@ async def publish_kuaishou(mgr: BrowserManager, identity: Identity,
                     f"需要人工安全验证（页面提示「{verification}」），请在弹出的快手窗口里完成验证",
                 )
                 _log(f"等待用户在可见窗口完成“{verification}”")
-            if not retried_click and waited >= 20 and not publish_response["seen"] and not verify_notified:
-                retry_btn = await _primary_publish_button(page)
-                if retry_btn is not None:
-                    retried_click = True
-                    try:
-                        await retry_btn.click(timeout=4000)
-                        _log("20s 未收到 submit 响应，兜底重试点击发布")
-                    except Exception:
-                        pass
-            await page.wait_for_timeout(1000)
-            waited += 1
+            waited += await human_wait(page, 1000)
 
         if ok:
             # 发布回包有 photoId 时直达作品；否则打开作品管理页。不能保存当前

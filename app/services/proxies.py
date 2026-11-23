@@ -184,21 +184,29 @@ def _parse_ipapi(j: dict) -> dict:
 
 
 async def _proxy_geo(proxy_url: str, timeout: float = 8) -> dict | None:
-    """经代理查出口 IP/归属地/时区/坐标；空代理表示宿主直连。"""
-    import httpx
+    """经代理查出口 IP/归属地/时区/坐标；空代理表示宿主直连(强制 trust_env=False 隔离宿主机环境变量)。"""
+    from curl_cffi.requests import AsyncSession
+    from app.netfp import curl_proxy_url
     sources = [
         ("https://ipinfo.io/json", _parse_ipinfo),
         ("http://ip-api.com/json/?lang=zh-CN&fields=status,country,countryCode,regionName,city,lat,lon,timezone,isp,query",
          _parse_ipapi),
     ]
+    norm = curl_proxy_url(proxy_url) if proxy_url else ""
     try:
-        client_options = {"timeout": timeout, "follow_redirects": True}
-        if proxy_url:
-            client_options["proxy"] = proxy_url
-        async with httpx.AsyncClient(**client_options) as cli:
+        async with AsyncSession(
+            timeout=timeout,
+            allow_redirects=True,
+            proxy=(norm or None),
+            impersonate="chrome131",
+            trust_env=False,
+        ) as cli:
             for url, parser in sources:
                 try:
-                    g = parser((await cli.get(url)).json())
+                    resp = await cli.get(url)
+                    if resp.status_code != 200:
+                        continue
+                    g = parser(resp.json())
                     if g and g.get("ip"):
                         return g
                 except Exception:

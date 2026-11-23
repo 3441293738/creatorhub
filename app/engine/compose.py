@@ -108,7 +108,7 @@ async def generate(ctx: dict, ai: dict) -> str:
         "max_tokens": 120,
     }
     timeout = float(ai.get("timeout") or 20)
-    async with httpx.AsyncClient(timeout=timeout) as cli:
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as cli:
         r = await cli.post(base + "/chat/completions", json=body,
                            headers={"Authorization": f"Bearer {key}",
                                     "Content-Type": "application/json"})

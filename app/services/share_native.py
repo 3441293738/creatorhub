@@ -152,6 +152,9 @@ async def _douyin_native_share(
 
     async def _read_detail():
         nonlocal aweme_id, used_browser, download_ua, api_diagnostics
+        from app.browser.manager import normalize_proxy
+        if account is not None and normalize_proxy(proxy) != normalize_proxy(account.proxy or ""):
+            return {}, "browser_proxy_mismatch"
         aweme_id = await resolve_aweme_id(source_url, user_agent, proxy=proxy) or ""
         if not aweme_id:
             return {}, "unresolved_aweme_id"
@@ -274,17 +277,19 @@ async def _douyin_native_share(
 
     # 视频封面单独保存；图文作品的图片本身已经全部下载。
     if save_thumbnail and aweme.media_type == "video" and aweme.cover:
-        import httpx
-        from app.browser.manager import normalize_proxy
+        from curl_cffi.requests import AsyncSession
+        from app.netfp import curl_proxy_url, impersonate_for_ua
 
         cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
         headers = {"User-Agent": download_ua, "Referer": "https://www.douyin.com/"}
         try:
-            async with httpx.AsyncClient(
+            async with AsyncSession(
                 timeout=max(30.0, app_runtime.cfg.engine.request_timeout_seconds),
-                follow_redirects=True,
+                allow_redirects=True,
                 headers=headers,
-                proxy=normalize_proxy(proxy) or None,
+                proxy=curl_proxy_url(proxy) or None,
+                impersonate=impersonate_for_ua(download_ua),
+                trust_env=False,
             ) as http:
                 await downloader._download_one(http, aweme.cover, cover_path)
         except Exception:

@@ -26,7 +26,7 @@ async def _send_bark(cfg: dict, title: str, text: str) -> Tuple[bool, str]:
         return False, "缺少 bark key"
     server = (cfg.get("server") or "https://api.day.app").rstrip("/")
     url = f"{server}/{key}/{urllib.parse.quote(title)}/{urllib.parse.quote(text)}"
-    async with httpx.AsyncClient(timeout=TIMEOUT) as c:
+    async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False) as c:
         r = await c.get(url, params={"group": "douyin-monitor"})
         return (r.status_code == 200), f"HTTP {r.status_code}"
 
@@ -43,7 +43,7 @@ async def _send_dingtalk(cfg: dict, title: str, text: str) -> Tuple[bool, str]:
             secret.encode(), f"{ts}\n{secret}".encode(), hashlib.sha256).digest())
         webhook += f"&timestamp={ts}&sign={urllib.parse.quote_plus(sign)}"
     content = f"{keyword} {title}\n{text}".strip()
-    async with httpx.AsyncClient(timeout=TIMEOUT) as c:
+    async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False) as c:
         r = await c.post(webhook, json={"msgtype": "text", "text": {"content": content}})
         try:
             ok = r.json().get("errcode", -1) == 0
@@ -58,7 +58,7 @@ async def _send_telegram(cfg: dict, title: str, text: str) -> Tuple[bool, str]:
     if not token or not chat_id:
         return False, "缺少 bot_token / chat_id"
     api = (cfg.get("api_base") or "https://api.telegram.org").rstrip("/")
-    async with httpx.AsyncClient(timeout=TIMEOUT) as c:
+    async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False) as c:
         r = await c.post(f"{api}/bot{token}/sendMessage",
                          json={"chat_id": chat_id, "text": f"{title}\n{text}",
                                "disable_web_page_preview": True})

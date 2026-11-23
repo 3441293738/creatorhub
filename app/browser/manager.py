@@ -760,23 +760,25 @@ class BrowserManager:
                     await probe_page.close()
 
     def effective_browser_backend(self, identity: Identity) -> str:
-        """Resolve an account override without silently accepting bad values.
+        """Resolve an account browser backend.
 
-        Xiaohongshu is intentionally pinned to the local/system-Chrome path.
-        Mixing a third-party fingerprint runtime with its own identity surface
-        into an existing account profile creates cross-layer inconsistencies
-        (runtime, UA/client hints, GPU and persisted site state).  Treat that
-        combination as unsupported instead of trying to patch around a device
-        verification page.
+        Xiaohongshu defaults to the local/system-Chrome CDP path when set to
+        ``default``, while still allowing explicit ``fingerprint_chromium``
+        selection so multi-account XHS matrices on one host can isolate
+        engine-level Canvas/WebGL/Audio/Font hardware fingerprints.
         """
-        if str(getattr(identity, "platform", "") or "").lower() == "xhs":
-            return LOCAL_BACKEND
         requested = str(
             getattr(identity, "browser_backend", DEFAULT_BACKEND)
             or DEFAULT_BACKEND
         ).strip().lower()
         if requested not in ACCOUNT_BROWSER_BACKENDS:
             requested = DEFAULT_BACKEND
+        if str(getattr(identity, "platform", "") or "").lower() == "xhs":
+            return (
+                FINGERPRINT_CHROMIUM_BACKEND
+                if requested == FINGERPRINT_CHROMIUM_BACKEND
+                else LOCAL_BACKEND
+            )
         return (
             self.default_browser_backend
             if requested == DEFAULT_BACKEND else requested
@@ -853,10 +855,20 @@ class BrowserManager:
             "runtimes": self.fingerprint_runtime_catalog(),
         }
 
-    def anon_identity(self) -> Identity:
-        return Identity(account_id=None,
-                        profile_dir=str(Path(self.profiles_root) / "_anon"),
-                        ua=self.default_ua)
+    def anon_identity(self, *, proxy: str = "", platform: str = "") -> Identity:
+        from .identity import default_locale_for_platform, default_tz_for_platform
+        isolated_dir = Path(self.profiles_root) / "_anon" / f"session_{uuid.uuid4().hex}"
+        return Identity(
+            account_id=None,
+            profile_dir=str(isolated_dir),
+            identity_mode="native",
+            proxy=str(proxy or "").strip(),
+            ua=self.default_ua,
+            platform=str(platform or ""),
+            timezone_id=default_tz_for_platform(platform),
+            locale=default_locale_for_platform(platform),
+            fp_seed=uuid.uuid4().hex,
+        )
 
     def _uses_xhs_cdp(self, identity: Identity) -> bool:
         return (
@@ -866,15 +878,31 @@ class BrowserManager:
         )
 
     @staticmethod
-    def _xhs_proxy_plan(identity: Identity) -> ProxyPlan | None:
+    def _strict_proxy_plan(identity: Identity) -> ProxyPlan | None:
+        raw = str(getattr(identity, "proxy", "") or "").strip()
+        if not raw:
+            return None
         try:
-            return ProxyPlan.parse(identity.proxy)
+            return ProxyPlan.parse(raw)
         except ProxyConfigError as exc:
-            raise CdpProxyError(str(exc)) from None
+            if identity.platform == "xhs":
+                raise CdpProxyError(str(exc)) from None
+            raise
+
+    @classmethod
+    def _xhs_proxy_plan(cls, identity: Identity) -> ProxyPlan | None:
+        return cls._strict_proxy_plan(identity)
+
+    @staticmethod
+    def _normalize_lock_key(key: Any) -> Any:
+        if isinstance(key, str) and key.startswith("acc:") and key[4:].isdigit():
+            return int(key[4:])
+        return key
 
     def lock_for(self, key) -> asyncio.Lock:
-        """每账号串行锁:同一账号同一时刻只允许一个浏览器动作。"""
-        return self._locks.setdefault(key, asyncio.Lock())
+        """每账号串行锁:统一归一化 acc:<id> 与 <id>，保证引擎与浏览器层互斥同一把锁。"""
+        norm_key = self._normalize_lock_key(key)
+        return self._locks.setdefault(norm_key, asyncio.Lock())
 
     @staticmethod
     def proxy_signature(proxy: str) -> str:
@@ -1004,8 +1032,10 @@ class BrowserManager:
                 and effective_backend != FINGERPRINT_CHROMIUM_BACKEND:
             return "write_env_blocked:未检测到系统稳定版 Chrome 或可用指纹 Chromium"
         proxy = str(getattr(account, "proxy", "") or "").strip()
-        if not proxy or not self.native_write_require_verified_proxy:
+        if not self.native_write_require_verified_proxy:
             return ""
+        if not proxy:
+            return "write_env_blocked:账号未绑定专属代理，已拦截本机真实 IP 写操作"
         if getattr(account, "proxy_status", "unknown") not in {
                 "ok", "rotating", "drifted"}:
             return "write_env_blocked:账号代理尚未通过浏览器出口验证"
@@ -1097,17 +1127,19 @@ class BrowserManager:
             and fingerprint_plan is None
         )
         if legacy:
+            legacy_args = list(_LEGACY_ARGS)
+            if not str(identity.proxy or "").strip():
+                legacy_args.append("--no-proxy-server")
             kwargs.update(
-                args=list(_LEGACY_ARGS),
+                args=legacy_args,
                 viewport={"width": identity.viewport_w, "height": identity.viewport_h},
                 locale=identity.locale or "zh-CN",
                 timezone_id=identity.timezone_id or "Asia/Shanghai",
                 user_agent=ua,
-                # 存量账号保持既有画像，避免已建立的 profile 突然漂移。
                 geolocation=identity.geolocation,
                 permissions=["geolocation"],
             )
-        proxy_plan = try_proxy_plan(identity.proxy)
+        proxy_plan = self._strict_proxy_plan(identity)
         proxy = proxy_plan.playwright() if proxy_plan else None
         relay = None
         if proxy_plan is not None and proxy_plan.authenticated:
@@ -1123,7 +1155,9 @@ class BrowserManager:
             args = list(fingerprint_plan.args)
             args.append(
                 f"--window-size={int(identity.viewport_w)},{int(identity.viewport_h)}")
-            if proxy and str(identity.fp_webrtc_mode or "conceal") != "allow":
+            if not proxy:
+                args.append("--no-proxy-server")
+            if str(identity.fp_webrtc_mode or "conceal") != "allow":
                 for item in _PROXY_WEBRTC_ARGS:
                     if item not in args:
                         args.append(item)
@@ -1138,11 +1172,23 @@ class BrowserManager:
             if geo_permission == "allow":
                 kwargs["permissions"] = ["geolocation"]
         elif not legacy:
-            # native 账号使用 Chrome/操作系统自己的视口、语言、时区与硬件画像。
-            # 仅在显式配置代理时约束 WebRTC，避免 UDP 绕过代理出口。
+            # native + local 账号保留 Chrome 原生硬件栈，同时严格对齐代理出口对应的时区、语言与 WebRTC 隔离。
             kwargs["no_viewport"] = True
-            if proxy:
-                kwargs["args"] = list(_PROXY_WEBRTC_ARGS)
+            native_args = list(_PROXY_WEBRTC_ARGS)
+            if not proxy:
+                native_args.append("--no-proxy-server")
+            loc = str(identity.locale or "").strip()
+            if loc:
+                native_args.append(f"--lang={loc}")
+                kwargs["locale"] = loc
+            tz = str(identity.timezone_id or "").strip()
+            if tz:
+                kwargs["timezone_id"] = tz
+            if identity.geo_lat or identity.geo_lon:
+                kwargs["geolocation"] = identity.geolocation
+                if str(identity.fp_geolocation_permission or "allow").lower() == "allow":
+                    kwargs["permissions"] = ["geolocation"]
+            kwargs["args"] = native_args
         if proxy:
             kwargs["proxy"] = proxy
         try:
@@ -1183,7 +1229,8 @@ class BrowserManager:
                 pass
         if legacy and identity.fp_seed:
             try:
-                await ctx.add_init_script(fingerprint_script(identity.fp_seed, ua))
+                await ctx.add_init_script(
+                    fingerprint_script(identity.fp_seed, ua, identity.locale))
             except Exception:
                 pass
         # 登录态桥接:
@@ -1286,6 +1333,59 @@ class BrowserManager:
                 with suppress(Exception):
                     await relay.close()
             self._release_profile_lock(key)
+            if isinstance(key, str) and key.startswith("_anon:"):
+                self._cleanup_anon_dir_by_key(key)
+
+    def _cleanup_anon_dir_by_key(self, key: str) -> None:
+        anon_root = (Path(self.profiles_root) / "_anon").resolve()
+        if not anon_root.is_dir():
+            return
+        for child in anon_root.iterdir():
+            try:
+                norm = os.path.normcase(str(child.resolve()))
+                digest = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+                if f"_anon:{digest}" == key:
+                    shutil.rmtree(child, ignore_errors=True)
+                    break
+            except Exception:
+                continue
+
+    @staticmethod
+    async def _apply_cdp_locality_alignment(page: Any, identity: Identity) -> None:
+        """通过引擎级 CDP Emulation 将系统 Chrome 页面时区/语言/经纬度对齐至账号代理出口地。
+        不注入任何 JS 原型补丁，也不启用 Runtime.enable。"""
+        ctx = getattr(page, "context", None)
+        new_cdp = getattr(ctx, "new_cdp_session", None) if ctx is not None else None
+        if not callable(new_cdp):
+            return
+        tz = str(getattr(identity, "timezone_id", "") or "").strip()
+        loc = str(getattr(identity, "locale", "") or "").strip()
+        has_geo = bool(getattr(identity, "geo_lat", 0.0) or getattr(identity, "geo_lon", 0.0))
+        if not (tz or loc or has_geo):
+            return
+        cdp = None
+        try:
+            cdp = await new_cdp(page)
+            if tz:
+                with suppress(Exception):
+                    await cdp.send("Emulation.setTimezoneOverride", {"timezoneId": tz})
+            if loc:
+                with suppress(Exception):
+                    await cdp.send("Emulation.setLocaleOverride", {"locale": loc.replace("-", "_")})
+            if has_geo and str(getattr(identity, "fp_geolocation_permission", "allow")).lower() != "deny":
+                geo = identity.geolocation
+                with suppress(Exception):
+                    await cdp.send("Emulation.setGeolocationOverride", {
+                        "latitude": float(geo["latitude"]),
+                        "longitude": float(geo["longitude"]),
+                        "accuracy": float(geo.get("accuracy", 60)),
+                    })
+        except Exception:
+            pass
+        finally:
+            if cdp is not None:
+                with suppress(Exception):
+                    await cdp.detach()
 
     def _forget_closed_context(self, ctx: BrowserContext) -> None:
         """Drop cache entries when callers close a managed context directly."""
@@ -1355,9 +1455,7 @@ class BrowserManager:
             runtime_id = (
                 self.effective_fingerprint_runtime_id(identity)
                 if effective_backend == FINGERPRINT_CHROMIUM_BACKEND else "")
-            plan = (self._xhs_proxy_plan(identity)
-                    if identity.platform == "xhs"
-                    else try_proxy_plan(identity.proxy))
+            plan = self._strict_proxy_plan(identity)
             proxy_signature = plan.signature if plan else "direct"
             signature = self._context_signature(
                 identity, effective_backend, runtime_id, proxy_signature)
@@ -1394,10 +1492,8 @@ class BrowserManager:
                     else:
                         ctx = session.context
                         await self._capture_context_ua(ctx, identity)
-                        if plan is not None and plan.scheme in {"http", "https"} \
-                                and plan.authenticated:
-                            session.auth_controller = CdpProxyAuthController(
-                                ctx, plan)
+                        for init_pg in list(getattr(ctx, "pages", ()) or ()):
+                            await self._apply_cdp_locality_alignment(init_pg, identity)
                         await self._bridge_identity_cookies(ctx, identity)
                         self._cdp_sessions[key] = session
                         self._backend_by_key[key] = "cdp"
@@ -1432,8 +1528,7 @@ class BrowserManager:
         """用账号真实 BrowserContext 探测出口，不经独立 HTTP 客户端。"""
         if not self.browser_exit_probe_url:
             raise RuntimeError("未配置 browser_exit_probe_url")
-        ctx = await self.context_for(identity)
-        page = await ctx.new_page()
+        page = await self.new_page(identity, block_media=True)
         try:
             response = await page.goto(
                 self.browser_exit_probe_url, wait_until="domcontentloaded",
@@ -1523,10 +1618,11 @@ class BrowserManager:
             await self.close_context(identity.key)
             ctx = await self.context_for(identity)
             page = await ctx.new_page()
-        session = self._cdp_sessions.get(identity.key)
-        controller = getattr(session, "auth_controller", None)
-        if controller is not None:
-            await controller.install(page)
+        if (
+            self.effective_browser_backend(identity) == LOCAL_BACKEND
+            and identity.identity_mode == "native"
+        ):
+            await self._apply_cdp_locality_alignment(page, identity)
         if block_media and identity.platform not in {"xhs", "rednote"}:
             async def _route(route):
                 if route.request.resource_type in ("image", "media", "font"):
@@ -1577,12 +1673,9 @@ class BrowserManager:
     async def _visible_task_page(self, identity: Identity):
         """Reuse the account's owned task tab before creating a CDP page.
 
-        Fingerprint Chromium treats the first navigation of its native startup
-        tab differently from a tab created immediately through ``new_page``.
-        Xiaohongshu can redirect that newly-created automation tab to device
-        verification while the startup tab reaches the homepage normally.
-        Reusing only an untouched ``about:blank`` tab also avoids taking over a
-        page that the user already opened manually.
+        Tracks task-tab ownership strictly in Python memory (never writing any
+        marker string to ``window.name`` in the page's JavaScript realm, which
+        would otherwise be readable by first-party anti-bot scripts).
         """
         ctx = await self.context_for(identity)
         owned = self._task_pages.get(identity.key)
@@ -1593,29 +1686,12 @@ class BrowserManager:
             except Exception:
                 pass
             self._task_pages.pop(identity.key, None)
-        marker = f"creatorhub-task:{identity.key}"
         pages = list(getattr(ctx, "pages", ()) or ())
+        needs_cdp_align = (
+            self.effective_browser_backend(identity) == LOCAL_BACKEND
+            and identity.identity_mode == "native"
+        )
 
-        # CDP disconnect/reconnect creates fresh Python Page objects while the
-        # native profile can remain alive.  Recover the task tab by its durable
-        # window.name marker instead of opening another /chat tab on every
-        # application restart.
-        for candidate in pages:
-            try:
-                if candidate.is_closed():
-                    continue
-                candidate_marker = await candidate.evaluate("window.name")
-                if candidate_marker != marker:
-                    continue
-            except Exception:
-                continue
-            self._task_pages[identity.key] = candidate
-            return candidate
-
-        # Compatibility cleanup for tabs created before the marker existed.
-        # The background DM observer owns the exact /chat landing page; adopt
-        # one restored copy and close only identical duplicates.  User-opened
-        # conversations (/chat/<id>) and unrelated XHS pages are untouched.
         restored_chat_pages = []
         for candidate in pages:
             try:
@@ -1630,27 +1706,23 @@ class BrowserManager:
             for duplicate in restored_chat_pages[:-1]:
                 with suppress(Exception):
                     await duplicate.close()
-            with suppress(Exception):
-                await candidate.evaluate("(name) => { window.name = name; }", marker)
+            if needs_cdp_align:
+                await self._apply_cdp_locality_alignment(candidate, identity)
             self._task_pages[identity.key] = candidate
             return candidate
+
         for candidate in pages:
             try:
                 if candidate.url != "about:blank" or candidate.is_closed():
                     continue
             except Exception:
                 continue
-            session = self._cdp_sessions.get(identity.key)
-            controller = getattr(session, "auth_controller", None)
-            if controller is not None:
-                await controller.install(candidate)
-            with suppress(Exception):
-                await candidate.evaluate("(name) => { window.name = name; }", marker)
+            if needs_cdp_align:
+                await self._apply_cdp_locality_alignment(candidate, identity)
             self._task_pages[identity.key] = candidate
             return candidate
+
         page = await self.new_page(identity, block_media=False)
-        with suppress(Exception):
-            await page.evaluate("(name) => { window.name = name; }", marker)
         self._task_pages[identity.key] = page
         return page
 

@@ -64,8 +64,13 @@ async def _xhs_profile(state: str, proxy: str = "", *,
     cookie_str = xhs_cookie_str_from_state(state)
     if not has_a1(cookie_str):
         return {}, "logged_out"
-    client = XhsApiClient(cookie_str, user_agent or app_runtime.cfg.engine.user_agent,
-                          timeout=app_runtime.cfg.engine.request_timeout_seconds, proxy=proxy)
+    client = XhsApiClient(
+        cookie_str,
+        user_agent or app_runtime.cfg.engine.user_agent,
+        timeout=app_runtime.cfg.engine.request_timeout_seconds,
+        proxy=proxy,
+        storage_state=state,
+    )
     try:
         me = await client.self_info()
     except XhsApiError as exc:
@@ -171,12 +176,20 @@ async def _enrich_account_profile(account_id: int, state: str, *,
     # XHS 创作者号:用创作平台「我的信息」拿资料 + 判活(www 接口对创作态拿不到)
     if platform == "xhs" and creator_state:
         from app.platforms.xhs import creator_profile, creator_check
+        xhs_ua = _direct_request_ua(identity) if identity is not None else (a0.ua or app_runtime.cfg.engine.user_agent)
         profile_error = ""
-        if detailed:
-            prof, profile_error = await creator_profile(
-                creator_state, proxy=proxy, preserve_error=True)
-        else:
-            prof = await creator_profile(creator_state, proxy=proxy)
+        try:
+            if detailed:
+                prof, profile_error = await creator_profile(
+                    creator_state, proxy=proxy, preserve_error=True, user_agent=xhs_ua)
+            else:
+                prof = await creator_profile(creator_state, proxy=proxy, user_agent=xhs_ua)
+        except TypeError:
+            if detailed:
+                prof, profile_error = await creator_profile(
+                    creator_state, proxy=proxy, preserve_error=True)
+            else:
+                prof = await creator_profile(creator_state, proxy=proxy)
         if prof and (prof.get("nickname") or prof.get("douyin_id")):
             with get_session() as s:
                 acc = s.get(DouyinAccount, account_id)
@@ -199,11 +212,18 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 status = "invalid" if category == RiskCategory.AUTH else "error"
                 return _done(status, profile_error)
         check_error = ""
-        if detailed:
-            chk, check_error = await creator_check(
-                creator_state, proxy=proxy, preserve_error=True)
-        else:
-            chk = await creator_check(creator_state, proxy=proxy)
+        try:
+            if detailed:
+                chk, check_error = await creator_check(
+                    creator_state, proxy=proxy, preserve_error=True, user_agent=xhs_ua)
+            else:
+                chk = await creator_check(creator_state, proxy=proxy, user_agent=xhs_ua)
+        except TypeError:
+            if detailed:
+                chk, check_error = await creator_check(
+                    creator_state, proxy=proxy, preserve_error=True)
+            else:
+                chk = await creator_check(creator_state, proxy=proxy)
         if chk is True:
             with get_session() as s:
                 acc = s.get(DouyinAccount, account_id)
@@ -250,9 +270,18 @@ async def _enrich_account_profile(account_id: int, state: str, *,
             bmode = str(getattr(app_runtime.cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid").lower()
             u, err = None, ""
             if bmode in {"api", "hybrid"} and state:
-                bcli = BilibiliClient(
-                    state, a0.ua or app_runtime.cfg.engine.user_agent,
-                    proxy=proxy, timeout=app_runtime.cfg.engine.request_timeout_seconds)
+                bcli_kwargs = {
+                    "proxy": proxy,
+                    "timeout": app_runtime.cfg.engine.request_timeout_seconds,
+                    "account_seed": a0.fp_seed or str(a0.id or ""),
+                }
+                try:
+                    bcli = BilibiliClient(
+                        state, a0.ua or app_runtime.cfg.engine.user_agent, **bcli_kwargs)
+                except TypeError:
+                    bcli_kwargs.pop("account_seed", None)
+                    bcli = BilibiliClient(
+                        state, a0.ua or app_runtime.cfg.engine.user_agent, **bcli_kwargs)
                 async with bcli.session_scope():
                     u, err = await bcli.fetch_self_profile()
             auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
@@ -283,9 +312,15 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 except Exception as exc:
                     err = exc
             if not u and creator_state and rmode in {"api", "hybrid"}:
-                prof, perr = await rednote_creator_profile(
-                    creator_state, proxy=proxy, preserve_error=True
-                )
+                rn_ua = _direct_request_ua(identity) if identity is not None else (a0.ua or app_runtime.cfg.engine.user_agent)
+                try:
+                    prof, perr = await rednote_creator_profile(
+                        creator_state, proxy=proxy, preserve_error=True, user_agent=rn_ua
+                    )
+                except TypeError:
+                    prof, perr = await rednote_creator_profile(
+                        creator_state, proxy=proxy, preserve_error=True
+                    )
                 if prof and (prof.get("nickname") or prof.get("douyin_id")):
                     with get_session() as s:
                         acc = s.get(DouyinAccount, account_id)

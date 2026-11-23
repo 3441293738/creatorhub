@@ -20,6 +20,7 @@ from app.platforms.rednote import RednoteApiClient, cookie_str_from_state as red
 from app.platforms.tiktok import parse_tiktok_aweme
 from app.platforms.twitter import TwitterClient, parse_twitter_aweme
 from app.platforms.xhs import XhsApiClient, cookie_str_from_state, has_a1
+from app.profiles import pick_ephemeral_proxy
 from app.risk import RiskCategory, classify_platform_error
 from app.transport_matrix import douyin_client_environment
 from app.engine.collection_comments import CollectionCommentsMixin
@@ -179,12 +180,16 @@ class KeywordCollector(
         if not keywords:
             raise RuntimeError("采集任务没有可执行来源")
 
-        identity = (
-            self.browser.identity_for(account)
-            if account is not None
-            else self.browser.anon_identity()
-        )
-        proxy = (account.proxy or "") if account is not None else ""
+        if account is not None:
+            identity = self.browser.identity_for(account)
+            proxy = account.proxy or ""
+        else:
+            with get_session() as s:
+                proxy = pick_ephemeral_proxy(s, self.cfg, platform=job.platform)
+            try:
+                identity = self.browser.anon_identity(proxy=proxy, platform=job.platform)
+            except TypeError:
+                identity = self.browser.anon_identity()
         douyin_client = None
         xhs_client = None
         if job.platform == "douyin":
@@ -198,8 +203,12 @@ class KeywordCollector(
             if not has_a1(cookie):
                 raise RuntimeError("小红书登录态缺少 a1，请重新扫码登录")
             xhs_client = XhsApiClient(
-                cookie, self._direct_request_ua(identity),
-                timeout=self.cfg.engine.request_timeout_seconds, proxy=proxy)
+                cookie,
+                self._direct_request_ua(identity),
+                timeout=self.cfg.engine.request_timeout_seconds,
+                proxy=proxy,
+                storage_state=account.storage_state,
+            )
 
         if job.platform == "douyin":
             mode = str(getattr(

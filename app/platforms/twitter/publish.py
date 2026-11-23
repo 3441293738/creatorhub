@@ -2,7 +2,7 @@
 
 安全不变量：
 - 仅在实际触发最终 `Post` (`tweetButton`) 提交动作或监测到 `CreateTweet` 请求发出时才标记 `submitted` 并调用 `notify_submit`；
-- 自动收起 `#话题` / `@提及` 联想下拉遮罩 (`typeaheadDropdown` / `#layers` 透明背景层)，并在透明遮罩拦截指针时安全回退原生 DOM `.click()`（确保单次点击不重复提交）；
+- 自动收起 `#话题` / `@提及` 联想下拉遮罩 (`typeaheadDropdown` / `#layers` 透明背景层)，通过 `HumanInteractionEngine` 执行真实硬件轨迹点击（确保单次可信点击不重复提交）；
 - 优先拦截 `CreateTweet` / `CreateNoteTweet` GraphQL 响应提取精确 `rest_id` 避免主页首帖竞态；
 - 绝不自动点击任何验证码/挑战框，遇到 `/account/access` 立即返回 `verification_required:` 交由风控中心托管。
 """
@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from ...browser.human_interaction import DEFAULT_HUMAN_ENGINE, human_wait
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
 from .._submit import notify_stage as _notify_stage
@@ -93,7 +94,7 @@ async def _find_first_visible(page, selectors: Sequence[str], timeout_ms: int = 
                     return loc
             except Exception:
                 continue
-        await page.wait_for_timeout(350)
+        await human_wait(page, 350)
     return None
 
 
@@ -109,33 +110,44 @@ async def _dismiss_compose_overlays(page) -> None:
         ).first
         if await typeahead.count() and await typeahead.is_visible():
             await page.keyboard.press("Escape")
-            await page.wait_for_timeout(300)
+            await human_wait(page, 300)
     except Exception:
         pass
 
     try:
-        # 2) 若存在首次发帖引导提示框（如 Unlock more on X / Automated labels / Got it），点击知道了/关闭按钮（排除放弃草稿按钮）
-        dismissed = await page.evaluate(
-            """() => {
-                const dialog = document.querySelector('[data-testid="sheetDialog"]');
-                if (!dialog) return false;
-                const safeWords = ['got it', 'ok', 'close', 'maybe later', 'not now', '知道了', '好的', '关闭', '稍后', '暂不'];
-                const dangerWords = ['discard', 'delete', 'cancel', '放弃', '删除'];
-                for (const btn of dialog.querySelectorAll('button, [role="button"]')) {
-                    const tid = (btn.getAttribute('data-testid') || '').toLowerCase();
-                    if (tid.includes('confirmationsheetcancel') || tid.includes('discard')) continue;
-                    const txt = (btn.innerText || btn.getAttribute('aria-label') || '').trim().toLowerCase();
-                    if (!txt || dangerWords.some(w => txt.includes(w))) continue;
-                    if (safeWords.some(w => txt === w || txt.includes(w))) {
-                        btn.click();
-                        return true;
-                    }
-                }
-                return false;
-            }"""
-        )
-        if dismissed:
-            await page.wait_for_timeout(400)
+        # 2) 若存在首次发帖引导提示框（如 Unlock more on X / Automated labels / Got it），使用拟人轨迹点击知道了/关闭按钮（排除放弃草稿按钮）
+        dialog = page.locator('[data-testid="sheetDialog"]').first
+        if await dialog.count() and await dialog.is_visible():
+            safe_words = (
+                "got it",
+                "ok",
+                "close",
+                "maybe later",
+                "not now",
+                "知道了",
+                "好的",
+                "关闭",
+                "稍后",
+                "暂不",
+            )
+            danger_words = ("discard", "delete", "cancel", "放弃", "删除")
+            btns = dialog.locator('button, [role="button"]')
+            for idx in range(min(await btns.count(), 12)):
+                cand = btns.nth(idx)
+                if not await cand.is_visible():
+                    continue
+                tid = str(await cand.get_attribute("data-testid") or "").lower()
+                if "confirmationsheetcancel" in tid or "discard" in tid:
+                    continue
+                txt = str(
+                    (await cand.inner_text()) or (await cand.get_attribute("aria-label")) or ""
+                ).strip().lower()
+                if not txt or any(w in txt for w in danger_words):
+                    continue
+                if any(txt == w or w in txt for w in safe_words):
+                    await DEFAULT_HUMAN_ENGINE.click_locator(cand, page=page, timeout=2500)
+                    await human_wait(page, 400)
+                    break
     except Exception:
         pass
 
@@ -144,7 +156,7 @@ async def _wait_for_media_upload_ready(page, *, has_video: bool, timeout_ms: int
     """等待附件预览区的上传进度条消失，确保视频/图片已在 X 服务端完成上传与处理。"""
     deadline = asyncio.get_running_loop().time() + max(3.0, timeout_ms / 1000.0)
     # 先给前端渲染附件预览留出短暂时间
-    await page.wait_for_timeout(1200 if has_video else 600)
+    await human_wait(page, 1200 if has_video else 600)
     while asyncio.get_running_loop().time() < deadline:
         try:
             uploading = await page.evaluate(
@@ -163,7 +175,7 @@ async def _wait_for_media_upload_ready(page, *, has_video: bool, timeout_ms: int
                 return
         except Exception:
             return
-        await page.wait_for_timeout(800)
+        await human_wait(page, 800)
 
 
 async def _click_tweet_submit_once(
@@ -176,36 +188,26 @@ async def _click_tweet_submit_once(
     """单次安全点击发推/回复按钮：
 
     - 先收起可能遮挡按钮的 `#layers` 联想浮层；
-    - 尝试标准指针点击；若因透明遮罩拦截指针（`intercepts pointer events`）在预检阶段超时且尚未发出任何请求，
-      立即在按钮节点上执行一次原生 DOM `.click()`（不会产生重复提交）；
+    - 校验按钮处于可用状态后，通过 `DEFAULT_HUMAN_ENGINE.click_locator` 派发真实硬件鼠标轨迹与按压点击（严禁合成 JS `el.click()`）；
     - 仅在点击动作实际送达或请求已发出时标记 `submitted`，避免预检失败误锁为 `write_uncertain`。
     """
     await _dismiss_compose_overlays(page)
+    enabled = await submit_btn.evaluate(
+        """el => !el.disabled && el.getAttribute('aria-disabled') !== 'true'"""
+    )
+    if not enabled:
+        raise RuntimeError("X 发送按钮仍处于禁用状态（可能字数超限或媒体处理尚未完成）")
     try:
-        await submit_btn.click(timeout=3500)
+        await DEFAULT_HUMAN_ENGINE.click_locator(submit_btn, page=page, timeout=5000)
         res = mark_submitted()
         if inspect.isawaitable(res):
             await res
         return
-    except Exception as click_exc:
-        msg = str(click_exc)
+    except Exception:
         if was_request_sent():
             res = mark_submitted()
             if inspect.isawaitable(res):
                 await res
-            return
-        # Playwright 在真正派发鼠标事件前的命中测试被透明遮罩拦截：此时尚未发生任何点击，安全执行一次 DOM click
-        if "intercepts pointer events" in msg or "Timeout" in msg:
-            await _dismiss_compose_overlays(page)
-            enabled = await submit_btn.evaluate(
-                """el => !el.disabled && el.getAttribute('aria-disabled') !== 'true'"""
-            )
-            if not enabled:
-                raise RuntimeError("X 发送按钮仍处于禁用状态（可能字数超限或媒体处理尚未完成）") from click_exc
-            res = mark_submitted()
-            if inspect.isawaitable(res):
-                await res
-            await submit_btn.evaluate("el => el.click()")
             return
         raise
 
@@ -219,14 +221,14 @@ async def _apply_reply_permission(page, permission: str) -> None:
     if trigger is None:
         return
     try:
-        await trigger.click(timeout=2500)
-        await page.wait_for_timeout(500)
+        await DEFAULT_HUMAN_ENGINE.click_locator(trigger, page=page, timeout=2500)
+        await human_wait(page, 500)
         labels = _REPLY_PERMISSION_LABELS[perm]
         for label in labels:
             item = page.locator(f'div[role="menuitem"]:has-text("{label}")').first
             if await item.count() and await item.is_visible():
-                await item.click(timeout=2000)
-                await page.wait_for_timeout(400)
+                await DEFAULT_HUMAN_ENGINE.click_locator(item, page=page, timeout=2000)
+                await human_wait(page, 400)
                 return
         await page.keyboard.press("Escape")
     except Exception:
@@ -252,19 +254,20 @@ async def _post_first_comment_reply(
         txt = txt + " "
     try:
         await page.goto(tweet_link, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(1800)
+        await human_wait(page, 1800)
         reply_box = await _find_first_visible(page, COMPOSE_TEXTBOX_SELECTORS, timeout_ms=8000)
         if reply_box is None:
             reply_btn = page.locator('button[data-testid="reply"]').first
             if await reply_btn.count():
-                await reply_btn.click(timeout=3000)
-                await page.wait_for_timeout(800)
+                await DEFAULT_HUMAN_ENGINE.click_locator(reply_btn, page=page, timeout=3000)
+                await human_wait(page, 800)
                 reply_box = await _find_first_visible(page, COMPOSE_TEXTBOX_SELECTORS, timeout_ms=6000)
         if reply_box is None:
             return
-        await reply_box.click(timeout=2500)
-        await page.keyboard.insert_text(txt)
-        await page.wait_for_timeout(500)
+        await DEFAULT_HUMAN_ENGINE.type_text(
+            reply_box, txt, page=page, clear=False, timeout=4000
+        )
+        await human_wait(page, 500)
         await _dismiss_compose_overlays(page)
         send_btn = await _find_first_visible(page, COMPOSE_SUBMIT_BUTTON_SELECTORS, timeout_ms=6000)
         if send_btn is not None:
@@ -274,7 +277,7 @@ async def _post_first_comment_reply(
                 mark_submitted=lambda: None,
                 was_request_sent=lambda: False,
             )
-            await page.wait_for_timeout(2000)
+            await human_wait(page, 2000)
     except Exception:
         pass
 
@@ -424,7 +427,7 @@ async def publish_twitter(
         try:
             await _notify_stage(on_stage, "正在打开 X 发推编辑器…")
             await page.goto(COMPOSE_URL, wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_timeout(1500)
+            await human_wait(page, 1500)
 
             cur_url = str(page.url or "").lower()
             if "/login" in cur_url or "/i/flow/login" in cur_url:
@@ -438,7 +441,7 @@ async def publish_twitter(
             textbox = await _find_first_visible(page, COMPOSE_TEXTBOX_SELECTORS, timeout_ms=20000)
             if textbox is None:
                 await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=35000)
-                await page.wait_for_timeout(1500)
+                await human_wait(page, 1500)
                 cur_url = str(page.url or "").lower()
                 if "/login" in cur_url or "/i/flow/login" in cur_url:
                     return False, "", "logged_out:X 浏览器会话未登录，请重新登录"
@@ -447,8 +450,8 @@ async def publish_twitter(
                 await _dismiss_compose_overlays(page)
                 new_btn = page.locator('[data-testid="SideNav_NewTweet_Button"]').first
                 if await new_btn.count() and await new_btn.is_visible():
-                    await new_btn.click(timeout=3000)
-                    await page.wait_for_timeout(1000)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(new_btn, page=page, timeout=3000)
+                    await human_wait(page, 1000)
                 textbox = await _find_first_visible(page, COMPOSE_TEXTBOX_SELECTORS, timeout_ms=12000)
 
             if textbox is None:
@@ -456,14 +459,14 @@ async def publish_twitter(
 
             if caption:
                 await _notify_stage(on_stage, "正在输入推文正文与话题…")
-                await textbox.click(timeout=3000)
-                await page.wait_for_timeout(250)
                 # 末尾如果是 #话题 或 @提及，追加一个空格让编辑器立即闭合实体联想框，防止遮挡 Post 按钮
                 text_to_type = caption
                 if _TRAILING_ENTITY_RE.search(text_to_type) and twitter_weighted_length(text_to_type) + 1 <= cap_limit:
                     text_to_type = text_to_type + " "
-                await page.keyboard.insert_text(text_to_type)
-                await page.wait_for_timeout(500)
+                await DEFAULT_HUMAN_ENGINE.type_text(
+                    textbox, text_to_type, page=page, clear=False, timeout=5000
+                )
+                await human_wait(page, 500)
                 await _dismiss_compose_overlays(page)
 
             if paths:
@@ -477,7 +480,7 @@ async def publish_twitter(
                 if file_input is None:
                     return False, "", "未找到 X 发推媒体上传控件(input[type=file])"
                 await file_input.set_input_files([str(p) for p in paths])
-                await page.wait_for_timeout(1500)
+                await human_wait(page, 1500)
 
             if reply_perm != "everyone":
                 await _notify_stage(on_stage, "正在设置推文回复权限…")
@@ -504,7 +507,7 @@ async def publish_twitter(
                         return False, "", (upload_err or dom_up_err)
                     if media_finalized:
                         break
-                    await page.wait_for_timeout(700)
+                    await human_wait(page, 700)
                 await _wait_for_media_upload_ready(page, has_video=has_video, timeout_ms=10_000)
                 if upload_err:
                     return False, "", upload_err
@@ -564,7 +567,7 @@ async def publish_twitter(
                 if any(p in cur_after for p in ACCOUNT_LOCKED_URL_PARTS):
                     return False, "", "verification_required:X 提交后触发安全挑战(/account/access)"
 
-                await page.wait_for_timeout(1000)
+                await human_wait(page, 1000)
 
             return (
                 False,

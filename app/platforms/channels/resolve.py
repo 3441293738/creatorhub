@@ -22,7 +22,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-import httpx
+from curl_cffi.requests import AsyncSession
+
+from ...netfp import impersonate_for_ua
 
 PREVIEW_API = "https://channels.weixin.qq.com/finder-preview/api/feed/get_feed_info"
 
@@ -330,10 +332,14 @@ async def fetch_finder_preview_info(
         "Referer": referer,
         "User-Agent": ua,
     }
-    async with httpx.AsyncClient(
+    from ...netfp import curl_proxy_url
+    norm_proxy = curl_proxy_url(proxy) or None
+    async with AsyncSession(
+        impersonate=impersonate_for_ua(ua),
+        trust_env=False,
         timeout=timeout,
-        follow_redirects=True,
-        proxy=normalized_proxy or None,
+        allow_redirects=True,
+        proxy=norm_proxy,
     ) as client:
         resp = await client.post(api_url, json=payload, headers=headers)
     if resp.status_code == 401:
@@ -526,6 +532,7 @@ async def resolve_channels_creator(
                 object_nonce_id=ref.object_nonce_id,
                 export_id=preview_eid or ref.export_id,
                 share_url=ref.url or text,
+                proxy=proxy,
             )
             if obj:
                 uname, nick, avatar = _extract_creator_from_feed_object(obj)

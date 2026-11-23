@@ -6,9 +6,10 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 from urllib.parse import urlsplit
 
-import httpx
+from curl_cffi.requests import AsyncSession
 
 from ...browser.manager import normalize_proxy
+from ...netfp import impersonate_for_ua
 from .urls import tweet_url
 
 TWITTER_HOSTS = frozenset({
@@ -232,23 +233,28 @@ async def resolve_twitter_short_url(
     if host not in SHORT_HOSTS:
         return candidate
 
+    ua = (user_agent or "").strip() or (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
     headers = {
-        "User-Agent": user_agent or (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": ua,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
-    norm_proxy = normalize_proxy(proxy) if proxy else ""
+    from ...netfp import curl_proxy_url
+    norm_proxy = curl_proxy_url(proxy) if proxy else ""
     try:
-        async with httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=max(3.0, float(timeout)),
-            headers=headers,
-            proxy=norm_proxy or None,
+        async with AsyncSession(
+            impersonate=impersonate_for_ua(ua),
             trust_env=False,
         ) as cli:
-            resp = await cli.get(candidate)
+            resp = await cli.get(
+                candidate,
+                headers=headers,
+                proxy=norm_proxy or None,
+                timeout=max(3.0, float(timeout)),
+                allow_redirects=True,
+            )
             final = str(resp.url or candidate)
             return final
     except Exception:

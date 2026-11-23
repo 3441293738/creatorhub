@@ -25,8 +25,12 @@ class CommentWatchPlatformsMixin:
         if not has_a1(cookie_str):
             return None
         return XhsApiClient(
-            cookie_str, self._direct_request_ua(identity),
-                            timeout=self.cfg.engine.request_timeout_seconds, proxy=proxy)
+            cookie_str,
+            self._direct_request_ua(identity),
+            timeout=self.cfg.engine.request_timeout_seconds,
+            proxy=proxy,
+            storage_state=state,
+        )
 
     async def _xhs_fetch_comments(self, client, note_id, xsec_token, known) -> list:
         try:

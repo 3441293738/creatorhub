@@ -15,6 +15,13 @@ from ..platforms.bilibili.extract import (
     parse_bili_comment,
     parse_bili_self_user,
 )
+from .human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from .identity import Identity
 from .manager import BrowserManager
 
@@ -38,7 +45,7 @@ async def fetch_bili_self_profile(
                         return await r.json();
                     } catch (_) { return null; }
                 };
-                const nav = await getJson('https://api.bilibili.com/x/web-interface/nav?_t=' + Date.now());
+                const nav = await getJson('https://api.bilibili.com/x/web-interface/nav');
                 if (!nav) return { error: 'nav_network_error' };
                 if (nav.code === -101 || !nav.data || !nav.data.isLogin) {
                     return { error: 'logged_out' };
@@ -116,12 +123,12 @@ async def fetch_bili_videos(
             wait_until="domcontentloaded",
             timeout=35000,
         )
-        await page.wait_for_timeout(2500)
+        await human_wait(page, 2500)
         for _ in range(max(1, int(max_scrolls))):
             if known and collected and all(k in known for k in collected):
                 break
-            await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(1200)
+            await human_scroll(page)
+            await human_wait(page, 900)
             next_btn = page.locator(
                 ".vui_pagenation--btn-side:has-text('下一页'), .be-pager-next:not(.be-pager-disabled)"
             ).first
@@ -129,8 +136,8 @@ async def fetch_bili_videos(
                 if await next_btn.count() and await next_btn.is_visible():
                     cls = str(await next_btn.get_attribute("class") or "")
                     if "disabled" not in cls:
-                        await next_btn.click(timeout=2000)
-                        await page.wait_for_timeout(1500)
+                        await DEFAULT_HUMAN_ENGINE.click_locator(next_btn, page=page, timeout=3000)
+                        await human_wait(page, 1500)
                     else:
                         break
                 else:
@@ -220,17 +227,17 @@ async def fetch_bili_search(
             wait_until="domcontentloaded",
             timeout=35000,
         )
-        await page.wait_for_timeout(2500)
+        await human_wait(page, 2500)
         for _ in range(max(1, int(max_scrolls))):
-            await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(1200)
+            await human_scroll(page)
+            await human_wait(page, 900)
             next_btn = page.locator(".vui_pagenation--btn-side:has-text('下一页')").first
             try:
                 if await next_btn.count() and await next_btn.is_visible():
                     cls = str(await next_btn.get_attribute("class") or "")
                     if "disabled" not in cls:
-                        await next_btn.click(timeout=2000)
-                        await page.wait_for_timeout(1500)
+                        await DEFAULT_HUMAN_ENGINE.click_locator(next_btn, page=page, timeout=3000)
+                        await human_wait(page, 1500)
                     else:
                         break
                 else:
@@ -289,12 +296,12 @@ async def fetch_bili_comments(
     page.on("response", on_response)
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=35000)
-        await page.wait_for_timeout(2200)
+        await human_wait(page, 2200)
         for _ in range(max(2, min(8, (max_count // 15) + 2))):
             if len(collected) >= max_count:
                 break
-            await page.evaluate("() => window.scrollBy(0, 1200)")
-            await page.wait_for_timeout(1200)
+            await human_scroll(page, distance=820)
+            await human_wait(page, 900)
         return list(collected.values())[:max_count], ("" if collected else "empty")
     except Exception as exc:
         return list(collected.values())[:max_count], f"browser:{type(exc).__name__}:{exc}"
@@ -353,12 +360,12 @@ async def post_bili_comment(
     page.on("response", on_response)
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=35000)
-        await page.wait_for_timeout(2500)
+        await human_wait(page, 2500)
         if "passport.bilibili.com" in page.url or "/login" in page.url:
             return False, "logged_out:B 站账号未登录"
 
-        await page.evaluate("() => window.scrollBy(0, 800)")
-        await page.wait_for_timeout(1800)
+        await human_scroll(page, distance=560)
+        await human_wait(page, 1400)
 
         editor = None
         for sel in (
@@ -375,12 +382,8 @@ async def post_bili_comment(
         if editor is None:
             return False, "未找到 B 站评论输入框（可能稿件关闭评论或账号未登录）"
 
-        await editor.click(timeout=3000)
-        try:
-            await editor.fill(body, timeout=3000)
-        except Exception:
-            await page.keyboard.type(body, delay=15)
-        await page.wait_for_timeout(400)
+        await DEFAULT_HUMAN_ENGINE.type_text(editor, body, page=page, timeout=4000)
+        await human_wait(page, 400)
 
         send_btn = None
         for bsel in (
@@ -397,14 +400,14 @@ async def post_bili_comment(
 
         await notify_submit(on_submit)
         submitted["clicked"] = True
-        await send_btn.click(timeout=4000)
+        await DEFAULT_HUMAN_ENGINE.click_locator(send_btn, page=page, timeout=4000)
 
         for _ in range(20):
             if reply_resp["seen"]:
                 if reply_resp["ok"]:
                     return True, ""
                 return False, f"write_uncertain:评论接口返回({reply_resp['message']})"
-            await page.wait_for_timeout(500)
+            await human_wait(page, 500)
         return False, "write_uncertain:已点击评论发布但未收到 /x/v2/reply/add 确认"
     except asyncio.CancelledError:
         raise
@@ -417,6 +420,7 @@ async def post_bili_comment(
         except Exception:
             pass
         try:
-            await ctx.close()
+            if not page.is_closed():
+                await page.close()
         except Exception:
             pass

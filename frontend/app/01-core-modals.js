@@ -61,11 +61,23 @@ function localDateTimeValue(value) {
   const pad = n => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
-function safeMediaUrl(value) {
+function safeHttpUrl(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
   try {
     const url = new URL(raw, typeof location === "undefined" ? "http://localhost" : location.href);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    return url.href;
+  } catch (_) { return ""; }
+}
+function safeMediaUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("/api/") || raw.startsWith("blob:") || raw.startsWith("data:image/")) return raw;
+  try {
+    const baseHref = typeof location === "undefined" ? "http://localhost" : location.href;
+    const pageOrigin = typeof location === "undefined" ? "http://localhost" : location.origin;
+    const url = new URL(raw, baseHref);
     if (!["http:", "https:"].includes(url.protocol)) return "";
     const host = (url.hostname || "").toLowerCase();
     const isPreview = typeof document !== "undefined" && document.documentElement?.dataset?.preview === "true";
@@ -75,8 +87,20 @@ function safeMediaUrl(value) {
     if (!isPreview && url.protocol === "https:" && (host.endsWith(".cdninstagram.com") || host.endsWith(".fbcdn.net"))) {
       return `/api/ig-media-thumb?url=${encodeURIComponent(url.href)}`;
     }
+    if (!isPreview && url.origin !== pageOrigin) {
+      return `/api/thumb?url=${encodeURIComponent(url.href)}`;
+    }
     return url.href;
   } catch (_) { return ""; }
+}
+function setHtmlIfChanged(el, nextHtml) {
+  if (!el) return false;
+  const html = String(nextHtml ?? "");
+  if (el._lastHtml === html && el._lastDomHtml === el.innerHTML && el.childNodes.length > 0) return false;
+  el._lastHtml = html;
+  el.innerHTML = html;
+  el._lastDomHtml = el.innerHTML;
+  return true;
 }
 // JSON encoding handles the JS string, then HTML encoding handles the attribute.
 function jsArg(value) { return esc(JSON.stringify(String(value ?? ""))); }

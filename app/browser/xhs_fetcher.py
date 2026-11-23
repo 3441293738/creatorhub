@@ -10,6 +10,13 @@ import re
 import urllib.parse
 from typing import Dict, List, Optional, Set, Tuple
 
+from .human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from .identity import Identity
 from .manager import BrowserManager
 
@@ -601,7 +608,7 @@ async def fetch_xhs_favorite_boards(
                 try:
                     control = page.get_by_text(label, exact=True).first
                     if await control.is_visible(timeout=1200):
-                        await control.click()
+                        await DEFAULT_HUMAN_ENGINE.click_locator(control, page=page, timeout=3000)
                         break
                 except Exception:
                     continue
@@ -648,7 +655,7 @@ async def fetch_xhs_favorites(
                 try:
                     control = page.get_by_text(label, exact=True).first
                     if await control.is_visible(timeout=1200):
-                        await control.click()
+                        await DEFAULT_HUMAN_ENGINE.click_locator(control, page=page, timeout=3000)
                         break
                 except Exception:
                     continue
@@ -660,7 +667,7 @@ async def fetch_xhs_favorites(
                     try:
                         board = page.get_by_text(board_name, exact=True).first
                         if await board.is_visible(timeout=2500):
-                            await board.click()
+                            await DEFAULT_HUMAN_ENGINE.click_locator(board, page=page, timeout=3000)
                             opened = True
                     except Exception:
                         pass
@@ -670,7 +677,7 @@ async def fetch_xhs_favorites(
                         try:
                             board = page.locator(selector).first
                             if await board.is_visible(timeout=1200):
-                                await board.click()
+                                await DEFAULT_HUMAN_ENGINE.click_locator(board, page=page, timeout=3000)
                                 break
                         except Exception:
                             continue

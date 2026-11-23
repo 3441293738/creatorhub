@@ -69,16 +69,24 @@ def bv_to_av(bvid: str) -> int:
     return (tmp & _MASK_CODE) ^ _XOR_CODE
 
 
+_DEFAULT_RESOLVE_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
 async def _follow_b23(text: str, user_agent: str, *, proxy: str = "") -> Optional[str]:
     short = _SHORT_RE.search(text or "")
     if not short:
         return None
-    clean_proxy = normalize_proxy(proxy) or None
+    ua = str(user_agent or "").strip() or _DEFAULT_RESOLVE_UA
+    from ...netfp import curl_proxy_url
+    clean_proxy = curl_proxy_url(proxy) or None
     try:
-        async with AsyncSession(impersonate=impersonate_for_ua(user_agent)) as cli:
+        async with AsyncSession(impersonate=impersonate_for_ua(ua), trust_env=False) as cli:
             r = await cli.get(
                 short.group(0),
-                headers={"User-Agent": user_agent},
+                headers={"User-Agent": ua},
                 proxy=clean_proxy,
                 timeout=15,
                 allow_redirects=True,

@@ -16,7 +16,8 @@ from app import runtime as app_runtime
 from app.api.accounts import _clean_account_tags, _parse_account_tags
 from app.api.publishing import _publish_dict, _publish_title_cap, _validate_non_xhs_publish_files
 from app.browser.backends import ACCOUNT_BROWSER_BACKENDS, LOCAL_BACKEND
-from app.profiles import assign_proxy_from_pool
+from app.browser.manager import normalize_proxy
+from app.profiles import assign_proxy_from_pool, resolve_pool_proxy_row
 from app.db import get_session
 from app.models import (
     AccountActionTask,
@@ -46,6 +47,7 @@ from app.services import login_sessions as login_sessions_service
 from app.services import metadata as metadata_service
 from app.services import proxies as proxies_service
 from app.services import share_downloads as share_downloads_service
+from app.services import thumb_cache
 
 router = APIRouter()
 
@@ -172,12 +174,17 @@ def _account_health_state(
     risk_state: AccountRiskState | None,
     now: datetime,
     same_platform_direct_count: int = 0,
+    same_platform_total_count: int = 0,
+    same_platform_shared_proxy: bool = False,
+    strict_proxy_required: bool = True,
 ) -> str:
     if acc.status == "invalid" or (not has_read_login and not has_creator):
         return "invalid"
-    if acc.proxy and acc.proxy_status in {"bad", "auth_error", "blocked"}:
+    if acc.proxy and acc.proxy_status in {"bad", "auth_error", "blocked", "disabled", "drifted"}:
         return "proxy_issue"
     if acc.proxy and acc.fp_source_ip and acc.exit_ip and acc.fp_source_ip != acc.exit_ip:
+        return "proxy_issue"
+    if same_platform_shared_proxy:
         return "proxy_issue"
     if risk_state and (
         risk_state.manual_review_required
@@ -187,7 +194,14 @@ def _account_health_state(
         return "risk"
     if acc.write_paused_until and acc.write_paused_until > now:
         return "risk"
-    if not acc.proxy and same_platform_direct_count > 1:
+    if not acc.proxy and (
+        (
+            strict_proxy_required
+            and getattr(acc, "require_proxy", True)
+            and (acc.platform in {"tiktok", "rednote", "instagram", "twitter"} or same_platform_total_count > 1)
+        )
+        or same_platform_direct_count > 1
+    ):
         return "no_proxy"
     return "healthy"
 
@@ -219,11 +233,23 @@ async def matrix_overview(platform: str = ""):
         fans_deltas = _compute_fans_deltas(session, all_ids)
         rollups = _compute_task_rollups(session, all_ids, now)
 
-        # 同平台未配代理计数（多号直连才算关联风险）
+        # 同平台未配代理计数与同平台共享代理/出口 IP 计数
         direct_by_pf: dict[str, int] = {}
+        total_by_pf: dict[str, int] = {}
+        same_pf_proxy_counts: dict[tuple[str, str], int] = {}
+        same_pf_exit_counts: dict[tuple[str, str], int] = {}
+        strict_proxy = bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True))
         for acc in all_accounts:
+            total_by_pf[acc.platform] = total_by_pf.get(acc.platform, 0) + 1
             if not acc.proxy:
                 direct_by_pf[acc.platform] = direct_by_pf.get(acc.platform, 0) + 1
+            else:
+                np = normalize_proxy(acc.proxy)
+                if np:
+                    same_pf_proxy_counts[(acc.platform, np)] = same_pf_proxy_counts.get((acc.platform, np), 0) + 1
+            ex_ip = str(acc.exit_ip or "").strip()
+            if ex_ip:
+                same_pf_exit_counts[(acc.platform, ex_ip)] = same_pf_exit_counts.get((acc.platform, ex_ip), 0) + 1
 
         # 未读私信按账号与平台汇总
         unread_by_acc: dict[int, int] = {}
@@ -355,6 +381,12 @@ async def matrix_overview(platform: str = ""):
             if not entry:
                 continue
             has_read, has_creator = _account_login_flags(acc)
+            np = normalize_proxy(acc.proxy) if acc.proxy else ""
+            ex_ip = str(acc.exit_ip or "").strip()
+            shared_proxy = bool(
+                (np and same_pf_proxy_counts.get((acc.platform, np), 0) > 1)
+                or (ex_ip and same_pf_exit_counts.get((acc.platform, ex_ip), 0) > 1)
+            )
             h_state = _account_health_state(
                 acc,
                 has_read_login=has_read,
@@ -362,6 +394,9 @@ async def matrix_overview(platform: str = ""):
                 risk_state=risk_map.get(acc.id or 0),
                 now=now,
                 same_platform_direct_count=direct_by_pf.get(acc.platform, 0),
+                same_platform_total_count=total_by_pf.get(acc.platform, 0),
+                same_platform_shared_proxy=shared_proxy,
+                strict_proxy_required=strict_proxy,
             )
             entry["accounts_total"] += 1
             if h_state == "invalid":
@@ -429,6 +464,7 @@ async def matrix_overview(platform: str = ""):
 
         preview_pool: list[dict[str, Any]] = []
         for rec in recent_mon_items:
+            has_cover = bool(thumb_cache.find_work_local_cover(rec.local_path, rec.aweme_id) or rec.cover_url)
             preview_pool.append({
                 "uid": f"monitor:{rec.id}",
                 "source_kind": "monitor",
@@ -436,7 +472,7 @@ async def matrix_overview(platform: str = ""):
                 "platform": rec.platform,
                 "aweme_id": rec.aweme_id,
                 "desc": rec.desc or "（无作品描述）",
-                "cover_url": rec.cover_url or "",
+                "cover_url": f"/api/contents/{rec.id}/cover" if has_cover else "",
                 "media_type": rec.media_type or "video",
                 "like_count": int(rec.like_count or 0),
                 "comment_count": int(rec.comment_count or 0),
@@ -449,6 +485,7 @@ async def matrix_overview(platform: str = ""):
                 "_sort_ts": rec.created_at.timestamp() if rec.created_at else 0,
             })
         for rec in recent_col_items:
+            has_cover = bool(thumb_cache.find_work_local_cover(rec.local_path, rec.aweme_id) or rec.cover_url)
             preview_pool.append({
                 "uid": f"collection:{rec.id}",
                 "source_kind": "collection",
@@ -456,7 +493,7 @@ async def matrix_overview(platform: str = ""):
                 "platform": rec.platform,
                 "aweme_id": rec.aweme_id,
                 "desc": rec.desc or "（无作品描述）",
-                "cover_url": rec.cover_url or "",
+                "cover_url": f"/api/collections/{rec.job_id}/contents/{rec.id}/cover" if has_cover else "",
                 "media_type": rec.media_type or "video",
                 "like_count": int(rec.like_count or 0),
                 "comment_count": int(rec.comment_count or 0),
@@ -536,11 +573,23 @@ async def list_matrix_accounts(platform: str = ""):
     with get_session() as session:
         all_accounts = session.exec(select(DouyinAccount)).all()
         direct_by_pf: dict[str, int] = {}
+        total_by_pf: dict[str, int] = {}
+        same_pf_proxy_counts: dict[tuple[str, str], int] = {}
+        same_pf_exit_counts: dict[tuple[str, str], int] = {}
+        strict_proxy = bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True))
         profile_counts: dict[str, int] = {}
         profile_keys: dict[int, str] = {}
         for acc in all_accounts:
+            total_by_pf[acc.platform] = total_by_pf.get(acc.platform, 0) + 1
             if not acc.proxy:
                 direct_by_pf[acc.platform] = direct_by_pf.get(acc.platform, 0) + 1
+            else:
+                np = normalize_proxy(acc.proxy)
+                if np:
+                    same_pf_proxy_counts[(acc.platform, np)] = same_pf_proxy_counts.get((acc.platform, np), 0) + 1
+            ex_ip = str(acc.exit_ip or "").strip()
+            if ex_ip:
+                same_pf_exit_counts[(acc.platform, ex_ip)] = same_pf_exit_counts.get((acc.platform, ex_ip), 0) + 1
             if acc.id and acc.profile_dir:
                 try:
                     norm_p = str(Path(acc.profile_dir).expanduser().resolve()).lower()
@@ -628,6 +677,12 @@ async def list_matrix_accounts(platform: str = ""):
             aid = acc.id or 0
             has_read, has_creator = _account_login_flags(acc)
             r_state = risk_map.get(aid)
+            np = normalize_proxy(acc.proxy) if acc.proxy else ""
+            ex_ip = str(acc.exit_ip or "").strip()
+            shared_proxy = bool(
+                (np and same_pf_proxy_counts.get((acc.platform, np), 0) > 1)
+                or (ex_ip and same_pf_exit_counts.get((acc.platform, ex_ip), 0) > 1)
+            )
             h_state = _account_health_state(
                 acc,
                 has_read_login=has_read,
@@ -635,6 +690,9 @@ async def list_matrix_accounts(platform: str = ""):
                 risk_state=r_state,
                 now=now,
                 same_platform_direct_count=direct_by_pf.get(acc.platform, 0),
+                same_platform_total_count=total_by_pf.get(acc.platform, 0),
+                same_platform_shared_proxy=shared_proxy,
+                strict_proxy_required=strict_proxy,
             )
             tags = _parse_account_tags(acc.tags)
             p_key = profile_keys.get(aid, "")
@@ -840,9 +898,6 @@ async def batch_operate_accounts(body: AccountBatchActionIn):
         with get_session() as session:
             rows = session.exec(select(DouyinAccount).where(DouyinAccount.id.in_(ids))).all()
             for acc in rows:
-                if acc.platform == "xhs" and status.get("name") != LOCAL_BACKEND:
-                    skipped_xhs += 1
-                    continue
                 acc.browser_backend = requested
                 acc.browser_runtime_id = runtime_id if requested == "fingerprint_chromium" else ""
                 session.add(acc)
@@ -876,7 +931,9 @@ async def batch_operate_accounts(body: AccountBatchActionIn):
                 if not picked:
                     unassigned += 1
                     continue
+                pool_row = resolve_pool_proxy_row(session, picked)
                 acc.proxy = picked
+                acc.proxy_id = pool_row.id if pool_row else None
                 acc.proxy_status = "bound"
                 acc.exit_ip = ""
                 acc.exit_country = ""
@@ -898,12 +955,18 @@ async def batch_operate_accounts(body: AccountBatchActionIn):
         }
 
     if act == "clear_proxy":
+        if bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True)):
+            raise HTTPException(
+                400,
+                "已启用严格代理锁 (strict_proxy_required)，禁止批量清空账号代理以免多账号暴露本机真实 IP；请直接更换代理或先关闭严格代理锁",
+            )
         cleared = 0
         with get_session() as session:
             rows = session.exec(select(DouyinAccount).where(DouyinAccount.id.in_(ids))).all()
             for acc in rows:
                 if acc.proxy:
                     acc.proxy = ""
+                    acc.proxy_id = None
                     acc.proxy_status = "unknown"
                     acc.exit_ip = ""
                     acc.exit_country = ""
@@ -1038,7 +1101,7 @@ async def matrix_hub_analytics(
                 "display_name": _account_display_name(acc, aid),
                 "nickname": acc.nickname or "",
                 "alias": acc.alias or "",
-                "avatar": acc.avatar or "",
+                "avatar": thumb_cache.local_thumb_api_url(acc.avatar, platform=acc.platform),
                 "douyin_id": acc.douyin_id or "",
                 "group_name": acc.group_name or "",
                 "account_role": acc.account_role or "hybrid",
@@ -1093,12 +1156,12 @@ async def matrix_hub_analytics(
                 "platform": w.platform,
                 "account_id": w.account_id,
                 "account_name": _account_display_name(acc, w.account_id),
-                "account_avatar": (acc.avatar if acc else "") or "",
+                "account_avatar": thumb_cache.local_thumb_api_url(acc.avatar, platform=acc.platform) if acc else "",
                 "group_name": (acc.group_name if acc else "") or "",
                 "item_id": w.item_id,
                 "desc": w.desc or "（无标题描述）",
                 "media_type": w.media_type or "video",
-                "cover_url": w.cover_url or "",
+                "cover_url": thumb_cache.local_thumb_api_url(w.cover_url, platform=w.platform),
                 "create_time": int(w.create_time or 0),
                 "play_count": int(w.play_count or 0),
                 "like_count": int(w.like_count or 0),
@@ -1152,7 +1215,10 @@ def _resolve_record_local_files(source_kind: str, rec: Any) -> list[Path]:
             if getattr(rec, "media_type", "") == "images" and aweme_id and p.parent.is_dir():
                 siblings = sorted(
                     f for f in p.parent.glob(f"{aweme_id}_*")
-                    if f.is_file() and f.suffix.lower() in MEDIA_EXTENSIONS and f.stat().st_size > 0
+                    if f.is_file()
+                    and ".cover." not in f.name.lower()
+                    and f.suffix.lower() in MEDIA_EXTENSIONS
+                    and f.stat().st_size > 0
                 )
                 if siblings:
                     return siblings
@@ -1162,7 +1228,12 @@ def _resolve_record_local_files(source_kind: str, rec: Any) -> list[Path]:
             pattern = f"{aweme_id}_*" if aweme_id else "*"
             for f in sorted(p.glob(pattern)):
                 try:
-                    if f.is_file() and f.suffix.lower() in MEDIA_EXTENSIONS and f.stat().st_size > 0:
+                    if (
+                        f.is_file()
+                        and ".cover." not in f.name.lower()
+                        and f.suffix.lower() in MEDIA_EXTENSIONS
+                        and f.stat().st_size > 0
+                    ):
                         files.append(f)
                 except OSError:
                     continue
@@ -1251,7 +1322,11 @@ async def list_media_hub(
                 "group_name": src_info["group_name"],
                 "source_label": "作品监控",
                 "media_type": r.media_type or "video",
-                "cover_url": r.cover_url or "",
+                "cover_url": (
+                    f"/api/contents/{r.id}/cover"
+                    if (thumb_cache.find_work_local_cover(r.local_path, r.aweme_id) or r.cover_url)
+                    else ""
+                ),
                 "duration": int(r.duration or 0),
                 "like_count": int(r.like_count or 0),
                 "comment_count": int(r.comment_count or 0),
@@ -1293,7 +1368,11 @@ async def list_media_hub(
                 "group_name": r.keyword or "",
                 "source_label": kw_label,
                 "media_type": r.media_type or "video",
-                "cover_url": r.cover_url or "",
+                "cover_url": (
+                    f"/api/collections/{r.job_id}/contents/{r.id}/cover"
+                    if (thumb_cache.find_work_local_cover(r.local_path, r.aweme_id) or r.cover_url)
+                    else ""
+                ),
                 "duration": 0,
                 "like_count": int(r.like_count or 0),
                 "comment_count": int(r.comment_count or 0),
@@ -1335,7 +1414,7 @@ async def list_media_hub(
                 "group_name": (acc.group_name if acc else "") or "",
                 "source_label": "自有账号作品",
                 "media_type": r.media_type or "video",
-                "cover_url": r.cover_url or "",
+                "cover_url": thumb_cache.local_thumb_api_url(r.cover_url, platform=r.platform),
                 "duration": 0,
                 "like_count": int(r.like_count or 0),
                 "comment_count": int(r.comment_count or 0),
@@ -1377,7 +1456,11 @@ async def list_media_hub(
                 "group_name": "",
                 "source_label": "链接下载",
                 "media_type": norm_mtype,
-                "cover_url": r.cover_url or "",
+                "cover_url": (
+                    f"/api/share-download/history/{r.id}/cover"
+                    if (share_downloads_service._find_share_local_cover(r) or r.cover_url)
+                    else ""
+                ),
                 "duration": 0,
                 "like_count": 0,
                 "comment_count": 0,
@@ -1436,7 +1519,11 @@ async def media_hub_detail(source_kind: str, id: int):
             platform = rec.platform
             aweme_id = rec.aweme_id
             desc = rec.desc or ""
-            cover_url = rec.cover_url or ""
+            cover_url = (
+                f"/api/contents/{rec.id}/cover"
+                if (thumb_cache.find_work_local_cover(rec.local_path, rec.aweme_id) or rec.cover_url)
+                else ""
+            )
             media_type = rec.media_type or "video"
             local_path = rec.local_path or ""
             source_url = ""
@@ -1455,7 +1542,11 @@ async def media_hub_detail(source_kind: str, id: int):
             platform = rec.platform
             aweme_id = rec.aweme_id
             desc = rec.desc or ""
-            cover_url = rec.cover_url or ""
+            cover_url = (
+                f"/api/collections/{rec.job_id}/contents/{rec.id}/cover"
+                if (thumb_cache.find_work_local_cover(rec.local_path, rec.aweme_id) or rec.cover_url)
+                else ""
+            )
             media_type = rec.media_type or "video"
             local_path = rec.local_path or ""
             source_url = rec.source_url or ""
@@ -1466,12 +1557,12 @@ async def media_hub_detail(source_kind: str, id: int):
             rec = session.get(AccountWork, id)
             if not rec:
                 raise HTTPException(404, "自有作品记录不存在")
-            remote_medias = [{"kind": "image", "url": rec.cover_url}] if rec.cover_url else []
             local_files = []
             platform = rec.platform
             aweme_id = rec.item_id
             desc = rec.desc or ""
-            cover_url = rec.cover_url or ""
+            cover_url = thumb_cache.local_thumb_api_url(rec.cover_url, platform=rec.platform)
+            remote_medias = [{"kind": "image", "url": cover_url}] if cover_url else []
             media_type = rec.media_type or "video"
             local_path = ""
             source_url = ""
@@ -1482,12 +1573,16 @@ async def media_hub_detail(source_kind: str, id: int):
             rec = session.get(ShareDownloadRecord, id)
             if not rec:
                 raise HTTPException(404, "下载记录不存在")
-            remote_medias = [{"kind": "image", "url": rec.cover_url}] if rec.cover_url else []
             local_files = _resolve_record_local_files("share", rec)
             platform = rec.platform
             aweme_id = rec.item_id or ""
             desc = rec.title or ""
-            cover_url = rec.cover_url or ""
+            cover_url = (
+                f"/api/share-download/history/{rec.id}/cover"
+                if (share_downloads_service._find_share_local_cover(rec) or rec.cover_url)
+                else ""
+            )
+            remote_medias = [{"kind": "image", "url": cover_url}] if cover_url else []
             media_type = "images" if rec.media_type in {"images", "image", "gallery"} else "video"
             local_path = rec.output_dir or ""
             source_url = rec.source_url or ""
@@ -1496,6 +1591,21 @@ async def media_hub_detail(source_kind: str, id: int):
             comment_count = 0
         else:
             raise HTTPException(400, "未知内容来源类型")
+
+        if isinstance(remote_medias, list):
+            remote_medias = [
+                {
+                    **item,
+                    "url": (
+                        thumb_cache.local_thumb_api_url(str(item.get("url") or ""), platform=platform)
+                        if item.get("kind") == "image"
+                        else item.get("url", "")
+                    ),
+                }
+                if isinstance(item, dict)
+                else item
+                for item in remote_medias
+            ]
 
         local_medias = [
             {
@@ -1597,7 +1707,7 @@ async def serve_media_hub_local_file(source_kind: str, id: int, index: int = 0):
         target,
         filename=target.name,
         content_disposition_type="inline",
-        headers={"Cache-Control": "private, no-cache"},
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 
@@ -1691,6 +1801,14 @@ async def create_matrix_batch_publish(body: MatrixBatchPublishIn):
             acc = session.get(DouyinAccount, aid)
             if not acc or acc.platform not in ALL_PLATFORMS:
                 skipped.append({"account_id": aid, "reason": "账号不存在或平台不支持"})
+                continue
+            if str(acc.account_role or "hybrid").strip().lower() == "crawler":
+                skipped.append({
+                    "account_id": aid,
+                    "account_name": _account_display_name(acc, aid),
+                    "platform": acc.platform,
+                    "reason": "账号角色为「仅采集号 (crawler)」，已禁止执行作品发布",
+                })
                 continue
             has_read, has_creator = _account_login_flags(acc)
             if acc.status == "invalid" or (acc.platform == "xhs" and not has_creator) or (

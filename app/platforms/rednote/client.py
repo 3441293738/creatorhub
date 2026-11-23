@@ -60,17 +60,18 @@ class RednoteApiClient:
         from curl_cffi.requests import AsyncSession
         from xhshow import Xhshow
 
-        from ...browser.manager import normalize_proxy
+        from ...netfp import curl_proxy_url
 
         self._session_cls = AsyncSession
         self._session = None
         self._session_owner = None
         self.cookie_str = cookie_str or ""
         self.timeout = timeout
-        self.proxy = normalize_proxy(proxy) or None
+        self.proxy = curl_proxy_url(proxy) or None
         self.impersonate = impersonate_for_ua(user_agent)
         coherent = _coherent_direct_headers(user_agent, self.impersonate)
-        self._signer = RednoteSigner()
+        self.user_agent = coherent["user-agent"]
+        self._signer = RednoteSigner(user_agent=self.user_agent)
         self._search_id_helper = Xhshow()
         self._comment_api_blocked = False
         self._blocked_get_uris: set[str] = set()
@@ -79,7 +80,7 @@ class RednoteApiClient:
             self.cookie_str,
             storage_state=storage_state,
             explicit_context=sign_context,
-            user_agent=user_agent,
+            user_agent=self.user_agent,
             locale=locale,
             timezone=timezone,
         )
@@ -106,7 +107,7 @@ class RednoteApiClient:
             return
         self._session_owner = owner
         try:
-            async with self._session_cls(discard_cookies=True) as session:
+            async with self._session_cls(discard_cookies=True, trust_env=False) as session:
                 self._session = session
                 try:
                     yield self
@@ -135,7 +136,7 @@ class RednoteApiClient:
 
         if self._session is not None and self._session_owner is asyncio.current_task():
             return await send(self._session)
-        async with self._session_cls(discard_cookies=True) as session:
+        async with self._session_cls(discard_cookies=True, trust_env=False) as session:
             return await send(session)
 
     def _headers_for(self, *, is_creator: bool = False) -> dict[str, str]:
@@ -175,6 +176,7 @@ class RednoteApiClient:
             b1=self.sign_context.b1,
             dsl_pair=self.sign_context.dsl_pair,
             sign_count=self.sign_context.next_sign_count(),
+            user_agent=self.user_agent,
         )
         headers = {**base_hdrs, **sign, "Cookie": self.cookie_str}
         url = host + canonical_request("GET", uri, query_params)
@@ -226,6 +228,7 @@ class RednoteApiClient:
             b1=self.sign_context.b1,
             dsl_pair=self.sign_context.dsl_pair,
             sign_count=self.sign_context.next_sign_count(),
+            user_agent=self.user_agent,
         )
         headers = {**base_hdrs, **sign, "Cookie": self.cookie_str}
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)

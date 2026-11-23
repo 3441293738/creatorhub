@@ -79,10 +79,13 @@ def _rule_dict(r: CommentRule) -> dict:
     }
 
 
-async def _resolve_rule_target(platform: str, mode: str, target_kind: str, target: str):
+async def _resolve_rule_target(
+    platform: str, mode: str, target_kind: str, target: str, *, account_id: int | None = None
+):
     """把 mode/target_kind/target 解析成 (kind, sec_uid, aweme_id, keyword, xsec_token)。
     解析失败抛 HTTPException。POST 与 PUT(改目标)共用。"""
     sec_uid = aweme_id = keyword = xsec_token = ""
+    eff_proxy = metadata_service._resolve_ephemeral_proxy(platform, account_id)
     if mode == "auto_comment":
         kind = target_kind if target_kind in ("keyword", "creator") else "keyword"
         if kind == "keyword":
@@ -94,16 +97,22 @@ async def _resolve_rule_target(platform: str, mode: str, target_kind: str, targe
                 raise HTTPException(400, f"{pn}暂不支持关键词发现,请用「创作者」模式")
         else:
             if platform == "xhs":
-                ref = await xhs_resolve_user(target, app_runtime.cfg.engine.user_agent)
+                ref = await metadata_service._call_resolver(
+                    xhs_resolve_user, target, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
                 if not ref:
                     raise HTTPException(400, "无法解析小红书创作者(主页链接 / xhslink / user_id)")
                 sec_uid, xsec_token = ref.user_id, ref.xsec_token
             elif platform == "kuaishou":
-                sec_uid = await resolve_ks_user_id(target, app_runtime.cfg.engine.user_agent)
+                sec_uid = await metadata_service._call_resolver(
+                    resolve_ks_user_id, target, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
                 if not sec_uid:
                     raise HTTPException(400, "无法解析快手创作者(主页链接 / 短链 / user_id)")
             elif platform == "bilibili":
-                sec_uid = await resolve_bili_mid(target, app_runtime.cfg.engine.user_agent) or ""
+                sec_uid = await metadata_service._call_resolver(
+                    resolve_bili_mid, target, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                ) or ""
                 if not sec_uid:
                     raise HTTPException(400, "无法解析 B 站 UP 主 UID(空间链接 / b23.tv / 数字 UID)")
             elif platform == "instagram":
@@ -113,30 +122,43 @@ async def _resolve_rule_target(platform: str, mode: str, target_kind: str, targe
                 if not sec_uid:
                     raise HTTPException(400, "无法解析 Instagram 创作者(@username / 主页链接 / 数字 UID)")
             elif platform == "twitter":
-                expanded_tw = await resolve_twitter_short_url(target, user_agent=app_runtime.cfg.engine.user_agent)
+                expanded_tw = await metadata_service._call_resolver(
+                    resolve_twitter_short_url,
+                    target,
+                    user_agent=app_runtime.cfg.engine.user_agent,
+                    proxy=eff_proxy,
+                )
                 if looks_like_twitter_tweet(expanded_tw):
                     raise HTTPException(400, "创作者模式请填写 Twitter @username 或主页链接，不要填写单条推文链接")
                 sec_uid = resolve_twitter_user_target(expanded_tw)
                 if not sec_uid:
                     raise HTTPException(400, "无法解析 Twitter 创作者(@username / x.com/<username> / 数字 UID)")
             else:
-                sec_uid = await resolve_sec_uid(target, app_runtime.cfg.engine.user_agent)
+                sec_uid = await metadata_service._call_resolver(
+                    resolve_sec_uid, target, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
                 if not sec_uid:
                     raise HTTPException(400, "无法解析 sec_uid(主页链接 / 短链 / sec_uid)")
     else:
         kind = target_kind if target_kind in ("self", "work") else "self"
         if kind == "work":
             if platform == "xhs":
-                ref = await xhs_resolve_note(target, app_runtime.cfg.engine.user_agent)
+                ref = await metadata_service._call_resolver(
+                    xhs_resolve_note, target, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
                 if not ref:
                     raise HTTPException(400, "无法解析小红书笔记(explore 链接 / xhslink / note_id)")
                 aweme_id, xsec_token = ref.note_id, ref.xsec_token
             elif platform == "kuaishou":
-                aweme_id = await resolve_ks_photo_id(target, app_runtime.cfg.engine.user_agent)
+                aweme_id = await metadata_service._call_resolver(
+                    resolve_ks_photo_id, target, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
                 if not aweme_id:
                     raise HTTPException(400, "无法解析快手作品 id(作品链接 / 短链 / photo_id)")
             elif platform == "bilibili":
-                aweme_id = await resolve_bili_work(target, app_runtime.cfg.engine.user_agent) or ""
+                aweme_id = await metadata_service._call_resolver(
+                    resolve_bili_work, target, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                ) or ""
                 if not aweme_id:
                     raise HTTPException(400, "无法解析 B 站稿件(BV 号 / 视频链接 / b23.tv)")
             elif platform == "instagram":
@@ -145,13 +167,20 @@ async def _resolve_rule_target(platform: str, mode: str, target_kind: str, targe
                 if not aweme_id:
                     raise HTTPException(400, "无法解析 Instagram 作品(/p/<code>/ 或 /reel/<code>/ 链接或 shortcode)")
             elif platform == "twitter":
-                expanded_tw = await resolve_twitter_short_url(target, user_agent=app_runtime.cfg.engine.user_agent)
+                expanded_tw = await metadata_service._call_resolver(
+                    resolve_twitter_short_url,
+                    target,
+                    user_agent=app_runtime.cfg.engine.user_agent,
+                    proxy=eff_proxy,
+                )
                 tref = resolve_twitter_tweet_ref(expanded_tw)
                 aweme_id = tref.tweet_id if tref else ""
                 if not aweme_id:
                     raise HTTPException(400, "无法解析 Twitter 推文(x.com/<user>/status/<id> 链接、t.co 短链或数字推文 ID)")
             else:
-                aweme_id = await resolve_aweme_id(target, app_runtime.cfg.engine.user_agent)
+                aweme_id = await metadata_service._call_resolver(
+                    resolve_aweme_id, target, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
                 if not aweme_id:
                     raise HTTPException(400, "无法解析作品 id(作品链接 / 短链 / 数字 id)")
     return kind, sec_uid, aweme_id, keyword, xsec_token
@@ -186,9 +215,14 @@ async def add_comment_rule(body: CommentRuleIn, request: Request = None):
             raise HTTPException(400, f"请选择一个已登录的{_pn}账号")
         if not (acc.storage_state or acc.creator_storage_state or acc.cookie):
             raise HTTPException(400, "该账号未登录,发评论需要登录态")
+        if mode == "auto_comment" and str(acc.account_role or "hybrid").strip().lower() == "publish":
+            raise HTTPException(
+                400,
+                "该账号角色设为「发布主号 (publish)」，禁止执行外部作品主动评论引流 (auto_comment) 以保护主号；仅允许自有作品评论自动回复 (auto_reply)",
+            )
 
     kind, sec_uid, aweme_id, keyword, xsec_token = await _resolve_rule_target(
-        platform, mode, body.target_kind, body.target)
+        platform, mode, body.target_kind, body.target, account_id=body.account_id)
 
     with get_session() as s:
         def create():
@@ -233,7 +267,8 @@ async def update_comment_rule(rid: int, body: CommentRuleUpdate):
             mode = body.mode if body.mode in ("auto_reply", "auto_comment") else r.mode
             tk = body.target_kind if body.target_kind is not None else r.target_kind
             tgt = body.target if body.target is not None else ""
-        new_target = (mode, *await _resolve_rule_target(platform, mode, tk, tgt))
+            eff_acc_id = body.account_id if body.account_id is not None else r.account_id
+        new_target = (mode, *await _resolve_rule_target(platform, mode, tk, tgt, account_id=eff_acc_id))
 
     with get_session() as s:
         r = s.get(CommentRule, rid)

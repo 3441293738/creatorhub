@@ -260,9 +260,23 @@ function openCollectionVerifyBrowser(jobId) {
   }
   openAccountBrowser(job.account_id, targetUrl);
 }
+let COLLECTION_RENDERED_JOB_ID = 0;
+let COLLECTION_RENDERED_SIG = "";
+function collectionJobResultSig(job, page = COLLECTION_PAGE) {
+  if (!job) return "";
+  return [
+    job.id,
+    Math.max(1, Number(page) || 1),
+    job.status,
+    Number(job.content_count || 0),
+    Number(job.comment_count || 0),
+    Number(job.error_count || 0),
+    Number(job.current_item_index || 0),
+  ].join(":");
+}
 function renderCollectionJobs() {
   const body = $("collection-job-table"); if (!body) return;
-  body.innerHTML = COLLECTION_JOBS.map(job => {
+  const html = COLLECTION_JOBS.map(job => {
     const status = collectionStatus(job.status);
     const percent = collectionProgress(job);
     const sourceLabel = job.source_type === "keyword" ? "关键词" : "来源";
@@ -298,6 +312,7 @@ function renderCollectionJobs() {
       </div>
     </article>`;
   }).join("") || collectionTaskEmpty();
+  setHtmlIfChanged(body, html);
 }
 async function refreshCollections() {
   const isCurrent = beginViewRequest("collections");
@@ -316,7 +331,10 @@ async function refreshCollections() {
       const job = COLLECTION_JOBS.find(j => j.id === COLLECTION_JOB_ID);
       if (job) {
         updateCollectionResultStats(job);
-        if (CURRENT_TAB === "collections") await loadCollectionContents(COLLECTION_PAGE, true);
+        const nextSig = collectionJobResultSig(job, COLLECTION_PAGE);
+        if (CURRENT_TAB === "collections" && nextSig !== COLLECTION_RENDERED_SIG) {
+          await loadCollectionContents(COLLECTION_PAGE, true);
+        }
       }
       else closeCollectionResults();
     }
@@ -443,14 +461,24 @@ function updateCollectionResultStats(job) {
 }
 async function openCollectionResults(jobId) {
   const btn = evtBtn();
-  COLLECTION_JOB_ID = Number(jobId); COLLECTION_PAGE = 1;
+  const nextJobId = Number(jobId);
+  const sameRenderedJob = COLLECTION_RENDERED_JOB_ID === nextJobId;
+  COLLECTION_JOB_ID = nextJobId; COLLECTION_PAGE = 1;
   window.dispatchEvent(new Event("creatorhub:agent-context"));
   const job = COLLECTION_JOBS.find(j => j.id === COLLECTION_JOB_ID);
   if (job) updateCollectionResultStats(job);
   $("collection-results-card").style.display = "";
   globalThis.CreatorHubWorkbench?.collectionDetail?.(true);
+  const targetSig = collectionJobResultSig(job, 1);
+  const hasCachedDom = sameRenderedJob && targetSig && targetSig === COLLECTION_RENDERED_SIG
+    && Boolean($("collection-content-list")?.querySelector(".collection-result-item"));
+  if (hasCachedDom) {
+    const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    $("collection-results-card").scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
+    return;
+  }
   await withBusy(btn, "加载中", async () => {
-    await loadCollectionContents(1);
+    await loadCollectionContents(1, sameRenderedJob);
     const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     $("collection-results-card").scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
   });
@@ -567,22 +595,28 @@ function copyCollectionPath(button) {
 }
 async function loadCollectionContents(page = COLLECTION_PAGE, quiet = false) {
   if (!COLLECTION_JOB_ID) return;
+  const targetJobId = COLLECTION_JOB_ID;
   COLLECTION_PAGE = Math.max(1, Number(page) || 1);
   const isCurrent = beginViewRequest("collection-contents", () => `${COLLECTION_JOB_ID}:${COLLECTION_PAGE}`);
   const body = $("collection-content-list");
-  if (!quiet) body.innerHTML = collectionResultSkeleton(4);
+  if (!quiet) setHtmlIfChanged(body, collectionResultSkeleton(4));
   try {
-    const result = await api(`/api/collections/${COLLECTION_JOB_ID}/contents?page=${COLLECTION_PAGE}&page_size=20`);
+    const result = await api(`/api/collections/${targetJobId}/contents?page=${COLLECTION_PAGE}&page_size=20`);
     if (!isCurrent()) return;
     COLLECTION_PAGE = result.page;
-    body.innerHTML = (result.items || []).map(collectionResultCard).join("") || collectionEmpty("任务暂时没有作品结果", "采集中可稍后刷新；失败任务可查看错误并续跑");
+    const html = (result.items || []).map(collectionResultCard).join("") || collectionEmpty("任务暂时没有作品结果", "采集中可稍后刷新；失败任务可查看错误并续跑");
+    setHtmlIfChanged(body, html);
+    const job = COLLECTION_JOBS.find(j => j.id === targetJobId);
+    COLLECTION_RENDERED_JOB_ID = targetJobId;
+    COLLECTION_RENDERED_SIG = collectionJobResultSig(job, COLLECTION_PAGE);
     $("collection-result-count").textContent = `共 ${fmtNum(result.total)} 个作品`;
     const pager = $("collection-pager");
-    pager.innerHTML = `<button class="ghost sm" onclick="loadCollectionContents(${result.page - 1})"${result.page <= 1 ? " disabled" : ""}>${ic("i-prev")}上一页</button><span class="mut">第 ${result.page} / ${result.pages} 页 · 共 ${fmtNum(result.total)} 条</span><button class="ghost sm" onclick="loadCollectionContents(${result.page + 1})"${result.page >= result.pages ? " disabled" : ""}>下一页${ic("i-next")}</button>`;
+    setHtmlIfChanged(pager, `<button class="ghost sm" onclick="loadCollectionContents(${result.page - 1})"${result.page <= 1 ? " disabled" : ""}>${ic("i-prev")}上一页</button><span class="mut">第 ${result.page} / ${result.pages} 页 · 共 ${fmtNum(result.total)} 条</span><button class="ghost sm" onclick="loadCollectionContents(${result.page + 1})"${result.page >= result.pages ? " disabled" : ""}>下一页${ic("i-next")}</button>`);
     pager.hidden = result.pages <= 1;
   } catch (e) {
     if (!isCurrent()) return;
-    body.innerHTML = collectionEmpty("结果加载失败", e.message);
+    COLLECTION_RENDERED_SIG = "";
+    setHtmlIfChanged(body, collectionEmpty("结果加载失败", e.message));
     $("collection-result-count").textContent = "";
   }
 }
@@ -701,7 +735,7 @@ async function deleteCollection(jobId) {
   const btn = evtBtn();
   if (!await uiConfirm({ title: "删除采集任务", message: "将删除任务及其作品、评论记录；本地已下载文件不会被删除。", okText: "删除", danger: true })) return;
   await withBusy(btn, "删除中", async () => {
-    try { await api(`/api/collections/${jobId}`, { method: "DELETE" }); if (COLLECTION_JOB_ID === jobId) closeCollectionResults(); toast("任务记录已删除，本地文件已保留", "ok"); await refreshCollections(); }
+    try { await api(`/api/collections/${jobId}`, { method: "DELETE" }); if (COLLECTION_RENDERED_JOB_ID === Number(jobId)) { COLLECTION_RENDERED_JOB_ID = 0; COLLECTION_RENDERED_SIG = ""; } if (COLLECTION_JOB_ID === jobId) closeCollectionResults(); toast("任务记录已删除，本地文件已保留", "ok"); await refreshCollections(); }
     catch (e) { toast("删除失败：" + e.message, "err"); }
   });
 }

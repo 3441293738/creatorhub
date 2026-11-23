@@ -6,6 +6,7 @@ from urllib.parse import urljoin
 import re
 import sys
 
+from app.browser.human_interaction import human_wait
 from app.browser.manager import BrowserManager
 
 
@@ -108,7 +109,7 @@ async def _self_profile_link(mgr: BrowserManager, identity, platform: str
     try:
         await page.goto(home, wait_until="domcontentloaded", timeout=30000)
         for _ in range(6):          # 侧栏/顶栏异步渲染,轮询最多 ~6s
-            await page.wait_for_timeout(1000)
+            await human_wait(page, 1000)
             try:
                 href = await page.evaluate(js) or ""
             except Exception:
@@ -243,8 +244,21 @@ async def _douyin_cookie_str(mgr: BrowserManager, identity) -> str:
     return "; ".join(f"{c['name']}={c['value']}" for c in cks)
 
 
+def _iter_identity_states(identity) -> Tuple[str, ...]:
+    """枚举 Identity 上的登录态快照（支持 bridge_states 元组及兼容 storage_state 属性）。"""
+    out: List[str] = []
+    for raw in (getattr(identity, "bridge_states", None) or ()):
+        if raw and isinstance(raw, str):
+            out.append(raw)
+    for attr in ("creator_storage_state", "storage_state"):
+        raw = getattr(identity, attr, "") or ""
+        if raw and isinstance(raw, str) and raw not in out:
+            out.append(raw)
+    return tuple(out)
+
+
 async def _rednote_cookie_str(mgr: BrowserManager, identity) -> str:
-    """从账号专属 context 或 storage_state 提取严格归属 rednote.com 的 Cookie 串。"""
+    """从账号专属 context 或 bridge_states/storage_state 提取严格归属 rednote.com 的 Cookie 串。"""
     from app.platforms.rednote import cookie_str_from_state
     from app.platforms.rednote.domains import is_rednote_host
 
@@ -267,18 +281,20 @@ async def _rednote_cookie_str(mgr: BrowserManager, identity) -> str:
                 return "; ".join(f"{k}={v}" for k, v in merged.items())
     except Exception:
         pass
-    for raw in (
-        getattr(identity, "creator_storage_state", "") or "",
-        getattr(identity, "storage_state", "") or "",
-    ):
+    fallback = ""
+    for raw in _iter_identity_states(identity):
         s = cookie_str_from_state(raw)
-        if s:
+        if not s:
+            continue
+        if "a1=" in s or "web_session=" in s:
             return s
-    return ""
+        if not fallback:
+            fallback = s
+    return fallback
 
 
 async def _bili_cookie_str(mgr: BrowserManager, identity) -> str:
-    """从账号专属 context 或 storage_state 提取 bilibili.com 完整 Cookie 串。"""
+    """从账号专属 context 或 bridge_states/storage_state 提取 bilibili.com 完整 Cookie 串。"""
     from app.platforms.bilibili import cookie_str_from_state
     try:
         ctx = await mgr.context_for(identity)
@@ -293,11 +309,20 @@ async def _bili_cookie_str(mgr: BrowserManager, identity) -> str:
                 return "; ".join(f"{k}={v}" for k, v in merged.items())
     except Exception:
         pass
-    return cookie_str_from_state(getattr(identity, "storage_state", "") or "")
+    fallback = ""
+    for raw in _iter_identity_states(identity):
+        s = cookie_str_from_state(raw)
+        if not s:
+            continue
+        if "SESSDATA=" in s:
+            return s
+        if not fallback:
+            fallback = s
+    return fallback
 
 
 async def _ig_cookie_str(mgr: BrowserManager, identity) -> str:
-    """从账号专属 context 或 storage_state 提取 instagram.com 完整 Cookie 串。"""
+    """从账号专属 context 或 bridge_states/storage_state 提取 instagram.com 完整 Cookie 串。"""
     from app.platforms.instagram import cookie_str_from_state
     try:
         ctx = await mgr.context_for(identity)
@@ -308,11 +333,20 @@ async def _ig_cookie_str(mgr: BrowserManager, identity) -> str:
                 return "; ".join(f"{k}={v}" for k, v in merged.items())
     except Exception:
         pass
-    return cookie_str_from_state(getattr(identity, "storage_state", "") or "")
+    fallback = ""
+    for raw in _iter_identity_states(identity):
+        s = cookie_str_from_state(raw)
+        if not s:
+            continue
+        if "sessionid=" in s:
+            return s
+        if not fallback:
+            fallback = s
+    return fallback
 
 
 async def _twitter_cookie_str(mgr: BrowserManager, identity) -> str:
-    """从账号专属 context 或 storage_state 提取 x.com 完整 Cookie 串。"""
+    """从账号专属 context 或 bridge_states/storage_state 提取 x.com 完整 Cookie 串。"""
     from app.platforms.twitter import cookie_str_from_state
     try:
         ctx = await mgr.context_for(identity)
@@ -323,4 +357,13 @@ async def _twitter_cookie_str(mgr: BrowserManager, identity) -> str:
                 return "; ".join(f"{k}={v}" for k, v in merged.items())
     except Exception:
         pass
-    return cookie_str_from_state(getattr(identity, "storage_state", "") or "")
+    fallback = ""
+    for raw in _iter_identity_states(identity):
+        s = cookie_str_from_state(raw)
+        if not s:
+            continue
+        if "auth_token=" in s:
+            return s
+        if not fallback:
+            fallback = s
+    return fallback

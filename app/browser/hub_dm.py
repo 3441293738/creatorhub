@@ -7,6 +7,13 @@ import os
 
 from app.browser.douyin_im_pb import parse_conversations
 from app.browser.hub_common import _ID_KEYS, _NAME_KEYS, _STRONG_ID_KEYS, _avatar_of, _bili_cookie_str, _ig_cookie_str, _looks_like_user, _twitter_cookie_str
+from app.browser.human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from app.browser.manager import BrowserManager
 
 
@@ -65,12 +72,28 @@ _DOUYIN_IM_BOXES_JS = """() => {
         clickable = true; break;
       }
     }
-    const x = r.x + r.width / 2, y = r.y + r.height / 2;
-    const top = document.elementFromPoint(x, y);   // 该坐标上真正会收到点击的元素
+    const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+    const top = document.elementFromPoint(cx, cy);   // 该坐标上真正会收到点击的元素
     const covered = !(top && (top === e || e.contains(top) || top.contains(e)));
-    out.push({x, y, tag: e.tagName, clickable, covered});
+    out.push({x: r.x, y: r.y, width: r.width, height: r.height, cx, cy, tag: e.tagName, clickable, covered});
   }
   return out;
+}"""
+
+
+_FIND_DM_SCROLL_BOX_JS = """() => {
+  let best = null, bh = 0;
+  document.querySelectorAll('div,ul,section,aside').forEach(e => {
+    const s = getComputedStyle(e);
+    const r = e.getBoundingClientRect();
+    if (r.width > 120 && r.height > 120
+        && (s.overflowY === 'auto' || s.overflowY === 'scroll' || s.overflowY === 'overlay')
+        && e.scrollHeight > e.clientHeight + 40 && e.scrollHeight > bh) {
+      best = r;
+      bh = e.scrollHeight;
+    }
+  });
+  return best ? {x: best.x, y: best.y, width: best.width, height: best.height} : null;
 }"""
 
 
@@ -310,8 +333,9 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
             return [], "logged_out:缺少 B 站登录 Cookie"
         client = BilibiliClient(
             cookie_s,
-            getattr(identity, "user_agent", ""),
+            getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
             proxy=getattr(identity, "proxy", ""),
+            account_seed=getattr(identity, "fp_seed", ""),
         )
         async with client.session_scope():
             return await client.fetch_dm_sessions(size=100)
@@ -488,7 +512,7 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
             if platform == "xhs":
                 await mgr.xhs_interaction.pause(0.25, 0.55)
             else:
-                await page.wait_for_timeout(3000)
+                await human_wait(page, 3000)
         # 标定:枚举页面上所有像「私信/消息」的可点元素(真实 DOM),用来校准入口选择器,
         # 而不是继续盲猜。抖音私信入口是顶栏信封图标(多为 SVG + aria-label,无文字)。
         if platform == "douyin":
@@ -505,20 +529,17 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 print(f"[dm-probe] douyin entry candidates({len(probe)}): {ascii(probe)}")
             except Exception as e:
                 print(f"[dm-probe] douyin probe failed: {ascii(repr(e))}")
-        # 抖音:「消息」是 <div>(无 href),React onClick 绑在祖先上,合成 element.click()
-        # 不触发。改用真人式坐标点击:定位可点祖先→hover→page.mouse.click,外层容器优先,
-        # 每次确认 IM 是否真的 bootstrap(im_hit);再加 JS 点祖先链兜底。
+        # 抖音:「消息」是 <div>(无 href),React onClick 绑在祖先上,严禁合成 element.click()。
+        # 统一使用拟人贝塞尔轨迹 + 随机安全落点 + 真实硬件按压驻留点击。
         if platform == "douyin":
             via = ""
             boxes = []
-            # 实测:hydrate 完成后抖音会给入口打 data-e2e="im-entry"。优先用它,
-            # 比坐标点击稳(坐标只是没有 data-e2e 时的兜底)。
             try:
                 entry = page.locator('[data-e2e="im-entry"]').first
                 if await entry.is_visible(timeout=2000):
-                    await entry.click(timeout=3000)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(entry, page=page, timeout=3000)
                     for _ in range(10):
-                        await page.wait_for_timeout(500)
+                        await human_wait(page, 500)
                         if im_hit[0]:
                             break
                     if im_hit[0]:
@@ -534,7 +555,7 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
             seen_pt: Set[tuple] = set()
             ordered = []
             for b in sorted(boxes or [], key=lambda b: (not b["clickable"], b["covered"])):
-                pt = (int(b["x"]), int(b["y"]))
+                pt = (int(b.get("cx", b["x"])), int(b.get("cy", b["y"])))
                 if pt not in seen_pt:
                     seen_pt.add(pt)
                     ordered.append(b)
@@ -543,18 +564,16 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 if im_hit[0]:
                     break
                 try:
-                    await page.mouse.move(b["x"], b["y"])
-                    await page.wait_for_timeout(150)
-                    await page.mouse.click(b["x"], b["y"])
+                    tx, ty = DEFAULT_HUMAN_ENGINE.sample_box_point(b)
+                    await DEFAULT_HUMAN_ENGINE.click_point(page, tx, ty)
                     for _ in range(7):
-                        await page.wait_for_timeout(500)
+                        await human_wait(page, 500)
                         if im_hit[0]:
                             break
                     if im_hit[0]:
-                        via = f"mouse@{int(b['x'])},{int(b['y'])}({b['tag']})"
+                        via = f"mouse@{int(tx)},{int(ty)}({b['tag']})"
                 except Exception:
                     continue
-            # 点击到底做了什么?没有这个对比,只能反复猜「点没点中」
             after_dom = await _dm_panel_probe(page)
             print(f"[dm-probe] douyin dom before={before_dom}")
             print(f"[dm-probe] douyin dom after ={after_dom}")
@@ -569,20 +588,34 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 print(f"[dm] douyin switched to popup url={page.url} "
                       f"dom={await _dm_panel_probe(page)}")
             if not im_hit[0]:
-                try:
-                    await page.evaluate(
-                        # 取最内层(.pop())——外层 wrapper 上通常没绑 handler
-                        "() => { const hs=[...document.querySelectorAll('div,span,a,button,li')]"
-                        ".filter(e => (e.textContent||'').trim()==='消息'); let t=hs.pop();"
-                        " for(let d=0;d<5&&t;d++,t=t.parentElement){ try{t.click();}catch(e){} } }")
-                    for _ in range(8):
-                        await page.wait_for_timeout(500)
-                        if im_hit[0]:
-                            break
+                # 兜底定位可见「消息/私信」或会话卡片，执行硬件级拟人点击（严禁 JS t.click()）
+                for fallback_sel in (
+                    '[data-e2e*="im"]',
+                    '[data-e2e*="message"]',
+                    '[data-e2e*="conversation"]',
+                    'a[href*="/im"]',
+                    'text="消息"',
+                    'text="私信"',
+                ):
                     if im_hit[0]:
-                        via = "js-clickchain"
-                except Exception:
-                    pass
+                        break
+                    try:
+                        loc = page.locator(fallback_sel)
+                        cnt = min(await loc.count(), 4)
+                        for idx in range(cnt - 1, -1, -1):
+                            cand = loc.nth(idx)
+                            if not await cand.is_visible():
+                                continue
+                            await DEFAULT_HUMAN_ENGINE.click_locator(cand, page=page, timeout=2500)
+                            for _ in range(7):
+                                await human_wait(page, 500)
+                                if im_hit[0]:
+                                    break
+                            if im_hit[0]:
+                                via = f"human-locator:{fallback_sel}#{idx}"
+                                break
+                    except Exception:
+                        continue
             douyin_open_via = via
         # 打开私信抽屉/面板(站内图标里,点开才会拉会话列表);小红书私信走 /api/im/web REST。
         # 关键:入口是 flaky 的 —— 「消息」有多个同文本 DIV,.first 常点中非导航的文本节点。
@@ -608,13 +641,13 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                         if platform == "xhs":
                             await mgr.xhs_interaction.click_visible(el)
                         else:
-                            await el.click(timeout=3500)
+                            await DEFAULT_HUMAN_ENGINE.click_locator(el, page=page, timeout=3500)
                         # 确认:等 IM 流量出现(最多 ~3.5s),没起来就试下一个候选
                         for _ in range(7):
                             if platform == "xhs":
                                 await mgr.xhs_interaction.pause(0.2, 0.45)
                             else:
-                                await page.wait_for_timeout(500)
+                                await human_wait(page, 500)
                             if im_hit[0]:
                                 break
                         if im_hit[0] or platform == "xhs":
@@ -642,30 +675,29 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
         if platform == "xhs":
             await mgr.xhs_interaction.pause(0.25, 0.55)
         else:
-            await page.wait_for_timeout(settle_ms)
+            await human_wait(page, settle_ms)
         for _ in range(max_scrolls):
             before = len(collected)
             try:
                 if platform == "xhs":
                     await mgr.xhs_interaction.scroll_step(page)
                 else:
-                    await page.mouse.wheel(0, 2500)
-                    await page.evaluate(
-                        "() => { let b=null,h=0; document.querySelectorAll('div,ul,section').forEach(e=>{"
-                        " const s=getComputedStyle(e); if((s.overflowY==='auto'||s.overflowY==='scroll')"
-                        " && e.scrollHeight>e.clientHeight+40 && e.scrollHeight>h){b=e;h=e.scrollHeight;}});"
-                        " if(b)b.scrollTop=b.scrollHeight; }")
+                    sbox = await page.evaluate(_FIND_DM_SCROLL_BOX_JS)
+                    if isinstance(sbox, dict) and sbox.get("width") and sbox.get("height"):
+                        sx, sy = DEFAULT_HUMAN_ENGINE.sample_box_point(sbox)
+                        await DEFAULT_HUMAN_ENGINE.move_mouse(page, sx, sy)
+                    await human_scroll(page, settle=False)
             except Exception:
                 pass
             if platform != "xhs":
-                await page.wait_for_timeout(settle_ms)
+                await human_wait(page, settle_ms)
             if len(collected) == before:
                 break
         # wait_for_response 只等到响应头就返回,大包的 body 可能还在下载 —— 不等的话
         # 解析时 dm_init_raw 还是空的,看起来就像「包没来」。
         if platform == "douyin" and im_hit[0] and not dm_init_raw[0]:
             for _ in range(20):           # 最多 ~10s
-                await page.wait_for_timeout(500)
+                await human_wait(page, 500)
                 if dm_init_raw[0]:
                     break
             print(f"[dm-init] 等待 body 落地: len={len(dm_init_raw[0])}")
@@ -824,8 +856,9 @@ async def fetch_dm_history(mgr: BrowserManager, identity, platform: str,
             return {}, "logged_out:缺少 B 站登录 Cookie"
         client = BilibiliClient(
             cookie_s,
-            getattr(identity, "user_agent", ""),
+            getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
             proxy=getattr(identity, "proxy", ""),
+            account_seed=getattr(identity, "fp_seed", ""),
         )
         async with client.session_scope():
             return await client.fetch_dm_messages(

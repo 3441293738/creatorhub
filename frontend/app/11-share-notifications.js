@@ -284,7 +284,7 @@ function shareHistoryRow(row) {
   const specSub = [quality, mediaCount > 1 ? `${mediaCount} 媒体` : (duration ? fmtDur(duration) : "")].filter(Boolean).join(" · ");
   return `<tr>
     <td class="content-check-cell"><input type="checkbox" data-id="${Number(row.id)}" onchange="shareHistoryToggleOne(${Number(row.id)},this.checked)" ${selShareHistory.has(row.id) ? "checked" : ""} aria-label="选择下载记录"></td>
-    <td class="content-cover-cell"><span class="content-cover-box" onclick="openShareHistoryPreview(${Number(row.id)})" title="点击站内预览">${cover ? `<img class="thumb" src="${esc(cover)}" alt="${esc(title.slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy">` : `<span class="content-cover-empty">${ic(type === "images" ? "i-image" : "i-film")}</span>`}${durBadge}</span></td>
+    <td class="content-cover-cell"><span class="content-cover-box" onclick="openShareHistoryPreview(${Number(row.id)})" title="点击站内预览">${cover ? `<img class="thumb" src="${esc(safeMediaUrl(cover))}" alt="${esc(title.slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy">` : `<span class="content-cover-empty">${ic(type === "images" ? "i-image" : "i-film")}</span>`}${durBadge}</span></td>
     <td class="content-desc-cell"><div class="content-desc-text clickable" title="${esc(title)}" onclick="openShareHistoryPreview(${Number(row.id)})">${esc(title)}</div>${descriptionMeta}</td>
     <td><span class="content-kind">${esc(typeName)}</span>${specSub ? `<span class="content-quality">${esc(specSub)}</span>` : ""}</td>
     <td class="mut num">${contentTimeCell(createTime)}</td>

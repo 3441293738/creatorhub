@@ -62,11 +62,7 @@ class CommentWatchMixin:
             name = w.title or aweme_id or (sec_uid[:12] if sec_uid else "watch")
             state = creator_state = proxy = ""
             ua = self.cfg.engine.user_agent
-            identity = (
-                self.browser.anon_identity()
-                if callable(getattr(self.browser, "anon_identity", None))
-                else None
-            )
+            identity = None
             has_creator = False
             if w.account_id:
                 acc = s.get(DouyinAccount, w.account_id)
@@ -104,6 +100,15 @@ class CommentWatchMixin:
                         if callable(getattr(self.browser, "identity_for", None))
                         else None
                     )
+            if identity is None and not w.account_id:
+                identity, anon_px = self._anon_identity_proxy(platform, session=s)
+                proxy = proxy or anon_px
+                if not proxy and platform in {"tiktok", "rednote", "instagram", "twitter"} and getattr(self.cfg.engine, "strict_proxy_required", True):
+                    msg = "已启用严格代理锁，匿名评论监控未分配到可用池代理，已跳过以免暴露本机 IP"
+                    w.last_scan_at = datetime.utcnow()
+                    w.last_error = msg
+                    s.add(w); s.commit()
+                    return {"ok": False, "new_comments": 0, "error": msg}
                 elif platform == "tiktok":
                     msg = "绑定的 TikTok 账号不存在或登录态已失效"
                     w.last_scan_at = datetime.utcnow()

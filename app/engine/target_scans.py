@@ -18,6 +18,7 @@ from app.platforms.kuaishou import parse_self_user as parse_ks_self_user
 from app.platforms.tiktok import tiktok_display_text
 from app.platforms.tiktok.urls import profile_url as tiktok_profile_url
 from app.risk import OperationKind
+from app.services import thumb_cache
 from app.settings import get_setting
 
 
@@ -196,9 +197,18 @@ class TargetScanMixin:
                         t.avatar = ava[0] if ava else t.avatar
                 s.add(t)
                 target_name = t.nickname or t.sec_uid[:12]
+                target_avatar = t.avatar or ""
+            else:
+                target_avatar = ""
             s.commit()
             for rec, _, _ in new_records:
                 s.refresh(rec)
+
+        thumb_cache.schedule_thumb_prewarm(
+            [target_avatar, *(aw.cover for _, aw, dl in new_records if aw.cover and not dl)],
+            platform="douyin",
+            proxy=proxy,
+        )
 
         if new_records and not should_backfill:
             await self._notify_new(target_name, [aw for _, aw, _ in new_records])
@@ -217,11 +227,7 @@ class TargetScanMixin:
             if not target:
                 return {"ok": False, "error": "target not found"}
             first_scan = target.last_scan_at is None
-            identity = (
-                self.browser.anon_identity()
-                if callable(getattr(self.browser, "anon_identity", None))
-                else None
-            )
+            identity = None
             proxy = ""
             if target.account_id:
                 acc = s.get(DouyinAccount, target.account_id)
@@ -229,7 +235,9 @@ class TargetScanMixin:
                     if self._proxy_bad(acc):
                         return self._mark_target_skip(
                             target_id, "账号代理标记为不可用(proxy bad),已跳过以免暴露真实 IP")
-                    identity, proxy = self._identity_proxy(acc)
+                    identity, proxy = self._identity_proxy(acc, platform="kuaishou", session=s)
+            if identity is None and not target.account_id:
+                identity, proxy = self._anon_identity_proxy("kuaishou", session=s)
             known = set(s.exec(
                 select(ContentRecord.aweme_id)
                 .where(ContentRecord.target_id == target_id)).all())
@@ -296,9 +304,18 @@ class TargetScanMixin:
                         t.avatar = p.get("avatar") or t.avatar
                 s.add(t)
                 target_name = t.nickname or (user_id[:12] if user_id else "kuaishou")
+                target_avatar = t.avatar or ""
+            else:
+                target_avatar = ""
             s.commit()
             for rec, _, _ in new_records:
                 s.refresh(rec)
+
+        thumb_cache.schedule_thumb_prewarm(
+            [target_avatar, *(aw.cover for _, aw, dl in new_records if aw.cover and not dl)],
+            platform="kuaishou",
+            proxy=proxy,
+        )
 
         if new_records and not should_backfill:
             await self._notify_new(target_name, [aw for _, aw, _ in new_records])
@@ -401,9 +418,18 @@ class TargetScanMixin:
                 s.add(target)
                 target_name = (tiktok_display_text(target.nickname)
                                or (f"@{unique_id}" if unique_id else "tiktok"))
+                target_avatar = target.avatar or ""
+            else:
+                target_avatar = ""
             s.commit()
             for rec, _, _ in new_records:
                 s.refresh(rec)
+
+        thumb_cache.schedule_thumb_prewarm(
+            [target_avatar, *(aw.cover for _, aw, dl in new_records if aw.cover and not dl)],
+            platform="tiktok",
+            proxy=proxy,
+        )
 
         if new_records and not should_backfill:
             await self._notify_new(target_name, [aw for _, aw, _ in new_records])
@@ -423,11 +449,7 @@ class TargetScanMixin:
             if not target:
                 return {"ok": False, "error": "target not found"}
             is_first_scan = target.last_scan_at is None
-            identity = (
-                self.browser.anon_identity()
-                if callable(getattr(self.browser, "anon_identity", None))
-                else None
-            )
+            identity = None
             proxy = ""
             acc_sec_uid = ""
             has_active_account = False
@@ -437,13 +459,15 @@ class TargetScanMixin:
                     if self._proxy_bad(acc):
                         return self._mark_target_skip(
                             target_id, "账号代理标记为不可用(proxy bad),已跳过以免暴露真实 IP")
-                    identity, proxy = self._identity_proxy(acc)
+                    identity, proxy = self._identity_proxy(acc, platform="shipinhao", session=s)
                     acc_sec_uid = acc.sec_uid or ""
                     has_active_account = (
                         acc.platform == "shipinhao"
                         and acc.status == "active"
                         and bool(acc.storage_state or acc.creator_storage_state)
                     )
+            if identity is None and not target.account_id:
+                identity, proxy = self._anon_identity_proxy("shipinhao", session=s)
             known = set(s.exec(
                 select(ContentRecord.aweme_id)
                 .where(ContentRecord.target_id == target_id)).all())
@@ -553,9 +577,18 @@ class TargetScanMixin:
                         t.avatar = first_aw.avatar
                 s.add(t)
                 target_name = t.nickname or (user_id[:16] if user_id else "shipinhao")
+                target_avatar = t.avatar or ""
+            else:
+                target_avatar = ""
             s.commit()
             for rec, _, _ in new_records:
                 s.refresh(rec)
+
+        thumb_cache.schedule_thumb_prewarm(
+            [target_avatar, *(aw.cover for _, aw, dl in new_records if aw.cover and not dl)],
+            platform="shipinhao",
+            proxy=proxy,
+        )
 
         if new_records and not should_backfill:
             await self._notify_new(target_name, [aw for _, aw, _ in new_records])

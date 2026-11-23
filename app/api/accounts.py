@@ -185,6 +185,8 @@ async def list_accounts(platform: str | None = None):
                 "login_type": "cookie" if a.cookie else "scan",
                 "monitor_count": used,
                 # 风控隔离画像
+                "proxy_id": a.proxy_id,
+                "require_proxy": bool(getattr(a, "require_proxy", True)),
                 "proxy": proxies_service._mask_proxy(a.proxy),
                 "proxy_status": a.proxy_status,
                 "has_proxy": bool(a.proxy),
@@ -442,11 +444,6 @@ async def set_account_browser_backend(
         account = session.get(DouyinAccount, account_id)
         if account is None:
             raise HTTPException(404, "账号不存在")
-        if account.platform == "xhs" and status.get("name") != LOCAL_BACKEND:
-            raise HTTPException(
-                400,
-                "小红书账号仅支持系统 Chrome/CDP 原生环境，不能切换到指纹内核",
-            )
 
     # A user-held headed context owns the same profile and must be released
     # before switching its runtime executable.

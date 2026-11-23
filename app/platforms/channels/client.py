@@ -515,6 +515,7 @@ class ChannelsProtocolClient:
         object_nonce_id: str = "",
         export_id: str = "",
         share_url: str = "",
+        proxy: str = "",
     ) -> tuple[dict[str, Any], str]:
         """获取单条视频号作品完整 `ChannelsObject`(含加密 CDN 直链、`urlToken`、`decodeKey`、`objectNonceId`)。"""
         oid = (object_id or "").strip()
@@ -529,7 +530,9 @@ class ChannelsProtocolClient:
                 eid = ref.export_id or eid
                 if ref.share_id and not eid:
                     try:
-                        preview = await fetch_finder_preview_info(share_id=ref.share_id)
+                        preview = await fetch_finder_preview_info(
+                            share_id=ref.share_id, proxy=proxy
+                        )
                         eid = str(preview.get("export_id") or "")
                     except Exception:
                         eid = ref.share_id
@@ -537,7 +540,7 @@ class ChannelsProtocolClient:
         if oid.startswith("sph:") and not eid:
             sid = oid[4:]
             try:
-                preview = await fetch_finder_preview_info(share_id=sid)
+                preview = await fetch_finder_preview_info(share_id=sid, proxy=proxy)
                 eid = str(preview.get("export_id") or sid)
             except Exception:
                 eid = sid
@@ -876,6 +879,7 @@ class ChannelsProtocolClient:
         limit: int = 200,
         include_replies: bool = True,
         max_pages: int = 50,
+        proxy: str = "",
     ) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
         """使用 `pc_findergetcommentlist`(cmdid 10753) 采集主评论与各根评论独立二级回复线程。"""
         if limit <= 0:
@@ -889,6 +893,7 @@ class ChannelsProtocolClient:
             detail_obj, detail_err = await self.fetch_feed_detail(
                 object_id=oid if oid.isdecimal() else "",
                 export_id="" if oid.isdecimal() else oid,
+                proxy=proxy,
             )
             if detail_obj:
                 oid = str(detail_obj.get("id") or detail_obj.get("objectId") or oid)

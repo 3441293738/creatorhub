@@ -325,45 +325,15 @@ class CommentTaskRunnerMixin:
                     async with client.session_scope():
                         ok, result, err = await client.post_comment(
                             aweme_id, content, reply_comment_id=target_cid)
-                if (not ok and dy_write_mode == "hybrid"
-                        and str(err or "").startswith(
-                            "api_requires_browser_security:")):
-                    secure_data, secure_error, secure_uncertain = (
-                        await douyin_secure_post_api(
-                            self.browser, identity,
-                            "/aweme/v1/web/comment/publish/",
-                            {"device_platform": "webapp", "aid": "6383",
-                             "channel": "channel_pc_web",
-                             "aweme_id": aweme_id, "item_type": 0},
-                            {"aweme_id": aweme_id, "text": content,
-                             "item_type": 0, "reply_id": target_cid,
-                             "reply_comment_id": target_cid,
-                             "at_users": "[]"},
-                            timeout_ms=(
-                                self.cfg.engine.request_timeout_seconds * 1000)))
-                    method = "api_browser_context"
-                    if secure_uncertain:
-                        ok, result, err = False, "", secure_error
-                    elif secure_data is None:
-                        ok, result, err = False, "", secure_error
-                    else:
-                        client.last_response = {
-                            "browser_security_context_required": True,
-                            "dtrait_header_attached": True,
-                        }
-                        ok, err = client._write_result(
-                            secure_data, secure_error or "secure_api_no_response")
-                        comment = secure_data.get("comment") or {}
-                        result = (str(comment.get("cid")
-                                      or comment.get("comment_id")
-                                      or secure_data.get("comment_id") or "ok")
-                                  if ok else "")
-                # Only a response that clearly rejected the POST may enter the
-                # browser fallback. Unknown request outcome remains uncertain.
+                # Only a response that clearly rejected the POST (or requested
+                # browser security context) may enter the real UI fallback.
                 if (not ok and dy_write_mode == "hybrid"
                         and not str(err or "").startswith("write_uncertain:")):
                     category, _signal = classify_platform_error(err)
-                    if category in {RiskCategory.BUSINESS, RiskCategory.RISK}:
+                    if (
+                        str(err or "").startswith("api_requires_browser_security:")
+                        or category in {RiskCategory.BUSINESS, RiskCategory.RISK}
+                    ):
                         ok, err = await post_comment_browser(
                             self.browser, identity, aweme_id, content,
                             reply_to_text=target_text if target_cid else "",

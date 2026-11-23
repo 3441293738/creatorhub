@@ -394,6 +394,24 @@ def decode_field(raw: bytes, config: tuple[int, int, int | None, int, int]) -> s
     return "".join(out)
 
 
+def derive_identity_hashes(account_seed: str = "") -> tuple[str, str, str]:
+    """Derive deterministic per-account non-zero ``(canvas_hash, webgl_hash, device_hash)``.
+
+    When ``account_seed`` is empty, returns the neutral placeholders
+    ``(CANVAS_HASH, WEBGL_HASH, DEVICE_HASH)`` so bare calls stay byte-identical.
+    """
+    seed = str(account_seed or "").strip()
+    if not seed:
+        return CANVAS_HASH, WEBGL_HASH, DEVICE_HASH
+    digest = hashlib.sha256(f"tiktok-webmssdk-fp|{seed}".encode("utf-8")).digest()
+    canvas_u32 = (int.from_bytes(digest[0:4], "big") & 0x7FFFFFFF) or 0x1A2B3C4D
+    webgl_u32 = (int.from_bytes(digest[4:8], "big") & 0xFFFFFFFF) or 0x5E6F7A8B
+    device_hex = hashlib.md5(f"tiktok-webmssdk-dev|{seed}".encode("utf-8")).hexdigest()
+    if int(device_hex, 16) == 0:
+        device_hex = "1" + device_hex[1:]
+    return str(canvas_u32), str(webgl_u32), device_hex
+
+
 def dynosaur_payload(
     query: str,
     user_agent: str,
@@ -403,6 +421,10 @@ def dynosaur_payload(
     sequence: int = CALL_SEQUENCE_START,
     env_code: int = ENV_CODE,
     ub_code: int = UB_CODE,
+    account_seed: str = "",
+    canvas_hash: str | None = None,
+    webgl_hash: str | None = None,
+    device_hash: str | None = None,
 ) -> bytes:
     """The environment report, 25 TLV fields with keys 0x20..0x38 ascending.
 
@@ -412,6 +434,11 @@ def dynosaur_payload(
     User-Agent, which is why the signature has to be computed with the same UA
     the request is sent with.
     """
+    def_canvas, def_webgl, def_device = derive_identity_hashes(account_seed)
+    eff_canvas = def_canvas if canvas_hash is None else str(canvas_hash)
+    eff_webgl = def_webgl if webgl_hash is None else str(webgl_hash)
+    eff_device = def_device if device_hash is None else str(device_hash)
+
     fields: dict[int, bytes] = {
         0x21: encode_field("1", ENCODER_B),
         0x22: encode_field("1", ENCODER_B),
@@ -420,18 +447,18 @@ def dynosaur_payload(
         0x25: encode_field(str(sequence), ENCODER_A),
         0x26: encode_field(str(env_code), ENCODER_A),
         0x27: encode_field(str(timestamp), ENCODER_A),
-        0x28: encode_field(WEBGL_HASH, ENCODER_A),
+        0x28: encode_field(eff_webgl, ENCODER_A),
         0x29: encode_field("0", ENCODER_A),
         0x2A: encode_field(SDK_VERSION, ENCODER_A),
         0x2B: _be(hash_state(""), 4),
-        0x2C: encode_field(CANVAS_HASH, ENCODER_A),
+        0x2C: encode_field(eff_canvas, ENCODER_A),
         0x2D: encode_field("0", ENCODER_A),
         0x2E: _be(hash_state(query), 4),
         0x2F: encode_field(str(sequence), ENCODER_A),
         0x30: _be(hash_state(user_agent), 4),
         0x31: encode_field(SCM_VERSION, ENCODER_A),
         0x32: encode_field(COMPONENT_VERSION, ENCODER_A),
-        0x33: encode_field(DEVICE_HASH, ENCODER_A),
+        0x33: encode_field(eff_device, ENCODER_A),
         0x34: encode_field(str(nonce), ENCODER_A),
         0x35: encode_field(PAGE, ENCODER_A),
         0x36: encode_field(str(ub_code), ENCODER_A),
@@ -570,6 +597,10 @@ def sign(
     nonce: int | None = None,
     nonce2: int | None = None,
     sequence: int = CALL_SEQUENCE_START,
+    account_seed: str = "",
+    canvas_hash: str | None = None,
+    webgl_hash: str | None = None,
+    device_hash: str | None = None,
     rng: random.Random | None = None,
     key: Sequence[int] | None = None,
     key2: Sequence[int] | None = None,
@@ -600,7 +631,17 @@ def sign(
 
     query = encode_browser_query(pairs)
     dynosaur = seal(
-        dynosaur_payload(query, user_agent, timestamp=stamp, nonce=first_nonce, sequence=sequence),
+        dynosaur_payload(
+            query,
+            user_agent,
+            timestamp=stamp,
+            nonce=first_nonce,
+            sequence=sequence,
+            account_seed=account_seed,
+            canvas_hash=canvas_hash,
+            webgl_hash=webgl_hash,
+            device_hash=device_hash,
+        ),
         key if key is not None else _random_key(source),
     )
     # The seal covers the query as it stands after X-Dynosaur and msToken have
@@ -642,6 +683,8 @@ __all__ = [
     "BOGUS_PARAM",
     "BOGUS_VALUE",
     "CALL_SEQUENCE_START",
+    "CANVAS_HASH",
+    "DEVICE_HASH",
     "DYNOSAUR_PARAM",
     "ENCODER_A",
     "ENCODER_B",
@@ -651,7 +694,9 @@ __all__ = [
     "SCM_VERSION",
     "SDK_VERSION",
     "UB_CODE",
+    "WEBGL_HASH",
     "decode_field",
+    "derive_identity_hashes",
     "dynosaur_payload",
     "encode_field",
     "encode_query",

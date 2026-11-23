@@ -83,6 +83,11 @@ class EngineSettingsPatch(BaseModel):
     action_hourly_cap_per_account: int | None = Field(None, ge=0, le=10000)
     action_min_gap_seconds: int | None = Field(None, ge=0, le=86400)
     verify_proxy_region: bool | None = None
+    strict_proxy_required: bool | None = None
+    forbid_same_platform_shared_proxy: bool | None = None
+    quiet_hours_enabled: bool | None = None
+    quiet_hours_include_reads: bool | None = None
+    quiet_hours_wake_jitter_minutes: int | None = Field(None, ge=0, le=120)
     native_write_gate_enabled: bool | None = None
     native_write_require_system_chrome: bool | None = None
     native_write_require_verified_proxy: bool | None = None

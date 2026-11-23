@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import h11
 import httpx
+from curl_cffi.requests import AsyncSession
 from websockets.asyncio.server import Server as WsServer
 from websockets.asyncio.server import ServerConnection
 from websockets.asyncio.server import serve as ws_serve
@@ -347,7 +348,7 @@ class ChannelsProxyManager:
         self._proxy_server: asyncio.AbstractServer | None = None
         self._ws_server: WsServer | None = None
         self._ws_hub_port: int | None = None
-        self._upstream_client: httpx.AsyncClient | None = None
+        self._upstream_client: httpx.AsyncClient | AsyncSession | None = None
         self._client_tasks: set[asyncio.Task[Any]] = set()
 
         self._pages: dict[str, ConnectedFinderPage] = {}
@@ -433,6 +434,48 @@ class ChannelsProxyManager:
         configured_bridge = bridge.replace("/*__CREATORHUB_PROXY_CONFIG__*/ null", cfg_json, 1)
         return (bootstrap + "\n" + configured_bridge).encode("utf-8")
 
+    def _upstream_proxy_url(self) -> str | None:
+        up = self._upstream_proxy
+        if not up.get("enabled"):
+            return None
+        up_host = str(up.get("host") or "")
+        up_port = int(up.get("port") or 0)
+        if not up_host or not up_port or up_port == self._bound_port:
+            raise ConnectionError(
+                f"Upstream proxy is enabled ({up_host}:{up_port}) but invalid or matches bound port"
+            )
+        return f"http://{up_host}:{up_port}"
+
+    async def _send_upstream_request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Any,
+        body: bytes | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        assert self._upstream_client is not None
+        extra: dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
+        if isinstance(self._upstream_client, httpx.AsyncClient):
+            return await self._upstream_client.request(
+                method,
+                url,
+                headers=headers,
+                content=body,
+                **extra,
+            )
+        return await self._upstream_client.request(
+            method,
+            url,
+            headers=headers,
+            data=body,
+            proxy=self._upstream_proxy_url(),
+            allow_redirects=False,
+            discard_cookies=True,
+            **extra,
+        )
+
     async def _discover_upstream_finder_module_url(self) -> str:
         now = time.time()
         if self._cached_finder_module_url and (now - self._cached_finder_module_at) < 1800:
@@ -440,7 +483,8 @@ class ChannelsProxyManager:
         if self._upstream_client is None:
             return ""
         try:
-            resp = await self._upstream_client.get(
+            resp = await self._send_upstream_request(
+                "GET",
                 "https://channels.weixin.qq.com/web/pages/home",
                 headers={
                     "User-Agent": _SYNTHETIC_WECHAT_UA,
@@ -577,12 +621,22 @@ class ChannelsProxyManager:
             self.ca.ssl_context_for_host("channels.weixin.qq.com")
 
             if self._upstream_client is None:
-                self._upstream_client = httpx.AsyncClient(
-                    trust_env=False,
-                    follow_redirects=False,
-                    timeout=30.0,
-                    transport=self._upstream_transport,
-                )
+                if self._upstream_transport is not None:
+                    self._upstream_client = httpx.AsyncClient(
+                        trust_env=False,
+                        follow_redirects=False,
+                        timeout=30.0,
+                        transport=self._upstream_transport,
+                    )
+                else:
+                    self._upstream_client = AsyncSession(
+                        impersonate="chrome131",
+                        trust_env=False,
+                        allow_redirects=False,
+                        discard_cookies=True,
+                        default_headers=False,
+                        timeout=30.0,
+                    )
 
             try:
                 self._ws_server = await ws_serve(
@@ -714,7 +768,10 @@ class ChannelsProxyManager:
 
         if self._upstream_client is not None:
             try:
-                await self._upstream_client.aclose()
+                if hasattr(self._upstream_client, "aclose"):
+                    await self._upstream_client.aclose()
+                else:
+                    await self._upstream_client.close()
             except Exception:
                 pass
             self._upstream_client = None
@@ -999,34 +1056,48 @@ class ChannelsProxyManager:
         host: str,
         port: int,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        """Connect to target via pre-existing local HTTP proxy when active, falling back to direct TCP."""
+        """Connect to target via pre-existing local HTTP proxy when active; fail-closed if upstream fails."""
         is_loopback = host in {"127.0.0.1", "localhost", "::1"}
         up = self._upstream_proxy
         if not is_loopback and up.get("enabled"):
             up_host = str(up.get("host") or "")
             up_port = int(up.get("port") or 0)
-            if up_host and up_port and up_port != self._bound_port:
-                up_writer: asyncio.StreamWriter | None = None
-                try:
-                    up_reader, up_writer = await asyncio.wait_for(
-                        asyncio.open_connection(up_host, up_port),
-                        timeout=4.0,
-                    )
-                    authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
-                    connect_req = (
-                        f"CONNECT {authority} HTTP/1.1\r\n"
-                        f"Host: {authority}\r\n"
-                        f"Proxy-Connection: Keep-Alive\r\n\r\n"
-                    ).encode("latin-1")
-                    up_writer.write(connect_req)
-                    await up_writer.drain()
-                    resp_head = await asyncio.wait_for(up_reader.readuntil(b"\r\n\r\n"), timeout=10.0)
-                    status_line = resp_head.split(b"\r\n", 1)[0]
-                    if b" 200 " in status_line or status_line.endswith(b" 200"):
-                        return up_reader, up_writer
-                    await self._close_writer(up_writer)
-                except Exception:
-                    await self._close_writer(up_writer)
+            if not up_host or not up_port or up_port == self._bound_port:
+                raise ConnectionError(
+                    f"Upstream proxy is enabled ({up_host}:{up_port}) but invalid or matches bound port"
+                )
+            up_writer: asyncio.StreamWriter | None = None
+            try:
+                up_reader, up_writer = await asyncio.wait_for(
+                    asyncio.open_connection(up_host, up_port),
+                    timeout=4.0,
+                )
+                authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+                connect_req = (
+                    f"CONNECT {authority} HTTP/1.1\r\n"
+                    f"Host: {authority}\r\n"
+                    f"Proxy-Connection: Keep-Alive\r\n\r\n"
+                ).encode("latin-1")
+                up_writer.write(connect_req)
+                await up_writer.drain()
+                resp_head = await asyncio.wait_for(up_reader.readuntil(b"\r\n\r\n"), timeout=10.0)
+                status_line = resp_head.split(b"\r\n", 1)[0]
+                if b" 200 " in status_line or status_line.endswith(b" 200"):
+                    return up_reader, up_writer
+                await self._close_writer(up_writer)
+                up_writer = None
+                raise ConnectionError(
+                    f"Upstream proxy {up_host}:{up_port} rejected CONNECT to {authority}: "
+                    f"{status_line.decode('latin-1', errors='replace')}"
+                )
+            except ConnectionError:
+                await self._close_writer(up_writer)
+                raise
+            except Exception as exc:
+                await self._close_writer(up_writer)
+                raise ConnectionError(
+                    f"Upstream proxy {up_host}:{up_port} connection failed for {host}:{port}: {exc}"
+                ) from exc
 
         return await asyncio.wait_for(
             asyncio.open_connection(host, port),
@@ -1325,13 +1396,23 @@ class ChannelsProxyManager:
         assert self._upstream_client is not None
         url = f"https://{hostname}{target}" if target.startswith("/") else target
 
+        ua_bytes = b""
         accept_header = ""
         for k, v in req_headers:
-            if k.lower() == b"accept":
+            kl = k.lower()
+            if kl == b"user-agent":
+                ua_bytes = v.lower()
+            elif kl == b"accept":
                 accept_header = v.decode("latin-1", errors="ignore").lower()
-                break
-        likely_html_nav = method.upper() in {"GET", "HEAD"} and (
-            "text/html" in accept_header or target.startswith("/web/pages/")
+
+        parsed_target = urlsplit(target)
+        norm_path = (parsed_target.path or "/").rstrip("/") or "/"
+        is_wechat_ua = any(marker in ua_bytes for marker in _WECHAT_UA_MARKERS)
+        should_inject_bridge = norm_path in BRIDGE_LANDING_PATHS or is_wechat_ua
+        likely_html_nav = (
+            should_inject_bridge
+            and method.upper() in {"GET", "HEAD"}
+            and ("text/html" in accept_header or target.startswith("/web/pages/"))
         )
 
         forward_headers: list[tuple[str, str]] = []
@@ -1344,15 +1425,15 @@ class ChannelsProxyManager:
             forward_headers.append(
                 (k.decode("latin-1", errors="replace"), v.decode("latin-1", errors="replace"))
             )
-        # Only advertise gzip/deflate since brotli/zstd are not installed in this environment.
+        # Only advertise gzip/deflate since brotli/zstd may not be installed for httpx transports.
         forward_headers.append(("Accept-Encoding", "gzip, deflate"))
 
         try:
-            resp = await self._upstream_client.request(
+            resp = await self._send_upstream_request(
                 method,
                 url,
                 headers=forward_headers,
-                content=req_body if req_body else None,
+                body=req_body if req_body else None,
             )
         except Exception as exc:
             err_body = f"Upstream proxy error: {sanitize_bridge_error(exc)}".encode("utf-8")
@@ -1374,7 +1455,8 @@ class ChannelsProxyManager:
         body = resp.content
         injected_html = False
         if (
-            method.upper() == "GET"
+            should_inject_bridge
+            and method.upper() == "GET"
             and resp.status_code == 200
             and "text/html" in content_type
         ):
@@ -1483,13 +1565,18 @@ class ChannelsProxyManager:
                 return
 
         try:
-            resp = await self._upstream_client.request(
+            resp = await self._send_upstream_request(
                 method,
                 target,
                 headers=forward_headers,
-                content=body or None,
+                body=body or None,
             )
-            chunks = [f"{version} {resp.status_code} {resp.reason_phrase}\r\n".encode("latin-1")]
+            reason = (
+                getattr(resp, "reason_phrase", None)
+                or getattr(resp, "reason", None)
+                or "OK"
+            )
+            chunks = [f"{version} {resp.status_code} {reason}\r\n".encode("latin-1")]
             for k_str, v_str in resp.headers.multi_items():
                 kl = k_str.lower().encode("latin-1")
                 if kl in _RESPONSE_STRIP_HEADERS:

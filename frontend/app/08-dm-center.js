@@ -219,10 +219,10 @@ function markDmRead(convId) {
 function dmVideoCard(c) {
   const url = c.item_id ? `https://www.douyin.com/video/${encodeURIComponent(c.item_id)}` : "#";
   const cover = c.cover
-    ? `<img src="${esc(c.cover)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
+    ? `<img src="${esc(safeMediaUrl(c.cover))}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
     : "";
   const avatar = c.avatar
-    ? `<img class="av" src="${esc(c.avatar)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
+    ? `<img class="av" src="${esc(safeMediaUrl(c.avatar))}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
     : "";
   return `<a class="dm-vcard" href="${url}" target="_blank" rel="noopener">
     <div class="cov">${cover}<span class="play">▶</span></div>
@@ -470,16 +470,15 @@ async function setBrowserBackend(id) {
     toast("读取浏览器环境失败:" + e.message, "err");
     return;
   }
-  const localOnly = account.platform === "xhs";
-  const options = browserChoiceOptions(catalog, { localOnly });
-  const currentChoice = localOnly ? "local"
-    : account.browser_backend === "fingerprint_chromium" && account.browser_runtime_id
+  const isXhs = account.platform === "xhs";
+  const options = browserChoiceOptions(catalog, { localOnly: false });
+  const currentChoice = account.browser_backend === "fingerprint_chromium" && account.browser_runtime_id
     ? `fingerprint_chromium::${account.browser_runtime_id}`
-    : (account.browser_backend || "default");
+    : (account.browser_backend || (isXhs ? "local" : "default"));
   const selected = await uiSelect({
     title: "账号浏览器环境",
-    hint: localOnly
-      ? `${account.nickname} · 小红书固定使用系统 Chrome/CDP 原生环境。`
+    hint: isXhs
+      ? `${account.nickname} · 单号推荐系统 Chrome/CDP；同机多小红书号推荐切换至 Fingerprint Chromium 隔离硬件指纹。`
       : `${account.nickname} · 切换时会关闭该账号当前浏览器，下次任务使用新内核。`,
     options,
     value: currentChoice,

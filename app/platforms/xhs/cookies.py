@@ -5,6 +5,7 @@ import json
 import math
 import re
 import time
+from urllib.parse import urlsplit
 
 
 _NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
@@ -100,3 +101,41 @@ def has_creator_cookies(storage_state_json: str) -> bool:
     """A creator session must be nonempty; a client identifier is not a login."""
     return any(name in _CREATOR_SESSIONS and value
                for name, value in _snapshot_cookies(storage_state_json).items())
+
+
+def extract_b1_from_state(storage_state_json: str) -> str:
+    """Extract first-party XHS `b1` environment fingerprint from `origins[].localStorage`."""
+    try:
+        state = json.loads(storage_state_json or "{}") if isinstance(storage_state_json, str) else storage_state_json
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(state, dict) or not isinstance(state.get("origins"), list):
+        return ""
+    valid_origins = []
+    for entry in state.get("origins", []):
+        if not isinstance(entry, dict):
+            continue
+        origin_url = str(entry.get("origin") or "").strip()
+        try:
+            host = (urlsplit(origin_url).hostname or "").lower()
+        except ValueError:
+            continue
+        if host and _domain_allowed(host):
+            valid_origins.append(entry)
+    valid_origins.sort(
+        key=lambda item: (
+            0 if "www.xiaohongshu.com" in str(item.get("origin") or "").lower()
+            else 1 if "creator.xiaohongshu.com" in str(item.get("origin") or "").lower()
+            else 2
+        )
+    )
+    for entry in valid_origins:
+        ls = entry.get("localStorage")
+        if not isinstance(ls, list):
+            continue
+        for pair in ls:
+            if isinstance(pair, dict) and pair.get("name") == "b1":
+                val = str(pair.get("value") or "").strip()
+                if val:
+                    return val
+    return ""

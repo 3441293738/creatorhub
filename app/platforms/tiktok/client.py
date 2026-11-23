@@ -5,6 +5,7 @@ mapping. Any re-encoding after :func:`offline_sign.sign` invalidates X-Gnarly.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import re
@@ -15,14 +16,124 @@ from urllib.parse import quote
 from curl_cffi.requests import AsyncSession
 
 from ...browser.manager import normalize_proxy
-from ...netfp import impersonate_for_ua
+from ...netfp import curl_proxy_url, impersonate_for_ua
 from .extract import flatten_tiktok_comments
-from .offline_sign import BOGUS_VALUE, SDK_VERSION, SCM_VERSION, pick_ms_token, sign
+from .offline_sign import (
+    BOGUS_VALUE,
+    CALL_SEQUENCE_START,
+    SCM_VERSION,
+    SDK_VERSION,
+    pick_ms_token,
+    sign,
+)
 
 BASE = "https://www.tiktok.com"
 SEARCH_ITEM_PATH = "/api/search/item/full/"
 COMMENT_LIST_PATH = "/api/comment/list/"
 COMMENT_REPLY_PATH = "/api/comment/list/reply/"
+DEFAULT_TIKTOK_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+_CN_DOMESTIC_TIMEZONES = frozenset({
+    "Asia/Shanghai",
+    "Asia/Chongqing",
+    "Asia/Harbin",
+    "Asia/Urumqi",
+    "PRC",
+})
+
+_TZ_TO_GEO: dict[str, tuple[str, str, str]] = {
+    "Asia/Singapore": ("SG", "en-SG", "en"),
+    "Asia/Tokyo": ("JP", "ja-JP", "ja"),
+    "Asia/Seoul": ("KR", "ko-KR", "ko"),
+    "Europe/London": ("GB", "en-GB", "en"),
+    "Asia/Hong_Kong": ("HK", "zh-Hant-HK", "zh-Hant"),
+    "Asia/Taipei": ("TW", "zh-Hant-TW", "zh-Hant"),
+    "Asia/Bangkok": ("TH", "th-TH", "th"),
+    "Asia/Jakarta": ("ID", "id-ID", "id"),
+    "Asia/Ho_Chi_Minh": ("VN", "vi-VN", "vi"),
+    "Asia/Saigon": ("VN", "vi-VN", "vi"),
+    "Asia/Kuala_Lumpur": ("MY", "ms-MY", "ms"),
+    "Asia/Manila": ("PH", "en-PH", "en"),
+    "Europe/Paris": ("FR", "fr-FR", "fr"),
+    "Europe/Berlin": ("DE", "de-DE", "de"),
+    "Europe/Madrid": ("ES", "es-ES", "es"),
+    "Europe/Rome": ("IT", "it-IT", "it"),
+    "Australia/Sydney": ("AU", "en-AU", "en"),
+    "Australia/Melbourne": ("AU", "en-AU", "en"),
+    "America/Toronto": ("CA", "en-CA", "en"),
+    "America/Vancouver": ("CA", "en-CA", "en"),
+    "America/Sao_Paulo": ("BR", "pt-BR", "pt"),
+    "America/Mexico_City": ("MX", "es-MX", "es"),
+}
+
+_REGION_DEFAULTS: dict[str, tuple[str, str, str]] = {
+    "US": ("America/New_York", "en-US", "en"),
+    "SG": ("Asia/Singapore", "en-SG", "en"),
+    "JP": ("Asia/Tokyo", "ja-JP", "ja"),
+    "KR": ("Asia/Seoul", "ko-KR", "ko"),
+    "GB": ("Europe/London", "en-GB", "en"),
+    "HK": ("Asia/Hong_Kong", "zh-Hant-HK", "zh-Hant"),
+    "TW": ("Asia/Taipei", "zh-Hant-TW", "zh-Hant"),
+    "TH": ("Asia/Bangkok", "th-TH", "th"),
+    "ID": ("Asia/Jakarta", "id-ID", "id"),
+    "VN": ("Asia/Ho_Chi_Minh", "vi-VN", "vi"),
+    "MY": ("Asia/Kuala_Lumpur", "ms-MY", "ms"),
+    "PH": ("Asia/Manila", "en-PH", "en"),
+    "FR": ("Europe/Paris", "fr-FR", "fr"),
+    "DE": ("Europe/Berlin", "de-DE", "de"),
+    "ES": ("Europe/Madrid", "es-ES", "es"),
+    "IT": ("Europe/Rome", "it-IT", "it"),
+    "AU": ("Australia/Sydney", "en-AU", "en"),
+    "CA": ("America/Toronto", "en-CA", "en"),
+    "BR": ("America/Sao_Paulo", "pt-BR", "pt"),
+    "MX": ("America/Mexico_City", "es-MX", "es"),
+}
+
+
+def _normalize_tiktok_geo(
+    locale: str = "en-US",
+    timezone: str = "America/New_York",
+    region: str = "US",
+) -> tuple[str, str, str, str]:
+    """Align ``(locale, timezone, region, app_language)`` coherently for overseas TikTok Web."""
+    loc = str(locale or "").strip().replace("_", "-") or "en-US"
+    tz = str(timezone or "").strip() or "America/New_York"
+    reg = str(region or "").strip().upper()
+
+    is_cn_tz = tz in _CN_DOMESTIC_TIMEZONES
+    is_cn_loc = loc.lower().startswith("zh-cn") or loc.lower() == "zh"
+
+    if reg in {"", "US", "CN"}:
+        if tz in _TZ_TO_GEO:
+            reg = _TZ_TO_GEO[tz][0]
+        elif not is_cn_tz and not tz.startswith(("America/", "US/", "Pacific/Honolulu")):
+            parts = loc.split("-")
+            if len(parts) >= 2 and len(parts[-1]) == 2 and parts[-1].isalpha():
+                cand_reg = parts[-1].upper()
+                if cand_reg != "CN":
+                    reg = cand_reg
+        if reg in {"", "CN"}:
+            reg = "US"
+
+    def_tz, def_loc, def_lang = _REGION_DEFAULTS.get(
+        reg, ("America/New_York", "en-US", "en")
+    )
+    if is_cn_tz:
+        tz = def_tz
+    if is_cn_loc:
+        loc = def_loc
+
+    loc_low = loc.lower()
+    if loc_low.startswith(("zh-tw", "zh-hk", "zh-hant")):
+        app_lang = "zh-Hant"
+    elif loc_low.startswith("zh"):
+        app_lang = "zh-Hans"
+    else:
+        app_lang = loc.split("-", 1)[0].lower() or def_lang
+    return loc, tz, reg, app_lang
 
 
 def _cookie_map(storage_state: str | Mapping | None) -> dict[str, str]:
@@ -54,11 +165,9 @@ def _app_version(user_agent: str) -> str:
 
 
 def _os_name(user_agent: str) -> str:
-    value = (user_agent or "").lower()
-    if "macintosh" in value or "mac os" in value:
+    value = user_agent or ""
+    if "Mac OS" in value or "Macintosh" in value or "mac os" in value.lower() or "macintosh" in value.lower():
         return "mac"
-    if "linux" in value and "android" not in value:
-        return "linux"
     return "windows"
 
 
@@ -69,22 +178,47 @@ def _device_id(seed: str) -> str:
     )
 
 
+def _derive_tiktok_account_seed(
+    account_seed: str,
+    device_seed: str,
+    cookies: Mapping[str, str],
+    user_agent: str,
+    proxy: str | None,
+) -> str:
+    explicit = str(account_seed or "").strip()
+    if explicit:
+        return explicit
+    if device_seed and str(device_seed).strip() not in {"", "creatorhub"}:
+        return str(device_seed).strip()
+    material = (
+        cookies.get("sessionid")
+        or cookies.get("sessionid_ss")
+        or cookies.get("ttwid")
+        or cookies.get("msToken")
+        or f"{user_agent}|{proxy or 'direct'}"
+    )
+    return hashlib.sha256(f"tiktok-acct-seed|{material}".encode("utf-8")).hexdigest()[:32]
+
+
 def search_pairs(
     keyword: str, *, count: int, offset: int = 0, user_agent: str,
     locale: str = "en-US", timezone: str = "America/New_York",
     viewport: tuple[int, int] = (1920, 1080), region: str = "US",
     device_seed: str = "creatorhub",
 ) -> list[tuple[str, str]]:
-    language = (locale or "en-US").split("-", 1)[0] or "en"
+    norm_locale, norm_tz, norm_region, language = _normalize_tiktok_geo(
+        locale, timezone, region
+    )
+    os_val = _os_name(user_agent)
     width, height = viewport
     values = {
         "aid": "1988",
         "app_language": language,
         "app_name": "tiktok_web",
-        "browser_language": locale or "en-US",
+        "browser_language": norm_locale,
         "browser_name": "Mozilla",
         "browser_online": "true",
-        "browser_platform": "Win32" if _os_name(user_agent) == "windows" else "MacIntel",
+        "browser_platform": "MacIntel" if os_val == "mac" else "Win32",
         "browser_version": _app_version(user_agent),
         "channel": "tiktok_web",
         "cookie_enabled": "true",
@@ -96,14 +230,14 @@ def search_pairs(
         "is_fullscreen": "false",
         "is_page_visible": "true",
         "language": language,
-        "os": _os_name(user_agent),
-        "priority_region": region or "US",
+        "os": os_val,
+        "priority_region": norm_region,
         "referer": "",
-        "region": region or "US",
+        "region": norm_region,
         "root_referer": "https://www.tiktok.com/",
         "screen_height": str(height or 1080),
         "screen_width": str(width or 1920),
-        "tz_name": timezone or "America/New_York",
+        "tz_name": norm_tz,
         "webcast_language": language,
         "keyword": str(keyword or "").strip(),
         "offset": str(max(0, int(offset))),
@@ -122,9 +256,10 @@ def comment_pairs(
     viewport: tuple[int, int] = (1920, 1080), region: str = "US",
     device_seed: str = "creatorhub",
 ) -> list[tuple[str, str]]:
+    _, _, norm_region, _ = _normalize_tiktok_geo(locale, timezone, region)
     pairs = search_pairs(
         "x", count=1, user_agent=user_agent, locale=locale,
-        timezone=timezone, viewport=viewport, region=region,
+        timezone=timezone, viewport=viewport, region=norm_region,
         device_seed=device_seed,
     )
     output = [
@@ -136,7 +271,7 @@ def comment_pairs(
         ("aweme_id", str(aweme_id)),
         ("cursor", str(cursor or "0")),
         ("count", str(max(1, min(50, int(count))))),
-        ("current_region", region or "US"),
+        ("current_region", norm_region),
     ))
     return output
 
@@ -211,37 +346,81 @@ class TikTokNativeClient:
         proxy: str = "", locale: str = "en-US",
         timezone: str = "America/New_York", viewport: tuple[int, int] = (1920, 1080),
         region: str = "US", device_seed: str = "creatorhub", timeout: float = 30.0,
+        account_seed: str = "",
     ):
         self.cookies = _cookie_map(storage_state)
-        self.user_agent = str(user_agent or "")
-        self.proxy = normalize_proxy(proxy) or None
-        self.locale = locale or "en-US"
-        self.timezone = timezone or "America/New_York"
+        self.user_agent = str(user_agent or "").strip() or DEFAULT_TIKTOK_UA
+        self.proxy = curl_proxy_url(proxy) or None
+        norm_locale, norm_tz, norm_region, norm_lang = _normalize_tiktok_geo(
+            locale, timezone, region
+        )
+        self.locale = norm_locale
+        self.timezone = norm_tz
         self.viewport = viewport
-        self.region = region or "US"
-        self.device_seed = device_seed or "creatorhub"
+        self.region = norm_region
+        self.app_language = norm_lang
+        self.account_seed = _derive_tiktok_account_seed(
+            account_seed, device_seed, self.cookies, self.user_agent, self.proxy
+        )
+        self.device_seed = (
+            str(device_seed).strip()
+            if (device_seed and str(device_seed).strip() not in {"", "creatorhub"})
+            else self.account_seed
+        )
         self.timeout = float(timeout)
         self.impersonate = impersonate_for_ua(self.user_agent)
+        self._call_sequence: int = CALL_SEQUENCE_START
+
+    def _headers(self, *, referer: str) -> dict[str, str]:
+        m = re.search(r"Chrome/(\d+)", self.user_agent)
+        major = int(m.group(1)) if m else 131
+        if "Edg/" in self.user_agent:
+            brands = f'"Chromium";v="{major}", "Microsoft Edge";v="{major}", "Not?A_Brand";v="99"'
+        else:
+            brands = f'"Chromium";v="{major}", "Google Chrome";v="{major}", "Not?A_Brand";v="99"'
+        platform = '"macOS"' if _os_name(self.user_agent) == "mac" else '"Windows"'
+        base_lang = self.locale.split("-", 1)[0].lower() or "en"
+        accept_lang = (
+            f"{self.locale},{base_lang};q=0.9,en;q=0.8"
+            if base_lang != "en"
+            else f"{self.locale},en;q=0.9"
+        )
+        return {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": accept_lang,
+            "Referer": referer,
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "User-Agent": self.user_agent,
+            "sec-ch-ua": brands,
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": platform,
+        }
 
     async def _get_json(
         self, path: str, pairs: Iterable[tuple[str, str]], *, referer: str,
     ) -> tuple[TikTokNativeResult, object | None]:
+        seq = self._call_sequence
+        self._call_sequence = (self._call_sequence % 65535) + 1
         query, added = sign(
-            pairs, self.user_agent, ms_token=pick_ms_token(self.cookies)
+            pairs,
+            self.user_agent,
+            ms_token=pick_ms_token(self.cookies),
+            sequence=seq,
+            account_seed=self.account_seed,
         )
         url = f"{BASE}{path}?{query}"
-        headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": f"{self.locale},en;q=0.8",
-            "Referer": referer,
-            "User-Agent": self.user_agent,
-        }
+        headers = self._headers(referer=referer)
         result = TikTokNativeResult(signature_lengths={
             key: len(value) for key, value in added.items()
         }, endpoint=path)
         try:
             async with AsyncSession(
-                impersonate=self.impersonate, cookies=self.cookies, headers=headers
+                impersonate=self.impersonate,
+                cookies=self.cookies,
+                headers=headers,
+                trust_env=False,
             ) as session:
                 response = await session.get(
                     url, quote=False, proxy=self.proxy, timeout=self.timeout,

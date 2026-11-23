@@ -31,15 +31,34 @@ def impersonate_for_ua(user_agent: str) -> str:
     return f"chrome{best}"
 
 
+def curl_proxy_url(proxy: str) -> str:
+    """将代理地址转为 libcurl / yt-dlp 远程 DNS 解析格式（socks5 -> socks5h），防止本地 DNS 污染与泄露。"""
+    raw = str(proxy or "").strip()
+    if not raw:
+        return ""
+    from .browser.manager import normalize_proxy
+
+    norm = normalize_proxy(raw)
+    if norm.startswith("socks5://"):
+        return "socks5h://" + norm[len("socks5://"):]
+    return norm
+
+
+def curl_proxies(proxy: str) -> Optional[dict[str, str]]:
+    """构造供 curl_cffi AsyncSession/Session 使用的 proxies 字典（自动启用 socks5h 远程 DNS）。"""
+    url = curl_proxy_url(proxy)
+    return {"http": url, "https": url} if url else None
+
+
 async def probe_ip_region(proxy: str = "", timeout: float = 8.0) -> Optional[dict]:
     """尽力探测出口 IP 的国家/地区 + 经纬度(经指定代理)。返回
     {'ip','country'(大写 ISO2),'lat','lon','city'} 或 None。country 用于「代理地区是否与
     账号时区一致」的告警;lat/lon 用于把该账号的 geolocation 伪造坐标对齐到真实出口地。
     任何失败都静默 None。"""
     from curl_cffi.requests import AsyncSession
-    proxies = {"http": proxy, "https": proxy} if proxy else None
+    proxies = curl_proxies(proxy)
     try:
-        async with AsyncSession() as cli:
+        async with AsyncSession(trust_env=False) as cli:
             r = await cli.get("https://ipinfo.io/json", timeout=timeout,
                               impersonate=DEFAULT_IMPERSONATE, proxies=proxies)
             if r.status_code != 200:

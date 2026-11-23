@@ -18,6 +18,7 @@ from app.services import collections as collections_service
 from app.services import contents as contents_service
 from app.services import metadata as metadata_service
 from app.services import share_downloads as share_downloads_service
+from app.services import thumb_cache
 from app.submissions import submit_once
 
 router = APIRouter()
@@ -33,6 +34,15 @@ def _resolve_collection_account_id(
 ) -> int:
     acc_id = int(requested_id or 0)
     account = session.get(DouyinAccount, acc_id) if acc_id else None
+    if (
+        account is not None
+        and source_type in {"keyword", "creator"}
+        and str(account.account_role or "hybrid").strip().lower() == "publish"
+    ):
+        raise HTTPException(
+            400,
+            "该账号角色设为「发布主号 (publish)」，已物理禁止执行外部关键词/竞品创作者采集以免连坐主号；请改用「仅采集号 (crawler)」或「混合号 (hybrid)」",
+        )
     if _collection_requires_account(platform, source_type):
         if (not account or account.platform != platform
                 or account.status != "active" or not account.storage_state):
@@ -190,6 +200,26 @@ def _get_collection_content(session, job_id: int,
     return row
 
 
+@router.api_route(
+    "/api/collections/{job_id}/contents/{content_id}/cover",
+    methods=["GET", "HEAD"],
+)
+async def keyword_collection_content_cover(job_id: int, content_id: int):
+    """优先直接返回本地已下载的作品封面或图集首图；未下载作品则自动持久化缓存到本地磁盘后返回。"""
+    with get_session() as session:
+        row = _get_collection_content(session, job_id, content_id)
+        local_path = row.local_path
+        aweme_id = row.aweme_id
+        raw_cover = row.cover_url
+        platform = row.platform
+    local_cover = thumb_cache.find_work_local_cover(local_path, aweme_id)
+    if local_cover is not None:
+        return thumb_cache.file_thumb_response(local_cover)
+    if raw_cover:
+        return await thumb_cache.serve_cached_thumb(raw_cover, platform=platform)
+    raise HTTPException(404, "封面不存在")
+
+
 @router.get("/api/collections/{job_id}/contents/{content_id}/media")
 async def keyword_collection_content_media(job_id: int, content_id: int):
     """Return local-first media URLs for the collection result preview."""
@@ -203,20 +233,24 @@ async def keyword_collection_content_media(job_id: int, content_id: int):
         } for index, path in enumerate(local_paths)]
         local_video = next(
             (item for item in local_medias if item["kind"] == "video"), None)
-        has_local_images = any(item["kind"] == "image" for item in local_medias)
         playable_remote = [
-            {k: v for k, v in item.items() if k != "encrypted"}
+            {
+                **{k: v for k, v in item.items() if k != "encrypted"},
+                "url": (
+                    thumb_cache.local_thumb_api_url(str(item.get("url") or ""), platform=row.platform)
+                    if item.get("kind") == "image"
+                    else item.get("url", "")
+                ),
+            }
             for item in remote_medias
             if not item.get("encrypted")
         ]
-        medias = (
-            local_medias
-            if (has_local_images or (local_video and not playable_remote))
-            else playable_remote
-        )
+        medias = local_medias if local_medias else playable_remote
+        has_cover = bool(thumb_cache.find_work_local_cover(row.local_path, row.aweme_id) or row.cover_url)
+        cover_api_url = f"/api/collections/{job_id}/contents/{content_id}/cover" if has_cover else ""
         return {
             "id": row.id, "platform": row.platform, "desc": row.desc,
-            "media_type": row.media_type, "cover_url": row.cover_url,
+            "media_type": row.media_type, "cover_url": cover_api_url,
             "local_path": row.local_path, "medias": medias,
             "local_url": local_video["url"] if local_video else "",
             "source_url": (f"https://www.xiaohongshu.com/explore/{row.aweme_id}"
@@ -260,7 +294,7 @@ async def keyword_collection_local_media(job_id: int, content_id: int,
         path,
         filename=path.name,
         content_disposition_type="inline",
-        headers={"Cache-Control": "private, no-cache"},
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 

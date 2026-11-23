@@ -11,7 +11,11 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app import runtime as app_runtime
-from app.account_merge import cleanup_merged_profiles, duplicate_xhs_account_ids, reconcile_xhs_accounts
+from app.account_merge import (
+    cleanup_merged_profiles,
+    duplicate_platform_account_ids,
+    reconcile_platform_accounts,
+)
 from app.browser import interactive_bilibili_login, interactive_channels_login, interactive_creator_login, interactive_instagram_login, interactive_ks_creator_login, interactive_ks_login, interactive_login, interactive_rednote_creator_login, interactive_rednote_login, interactive_tiktok_login, interactive_twitter_login, interactive_xhs_creator_login, interactive_xhs_login
 from app.browser.backends import ACCOUNT_BROWSER_BACKENDS, LOCAL_BACKEND
 from app.browser.ip_fingerprint import derive_ip_fingerprint
@@ -20,7 +24,14 @@ from app.models import DouyinAccount
 from app.platforms.rednote import parse_rednote_self_user
 from app.platforms.tiktok import parse_tiktok_app_context
 from app.platforms.xhs import parse_self_user as parse_xhs_self_user
-from app.profiles import allocate_profile_dir, ensure_identity, release_proxy_reservation, reserve_proxy_from_pool
+from app.profiles import (
+    allocate_profile_dir,
+    ensure_identity,
+    find_same_platform_proxy_conflict,
+    release_proxy_reservation,
+    reserve_proxy_from_pool,
+    resolve_pool_proxy_row,
+)
 from app.risk import OperationKind
 from app.services import account_profiles as account_profiles_service
 from app.services import browser_runtimes as browser_runtimes_service
@@ -60,6 +71,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
           else "创作者账号" if creator else "扫码账号")
     try:
         # 1) 准备画像 + identity(新建账号此时不写库,只用临时 profile)
+        strict_proxy = bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True))
+        forbid_shared = bool(getattr(app_runtime.cfg.engine, "forbid_same_platform_shared_proxy", True))
         if account_id:
             with get_session() as s:
                 acc = s.get(DouyinAccount, account_id)
@@ -69,14 +82,36 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                         account_id=account_id, error="账号不存在")
                     return
                 ensure_identity(acc, app_runtime.cfg, session=s, assign_proxy=False)
+                if not str(acc.proxy or "").strip():
+                    from app.profiles import account_requires_dedicated_proxy
+                    must_px, must_reason = account_requires_dedicated_proxy(
+                        s, app_runtime.cfg, platform=acc.platform, account=acc
+                    )
+                    if must_px:
+                        app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
+                            status="error", platform=platform, creator=creator,
+                            account_id=account_id,
+                            error=f"{must_reason}；请先为该账号绑定专属代理后再重新登录")
+                        return
+                if forbid_shared and acc.proxy:
+                    conflict = find_same_platform_proxy_conflict(
+                        s, acc.platform, acc.proxy,
+                        exclude_account_id=acc.id,
+                        candidate_exit_ip=acc.exit_ip,
+                    )
+                    if conflict is not None:
+                        app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
+                            status="error", platform=platform, creator=creator,
+                            account_id=account_id,
+                            error=f"同平台防关联拦截：该账号绑定的代理已与同平台账号「{conflict.nickname or conflict.id}」冲突，请更换独立代理")
+                        return
                 s.add(acc); s.commit(); s.refresh(acc)
                 identity = app_runtime.browser.identity_for(acc)
                 acc_id = acc.id
         else:
             acc_id = None
-            new_fields = generate_identity_fields()
+            new_fields = generate_identity_fields(platform=platform)
             tmp_profile = allocate_profile_dir(app_runtime.cfg.engine.profiles_dir)
-            # 登录前选定代理:具体地址 / auto(占用最少) / 空(不用代理)
             choice = (proxy_choice or "").strip()
             if choice.lower() in ("", "none"):
                 proxy = ""
@@ -88,13 +123,33 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             else:
                 from app.browser.manager import normalize_proxy
                 proxy = normalize_proxy(choice)
+                if forbid_shared and proxy:
+                    with get_session() as s:
+                        conflict = find_same_platform_proxy_conflict(
+                            s, platform, proxy
+                        )
+                        if conflict is not None:
+                            app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
+                                status="error", platform=platform, creator=creator,
+                                account_id=None,
+                                error=f"同平台防关联拦截：所选代理已被同平台账号「{conflict.nickname or conflict.id}」占用，请为新账号选择独立代理")
+                            return
+            if not proxy:
+                from app.profiles import account_requires_dedicated_proxy
+                with get_session() as s:
+                    must_px, must_reason = account_requires_dedicated_proxy(
+                        s, app_runtime.cfg, platform=platform
+                    )
+                if must_px:
+                    app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
+                        status="error", platform=platform, creator=creator,
+                        account_id=None,
+                        error=f"{must_reason}；请先在「代理池」添加可用独享代理后再扫码登录")
+                    return
             requested_backend = str(browser_backend or "default").strip().lower()
             if requested_backend not in ACCOUNT_BROWSER_BACKENDS:
                 requested_backend = "default"
-            # Internal callers cannot opt Xiaohongshu back into a fingerprint
-            # runtime after the public API validation below.  Keep one native
-            # system-Chrome identity surface for login and subsequent tasks.
-            if platform == "xhs":
+            if platform == "xhs" and requested_backend != "fingerprint_chromium":
                 requested_backend = LOCAL_BACKEND
                 browser_runtime_id = ""
                 fingerprint_overrides = None
@@ -105,8 +160,9 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     requested_backend, browser_runtime_id).get("name", "")
             is_fingerprint_environment = (
                 effective_backend == "fingerprint_chromium")
-            if is_fingerprint_environment:
-                geo = await proxies_service._proxy_geo(proxy, timeout=6)
+            # 只要配置了代理，无论使用指纹内核还是系统 Chrome，均经由该代理探测真实出口归属地并对齐时区/语言/经纬度！
+            if proxy or is_fingerprint_environment:
+                geo = await proxies_service._proxy_geo(proxy, timeout=6) if (proxy or not strict_proxy) else None
                 if geo and geo.get("ip"):
                     fingerprint_fields = derive_ip_fingerprint(
                         task_id,
@@ -119,7 +175,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                         longitude=geo.get("lon") or 0.0,
                     )
                 new_fields = account_profiles_service._merge_prelogin_fingerprint_fields(
-                    new_fields, fingerprint_fields, fingerprint_overrides)
+                    new_fields, fingerprint_fields, fingerprint_overrides if is_fingerprint_environment else None)
             identity = Identity(
                 account_id=None, profile_dir=tmp_profile, identity_mode="native",
                 browser_backend=requested_backend,
@@ -297,6 +353,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 if account_id:
                     acc = s.get(DouyinAccount, acc_id)
                 else:
+                    pool_row = resolve_pool_proxy_row(s, identity.proxy) if identity.proxy else None
                     acc = DouyinAccount(
                         platform=platform,
                         nickname=(observed_profile.get("nickname")
@@ -309,7 +366,10 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                             "follower_count", 0),
                         aweme_count=observed_profile.get("aweme_count", 0),
                         status="active",
-                        profile_dir=tmp_profile, proxy=identity.proxy,
+                        profile_dir=tmp_profile,
+                        proxy_id=(pool_row.id if pool_row else None),
+                        proxy=identity.proxy,
+                        require_proxy=bool(identity.proxy or strict_proxy),
                         browser_backend=identity.browser_backend,
                         browser_runtime_id=identity.browser_runtime_id,
                         identity_mode="native", ua=identity.ua or "",
@@ -451,23 +511,21 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             else:
                 profile_status = await account_profiles_service._enrich_account_profile(
                     acc_id, state_json)   # best-effort
-            # 主站与创作平台可能被用户分别从顶部入口登录。资料同步拿到
-            # user_id/red_id 后即可权威判断是否为同一个小红书账号，并把
-            # 两份登录态自动折叠到稳定的旧账号 id。
-            if is_xhs:
+            # 全平台同号去重收敛:若用户在顶栏新建扫码了已存在的同一平台账号(如补创作者态或重复扫码)，
+            # 自动将最新登录态收敛至原稳定账号 ID，避免同一平台账号产生两个并发轮询环境。
+            with get_session() as s:
+                duplicate_ids = duplicate_platform_account_ids(s, acc_id)
+            if len(duplicate_ids) > 1:
+                await browser_runtimes_service._close_runtime_accounts(duplicate_ids)
                 with get_session() as s:
-                    duplicate_ids = duplicate_xhs_account_ids(s, acc_id)
-                if len(duplicate_ids) > 1:
-                    await browser_runtimes_service._close_runtime_accounts(duplicate_ids)
-                    with get_session() as s:
-                        merged_accounts = reconcile_xhs_accounts(
-                            s, account_id=acc_id)
-                    if merged_accounts:
-                        cleanup_merged_profiles(
-                            merged_accounts, app_runtime.cfg.engine.profiles_dir)
-                        for merge in merged_accounts:
-                            if acc_id == merge.removed_id:
-                                acc_id = merge.kept_id
+                    merged_accounts = reconcile_platform_accounts(
+                        s, platform=platform, account_id=acc_id)
+                if merged_accounts:
+                    cleanup_merged_profiles(
+                        merged_accounts, app_runtime.cfg.engine.profiles_dir)
+                    for merge in merged_accounts:
+                        if acc_id == merge.removed_id:
+                            acc_id = merge.kept_id
 
             with get_session() as s:
                 acc = s.get(DouyinAccount, acc_id)
@@ -514,12 +572,8 @@ def _validate_login_browser_backend(
     status = browser_runtimes_service._browser_backend_status(requested, runtime_id)
     if not status["available"]:
         raise HTTPException(400, f"浏览器环境不可用：{status['detail']}")
-    if str(platform or "").lower() == "xhs" \
-            and status.get("name") != LOCAL_BACKEND:
-        raise HTTPException(
-            400,
-            "小红书仅支持系统 Chrome/CDP 原生环境；指纹内核会造成环境不一致",
-        )
+    if str(platform or "").lower() == "xhs" and requested == "default":
+        return LOCAL_BACKEND, ""
     return requested, runtime_id
 
 

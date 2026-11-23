@@ -300,7 +300,19 @@ export function HubMatrixDashboard({ ctx }) {
                         <td>
                           <div className="mx-td-acc">
                             {acc.avatar ? (
-                              <img className="avatar sm" src={safeThumb(acc.avatar)} alt="" referrerPolicy="no-referrer" />
+                              <>
+                                <img
+                                  className="avatar sm"
+                                  src={safeThumb(acc.avatar)}
+                                  alt=""
+                                  referrerPolicy="no-referrer"
+                                  onError={e => {
+                                    e.currentTarget.style.display = "none";
+                                    if (e.currentTarget.nextElementSibling) e.currentTarget.nextElementSibling.style.display = "";
+                                  }}
+                                />
+                                <span className="wb-avatar-fallback sm" style={{ display: "none" }}>{(acc.display_name || "号").slice(0, 1)}</span>
+                              </>
                             ) : (
                               <span className="wb-avatar-fallback sm">{(acc.display_name || "号").slice(0, 1)}</span>
                             )}
@@ -361,15 +373,36 @@ export function HubMatrixDashboard({ ctx }) {
               {analytics.works.items.map(w => {
                 const pf = PF_MAP[w.platform] || { short: w.platform, color: "#64748b" };
                 const ext = platformExternalWorkUrl(w.platform, w.item_id);
+                const isTextPost = w.platform === "twitter" && !w.cover_url && w.media_type !== "video";
+                const kindLabel = isTextPost ? "纯文本" : (w.media_type === "images" ? "图文" : "视频");
                 return (
                   <article key={w.id} className="mx-gcard">
                     <div className="mx-gcard-cover" onClick={() => ext && window.open(ext, "_blank", "noopener")}>
                       {w.cover_url ? (
-                        <img src={safeThumb(w.cover_url)} alt="" loading="lazy" referrerPolicy="no-referrer" />
+                        <>
+                          <img
+                            src={safeThumb(w.cover_url)}
+                            alt=""
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                            onError={e => {
+                              e.currentTarget.style.display = "none";
+                              if (e.currentTarget.nextElementSibling) e.currentTarget.nextElementSibling.style.display = "";
+                            }}
+                          />
+                          <div className="mx-mini-ph" style={{ display: "none" }}><Icon name={w.media_type === "images" ? "image" : "film"} /></div>
+                        </>
+                      ) : isTextPost ? (
+                        <div className="mx-mini-ph" style={{ padding: "14px", textAlign: "left", alignItems: "flex-start" }}>
+                          <span style={{ fontSize: "12.5px", lineHeight: 1.55, color: "var(--fg-2)", display: "-webkit-box", WebkitLineClamp: 5, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                            {w.desc}
+                          </span>
+                        </div>
                       ) : (
-                        <div className="mx-mini-ph"><Icon name="film" /></div>
+                        <div className="mx-mini-ph"><Icon name={w.media_type === "images" ? "image" : "film"} /></div>
                       )}
                       <span className="mx-mini-pf" style={{ "--pf-c": pf.color }}>{pf.short}</span>
+                      <span className="mx-mini-kind">{kindLabel}</span>
                       {(w.zero_play_alerted || w.status_alerted) && (
                         <span className="mx-mini-local warn">{w.zero_play_alerted ? "0播预警" : w.status_alerted}</span>
                       )}

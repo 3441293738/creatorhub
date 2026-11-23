@@ -6,6 +6,13 @@ import re
 import time
 from typing import Dict, List, Tuple
 
+from .human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from .identity import Identity
 from .manager import BrowserManager
 from ..platforms.tiktok.extract import (
@@ -140,15 +147,16 @@ async def _page_video_cards(page) -> list[dict]:
 
 async def _trigger_video_search(page, keyword: str) -> bool:
     for selector in (
-            'input[data-e2e=\"search-user-input\"]',
-            'input[type=\"search\"]',
-            'input[placeholder*=\"Search\"]'):
+            'input[data-e2e="search-user-input"]',
+            'input[type="search"]',
+            'input[placeholder*="Search"]'):
         try:
             field = page.locator(selector).first
             if await field.count() and await field.is_visible():
-                await field.fill(keyword)
+                await DEFAULT_HUMAN_ENGINE.type_text(field, keyword, page=page, timeout=4000)
+                await human_wait(page, 180)
                 await field.press("Enter")
-                await page.wait_for_timeout(1500)
+                await human_wait(page, 1500)
                 return True
         except Exception:
             continue
@@ -177,7 +185,7 @@ async def _wait_for_tiktok_search_results(
         await _merge_page_items(page, collected)
         if collected:
             return True
-        await page.wait_for_timeout(750)
+        await human_wait(page, 750)
     await _merge_page_items(page, collected)
     return bool(collected)
 
@@ -280,8 +288,8 @@ async def fetch_tiktok_search(
         stagnant = 0
         for _ in range(max(1, min(40, int(max_scrolls or 1)))):
             before = len(collected)
-            await page.evaluate("() => window.scrollBy(0, Math.max(innerHeight * .85, 650))")
-            await page.wait_for_timeout(900)
+            await human_scroll(page, settle=False)
+            await human_wait(page, 900)
             await _merge_page_items(page, collected)
             if len(collected) >= max_results:
                 break
@@ -363,7 +371,7 @@ async def fetch_tiktok_profile_works(
     page.on("response", on_response)
     try:
         await page.goto(profile_url(unique_id), wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(1400)
+        await human_wait(page, 1400)
         failure = await _page_failure(page)
         if failure:
             return [], failure
@@ -371,8 +379,8 @@ async def fetch_tiktok_profile_works(
         stagnant = 0
         for _ in range(max(1, min(40, int(max_scrolls or 1)))):
             before = len(collected)
-            await page.evaluate("() => window.scrollBy(0, Math.max(innerHeight * .85, 650))")
-            await page.wait_for_timeout(850)
+            await human_scroll(page, settle=False)
+            await human_wait(page, 850)
             await _merge_page_items(page, collected)
             if len(collected) >= max_results:
                 break
@@ -419,14 +427,14 @@ async def fetch_tiktok_users(
     page.on("response", on_response)
     try:
         await page.goto(user_search_url(keyword), wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(1400)
+        await human_wait(page, 1400)
         failure = await _page_failure(page)
         if failure:
             return [], failure
         for _ in range(max(1, min(40, int(max_scrolls or 1)))):
             before = len(collected)
-            await page.evaluate("() => window.scrollBy(0, Math.max(innerHeight * .85, 650))")
-            await page.wait_for_timeout(850)
+            await human_scroll(page, settle=False)
+            await human_wait(page, 850)
             if len(collected) >= max_results or (collected and len(collected) == before):
                 break
         return list(collected.values())[:max_results], ""
@@ -446,7 +454,7 @@ async def fetch_tiktok_self_profile(
     page = await mgr.new_page(identity, block_media)
     try:
         await page.goto("https://www.tiktok.com/", wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(1200)
+        await human_wait(page, 1200)
         failure = await _page_failure(page)
         if failure:
             return None, failure
@@ -484,9 +492,9 @@ async def _expand_reply_threads(page, max_clicks: int = 12) -> None:
             try:
                 button = locator.nth(index)
                 if await button.is_visible():
-                    await button.click(timeout=2500)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(button, page=page, timeout=2500)
                     clicked += 1
-                    await page.wait_for_timeout(300)
+                    await human_wait(page, 300)
             except Exception:
                 continue
             if clicked >= max_clicks:
@@ -535,15 +543,15 @@ async def fetch_tiktok_comments(
     try:
         url = str(target_url or "").strip() or video_url(aweme_id, author_unique_id)
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(1400)
+        await human_wait(page, 1400)
         failure = await _page_failure(page)
         if failure:
             return [], failure
         for _ in range(max(1, min(30, int(max_scrolls or 1)))):
             if include_replies:
                 await _expand_reply_threads(page)
-            await page.evaluate("() => window.scrollBy(0, Math.max(innerHeight * .75, 550))")
-            await page.wait_for_timeout(750)
+            await human_scroll(page, settle=False)
+            await human_wait(page, 750)
             if len(collected) >= max_comments:
                 break
         if not include_replies:

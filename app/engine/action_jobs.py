@@ -243,18 +243,6 @@ class ActionJobMixin:
                                               target_uid, target_sec_uid, unfollow=True)
                 return ok, err, "browser"
             if action == "send_dm":
-                # Preserve the pre-existing browser-context imapi route when
-                # browser mode is selected, then fall back to the visible page.
-                if (platform == "douyin" and not native_mode
-                        and dm_conv_id and dm_short_id and dm_ticket):
-                    ok, err = await send_dm_api(
-                        self.browser, identity, dm_conv_id, dm_short_id,
-                        dm_ticket, content)
-                    if ok:
-                        return True, "", "api_browser_context"
-                    category, _signal = classify_platform_error(err)
-                    if category != RiskCategory.BUSINESS:
-                        return False, err, "api_browser_context"
                 if platform == "tiktok":
                     ok, err = await send_tiktok_dm(
                         self.browser, identity, target_sec_uid or target_uid, content,
@@ -554,39 +542,16 @@ class ActionJobMixin:
                             ok, err = await _send_new_or_existing_dm(client)
                         else:
                             ok, err = False, f"未知动作 {action}"
-                if (not ok and dy_write_mode == "hybrid"
-                        and action in {"follow", "unfollow"}
-                        and str(err or "").startswith(
-                            "api_requires_browser_security:")):
-                    secure_data, secure_error, secure_uncertain = (
-                        await douyin_secure_post_api(
-                            self.browser, identity,
-                            "/aweme/v1/web/commit/follow/user/",
-                            {"device_platform": "webapp", "aid": "6383",
-                             "channel": "channel_pc_web"},
-                            {"user_id": target_uid,
-                             "type": 2 if action == "unfollow" else 1},
-                            timeout_ms=(
-                                self.cfg.engine.request_timeout_seconds * 1000)))
-                    method = "api_browser_context"
-                    if secure_uncertain:
-                        ok, err = False, secure_error
-                    elif secure_data is None:
-                        ok, err = False, secure_error
-                    else:
-                        client.last_response = {
-                            "browser_security_context_required": True,
-                            "dtrait_header_attached": True,
-                        }
-                        ok, err = client._write_result(
-                            secure_data, secure_error or "secure_api_no_response")
-                # A known rejection has a response and can fall back; an
-                # ambiguous request is deliberately not submitted twice.
+                # A known rejection (or browser security context requirement)
+                # falls back to genuine browser UI; an ambiguous request is not submitted twice.
                 if (not ok and dy_write_mode == "hybrid"
                         and not str(err or "").startswith((
                             "write_uncertain:", "target_resolution_failed:"))):
                     category, _signal = classify_platform_error(err)
-                    if category in {RiskCategory.BUSINESS, RiskCategory.RISK}:
+                    if (
+                        str(err or "").startswith("api_requires_browser_security:")
+                        or category in {RiskCategory.BUSINESS, RiskCategory.RISK}
+                    ):
                         ok, err, method = await _browser_action()
                         method = ("browser_fallback"
                                   if method == "browser" else method)

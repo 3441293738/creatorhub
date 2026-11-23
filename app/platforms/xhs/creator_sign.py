@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import atexit
+import base64
 import hashlib
 import hmac
 import json
@@ -197,19 +198,122 @@ def available() -> bool:
     return _AVAILABLE
 
 
-def generate_xs_xs_common(a1: str, api: str, data="") -> tuple:
+_STANDARD_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+_CUSTOM_B64 = "ZmserbBoHQtNP+wOcza/LpngG8yJq42KWYj0DSfdikx3VT16IlUAFM97hECvuRX5"
+_CUSTOM_B64_ENC = str.maketrans(_STANDARD_B64, _CUSTOM_B64)
+_CUSTOM_B64_DEC = str.maketrans(_CUSTOM_B64, _STANDARD_B64)
+
+
+def x2_for_ua(user_agent: str) -> str:
+    ua = str(user_agent or "")
+    if "Mac OS" in ua or "Macintosh" in ua:
+        return "Mac OS"
+    if "Linux" in ua and "Android" not in ua:
+        return "Linux"
+    return "Windows"
+
+
+def _encode_custom_b64(text: str) -> str:
+    return base64.b64encode(text.encode("utf-8")).decode("ascii").translate(_CUSTOM_B64_ENC)
+
+
+def _decode_custom_b64(encoded: str) -> str:
+    std = encoded.translate(_CUSTOM_B64_DEC)
+    std += "=" * ((4 - len(std) % 4) % 4)
+    return base64.b64decode(std.encode("ascii")).decode("utf-8")
+
+
+def _crc32_signed(data: str | bytes) -> int:
+    crc = 0xFFFFFFFF
+    raw = [ord(ch) & 0xFF for ch in data] if isinstance(data, str) else list(data)
+    for value in raw:
+        t = (crc & 0xFF) ^ value
+        for _ in range(8):
+            t = ((t >> 1) ^ 0xEDB88320) if (t & 1) else (t >> 1)
+        crc = (t ^ (crc >> 8)) & 0xFFFFFFFF
+    u = (0xFFFFFFFF ^ crc ^ 0xEDB88320) & 0xFFFFFFFF
+    return u - 0x100000000 if (u & 0x80000000) else u
+
+
+def _rewrite_xs_and_common(
+    xs: str,
+    xt: int | str,
+    xs_common: str,
+    *,
+    b1: str = "",
+    user_agent: str = "",
+) -> tuple[str, int | str, str]:
+    x2 = x2_for_ua(user_agent)
+    clean_b1 = str(b1 or "").strip()
+    if x2 == "Windows" and not clean_b1:
+        return xs, xt, xs_common
+    if x2 != "Windows" and isinstance(xs, str) and xs.startswith("XYS_"):
+        try:
+            xs_obj = json.loads(_decode_custom_b64(xs[4:]))
+            if isinstance(xs_obj, dict):
+                xs_obj["x2"] = x2
+                xs = "XYS_" + _encode_custom_b64(
+                    json.dumps(xs_obj, separators=(",", ":"), ensure_ascii=False)
+                )
+        except Exception:
+            pass
+    try:
+        common_obj = json.loads(_decode_custom_b64(xs_common))
+        if isinstance(common_obj, dict):
+            common_obj["x2"] = x2
+            if clean_b1:
+                common_obj["x8"] = clean_b1
+            if common_obj.get("x7"):
+                common_obj["x7"] = xs
+            eff_b1 = str(common_obj.get("x8") or "")
+            if common_obj.get("x6") not in ("", None):
+                md5_hex = hashlib.md5(
+                    f"{common_obj['x6']}{xs}{eff_b1}".encode("utf-8")
+                ).hexdigest()
+                common_obj["x9"] = _crc32_signed(bytes.fromhex(md5_hex))
+            else:
+                common_obj["x9"] = _crc32_signed(eff_b1)
+            xs_common = _encode_custom_b64(
+                json.dumps(common_obj, separators=(",", ":"), ensure_ascii=False)
+            )
+    except Exception:
+        pass
+    return xs, xt, xs_common
+
+
+def generate_xs_xs_common(
+    a1: str,
+    api: str,
+    data="",
+    *,
+    b1: str = "",
+    user_agent: str = "",
+) -> tuple:
     ret = _worker("xhs_creator_260411.js").call(
         "get_request_headers_params", api, data, a1)
-    return ret["xs"], ret["xt"], ret["xs_common"]
+    return _rewrite_xs_and_common(
+        ret["xs"], ret["xt"], ret["xs_common"], b1=b1, user_agent=user_agent
+    )
 
 
-def generate_xsc_main(a1: str, api: str, data="", method: str = "GET") -> dict:
+def generate_xsc_main(
+    a1: str,
+    api: str,
+    data="",
+    method: str = "GET",
+    *,
+    b1: str = "",
+    user_agent: str = "",
+) -> dict:
     """网页主签名(xhs_main_260411.js,带 method)。用于 www/edith 的带参 GET 等。
     api 传"路径?query"(splice_str 结果),data='',method='GET'。"""
     ret = _worker("xhs_main_260411.js").call(
         "get_request_headers_params", api, data, a1, method)
+    xs, xt, xs_common = _rewrite_xs_and_common(
+        ret["xs"], ret["xt"], ret["xs_common"], b1=b1, user_agent=user_agent
+    )
     return {
-        "x-s": ret["xs"], "x-t": str(ret["xt"]), "x-s-common": ret["xs_common"],
+        "x-s": xs, "x-t": str(xt), "x-s-common": xs_common,
         "x-b3-traceid": gen_b3_traceid(), "x-xray-traceid": gen_xray_traceid(),
     }
 
@@ -234,8 +338,17 @@ def gen_xray_traceid() -> str:
     return _rand_hex(32)
 
 
-def generate_xsc(a1: str, api: str, data="") -> dict:
-    xs, xt, xs_common = generate_xs_xs_common(a1, api, data)
+def generate_xsc(
+    a1: str,
+    api: str,
+    data="",
+    *,
+    b1: str = "",
+    user_agent: str = "",
+) -> dict:
+    xs, xt, xs_common = generate_xs_xs_common(
+        a1, api, data, b1=b1, user_agent=user_agent
+    )
     return {
         "x-s": xs, "x-t": str(xt), "x-s-common": xs_common,
         "x-b3-traceid": gen_b3_traceid(), "x-xray-traceid": gen_xray_traceid(),

@@ -15,7 +15,61 @@ from app import runtime as app_runtime
 from app.models import ContentRecord, MonitorTarget
 from app.platforms.tiktok import tiktok_display_text
 from app.services import metadata as metadata_service
+from app.services import thumb_cache
 from app.windowing import EXPLORER_WINDOW_CLASSES, bring_window_to_front, capture_window_snapshot
+
+_CONTENT_IMAGE_EXTS = {".jpg", ".jpeg", ".webp", ".png", ".gif", ".avif"}
+_CONTENT_MEDIA_EXTS = _CONTENT_IMAGE_EXTS | {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".flv"}
+
+
+def _content_media_sort_key(path: Path) -> tuple[int, int | str]:
+    tail = path.stem.rsplit("_", 1)[-1]
+    return (0, int(tail)) if tail.isdigit() else (1, path.name.lower())
+
+
+def _content_local_media_paths(rec: ContentRecord) -> list[Path]:
+    """解析监控作品对应的本地媒体文件列表（兼容单文件与图集目录，排除旁路 .cover.* 封面）。"""
+    if not rec.local_path:
+        return []
+    try:
+        path = Path(rec.local_path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return []
+    aid = str(rec.aweme_id or "").strip()
+    if path.is_file():
+        if rec.media_type == "images" and aid and path.parent.is_dir():
+            try:
+                siblings = [
+                    child for child in path.parent.iterdir()
+                    if child.is_file()
+                    and child.name.startswith(f"{aid}_")
+                    and ".cover." not in child.name.lower()
+                    and child.suffix.lower() in _CONTENT_IMAGE_EXTS
+                    and child.stat().st_size > 0
+                ]
+                if siblings:
+                    return sorted(siblings, key=_content_media_sort_key)
+            except OSError:
+                pass
+        try:
+            return [path] if path.stat().st_size > 0 and ".cover." not in path.name.lower() else []
+        except OSError:
+            return []
+    if not path.is_dir():
+        return []
+    prefix = f"{aid}_" if aid else ""
+    try:
+        candidates = [
+            child for child in path.iterdir()
+            if child.is_file()
+            and (not prefix or child.name.startswith(prefix))
+            and ".cover." not in child.name.lower()
+            and child.suffix.lower() in _CONTENT_MEDIA_EXTS
+            and child.stat().st_size > 0
+        ]
+    except OSError:
+        return []
+    return sorted(candidates, key=_content_media_sort_key)
 
 
 def _content_capture_bounds(start: datetime | None, end: datetime | None):
@@ -72,10 +126,18 @@ def _content_dict(r: ContentRecord, source: dict | None = None) -> dict:
     if captured:
         captured = (captured.astimezone(timezone.utc) if captured.tzinfo
                     else captured.replace(tzinfo=timezone.utc))
+    has_cover = bool(thumb_cache.find_work_local_cover(r.local_path, r.aweme_id) or r.cover_url)
+    cover_api_url = (
+        f"/api/contents/{r.id}/cover"
+        if (has_cover and r.id)
+        else thumb_cache.local_thumb_api_url(r.cover_url, platform=r.platform)
+    )
     return {
         "id": r.id, "platform": r.platform, "target_id": r.target_id,
         "aweme_id": r.aweme_id, "desc": r.desc, "media_type": r.media_type,
-        "quality": r.quality, "create_time": r.create_time, "cover_url": r.cover_url,
+        "quality": r.quality, "create_time": r.create_time,
+        "cover_url": cover_api_url,
+        "remote_cover_url": r.cover_url or "",
         "like_count": r.like_count, "comment_count": r.comment_count,
         "duration": r.duration, "retry_count": r.retry_count,
         "download_status": r.download_status, "local_path": r.local_path, "error": r.error,

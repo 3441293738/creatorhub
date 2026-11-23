@@ -254,7 +254,7 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                     cookie_s,
                     mgr.direct_request_user_agent(identity)
                     if hasattr(mgr, "direct_request_user_agent")
-                    else getattr(identity, "ua", ""),
+                    else (getattr(identity, "ua", "") or getattr(identity, "user_agent", "")),
                     proxy=getattr(identity, "proxy", ""),
                 )
                 try:
@@ -302,8 +302,9 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
             if cookie_s:
                 client = BilibiliClient(
                     cookie_s,
-                    getattr(identity, "user_agent", ""),
+                    getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
                     proxy=getattr(identity, "proxy", ""),
+                    account_seed=getattr(identity, "fp_seed", ""),
                 )
                 async with client.session_scope():
                     works, cerr = await client.fetch_all_creator_archives(

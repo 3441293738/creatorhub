@@ -1,6 +1,7 @@
 """哔哩哔哩直连 HTTP 客户端（Web / 创作中心 / WBI 签名 / VC 私信 / Cookie 刷新）。"""
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -12,7 +13,7 @@ from urllib.parse import urlencode
 from curl_cffi.requests import AsyncSession
 
 from ...browser.manager import normalize_proxy
-from ...netfp import impersonate_for_ua
+from ...netfp import curl_proxy_url, impersonate_for_ua
 from .._submit import notify_submit
 from .extract import (
     Aweme,
@@ -27,7 +28,7 @@ from .extract import (
     parse_bili_self_user,
 )
 from .formatter import FALLBACK_PARTITIONS, play_source_percent
-from .im_codec import create_uuid_v1
+from .im_codec import create_uuid_v1_factory
 from .resolve import av_to_bv, bv_to_av, resolve_bili_work_ref
 from .wbi import (
     VC_COMMON_PARAMS,
@@ -125,6 +126,58 @@ def has_bili_login_cookies(storage_state: str | Mapping[str, Any] | None) -> boo
     return bool(cks.get("SESSDATA") and cks.get("bili_jct"))
 
 
+def _derive_bili_account_seed(
+    account_seed: str,
+    cookies: Mapping[str, str],
+    user_agent: str,
+    proxy: Optional[str],
+) -> str:
+    explicit = str(account_seed or "").strip()
+    if explicit:
+        return explicit
+    material = (
+        cookies.get("DedeUserID")
+        or cookies.get("SESSDATA")
+        or cookies.get("bili_jct")
+        or f"{user_agent}|{proxy or 'direct'}"
+    )
+    return hashlib.sha256(f"bili-acct-seed|{material}".encode("utf-8")).hexdigest()[:32]
+
+
+def _derive_bili_infoc_id(seed: str, purpose: str) -> str:
+    """按账号种子确定性派生符合 B 站 Web 端格式的 `buvid3` / `_uuid`（`<UUIDv4-upper><5digits>infoc`）。"""
+    digest = hashlib.sha256(f"bili-{purpose}|{seed}".encode("utf-8")).digest()
+    b = bytearray(digest[:16])
+    b[6] = (b[6] & 0x0F) | 0x40
+    b[8] = (b[8] & 0x3F) | 0x80
+    hx = bytes(b).hex().upper()
+    uuid_str = f"{hx[0:8]}-{hx[8:12]}-{hx[12:16]}-{hx[16:20]}-{hx[20:32]}"
+    tail = int.from_bytes(digest[16:20], "big") % 100000
+    return f"{uuid_str}{tail:05d}infoc"
+
+
+def _bili_client_hints(user_agent: str) -> Dict[str, str]:
+    ua = str(user_agent or DEFAULT_UA)
+    m = re.search(r"Chrome/(\d+)", ua)
+    major = int(m.group(1)) if m else 131
+    if "Edg/" in ua:
+        brands = f'"Chromium";v="{major}", "Microsoft Edge";v="{major}", "Not?A_Brand";v="99"'
+    else:
+        brands = f'"Chromium";v="{major}", "Google Chrome";v="{major}", "Not?A_Brand";v="99"'
+    platform = (
+        '"macOS"'
+        if ("Mac OS" in ua or "Macintosh" in ua)
+        else '"Linux"'
+        if ("Linux" in ua and "Android" not in ua)
+        else '"Windows"'
+    )
+    return {
+        "sec-ch-ua": brands,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": platform,
+    }
+
+
 class BilibiliClient:
     """B 站多域统一异步客户端（按账号隔离 Cookie、UA、TLS 指纹与代理）。"""
 
@@ -136,12 +189,21 @@ class BilibiliClient:
         proxy: str = "",
         timeout: float = 20.0,
         locale: str = "zh-CN",
+        account_seed: str = "",
     ):
         self.cookies: Dict[str, str] = cookie_map_from_state(storage_state)
         self.user_agent = str(user_agent or DEFAULT_UA)
-        self.proxy = normalize_proxy(proxy) or None
+        self.proxy = curl_proxy_url(proxy) or None
         self.timeout = float(timeout)
         self.locale = locale or "zh-CN"
+        self.account_seed = _derive_bili_account_seed(
+            account_seed, self.cookies, self.user_agent, self.proxy
+        )
+        self._uuid_v1 = create_uuid_v1_factory(account_seed=self.account_seed)
+        if not self.cookies.get("buvid3"):
+            self.cookies["buvid3"] = _derive_bili_infoc_id(self.account_seed, "buvid3")
+        if not self.cookies.get("_uuid"):
+            self.cookies["_uuid"] = _derive_bili_infoc_id(self.account_seed, "_uuid")
         self.impersonate = impersonate_for_ua(self.user_agent)
         self.last_error: str = ""
         self._session: Optional[AsyncSession] = None
@@ -163,7 +225,7 @@ class BilibiliClient:
         if self._session is not None:
             yield self
             return
-        async with AsyncSession(impersonate=self.impersonate) as sess:
+        async with AsyncSession(impersonate=self.impersonate, trust_env=False) as sess:
             self._session = sess
             try:
                 yield self
@@ -182,6 +244,7 @@ class BilibiliClient:
             "Accept-Language": f"{self.locale},zh;q=0.9,en;q=0.8",
             "Referer": referer,
             "User-Agent": self.user_agent,
+            **_bili_client_hints(self.user_agent),
         }
         if origin:
             hdrs["Origin"] = origin
@@ -221,7 +284,7 @@ class BilibiliClient:
                 quote=curl_quote,
             )
         else:
-            async with AsyncSession(impersonate=self.impersonate) as sess:
+            async with AsyncSession(impersonate=self.impersonate, trust_env=False) as sess:
                 resp = await sess.request(
                     method,
                     url,
@@ -324,18 +387,12 @@ class BilibiliClient:
         return payload, ""
 
     async def ensure_buvid(self) -> None:
-        """补齐 `buvid3` / `buvid4` 指纹 Cookie，降低公开搜索与空间接口风控率。"""
-        if self._buvid_checked or (self.cookies.get("buvid3") and self.cookies.get("buvid4")):
-            self._buvid_checked = True
-            return
+        """确保账号稳定的 `buvid3` / `_uuid` 指纹 Cookie 已就绪，避免每次实例化请求 `/x/frontend/finger/spi` 产生漂移标识。"""
+        if not self.cookies.get("buvid3"):
+            self.cookies["buvid3"] = _derive_bili_infoc_id(self.account_seed, "buvid3")
+        if not self.cookies.get("_uuid"):
+            self.cookies["_uuid"] = _derive_bili_infoc_id(self.account_seed, "_uuid")
         self._buvid_checked = True
-        payload, _ = await self._get_json(f"{API_BASE}/x/frontend/finger/spi")
-        data = (payload or {}).get("data") if isinstance(payload, dict) else None
-        if isinstance(data, Mapping):
-            if data.get("b_3") and not self.cookies.get("buvid3"):
-                self.cookies["buvid3"] = str(data["b_3"])
-            if data.get("b_4") and not self.cookies.get("buvid4"):
-                self.cookies["buvid4"] = str(data["b_4"])
 
     async def ensure_wbi_key(self, *, force: bool = False) -> str:
         """获取并缓存 WBI `mixin_key`（即使未登录 `code == -101` 时 `nav` 也会返回 `wbi_img`）。"""
@@ -1523,7 +1580,7 @@ class BilibiliClient:
         except Exception as exc:
             return False, str(exc), {}
 
-        dev = (str(dev_id or "").strip() or create_uuid_v1()).upper()
+        dev = (str(dev_id or "").strip() or self._uuid_v1()).upper()
         signed = sign_with_key(
             mixin_key,
             {

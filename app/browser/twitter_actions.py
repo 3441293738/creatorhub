@@ -11,9 +11,16 @@ import asyncio
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
 
 from ..platforms._submit import notify_submit
-def classify_twitter_payload_error(status_code: int, payload: Any, fallback_text: str = "") -> str:
+
+
+def classify_twitter_payload_error(
+    status_code: int, payload: Any, fallback_text: str = ""
+) -> str:
     from ..platforms.twitter.client import classify_twitter_payload_error as _fn
+
     return _fn(status_code, payload, fallback_text)
+
+
 from ..platforms.twitter.extract import extract_graphql_tweets
 from ..platforms.twitter.formatter import trim_to_twitter_limit
 from ..platforms.twitter.resolve import (
@@ -48,6 +55,13 @@ from ..platforms.twitter.urls import (
     profile_url,
     tweet_url,
 )
+from .human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from .identity import Identity
 from .manager import BrowserManager
 from .twitter_fetcher import check_twitter_url_risk
@@ -63,7 +77,7 @@ async def _wait_visible(page, selectors: Sequence[str], timeout_ms: int = 8000):
                     return loc
             except Exception:
                 continue
-        await page.wait_for_timeout(300)
+        await human_wait(page, 300)
     return None
 
 
@@ -77,7 +91,14 @@ async def _run_in_account_page(
     if headed:
         async with mgr.temporary_headed_context(identity) as ctx:
             page = await ctx.new_page()
-            return await fn(page)
+            try:
+                return await fn(page)
+            finally:
+                try:
+                    if not page.is_closed():
+                        await page.close()
+                except Exception:
+                    pass
     page = await mgr.new_page(identity, block_media=False)
     try:
         return await fn(page)
@@ -146,7 +167,7 @@ async def post_twitter_comment(
         page.on("response", on_response)
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=40000)
-            await page.wait_for_timeout(2000)
+            await human_wait(page, 2000)
             risk_err = check_twitter_url_risk(page.url)
             if risk_err:
                 return False, "", risk_err
@@ -155,8 +176,10 @@ async def post_twitter_comment(
             if box is None:
                 reply_btn = await _wait_visible(page, REPLY_BUTTON_SELECTORS, timeout_ms=5000)
                 if reply_btn is not None:
-                    await reply_btn.click(timeout=3000)
-                    await page.wait_for_timeout(900)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(
+                        reply_btn, page=page, timeout=3000
+                    )
+                    await human_wait(page, 900)
                 box = await _wait_visible(page, COMPOSE_TEXTBOX_SELECTORS, timeout_ms=8000)
             if box is None:
                 return False, "", "未找到推文回复输入框（该推文可能限制了可回复受众）"
@@ -168,14 +191,23 @@ async def post_twitter_comment(
                 _dismiss_compose_overlays,
             )
 
-            await box.click(timeout=3000)
-            await page.wait_for_timeout(250)
-            to_type = body + " " if (_TRAILING_ENTITY_RE.search(body) and twitter_weighted_length(body) + 1 <= 280) else body
-            await page.keyboard.insert_text(to_type)
-            await page.wait_for_timeout(500)
+            to_type = (
+                body + " "
+                if (
+                    _TRAILING_ENTITY_RE.search(body)
+                    and twitter_weighted_length(body) + 1 <= 280
+                )
+                else body
+            )
+            await DEFAULT_HUMAN_ENGINE.type_text(
+                box, to_type, page=page, clear=False, timeout=4000
+            )
+            await human_wait(page, 500)
             await _dismiss_compose_overlays(page)
 
-            send_btn = await _wait_visible(page, COMPOSE_SUBMIT_BUTTON_SELECTORS, timeout_ms=8000)
+            send_btn = await _wait_visible(
+                page, COMPOSE_SUBMIT_BUTTON_SELECTORS, timeout_ms=8000
+            )
             if send_btn is None:
                 return False, "", "X 回复按钮不可用（可能受限于作者回复权限设置）"
 
@@ -212,7 +244,7 @@ async def post_twitter_comment(
                 if toast_ok:
                     ref_new = resolve_twitter_tweet_ref(str(toast_ok))
                     return True, (ref_new.tweet_id if ref_new else "ok"), ""
-                await page.wait_for_timeout(800)
+                await human_wait(page, 800)
 
             return False, "", "write_uncertain:已点击回复提交，但未收到 X CreateTweet 确认响应，请人工核对"
         finally:
@@ -269,12 +301,14 @@ async def do_twitter_like(
         page.on("response", on_response)
         try:
             await page.goto(ref.url, wait_until="domcontentloaded", timeout=35000)
-            await page.wait_for_timeout(2000)
+            await human_wait(page, 2000)
             risk_err = check_twitter_url_risk(page.url)
             if risk_err:
                 return False, risk_err
 
-            already_liked = (await _wait_visible(page, UNLIKE_BUTTON_SELECTORS, timeout_ms=2500)) is not None
+            already_liked = (
+                await _wait_visible(page, UNLIKE_BUTTON_SELECTORS, timeout_ms=2500)
+            ) is not None
             if unlike:
                 if not already_liked:
                     return True, ""
@@ -289,7 +323,7 @@ async def do_twitter_like(
 
             await notify_submit(on_submit)
             submitted = True
-            await btn.click(timeout=3500)
+            await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=page, timeout=3500)
 
             expected_sel = LIKE_BUTTON_SELECTORS if unlike else UNLIKE_BUTTON_SELECTORS
             deadline = asyncio.get_running_loop().time() + 12.0
@@ -300,7 +334,7 @@ async def do_twitter_like(
                     return False, api_err
                 if (await _wait_visible(page, expected_sel, timeout_ms=500)) is not None:
                     return True, ""
-                await page.wait_for_timeout(500)
+                await human_wait(page, 500)
 
             return False, "write_uncertain:点赞请求已触发但未确认状态变更"
         finally:
@@ -364,38 +398,54 @@ async def do_twitter_retweet(
         page.on("response", on_response)
         try:
             await page.goto(ref.url, wait_until="domcontentloaded", timeout=35000)
-            await page.wait_for_timeout(2000)
+            await human_wait(page, 2000)
             risk_err = check_twitter_url_risk(page.url)
             if risk_err:
                 return False, "", risk_err
 
-            already_rt = (await _wait_visible(page, UNRETWEET_BUTTON_SELECTORS, timeout_ms=2500)) is not None
+            already_rt = (
+                await _wait_visible(page, UNRETWEET_BUTTON_SELECTORS, timeout_ms=2500)
+            ) is not None
             if unretweet and not q_body:
                 if not already_rt:
                     return True, "ok", ""
-                btn = await _wait_visible(page, UNRETWEET_BUTTON_SELECTORS, timeout_ms=5000)
+                btn = await _wait_visible(
+                    page, UNRETWEET_BUTTON_SELECTORS, timeout_ms=5000
+                )
                 if btn is None:
                     return False, "", "未找到取消转推按钮"
-                await btn.click(timeout=3000)
-                await page.wait_for_timeout(600)
+                await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=page, timeout=3000)
+                await human_wait(page, 600)
                 confirm = page.locator('[data-testid="unretweetConfirm"]').first
                 await notify_submit(on_submit)
                 submitted = True
-                await confirm.click(timeout=3500)
+                await DEFAULT_HUMAN_ENGINE.click_locator(
+                    confirm, page=page, timeout=3500
+                )
             elif q_body:
                 rt_btn = await _wait_visible(
-                    page, (*RETWEET_BUTTON_SELECTORS, *UNRETWEET_BUTTON_SELECTORS), timeout_ms=6000
+                    page,
+                    (*RETWEET_BUTTON_SELECTORS, *UNRETWEET_BUTTON_SELECTORS),
+                    timeout_ms=6000,
                 )
                 if rt_btn is None:
                     return False, "", "未找到转推/引用按钮"
-                await rt_btn.click(timeout=3000)
-                await page.wait_for_timeout(600)
-                quote_item = await _wait_visible(page, QUOTE_MENUITEM_SELECTORS, timeout_ms=5000)
+                await DEFAULT_HUMAN_ENGINE.click_locator(
+                    rt_btn, page=page, timeout=3000
+                )
+                await human_wait(page, 600)
+                quote_item = await _wait_visible(
+                    page, QUOTE_MENUITEM_SELECTORS, timeout_ms=5000
+                )
                 if quote_item is None:
                     return False, "", "未找到 Quote(引用) 菜单项"
-                await quote_item.click(timeout=3000)
-                await page.wait_for_timeout(900)
-                box = await _wait_visible(page, COMPOSE_TEXTBOX_SELECTORS, timeout_ms=8000)
+                await DEFAULT_HUMAN_ENGINE.click_locator(
+                    quote_item, page=page, timeout=3000
+                )
+                await human_wait(page, 900)
+                box = await _wait_visible(
+                    page, COMPOSE_TEXTBOX_SELECTORS, timeout_ms=8000
+                )
                 if box is None:
                     return False, "", "未找到引用推文输入框"
                 from ..platforms.twitter.formatter import twitter_weighted_length
@@ -405,12 +455,22 @@ async def do_twitter_retweet(
                     _dismiss_compose_overlays,
                 )
 
-                await box.click(timeout=3000)
-                to_type_q = q_body + " " if (_TRAILING_ENTITY_RE.search(q_body) and twitter_weighted_length(q_body) + 1 <= 280) else q_body
-                await page.keyboard.insert_text(to_type_q)
-                await page.wait_for_timeout(500)
+                to_type_q = (
+                    q_body + " "
+                    if (
+                        _TRAILING_ENTITY_RE.search(q_body)
+                        and twitter_weighted_length(q_body) + 1 <= 280
+                    )
+                    else q_body
+                )
+                await DEFAULT_HUMAN_ENGINE.type_text(
+                    box, to_type_q, page=page, clear=False, timeout=4000
+                )
+                await human_wait(page, 500)
                 await _dismiss_compose_overlays(page)
-                send_btn = await _wait_visible(page, COMPOSE_SUBMIT_BUTTON_SELECTORS, timeout_ms=8000)
+                send_btn = await _wait_visible(
+                    page, COMPOSE_SUBMIT_BUTTON_SELECTORS, timeout_ms=8000
+                )
                 if send_btn is None:
                     return False, "", "引用推文发送按钮不可用"
 
@@ -429,17 +489,25 @@ async def do_twitter_retweet(
             else:
                 if already_rt:
                     return True, "ok", ""
-                rt_btn = await _wait_visible(page, RETWEET_BUTTON_SELECTORS, timeout_ms=6000)
+                rt_btn = await _wait_visible(
+                    page, RETWEET_BUTTON_SELECTORS, timeout_ms=6000
+                )
                 if rt_btn is None:
                     return False, "", "未找到转推按钮"
-                await rt_btn.click(timeout=3000)
-                await page.wait_for_timeout(600)
-                confirm = await _wait_visible(page, RETWEET_CONFIRM_SELECTORS, timeout_ms=5000)
+                await DEFAULT_HUMAN_ENGINE.click_locator(
+                    rt_btn, page=page, timeout=3000
+                )
+                await human_wait(page, 600)
+                confirm = await _wait_visible(
+                    page, RETWEET_CONFIRM_SELECTORS, timeout_ms=5000
+                )
                 if confirm is None:
                     return False, "", "未找到确认转推菜单项"
                 await notify_submit(on_submit)
                 submitted = True
-                await confirm.click(timeout=3500)
+                await DEFAULT_HUMAN_ENGINE.click_locator(
+                    confirm, page=page, timeout=3500
+                )
 
             deadline = asyncio.get_running_loop().time() + 15.0
             while asyncio.get_running_loop().time() < deadline:
@@ -448,9 +516,13 @@ async def do_twitter_retweet(
                 if api_err:
                     return False, "", api_err
                 if not q_body and not unretweet:
-                    if (await _wait_visible(page, UNRETWEET_BUTTON_SELECTORS, timeout_ms=500)) is not None:
+                    if (
+                        await _wait_visible(
+                            page, UNRETWEET_BUTTON_SELECTORS, timeout_ms=500
+                        )
+                    ) is not None:
                         return True, "ok", ""
-                await page.wait_for_timeout(600)
+                await human_wait(page, 600)
 
             return False, "", "write_uncertain:转推/引用已提交但未收到明确确认，请人工核对"
         finally:
@@ -507,26 +579,32 @@ async def do_twitter_follow(
         page.on("response", on_response)
         try:
             await page.goto(profile_url(target), wait_until="domcontentloaded", timeout=35000)
-            await page.wait_for_timeout(2200)
+            await human_wait(page, 2200)
             risk_err = check_twitter_url_risk(page.url)
             if risk_err:
                 return False, risk_err
 
-            is_following_now = (await _wait_visible(page, UNFOLLOW_BUTTON_SELECTORS, timeout_ms=2500)) is not None
+            is_following_now = (
+                await _wait_visible(page, UNFOLLOW_BUTTON_SELECTORS, timeout_ms=2500)
+            ) is not None
             if unfollow:
                 if not is_following_now:
                     return True, ""
                 btn = await _wait_visible(page, UNFOLLOW_BUTTON_SELECTORS, timeout_ms=5000)
                 if btn is None:
                     return False, "未在主页定位到「正在关注」按钮"
-                await btn.click(timeout=3000)
-                await page.wait_for_timeout(600)
-                confirm_btn = await _wait_visible(page, CONFIRM_SHEET_BUTTON_SELECTORS, timeout_ms=5000)
+                await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=page, timeout=3000)
+                await human_wait(page, 600)
+                confirm_btn = await _wait_visible(
+                    page, CONFIRM_SHEET_BUTTON_SELECTORS, timeout_ms=5000
+                )
                 if confirm_btn is None:
                     return False, "未弹出取关二次确认框"
                 await notify_submit(on_submit)
                 submitted = True
-                await confirm_btn.click(timeout=3500)
+                await DEFAULT_HUMAN_ENGINE.click_locator(
+                    confirm_btn, page=page, timeout=3500
+                )
             else:
                 if is_following_now:
                     return True, ""
@@ -535,7 +613,7 @@ async def do_twitter_follow(
                     return False, "未在主页定位到 Follow(关注) 按钮（目标账号可能不存在或已屏蔽）"
                 await notify_submit(on_submit)
                 submitted = True
-                await btn.click(timeout=3500)
+                await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=page, timeout=3500)
 
             expected_sel = FOLLOW_BUTTON_SELECTORS if unfollow else UNFOLLOW_BUTTON_SELECTORS
             deadline = asyncio.get_running_loop().time() + 14.0
@@ -546,7 +624,7 @@ async def do_twitter_follow(
                     return False, api_err
                 if (await _wait_visible(page, expected_sel, timeout_ms=500)) is not None:
                     return True, ""
-                await page.wait_for_timeout(500)
+                await human_wait(page, 500)
 
             return False, "write_uncertain:关注/取关点击已执行，但未观测到按钮状态翻转，请人工核对"
         finally:
@@ -610,22 +688,26 @@ async def send_twitter_dm(
         page.on("response", on_response)
         try:
             if cid:
-                await page.goto(dm_conversation_url(cid), wait_until="domcontentloaded", timeout=40000)
-                await page.wait_for_timeout(2400)
+                await page.goto(
+                    dm_conversation_url(cid), wait_until="domcontentloaded", timeout=40000
+                )
+                await human_wait(page, 2400)
             else:
                 user_target = resolve_twitter_user_target(raw_target) or raw_target.lstrip("@")
                 if not user_target:
                     return False, "缺少私信接收方 @username、UID 或会话 ID"
-                await page.goto(profile_url(user_target), wait_until="domcontentloaded", timeout=38000)
-                await page.wait_for_timeout(2200)
+                await page.goto(
+                    profile_url(user_target), wait_until="domcontentloaded", timeout=38000
+                )
+                await human_wait(page, 2200)
                 risk_err = check_twitter_url_risk(page.url)
                 if risk_err:
                     return False, risk_err
                 dm_btn = await _wait_visible(page, DM_PROFILE_BUTTON_SELECTORS, timeout_ms=7000)
                 if dm_btn is None:
                     return False, "该 X 用户未开放陌生人私信入口（主页无发私信按钮）"
-                await dm_btn.click(timeout=3500)
-                await page.wait_for_timeout(2000)
+                await DEFAULT_HUMAN_ENGINE.click_locator(dm_btn, page=page, timeout=3500)
+                await human_wait(page, 2000)
 
             risk_err = check_twitter_url_risk(page.url)
             if risk_err:
@@ -636,7 +718,10 @@ async def send_twitter_dm(
                 loc = page.locator(pin_sel).first
                 try:
                     if await loc.count() and await loc.is_visible():
-                        return False, "X 加密私信要求先解锁安全 PIN 码，请在账号页点击「打开浏览器」输入一次 PIN"
+                        return (
+                            False,
+                            "X 加密私信要求先解锁安全 PIN 码，请在账号页点击「打开浏览器」输入一次 PIN",
+                        )
                 except Exception:
                     continue
 
@@ -644,16 +729,18 @@ async def send_twitter_dm(
             if composer is None:
                 return False, "未找到 X 私信消息输入框"
 
-            await composer.click(timeout=3000)
-            await page.wait_for_timeout(250)
-            await page.keyboard.insert_text(msg_text)
-            await page.wait_for_timeout(500)
+            await DEFAULT_HUMAN_ENGINE.type_text(
+                composer, msg_text, page=page, clear=False, timeout=4000
+            )
+            await human_wait(page, 500)
 
             send_btn = await _wait_visible(page, DM_SEND_BUTTON_SELECTORS, timeout_ms=5000)
             await notify_submit(on_submit)
             submitted = True
             if send_btn is not None:
-                await send_btn.click(timeout=3500)
+                await DEFAULT_HUMAN_ENGINE.click_locator(
+                    send_btn, page=page, timeout=3500
+                )
             else:
                 await page.keyboard.press("Enter")
 
@@ -679,7 +766,7 @@ async def send_twitter_dm(
                         return True, ""
                 except Exception:
                     pass
-                await page.wait_for_timeout(700)
+                await human_wait(page, 700)
 
             return False, "write_uncertain:私信已点击发送但未确认回执，请到 X 私信列表核对以免重发"
         finally:

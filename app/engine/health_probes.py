@@ -24,6 +24,7 @@ from app.platforms.rednote import RednoteApiError, parse_rednote_self_user, redn
 from app.platforms.twitter import TwitterClient
 from app.platforms.xhs import XhsApiError, creator_check, parse_self_user as parse_xhs_self_user
 from app.risk import OperationKind, RiskCategory, classify_platform_error
+from app.services import thumb_cache
 from app.transport_matrix import douyin_client_environment, resolve_transport
 
 
@@ -377,11 +378,15 @@ class HealthProbeMixin:
             elif classify_platform_error(err)[0] == RiskCategory.AUTH:
                 account.status = "invalid"
                 log.warning("账号 %s(%s)登录态失效", aid, account.nickname)
+            acc_avatar = account.avatar or ""
             session.add(account)
             session.commit()
             risk_state = session.get(AccountRiskState, aid)
             recovered = bool(was_recovering and risk_state
                              and risk_state.risk_level == 0)
+
+        if got_profile and acc_avatar:
+            thumb_cache.schedule_thumb_prewarm([acc_avatar], platform=platform, proxy=proxy)
 
         if got_profile and self.cfg.engine.work_health_stat_snapshots:
             try:
@@ -424,45 +429,57 @@ class HealthProbeMixin:
         return completed
 
     async def _check_accounts(self):
+        import random
         interval = self.cfg.engine.account_check_interval_seconds
         if interval <= 0:
             return
         now = time.time()
-        sweep_due = now - self._last_acct_check >= interval
+        target_interval = getattr(self, "_next_acct_check_interval", float(interval))
+        sweep_due = now - self._last_acct_check >= target_interval
         if not sweep_due and not self._pending_account_checks:
             return
         with get_session() as session:
-            # last_active_at includes public reads. It is not an auth check
-            # timestamp; idle_keepalive_hours must not postpone login checks.
             probes = [self._account_probe_tuple(account)
                       for account in session.exec(select(DouyinAccount)).all()
                       if (account.storage_state or account.creator_storage_state)
                       and account.status != "invalid"]
+        random.shuffle(probes)
         eligible = {probe[0] for probe in probes}
         self._pending_account_checks.intersection_update(eligible)
         if sweep_due:
             self._last_acct_check = now
+            self._next_acct_check_interval = float(interval) * random.uniform(0.84, 1.32)
             self._pending_account_checks.update(eligible)
+        checked_in_tick = 0
         for probe in probes:
             if probe[0] not in self._pending_account_checks:
                 continue
+            if checked_in_tick > 0:
+                await asyncio.sleep(random.uniform(1.4, 3.8))
             result = await self._probe_account_health(probe)
-            # Busy/risk-deferred checks stay due for the next scheduler tick;
-            # don't postpone them for another entire 30-minute interval.
+            checked_in_tick += 1
             if not result.get("deferred"):
                 self._pending_account_checks.discard(probe[0])
+            # 单轮最多探活 3 个账号，避免整批账号在同一分钟密集请求平台接口
+            if checked_in_tick >= 3:
+                break
 
     # ── 本账号作品健康监控(B5)+ 数据快照(B4)──
     async def _check_work_health(self):
-        """定期同步本账号作品,检测「持续0播 / 违规下架」并推送;顺带写每日数据快照。
-        默认关闭(work_health_enabled)。较重(每账号开一次浏览器抓自己作品),故独立节流。"""
+        """定期同步本账号作品,检测「持续0播 / 违规下架」并推送;顺带写每日数据快照。"""
+        import random
         if not self.cfg.engine.work_health_enabled:
             return
         now = time.time()
-        if now - getattr(self, "_last_work_health", 0.0) < \
-                self.cfg.engine.work_health_interval_seconds:
+        target_interval = getattr(
+            self, "_next_work_health_interval", float(self.cfg.engine.work_health_interval_seconds)
+        )
+        if now - getattr(self, "_last_work_health", 0.0) < target_interval:
             return
         self._last_work_health = now
+        self._next_work_health_interval = (
+            float(self.cfg.engine.work_health_interval_seconds) * random.uniform(0.85, 1.30)
+        )
         with get_session() as s:
             accs = [(a.id, a.platform,
                      (a.sec_uid or a.uid or a.douyin_id or "") if a.platform in {"instagram", "twitter"} else (a.sec_uid or ""),
@@ -557,7 +574,13 @@ class HealthProbeMixin:
                                        f"{nick}:「{title}」发布 {age_h:.0f} 小时仍 0 播放,疑似限流"))
                         rec.zero_play_alerted = True
                 s.add(rec)
+            acc_proxy = (acc.proxy or "") if acc else ""
             s.commit()
+        thumb_cache.schedule_thumb_prewarm(
+            [str(w.get("cover_url") or "") for w in items],
+            platform=platform,
+            proxy=acc_proxy,
+        )
         if self.cfg.engine.work_health_stat_snapshots:
             self._write_stat_snapshot(account_id, platform, items)
         if alerts:

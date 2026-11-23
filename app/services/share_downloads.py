@@ -16,6 +16,7 @@ from app import runtime as app_runtime
 from app.db import get_session
 from app.engine.share_downloader import detect_platform
 from app.models import DouyinAccount, ShareDownloadRecord
+from app.services import thumb_cache
 from app.settings import get_setting
 
 
@@ -170,7 +171,13 @@ def _save_share_download_history(
         s.add(record)
         s.commit()
         s.refresh(record)
-        return int(record.id or 0)
+        rec_id = int(record.id or 0)
+        raw_cover = str(record.cover_url or "")
+        pf = str(record.platform or "")
+        has_local_cover = _find_share_local_cover(record) is not None
+    if raw_cover and not has_local_cover:
+        thumb_cache.schedule_thumb_prewarm([raw_cover], platform=pf)
+    return rec_id
 
 
 def _backfill_share_download_history() -> int:
@@ -245,6 +252,45 @@ def _backfill_share_download_history() -> int:
     return restored
 
 
+def _find_share_local_cover(record: ShareDownloadRecord) -> Path | None:
+    """从链接下载历史的本地文件清单或输出目录定位缩略图/图集首图（零网络请求）。"""
+    try:
+        files = json.loads(record.files_json or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        files = []
+    if isinstance(files, list):
+        # 1) 优先匹配 role=thumbnail 或 .cover.*
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "")
+            name = str(item.get("name") or "").lower()
+            if role == "thumbnail" or ".cover." in name:
+                raw = str(item.get("path") or "").strip()
+                if not raw:
+                    continue
+                try:
+                    p = Path(raw).expanduser().resolve(strict=True)
+                    if p.is_file() and p.suffix.lower() in thumb_cache.IMAGE_EXTS and p.stat().st_size > 0:
+                        return p
+                except (OSError, RuntimeError):
+                    continue
+        # 2) 图集/单图下载直接复用首张图片文件
+        for item in files:
+            if not isinstance(item, dict) or item.get("role") != "media":
+                continue
+            raw = str(item.get("path") or "").strip()
+            if not raw:
+                continue
+            try:
+                p = Path(raw).expanduser().resolve(strict=True)
+                if p.is_file() and p.suffix.lower() in thumb_cache.IMAGE_EXTS and p.stat().st_size > 0:
+                    return p
+            except (OSError, RuntimeError):
+                continue
+    return thumb_cache.find_work_local_cover(record.output_dir or "", record.item_id or "")
+
+
 def _share_history_dict(record: ShareDownloadRecord) -> dict:
     try:
         files = json.loads(record.files_json or "[]")
@@ -278,6 +324,12 @@ def _share_history_dict(record: ShareDownloadRecord) -> dict:
                 create_time = 0
     local_path = str(first_file.get("path") or "") if isinstance(first_file, dict) else ""
     quality = str(metadata.get("format") or metadata.get("format_id") or "")
+    has_cover = bool(_find_share_local_cover(record) or record.cover_url)
+    cover_api_url = (
+        f"/api/share-download/history/{record.id}/cover"
+        if (has_cover and record.id)
+        else thumb_cache.local_thumb_api_url(record.cover_url, platform=record.platform)
+    )
     return {
         "id": record.id,
         "platform": record.platform,
@@ -288,7 +340,8 @@ def _share_history_dict(record: ShareDownloadRecord) -> dict:
         "author": record.author,
         "media_type": record.media_type,
         "media_count": record.media_count,
-        "cover_url": record.cover_url,
+        "cover_url": cover_api_url,
+        "remote_cover_url": record.cover_url or "",
         "status": record.status,
         "output_dir": record.output_dir,
         "files": files if isinstance(files, list) else [],

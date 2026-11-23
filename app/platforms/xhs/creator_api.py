@@ -20,6 +20,8 @@ from curl_cffi.curl import CURL_READFUNC_ABORT
 from curl_cffi.requests import Session
 
 from . import creator_sign as sign
+from .client import _coherent_direct_headers
+from .cookies import cookie_str_from_state, extract_b1_from_state
 from .deadline import remaining_seconds
 from .media import (COPY_CHUNK_BYTES, MediaFile, media_size, validate_media_count,
                     validate_media_size)
@@ -31,8 +33,11 @@ CREATOR_URL = "https://creator.xiaohongshu.com"
 UPLOAD_URL = "https://ros-upload.xiaohongshu.com"
 EDITH_URL = "https://edith.xiaohongshu.com"
 WEB_URL = "https://www.xiaohongshu.com"
-_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-       "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0")
+_DEFAULT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+)
+_UA = _DEFAULT_UA
 TRANSCODE_MAX_RETRIES = 20
 TRANSCODE_RETRY_DELAY = 3
 MAX_IMAGE_PIXELS = 50_000_000
@@ -95,36 +100,65 @@ def _upload_fields(payload, xt) -> tuple[str, str, str, str]:
     return origin, segments[-1], token, ";".join(times)
 
 
-def _common_headers() -> dict:
+def _common_headers(user_agent: str = "", impersonate: str = "") -> dict:
+    eff_ua = str(user_agent or "").strip() or _DEFAULT_UA
+    eff_imp = impersonate or impersonate_for_ua(eff_ua)
+    coherent = _coherent_direct_headers(eff_ua, eff_imp)
     return {
-        "user-agent": _UA, "accept": "application/json, text/plain, */*",
+        "accept": "application/json, text/plain, */*",
         "content-type": "application/json;charset=UTF-8",
         "origin": CREATOR_URL, "referer": f"{CREATOR_URL}/",
         "sec-fetch-site": "same-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty",
         "accept-language": "zh-CN,zh;q=0.9",
+        **coherent,
     }
 
 
 class XhsCreatorApi:
     def __init__(self, cookie_str: str, timeout: float = 30.0, proxy: str = "", *,
+                 user_agent: str = "", b1: str = "", storage_state: str = "",
                  cancel_event: threading.Event | None = None, deadline: float | None = None):
         self._cancel_event = cancel_event
         self._deadline = deadline
-        self.cookies = sign.trans_cookies(cookie_str)
+        self.storage_state = storage_state or ""
+        effective_cookie_str = cookie_str or (
+            cookie_str_from_state(self.storage_state) if self.storage_state else ""
+        )
+        self.cookies = sign.trans_cookies(effective_cookie_str)
         if not self.cookies.get("a1"):
             raise XhsPublishError("登录态缺少 a1,请重新扫码登录该小红书账号",
                                   category="auth", signal="auth_expired")
         self.a1 = self.cookies["a1"]
-        from ...browser.manager import normalize_proxy
-        p = normalize_proxy(proxy) or None
+        self.b1 = str(b1 or "").strip() or extract_b1_from_state(self.storage_state)
+        raw_ua = str(user_agent or "").strip() or _DEFAULT_UA
+        self.impersonate = impersonate_for_ua(raw_ua)
+        self._coherent_headers = _coherent_direct_headers(raw_ua, self.impersonate)
+        self.user_agent = self._coherent_headers["user-agent"]
+        from ...netfp import curl_proxies
         self._session_cls = Session
         self._session_options = {
-            "timeout": timeout, "impersonate": impersonate_for_ua(_UA),
-            "proxies": {"http": p, "https": p} if p else None,
-            "discard_cookies": True, "allow_redirects": False,
+            "timeout": timeout,
+            "impersonate": self.impersonate,
+            "proxies": curl_proxies(proxy),
+            "discard_cookies": True,
+            "allow_redirects": False,
+            "trust_env": False,
         }
         self._upload_cli = None
         self.cli = self._session_cls(**self._session_options)
+
+    def _headers(self) -> dict:
+        return {
+            "accept": "application/json, text/plain, */*",
+            "content-type": "application/json;charset=UTF-8",
+            "origin": CREATOR_URL,
+            "referer": f"{CREATOR_URL}/",
+            "sec-fetch-site": "same-site",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-dest": "empty",
+            "accept-language": "zh-CN,zh;q=0.9",
+            **self._coherent_headers,
+        }
 
     def close(self):
         for client in (self._upload_cli, self.cli):
@@ -219,8 +253,8 @@ class XhsCreatorApi:
         params = {"biz_name": "spectrum", "scene": media_type, "file_count": "1",
                   "version": "1", "source": "web"}
         spliced = sign.splice_str(api, params)
-        h = _common_headers()
-        h.update(sign.generate_xsc(self.a1, spliced))
+        h = self._headers()
+        h.update(sign.generate_xsc(self.a1, spliced, b1=self.b1, user_agent=self.user_agent))
         r = self._request("get", CREATOR_URL + spliced, headers=h, cookies=self.cookies)
         j = parse_response(r)
         return j, h["x-t"]
@@ -247,7 +281,7 @@ class XhsCreatorApi:
         signature = sign.cos_signature(message, file_id, file_size, host_only)
         headers = {
             "accept": "*/*", "origin": CREATOR_URL, "referer": f"{CREATOR_URL}/",
-            "user-agent": _UA, "content-type": "",
+            **self._coherent_headers, "content-type": "",
             "authorization": (f"q-sign-algorithm=sha1&q-ak=null&q-sign-time={message}"
                               f"&q-key-time={message}&q-header-list=content-length;host"
                               f"&q-url-param-list=&q-signature={signature}"),
@@ -268,8 +302,8 @@ class XhsCreatorApi:
         api = "/web_api/sns/capa/postgw/query_transcode"
         params = {"video_id": str(video_id), "need_transcode": "false", "resource_type": "0"}
         spliced = sign.splice_str(api, params)
-        h = _common_headers()
-        h.update(sign.generate_xsc(self.a1, spliced))
+        h = self._headers()
+        h.update(sign.generate_xsc(self.a1, spliced, b1=self.b1, user_agent=self.user_agent))
         r = self._request("get", EDITH_URL + spliced, headers=h, cookies=self.cookies)
         return parse_response(r)
 
@@ -278,8 +312,8 @@ class XhsCreatorApi:
         data = {"keyword": keyword,
                 "suggest_topic_request": {"title": "", "desc": f"#{keyword}"},
                 "page": {"page_size": 20, "page": 1}}
-        h = _common_headers()
-        h.update(sign.generate_xsc(self.a1, api, data))
+        h = self._headers()
+        h.update(sign.generate_xsc(self.a1, api, data, b1=self.b1, user_agent=self.user_agent))
         body = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
         r = self._request("post", EDITH_URL + api, headers=h, data=body.encode("utf-8"),
                           cookies=self.cookies)
@@ -369,12 +403,12 @@ class XhsCreatorApi:
                 data["common"]["desc"] = f"{data['common']['desc']} #{clean}".strip()
 
         body = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
-        xs, xt, xs_common = sign.generate_xs_xs_common(self.a1, post_api, body)
+        xs, xt, xs_common = sign.generate_xs_xs_common(
+            self.a1, post_api, body, b1=self.b1, user_agent=self.user_agent
+        )
         h = {
-            "user-agent": _UA, "accept": "application/json, text/plain, */*",
-            "content-type": "application/json", "origin": CREATOR_URL,
-            "referer": f"{CREATOR_URL}/", "sec-fetch-site": "same-site",
-            "sec-fetch-mode": "cors", "sec-fetch-dest": "empty",
+            **self._headers(),
+            "content-type": "application/json",
             "x-s": xs, "x-t": str(xt), "x-s-common": xs_common,
             "x-b3-traceid": sign.gen_b3_traceid(), "x-xray-traceid": sign.gen_xray_traceid(),
             "x-rap-param": sign.generate_x_rap_param(post_api, body),
@@ -395,9 +429,9 @@ class XhsCreatorApi:
     def my_info(self, *, detailed: bool = False):
         """创作平台「我的信息」；详细模式额外返回未裁剪的响应。"""
         api = "/api/galaxy/user/info"
-        h = _common_headers()
+        h = self._headers()
         h["sec-fetch-site"] = "same-origin"
-        h.update(sign.generate_xsc(self.a1, api))
+        h.update(sign.generate_xsc(self.a1, api, b1=self.b1, user_agent=self.user_agent))
         r = self._request("get", CREATOR_URL + api, headers=h, cookies=self.cookies)
         j = parse_response(r)
         result = True, (j.get("data") or {})
@@ -407,8 +441,8 @@ class XhsCreatorApi:
         """轻量校验创作者登录态；详细模式额外返回未裁剪的响应。"""
         api = "/api/galaxy/creator/note/user/posted"
         spliced = sign.splice_str(api, {"tab": "0"})
-        h = _common_headers()
-        h.update(sign.generate_xsc(self.a1, spliced))
+        h = self._headers()
+        h.update(sign.generate_xsc(self.a1, spliced, b1=self.b1, user_agent=self.user_agent))
         r = self._request("get", CREATOR_URL + spliced, headers=h, cookies=self.cookies)
         j = parse_response(r)
         result = True, (j.get("msg") or "")
@@ -423,8 +457,8 @@ class XhsCreatorApi:
             if page:
                 params["page"] = str(page)
             spliced = sign.splice_str(api, params)
-            h = _common_headers()
-            h.update(sign.generate_xsc(self.a1, spliced))
+            h = self._headers()
+            h.update(sign.generate_xsc(self.a1, spliced, b1=self.b1, user_agent=self.user_agent))
             r = self._request("get", CREATOR_URL + spliced, headers=h, cookies=self.cookies)
             j = parse_response(r)
             d = j.get("data") or {}

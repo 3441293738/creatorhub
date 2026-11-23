@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import Awaitable, Callable, List, Tuple
 from urllib.parse import urlparse
 
+from ...browser.human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_wait,
+)
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
 from .._submit import notify_stage as _notify_stage, notify_submit as _notify_submit
@@ -101,42 +107,31 @@ _POI_RESULT = [
 
 
 async def _fill_first(page, selectors, text, timeout=2500) -> bool:
-    for sel in selectors:
-        try:
-            el = page.locator(sel).first
-            await el.click(timeout=timeout)
-            try:
-                await el.fill(text, timeout=timeout)
-            except Exception:
-                await page.keyboard.type(text, delay=30)   # contenteditable 不支持 fill
-            return True
-        except Exception:
-            continue
-    return False
+    return bool(await human_fill_first(page, selectors, text, clear=True, timeout=timeout))
 
 
 async def _click_first(page, selectors, timeout=3000) -> bool:
-    for sel in selectors:
-        try:
-            btn = page.locator(sel).first
-            if await btn.count():
-                await btn.click(timeout=timeout)
-                return True
-        except Exception:
-            continue
-    return False
+    return await human_click_first(page, selectors, timeout=timeout)
 
 
 async def _click_in_frames(page, selectors, timeout=4000) -> bool:
-    """在主页面 + 所有子 frame(micro/content iframe)里点第一个命中的元素。
+    """在主页面 + 所有子 frame(micro/content iframe)里点第一个命中的可见元素。
     视频号发布 UI 在 iframe 里,普通 page.click 点不到,必须遍历 frames。"""
     for frame in page.frames:
         for sel in selectors:
             try:
-                loc = frame.locator(sel).first
-                if await loc.count():
-                    await loc.click(timeout=timeout)
-                    return True
+                loc = frame.locator(sel)
+                count = min(await loc.count(), 8)
+                for idx in range(count):
+                    cand = loc.nth(idx)
+                    try:
+                        if await cand.is_visible():
+                            await DEFAULT_HUMAN_ENGINE.click_locator(
+                                cand, page=page, timeout=timeout
+                            )
+                            return True
+                    except Exception:
+                        continue
             except Exception:
                 continue
     return False
@@ -151,14 +146,13 @@ async def _set_location(page, location: str):
         if not await _click_in_frames(page, _POI_TRIGGER, timeout=3000):
             log.warning("[channels_publish] 未找到位置控件,跳过位置设置")
             return
-        await page.wait_for_timeout(1200)
+        await human_wait(page, 1200)
         inp, _fr = await _find_in_frames(page, _POI_INPUT)
         if inp is None:
             log.warning("[channels_publish] 未找到位置搜索框,跳过位置(位置选择器需校准 _POI_INPUT)")
             return
-        await inp.click()
-        await page.keyboard.type(location, delay=40)
-        await page.wait_for_timeout(2200)      # 等搜索结果回来
+        await DEFAULT_HUMAN_ENGINE.type_text(inp, location, page=page, clear=True, timeout=3000)
+        await human_wait(page, 2200)      # 等搜索结果回来
         if not await _click_in_frames(page, _POI_RESULT, timeout=3000):
             log.warning("[channels_publish] 位置「%s」无匹配结果或结果选择器需校准 _POI_RESULT", location)
         else:
@@ -273,8 +267,8 @@ async def _dismiss_original_intercept(page) -> None:
             try:
                 loc = frame.locator(sel).first
                 if await loc.count() and await loc.is_visible():
-                    await loc.click(timeout=1500)
-                    await page.wait_for_timeout(200)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(loc, page=page, timeout=1500)
+                    await human_wait(page, 200)
                     return
             except Exception:
                 continue
@@ -321,7 +315,7 @@ async def _wait_upload_ready(page, media_type: str, timeout_seconds: int,
             busy_kw = await _any_text_in_frames(page, _UPLOAD_BUSY_KW)
             if not busy_kw:
                 return True, ""
-        await page.wait_for_timeout(1000)
+        await human_wait(page, 1000)
     desc_el, _ = await _find_in_frames(page, _DESC_SEL)
     title_el, _ = await _find_in_frames(page, _SHORT_TITLE_SEL)
     if desc_el is not None or title_el is not None:
@@ -330,16 +324,8 @@ async def _wait_upload_ready(page, media_type: str, timeout_seconds: int,
 
 
 async def _clear_and_fill(el, page, text: str, *, use_keyboard_fallback: bool = True) -> None:
-    await el.click(timeout=4000)
-    try:
-        await el.fill(text, timeout=4000)
-        return
-    except Exception:
-        if not use_keyboard_fallback:
-            raise
-    await page.keyboard.press("Control+A")
-    await page.keyboard.press("Backspace")
-    await page.keyboard.insert_text(text)
+    _ = use_keyboard_fallback
+    await DEFAULT_HUMAN_ENGINE.type_text(el, text, page=page, clear=True, timeout=4000)
 
 
 def _parse_channels_post_create(payload: object) -> tuple[bool, str, str]:
@@ -451,7 +437,7 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
         await _notify_stage(on_stage, "正在打开视频号助手发布页…")
         # 视频号发布入口就是 create 页;图文/视频靠点左侧导航切换(finderNewLifeCreateg 会 302 回 create)
         await page.goto(CREATE_URL_VIDEO, wait_until="domcontentloaded", timeout=40000)
-        await page.wait_for_timeout(4000)
+        await human_wait(page, 4000)
         if ("login.html" in page.url or page.url.rstrip("/").endswith("/login")
                 or channels_state["logged_out"]):
             return False, "", f"logged_out:视频号助手未登录(落到 {page.url})"
@@ -460,9 +446,9 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
         # (视频号 UI 在 micro/content iframe 里,按钮要跨 frame 点)
         if media_type == "images":
             await _click_in_frames(page, _IMAGE_NAV, timeout=4000)
-            await page.wait_for_timeout(2000)
+            await human_wait(page, 2000)
             if await _click_in_frames(page, _CREATE_IMAGE_BTN, timeout=5000):
-                await page.wait_for_timeout(2500)
+                await human_wait(page, 2500)
             else:
                 diag = await _collect_diag(page, "no-create-image-btn")
                 return False, "", f"未找到「发表图文」按钮,无法进图文发布页。DOM诊断: {diag}"
@@ -526,7 +512,7 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
         # 位置 POI(可选,best-effort)
         await _set_location(page, location)
         await _dismiss_original_intercept(page)
-        await page.wait_for_timeout(800)
+        await human_wait(page, 800)
 
         await _notify_stage(on_stage, "正在准备点击「发表」…")
         pub = None
@@ -540,7 +526,7 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
             pub, _pf = await _find_enabled_publish_button(page)
             if pub is not None:
                 break
-            await page.wait_for_timeout(1000)
+            await human_wait(page, 1000)
         if pub is None:
             diag = await _collect_diag(page, "no-publish-btn")
             return False, "", (f"上传/填写已完成但未找到可用的发表按钮(可能仍在转码或缺少必填项)。DOM诊断: {diag}")
@@ -548,7 +534,7 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
         await _notify_submit(on_submit)
         submitted["clicked"] = True
         try:
-            await pub.click(timeout=5000)
+            await DEFAULT_HUMAN_ENGINE.click_locator(pub, page=page, timeout=5000)
             await _notify_stage(on_stage, "已点击「发表」，等待视频号确认…")
         except Exception as e:
             return False, "", f"write_uncertain:点发表后连接或点击状态异常({e!r})，请先到视频号助手核对，系统不会自动重发"
@@ -588,7 +574,7 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
                 error = (f"write_uncertain:视频号返回发表异常({channels_state['rejected']})，"
                          f"请到视频号助手确认是否已发布。DOM诊断: {diag}")
                 break
-            await page.wait_for_timeout(2000)
+            await human_wait(page, 2000)
 
         if ok:
             current = str(page.url or "")

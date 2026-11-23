@@ -61,7 +61,7 @@ async def dispatch_event(event_id: int) -> dict:
 
     delivered = 0
     errors: list[str] = []
-    async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=False, trust_env=False) as client:
         for subscription in subscriptions:
             signature = hmac.new(
                 (subscription.secret or "").encode("utf-8"), body,

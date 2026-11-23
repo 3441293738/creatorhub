@@ -21,6 +21,7 @@ from app.platforms.rednote import build_rednote_note_url, resolve_rednote_user
 from app.platforms.twitter import looks_like_twitter_tweet, resolve_twitter_short_url, resolve_twitter_user_target
 from app.risk import RiskController
 from app.services import metadata as metadata_service
+from app.services import thumb_cache
 
 
 # ─────────── 抖音 / 小红书 / 快手 / 视频号批量采集 ───────────
@@ -134,17 +135,14 @@ def _validated_collection_input(body: KeywordCollectionIn) \
 
 
 async def _resolve_ks_creator_source(body: KeywordCollectionIn) -> None:
-    """把快手创作者采集的 source_ref 解析为可直开主页的 3x user_id。
-
-    与作品监控保持一致：接受完整分享文案 / 创作者主页链接 / v.kuaishou.com
-    短链 / user_id。解析成功后就地改写 body.source_ref，这样幂等提交的
-    payload 哈希与实际入库的目标一致（重复提交同一 key 不会哈希不一致）。
-    同时把前端按原始输入生成的「创作者 {原文案}」显示名替换成解析后的 ID。
-    """
+    """把快手创作者采集的 source_ref 解析为可直开主页的 3x user_id。"""
     if (body.platform.strip().lower() == "kuaishou"
             and body.source_type.strip().lower() == "creator"):
         original_ref = body.source_ref.strip()
-        resolved = await resolve_ks_user_id(original_ref, app_runtime.cfg.engine.user_agent)
+        eff_proxy = metadata_service._resolve_ephemeral_proxy("kuaishou", body.account_id)
+        resolved = await metadata_service._call_resolver(
+            resolve_ks_user_id, original_ref, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+        )
         if not resolved:
             raise HTTPException(
                 400, "无法解析快手创作者主页，请粘贴完整分享文案、"
@@ -190,7 +188,10 @@ async def _resolve_bili_creator_source(body: KeywordCollectionIn) -> None:
             and body.source_type.strip().lower() == "creator"):
         original_ref = body.source_ref.strip()
         cleaned = metadata_service._clean_platform_target_input(original_ref, "bilibili")
-        mid = await resolve_bili_mid(cleaned, app_runtime.cfg.engine.user_agent)
+        eff_proxy = metadata_service._resolve_ephemeral_proxy("bilibili", body.account_id)
+        mid = await metadata_service._call_resolver(
+            resolve_bili_mid, cleaned, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+        )
         if not mid:
             raise HTTPException(
                 400,
@@ -207,7 +208,10 @@ async def _resolve_rednote_creator_source(body: KeywordCollectionIn) -> None:
             and body.source_type.strip().lower() == "creator"):
         original_ref = body.source_ref.strip()
         cleaned = metadata_service._clean_platform_target_input(original_ref, "rednote")
-        ref = await resolve_rednote_user(cleaned, app_runtime.cfg.engine.user_agent)
+        eff_proxy = metadata_service._resolve_ephemeral_proxy("rednote", body.account_id)
+        ref = await metadata_service._call_resolver(
+            resolve_rednote_user, cleaned, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+        )
         if not ref or not ref.user_id:
             raise HTTPException(
                 400,
@@ -248,7 +252,13 @@ async def _resolve_twitter_creator_source(body: KeywordCollectionIn) -> None:
     ):
         original_ref = body.source_ref.strip()
         cleaned = metadata_service._clean_platform_target_input(original_ref, "twitter")
-        expanded = await resolve_twitter_short_url(cleaned, user_agent=app_runtime.cfg.engine.user_agent)
+        eff_proxy = metadata_service._resolve_ephemeral_proxy("twitter", body.account_id)
+        expanded = await metadata_service._call_resolver(
+            resolve_twitter_short_url,
+            cleaned,
+            user_agent=app_runtime.cfg.engine.user_agent,
+            proxy=eff_proxy,
+        )
         if looks_like_twitter_tweet(expanded):
             raise HTTPException(
                 400,
@@ -439,6 +449,7 @@ def _collection_local_media_paths(row: KeywordCollectionContent) -> list[Path]:
         candidates = [
             child for child in path.iterdir()
             if child.is_file() and child.name.startswith(prefix)
+            and ".cover." not in child.name.lower()
             and child.suffix.lower() in _COLLECTION_MEDIA_EXTS
             and child.stat().st_size > 0
         ]
@@ -482,17 +493,26 @@ def _collection_content_dict(row: KeywordCollectionContent) -> dict:
     else:
         url = f"https://www.douyin.com/video/{row.aweme_id}"
     local_files = _collection_local_media_paths(row)
+    local_cover = thumb_cache.find_work_local_cover(row.local_path, row.aweme_id)
     remote_medias = _collection_remote_medias(row)
     try:
         file_size = sum(path.stat().st_size for path in local_files)
     except OSError:
         file_size = 0
+    has_cover = bool(local_cover or row.cover_url)
+    cover_api_url = (
+        f"/api/collections/{row.job_id}/contents/{row.id}/cover"
+        if (has_cover and row.id)
+        else thumb_cache.local_thumb_api_url(row.cover_url, platform=row.platform)
+    )
     return {
         "id": row.id, "job_id": row.job_id, "platform": row.platform,
         "keyword": row.keyword, "aweme_id": row.aweme_id, "desc": row.desc,
         "author_name": row.author_name, "author_id": row.author_id,
         "media_type": row.media_type, "create_time": row.create_time,
-        "cover_url": row.cover_url, "like_count": row.like_count,
+        "cover_url": cover_api_url,
+        "remote_cover_url": row.cover_url or "",
+        "like_count": row.like_count,
         "comment_count": row.comment_count,
         "collected_comment_count": row.collected_comment_count,
         "download_status": row.download_status, "local_path": row.local_path,
@@ -501,7 +521,7 @@ def _collection_content_dict(row: KeywordCollectionContent) -> dict:
         "local_exists": bool(local_files),
         "media_count": len(local_files) or len(remote_medias),
         "file_size": file_size,
-        "preview_available": bool(local_files or remote_medias or row.cover_url),
+        "preview_available": bool(local_files or remote_medias or has_cover),
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 

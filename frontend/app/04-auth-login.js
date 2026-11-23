@@ -46,15 +46,15 @@ async function choosePreLoginBrowserBackend({ platform = "" } = {}) {
     toast("读取登录环境失败：" + e.message, "err");
     return null;
   }
-  const localOnly = platform === "xhs";
-  const options = browserChoiceOptions(catalog, { localOnly });
+  const isXhs = platform === "xhs";
+  const options = browserChoiceOptions(catalog, { localOnly: false });
   const selected = await uiSelect({
     title: "选择扫码登录环境",
-    hint: localOnly
-      ? "小红书固定使用系统 Chrome/CDP 原生环境；扫码、Cookie 和后续任务共用同一持久 Profile。"
+    hint: isXhs
+      ? "单号推荐使用系统 Chrome/CDP 原生环境；同机运营多个小红书号时可选 Fingerprint Chromium 实现底层硬件指纹隔离。"
       : "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。新的指纹环境会同时打开环境体检标签。",
     options,
-    value: localOnly ? "local" : preLoginBrowserBackend,
+    value: isXhs && preLoginBrowserBackend === "default" ? "local" : preLoginBrowserBackend,
   });
   if (selected !== null) preLoginBrowserBackend = selected;
   return selected;
@@ -84,14 +84,14 @@ async function choosePreLoginProxy({ platform = PLATFORM } = {}) {
     { value: "auto", label: autoLabel },
     ...opts.map(p => ({ value: p.url, label: formatProxyOptionLabel(p, platform) })),
     { value: "__custom__", label: "✎ 手动输入指定代理…" },
-    { value: "", label: "不用代理（使用本机网络）" },
+    { value: "", label: "⚠️ 不用代理（暴露本机真实 IP；开启严格代理锁时将拦截）" },
   ];
   const v = await uiSelect({
     title: "选择本次登录使用的代理",
     hint: preferDirect
-      ? (domestic ? "当前代理池无可用大陆节点；默认改用本机网络，避免境外代理导致国内平台加载慢或白屏。" : "当前代理池仅有大陆节点；请改选境外代理或手动输入，避免大陆节点导致海外平台连接失败或风控。")
-      : "整个登录/扫码过程都走它,从一开始就绑定这条 IP(最稳)。",
-    options, value: preferDirect ? "" : "auto",
+      ? (domestic ? "当前代理池无空闲大陆节点；请手动输入新代理或先扩充代理池（开启严格代理锁时禁止多号共享本机 IP）。" : "当前代理池无空闲境外节点；请手动输入新代理或先扩充代理池，避免大陆节点或本机直连触发风控。")
+      : "整个登录/扫码过程都走独立代理，从一开始锁定一号一 IP（严禁同平台共享出口）。",
+    options, value: preferDirect ? "__custom__" : "auto",
   });
   if (v === null) return null;
   if (v === "__custom__") {
@@ -104,7 +104,7 @@ async function choosePreLoginProxy({ platform = PLATFORM } = {}) {
   }
   return v;
 }
-function freshPreLoginFingerprint(browserBackend) {
+function freshPreLoginFingerprint(browserBackend, platform = PLATFORM) {
   const choice = browserChoiceParts(browserBackend);
   const runtimes = (preLoginBrowserCatalog || {}).runtimes || [];
   const runtime = runtimes.find(item => item.runtime_id === choice.runtimeId)
@@ -112,10 +112,13 @@ function freshPreLoginFingerprint(browserBackend) {
   const seed = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
     ? globalThis.crypto.randomUUID().replaceAll("-", "")
     : `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+  const overseas = ["tiktok", "rednote", "instagram", "twitter"].includes(platform || "");
   return {
     seed, engine_seed: "", fingerprint_id: seed.slice(0, 12),
     source_ip: "", country: "", region: "", city: "",
-    timezone: "Asia/Shanghai", locale: "zh-CN", accept_languages: "",
+    timezone: overseas ? "America/New_York" : "Asia/Shanghai",
+    locale: overseas ? "en-US" : "zh-CN",
+    accept_languages: "",
     viewport_w: 1280, viewport_h: 800, geo_lat: 0, geo_lon: 0,
     platform: "", platform_version: "", brand: "", brand_version: "",
     hardware_concurrency: 0, gpu_vendor: "", gpu_renderer: "",

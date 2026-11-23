@@ -1,4 +1,4 @@
-"""Central, deterministic-testable semantics for visible XHS page actions."""
+"""Central, human-dynamics semantics for visible XHS & Rednote page actions."""
 from __future__ import annotations
 
 import asyncio
@@ -8,6 +8,8 @@ import re
 import sys
 from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
+
+from .human_interaction import HumanInteractionEngine
 
 
 class XhsVisibleActionGate:
@@ -52,13 +54,14 @@ class XhsVisibleActionGate:
 
 
 class XhsInteractionPolicy:
-    """Page-native clicks, input and finite scrolling with bounded cadence."""
+    """Page-native clicks, input and finite scrolling with human Bezier/keystroke cadence."""
 
     def __init__(
             self, *, rng: random.Random | None = None,
             sleep: Callable[[float], Awaitable[None]] | None = None):
         self.rng = rng or random.SystemRandom()
         self.sleep = sleep or asyncio.sleep
+        self._human = HumanInteractionEngine(rng=self.rng, sleep=self.sleep)
         self._action_count = 0
         self._next_rest_at = int(self.rng.randint(14, 24))
 
@@ -101,27 +104,76 @@ class XhsInteractionPolicy:
                 await self._pause(0.05, 0.12)
             else:
                 raise RuntimeError("小红书页面控件当前不可用")
-        await locator.hover()
-        await self._pause(0.18, 0.48)
-        await locator.click()
+
+        target_page = getattr(locator, "page", None)
+        bbox_fn = getattr(locator, "bounding_box", None)
+        box = None
+        if callable(bbox_fn):
+            try:
+                box = await bbox_fn()
+            except Exception:
+                box = None
+        # Keep custom facade locators (_SubmitLocator / _PublishWebComponentLocator)
+        # working via their overridden .click(), while adding Bezier approach first.
+        is_custom_facade = locator.__class__.__name__.startswith("_")
+        if (
+            isinstance(box, dict)
+            and float(box.get("width") or 0) >= 2.0
+            and float(box.get("height") or 0) >= 2.0
+            and target_page is not None
+            and getattr(target_page, "mouse", None) is not None
+        ):
+            tx, ty = self._human.sample_box_point(box)
+            await self._human.move_mouse(target_page, tx, ty)
+            await self._pause(0.14, 0.42)
+            if not is_custom_facade:
+                mouse = target_page.mouse
+                if hasattr(mouse, "down") and hasattr(mouse, "up"):
+                    await mouse.down(button="left")
+                    await self._pause(0.055, 0.135)
+                    await mouse.up(button="left")
+                    await self._after_action()
+                    return
+        else:
+            await locator.hover()
+            await self._pause(0.18, 0.48)
+
+        hold_ms = int(self.rng.uniform(55, 132))
+        try:
+            await locator.click(delay=hold_ms)
+        except TypeError:
+            await locator.click()
         await self._after_action()
 
     async def _prepare_input(self, locator: Any) -> None:
-        await locator.wait_for(state="visible", timeout=10_000)
-        await locator.scroll_into_view_if_needed(timeout=10_000)
-        await locator.focus()
+        await self.click_visible(locator, timeout=10_000)
         await self._pause(0.06, 0.16)
-        modifier = "Meta" if sys.platform == "darwin" else "Control"
-        await locator.press(f"{modifier}+A")
-        await locator.press("Backspace")
+        has_existing = True
+        try:
+            val = await locator.input_value()
+            has_existing = bool(str(val or ""))
+        except Exception:
+            try:
+                dom_txt = await locator.evaluate(
+                    "el => String(el.value ?? el.innerText ?? el.textContent ?? '')"
+                )
+                has_existing = bool(str(dom_txt or "").strip())
+            except Exception:
+                has_existing = True
+        if has_existing:
+            modifier = "Meta" if sys.platform == "darwin" else "Control"
+            await locator.press(f"{modifier}+A")
+            await self._pause(0.04, 0.11)
+            await locator.press("Backspace")
+            await self._pause(0.05, 0.14)
 
     async def type_short(self, locator: Any, text: str) -> None:
         await self._prepare_input(locator)
-        # Keep the requested text exact; vary pauses, not content or targets.
         burst_left = int(self.rng.randint(3, 7))
         for character in str(text):
-            await locator.press_sequentially(character, delay=0)
-            await self._pause(0.06, 0.16)
+            hold_ms = int(self.rng.triangular(24, 76, 42))
+            await locator.press_sequentially(character, delay=hold_ms)
+            await self._pause(0.05, 0.16)
             burst_left -= 1
             if character in ",，。.!！?？;；:：\n":
                 await self._pause(0.2, 0.55)
@@ -137,10 +189,32 @@ class XhsInteractionPolicy:
         target_page = page or getattr(locator, "page", None)
         if target_page is None or not hasattr(target_page, "keyboard"):
             raise RuntimeError("长文本输入缺少活动页面")
-        await target_page.keyboard.insert_text(str(text))
+        content = str(text)
+        # Type opening prefix with real keydown/keyup events, then insert natural
+        # clause chunks with human review pauses rather than 1000 chars in 0ms.
+        head_len = min(len(content), int(self.rng.randint(8, 16)))
+        for ch in content[:head_len]:
+            hold_ms = int(self.rng.triangular(24, 72, 40))
+            await locator.press_sequentially(ch, delay=hold_ms)
+            await self._pause(0.04, 0.12)
+        if len(content) > head_len:
+            await self._pause(0.16, 0.38)
+            rest = content[head_len:]
+            pos = 0
+            while pos < len(rest):
+                step = int(self.rng.randint(42, 96))
+                end = min(len(rest), pos + step)
+                for idx in range(end - 1, pos + 14, -1):
+                    if rest[idx] in "\n。！？；，,!?;":
+                        end = idx + 1
+                        break
+                await target_page.keyboard.insert_text(rest[pos:end])
+                pos = end
+                if pos < len(rest):
+                    await self._pause(0.14, 0.42)
         await self._pause(0.08, 0.18)
-        await self._verify_text(locator, str(text))
-        await self.reading_pause(content_length=len(str(text)))
+        await self._verify_text(locator, content)
+        await self.reading_pause(content_length=len(content))
 
     @staticmethod
     def _normalize_verified_text(value: str, *, multiline: bool) -> str:
@@ -151,9 +225,6 @@ class XhsInteractionPolicy:
             .replace("\xa0", " ")
         )
         if multiline:
-            # Contenteditable editors (TipTap/ProseMirror) turn single newlines
-            # into separate <p> blocks whose innerText joins paragraphs with
-            # \n\n and may include a trailing block newline.
             text = re.sub(r"\n+", "\n", text).strip("\n")
         return text
 
@@ -171,14 +242,10 @@ class XhsInteractionPolicy:
             raise RuntimeError("小红书文本输入结果与预期不一致")
 
     async def scroll_step(self, page: Any, *, direction: int = 1) -> int:
-        # Triangular sampling avoids a flat machine-like distribution while
-        # remaining bounded enough for deterministic collection progress.
         amount = int(self.rng.triangular(350, 900, 610))
-        signed = amount if direction >= 0 else -amount
-        await page.mouse.wheel(0, signed)
-        await self._pause(0.18, 0.52)
-        await self._after_action()
-        return signed
+        return await self._human.scroll_wheel(
+            page, distance=amount, direction=direction, settle=True
+        )
 
     async def scroll_until(
             self, page: Any,

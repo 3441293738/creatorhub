@@ -103,12 +103,15 @@ async def add_watch(body: WatchIn):
         raise HTTPException(400, "近期天数须为 0~365，0 表示跟随全局设置")
     if not 0 <= body.max_scrolls <= 50:
         raise HTTPException(400, "抓取深度须为 0~50，0 表示跟随全局设置")
+    eff_proxy = metadata_service._resolve_ephemeral_proxy(platform, body.account_id)
     if platform == "xhs":
         kind = body.kind
         if kind == "auto":
             note_ref = None
             if xhs_looks_like_note(target_input) or "://" in target_input:
-                note_ref = await xhs_resolve_note(target_input, app_runtime.cfg.engine.user_agent)
+                note_ref = await metadata_service._call_resolver(
+                    xhs_resolve_note, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
             if note_ref:
                 kind = "video"
                 aweme_id, xsec_token = note_ref.note_id, note_ref.xsec_token
@@ -116,13 +119,17 @@ async def add_watch(body: WatchIn):
                 kind = "user"
         if kind == "video":
             if not aweme_id:
-                ref = await xhs_resolve_note(target_input, app_runtime.cfg.engine.user_agent)
+                ref = await metadata_service._call_resolver(
+                    xhs_resolve_note, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
                 if not ref:
                     raise HTTPException(400, "无法解析小红书笔记,请粘贴完整分享文案、explore 笔记链接 / xhslink 短链 / 24 位 note_id")
                 aweme_id, xsec_token = ref.note_id, ref.xsec_token
             title = "笔记 " + aweme_id
         else:
-            ref = await xhs_resolve_user(target_input, app_runtime.cfg.engine.user_agent)
+            ref = await metadata_service._call_resolver(
+                xhs_resolve_user, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+            )
             if not ref:
                 raise HTTPException(400, "无法解析小红书创作者,请粘贴完整分享文案、主页链接 / xhslink 短链 / 24 位 user_id")
             sec_uid, xsec_token = ref.user_id, ref.xsec_token
@@ -132,7 +139,9 @@ async def add_watch(body: WatchIn):
         if kind == "auto":
             note_ref = None
             if looks_like_rednote_note(target_input) or "://" in target_input:
-                note_ref = await resolve_rednote_note(target_input, app_runtime.cfg.engine.user_agent)
+                note_ref = await metadata_service._call_resolver(
+                    resolve_rednote_note, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
             if note_ref:
                 kind = "video"
                 aweme_id, xsec_token = note_ref.note_id, note_ref.xsec_token
@@ -140,13 +149,17 @@ async def add_watch(body: WatchIn):
                 kind = "user"
         if kind == "video":
             if not aweme_id:
-                ref = await resolve_rednote_note(target_input, app_runtime.cfg.engine.user_agent)
+                ref = await metadata_service._call_resolver(
+                    resolve_rednote_note, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
                 if not ref:
                     raise HTTPException(400, "无法解析海外小红书笔记,请粘贴 www.rednote.com/zh/discovery/item/... 笔记链接或 24 位 note_id")
                 aweme_id, xsec_token = ref.note_id, ref.xsec_token
             title = "笔记 " + aweme_id
         else:
-            ref = await resolve_rednote_user(target_input, app_runtime.cfg.engine.user_agent)
+            ref = await metadata_service._call_resolver(
+                resolve_rednote_user, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+            )
             if not ref:
                 raise HTTPException(400, "无法解析海外小红书创作者,请粘贴 www.rednote.com/zh/user/profile/... 主页链接或 24 位 user_id")
             sec_uid, xsec_token = ref.user_id, ref.xsec_token
@@ -155,16 +168,22 @@ async def add_watch(body: WatchIn):
         kind = body.kind
         if kind == "auto":
             if ks_looks_like_photo(target_input) or "://" in target_input:
-                aweme_id = await resolve_ks_photo_id(target_input, app_runtime.cfg.engine.user_agent) or ""
+                aweme_id = await metadata_service._call_resolver(
+                    resolve_ks_photo_id, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                ) or ""
             kind = "video" if aweme_id else "user"
         if kind == "video":
             if not aweme_id:
-                aweme_id = await resolve_ks_photo_id(target_input, app_runtime.cfg.engine.user_agent)
+                aweme_id = await metadata_service._call_resolver(
+                    resolve_ks_photo_id, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
             if not aweme_id:
                 raise HTTPException(400, "无法解析快手作品 id,请粘贴完整分享文案、作品链接 / v.kuaishou.com 短链 / photo_id")
             title = "作品 " + aweme_id
         else:
-            sec_uid = await resolve_ks_user_id(target_input, app_runtime.cfg.engine.user_agent)
+            sec_uid = await metadata_service._call_resolver(
+                resolve_ks_user_id, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+            )
             if not sec_uid:
                 raise HTTPException(400, "无法解析快手 user_id,请粘贴完整分享文案、主页链接 / 短链 / user_id")
         mode = "public"
@@ -181,7 +200,9 @@ async def add_watch(body: WatchIn):
         if kind == "video":
             if parsed_ref is not None and parsed_ref.object_nonce_id:
                 xsec_token = parsed_ref.object_nonce_id
-            aweme_id = await resolve_channels_photo_id(target_input, app_runtime.cfg.engine.user_agent) or ""
+            aweme_id = await metadata_service._call_resolver(
+                resolve_channels_photo_id, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+            ) or ""
             if not aweme_id and parsed_ref is not None:
                 aweme_id = (
                     parsed_ref.object_id
@@ -202,7 +223,9 @@ async def add_watch(body: WatchIn):
                 title = channels_res.nickname
         mode = "public"
     elif platform == "tiktok":
-        target_input, video_ref, profile_id = await metadata_service._resolve_tiktok_target(target_input)
+        target_input, video_ref, profile_id = await metadata_service._resolve_tiktok_target(
+            target_input, proxy=eff_proxy, account_id=body.account_id
+        )
         kind = body.kind if body.kind in {"auto", "video", "user"} else "auto"
         if kind == "auto":
             kind = "video" if video_ref else "user"
@@ -221,24 +244,34 @@ async def add_watch(body: WatchIn):
         kind = body.kind if body.kind in {"auto", "video", "user"} else "auto"
         if kind == "auto":
             if looks_like_bili_work(target_input):
-                aweme_id = await resolve_bili_work(target_input, app_runtime.cfg.engine.user_agent) or ""
+                aweme_id = await metadata_service._call_resolver(
+                    resolve_bili_work, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                ) or ""
                 kind = "video" if aweme_id else "user"
             else:
-                sec_uid = await resolve_bili_mid(target_input, app_runtime.cfg.engine.user_agent) or ""
+                sec_uid = await metadata_service._call_resolver(
+                    resolve_bili_mid, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                ) or ""
                 if sec_uid:
                     kind = "user"
                 else:
-                    aweme_id = await resolve_bili_work(target_input, app_runtime.cfg.engine.user_agent) or ""
+                    aweme_id = await metadata_service._call_resolver(
+                        resolve_bili_work, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                    ) or ""
                     kind = "video" if aweme_id else "user"
         if kind == "video":
             if not aweme_id:
-                aweme_id = await resolve_bili_work(target_input, app_runtime.cfg.engine.user_agent) or ""
+                aweme_id = await metadata_service._call_resolver(
+                    resolve_bili_work, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                ) or ""
             if not aweme_id:
                 raise HTTPException(400, "无法解析哔哩哔哩稿件，请粘贴 BV/av 号、视频/动态链接或 b23.tv 短链")
             title = "B站稿件 " + aweme_id
         else:
             if not sec_uid:
-                sec_uid = await resolve_bili_mid(target_input, app_runtime.cfg.engine.user_agent) or ""
+                sec_uid = await metadata_service._call_resolver(
+                    resolve_bili_mid, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                ) or ""
             if not sec_uid:
                 raise HTTPException(400, "无法解析哔哩哔哩 UP 主 UID，请粘贴空间链接、b23.tv 短链或纯数字 UID")
             title = "UP主 " + sec_uid
@@ -264,8 +297,11 @@ async def add_watch(body: WatchIn):
             title = f"@{sec_uid}" if not sec_uid.isdigit() else f"IG 用户 {sec_uid}"
         mode = "public"
     elif platform == "twitter":
-        expanded_tw, tw_ref, tw_user = await resolve_twitter_target(
-            target_input, user_agent=app_runtime.cfg.engine.user_agent
+        expanded_tw, tw_ref, tw_user = await metadata_service._call_resolver(
+            resolve_twitter_target,
+            target_input,
+            user_agent=app_runtime.cfg.engine.user_agent,
+            proxy=eff_proxy,
         )
         kind = body.kind if body.kind in {"auto", "video", "user"} else "auto"
         if kind == "auto":
@@ -287,16 +323,22 @@ async def add_watch(body: WatchIn):
     else:
         kind = body.kind
         if kind == "auto":
-            aweme_id = await resolve_aweme_id(target_input, app_runtime.cfg.engine.user_agent) or ""
+            aweme_id = await metadata_service._call_resolver(
+                resolve_aweme_id, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+            ) or ""
             kind = "video" if aweme_id else "user"
         if kind == "video":
             if not aweme_id:
-                aweme_id = await resolve_aweme_id(target_input, app_runtime.cfg.engine.user_agent)
+                aweme_id = await metadata_service._call_resolver(
+                    resolve_aweme_id, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
             if not aweme_id:
                 raise HTTPException(400, "无法解析视频 id,请粘贴完整分享文案、作品链接 / 短链 / 数字 id")
             title = "视频 " + aweme_id
         else:
-            sec_uid = await resolve_sec_uid(target_input, app_runtime.cfg.engine.user_agent)
+            sec_uid = await metadata_service._call_resolver(
+                resolve_sec_uid, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+            )
             if not sec_uid:
                 raise HTTPException(400, "无法解析 sec_uid,请粘贴完整分享文案、主页链接 / 短链 / sec_uid")
         mode = body.mode if body.mode in ("public", "creator") else "public"
@@ -310,6 +352,17 @@ async def add_watch(body: WatchIn):
                 raise HTTPException(400, "创作中心模式需要选择一个已“创作者登录”的账号")
 
     with get_session() as s:
+        if body.account_id:
+            watch_acc = s.get(DouyinAccount, body.account_id)
+            if (
+                watch_acc is not None
+                and mode == "public"
+                and str(watch_acc.account_role or "hybrid").strip().lower() == "publish"
+            ):
+                raise HTTPException(
+                    400,
+                    "该账号角色设为「发布主号 (publish)」，禁止绑定公开作品评论轮询采集；请使用「创作中心模式」或改选「仅采集号 (crawler)」/「混合号 (hybrid)」",
+                )
         if platform in {"tiktok", "instagram", "twitter"}:
             pname = "Instagram" if platform == "instagram" else "Twitter" if platform == "twitter" else "TikTok"
             account = s.get(DouyinAccount, body.account_id) if body.account_id else None

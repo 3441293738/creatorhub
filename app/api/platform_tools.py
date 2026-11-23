@@ -62,9 +62,20 @@ async def search_tiktok_users(body: TikTokUserSearchIn):
                 or account.status != "active" or not account.storage_state):
             raise HTTPException(400, "请选择有效的 TikTok 登录账号")
         identity = app_runtime.browser.identity_for(account)
-    items, error = await fetch_tiktok_users(
-        app_runtime.browser, identity, keyword, max_results=body.max_results,
-        block_media=app_runtime.cfg.engine.block_media_resources)
+    if app_runtime.engine is not None:
+        async with app_runtime.engine.operation_guard(
+            body.account_id, OperationKind.READ_HEAVY,
+            fallback_key=f"tt-search:{body.account_id}",
+            operation_target=identity,
+        ):
+            items, error = await fetch_tiktok_users(
+                app_runtime.browser, identity, keyword, max_results=body.max_results,
+                block_media=app_runtime.cfg.engine.block_media_resources)
+    else:
+        async with app_runtime.browser.lock_for(body.account_id):
+            items, error = await fetch_tiktok_users(
+                app_runtime.browser, identity, keyword, max_results=body.max_results,
+                block_media=app_runtime.cfg.engine.block_media_resources)
     return {"items": items, "error": error}
 
 
@@ -114,9 +125,20 @@ async def tiktok_protocol_probe(body: TikTokProtocolProbeIn):
         }
         if native.items or mode == "native" or native.category == "empty_valid":
             return result
-    async with app_runtime.browser.temporary_headed_context(identity):
-        result = await probe_tiktok_protocol(
-            app_runtime.browser, identity, keyword, timeout_ms=body.timeout_ms)
+    if app_runtime.engine is not None:
+        async with app_runtime.engine.operation_guard(
+            body.account_id, OperationKind.READ_HEAVY,
+            fallback_key=f"tt-probe:{body.account_id}",
+            operation_target=identity,
+        ):
+            async with app_runtime.browser.temporary_headed_context(identity):
+                result = await probe_tiktok_protocol(
+                    app_runtime.browser, identity, keyword, timeout_ms=body.timeout_ms)
+    else:
+        async with app_runtime.browser.lock_for(body.account_id):
+            async with app_runtime.browser.temporary_headed_context(identity):
+                result = await probe_tiktok_protocol(
+                    app_runtime.browser, identity, keyword, timeout_ms=body.timeout_ms)
     result["fallback_from"] = "native_api" if mode == "auto" else ""
     return result
 
@@ -193,13 +215,28 @@ async def search_twitter_users(body: TwitterUserSearchIn):
         ):
             raise HTTPException(400, "请选择有效的 Twitter 登录账号")
         identity = app_runtime.browser.identity_for(account)
-    items, error = await fetch_twitter_users(
-        app_runtime.browser,
-        identity,
-        keyword,
-        max_results=body.max_results,
-        block_media=app_runtime.cfg.engine.block_media_resources,
-    )
+    if app_runtime.engine is not None:
+        async with app_runtime.engine.operation_guard(
+            body.account_id, OperationKind.READ_HEAVY,
+            fallback_key=f"tw-search:{body.account_id}",
+            operation_target=identity,
+        ):
+            items, error = await fetch_twitter_users(
+                app_runtime.browser,
+                identity,
+                keyword,
+                max_results=body.max_results,
+                block_media=app_runtime.cfg.engine.block_media_resources,
+            )
+    else:
+        async with app_runtime.browser.lock_for(body.account_id):
+            items, error = await fetch_twitter_users(
+                app_runtime.browser,
+                identity,
+                keyword,
+                max_results=body.max_results,
+                block_media=app_runtime.cfg.engine.block_media_resources,
+            )
     return {"items": items, "error": "" if error == "empty" else error}
 
 
@@ -227,8 +264,9 @@ async def twitter_interact(body: TwitterInteractIn):
             raise HTTPException(429, gate_err)
         identity = app_runtime.browser.identity_for(account)
 
-    async with app_runtime.engine.guard_operation(
-        body.account_id, OperationKind.SOCIAL, fallback_key=f"tw-act:{body.account_id}"
+    async with app_runtime.engine.operation_guard(
+        body.account_id, OperationKind.SOCIAL, fallback_key=f"tw-act:{body.account_id}",
+        operation_target=identity,
     ):
         if body.action in {"like", "unlike"}:
             ok, err = await do_twitter_like(

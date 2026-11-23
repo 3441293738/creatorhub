@@ -9,7 +9,11 @@ import asyncio
 from fastapi import FastAPI
 
 from app import runtime as app_runtime
-from app.account_merge import cleanup_merged_profiles, reconcile_xhs_accounts
+from app.account_merge import (
+    cleanup_merged_profiles,
+    cleanup_orphan_profiles,
+    reconcile_platform_accounts,
+)
 from app.browser import BrowserManager
 from app.channels_settings import load_persisted_channels_settings
 from app.db import get_session, init_db
@@ -34,13 +38,19 @@ async def lifespan(app: FastAPI):
     recover_interrupted()
     try:
         with get_session() as session:
-            merged_accounts = reconcile_xhs_accounts(session)
+            merged_accounts = reconcile_platform_accounts(session)
         if merged_accounts:
             cleanup_merged_profiles(merged_accounts, app_runtime.cfg.engine.profiles_dir)
             print(
-                f"[startup] 已自动合并 {len(merged_accounts)} 条重复的小红书登录记录")
+                f"[startup] 已自动合并 {len(merged_accounts)} 条同平台重复登录记录")
+        with get_session() as session:
+            removed_orphans = cleanup_orphan_profiles(
+                session, app_runtime.cfg.engine.profiles_dir
+            )
+        if removed_orphans:
+            print(f"[startup] 已清理 {removed_orphans} 个孤立/残留浏览器目录")
     except Exception as e:
-        print(f"[startup] 小红书账号自动合并失败(不影响启动): {e!r}")
+        print(f"[startup] 账号去重或残留目录清理失败(不影响启动): {e!r}")
     if load_persisted_risk_settings(app_runtime.cfg):
         print("[startup] 已加载风控中心保存的运行时规则")
     if load_persisted_engine_settings(app_runtime.cfg):

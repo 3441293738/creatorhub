@@ -14,13 +14,14 @@ import hmac
 import json
 import math
 import random
+import re
 import struct
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote, quote_plus, unquote
 from zoneinfo import ZoneInfo
 
 # ── 基础地址与客户端常量 ──
@@ -110,11 +111,167 @@ def is_valid_android_device_ua(device_ua: str) -> bool:
     return len(first) == 2 and all(first)
 
 
-def pick_android_device_ua(seed: str = "") -> str:
+def pick_android_device_ua(seed: str = "", locale: str = "") -> str:
     if not seed:
-        return ANDROID_DEVICE_UAS[0]
-    idx = int.from_bytes(hashlib.sha256(seed.encode("utf-8")).digest()[:4], "big") % len(ANDROID_DEVICE_UAS)
-    return ANDROID_DEVICE_UAS[idx]
+        base = ANDROID_DEVICE_UAS[0]
+    else:
+        idx = int.from_bytes(hashlib.sha256(seed.encode("utf-8")).digest()[:4], "big") % len(ANDROID_DEVICE_UAS)
+        base = ANDROID_DEVICE_UAS[idx]
+    return _align_android_ua_locale(base, locale)
+
+
+def _align_android_ua_locale(device_ua: str, locale: str) -> str:
+    loc = str(locale or "").strip().replace("-", "_")
+    if not loc or not is_valid_android_device_ua(device_ua):
+        return device_ua
+    parts = device_ua.split("; ")
+    parts[7] = loc
+    return "; ".join(parts)
+
+
+_IG_TZ_GEO_MAP: Dict[str, Tuple[str, str]] = {
+    "America/New_York": ("US", "en_US"),
+    "America/Chicago": ("US", "en_US"),
+    "America/Denver": ("US", "en_US"),
+    "America/Los_Angeles": ("US", "en_US"),
+    "America/Phoenix": ("US", "en_US"),
+    "America/Anchorage": ("US", "en_US"),
+    "Pacific/Honolulu": ("US", "en_US"),
+    "America/Toronto": ("CA", "en_CA"),
+    "America/Vancouver": ("CA", "en_CA"),
+    "America/Sao_Paulo": ("BR", "pt_BR"),
+    "America/Mexico_City": ("MX", "es_MX"),
+    "Europe/London": ("GB", "en_GB"),
+    "Europe/Berlin": ("DE", "de_DE"),
+    "Europe/Paris": ("FR", "fr_FR"),
+    "Europe/Madrid": ("ES", "es_ES"),
+    "Europe/Rome": ("IT", "it_IT"),
+    "Australia/Sydney": ("AU", "en_AU"),
+    "Australia/Melbourne": ("AU", "en_AU"),
+    "Asia/Singapore": ("SG", "en_SG"),
+    "Asia/Shanghai": ("SG", "en_SG"),
+    "Asia/Chongqing": ("SG", "en_SG"),
+    "Asia/Harbin": ("SG", "en_SG"),
+    "Asia/Urumqi": ("SG", "en_SG"),
+    "PRC": ("SG", "en_SG"),
+    "Asia/Hong_Kong": ("HK", "zh_HK"),
+    "Asia/Taipei": ("TW", "zh_TW"),
+    "Asia/Tokyo": ("JP", "ja_JP"),
+    "Asia/Seoul": ("KR", "ko_KR"),
+    "Asia/Manila": ("PH", "en_PH"),
+    "Asia/Kuala_Lumpur": ("MY", "ms_MY"),
+    "Asia/Bangkok": ("TH", "th_TH"),
+    "Asia/Jakarta": ("ID", "id_ID"),
+    "Asia/Ho_Chi_Minh": ("VN", "vi_VN"),
+    "Asia/Saigon": ("VN", "vi_VN"),
+    "Asia/Kolkata": ("IN", "en_IN"),
+    "Asia/Calcutta": ("IN", "en_IN"),
+}
+
+_IG_COUNTRY_DEFAULT_LOCALE: Dict[str, str] = {
+    "US": "en_US",
+    "CA": "en_CA",
+    "GB": "en_GB",
+    "AU": "en_AU",
+    "SG": "en_SG",
+    "HK": "zh_HK",
+    "TW": "zh_TW",
+    "JP": "ja_JP",
+    "KR": "ko_KR",
+    "PH": "en_PH",
+    "MY": "ms_MY",
+    "TH": "th_TH",
+    "ID": "id_ID",
+    "VN": "vi_VN",
+    "IN": "en_IN",
+    "DE": "de_DE",
+    "FR": "fr_FR",
+    "ES": "es_ES",
+    "IT": "it_IT",
+    "BR": "pt_BR",
+    "MX": "es_MX",
+}
+
+
+def resolve_ig_timezone_geo(
+    timezone_id: str = "",
+    *,
+    timezone_offset: Optional[int] = None,
+    country_iso_code: str = "",
+    locale: str = "",
+) -> Tuple[str, str, int]:
+    """对齐 `(country_iso_code, locale, timezone_offset)`，杜绝 `UTC+8 (28800)` 与 `en_US`/`US` 混搭。"""
+    tz_clean = str(timezone_id or "").strip()
+    if tz_clean:
+        off = timezone_offset_seconds(tz_clean)
+    elif timezone_offset is not None:
+        off = int(timezone_offset)
+    else:
+        off = 28800
+
+    is_us_tz = tz_clean.startswith(("America/New_York", "America/Chicago", "America/Denver",
+                                    "America/Los_Angeles", "America/Phoenix", "America/Anchorage",
+                                    "Pacific/Honolulu", "US/")) or (-36000 <= off <= -14400 and not tz_clean)
+
+    mapped_country, mapped_locale = "", ""
+    if tz_clean in _IG_TZ_GEO_MAP:
+        mapped_country, mapped_locale = _IG_TZ_GEO_MAP[tz_clean]
+    elif is_us_tz:
+        mapped_country, mapped_locale = "US", "en_US"
+    elif off == 28800:
+        mapped_country, mapped_locale = "SG", "en_SG"
+    elif off == 32400:
+        mapped_country, mapped_locale = "JP", "ja_JP"
+    elif off == 25200:
+        mapped_country, mapped_locale = "TH", "th_TH"
+    elif off in {0, 3600}:
+        mapped_country, mapped_locale = "GB", "en_GB"
+    else:
+        mapped_country, mapped_locale = "GB", "en_GB"
+
+    explicit_country = str(country_iso_code or "").strip().upper()
+    if explicit_country and explicit_country != "CN":
+        if explicit_country == "US" and not is_us_tz:
+            country = mapped_country
+        else:
+            country = explicit_country
+    else:
+        country = mapped_country
+
+    explicit_locale = str(locale or "").strip().replace("-", "_")
+    if explicit_locale and not explicit_locale.lower().startswith("zh_cn"):
+        if explicit_locale == "en_US" and not is_us_tz:
+            loc = _IG_COUNTRY_DEFAULT_LOCALE.get(country, mapped_locale)
+        else:
+            loc = explicit_locale
+    else:
+        loc = _IG_COUNTRY_DEFAULT_LOCALE.get(country, mapped_locale)
+
+    return country, loc, off
+
+
+def _derive_ig_account_seed(
+    account_seed: str = "",
+    cookies: Optional[Mapping[str, str]] = None,
+    *,
+    ds_user_id: str = "",
+    sessionid: str = "",
+    mid: str = "",
+) -> str:
+    """确保 `account_seed` 为空时也能从 `ds_user_id` / `sessionid` 派生跨进程确定性种子。"""
+    explicit = str(account_seed or "").strip()
+    if explicit:
+        return explicit
+    cks = cookies or {}
+    uid = str(ds_user_id or cks.get("ds_user_id") or "").strip()
+    sess = str(sessionid or cks.get("sessionid") or "").strip()
+    if not uid and sess:
+        head = unquote(sess).split(":", 1)[0].strip()
+        if head.isdigit():
+            uid = head
+    mid_val = str(mid or cks.get("mid") or "").strip()
+    material = uid or sess or mid_val or "ig-anonymous"
+    return hashlib.sha256(f"ig-acct-seed|{material}".encode("utf-8")).hexdigest()[:32]
 
 
 def parse_android_device_ua(device_ua: str) -> Dict[str, str]:
@@ -421,7 +578,9 @@ class InstagramSessionState:
     explicit_device_id: Optional[str] = None
     android_device_ua: str = ""
     web_user_agent: str = ""
-    country_iso_code: str = "US"
+    timezone_id: str = ""
+    country_iso_code: str = ""
+    locale: str = ""
     timezone_offset: int = 28800
     new_domain: bool = False
     ignore_nav_chain: bool = False
@@ -453,7 +612,24 @@ class InstagramSessionState:
     web_suspended_ops: Dict[str, SuspendedOp] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
-        base_seed = self.seed or self.auth_ds_user_id or str(uuid.uuid4())
+        resolved_country, resolved_locale, resolved_offset = resolve_ig_timezone_geo(
+            self.timezone_id,
+            timezone_offset=self.timezone_offset,
+            country_iso_code=self.country_iso_code,
+            locale=self.locale,
+        )
+        self.country_iso_code = resolved_country
+        self.locale = resolved_locale
+        self.timezone_offset = resolved_offset
+
+        base_seed = _derive_ig_account_seed(
+            self.seed,
+            self.browser_cookies,
+            ds_user_id=self.auth_ds_user_id,
+            sessionid=self.auth_sessionid,
+            mid=self.auth_mid,
+        )
+        self.seed = base_seed
         if not self.unique_id:
             self.unique_id = _seeded_uuid(base_seed, "unique_id")
         if not self.unique_id_ex:
@@ -467,11 +643,59 @@ class InstagramSessionState:
         if not self.client_session_id:
             self.client_session_id = _seeded_uuid(base_seed, "client_session")
         if not is_valid_android_device_ua(self.android_device_ua):
-            self.android_device_ua = pick_android_device_ua(base_seed)
+            self.android_device_ua = pick_android_device_ua(base_seed, self.locale)
+        elif self.android_device_ua in ANDROID_DEVICE_UAS:
+            self.android_device_ua = _align_android_ua_locale(self.android_device_ua, self.locale)
+
+    @classmethod
+    def from_storage_state(
+        cls,
+        storage_state: str | Mapping[str, Any] | None = None,
+        *,
+        account_seed: str = "",
+        timezone_id: str = "Asia/Shanghai",
+        android_device_ua: str = "",
+        web_user_agent: str = "",
+        new_domain: bool = False,
+        locale: str = "",
+        country_iso_code: str = "",
+    ) -> "InstagramSessionState":
+        from .extract import cookie_map_from_state
+
+        cookies = cookie_map_from_state(storage_state)
+        det_seed = _derive_ig_account_seed(account_seed, cookies)
+        state = cls(
+            seed=det_seed,
+            android_device_ua=android_device_ua,
+            web_user_agent=web_user_agent,
+            timezone_id=timezone_id,
+            country_iso_code=country_iso_code,
+            locale=locale,
+            timezone_offset=timezone_offset_seconds(timezone_id),
+            new_domain=new_domain,
+        )
+        state.import_browser_cookies(cookies)
+        return state
 
     @property
     def device_id(self) -> str:
         return derive_device_id(self.unique_id, self.explicit_device_id)
+
+    @property
+    def android_device_id(self) -> str:
+        return self.device_id
+
+    @property
+    def uuid(self) -> str:
+        return self.unique_id_ex
+
+    @property
+    def phone_id(self) -> str:
+        return self.family_device_guid
+
+    @property
+    def family_device_id(self) -> str:
+        return self.family_device_guid
 
     @property
     def is_logged_in(self) -> bool:
@@ -618,7 +842,9 @@ def build_mobile_headers(
     if is_external:
         return dict(sorted(hdrs.items(), key=lambda kv: kv[0]))
 
-    hdrs.setdefault("Accept-Language", "en-US")
+    app_locale = str(session.locale or "en_SG").replace("-", "_")
+    lang_tag = app_locale.replace("_", "-")
+    hdrs.setdefault("Accept-Language", lang_tag)
     hdrs.setdefault("Accept-Encoding", "gzip,deflate")
     hdrs.setdefault("User-Agent", session.mobile_user_agent())
     hdrs.setdefault("X-Fb-Http-Engine", "Liger")
@@ -639,11 +865,11 @@ def build_mobile_headers(
         hdrs.setdefault("X-Ig-Device-Id", session.unique_id_ex)
         hdrs.setdefault("X-Ig-Family-Device-Id", session.family_device_guid)
         if session.auth_mid:
-            hdrs.setdefault("X-Ig-App-Startup-Country", session.country_iso_code or "US")
+            hdrs.setdefault("X-Ig-App-Startup-Country", session.country_iso_code or "SG")
         hdrs.setdefault("X-Ig-Android-Id", session.device_id)
-        hdrs.setdefault("X-Ig-App-Locale", "en_US")
-        hdrs.setdefault("X-Ig-Device-Locale", "en_US")
-        hdrs.setdefault("X-Ig-Mapped-Locale", "en_US")
+        hdrs.setdefault("X-Ig-App-Locale", app_locale)
+        hdrs.setdefault("X-Ig-Device-Locale", app_locale)
+        hdrs.setdefault("X-Ig-Mapped-Locale", app_locale)
         if session.nav_chain and not session.ignore_nav_chain:
             hdrs.setdefault("X-Ig-Nav-Chain", session.nav_chain)
         hdrs.setdefault("X-Ig-Timezone-Offset", str(session.timezone_offset))
@@ -685,9 +911,16 @@ def build_web_headers(
     extra: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, str]:
     """构造 Instagram Web 会话 HTTP 请求头（使用浏览器 Cookie + `X-CSRFToken` + `X-Ig-App-Id`，不混入移动端 Bearer）。"""
+    lang_tag = str(session.locale or "en_SG").replace("_", "-")
+    base_lang = lang_tag.split("-", 1)[0].lower() or "en"
+    accept_lang = (
+        f"{lang_tag},{base_lang};q=0.9,en;q=0.8"
+        if base_lang != "en"
+        else f"{lang_tag},en;q=0.9"
+    )
     hdrs: Dict[str, str] = {
         "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Language": accept_lang,
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-site" if "i.instagram.com" in url else "same-origin",
@@ -697,7 +930,25 @@ def build_web_headers(
         "X-Requested-With": "XMLHttpRequest",
     }
     if session.web_user_agent:
-        hdrs["User-Agent"] = session.web_user_agent
+        ua = session.web_user_agent
+        hdrs["User-Agent"] = ua
+        m = re.search(r"Chrome/(\d+)", ua)
+        major = int(m.group(1)) if m else 131
+        brands = (
+            f'"Chromium";v="{major}", "Microsoft Edge";v="{major}", "Not?A_Brand";v="99"'
+            if "Edg/" in ua
+            else f'"Chromium";v="{major}", "Google Chrome";v="{major}", "Not?A_Brand";v="99"'
+        )
+        platform = (
+            '"macOS"'
+            if ("Mac OS" in ua or "Macintosh" in ua)
+            else '"Linux"'
+            if ("Linux" in ua and "Android" not in ua)
+            else '"Windows"'
+        )
+        hdrs["sec-ch-ua"] = brands
+        hdrs["sec-ch-ua-mobile"] = "?0"
+        hdrs["sec-ch-ua-platform"] = platform
     if referer:
         hdrs["Referer"] = referer
     if "i.instagram.com" in url:

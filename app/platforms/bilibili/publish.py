@@ -19,6 +19,13 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlparse
 
+from ...browser.human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from ...browser.identity import Identity
 from ...browser.manager import BrowserManager
 from ...media_tools import video_cover_and_meta
@@ -136,36 +143,18 @@ async def _visible_text(page, keywords) -> str:
 
 
 async def _dismiss_guides(page) -> None:
-    for sel in _DISMISS_GUIDE_SELECTORS:
-        try:
-            loc = page.locator(sel)
-            for idx in range(await loc.count()):
-                cand = loc.nth(idx)
-                if await cand.is_visible():
-                    await cand.click(timeout=1500)
-                    await page.wait_for_timeout(200)
-        except Exception:
-            continue
+    for _ in range(3):
+        clicked = await human_click_first(page, _DISMISS_GUIDE_SELECTORS, timeout=1500)
+        if not clicked:
+            break
+        await human_wait(page, 220)
 
 
 async def _fill_first_visible(page, selectors, text: str, timeout: int = 3500) -> bool:
-    for sel in selectors:
-        try:
-            loc = page.locator(sel)
-            for idx in range(await loc.count()):
-                cand = loc.nth(idx)
-                if not await cand.is_visible():
-                    continue
-                await cand.click(timeout=timeout)
-                try:
-                    await cand.fill(text, timeout=timeout)
-                except Exception:
-                    await page.keyboard.press("Control+A")
-                    await page.keyboard.type(text, delay=10)
-                return True
-        except Exception:
-            continue
-    return False
+    matched = await human_fill_first(
+        page, selectors, text, clear=True, timeout=timeout
+    )
+    return bool(matched)
 
 
 async def _ensure_dom_tags(page, tag_csv: str) -> None:
@@ -181,10 +170,12 @@ async def _ensure_dom_tags(page, tag_csv: str) -> None:
                 if not await inp.is_visible():
                     continue
                 for tag in tags[:5]:
-                    await inp.click(timeout=2000)
-                    await inp.fill(tag[:20], timeout=2000)
+                    await DEFAULT_HUMAN_ENGINE.type_text(
+                        inp, tag[:20], page=page, clear=False, timeout=2500
+                    )
+                    await human_wait(page, 90)
                     await page.keyboard.press("Enter")
-                    await page.wait_for_timeout(150)
+                    await human_wait(page, 220)
                 return
         except Exception:
             continue
@@ -332,12 +323,12 @@ async def _close_residual_cover_modals(page) -> None:
             for idx in range(await cancel_loc.count()):
                 btn = cancel_loc.nth(idx)
                 if await btn.is_visible():
-                    await btn.click(timeout=1500)
-                    await page.wait_for_timeout(300)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=page, timeout=1500)
+                    await human_wait(page, 300)
                     break
             else:
                 await page.keyboard.press("Escape")
-                await page.wait_for_timeout(300)
+                await human_wait(page, 300)
         except Exception:
             return
 
@@ -356,35 +347,31 @@ async def _apply_custom_cover(page, cover_file: str, cover_state: Dict[str, str]
 
     page.on("filechooser", _on_unexpected_fc)
     try:
-        await page.evaluate("() => window.scrollTo(0, 0)")
-        await page.wait_for_timeout(250)
+        try:
+            scroll_y = int(await page.evaluate("() => window.scrollY || 0") or 0)
+            if scroll_y > 80:
+                await human_scroll(page, distance=min(scroll_y, 700), direction=-1, settle=False)
+        except Exception:
+            pass
+        await human_wait(page, 250)
 
-        opened = False
-        for trigger_sel in (
-            ".cover-main .cover-empty",
-            ".cover-main .cover-img",
-            ".cover-slot",
-            ".cover-upload",
-            ".bcc-upload-cover",
-            ":text-is('添加封面')",
-            ":text-is('更改封面')",
-            ":text-is('封面设置')",
-        ):
-            try:
-                loc = page.locator(trigger_sel)
-                for idx in range(await loc.count()):
-                    cand = loc.nth(idx)
-                    if await cand.is_visible():
-                        await cand.scroll_into_view_if_needed(timeout=2000)
-                        await cand.click(timeout=3000)
-                        opened = True
-                        break
-                if opened:
-                    break
-            except Exception:
-                continue
+        opened = await human_click_first(
+            page,
+            (
+                ".cover-main .cover-empty",
+                ".cover-main .cover-img",
+                ".cover-slot",
+                ".cover-upload",
+                ".bcc-upload-cover",
+                ":text-is('添加封面')",
+                ":text-is('更改封面')",
+                ":text-is('封面设置')",
+            ),
+            timeout=3000,
+        )
+        _ = opened
 
-        await page.wait_for_timeout(700)
+        await human_wait(page, 700)
 
         uploaded_to_cropper = fc_handled["count"] > 0
         if not uploaded_to_cropper:
@@ -406,12 +393,14 @@ async def _apply_custom_cover(page, cover_file: str, cover_state: Dict[str, str]
                     if target_btn is None:
                         continue
                     prev_count = fc_handled["count"]
-                    await target_btn.click(timeout=2500)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(
+                        target_btn, page=page, timeout=2500
+                    )
                     for _ in range(10):
                         if fc_handled["count"] > prev_count:
                             uploaded_to_cropper = True
                             break
-                        await page.wait_for_timeout(150)
+                        await human_wait(page, 150)
                     if uploaded_to_cropper:
                         break
                 except Exception:
@@ -424,7 +413,7 @@ async def _apply_custom_cover(page, cover_file: str, cover_state: Dict[str, str]
                 uploaded_to_cropper = True
 
         if uploaded_to_cropper:
-            await page.wait_for_timeout(1200)
+            await human_wait(page, 1200)
             # 依次推进「完成（4:3） -> 确认同步 -> 完成（16:9）」，直到双比例封面上传完毕且弹窗关闭
             for _ in range(16):
                 state = await page.evaluate(
@@ -448,7 +437,9 @@ async def _apply_custom_cover(page, cover_file: str, cover_state: Dict[str, str]
                     sync_btn = page.get_by_text("确认同步", exact=True)
                     for idx in range(await sync_btn.count()):
                         if await sync_btn.nth(idx).is_visible():
-                            await sync_btn.nth(idx).click(timeout=2500)
+                            await DEFAULT_HUMAN_ENGINE.click_locator(
+                                sync_btn.nth(idx), page=page, timeout=2500
+                            )
                             break
                 elif "完成" in state["visTexts"]:
                     done_loc = page.locator(
@@ -456,9 +447,11 @@ async def _apply_custom_cover(page, cover_file: str, cover_state: Dict[str, str]
                     )
                     for idx in range(await done_loc.count()):
                         if await done_loc.nth(idx).is_visible():
-                            await done_loc.nth(idx).click(timeout=2500)
+                            await DEFAULT_HUMAN_ENGINE.click_locator(
+                                done_loc.nth(idx), page=page, timeout=2500
+                            )
                             break
-                await page.wait_for_timeout(750)
+                await human_wait(page, 750)
 
             if await _page_has_cover(page, cover_state):
                 return True
@@ -500,7 +493,7 @@ async def _ensure_bili_cover(
     for _ in range(4):
         if await _page_has_cover(page, cover_state):
             return
-        await page.wait_for_timeout(500)
+        await human_wait(page, 500)
 
     await _notify_stage(on_stage, "正在从视频自动提取封面并上传…")
     jpeg_bytes = b""
@@ -522,8 +515,8 @@ async def _ensure_bili_cover(
         for idx in range(await rec_cards.count()):
             card = rec_cards.nth(idx)
             if await card.is_visible():
-                await card.click(timeout=2000)
-                await page.wait_for_timeout(800)
+                await DEFAULT_HUMAN_ENGINE.click_locator(card, page=page, timeout=2000)
+                await human_wait(page, 800)
                 if await _page_has_cover(page, cover_state):
                     return
     except Exception:
@@ -569,9 +562,8 @@ async def _apply_creation_statement(page, statement_id: int) -> None:
         wrap = page.locator(".creation-statement-container .bcc-select-input-wrap").first
         if not await wrap.count() or not await wrap.is_visible():
             return
-        await wrap.scroll_into_view_if_needed(timeout=2000)
-        await wrap.click(timeout=2500)
-        await page.wait_for_timeout(350)
+        await DEFAULT_HUMAN_ENGINE.click_locator(wrap, page=page, timeout=2500)
+        await human_wait(page, 350)
         opts = page.locator(
             ".creation-statement-container .bcc-select-option-list .bcc-option, "
             ".bcc-select-option-list .bcc-option, .bcc-option"
@@ -582,8 +574,8 @@ async def _apply_creation_statement(page, statement_id: int) -> None:
                 continue
             txt = ((await opt.inner_text()) or "").strip()
             if label in txt:
-                await opt.click(timeout=2500)
-                await page.wait_for_timeout(250)
+                await DEFAULT_HUMAN_ENGINE.click_locator(opt, page=page, timeout=2500)
+                await human_wait(page, 250)
                 return
     except Exception as exc:
         _log(f"设置创作声明未命中(不阻断发布): {exc!r}")
@@ -718,7 +710,7 @@ async def _wait_bili_video_uploaded(
                 except Exception:
                     continue
 
-        await page.wait_for_timeout(1200)
+        await human_wait(page, 1200)
     return "B 站视频上传超时，请检查网络或视频大小后重试"
 
 
@@ -791,7 +783,7 @@ async def _publish_bilibili_dynamic_images(
     try:
         await _notify_stage(on_stage, "正在打开 B 站动态页…")
         await page.goto(DYNAMIC_PUBLISH_URL, wait_until="domcontentloaded", timeout=40000)
-        await page.wait_for_timeout(3000)
+        await human_wait(page, 3000)
         body_dom = ""
         try:
             body_dom = await page.locator("body").inner_text()
@@ -833,8 +825,8 @@ async def _publish_bilibili_dynamic_images(
             try:
                 icon = page.locator(".bili-dyn-publishing__image-upload, [title*='图片']").first
                 if await icon.count():
-                    await icon.click(timeout=3000)
-                    await page.wait_for_timeout(500)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(icon, page=page, timeout=3000)
+                    await human_wait(page, 500)
                     loc = page.locator("input[type='file']").first
                     if await loc.count():
                         await loc.set_input_files(files[:9], timeout=15000)
@@ -845,7 +837,7 @@ async def _publish_bilibili_dynamic_images(
             await _dump(page, "dyn-no-upload")
             return False, "", "未找到 B 站动态图片上传入口"
 
-        await page.wait_for_timeout(3500)
+        await human_wait(page, 3500)
         pub_btn = None
         for bsel in (
             ".bili-dyn-publishing__action.launcher",
@@ -869,7 +861,7 @@ async def _publish_bilibili_dynamic_images(
 
         await _notify_submit(on_submit)
         submitted["clicked"] = True
-        await pub_btn.click(timeout=5000)
+        await DEFAULT_HUMAN_ENGINE.click_locator(pub_btn, page=page, timeout=5000)
         await _notify_stage(on_stage, "已点击动态「发布」，等待 B 站确认…")
 
         for _ in range(max(10, int(timeout_seconds))):
@@ -883,7 +875,7 @@ async def _publish_bilibili_dynamic_images(
                         "请先在动态主页核对是否已发出"
                     )
                 break
-            await page.wait_for_timeout(1000)
+            await human_wait(page, 1000)
 
         if not ok and not error:
             png = await _dump(page, "dyn-unconfirmed")
@@ -1074,7 +1066,7 @@ async def publish_bilibili(
         _log(f"打开创作中心视频投稿页 video={files[0]}")
         await _notify_stage(on_stage, "正在打开 B 站创作中心投稿页…")
         await page.goto(VIDEO_UPLOAD_URL, wait_until="domcontentloaded", timeout=45000)
-        await page.wait_for_timeout(3500)
+        await human_wait(page, 3500)
         body_text = ""
         try:
             body_text = await page.locator("body").inner_text()
@@ -1138,8 +1130,10 @@ async def publish_bilibili(
             try:
                 repost_radio = page.get_by_text("转载", exact=True).first
                 if await repost_radio.count() and await repost_radio.is_visible():
-                    await repost_radio.click(timeout=2000)
-                    await page.wait_for_timeout(200)
+                    await DEFAULT_HUMAN_ENGINE.click_locator(
+                        repost_radio, page=page, timeout=2000
+                    )
+                    await human_wait(page, 200)
                 await _fill_first_visible(
                     page,
                     (
@@ -1162,17 +1156,13 @@ async def publish_bilibili(
             submit_btn = await _find_submit_button(page)
             if submit_btn is not None:
                 break
-            await page.wait_for_timeout(1000)
+            await human_wait(page, 1000)
         if submit_btn is None:
             await _dump(page, "no-submit-btn")
             return False, "", "未找到可用的「立即投稿」按钮（已保存 data/debug 诊断快照）"
 
-        await submit_btn.scroll_into_view_if_needed(timeout=3000)
         submitted["clicked"] = True
-        try:
-            await submit_btn.click(timeout=5000)
-        except Exception:
-            await page.evaluate("() => document.querySelector('.submit-container .submit-add')?.click()")
+        await DEFAULT_HUMAN_ENGINE.click_locator(submit_btn, page=page, timeout=5000)
         _log("已点击立即投稿，等待 add/v3 请求与响应")
         await _notify_stage(on_stage, "已点击「立即投稿」，等待 B 站确认…")
 
@@ -1211,14 +1201,12 @@ async def publish_bilibili(
                             cover_state=cover_state,
                             on_stage=on_stage,
                         )
-                        await page.wait_for_timeout(800)
+                        await human_wait(page, 800)
+                        await _dismiss_guides(page)
                         btn_retry = await _find_submit_button(page)
                         if btn_retry is not None:
-                            await btn_retry.scroll_into_view_if_needed(timeout=3000)
-                            await btn_retry.click(timeout=5000)
-                        else:
-                            await page.evaluate(
-                                "() => document.querySelector('.submit-container .submit-add')?.click()"
+                            await DEFAULT_HUMAN_ENGINE.click_locator(
+                                btn_retry, page=page, timeout=5000
                             )
                         waited += 1
                         continue
@@ -1239,7 +1227,7 @@ async def publish_bilibili(
                 )
                 _log(f"检测到人机验证提示：{verify_kw}，等待人工操作")
 
-            await page.wait_for_timeout(1000)
+            await human_wait(page, 1000)
             waited += 1
 
         if not ok and not error:

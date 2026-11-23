@@ -19,6 +19,7 @@ from app.services import contents as contents_service
 from app.services import share_downloads as share_downloads_service
 from app.services import share_native as share_native_service
 from app.services import share_native_social as share_native_social_service
+from app.services import thumb_cache
 from app.settings import get_setting
 
 router = APIRouter()
@@ -89,8 +90,26 @@ async def share_download(body: ShareDownloadIn):
 
     cookie_file = ""
     try:
+        from app.browser.manager import normalize_proxy
         cookie_file, account_proxy, account_ua = share_downloads_service._write_account_cookie_file(body.account_id)
-        proxy = body.proxy.strip() or account_proxy
+        req_proxy = body.proxy.strip()
+        if body.account_id is not None and req_proxy and normalize_proxy(req_proxy) != normalize_proxy(account_proxy):
+            raise HTTPException(
+                400,
+                "所选账号已绑定专属环境，禁止在分享下载中临时切换代理出口(防止同登录态跨 IP 关联)；请清空临时代理重试",
+            )
+        proxy = account_proxy if body.account_id is not None else req_proxy
+        if not proxy and bool(getattr(app_runtime.cfg.engine, "strict_proxy_required", True)):
+            with get_session() as s_pool:
+                from app.profiles import _pool_urls
+                pool_candidates = _pool_urls(s_pool, app_runtime.cfg)
+                if pool_candidates:
+                    proxy = pool_candidates[0]
+            if not proxy:
+                raise HTTPException(
+                    400,
+                    "已启用强制代理保护：请先选择已绑定代理的账号、填写代理或在「代理池」添加可用节点",
+                )
         user_agent = account_ua or app_runtime.cfg.engine.user_agent
         downloader = ShareDownloader(
             output_root,
@@ -199,6 +218,13 @@ async def share_download(body: ShareDownloadIn):
                         except ShareDownloadFallback:
                             # 非视频号的 qq.com 链接(如 v.qq.com)直接交由通用提取器处理
                             item = None
+                    # 9 大核心平台严禁把账号登录态 Cookie 交给 yt-dlp(Python OpenSSL TLS 栈)，避免同会话 TLS 指纹突变触发风控
+                    safe_ytdlp_cookie = (
+                        "" if link.platform in {
+                            "douyin", "xhs", "rednote", "kuaishou", "wechat",
+                            "shipinhao", "tiktok", "bilibili", "instagram", "twitter"
+                        } else cookie_file
+                    )
                     if item is not None:
                         pass
                     elif body.download:
@@ -209,12 +235,12 @@ async def share_download(body: ShareDownloadIn):
                             save_thumbnail=body.save_thumbnail,
                             save_subtitles=body.save_subtitles,
                             proxy=proxy,
-                            cookie_file=cookie_file,
+                            cookie_file=safe_ytdlp_cookie,
                             max_filesize_mb=body.max_filesize_mb,
                         )
                     else:
                         item = await downloader.inspect(
-                            link.url, proxy=proxy, cookie_file=cookie_file
+                            link.url, proxy=proxy, cookie_file=safe_ytdlp_cookie
                         )
                     item["input_platform"] = link.platform
                     if fallback_error:
@@ -332,7 +358,24 @@ def _share_history_local_path(
     return None
 
 
-@router.get("/api/share-download/history/{record_id}/media/{media_index}")
+@router.api_route("/api/share-download/history/{record_id}/cover", methods=["GET", "HEAD"])
+async def share_download_history_cover(record_id: int):
+    """优先返回链接下载历史已落盘的本地封面/图集首图；无本地缩略图时自动持久化缓存。"""
+    with get_session() as s:
+        record = s.get(ShareDownloadRecord, record_id)
+        if not record:
+            raise HTTPException(404, "下载历史不存在")
+        local_cover = share_downloads_service._find_share_local_cover(record)
+        raw_cover = record.cover_url
+        platform = record.platform
+    if local_cover is not None:
+        return thumb_cache.file_thumb_response(local_cover)
+    if raw_cover:
+        return await thumb_cache.serve_cached_thumb(raw_cover, platform=platform)
+    raise HTTPException(404, "封面不存在")
+
+
+@router.api_route("/api/share-download/history/{record_id}/media/{media_index}", methods=["GET", "HEAD"])
 async def share_download_history_media(record_id: int, media_index: int):
     """返回链接下载历史中的本地媒体，供作品预览复用。"""
     with get_session() as s:
@@ -346,7 +389,7 @@ async def share_download_history_media(record_id: int, media_index: int):
         path,
         filename=path.name,
         content_disposition_type="inline",
-        headers={"Cache-Control": "private, no-cache"},
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 
@@ -377,11 +420,12 @@ async def share_download_history_preview(record_id: int):
             })
         media_type = record.media_type or ("images" if medias and medias[0]["kind"] == "image" else "video")
         video = next((item for item in medias if item["kind"] == "video"), None)
+        has_cover = bool(share_downloads_service._find_share_local_cover(record) or record.cover_url)
         return {
             "id": record.id,
             "desc": record.title or record.item_id,
             "media_type": media_type,
-            "cover_url": record.cover_url,
+            "cover_url": f"/api/share-download/history/{record_id}/cover" if has_cover else "",
             "medias": medias,
             "local_url": video["url"] if video else "",
         }

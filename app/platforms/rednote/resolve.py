@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from curl_cffi.requests import AsyncSession
 
+from ...browser.manager import normalize_proxy
 from ...netfp import impersonate_for_ua
 from .domains import WWW_URL, is_rednote_host
 
@@ -86,16 +87,23 @@ def build_rednote_profile_url(
     return f"{base}?{up.urlencode(params)}" if params else base
 
 
-async def _follow_short(text: str, user_agent: str) -> Optional[str]:
+async def _follow_short(text: str, user_agent: str, proxy: str = "") -> Optional[str]:
     short = _SHORT_RE.search(text)
     if not short:
         return None
+    from ...netfp import curl_proxy_url
+    norm_proxy = curl_proxy_url(proxy) or None
     try:
-        async with AsyncSession(impersonate=impersonate_for_ua(user_agent)) as cli:
+        async with AsyncSession(
+            impersonate=impersonate_for_ua(user_agent),
+            proxy=norm_proxy,
+            trust_env=False,
+        ) as cli:
             resp = await cli.get(
                 _clean_url_token(short.group(0)),
                 headers={"User-Agent": user_agent},
                 timeout=15,
+                proxy=norm_proxy,
             )
             return str(resp.url)
     except Exception:
@@ -113,7 +121,9 @@ def _match_rednote_url(candidate: str, pattern: re.Pattern[str]) -> Optional[re.
     return pattern.search(parsed.path or "")
 
 
-async def resolve_rednote_note(text: str, user_agent: str = "") -> Optional[RednoteNoteRef]:
+async def resolve_rednote_note(
+    text: str, user_agent: str = "", proxy: str = ""
+) -> Optional[RednoteNoteRef]:
     """Resolve a Rednote explore/discovery URL, share text, short link, or bare 24-hex note ID."""
     raw = str(text or "").strip()
     if not raw:
@@ -142,7 +152,7 @@ async def resolve_rednote_note(text: str, user_agent: str = "") -> Optional[Redn
                 xsec_source=src or "pc_feed",
             )
 
-    final = await _follow_short(raw, user_agent)
+    final = await _follow_short(raw, user_agent, proxy=proxy)
     if final:
         matched = _match_rednote_url(final, _NOTE_PATH_RE)
         if matched:
@@ -155,7 +165,9 @@ async def resolve_rednote_note(text: str, user_agent: str = "") -> Optional[Redn
     return None
 
 
-async def resolve_rednote_user(text: str, user_agent: str = "") -> Optional[RednoteUserRef]:
+async def resolve_rednote_user(
+    text: str, user_agent: str = "", proxy: str = ""
+) -> Optional[RednoteUserRef]:
     """Resolve a Rednote profile URL, share text, short link, or bare 24-hex user ID."""
     raw = str(text or "").strip()
     if not raw:
@@ -184,7 +196,7 @@ async def resolve_rednote_user(text: str, user_agent: str = "") -> Optional[Redn
                 xsec_source=src or "pc_search",
             )
 
-    final = await _follow_short(raw, user_agent)
+    final = await _follow_short(raw, user_agent, proxy=proxy)
     if final:
         matched = _match_rednote_url(final, _USER_PATH_RE)
         if matched:

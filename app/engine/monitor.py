@@ -23,6 +23,7 @@ from app.engine.monitor_helpers import _AccountCheckBusy, _WRITE_SUBMIT_PREFIX, 
 from app.models import AccountActionTask, CommentTask, CommentWatch, DanmakuWatch, DouyinAccount, KeywordCollectionJob, MonitorTarget, PublishTask
 from app.operations import record_account_operation
 from app.platforms.xhs import XhsApiError
+from app.profiles import account_requires_dedicated_proxy, pick_ephemeral_proxy, resolve_pool_proxy_row
 from app.risk import OperationKind, RiskCategory, RiskController, classify_platform_error
 from app.engine.action_jobs import ActionJobMixin
 from app.engine.comment_rules_runner import CommentRuleRunnerMixin
@@ -350,23 +351,62 @@ class MonitorEngine(
             account_id, kind, fallback_key, operation,
             empty_result=empty_result, interactive_read=True)
 
-    def _identity_proxy(self, acc):
-        """由账号行构建 (Identity, proxy)。acc 为空则匿名画像。"""
+    def _anon_identity_proxy(self, platform: str = "", *, session=None):
+        """为未绑定账号的匿名公开抓取分配代理池出口与平台匹配的临时浏览器身份。"""
+        proxy = ""
+        try:
+            if session is not None:
+                proxy = pick_ephemeral_proxy(session, self.cfg, platform=platform)
+            else:
+                with get_session() as s:
+                    proxy = pick_ephemeral_proxy(s, self.cfg, platform=platform)
+        except Exception:
+            proxy = ""
+        anon_fn = getattr(self.browser, "anon_identity", None)
+        if not callable(anon_fn):
+            return None, proxy
+        try:
+            return anon_fn(proxy=proxy, platform=platform), proxy
+        except TypeError:
+            return anon_fn(), proxy
+
+    def _identity_proxy(self, acc, *, platform: str = "", session=None):
+        """由账号行构建 (Identity, proxy)。acc 为空则分配池代理匿名画像。"""
         if acc:
-            ident = self.browser.identity_for(acc)
+            ident_fn = getattr(self.browser, "identity_for", None)
+            ident = ident_fn(acc) if callable(ident_fn) else None
             return ident, (acc.proxy or "")
-        return self.browser.anon_identity(), ""
+        return self._anon_identity_proxy(platform, session=session)
 
     def _dl_proxy(self, proxy: str) -> str:
         """媒体下载实际使用的代理(受 route_download_via_proxy 开关控制)。"""
         return proxy if self.cfg.engine.route_download_via_proxy else ""
 
-    @staticmethod
-    def _proxy_bad(acc) -> bool:
-        return bool(
-            acc and acc.proxy
-            and acc.proxy_status in {"bad", "auth_error", "blocked"}
-        )
+    def _proxy_bad(self, acc) -> bool:
+        if not acc:
+            return False
+        if not acc.proxy:
+            try:
+                with get_session() as s:
+                    must_px, _ = account_requires_dedicated_proxy(
+                        s, self.cfg, platform=acc.platform, account=acc
+                    )
+                    return must_px
+            except Exception:
+                return False
+        if acc.proxy_status in {"bad", "auth_error", "blocked", "disabled", "drifted"}:
+            return True
+        try:
+            with get_session() as s:
+                pool_row = resolve_pool_proxy_row(s, acc.proxy)
+                if pool_row is not None and (
+                    not pool_row.enabled
+                    or pool_row.status in {"bad", "auth_error", "blocked", "disabled"}
+                ):
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _native_write_environment_error(
             self, acc, *, headed: bool = True,
@@ -759,6 +799,19 @@ class MonitorEngine(
                 and job.source_type in {"keyword", "creator"}
             )
             account = s.get(DouyinAccount, job.account_id) if job.account_id else None
+            if (
+                account is not None
+                and job.source_type in {"keyword", "creator"}
+                and str(account.account_role or "hybrid").strip().lower() == "publish"
+            ):
+                job.status = "failed"
+                job.current_step = "执行失败"
+                job.error = "账号角色设为「发布主号 (publish)」，已拦截外部关键词/竞品采集"
+                job.error_count += 1
+                job.finished_at = datetime.utcnow()
+                s.add(job); s.commit()
+                self._log_collection_operation(job, "failed", "failed", job.error)
+                return {"ok": False, "error": job.error}
             if requires_account and (
                 not account or account.platform != job.platform
                 or account.status != "active" or not account.storage_state

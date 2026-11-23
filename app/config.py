@@ -89,9 +89,9 @@ class EngineConfig:
     douyin_dm_sync_mode: str = "hybrid"      # hybrid | api | browser
     douyin_creator_danmaku_mode: str = "hybrid"  # hybrid | api | browser
     douyin_publish_mode: str = "browser"     # browser (api reserved)
-    # browser=页面写入；api=仅网页 HTTP/imapi；hybrid=API 优先、明确拒绝时页面回退。
+    # browser=页面写入(默认推荐，真机拟人交互)；api=仅网页 HTTP/imapi；hybrid=API 优先、明确拒绝时页面回退。
     # 不确定的网络结果一律不回退，避免重复提交非幂等写请求。
-    douyin_write_mode: str = "hybrid"        # 默认 API 优先；明确失败后才回退浏览器
+    douyin_write_mode: str = "browser"       # 默认真机浏览器写入，避免无 DTrait 直连高频触发风控
     xhs_keyword_gap_seconds: float = 10.0    # 同一任务相邻关键词的最小停顿
     xhs_item_gap_seconds: float = 2.5         # 相邻详情/评论读取的最小停顿
     xhs_request_jitter: float = 0.35          # 上述停顿的正向随机抖动比例
@@ -128,13 +128,18 @@ class EngineConfig:
     action_daily_cap_per_account: int = 20   # 每账号每日写操作总上限(跨所有动作),0=不限
     action_hourly_cap_per_account: int = 6   # 每账号每小时写操作上限,0=不限
     action_min_gap_seconds: int = 90         # 同账号两次写操作全局最小间隔(与任务级 min_gap 取大)
-    # ── 活跃时段(夜间静默)──
-    #   仅约束「写操作」(评论/关注/取关/私信)自动排队执行;读取抓取不受影响。
-    #   按东八区(账号时区)小时判定,避免整个账号矩阵在深夜齐发的机器特征。
+    # ── 活跃时段(夜间静默与人类作息节律)──
+    #   默认同时约束自动写操作与后台自动抓爬/体检(手动即时查看不受影响)，
+    #   并按「账号 ID + 当地日期」叠加每日独立随机苏醒/入睡偏移，彻底消除矩阵整点齐发与凌晨 3 点机器爬虫特征。
     quiet_hours_enabled: bool = True         # 夜间静默总开关
+    quiet_hours_include_reads: bool = True   # 夜间静默期间同步休眠后台监控/评论采集/登录态体检
+    quiet_hours_wake_jitter_minutes: int = 35  # 每账号每日独立苏醒/入睡随机偏移上限(0-120 分钟)
     active_hours_start: int = 8              # 活跃起点小时(含),0-23
     active_hours_end: int = 24               # 活跃止点小时(不含);可 >24 表示跨零点(如 25=次日 1 点)
     verify_proxy_region: bool = True         # 体检时探测代理出口国家,与账号时区不一致则告警
+    # ── 强制独享代理与同平台防关联门禁(Fail-Closed)──
+    strict_proxy_required: bool = True       # 未绑定代理或代理不可用时一律阻断登录与任务，严禁回退本机真实 IP
+    forbid_same_platform_shared_proxy: bool = True  # 禁止同一平台下多个账号共用同一代理或同一出口 IP
     # 新建 native 账号的写操作环境门禁。存量 legacy 账号不受这组开关影响。
     native_write_gate_enabled: bool = True
     native_write_require_system_chrome: bool = True
@@ -253,7 +258,7 @@ def load_config(path: str | None = None) -> Config:
                 ("douyin_dm_sync_mode", "hybrid"),
                 ("douyin_creator_danmaku_mode", "hybrid"),
                 ("douyin_publish_mode", "browser"),
-                ("douyin_write_mode", "hybrid"),
+                ("douyin_write_mode", "browser"),
                 ("bilibili_read_mode", "hybrid"),
                 ("bilibili_write_mode", "hybrid"),
                 ("instagram_read_mode", "hybrid"),
@@ -282,6 +287,8 @@ def load_config(path: str | None = None) -> Config:
             setattr(cfg.engine, name, min(1.0, max(0.0, value)) if math.isfinite(value) else 0.0)
         cfg.engine.initial_scan_spread_seconds = max(
             0, min(600, int(cfg.engine.initial_scan_spread_seconds)))
+        cfg.engine.quiet_hours_wake_jitter_minutes = max(
+            0, min(120, int(cfg.engine.quiet_hours_wake_jitter_minutes)))
         cfg.engine.browser_session_idle_seconds = max(
             0, int(cfg.engine.browser_session_idle_seconds))
         if cfg.engine.xhs_cdp_idle_seconds is not None:

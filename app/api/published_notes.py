@@ -11,6 +11,7 @@ from app.platforms.rednote import RednoteApiClient, flatten_rednote_comments, pa
 from app.platforms.xhs import XhsApiClient, XhsApiError, has_a1, parse_self_user as parse_xhs_self_user, cookie_str_from_state as xhs_cookie_str_from_state
 from app.risk import OperationKind, RiskCategory, classify_platform_error
 from app.services import account_profiles as account_profiles_service
+from app.services import thumb_cache
 
 router = APIRouter()
 
@@ -30,8 +31,13 @@ async def _xhs_account_uid(state: str, proxy: str = "", *,
     cookie = xhs_cookie_str_from_state(state)
     if has_a1(cookie):
         try:
-            client = XhsApiClient(cookie, user_agent or app_runtime.cfg.engine.user_agent,
-                                  timeout=app_runtime.cfg.engine.request_timeout_seconds, proxy=proxy)
+            client = XhsApiClient(
+                cookie,
+                user_agent or app_runtime.cfg.engine.user_agent,
+                timeout=app_runtime.cfg.engine.request_timeout_seconds,
+                proxy=proxy,
+                storage_state=state,
+            )
             me = await client.self_info()
             uid = str((me or {}).get("user_id") or "")
             if uid:
@@ -44,9 +50,9 @@ async def _xhs_account_uid(state: str, proxy: str = "", *,
     try:
         if detailed:
             prof, profile_error = await creator_profile(
-                state, proxy=proxy, preserve_error=True)
+                state, proxy=proxy, preserve_error=True, user_agent=user_agent)
         else:
-            prof = await creator_profile(state, proxy=proxy)
+            prof = await creator_profile(state, proxy=proxy, user_agent=user_agent)
             profile_error = ""
     except Exception as exc:
         if detailed:
@@ -92,6 +98,19 @@ async def list_published_notes(account_id: int, platform: str | None = None):
 
     async def _fetch_published_notes():
         def _payload(items, good_tokens=False, error_category=""):
+            raw_covers = [str(it.get("cover") or "") for it in items if isinstance(it, dict)]
+            thumb_cache.schedule_thumb_prewarm(raw_covers, platform=acc_platform, proxy=proxy)
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                if it.get("cover"):
+                    it["remote_cover"] = it["cover"]
+                    it["cover"] = thumb_cache.local_thumb_api_url(str(it["cover"]), platform=acc_platform)
+                if isinstance(it.get("images"), list):
+                    it["images"] = [
+                        thumb_cache.local_thumb_api_url(str(u), platform=acc_platform) or u
+                        for u in it["images"]
+                    ]
             payload = {
                 "notes": items,
                 "total": len(items),
@@ -390,9 +409,13 @@ async def publish_note_media(account_id: int, note_id: str,
         return {
             "media_type": aw.media_type,
             "desc": aw.desc,
-            "cover_url": aw.cover or "",
+            "cover_url": thumb_cache.local_thumb_api_url(aw.cover or "", platform=acc_platform),
             "medias": [{
-                "url": media.url,
+                "url": (
+                    thumb_cache.local_thumb_api_url(media.url, platform=acc_platform)
+                    if media.kind == "image"
+                    else media.url
+                ),
                 "kind": media.kind,
                 "ext": media.ext,
                 "index": media.index,

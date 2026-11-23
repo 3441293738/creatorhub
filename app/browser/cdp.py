@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import urlparse
 
 from .identity import Identity
-from .proxy import ProxyPlan, Socks5AuthRelay
+from .proxy import HttpProxyAuthRelay, ProxyPlan, Socks5AuthRelay
 
 
 _OWNER_FILE = ".creatorhub-cdp-owner.json"
@@ -198,7 +198,8 @@ class ChromeLocator:
 
 def chrome_launch_args(
         profile_dir: Path, port: int,
-        proxy_server: str = "") -> list[str]:
+        proxy_server: str = "",
+        *, locale: str = "", accept_lang: str = "") -> list[str]:
     """Build the minimal native Chrome argument set used by the CDP backend."""
     port = int(port)
     if not (1 <= port <= 65535):
@@ -209,18 +210,22 @@ def chrome_launch_args(
         f"--remote-debugging-port={port}",
         "--no-first-run",
         "--no-default-browser-check",
-        # A managed session is occasionally recycled after being idle.  If an
-        # older CreatorHub build had to terminate Chrome before it finished
-        # flushing the profile, do not keep showing Chrome's "restore pages"
-        # bubble on every later background launch.
         "--disable-session-crashed-bubble",
-        # Routine account tasks reuse one headed page in the background.
-        # Login/explicit-open flows restore the same window when required.
         "--start-minimized",
     ]
+    loc = str(locale or "").strip()
+    if loc:
+        args.append(f"--lang={loc}")
+        acc_lang = str(accept_lang or "").strip() or (
+            loc if "-" not in loc else f"{loc},{loc.split('-', 1)[0]}"
+        )
+        args.append(f"--accept-lang={acc_lang}")
     if proxy_server:
         args.append(f"--proxy-server={proxy_server}")
-        args.extend(_WEBRTC_PROXY_ARGS)
+    else:
+        # 显式直连时隔离操作系统 WinINet 代理(如 127.0.0.1:2023 视频号桥接)，避免被本机系统代理劫持
+        args.append("--no-proxy-server")
+    args.extend(_WEBRTC_PROXY_ARGS)
     args.append("about:blank")
     return args
 
@@ -252,7 +257,7 @@ class XhsCdpSession:
     context: Any
     owned: OwnedChromeProcess
     proxy_signature: str = "direct"
-    relay: Socks5AuthRelay | None = None
+    relay: HttpProxyAuthRelay | Socks5AuthRelay | None = None
     last_used: float = 0.0
     auth_controller: CdpProxyAuthController | None = None
 
@@ -506,15 +511,18 @@ class XhsCdpBackend:
         if profile_is_locked(profile_dir):
             raise CdpProfileConflictError(
                 f"Chrome profile is already in use: {profile_dir}")
-        relay: Socks5AuthRelay | None = None
+        relay: HttpProxyAuthRelay | Socks5AuthRelay | None = None
         process = None
         browser = None
         marker_path = profile_dir / _OWNER_FILE
         try:
             proxy_server = ""
             if proxy_plan is not None:
-                if proxy_plan.scheme == "socks5" and proxy_plan.authenticated:
-                    relay = Socks5AuthRelay(proxy_plan)
+                if proxy_plan.authenticated:
+                    if proxy_plan.scheme == "socks5":
+                        relay = Socks5AuthRelay(proxy_plan)
+                    else:
+                        relay = HttpProxyAuthRelay(proxy_plan)
                     relay_port = await relay.start()
                     proxy_server = proxy_plan.chrome_server(relay_port)
                 else:
@@ -524,8 +532,10 @@ class XhsCdpBackend:
             for attempt in range(3):
                 port = int(self.port_selector())
                 args = [str(Path(executable)), *chrome_launch_args(
-                    profile_dir, port, proxy_server)]
-                process = self.process_factory(args)
+                    profile_dir, port, proxy_server,
+                    locale=getattr(identity, "locale", ""),
+                    accept_lang=getattr(identity, "fp_accept_languages", ""))]
+                process = self._launch_with_identity_env(args, identity)
                 started_at = datetime.now(timezone.utc).isoformat()
                 owned = OwnedChromeProcess(
                     pid=int(process.pid),
@@ -683,10 +693,9 @@ class XhsCdpBackend:
                     marker_path.unlink()
             return None
 
-        # An authenticated SOCKS relay lives only in the old CreatorHub
+        # An authenticated HTTP/SOCKS relay lives only in the old CreatorHub
         # process. Reusing that Chrome would retain a dead loopback proxy.
-        if proxy_plan is not None and (
-                proxy_plan.scheme == "socks5" and proxy_plan.authenticated):
+        if proxy_plan is not None and proxy_plan.authenticated:
             assert marker is not None and info is not None and port is not None
             await self._terminate_owned_for_restart(
                 marker_path, active_path, int(marker["pid"]), port)
@@ -804,8 +813,9 @@ class XhsCdpBackend:
             proxy_args = [command]
         if proxy_plan is None:
             return not proxy_args
-        if proxy_plan.scheme == "socks5" and proxy_plan.authenticated:
-            return bool(proxy_args and "socks5://127.0.0.1:" in command)
+        if proxy_plan.authenticated:
+            prefix = "socks5://127.0.0.1:" if proxy_plan.scheme == "socks5" else "http://127.0.0.1:"
+            return bool(proxy_args and prefix in command)
         return f"--proxy-server={proxy_plan.chrome_server()}" in command
 
     async def _terminate_owned_for_restart(
@@ -904,6 +914,22 @@ class XhsCdpBackend:
             process.kill()
         with suppress(Exception):
             await asyncio.to_thread(process.wait, 2)
+
+    def _launch_with_identity_env(self, args: list[str], identity: Identity):
+        if self.process_factory is not self._spawn_process:
+            return self.process_factory(args)
+        env = dict(os.environ)
+        tz = str(getattr(identity, "timezone_id", "") or "").strip()
+        if tz:
+            env["TZ"] = tz
+        return subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=(os.name != "nt"),
+            env=env,
+        )
 
     def _spawn_process(self, args: list[str]):
         return subprocess.Popen(

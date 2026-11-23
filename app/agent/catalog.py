@@ -86,7 +86,7 @@ async def discover_models(settings: ConnectionSettings) -> dict:
         # /v1/models route. Preserve an explicit path; never guess another host.
         if not urlsplit(settings.base_url).path:
             endpoints.append(settings.base_url + "/v1/models")
-        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
             for endpoint_index, endpoint in enumerate(endpoints):
                 for index, query in enumerate(attempts):
                     async with client.stream("GET", endpoint, headers=headers, params=query) as response:

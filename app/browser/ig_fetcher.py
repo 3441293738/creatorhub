@@ -17,6 +17,13 @@ from ..platforms.instagram.extract import (
 )
 from ..platforms.instagram.protocol import WEB_APP_ID
 from ..platforms.instagram.resolve import clean_ig_username, resolve_ig_work_ref
+from .human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from .identity import Identity
 from .manager import BrowserManager
 
@@ -32,7 +39,7 @@ async def fetch_ig_self_profile(
             wait_until="domcontentloaded",
             timeout=35000,
         )
-        await page.wait_for_timeout(1500)
+        await human_wait(page, 1500)
         cur = str(page.url or "").lower()
         if "/accounts/login" in cur:
             return {}, "logged_out:Instagram 登录态失效，请重新登录"
@@ -41,14 +48,18 @@ async def fetch_ig_self_profile(
 
         result = await page.evaluate(
             """async (appId) => {
+                const csrfMatch = document.cookie.match(/(?:^|;\\s*)csrftoken=([^;]+)/);
+                const csrfToken = csrfMatch ? decodeURIComponent(csrfMatch[1]) : '';
                 const getJson = async (u) => {
                     try {
+                        const headers = {
+                            'X-IG-App-ID': appId,
+                            'X-Requested-With': 'XMLHttpRequest'
+                        };
+                        if (csrfToken) headers['X-CSRFToken'] = csrfToken;
                         const r = await fetch(u, {
                             credentials: 'include',
-                            headers: {
-                                'X-IG-App-ID': appId,
-                                'X-Requested-With': 'XMLHttpRequest'
-                            }
+                            headers
                         });
                         if (r.status === 401) return { __status: 401 };
                         return await r.json();
@@ -174,7 +185,7 @@ async def fetch_ig_posts(
             wait_until="domcontentloaded",
             timeout=35000,
         )
-        await page.wait_for_timeout(2500)
+        await human_wait(page, 2500)
         cur = str(page.url or "").lower()
         if "/accounts/login" in cur:
             return [], "", "logged_out:Instagram 登录态已失效"
@@ -184,8 +195,8 @@ async def fetch_ig_posts(
         for _ in range(max(1, int(max_scrolls))):
             if known and collected and all(k in known for k in collected):
                 break
-            await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(1300)
+            await human_scroll(page)
+            await human_wait(page, 950)
 
         if not collected:
             dom_cards = await page.evaluate(
@@ -277,13 +288,13 @@ async def fetch_ig_search(
     page.on("response", on_response)
     try:
         await page.goto(target_url, wait_until="domcontentloaded", timeout=35000)
-        await page.wait_for_timeout(2500)
+        await human_wait(page, 2500)
         cur = str(page.url or "").lower()
         if "/accounts/login" in cur:
             return [], "logged_out:Instagram 登录态已失效"
         for _ in range(max(1, int(max_scrolls))):
-            await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(1300)
+            await human_scroll(page)
+            await human_wait(page, 950)
 
         if not collected:
             dom_cards = await page.evaluate(
@@ -364,14 +375,14 @@ async def fetch_ig_comments(
     page.on("response", on_response)
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=35000)
-        await page.wait_for_timeout(2200)
+        await human_wait(page, 2200)
         if "/accounts/login" in str(page.url or "").lower():
             return [], "logged_out:Instagram 登录态已失效"
         for _ in range(max(2, min(8, (max_count // 15) + 2))):
             if len(collected) >= max_count:
                 break
-            await page.evaluate("() => window.scrollBy(0, 900)")
-            await page.wait_for_timeout(1100)
+            await human_scroll(page, distance=720)
+            await human_wait(page, 850)
         return list(collected.values())[:max_count], ("" if collected else "empty")
     except Exception as exc:
         return list(collected.values())[:max_count], f"browser:{type(exc).__name__}:{exc}"
@@ -434,7 +445,7 @@ async def post_ig_comment(
     page.on("response", on_response)
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=35000)
-        await page.wait_for_timeout(2500)
+        await human_wait(page, 2500)
         cur = str(page.url or "").lower()
         if "/accounts/login" in cur:
             return False, "logged_out:Instagram 账号未登录"
@@ -456,9 +467,8 @@ async def post_ig_comment(
         if editor is None:
             return False, "未找到 Instagram 评论输入框（可能帖子已关闭评论或未登录）"
 
-        await editor.click(timeout=3000)
-        await editor.fill(body, timeout=3000)
-        await page.wait_for_timeout(400)
+        await DEFAULT_HUMAN_ENGINE.type_text(editor, body, page=page, timeout=4000)
+        await human_wait(page, 400)
 
         post_btn = None
         for bsel in (
@@ -476,14 +486,14 @@ async def post_ig_comment(
 
         await notify_submit(on_submit)
         submitted["clicked"] = True
-        await post_btn.click(timeout=4000)
+        await DEFAULT_HUMAN_ENGINE.click_locator(post_btn, page=page, timeout=4000)
 
         for _ in range(20):
             if comment_resp["seen"]:
                 if comment_resp["ok"]:
                     return True, ""
                 return False, f"评论接口拒绝: {comment_resp['message'] or 'comment_failed'}"
-            await page.wait_for_timeout(500)
+            await human_wait(page, 500)
         return False, "write_uncertain:已点击 Instagram 评论发布但未收到接口回包确认"
     except asyncio.CancelledError:
         raise
@@ -496,6 +506,7 @@ async def post_ig_comment(
         except Exception:
             pass
         try:
-            await ctx.close()
+            if not page.is_closed():
+                await page.close()
         except Exception:
             pass

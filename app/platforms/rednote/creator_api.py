@@ -27,6 +27,7 @@ from curl_cffi.requests import Session
 from ...media_tools import video_cover_and_meta
 from ...netfp import impersonate_for_ua
 from ..xhs import creator_sign as xhs_cos_sign
+from ..xhs.client import _coherent_direct_headers
 from ..xhs.creator_api import (
     MAX_IMAGE_PIXELS,
     TRANSCODE_MAX_RETRIES,
@@ -68,7 +69,7 @@ DEFAULT_REDNOTE_UPLOAD_URL = "https://ros-upload.rednote.com"
 VIDEO_MULTIPART_CHUNK_BYTES = 20 * 1024 * 1024  # 20 MiB (literal 24363: 20971520)
 _DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
 _ALLOWED_UPLOAD_SUFFIXES = (".rednote.com", ".xhscdn.com", ".myqcloud.com")
 _HOST_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
@@ -221,8 +222,11 @@ class RednoteCreatorApi:
                 signal="auth_expired",
             )
         self.a1 = self.cookies["a1"]
-        self.user_agent = str(user_agent or _DEFAULT_UA).strip()
-        self._signer = RednoteSigner()
+        raw_ua = str(user_agent or _DEFAULT_UA).strip() or _DEFAULT_UA
+        self.impersonate = impersonate_for_ua(raw_ua)
+        self._coherent_headers = _coherent_direct_headers(raw_ua, self.impersonate)
+        self.user_agent = self._coherent_headers["user-agent"]
+        self._signer = RednoteSigner(user_agent=self.user_agent)
         self.sign_context = resolve_rednote_sign_context(
             self.cookie_str,
             storage_state=storage_state,
@@ -231,16 +235,16 @@ class RednoteCreatorApi:
             locale=locale,
             timezone=timezone,
         )
-        from ...browser.manager import normalize_proxy
+        from ...netfp import curl_proxies
 
-        norm_proxy = normalize_proxy(proxy) or None
         self._session_cls = Session
         self._session_options = {
             "timeout": timeout,
-            "impersonate": impersonate_for_ua(self.user_agent),
-            "proxies": {"http": norm_proxy, "https": norm_proxy} if norm_proxy else None,
+            "impersonate": self.impersonate,
+            "proxies": curl_proxies(proxy),
             "discard_cookies": True,
             "allow_redirects": False,
+            "trust_env": False,
         }
         self._upload_cli: Session | None = None
         self.cli = self._session_cls(**self._session_options)
@@ -258,7 +262,6 @@ class RednoteCreatorApi:
 
     def _base_headers(self) -> Dict[str, str]:
         return {
-            "user-agent": self.user_agent,
             "accept": "application/json, text/plain, */*",
             "content-type": "application/json;charset=UTF-8",
             "origin": CREATOR_URL,
@@ -267,6 +270,7 @@ class RednoteCreatorApi:
             "sec-fetch-mode": "cors",
             "sec-fetch-dest": "empty",
             "accept-language": "en-US,en;q=0.9,zh-CN;q=0.8",
+            **self._coherent_headers,
         }
 
     def _send(self, client: Session, method: str, url: str, **kwargs):
@@ -306,6 +310,7 @@ class RednoteCreatorApi:
             b1=self.sign_context.b1,
             dsl_pair=self.sign_context.dsl_pair,
             sign_count=self.sign_context.next_sign_count(),
+            user_agent=self.user_agent,
         )
         headers = {**self._base_headers(), **sign}
         full_url = base_url + canonical_request("GET", uri, query)
@@ -330,6 +335,7 @@ class RednoteCreatorApi:
             b1=self.sign_context.b1,
             dsl_pair=self.sign_context.dsl_pair,
             sign_count=self.sign_context.next_sign_count(),
+            user_agent=self.user_agent,
         )
         headers = {**self._base_headers(), **sign}
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
@@ -705,6 +711,7 @@ class RednoteCreatorApi:
             b1=self.sign_context.b1,
             dsl_pair=self.sign_context.dsl_pair,
             sign_count=self.sign_context.next_sign_count(),
+            user_agent=self.user_agent,
         )
         headers = {
             **self._base_headers(),

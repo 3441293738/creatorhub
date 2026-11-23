@@ -178,7 +178,10 @@ class CommentRuleRunnerMixin:
             acc_proxy = acc.proxy if acc else ""
             acc_sec_uid = acc.sec_uid if acc else ""
             acc_nick = acc.nickname if acc else ""
-            identity = self.browser.identity_for(acc) if acc else self.browser.anon_identity()
+            if acc:
+                identity = self.browser.identity_for(acc)
+            else:
+                identity, acc_proxy = self._anon_identity_proxy(rf["platform"], session=s)
 
         if not rf["account_id"] or not acc:
             self._mark_rule(rule_id, "未绑定发评论账号")

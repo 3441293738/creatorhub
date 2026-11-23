@@ -154,38 +154,53 @@ async def add_danmaku_watch(body: DanmakuWatchIn):
     kind = body.kind
     mode = body.mode if body.mode in ("public", "creator") else "public"
     title = ""
+    eff_proxy = metadata_service._resolve_ephemeral_proxy(platform, body.account_id)
     if platform == "bilibili":
         mode = "public"
         if kind == "auto":
             kind = "video" if looks_like_bili_work(target_input) else (
-                "video" if await resolve_bili_work(target_input, app_runtime.cfg.engine.user_agent) else "user"
+                "video"
+                if await metadata_service._call_resolver(
+                    resolve_bili_work, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
+                else "user"
             )
         if kind not in ("video", "user"):
             raise HTTPException(400, "监控对象类型须为 video 或 user")
         if kind == "video":
-            aweme_id = await resolve_bili_work(target_input, app_runtime.cfg.engine.user_agent) or ""
+            aweme_id = await metadata_service._call_resolver(
+                resolve_bili_work, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+            ) or ""
             if not aweme_id or not aweme_id.upper().startswith("BV1"):
                 raise HTTPException(400, "无法解析 B 站视频，请粘贴 BV 号、av 号、视频链接或 b23.tv 短链")
             title = "视频 " + aweme_id
         else:
-            sec_uid = await resolve_bili_mid(target_input, app_runtime.cfg.engine.user_agent) or ""
+            sec_uid = await metadata_service._call_resolver(
+                resolve_bili_mid, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+            ) or ""
             if not sec_uid:
                 raise HTTPException(400, "无法解析 B 站 UP 主 UID，请粘贴空间链接、b23.tv 短链或数字 UID")
             title = "UP主 " + sec_uid
     else:
         if kind == "auto":
-            aweme_id = await resolve_aweme_id(target_input, app_runtime.cfg.engine.user_agent) or ""
+            aweme_id = await metadata_service._call_resolver(
+                resolve_aweme_id, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+            ) or ""
             kind = "video" if aweme_id else "user"
         if kind not in ("video", "user"):
             raise HTTPException(400, "监控对象类型须为 video 或 user")
         if kind == "video":
             if not aweme_id:
-                aweme_id = await resolve_aweme_id(target_input, app_runtime.cfg.engine.user_agent)
+                aweme_id = await metadata_service._call_resolver(
+                    resolve_aweme_id, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+                )
             if not aweme_id:
                 raise HTTPException(400, "无法解析视频 id,请粘贴完整分享文案、作品链接、短链或数字 id")
             title = "视频 " + aweme_id
         else:
-            sec_uid = await resolve_sec_uid(target_input, app_runtime.cfg.engine.user_agent)
+            sec_uid = await metadata_service._call_resolver(
+                resolve_sec_uid, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
+            )
             if not sec_uid:
                 raise HTTPException(400, "无法解析 sec_uid,请粘贴完整分享文案、账号主页、短链或 sec_uid")
             title = "账号 " + sec_uid[:12]
@@ -199,6 +214,13 @@ async def add_danmaku_watch(body: DanmakuWatchIn):
                     raise HTTPException(400, "创作中心账号与监控账号不一致")
 
     with get_session() as s:
+        if body.account_id and mode == "public":
+            dm_acc = s.get(DouyinAccount, body.account_id)
+            if dm_acc and str(dm_acc.account_role or "hybrid").strip().lower() == "publish":
+                raise HTTPException(
+                    400,
+                    "该账号角色设为「发布主号 (publish)」，禁止绑定公开作品弹幕轮询采集；请使用「创作中心弹幕模式」或改选「仅采集号 (crawler)」/「混合号 (hybrid)」",
+                )
         q = select(DanmakuWatch).where(
             DanmakuWatch.platform == platform,
             DanmakuWatch.kind == kind,

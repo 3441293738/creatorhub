@@ -828,7 +828,19 @@ export function AccountMatrixCenter({ ctx }) {
 
                               <div className="mx-acc-identity">
                                 {acc.avatar ? (
-                                  <img className="avatar" src={safeThumb(acc.avatar)} alt="" referrerPolicy="no-referrer" />
+                                  <>
+                                    <img
+                                      className="avatar"
+                                      src={safeThumb(acc.avatar)}
+                                      alt=""
+                                      referrerPolicy="no-referrer"
+                                      onError={e => {
+                                        e.currentTarget.style.display = "none";
+                                        if (e.currentTarget.nextElementSibling) e.currentTarget.nextElementSibling.style.display = "";
+                                      }}
+                                    />
+                                    <span className="wb-avatar-fallback" style={{ display: "none" }}>{(acc.display_name || "号").slice(0, 1)}</span>
+                                  </>
                                 ) : (
                                   <span className="wb-avatar-fallback">{(acc.display_name || "号").slice(0, 1)}</span>
                                 )}
@@ -955,7 +967,19 @@ export function AccountMatrixCenter({ ctx }) {
                           <button type="button" className={`mx-pin-btn ${acc.pinned ? "pinned" : ""}`} onClick={() => togglePin(acc)} title="置顶" aria-label="置顶"><Icon name="star" /></button>
                           <span className="mx-mini-pf inline" style={{ "--pf-c": pf.color }}>{pf.short}</span>
                           {acc.avatar ? (
-                            <img className="avatar sm" src={safeThumb(acc.avatar)} alt="" referrerPolicy="no-referrer" />
+                            <>
+                              <img
+                                className="avatar sm"
+                                src={safeThumb(acc.avatar)}
+                                alt=""
+                                referrerPolicy="no-referrer"
+                                onError={e => {
+                                  e.currentTarget.style.display = "none";
+                                  if (e.currentTarget.nextElementSibling) e.currentTarget.nextElementSibling.style.display = "";
+                                }}
+                              />
+                              <span className="wb-avatar-fallback sm" style={{ display: "none" }}>{(acc.display_name || "号").slice(0, 1)}</span>
+                            </>
                           ) : (
                             <span className="wb-avatar-fallback sm">{(acc.display_name || "号").slice(0, 1)}</span>
                           )}

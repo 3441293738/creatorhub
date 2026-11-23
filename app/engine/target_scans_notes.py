@@ -16,6 +16,7 @@ from app.platforms.douyin.extract import Aweme
 from app.platforms.rednote import RednoteApiError, parse_rednote_brief, parse_rednote_detail, parse_rednote_self_user, cookie_str_from_state as rednote_cookie_str_from_state
 from app.platforms.xhs import XhsApiClient, XhsApiError, cookie_str_from_state, has_a1, parse_note_brief, parse_note_detail, parse_self_user as parse_xhs_self_user
 from app.risk import RiskCategory, classify_platform_error
+from app.services import thumb_cache
 from app.settings import get_setting
 
 
@@ -32,11 +33,7 @@ class NoteTargetScanMixin:
             xsec_token = target.xsec_token or ""
             state = ""
             proxy = ""
-            identity = (
-                self.browser.anon_identity()
-                if callable(getattr(self.browser, "anon_identity", None))
-                else None
-            )
+            identity = None
             if target.account_id:
                 acc = s.get(DouyinAccount, target.account_id)
                 if acc:
@@ -50,6 +47,8 @@ class NoteTargetScanMixin:
                         if callable(getattr(self.browser, "identity_for", None))
                         else None
                     )
+            if identity is None and not target.account_id:
+                identity, proxy = self._anon_identity_proxy("xhs", session=s)
             known = set(s.exec(
                 select(ContentRecord.aweme_id)
                 .where(ContentRecord.target_id == target_id)).all())
@@ -92,7 +91,9 @@ class NoteTargetScanMixin:
                 cookie_str,
                 self._direct_request_ua(identity),
                 timeout=self.cfg.engine.request_timeout_seconds,
-                proxy=proxy)
+                proxy=proxy,
+                storage_state=state,
+            )
         error = ""
         author = None
         briefs_raw: list = []
@@ -297,9 +298,18 @@ class NoteTargetScanMixin:
                 s.add(t)
                 target_name = t.nickname or (("#" + keyword) if kind == "keyword"
                                              else (user_id[:12] if user_id else "xhs"))
+                target_avatar = t.avatar or ""
+            else:
+                target_avatar = ""
             s.commit()
             for rec, _, _ in new_records:
                 s.refresh(rec)
+
+        thumb_cache.schedule_thumb_prewarm(
+            [target_avatar, *(aw.cover for _, aw, dl in new_records if aw.cover and not dl)],
+            platform="xhs",
+            proxy=proxy,
+        )
 
         captured = [aw for _, aw, _ in new_records if aw.medias]
         if captured and not first_scan:
@@ -325,11 +335,7 @@ class NoteTargetScanMixin:
             xsec_token = target.xsec_token or ""
             state = ""
             proxy = ""
-            identity = (
-                self.browser.anon_identity()
-                if callable(getattr(self.browser, "anon_identity", None))
-                else None
-            )
+            identity = None
             if target.account_id:
                 acc = s.get(DouyinAccount, target.account_id)
                 if acc:
@@ -340,6 +346,11 @@ class NoteTargetScanMixin:
                     proxy = acc.proxy or ""
                     if callable(getattr(self.browser, "identity_for", None)):
                         identity = self.browser.identity_for(acc)
+            if identity is None and not target.account_id:
+                identity, proxy = self._anon_identity_proxy("rednote", session=s)
+                if not proxy and getattr(self.cfg.engine, "strict_proxy_required", True):
+                    return self._mark_target_skip(
+                        target_id, "已启用严格代理锁，匿名监控未分配到可用池代理，已跳过以免暴露本机 IP")
             known = set(s.exec(
                 select(ContentRecord.aweme_id)
                 .where(ContentRecord.target_id == target_id)).all())
@@ -600,9 +611,18 @@ class NoteTargetScanMixin:
                 s.add(t)
                 target_name = t.nickname or (("#" + keyword) if kind == "keyword"
                                              else (user_id[:12] if user_id else "rednote"))
+                target_avatar = t.avatar or ""
+            else:
+                target_avatar = ""
             s.commit()
             for rec, _, _ in new_records:
                 s.refresh(rec)
+
+        thumb_cache.schedule_thumb_prewarm(
+            [target_avatar, *(aw.cover for _, aw, dl in new_records if aw.cover and not dl)],
+            platform="rednote",
+            proxy=proxy,
+        )
 
         captured = [aw for _, aw, _ in new_records if aw.medias]
         if captured and not first_scan:

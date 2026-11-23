@@ -43,6 +43,13 @@ from ..platforms.twitter.urls import (
     tweet_url,
     user_search_url,
 )
+from .human_interaction import (
+    DEFAULT_HUMAN_ENGINE,
+    human_click_first,
+    human_fill_first,
+    human_scroll,
+    human_wait,
+)
 from .identity import Identity
 from .manager import BrowserManager
 
@@ -211,7 +218,7 @@ async def fetch_twitter_self_profile(
     page.on("response", on_response)
     try:
         await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=40000)
-        await page.wait_for_timeout(2200)
+        await human_wait(page, 2200)
         risk_err = check_twitter_url_risk(page.url)
         if risk_err:
             return {}, risk_err
@@ -237,7 +244,7 @@ async def fetch_twitter_self_profile(
             # 打开个人主页触发 UserByScreenName 获取精确粉丝数与推文数
             captured_users.clear()
             await page.goto(profile_url(handle), wait_until="domcontentloaded", timeout=35000)
-            await page.wait_for_timeout(2000)
+            await human_wait(page, 2000)
             for u in captured_users:
                 if str(u.get("unique_id") or "").lower() == handle.lower():
                     return u, ""
@@ -315,7 +322,7 @@ async def fetch_twitter_user_tweets(
     page.on("response", on_response)
     try:
         await page.goto(profile_url(target), wait_until="domcontentloaded", timeout=40000)
-        await page.wait_for_timeout(2400)
+        await human_wait(page, 2400)
         risk_err = check_twitter_url_risk(page.url)
         if risk_err:
             return [], author_info, risk_err
@@ -323,8 +330,8 @@ async def fetch_twitter_user_tweets(
         for _ in range(max(1, int(max_scrolls))):
             if known and len(collected) >= 5 and all(tid in known for tid in list(collected.keys())[-5:]):
                 break
-            await page.evaluate("() => window.scrollBy(0, 1400)")
-            await page.wait_for_timeout(1300)
+            await human_scroll(page, settle=False)
+            await human_wait(page, 1300)
 
         if not collected:
             dom_rows = await _extract_dom_tweets(page, fallback_screen_name=(target if not target.isdigit() else ""))
@@ -384,7 +391,7 @@ async def fetch_twitter_search(
     page.on("response", on_response)
     try:
         await page.goto(target_url, wait_until="domcontentloaded", timeout=40000)
-        await page.wait_for_timeout(2500)
+        await human_wait(page, 2500)
         risk_err = check_twitter_url_risk(page.url)
         if risk_err:
             return [], risk_err
@@ -394,8 +401,8 @@ async def fetch_twitter_search(
             stagnant = 0
             for _ in range(max(1, int(max_scrolls))):
                 before = len(collected)
-                await page.evaluate("() => window.scrollBy(0, 1500)")
-                await page.wait_for_timeout(1400)
+                await human_scroll(page, settle=False)
+                await human_wait(page, 1400)
                 if len(collected) == before:
                     stagnant += 1
                     if stagnant >= 2:
@@ -420,7 +427,7 @@ async def fetch_twitter_search(
                 if ck_str:
                     fb_cli = TwitterClient(
                         ck_str,
-                        getattr(identity, "ua", "") or "",
+                        getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
                         proxy=getattr(identity, "proxy", "") or "",
                     )
                     async with fb_cli.session_scope():
@@ -485,7 +492,7 @@ async def fetch_twitter_tweet_detail(
     page.on("response", on_response)
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=35000)
-        await page.wait_for_timeout(2300)
+        await human_wait(page, 2300)
         risk_err = check_twitter_url_risk(page.url)
         if risk_err:
             return None, risk_err
@@ -549,7 +556,7 @@ async def fetch_twitter_comments(
     page.on("response", on_response)
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=35000)
-        await page.wait_for_timeout(2400)
+        await human_wait(page, 2400)
         risk_err = check_twitter_url_risk(page.url)
         if risk_err:
             return [], risk_err
@@ -558,8 +565,8 @@ async def fetch_twitter_comments(
         for _ in range(scroll_steps):
             if len(collected) >= max_count:
                 break
-            await page.evaluate("() => window.scrollBy(0, 1100)")
-            await page.wait_for_timeout(1100)
+            await human_scroll(page, settle=False)
+            await human_wait(page, 1100)
 
         if not collected:
             dom_rows = await _extract_dom_tweets(page)
@@ -624,7 +631,7 @@ async def fetch_twitter_users(
     page.on("response", on_response)
     try:
         await page.goto(user_search_url(kw), wait_until="domcontentloaded", timeout=35000)
-        await page.wait_for_timeout(2400)
+        await human_wait(page, 2400)
         risk_err = check_twitter_url_risk(page.url)
         if risk_err:
             return [], risk_err
@@ -632,8 +639,8 @@ async def fetch_twitter_users(
         for _ in range(max(1, min(8, (max_results // 15) + 1))):
             if len(collected) >= max_results:
                 break
-            await page.evaluate("() => window.scrollBy(0, 1200)")
-            await page.wait_for_timeout(1100)
+            await human_scroll(page, settle=False)
+            await human_wait(page, 1100)
 
         return list(collected.values())[:max_results], ("" if collected else "empty")
     except Exception as exc:
@@ -682,7 +689,7 @@ async def fetch_twitter_follows(
         handle = clean_twitter_username(user_ref)
         if not handle:
             await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=35000)
-            await page.wait_for_timeout(1800)
+            await human_wait(page, 1800)
             risk_err = check_twitter_url_risk(page.url)
             if risk_err:
                 return [], risk_err
@@ -692,7 +699,7 @@ async def fetch_twitter_follows(
 
         target_url = following_url(handle) if is_following_dir else followers_url(handle)
         await page.goto(target_url, wait_until="domcontentloaded", timeout=35000)
-        await page.wait_for_timeout(2400)
+        await human_wait(page, 2400)
         risk_err = check_twitter_url_risk(page.url)
         if risk_err:
             return [], risk_err
@@ -700,8 +707,8 @@ async def fetch_twitter_follows(
         stagnant = 0
         for _ in range(max(1, int(max_pages))):
             before = len(collected)
-            await page.evaluate("() => window.scrollBy(0, 1300)")
-            await page.wait_for_timeout(1200)
+            await human_scroll(page, settle=False)
+            await human_wait(page, 1200)
             if len(collected) == before:
                 stagnant += 1
                 if stagnant >= 3:
@@ -783,7 +790,7 @@ async def fetch_twitter_dm_conversations(
     page.on("response", on_response)
     try:
         await page.goto(MESSAGES_URL, wait_until="domcontentloaded", timeout=40000)
-        await page.wait_for_timeout(2800)
+        await human_wait(page, 2800)
         risk_err = check_twitter_url_risk(page.url)
         if risk_err:
             return [], risk_err
@@ -795,8 +802,8 @@ async def fetch_twitter_dm_conversations(
                 if await loc.count() and await loc.is_visible():
                     close_btn = page.locator('button[aria-label="Close" i], [data-testid="app-bar-close"]').first
                     if await close_btn.count() and await close_btn.is_visible():
-                        await close_btn.click(timeout=1500)
-                        await page.wait_for_timeout(1000)
+                        await DEFAULT_HUMAN_ENGINE.click_locator(close_btn, page=page, timeout=2000)
+                        await human_wait(page, 1000)
                     elif not convs:
                         return [], "X 加密私信要求输入安全 PIN 码，请点击「打开浏览器」完成一次 PIN 解锁后再同步"
                     break
@@ -886,7 +893,7 @@ async def fetch_twitter_dm_history(
     page.on("response", on_response)
     try:
         await page.goto(dm_conversation_url(cid), wait_until="domcontentloaded", timeout=40000)
-        await page.wait_for_timeout(2600)
+        await human_wait(page, 2600)
         risk_err = check_twitter_url_risk(page.url)
         if risk_err:
             return [], risk_err
