@@ -351,7 +351,7 @@ async def open_account_browser(
             page = check_page
             check_opened = True
         else:
-            # 新 Profile 或环境签名发生变化时，额外打开 BrowserScan 标签；
+            # 新 Profile 或环境签名发生变化时，额外打开环境检测标签；
             # 检测页失败不影响账号平台页和登录态检查。
             if callable(check_opener):
                 try:
@@ -444,5 +444,5 @@ async def open_account_browser(
 
 @router.post("/api/accounts/{account_id}/environment-check")
 async def open_account_environment_check(account_id: int):
-    """在账号自己的独立指纹 Profile 中手动打开 BrowserScan。"""
+    """在账号自己的独立指纹 Profile 中手动打开浏览器环境检测页。"""
     return await open_account_browser(account_id, environment_check=True)

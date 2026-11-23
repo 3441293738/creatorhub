@@ -1,8 +1,8 @@
-"""统一的 TLS/HTTP2 指纹复刻配置。
+"""统一的 TLS/HTTP2 浏览器握手指纹配置。
 
 所有"裸 HTTP 直连平台接口"的地方(签名直连 API、扫码登录轮询、msToken 申请、
 短链跳转、创作平台发布)都应改用 curl_cffi 的 impersonate,让请求的 JA3/JA4 与
-HTTP2 指纹复刻真实 Chrome —— 纯 httpx 的 TLS 指纹与浏览器不同,容易被风控按
+HTTP2 特征对齐真实浏览器 —— 纯 httpx 的 TLS 指纹与浏览器不同,容易被风控按
 "非浏览器客户端"识别。
 
 impersonate 目标按调用方传入的 UA 里的 Chrome 大版本自动挑最接近的,UA 升级后无需改这里。

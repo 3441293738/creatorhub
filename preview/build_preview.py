@@ -44,7 +44,7 @@ def build_guide(destination: Path) -> None:
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{name}使用指南 · CreatorHub</title>
 <meta name="description" content="{escape(platform['intro'])}"><link rel="stylesheet" href="../guide.css"></head><body>
 <a class="skip" href="#main">跳到正文</a><header class="topbar"><a class="brand" href="../">CreatorHub <span>使用指南</span></a><nav aria-label="平台指南">{links}</nav></header>
-<div class="layout"><aside><nav class="toc" aria-label="本页目录"><p>{name}入门</p><a href="#start">登录与第一个任务</a>{toc}<p>通用帮助</p><a href="../#install">安装与启动</a><a href="../#notifications">通知设置</a><a href="../#queue">任务队列与风控</a><a href="../#backup">更新与备份</a><a href="../#faq">常见问题</a><a href="../">全部功能手册</a></nav></aside>
+<div class="layout"><aside><nav class="toc" aria-label="本页目录"><p>{name}入门</p><a href="#start">登录与第一个任务</a>{toc}<p>通用帮助</p><a href="../#matrix">全平台矩阵与汇总</a><a href="../#install">安装与启动</a><a href="../#notifications">通知设置</a><a href="../#queue">任务队列与风控</a><a href="../#backup">更新与备份</a><a href="../#faq">常见问题</a><a href="../">全部功能手册</a></nav></aside>
 <main id="main"><section id="start"><div class="eyebrow">PLATFORM GUIDE</div><h1>{name}使用指南</h1><p class="lead">{escape(platform['intro'])}</p>
 <div class="note">真实操作需要本地运行。还没装好？先看<a href="../#install">安装教程</a>。</div>
 <h2>第一步：登录账号</h2><p>{escape(platform['login'])}</p><h2>第二步：完成第一个任务</h2><p>{escape(platform['first'])}</p><a href="../#{escape(platform['firstAnchor'])}">查看图文步骤 →</a>

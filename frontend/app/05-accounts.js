@@ -1,6 +1,10 @@
 // 05-accounts.js — 账号列表渲染、环境指纹编辑、浏览器内核目录与账号级操作。
 // ─── 账号 ───
-let ACCOUNTS = [];
+let ACCOUNTS = [], ALL_ACCOUNTS = [];
+function findAnyAccount(id) {
+  const num = Number(id);
+  return ALL_ACCOUNTS.find(x => Number(x.id) === num) || ACCOUNTS.find(x => Number(x.id) === num);
+}
 let BROWSER_RUNTIMES = [];
 let BROWSER_RUNTIME_ROOT = "";
 let MONITORS = [], WATCHES = [], CONTENTS = [];
@@ -538,12 +542,12 @@ function waitForAccountPaint(isCurrent) {
 }
 async function refreshAccounts() {
   const isCurrent = beginViewRequest("accounts");
-  let accs, workbench = [], inbox = { items: [] };
+  let allAccs, workbench = [];
+  const scopePf = GLOBAL_MODE ? "" : PLATFORM;
   try {
-    [accs, workbench, inbox] = await Promise.all([
-      api("/api/accounts?platform=" + PLATFORM),
-      api("/api/accounts/workbench?platform=" + PLATFORM).catch(() => []),
-      api("/api/dm/inbox?platform=" + PLATFORM + "&limit=100").catch(() => ({ items: [] })),
+    [allAccs, workbench] = await Promise.all([
+      api("/api/accounts"),
+      api("/api/accounts/workbench" + (scopePf ? "?platform=" + scopePf : "")).catch(() => []),
     ]);
   }
   catch (e) {
@@ -553,7 +557,9 @@ async function refreshAccounts() {
   if (!isCurrent()) return;
   await waitForAccountPaint(isCurrent);
   if (!isCurrent()) return;
-  ACCOUNTS = accs;
+  ALL_ACCOUNTS = Array.isArray(allAccs) ? allAccs : [];
+  ACCOUNTS = ALL_ACCOUNTS.filter(a => a.platform === PLATFORM);
+  const accs = GLOBAL_MODE ? ALL_ACCOUNTS : ACCOUNTS;
   const accountWork = new Map((workbench || []).map(value => [Number(value.account_id), value]));
   $("stat-acc").textContent = accs.length;
   $("acc-table").querySelector("tbody").innerHTML = accs.map(a => {
@@ -657,7 +663,7 @@ async function refreshAccounts() {
         <button class="ghost sm" onclick="openAccountBrowser(${a.id})" title="用该账号登录态弹出真实浏览器窗口,手动收发私信 / 维护 / 抓接口(关窗即保存)">打开浏览器</button>
         <button class="ghost sm" onclick="setBrowserBackend(${a.id})" title="选择本地 Chrome/Patchright 或开源 Fingerprint Chromium 内核">环境</button>
         <button class="ghost sm" onclick="manageFingerprint(${a.id})" title="根据账号当前出口 IP 生成稳定指纹、时区、语言和地理位置">指纹</button>
-        ${environmentCheck && environmentCheck.enabled ? `<button class="ghost sm" onclick="checkBrowserEnvironment(${a.id})" title="在该账号独立 Profile 中打开 BrowserScan，查看实际 IP、时区、WebRTC 和指纹">环境检测</button>` : ""}
+        ${environmentCheck && environmentCheck.enabled ? `<button class="ghost sm" onclick="checkBrowserEnvironment(${a.id})" title="在该账号独立 Profile 中打开环境检测页，查看实际 IP、时区、WebRTC 和指纹">环境检测</button>` : ""}
         <button class="ghost sm" onclick="setProxy(${a.id})" title="设置/分配该账号专属代理(防多账号关联)">代理</button>
         ${a.has_proxy ? `<button class="ghost sm" onclick="testProxy(${a.id})" title="经该代理实连一次,验证可用">测代理</button>` : ""}
         <button class="ghost sm danger" onclick="delAccount(${a.id})" aria-label="删除账号">${ic("i-trash")}删除</button>
@@ -665,12 +671,6 @@ async function refreshAccounts() {
       </td>
     </tr>`;
   }).join("") || empty(3, "还没有账号", "i-user", "用上方按钮扫码登录,或粘贴 Cookie 添加一个账号");
-  if ($("dm-inbox-table")) $("dm-inbox-table").innerHTML = (inbox.items || []).map(row => `<tr>
-    <td><b>${esc(row.account_name || `账号 #${row.account_id}`)}</b><div class="mut">${esc(PF_NAME[row.platform] || row.platform)}</div></td>
-    <td><b>${esc(row.peer_nickname || row.peer_uid || "未命名会话")}</b>${row.group_chat ? '<div class="mut">群聊</div>' : ""}${row.unread_count ? `<span class="pill pending">${Number(row.unread_count)} 未读</span>` : ""}</td>
-    <td title="${esc(row.last_text || "")}">${esc((row.last_text || "暂无文本消息").slice(0, 120))}</td>
-    <td>${row.last_time ? fmtTime(row.last_time) : "—"}</td>
-    <td class="acttd"><button class="ghost sm" onclick="openAggregatedDm(${Number(row.account_id)},${jsArg(row.conv_id)})">${ic("i-send")}处理</button></td></tr>`).join("") || empty(5, "暂无私信会话", "i-send", "在账号管理中同步私信后，会话会聚合显示在这里");
   globalThis.CreatorHubWorkbench?.accountsUpdated?.();
   if ($("tb-acc")) $("tb-acc").textContent = accs.length;
   populateAccountSelect();
@@ -699,6 +699,7 @@ function populateTikTokAccounts() {
     else if (accounts.length) select.value = String(accounts[0].id);
     select._csSync?.();
   }
+  if (!TIKTOK_USERS.length) renderTikTokUsers();
 }
 function renderTikTokUsers() {
   const body = $("tk-user-results");

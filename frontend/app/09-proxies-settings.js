@@ -161,7 +161,8 @@ async function importProxies() {
   } catch (e) { toast("导入失败:" + e.message, "err"); }
 }
 async function assignAllProxies() {
-  const noProxy = ACCOUNTS.filter(a => !a.has_proxy).length;
+  const poolTargets = (ALL_ACCOUNTS && ALL_ACCOUNTS.length) ? ALL_ACCOUNTS : ACCOUNTS;
+  const noProxy = poolTargets.filter(a => !a.has_proxy).length;
   if (!noProxy) { toast("所有账号都已配置代理", "info"); return; }
   if (!await uiConfirm({ title: "批量分配代理", message: `给 ${noProxy} 个未配代理的账号从池里自动分配(均衡,占用最少优先)?` })) return;
   const btn = event.target.closest("button"); if (btn) { btn.disabled = true; btn.textContent = "分配中…"; }
@@ -223,7 +224,7 @@ function pollReloginTask(tid) {
   tick();
 }
 async function delAccount(id) {
-  const a = ACCOUNTS.find(x => x.id === id);
+  const a = findAnyAccount(id);
   const warn = a && a.monitor_count > 0 ? `\n关联的 ${a.monitor_count} 个作品监控也会暂停。` : "";
   if (!await uiConfirm({ title: "删除账号", message: "删除该账号将取消未执行任务、停用关联规则并清理独占登录环境；历史内容保留。执行中的操作需要先结束。" + warn, okText: "删除并停止关联任务", danger: true })) return;
   try {

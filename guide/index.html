@@ -23,9 +23,10 @@
       <a href="#accounts">02 · 登录第一个账号</a>
       <a href="#first-task">03 · 完成第一个任务</a>
       <p>按功能查阅</p>
+      <a href="#matrix">全平台矩阵与汇总预览</a>
       <a href="#monitor">作品监控</a><a href="#collection">关键词采集</a>
       <a href="#comments">评论与弹幕监控</a><a href="#download">链接下载</a>
-      <a href="#publish">发布与转发</a><a href="#my-content">本账号管理与私信</a>
+      <a href="#publish">发布、转发与矩阵群发</a><a href="#my-content">矩阵数据、私信与单号管理</a>
       <a href="#tiktok-tools">TikTok 用户互动</a>
       <a href="#autocomment">自动评论与审核</a><a href="#notifications">通知</a>
       <a href="#queue">任务队列与风控</a><a href="#settings">设置与账号环境</a>
@@ -95,7 +96,7 @@ cd creatorhub</code></pre><p>克隆方式便于以后更新；ZIP 方式不要�
       <p>首次运行会创建 <code>.venv</code>、安装依赖和 Chromium，并从示例生成 <code>config.yaml</code>。看到持续下载日志时请等待，不要反复启动。</p>
       <h3>第三步：打开本地面板</h3>
       <p>等待服务启动后，在浏览器打开 <a href="http://127.0.0.1:8000">http://127.0.0.1:8000</a>。这个地址指的是你自己的电脑，不是公共网站。</p>
-      <div class="success"><strong>完成标志：</strong>能看到工作概览，切换平台、打开“平台账号”页面。第一次列表为空是正常的。</div>
+      <div class="success"><strong>完成标志：</strong>能看到指挥概览，切换顶部平台或打开“账号矩阵”页面。第一次列表为空是正常的。</div>
       <h3>以后怎么启动、怎么停止？</h3>
       <p>下次仍在同一文件夹运行启动脚本。服务运行期间保持终端开启；停止时回到终端按 <kbd>Ctrl</kbd> + <kbd>C</kbd>。仅关闭网页并不会停止后台服务。</p>
       <details><summary>常用启动与开发命令</summary><pre><code>.\start.cmd install
@@ -118,11 +119,11 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
 
     <section id="accounts">
       <div class="eyebrow">02 / ACCOUNT</div><h2>登录第一个账号</h2>
-      <p class="path">入口：顶部选择平台 → 平台账号 → 添加账号</p>
-      <ol><li>先选择要使用的平台。不同平台的账号和监控数据分开显示。</li><li>打开“平台账号”，选择当前平台提供的扫码或创作者登录入口。新手先用扫码方式，抖音也支持 Cookie 登录。</li><li>在弹出的浏览器窗口按平台提示扫码、确认或完成验证。不要提前关闭登录窗口。</li><li>回到账号列表，检查昵称和状态；必要时刷新资料或检测状态。</li></ol>
+      <p class="path">入口：顶部选择平台（或全平台）→ 账号矩阵 → 添加账号</p>
+      <ol><li>可在顶部选择要使用的具体平台，或在“全平台 → 账号矩阵”顶部快捷选择目标平台。</li><li>打开“账号矩阵”，点击对应平台的扫码、创作者登录或 Token / Cookie 导入入口。新手建议优先使用扫码登录。</li><li>在弹出的浏览器窗口按平台提示扫码、确认或完成验证。不要提前关闭登录窗口。</li><li>回到账号矩阵，检查昵称、健康状态与代理归属；必要时刷新资料、划入跨平台矩阵分组或设置角色标识。</li></ol>
       <div class="success"><strong>完成标志：</strong>账号出现在当前平台列表，状态检测正常，并能在创建任务时被选中。</div>
       <div class="note"><strong>小红书与海外小红书均区分两种登录用途：</strong>主站扫码登录用来读取内容与管理本账号作品；需要发布时还要完成独立的“创作者登录”。“能查看笔记”不代表“已经能发布”。海外小红书（<code>rednote.com</code>）需配置非中国大陆代理出口，支持 <code>www.rednote.com</code> 主站扫码、<code>creator.rednote.com</code> 创作者登录与 <code>.rednote.com</code> Cookie 导入，与国内版 <code>xiaohongshu.com</code> 登录态严格隔离、不可混用。</div>
-      <div class="note"><strong>TikTok、Instagram 与 Twitter 使用独立入口：</strong>切换到对应海外平台后，在“平台账号”点击平台登录入口，按提示选择浏览器环境和可用海外代理完成登录；Instagram 支持粘贴含 <code>sessionid</code> 与 <code>csrftoken</code> 的完整 Cookie，Twitter 支持“Token / Cookie 登录”（可直接粘贴 40 位 <code>auth_token</code> 令牌、多字段导出文本、JSON 数组或完整 Cookie，自动换取 <code>ct0</code> / <code>twid</code> 并补齐账号资料）。无需另做创作者登录；后续读取、发布与互动均复用该账号的独立环境与会话。</div>
+      <div class="note"><strong>TikTok、Instagram 与 Twitter 使用独立入口：</strong>切换到对应海外平台或在“账号矩阵”快捷添加栏选中平台后，点击登录入口，按提示选择浏览器环境和可用海外代理完成登录；Instagram 支持粘贴含 <code>sessionid</code> 与 <code>csrftoken</code> 的完整 Cookie，Twitter 支持“Token / Cookie 登录”（可直接粘贴 40 位 <code>auth_token</code> 令牌、多字段导出文本、JSON 数组或完整 Cookie，自动换取 <code>ct0</code> / <code>twid</code> 并补齐账号资料）。无需另做创作者登录；后续读取、发布与互动均复用该账号的独立环境与会话。</div>
       <p>若暂时看不到账号，先检查顶部平台是否选对。登录失效时从账号列表重新登录，不要为了修复登录删除整个数据目录。</p>
       <figure><a href="images/accounts-list.png"><img src="images/accounts-list.png" alt="平台账号列表，展示账号搜索、登录状态和操作入口" width="1600" loading="lazy"></a><figcaption>先确认账号可用，再创建任务；代理池和浏览器内核属于进阶选项。</figcaption></figure>
     </section>
@@ -134,7 +135,35 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
       <ol><li>完成对应平台账号登录，复制一条作品的完整分享文案或链接。</li><li>打开“链接下载”，粘贴分享内容；如表单提供账号、画质或保存选项，选择刚登录的账号，其余先保留默认值。</li><li>提交下载，等待页面返回结果，不要连续点击。</li><li>查看下载历史和保存路径，到电脑上的对应目录确认文件。</li></ol>
       <div class="success"><strong>完成标志：</strong>下载历史显示完成，实际文件可以打开。你已经验证了“本地服务 → 账号 → 任务 → 文件”这条流程。</div>
       <p>默认下载内容位于 <code>data/media/</code> 下；若修改过下载目录，请以界面或配置中的实际路径为准。失败时先看<a href="#faq">故障排查</a>，不需要重新安装整个项目。</p>
-      <p>下一步：想自动发现更新，阅读<a href="#monitor">作品监控</a>；想一次性按词收集，阅读<a href="#collection">关键词采集</a>。</p>
+      <p>下一步：管理多平台多账号或统一审阅素材，阅读<a href="#matrix">全平台矩阵与汇总预览</a>；想自动发现更新，阅读<a href="#monitor">作品监控</a>；想一次性按词收集，阅读<a href="#collection">关键词采集</a>。</p>
+    </section>
+
+    <section id="matrix">
+      <h2>全平台矩阵与汇总预览：高效统筹多平台多账号</h2>
+      <p class="path">入口：顶部「全平台」全局视角 → 指挥概览 / 汇总预览库 / 账号矩阵 / 矩阵数据与私信 / 矩阵群发</p>
+      <p>当管理多个平台或多个账号时，点击顶部切换栏最左侧的<strong>「全平台」</strong>即可进入跨九大平台的全局矩阵视角（左侧菜单会自动收敛为全局汇总、矩阵运维与系统级模块）；点击任意具体平台（如抖音、小红书、Twitter）则聚焦该平台的采集、监控、单号管理与互动工具。</p>
+      <h3>1. 指挥概览</h3>
+      <ul>
+        <li><strong>健康与待办快筛：</strong>顶部自动汇总登录失效、代理异常或出口漂移、风控冷却、未读私信、失败/待审任务及 0 播异常作品，点击任意告警胶囊即可直达对应筛选视图处理。</li>
+        <li><strong>九平台态势矩阵卡：</strong>一屏查看九个平台的在线账号数、粉丝净增、启用监控数、今日入库作品与评论，支持勾选「折叠空平台」精简顶部切换栏，点击卡片即可切入对应平台。</li>
+        <li><strong>近期捕获与发布排期：</strong>同屏预览最新高赞入库内容、今日待发/发布中队列与近 7 日采集发布趋势。</li>
+      </ul>
+      <h3>2. 汇总预览库（四源合一分栏快览）</h3>
+      <ul>
+        <li><strong>统一内容源：</strong>将「作品监控」「批量采集」「自有账号作品」「分享链接下载」四类记录汇总到同一视觉画廊（支持切换紧凑列表），可按平台、内容源、视频/图集、点赞门槛、仅看本地已就绪与关键词组合筛选。</li>
+        <li><strong>右侧固定快览器：</strong>点击任一作品即可在右侧分栏直接播放本地视频、左右翻阅多图图集、查阅完整文案与本地已抓取的高赞评论，无需频繁弹窗；支持键盘 <kbd>J</kbd> / <kbd>K</kbd> 上下快速切换审阅，以及一键打开所在文件夹或带入矩阵群发。</li>
+      </ul>
+      <h3>3. 账号矩阵与批量运维</h3>
+      <ul>
+        <li><strong>跨平台人设分组与角色：</strong>支持新建跨平台矩阵分组（如将同一 IP 下的抖音、小红书、B 站、Instagram 账号归入同一人设组，配置色标与期望代理地区），并为账号设置备注别名、常用置顶与职能角色（<strong>创作主号</strong> / <strong>采集小号</strong> / <strong>混合通用</strong>）。</li>
+        <li><strong>三视图切换：</strong>提供「矩阵分组卡片」（按人设组聚合多平台账号）、「密集运维总表」（适合数十上百账号快速检索排序）与「浏览器运行墙」（集中查看正在打开的独立窗口并支持一键全关）。</li>
+        <li><strong>批量操作与连续扫码补登：</strong>勾选多个账号后可批量划入分组、设置角色、增改标签、从代理池防重分配可用代理、切换浏览器内核或顺序检测登录态；当存在多个失效账号时，点击<strong>「连续补登失效号」</strong>即可逐个唤起对应扫码流程高效恢复。</li>
+      </ul>
+      <h3>4. 矩阵数据对比、全平台聚合私信与多号错峰群发</h3>
+      <ul>
+        <li><strong>矩阵数据与私信：</strong>默认展示全矩阵账号粉丝/播放/获赞排行、跨账号已发作品墙（支持一键筛选 0 播预警或异常状态作品）以及<strong>全平台聚合私信收件箱</strong>；切换到具体平台后，点击「单账号精细管理」即可操作单账号作品同步、关注/粉丝列表与会话回复。</li>
+        <li><strong>矩阵多号错峰群发：</strong>在全平台「矩阵群发」或单平台「内容发布 → 矩阵多号群发」中，上传一次视频或图文素材与主文案，即可按矩阵组或「创作主号」一键勾选多平台目标账号（误选采集小号自动提示），设置<strong>错峰间隔分钟数</strong>（各账号按序顺延定时入队），并在右侧按平台实时核对标题字数上限、单独覆盖特定平台标题与可见范围。</li>
+      </ul>
     </section>
 
     <section id="monitor">
@@ -199,18 +228,18 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
     </section>
 
     <section id="publish">
-      <h2>发布与转发</h2><p class="path">入口：发布 → 撰写内容；结果在“发布记录”查看</p>
+      <h2>发布、转发与矩阵群发</h2><p class="path">入口：单平台 → 内容发布（撰写内容 / 矩阵多号群发 / 发布记录）；全平台 → 矩阵群发</p>
       <p><strong>适用：</strong>抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram、Twitter。各平台复用对应账号的独立登录会话或浏览器；海外小红书支持最多 18 张图片或视频发布（标题上限 20 权重，图文正文上限 900 UTF-16 编码单元，默认走 <code>creator.rednote.com</code> 页面流并可在高级设置切换 <code>api</code> 实验协议通道），哔哩哔哩支持创作中心分区视频投稿（自动提取并同步双比例封面、填写必填创作声明）与图文动态发布，Instagram 支持单图、最多 10 项混合轮播图集、Reels、动态视频与 Story 快拍发布，Twitter 支持纯文本推文、最多 4 张图片或单视频 / GIF 发布（含 280 / 4000 加权字数控制、回复权限与首评串推），TikTok 当前只支持单视频发布。</p>
       <ol><li>切换到目标平台并选择发布账号。先确认创作者登录有效，特别是小红书与海外小红书。</li><li>添加自己拥有发布权的素材，填写标题、正文与话题；按表单要求检查素材类型。</li><li>在预览区域核对素材、账号和文案。TikTok 还可设置可见范围、评论、Duet 与 Stitch；平台定时由本地任务队列触发。</li><li>确认无误后提交一次，在“发布记录”和“任务队列”观察进度。</li><li>到平台侧核对作品。任务提交成功不代表已经通过平台审核或公开可见。</li></ol>
       <div class="note"><strong>遇到“结果待确认”：</strong>先去平台检查是否已经发出。不要直接重复提交，以免重复发布。连接中断或缺少成功证据时，本地状态可能无法立即确认平台结果。</div>
-      <h3>转发已下载内容</h3><p>项目支持将已下载的作品在支持的平台间一键带入发布页转发（包含抖音、小红书、海外小红书、视频号、哔哩哔哩、Instagram 与 Twitter 等已支持媒体的目标平台）。先完成下载，再在对应作品操作中进入转发，核对目标平台、账号和素材，修改文案后提交。</p>
+      <h3>转发已下载内容与跨平台多号群发</h3><p>项目支持将已下载的作品（从作品记录、下载历史或「汇总预览库」右侧快览栏）一键带入发布页或矩阵群发工作台（覆盖抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram 与 Twitter 等目标平台所支持的媒体形态）。需要一套素材同步分发到多个平台或多个账号时，可使用「矩阵多号群发」按矩阵组勾选目标账号、设置错峰间隔分钟数并按平台单独微调标题。</p>
       <p>定时及排队任务请保持本地服务运行，执行情况以记录和平台结果为准，不要把定时按钮当成云端托管承诺。</p>
       <figure><a href="images/publish-workflow.png"><img src="images/publish-workflow.png" alt="内容发布编辑器与素材、文案预览" width="1600" loading="lazy"></a><figcaption>提交前确认三件事：发到哪里、用哪个账号、发什么内容。</figcaption></figure>
     </section>
 
     <section id="my-content">
-      <h2>本账号管理与私信</h2><p class="path">入口：本账号管理（旧版“我的内容”）→ 选择账号 → 选择当前平台提供的标签</p>
-      <ol><li>选择自己的账号，再同步对应的作品、关注或粉丝数据。</li><li>等待同步结果，按页面筛选查看。抖音、小红书、哔哩哔哩、Instagram 和 Twitter 提供私信能力，快手与视频号不要按相同能力预期使用。</li><li>需要处理私信时，先同步并查看会话，确认对象与上下文，再撰写或审核回复。</li></ol>
+      <h2>矩阵数据、私信与单账号管理</h2><p class="path">入口：矩阵数据与私信 → 全矩阵账号对比 / 全平台聚合私信；切换到具体平台 → 单账号精细管理</p>
+      <ol><li>在全平台或任意平台打开「矩阵数据与私信」，可跨账号横向对比粉丝净增、播放与获赞，排查 0 播与异常作品，并在「全平台聚合私信」统一查看多账号未读会话。</li><li>需要同步或操作单个账号的明细时，顶部选中对应平台并切到「单账号精细管理」，选择账号后同步作品、关注、粉丝或单号私信数据。抖音、小红书、哔哩哔哩、Instagram 和 Twitter 提供私信能力，快手与视频号不要按相同能力预期使用。</li><li>需要处理私信时，先同步并查看会话，确认对象与上下文，再撰写或审核回复。</li></ol>
       <h3>TikTok 本账号作品与数据</h3>
       <p>选择 TikTok 账号，点击“同步作品”，通过该账号的公开主页读取已发布作品与可见统计。计数只统计当前所选账号；没有作品时保持空列表即可。当前不提供关注列表、粉丝列表或私信会话同步，需要主动联系其他用户时使用<a href="#tiktok-tools">用户互动</a>，不要把该入口当作私信收件箱。</p>
       <h3>抖音本账号通道与私信</h3>
@@ -266,7 +295,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
     </section>
 
     <section id="settings">
-      <h2>设置与账号环境</h2><p class="path">入口：设置；账号环境在“平台账号 → 浏览器内核 / 代理池”</p>
+      <h2>设置与账号环境</h2><p class="path">入口：系统设置；账号环境在“账号矩阵 → 浏览器内核 / 代理池”</p>
       <dl><dt>外观与体验</dt><dd>切换浅色、深色等显示选项；平台配色与主题分别控制。</dd><dt>下载设置</dt><dd>调整保存目录与默认下载选项。改动后用一条内容确认实际落盘位置。</dd><dt>AI 文案</dt><dd>按页面字段配置自己的服务地址、模型和密钥，在实际生成文案时核对效果。服务可能产生第三方费用，发送前检查生成内容；不用 AI 时可跳过。</dd><dt>采集与运行</dt><dd>调整浏览器、调度等运行参数。新手先保留默认，修改前记录原值，一次只调整一项。</dd><dt>视频号微信通道</dt><dd>连接本机已登录的桌面微信，开启视频号搜索、他人主页、评论与视频下载。只用本账号功能时可以不配置，步骤见<a href="#channels-wechat">视频号微信通道</a>。</dd></dl>
       <h3 id="browser-environment">账号隔离与代理</h3><p>每个账号有独立浏览器 Profile，Cookie、缓存和本地存储不共享，和日常个人 Chrome 配置分开。Profile 有跨进程占用保护，不要让其他 Chrome 进程同时打开项目账号的 Profile，也不要随意删除它。</p>
       <p>代理是可选项，不是安装前置条件。确有需要时，在“代理池”填写自己的代理并测试，再为账号关联；保持稳定出口。已配置的代理连接失败时会报错，不会静默改用直连。</p>
@@ -276,15 +305,15 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code></pre><p>激�
       <ul><li><code>xhs_browser_mode: auto</code> 优先启动系统稳定版 Chrome/CDP，并长期复用账号专用 Profile；<code>cdp</code> 为严格模式，缺少 Chrome 或 Profile 冲突时直接报错；<code>patchright</code> 显式使用 Patchright Chromium。</li><li>浏览器内核与读取方式是不同设置。<code>xhs_read_mode: api</code> 是当前默认读取方式，源码运行需准备 Node.js 依赖；<code>browser</code> 复用账号浏览器页面。</li><li>页面模式加载图片、字体和媒体，复用浏览器进程与 Profile；可见操作串行执行，搜索、滚动、输入和详情读取采用有界间隔。单轮上限仍按任务配置执行。</li><li>发布和评论默认使用 <code>browser</code>。提交只点击一次；连接中断或缺少成功证据时标记“结果待确认”，先去平台核对。</li><li>设备验证出现时保留当前可见窗口，自动任务暂停，不自动刷新、跳转或重复尝试；按平台提示完成验证后再检查任务。</li></ul>
       </details>
       <details><summary>进阶：非小红书账号使用 Fingerprint Chromium</summary>
-      <p>可选用开源 <a href="https://github.com/adryfish/fingerprint-chromium">fingerprint-chromium</a> 作为 Chromium 运行时；项目不捆绑其二进制。账号、Profile、代理和调度仍由 CreatorHub 管理，小红书不使用该后端。</p>
-      <ol><li>从上游 Release 下载适合当前系统的内核并校验文件，先备份账号 Profile。</li><li>进入“平台账号 → 浏览器内核”扫描安装目录，或添加本机 <code>chrome.exe</code> / <code>chrome</code> 路径。</li><li>在账号“环境”中选择具体版本。新账号登录前可配置语言、时区、位置、窗口、操作系统、浏览器品牌、CPU、WebGL、Canvas 和 WebRTC 等参数；登录后由账号“指纹”入口维护。</li><li>切换内核、代理或指纹配置后，重新检查登录态与出口。首次进入新环境会打开 BrowserScan 检测页，账号“环境检测”也可再次打开。</li></ol>
+      <p>可选用支持命令行特征种子的开源 Fingerprint Chromium 内核作为运行时；项目不捆绑其二进制文件。账号、Profile、代理和调度仍由 CreatorHub 管理，小红书不使用该后端。</p>
+      <ol><li>准备对应系统架构的内核程序并校验文件完整性，切换前先备份账号 Profile。</li><li>进入“账号矩阵 → 浏览器内核”扫描安装目录，或手动添加本机 <code>chrome.exe</code> / <code>chrome</code> 路径。</li><li>在账号“环境”中选择具体版本（也可在账号矩阵勾选多账号批量切换内核）。新账号登录前可配置语言、时区、位置、窗口、操作系统、浏览器品牌、CPU、WebGL、Canvas 和 WebRTC 等参数；登录后由账号“指纹”入口维护。</li><li>切换内核、代理或指纹配置后，重新检查登录态与出口。首次进入新环境会附带打开外部环境检测页，账号“环境检测”也可再次打开核对。</li></ol>
       <pre><code>engine:
   browser_backend: local
   fingerprint_chromium_path: D:/path/to/fingerprint-chromium/chrome.exe
   fingerprint_chromium_root: D:/path/to/browser-kernels
   fingerprint_chromium_allow_headless: false
   fingerprint_chromium_platform: auto</code></pre>
-      <p>路径按本机安装位置填写；<code>browser_backend: fingerprint_chromium</code> 可作为未单独指定环境的非小红书账号默认值。内核使用账号稳定种子管理浏览器特征，不叠加旧版 JavaScript 指纹脚本，默认使用有头窗口。“已提示”只表示检测页已打开，不代表平台验证通过；BrowserScan 会看到该环境的出口 IP 和浏览器特征。</p>
+      <p>路径按本机安装位置填写；<code>browser_backend: fingerprint_chromium</code> 可作为未单独指定环境的非小红书账号默认值。内核使用账号稳定种子管理浏览器特征，不叠加旧版 JavaScript 指纹脚本，默认使用有头窗口。“已提示”只表示环境检测页已打开，不代表平台验证通过；外部检测站点会读取该环境的出口 IP 和浏览器特征。</p>
       </details>
       <h3 id="channels-wechat">视频号微信通道</h3>
       <p class="path">入口：设置 → 视频号微信通道；视频号采集表单中的“配置本地微信通道”也会跳到这里</p>

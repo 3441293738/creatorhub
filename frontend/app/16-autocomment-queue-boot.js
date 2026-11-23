@@ -517,7 +517,7 @@ async function refreshTaskQueueBadge() {
   const isCurrent = beginViewRequest("task-queue-badge");
   TASK_QUEUE_BADGE_LOADING = true;
   try {
-    const params = new URLSearchParams({ platform: PLATFORM, state: "active", page_size: "1" });
+    const params = new URLSearchParams({ platform: GLOBAL_MODE ? "all" : PLATFORM, state: "active", page_size: "1" });
     const data = await api("/api/task-queue?" + params.toString());
     if (!isCurrent() || CURRENT_TAB === "queue") return;
     globalThis.CreatorHubWorkbench?.queueSummary?.(data.summary || {});
@@ -619,8 +619,13 @@ $("collection-job-table").innerHTML = collectionTaskSkeleton(3);
 $("collection-content-list").innerHTML = collectionResultSkeleton(4);
 $("queue-table").innerHTML = skeleton(8);
 
+// restore last-selected platform & global mode BEFORE restoring tab so global-mode tab guards apply cleanly
+PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "rednote", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
+GLOBAL_MODE = (() => { try { const g = localStorage.getItem("dym-global"); return g === null ? true : g === "1"; } catch (e) { return true; } })();
+if ($("queue-platform") && GLOBAL_MODE) $("queue-platform").value = "all";
+
 // restore last-selected section (default: 总览);旧版四个独立页已并入「账号管理」
-const VALID_TABS = ["overview", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "tiktok-tools", "publish", "autocomment", "share-download", "notifications", "settings"];
+const VALID_TABS = ["overview", "media-hub", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "tiktok-tools", "publish", "autocomment", "share-download", "notifications", "settings"];
 const LEGACY_HUB_TABS = ["myworks", "following", "fans", "dm"];
 switchTab((() => {
   try {
@@ -629,16 +634,18 @@ switchTab((() => {
       window.CreatorHubOpenAssistant = true;
       return "overview";
     }
-    if (VALID_TABS.includes(hashTab)) return hashTab;
-    const t = localStorage.getItem("dym-tab");
-    if (LEGACY_HUB_TABS.includes(t)) { HUB_TAB = t; return "hub"; }
-    return VALID_TABS.includes(t) ? t : "overview";
+    const candidate = VALID_TABS.includes(hashTab)
+      ? hashTab
+      : (() => {
+          const t = localStorage.getItem("dym-tab");
+          if (LEGACY_HUB_TABS.includes(t)) { HUB_TAB = t; return "hub"; }
+          return VALID_TABS.includes(t) ? t : "overview";
+        })();
+    if (GLOBAL_MODE && SINGLE_PF_ONLY_TABS.includes(candidate)) return "overview";
+    return candidate;
   } catch (e) { return "overview"; }
 })());
 switchHubTab(HUB_TAB);   // 恢复上次停留的子标签(我的作品/关注/粉丝/私信)
-
-// restore last-selected platform (default: 抖音)
-PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "rednote", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
 applyPlatformUI();
 updateTaskQueuePlatformLabel();
 
@@ -697,21 +704,57 @@ window.addEventListener("scroll", () => {
 }, { passive: true });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loop(); });
 
+function launchPlatformLogin(pf, mode = "main") {
+  if (pf && pf !== "all" && PLATFORM !== pf) {
+    PLATFORM = pf;
+    ACCOUNTS = ALL_ACCOUNTS.filter(a => a.platform === PLATFORM);
+    applyPlatformUI();
+  }
+  if (mode === "cookie") {
+    toggleCookie();
+    requestAnimationFrame(() => $("ck-val")?.focus());
+    return;
+  }
+  const creator = mode === "creator";
+  if (pf === "xhs") return creator ? startXhsCreatorLogin() : startXhsLogin();
+  if (pf === "rednote") return creator ? startRednoteCreatorLogin() : startRednoteLogin();
+  if (pf === "kuaishou") return creator ? startKsCreatorLogin() : startKsLogin();
+  if (pf === "shipinhao") return startChannelsLogin();
+  if (pf === "tiktok") return startTikTokLogin();
+  if (pf === "bilibili") return startBilibiliLogin();
+  if (pf === "instagram") return startInstagramLogin();
+  if (pf === "twitter") return startTwitterLogin();
+  return creator ? startCreatorLogin() : startLogin();
+}
+
 // Narrow bridge for React islands; business mutations remain in their original handlers.
 window.CreatorHubBridge = {
   selectPlatform: switchPlatform,
-  getContext: () => ({ tab: CURRENT_TAB, platform: PLATFORM }),
+  getContext: () => ({ tab: CURRENT_TAB, platform: PLATFORM, scope: GLOBAL_MODE ? "all" : PLATFORM, globalMode: GLOBAL_MODE }),
   getAgentContext() {
     const job = CURRENT_TAB === "collections" && COLLECTION_JOB_ID
       ? COLLECTION_JOBS.find(item => item.id === COLLECTION_JOB_ID && item.platform === PLATFORM) : null;
-    return { tab: CURRENT_TAB, platform: PLATFORM, title: (PAGE_META[CURRENT_TAB] || PAGE_META.overview).title,
+    return { tab: CURRENT_TAB, platform: GLOBAL_MODE ? "all" : PLATFORM, title: (PAGE_META[CURRENT_TAB] || PAGE_META.overview).title,
       task: job ? { task_type: "collections", id: job.id, platform: job.platform, status: job.status } : null };
   },
   navigate: switchTab,
   openAccount: openAccountHub,
-  openQueue(state) {
-    // The overview summary describes this platform, not the user's previous scope.
-    if ($("queue-platform")) { $("queue-platform").value = "current"; $("queue-platform")._csSync?.(); }
+  openAggregatedDm,
+  launchPlatformLogin,
+  accountActions: {
+    openBrowser: id => openAccountBrowser(Number(id)),
+    relogin: (id, scope = "auto") => relogin(Number(id), scope),
+    refreshProfile: id => refreshProfile(Number(id)),
+    setProxy: id => setProxy(Number(id)),
+    testProxy: id => testProxy(Number(id)),
+    setBrowserBackend: id => setBrowserBackend(Number(id)),
+    manageFingerprint: id => manageFingerprint(Number(id)),
+    checkEnvironment: id => checkBrowserEnvironment(Number(id)),
+    delAccount: id => delAccount(Number(id)),
+    refreshAll: () => { refreshAccounts(); refreshProxies(); },
+  },
+  openQueue(state, allPlatforms = GLOBAL_MODE) {
+    if ($("queue-platform")) { $("queue-platform").value = allPlatforms ? "all" : "current"; $("queue-platform")._csSync?.(); }
     $("queue-state").value = state; $("queue-state")._csSync?.();
     $("queue-query").value = ""; $("queue-type").value = ""; $("queue-type")._csSync?.();
     TASK_QUEUE_PAGE = 1;
@@ -719,14 +762,15 @@ window.CreatorHubBridge = {
   },
   async retry() {
     const refreshers = {
-      overview: [refreshOverviewSummary, refreshOverviewChart, refreshTaskQueueBadge],
-      accounts: [refreshAccounts, refreshBrowserRuntimes, refreshProxies],
+      overview: [refreshOverviewSummary, refreshOverviewChart, refreshTaskQueueBadge, () => window.dispatchEvent(new Event("creatorhub:matrix:refresh"))],
+      "media-hub": [() => window.dispatchEvent(new Event("creatorhub:matrix:refresh"))],
+      accounts: [refreshAccounts, refreshBrowserRuntimes, refreshProxies, () => window.dispatchEvent(new Event("creatorhub:matrix:refresh"))],
       monitors: [refreshMonitors, refreshContents], comments: [refreshWatches, refreshComments],
       danmaku: [refreshDanmakuWatches, refreshDanmaku], collections: [refreshCollections],
-      queue: [refreshTaskQueue], publish: [refreshPublish],
+      queue: [refreshTaskQueue], publish: [refreshPublish, () => window.dispatchEvent(new Event("creatorhub:matrix:refresh"))],
       autocomment: [refreshCommentRules, refreshCommentTasks],
       notifications: [refreshChannels, refreshWebhooks], settings: [loadSettings],
-      "risk-control": [refreshRiskCenter], hub: [refreshHubSummary, refreshHubPanel],
+      "risk-control": [refreshRiskCenter], hub: [refreshHubSummary, refreshHubPanel, () => window.dispatchEvent(new Event("creatorhub:matrix:refresh"))],
       "share-download": [refreshShareHistory],
     };
     await Promise.allSettled((refreshers[CURRENT_TAB] || []).map(fn => Promise.resolve().then(() => fn())));

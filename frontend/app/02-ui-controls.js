@@ -20,8 +20,8 @@ function focusAdjacentControl(origin, backwards = false) {
   if (next) requestAnimationFrame(() => next.focus({ preventScroll: true }));
 }
 function enhanceSelect(sel) {
-  // React owns the assistant's native controls; reparenting them breaks updates.
-  if (sel.dataset.cs || sel.closest(".agent-workspace")) return;
+  // React owns the assistant and matrix islands' native controls; reparenting them breaks updates.
+  if (sel.dataset.cs || sel.closest(".agent-workspace,.wb-react-island")) return;
   sel.dataset.cs = "1";
   const wrap = document.createElement("div");
   wrap.className = "cs" + (sel.className ? " " + sel.className : "");
@@ -241,7 +241,7 @@ function _dtFmt(d) { return `${d.getFullYear()}-${_pad2(d.getMonth() + 1)}-${_pa
 function _dtDisp(d) { return `${d.getFullYear()}-${_pad2(d.getMonth() + 1)}-${_pad2(d.getDate())} ${_pad2(d.getHours())}:${_pad2(d.getMinutes())}`; }
 function _dtParse(v) { const m = (v || "").match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/); return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) : null; }
 function enhanceDateTime(inp) {
-  if (inp.dataset.dt) return; inp.dataset.dt = "1";
+  if (inp.dataset.dt || inp.closest(".agent-workspace,.wb-react-island")) return; inp.dataset.dt = "1";
   const wrap = document.createElement("div");
   wrap.className = "dt" + (inp.className ? " " + inp.className : "");
   const st = inp.getAttribute("style"); if (st) wrap.setAttribute("style", st);

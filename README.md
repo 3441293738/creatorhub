@@ -13,9 +13,17 @@
   </a>
 </p>
 
-统一管理账号、采集与监控内容、下载素材和处理发布及互动任务。账号登录态、数据库与媒体文件保存在本地，各平台能力以[使用指南](https://3441293738.github.io/creatorhub/guide/#welcome)为准。
+统一管理多平台账号矩阵、汇总预览全站内容、采集与监控动态、下载素材并执行跨平台发布与互动任务。账号登录态、数据库与媒体文件保存在本地，各平台能力以[使用指南](https://3441293738.github.io/creatorhub/guide/#welcome)为准。
 
 > 在线预览使用脱敏示例数据，仅展示界面与交互；真实登录、采集、下载和发布需要在本地运行。
+
+## 核心矩阵与汇总能力
+
+- **全平台指挥概览**：支持「全平台」全局视角与单平台独立视角一键切换，集中呈现跨平台粉丝规模、异常待办快筛（登录失效、代理异常、风控冷却、未读私信、异常作品）、九平台健康态势卡、近期捕获高赞作品与发布排期。
+- **四源合一汇总预览库**：打通作品监控、关键词采集、自有账号作品与分享链接下载四类内容源，提供可视化画廊与右侧分栏实时快览（直接播放本地视频、翻阅多图图集、查看高赞评论，支持 `J` / `K` 快捷键切换与一键带入群发）。
+- **跨平台账号矩阵运维**：支持按人设或业务创建跨平台矩阵分组、标记账号角色（创作主号 / 采集小号 / 混合）与置顶别名；提供分组矩阵、密集运维总表、活跃浏览器运行墙三种视图，支持批量分配专属代理、切换浏览器内核、顺序探活及失效账号连续扫码补登向导。
+- **矩阵数据对比与聚合私信**：跨账号横向对比粉丝增减、播放与获赞表现，集中巡检 0 播与状态异常作品，并在同一收件箱聚合多平台未读私信会话；切换具体平台后可进入单账号精细管理。
+- **多账号错峰矩阵群发**：上传一次视频或图文素材与主文案，按矩阵组一键勾选多平台目标账号，自动校验各平台标题字数上限、支持分平台单独覆盖标题与可见范围，并按设定间隔自动错峰入队发布。
 
 ## 平台能力
 
@@ -72,7 +80,7 @@ chmod +x start.sh
 详细功能、平台差异、操作步骤和配置统一维护在 **[使用指南](https://3441293738.github.io/creatorhub/guide/)**：
 
 - 按平台上手：[抖音](https://3441293738.github.io/creatorhub/guide/douyin/) · [小红书](https://3441293738.github.io/creatorhub/guide/xhs/) · [海外小红书](https://3441293738.github.io/creatorhub/guide/rednote/) · [快手](https://3441293738.github.io/creatorhub/guide/kuaishou/) · [视频号](https://3441293738.github.io/creatorhub/guide/shipinhao/) · [TikTok](https://3441293738.github.io/creatorhub/guide/tiktok/) · [哔哩哔哩](https://3441293738.github.io/creatorhub/guide/bilibili/) · [Instagram](https://3441293738.github.io/creatorhub/guide/instagram/) · [Twitter](https://3441293738.github.io/creatorhub/guide/twitter/)
-- 日常使用：[功能手册](https://3441293738.github.io/creatorhub/guide/#monitor) · [配置与账号环境](https://3441293738.github.io/creatorhub/guide/#settings) · [更新与备份](https://3441293738.github.io/creatorhub/guide/#backup)
+- 日常使用：[全平台矩阵与汇总预览](https://3441293738.github.io/creatorhub/guide/#matrix) · [功能手册](https://3441293738.github.io/creatorhub/guide/#monitor) · [配置与账号环境](https://3441293738.github.io/creatorhub/guide/#settings) · [更新与备份](https://3441293738.github.io/creatorhub/guide/#backup)
 - 开发参考：[配置示例](config.example.yaml) · [更新日志](CHANGELOG.md) · [文档维护](guide/README.md)
 
 ## 技术栈

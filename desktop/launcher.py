@@ -273,12 +273,12 @@ def verify_shared_runtimes():
                    check=True, timeout=15, **child_options())
     from app.platforms.xhs import creator_sign
     try:
-        assert creator_sign.available(), "Bundled Node signing runtime failed its offline self-test"
+        assert creator_sign.available(), "Bundled Node signing runtime check failed"
         assert creator_sign._ctx("xhs_rap.js").eval("1 + 1") == 2
         assert creator_sign._ctx("xhs_rap.js").eval("'中文运行环境'") == "中文运行环境"
     finally:
         creator_sign.close_signers()
-    with tempfile.TemporaryDirectory(prefix="creatorhub-media-smoke-") as directory:
+    with tempfile.TemporaryDirectory(prefix="creatorhub-media-check-") as directory:
         path = Path(directory) / "sample.mp4"
         subprocess.run([find_ffmpeg(), "-nostdin", "-y", "-f", "lavfi", "-i",
                         "color=c=blue:s=160x90:r=25:d=1", "-c:v", "libx264", str(path)],

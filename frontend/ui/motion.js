@@ -88,12 +88,13 @@ export function selectionMarker(container, selector, variant = "segment") {
   const observer = new MutationObserver(() => {
     cancelAnimationFrame(frame); frame = requestAnimationFrame(() => update());
   });
-  observer.observe(container, { subtree: true, attributes: true, attributeFilter: ["class", "aria-pressed", "aria-selected", "data-state"] });
+  observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "aria-pressed", "aria-selected", "data-state"] });
   const resize = new ResizeObserver(() => update(false)); resize.observe(container);
   const layout = () => update(false);
   window.addEventListener("creatorhub:appearance", layout);
+  window.addEventListener("creatorhub:layout", layout);
   update(false);
-  return () => { observer.disconnect(); resize.disconnect(); cancelAnimationFrame(frame); window.removeEventListener("creatorhub:appearance", layout); byElement.get(marker)?.cancel(); marker.remove(); delete container.dataset.marker; };
+  return () => { observer.disconnect(); resize.disconnect(); cancelAnimationFrame(frame); window.removeEventListener("creatorhub:appearance", layout); window.removeEventListener("creatorhub:layout", layout); byElement.get(marker)?.cancel(); marker.remove(); delete container.dataset.marker; };
 }
 
 export function installMotion() {

@@ -23,6 +23,10 @@
     <div class="card-head">
       <span class="card-ic"><svg><use href="#i-film"/></svg></span>
       <h2 id="content-title">作品记录</h2>
+      <div class="right wb-inline-toggle" role="group" aria-label="作品展示模式">
+        <button type="button" class="ghost sm" id="content-view-cards" onclick="setContentViewMode('cards')"><svg><use href="#i-image"/></svg>封面画廊</button>
+        <button type="button" class="ghost sm" id="content-view-table" onclick="setContentViewMode('table')"><svg><use href="#i-list"/></svg>紧凑表格</button>
+      </div>
     </div>
     <div class="content-scope">
       <div class="content-scope-copy"><span class="content-origin-label">当前查看范围</span>
@@ -449,12 +453,13 @@
     </div>
   </section>
 
-  <!-- ───────── 账号管理(独立面板:本账号的作品/关注/粉丝/私信,数据按所选账号隔离) ───────── -->
+  <!-- ───────── 账号管理(矩阵跨号对比大盘 + 聚合私信 + 单账号明细) ───────── -->
   <section data-panel="hub">
-    <div class="card">
+    <div id="wb-hub-matrix-root" class="wb-react-island"></div>
+    <div class="card" id="hub-single-account-card">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-user"/></svg></span>
-        <h2>本账号管理 <span class="sub">本账号的作品、数据与已支持的关系功能</span></h2>
+        <h2>单账号精细管理 <span class="sub">所选账号的作品、关注、粉丝、私信与趋势</span></h2>
         <div class="right" style="display:flex;gap:8px;align-items:center">
           <select id="hub-acc" onchange="onHubAcc()" style="width:auto;min-width:190px" aria-label="选择账号"></select>
         </div>

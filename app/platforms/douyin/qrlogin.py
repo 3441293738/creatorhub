@@ -51,7 +51,7 @@ class QRLoginSession:
     def __init__(self, user_agent: str):
         self.ua = user_agent
         self.verify_fp = gen_verify_fp()
-        # curl_cffi 持久会话:复刻 Chrome TLS 指纹,沿用 cookie jar 收集登录态
+        # curl_cffi 持久会话:对齐浏览器 TLS 握手指纹,沿用 cookie jar 收集登录态
         self.client = AsyncSession(
             timeout=20,
             impersonate=impersonate_for_ua(user_agent),

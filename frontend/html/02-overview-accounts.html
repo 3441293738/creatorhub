@@ -52,13 +52,18 @@
   </div>
   </section>
 
+  <section data-panel="media-hub">
+    <div id="wb-media-hub-root" class="wb-react-island"></div>
+  </section>
+
   <section data-panel="accounts">
     <!-- 登录 / 账号 -->
     <div class="card" data-section="accounts">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-user"/></svg></span>
-        <h2>账号 <span class="sub">登录 / 管理</span></h2>
+        <h2>账号矩阵 <span class="sub">多平台分组 / 批量运维 / 登录管理</span></h2>
       </div>
+      <div id="wb-account-matrix-root" class="wb-react-island"></div>
       <div class="row" style="margin-bottom:14px;flex-wrap:wrap">
         <button class="dy-only" onclick="startLogin()"><svg><use href="#i-qr"/></svg>扫码登录</button>
         <button class="ghost dy-only" onclick="startCreatorLogin()"><svg><use href="#i-login"/></svg>创作者登录</button>
@@ -98,16 +103,6 @@
       <div class="table-wrap mini-table"><table id="acc-table" aria-label="平台账号列表"><thead><tr><th>账号与环境</th><th>状态与负载</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table></div>
     </div>
 
-    <!-- 暂时隐藏聚合私信入口与内容，保留功能；移除 hidden 即可恢复。 -->
-    <div class="card notsh-only" data-section="inbox" hidden>
-      <div class="card-head">
-        <span class="card-ic"><svg><use href="#i-send"/></svg></span>
-        <h2>聚合私信 <span class="sub">当前平台所有账号 · 人工处理</span></h2>
-        <div class="right"><button class="ghost sm" type="button" onclick="refreshAccounts()"><svg><use href="#i-bolt"/></svg>刷新</button></div>
-      </div>
-      <div class="table-wrap"><table aria-label="跨账号私信收件箱"><thead><tr><th>账号</th><th>会话</th><th>最近消息</th><th>时间</th><th>操作</th></tr></thead><tbody id="dm-inbox-table"></tbody></table></div>
-    </div>
-
     <!-- 指纹 Chromium 多版本内核 -->
     <div class="card" data-section="runtime">
       <div class="card-head">
@@ -117,7 +112,7 @@
       <p class="mut" style="font-size:12px;margin:-4px 0 12px">
         扫描当前机器的 Chromium 安装目录，或手动添加 <code>chrome.exe</code> / <code>chrome</code>。
         每台机器可以使用不同路径；每个账号可在上方「环境」中固定选择一个版本，不同版本使用独立 Profile。
-        新指纹环境首次登录或手动打开时会附带 BrowserScan 体检标签；该第三方页面会获取当前出口 IP 与浏览器特征。
+        新指纹环境首次登录或手动打开时会附带环境体检标签；外部检测页会读取当前出口 IP 与浏览器特征。
         <br>当前扫描目录：<code id="runtime-root">读取中…</code>
       </p>
       <div class="form-actions">
@@ -195,15 +190,17 @@
         <span class="card-ic"><svg><use href="#i-user"/></svg></span>
         <h2>TikTok 用户搜索与互动 <span class="sub">搜索用户后关注 / 取关 / 私信</span></h2>
       </div>
-      <div class="form-grid cols-4">
-        <div class="form-field"><label for="tk-account">执行账号</label><select id="tk-account"></select></div>
-        <div class="form-field"><label for="tk-user-query">用户关键词</label><input id="tk-user-query" type="search" placeholder="昵称或 @unique_id" onkeydown="if(event.key==='Enter'){event.preventDefault();searchTikTokUsers()}"></div>
-        <div class="form-field"><label for="tk-user-limit">结果上限</label><input id="tk-user-limit" type="number" min="1" max="100" value="30"></div>
-        <div class="form-field"><label>执行方式</label><label class="check-row"><input id="tk-action-run-now" type="checkbox"><span>立即打开浏览器执行</span></label></div>
+      <div class="stack">
+        <div class="form-grid tk-search-grid">
+          <div class="form-field"><label for="tk-account">执行账号</label><select id="tk-account"></select></div>
+          <div class="form-field"><label for="tk-user-query">用户关键词</label><input id="tk-user-query" type="search" placeholder="昵称或 @unique_id" onkeydown="if(event.key==='Enter'){event.preventDefault();searchTikTokUsers()}"></div>
+          <div class="form-field"><label for="tk-user-limit">结果上限</label><input id="tk-user-limit" type="number" min="1" max="100" value="30"></div>
+          <div class="form-field"><label>执行方式</label><label class="check-row"><input id="tk-action-run-now" type="checkbox"><span>立即打开浏览器执行</span></label></div>
+        </div>
+        <div class="form-actions"><span class="status-text" id="tk-user-status" role="status" aria-live="polite"></span><button type="button" onclick="searchTikTokUsers()"><svg><use href="#i-search"/></svg>搜索用户</button></div>
+        <div class="table-wrap"><table aria-label="TikTok 用户搜索结果"><thead><tr><th>用户</th><th>账号标识</th><th>数据</th><th>简介</th><th style="text-align:right">操作</th></tr></thead><tbody id="tk-user-results"></tbody></table></div>
+        <div class="form-note"><svg aria-hidden="true"><use href="#i-info"/></svg><span>用于查找其他 TikTok 用户并创建关注、取关或私信任务，不是本账号资料页。</span></div>
       </div>
-      <div class="form-actions"><span class="status-text" id="tk-user-status" role="status" aria-live="polite"></span><button type="button" onclick="searchTikTokUsers()"><svg><use href="#i-search"/></svg>搜索用户</button></div>
-      <div class="table-wrap" style="margin-top:12px"><table aria-label="TikTok 用户搜索结果"><thead><tr><th>用户</th><th>账号标识</th><th>数据</th><th>简介</th><th>操作</th></tr></thead><tbody id="tk-user-results"></tbody></table></div>
-      <div class="form-note" style="margin-top:12px"><svg aria-hidden="true"><use href="#i-info"/></svg><span>用于查找其他 TikTok 用户并创建关注、取关或私信任务，不是本账号资料页。</span></div>
     </div>
 
     <div class="card" data-section="tiktok-comment">
@@ -211,17 +208,19 @@
         <span class="card-ic"><svg><use href="#i-msg"/></svg></span>
         <h2>TikTok 手动评论任务 <span class="sub">指定作品创建评论或回复任务</span></h2>
       </div>
-      <div class="form-grid cols-4">
-        <div class="form-field"><label for="tk-comment-account">执行账号</label><select id="tk-comment-account"></select></div>
-        <div class="form-field"><label for="tk-aweme-id">作品链接 / ID</label><input id="tk-aweme-id" placeholder="https://www.tiktok.com/@user/video/... 或 video id"></div>
-        <div class="form-field"><label for="tk-author-id">作者 @username <span class="field-scope">仅填 ID 时必填</span></label><input id="tk-author-id" placeholder="例如 creator_name"></div>
-        <div class="form-field"><label for="tk-target-comment-id">目标评论 ID <span class="field-scope">回复时填写</span></label><input id="tk-target-comment-id" placeholder="顶层评论可留空"></div>
-        <div class="form-field"><label for="tk-target-nick">目标昵称 <span class="field-scope">可选</span></label><input id="tk-target-nick" placeholder="用于任务记录"></div>
+      <div class="stack">
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="tk-comment-account">执行账号</label><select id="tk-comment-account"></select></div>
+          <div class="form-field"><label for="tk-aweme-id">作品链接 / ID</label><input id="tk-aweme-id" placeholder="https://www.tiktok.com/@user/video/... 或 video id"></div>
+          <div class="form-field"><label for="tk-author-id">作者 @username <span class="field-scope">仅填 ID 时必填</span></label><input id="tk-author-id" placeholder="例如 creator_name"></div>
+          <div class="form-field"><label for="tk-target-comment-id">目标评论 ID <span class="field-scope">回复时填写</span></label><input id="tk-target-comment-id" placeholder="顶层评论可留空"></div>
+          <div class="form-field"><label for="tk-target-nick">目标昵称 <span class="field-scope">可选</span></label><input id="tk-target-nick" placeholder="用于任务记录"></div>
+        </div>
+        <div class="form-field"><label for="tk-comment-content">评论内容</label><textarea id="tk-comment-content" rows="3" placeholder="输入要发布的评论或回复"></textarea></div>
+        <div class="form-field"><label for="tk-target-text">目标评论原文 <span class="field-scope">回复任务必填，用于在页面定位回复区</span></label><textarea id="tk-target-text" rows="2" placeholder="顶层评论可留空"></textarea></div>
+        <div class="form-actions"><label class="check-row"><input id="tk-comment-run-now" type="checkbox"><span>立即执行</span></label><span class="actions-spacer"></span><button type="button" onclick="createTikTokCommentTask()"><svg><use href="#i-send"/></svg>创建评论任务</button></div>
+        <div class="form-note"><svg aria-hidden="true"><use href="#i-info"/></svg><span>这是主动写入工具，因此与账号资料分开；任务结果在「任务队列」查看。</span></div>
       </div>
-      <div class="form-field"><label for="tk-comment-content">评论内容</label><textarea id="tk-comment-content" rows="3" placeholder="输入要发布的评论或回复"></textarea></div>
-      <div class="form-field"><label for="tk-target-text">目标评论原文 <span class="field-scope">回复任务必填，用于在页面定位回复区</span></label><textarea id="tk-target-text" rows="2" placeholder="顶层评论可留空"></textarea></div>
-      <div class="form-actions"><label class="check-row"><input id="tk-comment-run-now" type="checkbox"><span>立即执行</span></label><span class="actions-spacer"></span><button type="button" onclick="createTikTokCommentTask()"><svg><use href="#i-send"/></svg>创建评论任务</button></div>
-      <div class="form-note" style="margin-top:12px"><svg aria-hidden="true"><use href="#i-info"/></svg><span>这是主动写入工具，因此与账号资料分开；任务结果在「任务队列」查看。</span></div>
     </div>
   </section>
 

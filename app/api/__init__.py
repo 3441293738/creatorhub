@@ -7,6 +7,7 @@ from ..agent.api import create_router as create_agent_router
 from . import login
 from . import contents
 from . import workbench
+from . import matrix
 from . import channels
 from . import accounts
 from . import task_queue
@@ -51,6 +52,7 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(login.router)
     app.include_router(contents.router)
     app.include_router(workbench.router)
+    app.include_router(matrix.router)
     app.include_router(channels.router)
     app.include_router(accounts.router)
     app.include_router(task_queue.router)

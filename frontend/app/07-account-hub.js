@@ -17,7 +17,7 @@ async function openAccountBrowser(id, url = "") {
       const qs = url ? "?url=" + encodeURIComponent(url) : "";
       const result = await api("/api/accounts/" + id + "/open-browser" + qs, { method: "POST" });
       const checkHint = result.environment_check_opened
-        ? " 已同时打开 BrowserScan 环境体检标签。" : "";
+        ? " 已同时打开浏览器环境体检标签。" : "";
       if (result.logged_out) {
         toast("该账号登录态已失效，请关闭当前窗口后点「重新登录」完成扫码。" + checkHint, "err", 8000);
         refreshAccounts();
@@ -36,15 +36,15 @@ async function openAccountBrowser(id, url = "") {
 async function checkBrowserEnvironment(id) {
   const btn = evtBtn();
   const confirmed = await uiConfirm({
-    title: "打开第三方环境检测",
-    message: "将在该账号的独立指纹环境中访问 BrowserScan。该站点会看到当前出口 IP 和浏览器指纹；检测结果仅用于环境核对，不代表平台风控一定通过。",
+    title: "打开浏览器环境检测",
+    message: "将在该账号的独立指纹环境中打开外部环境检测页。检测站点会读取当前出口 IP 和浏览器特征；结果仅用于环境核对，不代表平台风控一定通过。",
     okText: "打开检测页",
   });
   if (!confirmed) return;
   await withBusy(btn, "打开中", async () => {
     try {
       await api("/api/accounts/" + id + "/environment-check", { method: "POST" });
-      toast("BrowserScan 已在该账号独立环境中打开，请核对 IP、时区、WebRTC 与指纹一致性", "ok", 8000);
+      toast("环境检测页已在该账号独立环境中打开，请核对 IP、时区、WebRTC 与指纹一致性", "ok", 8000);
       await refreshAccounts();
     } catch (e) {
       toast("环境检测打开失败:" + e.message, "err", 8000);
@@ -58,20 +58,46 @@ function openHubAccountBrowser() {
   openAccountBrowser(+HUB_ACC);
 }
 
-// 从「账号」面板某行跳转查看该账号的本账号数据(作品/关注/粉丝/私信)
+// 从「账号」面板或跨平台矩阵跳转查看该账号的本账号数据(作品/关注/粉丝/私信)
 function openAccountHub(id) {
+  const targetAcc = typeof findAnyAccount === "function" ? findAnyAccount(id) : null;
+  if (targetAcc && targetAcc.platform && (GLOBAL_MODE || targetAcc.platform !== PLATFORM)) {
+    GLOBAL_MODE = false;
+    PLATFORM = targetAcc.platform;
+    try {
+      localStorage.setItem("dym-global", "0");
+      localStorage.setItem("dym-pf", PLATFORM);
+    } catch (e) {}
+    ACCOUNTS = ALL_ACCOUNTS.filter(a => a.platform === PLATFORM);
+    applyPlatformUI();
+    populateHubAccounts();
+  }
   setHubAcc(id);
   const s = $("hub-acc"); if (s) { s.value = HUB_ACC; if (s._csSync) s._csSync(); }
   DM_CONV = null;
   DM_NEW_TARGET = "";
+  window.dispatchEvent(new CustomEvent("creatorhub:hub-mode", { detail: { mode: "single", accountId: Number(id) } }));
   refreshHubSummary();
-  switchTab("hub");
+  switchTab("hub", true);
   switchHubTab("myworks");   // 默认落到「我的作品」,可再切关注/粉丝/私信
 }
 function openAggregatedDm(accountId, convId) {
+  const targetAcc = typeof findAnyAccount === "function" ? findAnyAccount(accountId) : null;
+  if (targetAcc && targetAcc.platform && (GLOBAL_MODE || targetAcc.platform !== PLATFORM)) {
+    GLOBAL_MODE = false;
+    PLATFORM = targetAcc.platform;
+    try {
+      localStorage.setItem("dym-global", "0");
+      localStorage.setItem("dym-pf", PLATFORM);
+    } catch (e) {}
+    ACCOUNTS = ALL_ACCOUNTS.filter(a => a.platform === PLATFORM);
+    applyPlatformUI();
+    populateHubAccounts();
+  }
   setHubAcc(accountId);
   const select = $("hub-acc"); if (select) { select.value = HUB_ACC; select._csSync?.(); }
-  switchTab("hub");
+  window.dispatchEvent(new CustomEvent("creatorhub:hub-mode", { detail: { mode: "single", accountId: Number(accountId) } }));
+  switchTab("hub", true);
   switchHubTab("dm");
   setTimeout(async () => { await refreshDmConvs(); await openDmConv(convId); }, 0);
 }

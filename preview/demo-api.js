@@ -348,6 +348,109 @@
     if (path === "/api/dm/conversations") return [{ conv_id: "DEMO_CONVERSATION", peer_nickname: "示例联系人", peer_avatar: "", last_text: "最近一条消息预览", unread_count: 2, peer_uid: "DEMO_UID", peer_sec_uid: "DEMO_SEC_UID" }];
     if (path === "/api/dm/messages") return [{ id: 231, direction: "in", text: "你好，想了解一下这个功能。", create_time: now - 600 }, { id: 232, direction: "out", text: "你好，这里是在线演示界面。", create_time: now - 420 }];
     if (/^\/api\/account-stats\/\d+$/.test(path)) return { account: { follower_count: 1280, aweme_count: 56 }, fans_delta: 86, trend: [1120, 1148, 1175, 1204, 1232, 1260, 1280].map((follower_count, index) => ({ follower_count, date: index })), works: contents(platform).map((item) => ({ desc: item.desc, play_count: 6800, like_count: item.like_count, comment_count: 28, status: "正常" })) };
+    if (path === "/api/dm/inbox") {
+      const items = accounts.slice(0, 4).map((acc, idx) => ({
+        id: 500 + idx, platform: acc.platform, account_id: acc.id, account_name: acc.nickname,
+        conv_id: "DEMO_CONV_" + acc.id, peer_uid: "PEER_" + idx, peer_nickname: "合作咨询用户 " + (idx + 1),
+        last_text: "你好，看到你的近期作品数据不错，想沟通商务推广档期。", last_time: now - idx * 900,
+        unread_count: idx < 2 ? 2 - idx : 0, group_chat: false,
+      }));
+      return { items, unread: items.reduce((s, x) => s + x.unread_count, 0) };
+    }
+    if (path === "/api/matrix/overview") {
+      const pfs = ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"];
+      const strip = pfs.map((pf, idx) => {
+        const pfAccs = accounts.filter(a => a.platform === pf);
+        return {
+          platform: pf, accounts_total: pfAccs.length, accounts_active: pfAccs.length,
+          accounts_invalid: 0, accounts_risk: 0, accounts_proxy_issue: 0, accounts_no_proxy: 0,
+          followers_total: pfAccs.reduce((s, a) => s + (a.follower_count || 1280), 0),
+          fans_delta: pfAccs.length ? 48 - idx * 4 : 0,
+          monitors_enabled: pf === "shipinhao" ? 0 : 1,
+          today_contents: pfAccs.length ? 6 - (idx % 3) : 0,
+          today_comments: pfAccs.length ? 18 - (idx % 5) : 0,
+          unread_dm: idx < 2 ? 2 - idx : 0, active_tasks: idx === 0 ? 1 : 0, failed_tasks: 0, blocked_tasks: 0,
+        };
+      });
+      const s7 = series();
+      const hot = ["douyin", "xhs", "bilibili", "instagram"].flatMap(pf => contents(pf).slice(0, 2).map(c => ({
+        uid: `monitor:${pf}-${c.id}`, source_kind: "monitor", id: c.id, platform: pf,
+        aweme_id: c.aweme_id, desc: c.desc, cover_url: c.cover_url || "", media_type: c.media_type,
+        like_count: c.like_count, comment_count: c.comment_count || 26, author_name: "示例监控源",
+        source_label: "作品监控", download_status: c.download_status, local_ready: c.download_status === "done",
+        create_time: c.create_time, captured_at: c.captured_at,
+      })));
+      return {
+        scope: url.searchParams.get("platform") || "all",
+        platform_strip: strip,
+        alerts: { invalid_accounts: 0, proxy_issues: 0, risk_accounts: 0, no_proxy_accounts: 0, unread_dm: 3, failed_tasks: 0, blocked_tasks: 0, active_tasks: 1, pending_reviews: 0, abnormal_works: 0 },
+        totals: { accounts: accounts.length, active_accounts: accounts.length, followers: accounts.length * 1680, fans_delta: 186, monitors: 8, contents_total: 42, downloaded_total: 28, comments_total: 310, own_works_total: 24, today_contents: 19, today_comments: 64 },
+        series_7d: { days: s7.days, contents: s7.contents, comments: s7.comments, publishes: [1, 2, 1, 3, 2, 4, 3] },
+        hot_contents: hot,
+        schedule_items: publishTasks("douyin").slice(0, 3).map(t => ({ ...t, account_name: "主IP·抖音号", group_name: "户外露营主IP" })),
+      };
+    }
+    if (path === "/api/matrix/accounts") {
+      const items = accounts.map((a, idx) => ({
+        ...a, alias: idx < 3 ? `主IP-${a.nickname}` : "", display_name: idx < 3 ? `主IP-${a.nickname}` : a.nickname,
+        group_name: idx < 4 ? "户外露营主IP" : "采集工具号池", tags: idx < 4 ? ["日更", "主力"] : ["采集池"],
+        account_role: idx < 4 ? "publish" : "crawler", pinned: idx < 2, sort_order: idx,
+        health_state: "healthy", follower_count: a.follower_count || 1680 + idx * 420, fans_delta: 36 - idx * 3,
+        aweme_count: a.aweme_count || 28, unread_dm: idx < 2 ? 2 - idx : 0, monitor_count: 1,
+        ip_matches_exit: true, browser_open: idx === 0, worker_running: false, profile_isolated: true,
+        tasks: { total: 0, pending: 0, running: 0, blocked: 0, failed: 0 },
+      }));
+      return {
+        items,
+        groups: [
+          { id: 1, name: "户外露营主IP", color: "blue", description: "抖音+小红书+B站跨平台同步矩阵", preferred_country: "CN", sort_order: 0 },
+          { id: 2, name: "采集工具号池", color: "amber", description: "专供关键词与评论监控轮询", preferred_country: "CN", sort_order: 1 },
+        ],
+        all_tags: ["主力", "日更", "采集池"],
+      };
+    }
+    if (path === "/api/matrix/hub-analytics") {
+      const ranked = accounts.map((a, idx) => ({
+        id: a.id, platform: a.platform, display_name: a.nickname, nickname: a.nickname, alias: "",
+        avatar: a.avatar || "", douyin_id: a.douyin_id || "", group_name: idx < 4 ? "户外露营主IP" : "采集工具号池",
+        account_role: idx < 4 ? "publish" : "crawler", pinned: idx < 2, status: "active",
+        follower_count: 2400 + idx * 510, fans_delta: 42 - idx * 4, aweme_count: 18 + idx * 2,
+        works_synced: 6, recent_7d_works: 3, plays_total: 18600 + idx * 2100, likes_total: 1420 + idx * 180,
+        comments_total: 168, zero_play_count: 0, abnormal_count: 0, unread_dm: idx < 2 ? 1 : 0,
+      }));
+      const worksItems = contents("douyin").map((c, idx) => ({
+        id: 600 + idx, platform: idx % 2 === 0 ? "douyin" : "xhs", account_id: accounts[0]?.id || 1,
+        account_name: accounts[0]?.nickname || "示例账号", account_avatar: "", group_name: "户外露营主IP",
+        item_id: c.aweme_id, desc: c.desc, media_type: c.media_type, cover_url: c.cover_url || "",
+        create_time: c.create_time, play_count: 9200 - idx * 1100, like_count: c.like_count, comment_count: 34, collect_count: 19,
+        status: "正常", zero_play_alerted: false, status_alerted: "",
+      }));
+      return {
+        kpi: { accounts_count: ranked.length, followers_total: ranked.reduce((s, x) => s + x.follower_count, 0), fans_delta_total: 168, works_total: 86, plays_total: 128000, likes_total: 9600, comments_total: 840, abnormal_works_total: 0, unread_dm_total: 2 },
+        accounts: ranked,
+        works: { items: worksItems, total: worksItems.length, page: 1, page_size: 24, pages: 1 },
+      };
+    }
+    if (path === "/api/matrix/media-hub") {
+      const items = ["douyin", "xhs", "bilibili"].flatMap(pf => contents(pf).map(c => ({
+        uid: `monitor:${c.id}-${pf}`, source_kind: "monitor", id: c.id, platform: pf, aweme_id: c.aweme_id,
+        desc: c.desc, author_name: "示例创作者", group_name: "行业精选", source_label: "作品监控",
+        media_type: c.media_type, cover_url: c.cover_url || "", duration: 42,
+        like_count: c.like_count, comment_count: 28, play_count: 0, download_status: c.download_status,
+        local_ready: c.download_status === "done", local_path: c.local_path || "", create_time: c.create_time, captured_at: c.captured_at,
+      })));
+      return { items, total: items.length, page: 1, page_size: 24, pages: 1, source_counts: { all: items.length, monitor: items.length, collection: 0, own: 0, share: 0 } };
+    }
+    if (path === "/api/matrix/media-hub/detail") {
+      const base = contents("douyin")[0] || { id: 1, desc: "示例作品详情文案", cover_url: "", like_count: 520 };
+      return {
+        source_kind: "monitor", id: base.id, platform: "douyin", aweme_id: "DEMO_WORK_001",
+        desc: base.desc, cover_url: base.cover_url || "", media_type: "images",
+        like_count: base.like_count, comment_count: 12, local_path: "data/media/demo", local_file_paths: ["data/media/demo.jpg"],
+        local_medias: [], remote_medias: [], source_url: "", can_repost: true,
+        comments: comments("douyin").slice(0, 5),
+      };
+    }
     if (/^\/api\/contents\/\d+\/media$/.test(path)) return { media_type: "images", cover_url: "", medias: [] };
     return [];
   }

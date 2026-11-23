@@ -623,7 +623,7 @@ def _needs_reply_thread(root_rec: dict[str, Any]) -> tuple[bool, str | None]:
 
 
 class CommentPager:
-    """同步注入式评论分页器(用于单元测试与 CLI JSONL 子进程传输)。"""
+    """同步注入式评论分页器(用于自定义传输层与 CLI JSONL 子进程传输)。"""
 
     def __init__(
         self,

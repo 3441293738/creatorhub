@@ -46,7 +46,7 @@ async function refreshRiskCenter(force = false, announce = force) {
   try {
     const shouldFillConfig = !RISK_CONFIG || force;
     const configPromise = shouldFillConfig ? api("/api/risk-control/config") : Promise.resolve(RISK_CONFIG);
-    const platformQuery = "?platform=" + encodeURIComponent(PLATFORM);
+    const platformQuery = GLOBAL_MODE ? "" : ("?platform=" + encodeURIComponent(PLATFORM));
     const [summary, accounts, config] = await Promise.all([
       api("/api/risk-control/summary" + platformQuery),
       api("/api/risk-control/accounts" + platformQuery),

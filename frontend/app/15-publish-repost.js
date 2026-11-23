@@ -211,7 +211,7 @@ const PUB_ST = { draft: "待确认预约", pending: "排队中", publishing: "�
 const PUB_PILL = { draft: "pending", pending: "pending", publishing: "downloading", uncertain: "downloading", done: "done", failed: "failed", canceled: "invalid" };
 async function editPublish(id) {
   const task = PUBLISH_TASKS.find(x => x.id === id); if (!task) return;
-  const accounts = ACCOUNTS.filter(a => a.platform === task.platform);
+  const accounts = (ALL_ACCOUNTS.length ? ALL_ACCOUNTS : ACCOUNTS).filter(a => a.platform === task.platform);
   const accountOptions = accounts.map(a =>
     `<option value="${a.id}">${esc(a.nickname)}${a.has_creator ? " · 创作号" : ""}</option>`
   ).join("");
@@ -311,15 +311,17 @@ async function editPublish(id) {
 async function refreshPublish() {
   const isCurrent = beginViewRequest("publish");
   if (!$("pub-table")) return;
-  const rows = await api("/api/publish?platform=" + (pfHasPublish(PLATFORM) ? PLATFORM : "xhs"));
+  const rows = await api("/api/publish" + (GLOBAL_MODE ? "" : "?platform=" + (pfHasPublish(PLATFORM) ? PLATFORM : "xhs")));
   if (!isCurrent()) return;
   PUBLISH_TASKS = rows;
   if ($("tb-pub")) $("tb-pub").textContent = rows.length;
   $("pub-table").innerHTML = rows.map(t => {
-    const pubAcc = (ACCOUNTS.find(a => a.id === t.account_id) || {}).nickname || (t.account_id ? `账号 #${t.account_id}` : "—");
+    const accObj = (typeof findAnyAccount === "function" && findAnyAccount(t.account_id)) || ACCOUNTS.find(a => a.id === t.account_id);
+    const pubAcc = accObj ? (accObj.alias || accObj.nickname || `账号 #${t.account_id}`) : (t.account_id ? `账号 #${t.account_id}` : "—");
+    const pfBadge = GLOBAL_MODE ? `<span class="mx-mini-pf inline" style="margin-right:6px">${esc(PF_NAME[t.platform] || t.platform)}</span>` : "";
     return `<tr>
     <td class="wrap" style="max-width:240px"><b>${esc(t.title || "(无标题)")}</b></td>
-    <td>${esc(pubAcc)}</td>
+    <td>${pfBadge}${esc(pubAcc)}</td>
     <td>${t.platform === "twitter" && !(t.media_count || 0) ? "纯文本" : `${t.media_type === "video" ? "视频" : "图文"} · <span class="mut num">${t.media_count || 0}</span>`}</td>
     <td>${t.source_platform ? esc(PF_NAME[t.source_platform] || t.source_platform) + " 转发" : "手动"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>

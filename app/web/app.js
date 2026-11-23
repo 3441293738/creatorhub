@@ -475,8 +475,8 @@ function focusAdjacentControl(origin, backwards = false) {
   if (next) requestAnimationFrame(() => next.focus({ preventScroll: true }));
 }
 function enhanceSelect(sel) {
-  // React owns the assistant's native controls; reparenting them breaks updates.
-  if (sel.dataset.cs || sel.closest(".agent-workspace")) return;
+  // React owns the assistant and matrix islands' native controls; reparenting them breaks updates.
+  if (sel.dataset.cs || sel.closest(".agent-workspace,.wb-react-island")) return;
   sel.dataset.cs = "1";
   const wrap = document.createElement("div");
   wrap.className = "cs" + (sel.className ? " " + sel.className : "");
@@ -696,7 +696,7 @@ function _dtFmt(d) { return `${d.getFullYear()}-${_pad2(d.getMonth() + 1)}-${_pa
 function _dtDisp(d) { return `${d.getFullYear()}-${_pad2(d.getMonth() + 1)}-${_pad2(d.getDate())} ${_pad2(d.getHours())}:${_pad2(d.getMinutes())}`; }
 function _dtParse(v) { const m = (v || "").match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/); return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) : null; }
 function enhanceDateTime(inp) {
-  if (inp.dataset.dt) return; inp.dataset.dt = "1";
+  if (inp.dataset.dt || inp.closest(".agent-workspace,.wb-react-island")) return; inp.dataset.dt = "1";
   const wrap = document.createElement("div");
   wrap.className = "dt" + (inp.className ? " " + inp.className : "");
   const st = inp.getAttribute("style"); if (st) wrap.setAttribute("style", st);
@@ -1056,14 +1056,18 @@ async function exportModuleReport(module, full = false, explicitBtn = null) {
 }
 
 let PLATFORM = "douyin";
+let GLOBAL_MODE = true;
 const PF_NAME = { douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram", twitter: "Twitter" };
 let CURRENT_TAB = "overview";
 const PAGE_META = {
   overview: {
-    title: "工作概览", desc: "查看待处理任务，接着推进今天的内容工作。"
+    title: "指挥概览", desc: "跨平台查看账号健康态势、高赞内容快览与今日发布排期。"
+  },
+  "media-hub": {
+    title: "汇总预览库", desc: "跨平台统一画廊预览监控作品、批量采集、自有作品与本地下载素材，支持右侧分栏快览。"
   },
   accounts: {
-    title: "平台账号", desc: "查看登录状态；网络与环境配置按需展开。"
+    title: "账号矩阵", desc: "按跨平台人设组管理多账号，支持异常快筛、批量配代理与连续扫码补登。"
   },
   "risk-control": {
     title: "风控中心", desc: "统一管理风控规则，查看账号状态、触发原因、恢复进度与事件记录。"
@@ -1081,13 +1085,13 @@ const PAGE_META = {
     title: "弹幕监控", desc: "监控短视频播放器内的弹幕，保留每条弹幕在视频中的时间点。"
   },
   hub: {
-    title: "本账号管理", desc: "查看当前登录账号自己的作品、数据与账号维护入口。"
+    title: "矩阵数据与私信", desc: "横向对比全部账号涨粉、播放、0播异常与全平台聚合私信，或下钻单账号明细。"
   },
   "tiktok-tools": {
     title: "用户互动", desc: "搜索其他 TikTok 用户并创建关注、取关、私信、评论或回复任务。"
   },
   publish: {
-    title: "内容发布", desc: "准备素材与文案，创建立即或定时发布任务。"
+    title: "内容发布", desc: "支持单账号精细发布或跨平台多账号错峰矩阵群发。"
   },
   queue: {
     title: "任务队列", desc: "统一查看采集、发布、评论、账号动作与下载任务的排队、执行和阻塞状态。"
@@ -1105,13 +1109,19 @@ const PAGE_META = {
     title: "设置", desc: "管理外观、下载、AI 文案与采集运行配置。"
   },
 };
+const SINGLE_PF_ONLY_TABS = ["monitors", "collections", "comments", "danmaku", "tiktok-tools", "autocomment"];
 function updatePageContext(name = CURRENT_TAB) {
   const meta = PAGE_META[name] || PAGE_META.overview;
-  if ($("page-title")) $("page-title").textContent = meta.title;
-  if ($("page-desc")) $("page-desc").textContent = meta.desc;
-  if ($("page-platform")) $("page-platform").textContent = PF_NAME[PLATFORM] || "当前平台";
-  if ($("page-kicker")) $("page-kicker").textContent = pfIsChannels(PLATFORM) ? "本账号工作台" : "多平台工作台";
-  document.title = `${meta.title} · ${PF_NAME[PLATFORM] || ""} | CreatorHub`;
+  const showGlobalLabel = GLOBAL_MODE && !SINGLE_PF_ONLY_TABS.includes(name);
+  const effectiveTitle = (GLOBAL_MODE && name === "publish") ? "矩阵群发与排期" : meta.title;
+  const effectiveDesc = (GLOBAL_MODE && name === "publish")
+    ? "一次上传素材与主文案，按跨平台矩阵组一键错峰群发，并统一追踪全平台发布进度。"
+    : meta.desc;
+  if ($("page-title")) $("page-title").textContent = effectiveTitle;
+  if ($("page-desc")) $("page-desc").textContent = effectiveDesc;
+  if ($("page-platform")) $("page-platform").textContent = showGlobalLabel ? "全平台矩阵" : (PF_NAME[PLATFORM] || "当前平台");
+  if ($("page-kicker")) $("page-kicker").textContent = showGlobalLabel ? "跨 9 大平台全局视角" : (pfIsChannels(PLATFORM) ? "本账号工作台" : "单平台精细工作台");
+  document.title = `${effectiveTitle} · ${showGlobalLabel ? "全平台" : (PF_NAME[PLATFORM] || "")} | CreatorHub`;
   globalThis.CreatorHubWorkbench?.navigate?.();
 }
 // 是否支持「发布」面板
@@ -1119,9 +1129,11 @@ function pfHasPublish(pf) { return ["xhs", "rednote", "kuaishou", "douyin", "shi
 // 视频号只有「本账号」数据(助手接口本账号),不支持监控他人作品/评论
 function pfIsChannels(pf) { return pf === "shipinhao"; }
 function switchPlatform(pf) {
-  if (!["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(pf)) pf = "douyin";
-  globalThis.CreatorHubWorkbench?.platformChanging?.(pf);
-  PLATFORM = pf;
+  const wantGlobal = pf === "all";
+  if (!wantGlobal && !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(pf)) pf = "douyin";
+  if (!wantGlobal) globalThis.CreatorHubWorkbench?.platformChanging?.(pf);
+  GLOBAL_MODE = wantGlobal;
+  if (!wantGlobal) PLATFORM = pf;
   VIEW_REQUESTS.clear();
   CONTENT_PAGE = COMMENT_PAGE = 1;
   COLLECTION_JOBS = []; closeCollectionResults(); renderCollectionJobs(); if ($("tb-col")) $("tb-col").textContent = "0";
@@ -1145,10 +1157,17 @@ function switchPlatform(pf) {
     const select = $(id);
     if (select) { select.value = ""; if (select._csSync) select._csSync(); }
   });
-  try { localStorage.setItem("dym-pf", pf); } catch (e) {}
+  try {
+    localStorage.setItem("dym-global", wantGlobal ? "1" : "0");
+    if (!wantGlobal) localStorage.setItem("dym-pf", pf);
+  } catch (e) {}
+  if ($("queue-platform")) {
+    $("queue-platform").value = wantGlobal ? "all" : "current";
+    $("queue-platform")._csSync?.();
+  }
   applyPlatformUI();
   ["t-interval", "w-interval", "d-w-interval"].forEach(id => $(id)?._monitorIntervalSync?.());
-  // 切换后立刻刷新该平台数据
+  // 切换后立刻刷新对应数据
   refreshAccounts(); refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshCollections();
   updateTaskQueuePlatformLabel();
   if (CURRENT_TAB === "queue") refreshTaskQueue(true); else refreshTaskQueueBadge();
@@ -1158,20 +1177,21 @@ function switchPlatform(pf) {
   if (CURRENT_TAB === "overview") loop();
 }
 function applyPlatformUI() {
-  document.body.classList.toggle("pf-douyin", PLATFORM === "douyin");
-  document.body.classList.toggle("pf-xhs", PLATFORM === "xhs");
-  document.body.classList.toggle("pf-kuaishou", PLATFORM === "kuaishou");
-  document.body.classList.toggle("pf-shipinhao", PLATFORM === "shipinhao");
-  document.body.classList.toggle("pf-tiktok", PLATFORM === "tiktok");
-  document.body.classList.toggle("pf-bilibili", PLATFORM === "bilibili");
-  document.body.classList.toggle("pf-rednote", PLATFORM === "rednote");
-  document.body.classList.toggle("pf-instagram", PLATFORM === "instagram");
-  document.body.classList.toggle("pf-twitter", PLATFORM === "twitter");
+  document.body.classList.toggle("pf-all", GLOBAL_MODE);
+  document.body.classList.toggle("pf-douyin", !GLOBAL_MODE && PLATFORM === "douyin");
+  document.body.classList.toggle("pf-xhs", !GLOBAL_MODE && PLATFORM === "xhs");
+  document.body.classList.toggle("pf-kuaishou", !GLOBAL_MODE && PLATFORM === "kuaishou");
+  document.body.classList.toggle("pf-shipinhao", !GLOBAL_MODE && PLATFORM === "shipinhao");
+  document.body.classList.toggle("pf-tiktok", !GLOBAL_MODE && PLATFORM === "tiktok");
+  document.body.classList.toggle("pf-bilibili", !GLOBAL_MODE && PLATFORM === "bilibili");
+  document.body.classList.toggle("pf-rednote", !GLOBAL_MODE && PLATFORM === "rednote");
+  document.body.classList.toggle("pf-instagram", !GLOBAL_MODE && PLATFORM === "instagram");
+  document.body.classList.toggle("pf-twitter", !GLOBAL_MODE && PLATFORM === "twitter");
   // 视频号:只有本账号数据,隐藏「监控他人作品/评论」相关入口(.notsh-only)
-  document.body.classList.toggle("pf-channels", pfIsChannels(PLATFORM));
+  document.body.classList.toggle("pf-channels", !GLOBAL_MODE && pfIsChannels(PLATFORM));
   if (!["douyin", "bilibili"].includes(PLATFORM) && CURRENT_TAB === "danmaku") switchTab("overview");
   document.querySelectorAll(".pswitch button").forEach(b => {
-    const active = b.dataset.pf === PLATFORM;
+    const active = GLOBAL_MODE ? b.dataset.pf === "all" : b.dataset.pf === PLATFORM;
     b.classList.toggle("active", active);
     b.setAttribute("aria-selected", active ? "true" : "false");
     b.tabIndex = active ? 0 : -1;
@@ -1203,11 +1223,19 @@ function applyPlatformUI() {
   });
   document.querySelectorAll(".collect-only").forEach(e => e.classList.toggle(
     "hidden", !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(PLATFORM)));
+  // 全平台模式下隐藏所有单平台专属采集/监控/互动入口与分组标题
+  if (GLOBAL_MODE) {
+    document.querySelectorAll(".single-pf-only").forEach(e => e.classList.add("hidden"));
+  } else {
+    document.querySelectorAll("#nav-sep-collect").forEach(e => e.classList.remove("hidden"));
+  }
+  if ($("nav-publish-label")) $("nav-publish-label").textContent = GLOBAL_MODE ? "矩阵群发" : "内容发布";
+  if ($("nav-hub-label")) $("nav-hub-label").textContent = GLOBAL_MODE ? "矩阵数据与私信" : "数据与私信";
   document.querySelectorAll(".meta-scope").forEach(e => {
     e.textContent = (PF_NAME[PLATFORM] || "当前平台") + "内独立";
   });
   // 发布面板入口
-  document.querySelectorAll(".pub-only").forEach(e => e.classList.toggle("hidden", !pfHasPublish(PLATFORM)));
+  document.querySelectorAll(".pub-only").forEach(e => e.classList.toggle("hidden", !GLOBAL_MODE && !pfHasPublish(PLATFORM)));
   // 发布面板文案随平台切换
   const ks = PLATFORM === "kuaishou", dy = PLATFORM === "douyin", sph = PLATFORM === "shipinhao", tk = PLATFORM === "tiktok", bili = PLATFORM === "bilibili", rn = PLATFORM === "rednote", ig = PLATFORM === "instagram", tw = PLATFORM === "twitter";
   const pubType = $("pub-type");
@@ -1313,25 +1341,31 @@ function applyPlatformUI() {
   applyCollectionForm();
   if (["douyin", "bilibili"].includes(PLATFORM)) applyDanmakuForm();
   if ($("t-kind") && !["xhs", "rednote"].includes(PLATFORM)) $("t-kind").value = "creator";
+  // 全平台视角下不展示单平台专属面板：若当前停留在单平台页，自动回到指挥概览
+  if (GLOBAL_MODE && SINGLE_PF_ONLY_TABS.includes(CURRENT_TAB)) {
+    switchTab("overview");
+    return;
+  }
   // 视频号不支持自动评论规则:若正停在自动评论面板,切回本账号管理
-  if (pfIsChannels(PLATFORM)) {
+  if (!GLOBAL_MODE && pfIsChannels(PLATFORM)) {
     const cur = (document.querySelector('.navitem.active') || {}).dataset;
     if (cur && cur.tab === "autocomment") switchTab("hub");
     // 视频号本账号只有「我的作品 / 数据」;若停在关注/粉丝/私信子页,切回我的作品
     if (["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
   }
-  if (PLATFORM === "tiktok" && CURRENT_TAB === "autocomment") switchTab("hub");
-  if (PLATFORM !== "tiktok" && CURRENT_TAB === "tiktok-tools") switchTab("accounts");
-  if (PLATFORM === "tiktok" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
-  if (PLATFORM === "rednote" && CURRENT_TAB === "autocomment") switchTab("hub");
-  if (PLATFORM === "rednote" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
-  if (!["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(PLATFORM) && CURRENT_TAB === "collections") switchTab("overview");
-  // 不支持发布的平台:若正停在该面板则回到总览(当前四平台均支持,兜底保留)
-  if (!pfHasPublish(PLATFORM)) {
+  if (!GLOBAL_MODE && PLATFORM === "tiktok" && CURRENT_TAB === "autocomment") switchTab("hub");
+  if (!GLOBAL_MODE && PLATFORM !== "tiktok" && CURRENT_TAB === "tiktok-tools") switchTab("accounts");
+  if (!GLOBAL_MODE && PLATFORM === "tiktok" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
+  if (!GLOBAL_MODE && PLATFORM === "rednote" && CURRENT_TAB === "autocomment") switchTab("hub");
+  if (!GLOBAL_MODE && PLATFORM === "rednote" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
+  if (!GLOBAL_MODE && !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(PLATFORM) && CURRENT_TAB === "collections") switchTab("overview");
+  // 不支持发布的平台:若正停在该面板则回到总览(当前九平台均支持,兜底保留)
+  if (!GLOBAL_MODE && !pfHasPublish(PLATFORM)) {
     const pub = document.querySelector('[data-panel="publish"]');
     if (pub && pub.style.display !== "none") switchTab("overview");
   }
   csSyncAll();   // 平台切换可能改了下拉选项/值,同步自定义下拉显示
+  requestAnimationFrame(() => window.dispatchEvent(new Event("creatorhub:layout")));
   updatePageContext();
 }
 const SMART_TARGET_PARSE_SEQ = Object.create(null);
@@ -1679,6 +1713,13 @@ function switchTab(name, pushHistory = false) {
     return;
   }
   if (!PAGE_META[name]) name = "overview";
+  // 若从全平台入口主动跳转到某个单平台功能（如去添加作品监控），自动退出全平台模式聚焦当前底层平台
+  if (GLOBAL_MODE && SINGLE_PF_ONLY_TABS.includes(name)) {
+    GLOBAL_MODE = false;
+    try { localStorage.setItem("dym-global", "0"); } catch (e) {}
+    CURRENT_TAB = name;
+    applyPlatformUI();
+  }
   globalThis.CreatorHubWorkbench?.beforeNavigate?.();
   const changed = CURRENT_TAB !== name;
   CURRENT_TAB = name;
@@ -1780,7 +1821,7 @@ async function choosePreLoginBrowserBackend({ platform = "" } = {}) {
     title: "选择扫码登录环境",
     hint: localOnly
       ? "小红书固定使用系统 Chrome/CDP 原生环境；扫码、Cookie 和后续任务共用同一持久 Profile。"
-      : "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。新的指纹环境会同时打开 BrowserScan 体检标签。",
+      : "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。新的指纹环境会同时打开环境体检标签。",
     options,
     value: localOnly ? "local" : preLoginBrowserBackend,
   });
@@ -2199,7 +2240,11 @@ async function saveCookie() {
 
 // 05-accounts.js — 账号列表渲染、环境指纹编辑、浏览器内核目录与账号级操作。
 // ─── 账号 ───
-let ACCOUNTS = [];
+let ACCOUNTS = [], ALL_ACCOUNTS = [];
+function findAnyAccount(id) {
+  const num = Number(id);
+  return ALL_ACCOUNTS.find(x => Number(x.id) === num) || ACCOUNTS.find(x => Number(x.id) === num);
+}
 let BROWSER_RUNTIMES = [];
 let BROWSER_RUNTIME_ROOT = "";
 let MONITORS = [], WATCHES = [], CONTENTS = [];
@@ -2737,12 +2782,12 @@ function waitForAccountPaint(isCurrent) {
 }
 async function refreshAccounts() {
   const isCurrent = beginViewRequest("accounts");
-  let accs, workbench = [], inbox = { items: [] };
+  let allAccs, workbench = [];
+  const scopePf = GLOBAL_MODE ? "" : PLATFORM;
   try {
-    [accs, workbench, inbox] = await Promise.all([
-      api("/api/accounts?platform=" + PLATFORM),
-      api("/api/accounts/workbench?platform=" + PLATFORM).catch(() => []),
-      api("/api/dm/inbox?platform=" + PLATFORM + "&limit=100").catch(() => ({ items: [] })),
+    [allAccs, workbench] = await Promise.all([
+      api("/api/accounts"),
+      api("/api/accounts/workbench" + (scopePf ? "?platform=" + scopePf : "")).catch(() => []),
     ]);
   }
   catch (e) {
@@ -2752,7 +2797,9 @@ async function refreshAccounts() {
   if (!isCurrent()) return;
   await waitForAccountPaint(isCurrent);
   if (!isCurrent()) return;
-  ACCOUNTS = accs;
+  ALL_ACCOUNTS = Array.isArray(allAccs) ? allAccs : [];
+  ACCOUNTS = ALL_ACCOUNTS.filter(a => a.platform === PLATFORM);
+  const accs = GLOBAL_MODE ? ALL_ACCOUNTS : ACCOUNTS;
   const accountWork = new Map((workbench || []).map(value => [Number(value.account_id), value]));
   $("stat-acc").textContent = accs.length;
   $("acc-table").querySelector("tbody").innerHTML = accs.map(a => {
@@ -2856,7 +2903,7 @@ async function refreshAccounts() {
         <button class="ghost sm" onclick="openAccountBrowser(${a.id})" title="用该账号登录态弹出真实浏览器窗口,手动收发私信 / 维护 / 抓接口(关窗即保存)">打开浏览器</button>
         <button class="ghost sm" onclick="setBrowserBackend(${a.id})" title="选择本地 Chrome/Patchright 或开源 Fingerprint Chromium 内核">环境</button>
         <button class="ghost sm" onclick="manageFingerprint(${a.id})" title="根据账号当前出口 IP 生成稳定指纹、时区、语言和地理位置">指纹</button>
-        ${environmentCheck && environmentCheck.enabled ? `<button class="ghost sm" onclick="checkBrowserEnvironment(${a.id})" title="在该账号独立 Profile 中打开 BrowserScan，查看实际 IP、时区、WebRTC 和指纹">环境检测</button>` : ""}
+        ${environmentCheck && environmentCheck.enabled ? `<button class="ghost sm" onclick="checkBrowserEnvironment(${a.id})" title="在该账号独立 Profile 中打开环境检测页，查看实际 IP、时区、WebRTC 和指纹">环境检测</button>` : ""}
         <button class="ghost sm" onclick="setProxy(${a.id})" title="设置/分配该账号专属代理(防多账号关联)">代理</button>
         ${a.has_proxy ? `<button class="ghost sm" onclick="testProxy(${a.id})" title="经该代理实连一次,验证可用">测代理</button>` : ""}
         <button class="ghost sm danger" onclick="delAccount(${a.id})" aria-label="删除账号">${ic("i-trash")}删除</button>
@@ -2864,12 +2911,6 @@ async function refreshAccounts() {
       </td>
     </tr>`;
   }).join("") || empty(3, "还没有账号", "i-user", "用上方按钮扫码登录,或粘贴 Cookie 添加一个账号");
-  if ($("dm-inbox-table")) $("dm-inbox-table").innerHTML = (inbox.items || []).map(row => `<tr>
-    <td><b>${esc(row.account_name || `账号 #${row.account_id}`)}</b><div class="mut">${esc(PF_NAME[row.platform] || row.platform)}</div></td>
-    <td><b>${esc(row.peer_nickname || row.peer_uid || "未命名会话")}</b>${row.group_chat ? '<div class="mut">群聊</div>' : ""}${row.unread_count ? `<span class="pill pending">${Number(row.unread_count)} 未读</span>` : ""}</td>
-    <td title="${esc(row.last_text || "")}">${esc((row.last_text || "暂无文本消息").slice(0, 120))}</td>
-    <td>${row.last_time ? fmtTime(row.last_time) : "—"}</td>
-    <td class="acttd"><button class="ghost sm" onclick="openAggregatedDm(${Number(row.account_id)},${jsArg(row.conv_id)})">${ic("i-send")}处理</button></td></tr>`).join("") || empty(5, "暂无私信会话", "i-send", "在账号管理中同步私信后，会话会聚合显示在这里");
   globalThis.CreatorHubWorkbench?.accountsUpdated?.();
   if ($("tb-acc")) $("tb-acc").textContent = accs.length;
   populateAccountSelect();
@@ -2898,6 +2939,7 @@ function populateTikTokAccounts() {
     else if (accounts.length) select.value = String(accounts[0].id);
     select._csSync?.();
   }
+  if (!TIKTOK_USERS.length) renderTikTokUsers();
 }
 function renderTikTokUsers() {
   const body = $("tk-user-results");
@@ -3082,7 +3124,7 @@ async function refreshRiskCenter(force = false, announce = force) {
   try {
     const shouldFillConfig = !RISK_CONFIG || force;
     const configPromise = shouldFillConfig ? api("/api/risk-control/config") : Promise.resolve(RISK_CONFIG);
-    const platformQuery = "?platform=" + encodeURIComponent(PLATFORM);
+    const platformQuery = GLOBAL_MODE ? "" : ("?platform=" + encodeURIComponent(PLATFORM));
     const [summary, accounts, config] = await Promise.all([
       api("/api/risk-control/summary" + platformQuery),
       api("/api/risk-control/accounts" + platformQuery),
@@ -3380,7 +3422,7 @@ async function openAccountBrowser(id, url = "") {
       const qs = url ? "?url=" + encodeURIComponent(url) : "";
       const result = await api("/api/accounts/" + id + "/open-browser" + qs, { method: "POST" });
       const checkHint = result.environment_check_opened
-        ? " 已同时打开 BrowserScan 环境体检标签。" : "";
+        ? " 已同时打开浏览器环境体检标签。" : "";
       if (result.logged_out) {
         toast("该账号登录态已失效，请关闭当前窗口后点「重新登录」完成扫码。" + checkHint, "err", 8000);
         refreshAccounts();
@@ -3399,15 +3441,15 @@ async function openAccountBrowser(id, url = "") {
 async function checkBrowserEnvironment(id) {
   const btn = evtBtn();
   const confirmed = await uiConfirm({
-    title: "打开第三方环境检测",
-    message: "将在该账号的独立指纹环境中访问 BrowserScan。该站点会看到当前出口 IP 和浏览器指纹；检测结果仅用于环境核对，不代表平台风控一定通过。",
+    title: "打开浏览器环境检测",
+    message: "将在该账号的独立指纹环境中打开外部环境检测页。检测站点会读取当前出口 IP 和浏览器特征；结果仅用于环境核对，不代表平台风控一定通过。",
     okText: "打开检测页",
   });
   if (!confirmed) return;
   await withBusy(btn, "打开中", async () => {
     try {
       await api("/api/accounts/" + id + "/environment-check", { method: "POST" });
-      toast("BrowserScan 已在该账号独立环境中打开，请核对 IP、时区、WebRTC 与指纹一致性", "ok", 8000);
+      toast("环境检测页已在该账号独立环境中打开，请核对 IP、时区、WebRTC 与指纹一致性", "ok", 8000);
       await refreshAccounts();
     } catch (e) {
       toast("环境检测打开失败:" + e.message, "err", 8000);
@@ -3421,20 +3463,46 @@ function openHubAccountBrowser() {
   openAccountBrowser(+HUB_ACC);
 }
 
-// 从「账号」面板某行跳转查看该账号的本账号数据(作品/关注/粉丝/私信)
+// 从「账号」面板或跨平台矩阵跳转查看该账号的本账号数据(作品/关注/粉丝/私信)
 function openAccountHub(id) {
+  const targetAcc = typeof findAnyAccount === "function" ? findAnyAccount(id) : null;
+  if (targetAcc && targetAcc.platform && (GLOBAL_MODE || targetAcc.platform !== PLATFORM)) {
+    GLOBAL_MODE = false;
+    PLATFORM = targetAcc.platform;
+    try {
+      localStorage.setItem("dym-global", "0");
+      localStorage.setItem("dym-pf", PLATFORM);
+    } catch (e) {}
+    ACCOUNTS = ALL_ACCOUNTS.filter(a => a.platform === PLATFORM);
+    applyPlatformUI();
+    populateHubAccounts();
+  }
   setHubAcc(id);
   const s = $("hub-acc"); if (s) { s.value = HUB_ACC; if (s._csSync) s._csSync(); }
   DM_CONV = null;
   DM_NEW_TARGET = "";
+  window.dispatchEvent(new CustomEvent("creatorhub:hub-mode", { detail: { mode: "single", accountId: Number(id) } }));
   refreshHubSummary();
-  switchTab("hub");
+  switchTab("hub", true);
   switchHubTab("myworks");   // 默认落到「我的作品」,可再切关注/粉丝/私信
 }
 function openAggregatedDm(accountId, convId) {
+  const targetAcc = typeof findAnyAccount === "function" ? findAnyAccount(accountId) : null;
+  if (targetAcc && targetAcc.platform && (GLOBAL_MODE || targetAcc.platform !== PLATFORM)) {
+    GLOBAL_MODE = false;
+    PLATFORM = targetAcc.platform;
+    try {
+      localStorage.setItem("dym-global", "0");
+      localStorage.setItem("dym-pf", PLATFORM);
+    } catch (e) {}
+    ACCOUNTS = ALL_ACCOUNTS.filter(a => a.platform === PLATFORM);
+    applyPlatformUI();
+    populateHubAccounts();
+  }
   setHubAcc(accountId);
   const select = $("hub-acc"); if (select) { select.value = HUB_ACC; select._csSync?.(); }
-  switchTab("hub");
+  window.dispatchEvent(new CustomEvent("creatorhub:hub-mode", { detail: { mode: "single", accountId: Number(accountId) } }));
+  switchTab("hub", true);
   switchHubTab("dm");
   setTimeout(async () => { await refreshDmConvs(); await openDmConv(convId); }, 0);
 }
@@ -4331,7 +4399,7 @@ async function refreshProfile(id) {
   await refreshAccounts();
 }
 async function setProxy(id) {
-  const a = ACCOUNTS.find(x => x.id === id);
+  const a = findAnyAccount(id);
   let opts = [];
   try { opts = await api("/api/proxies/options"); } catch (e) { }
   const cur = a && a.has_proxy ? a.proxy : "";
@@ -4372,7 +4440,7 @@ async function setProxy(id) {
 }
 
 async function setBrowserBackend(id) {
-  const account = ACCOUNTS.find(item => item.id === id);
+  const account = findAnyAccount(id);
   if (!account) return;
   let catalog;
   try {
@@ -4730,7 +4798,7 @@ function uiFingerprintEditor(account, fp, options = {}) {
 }
 
 async function manageFingerprint(id) {
-  const account = ACCOUNTS.find(item => item.id === id);
+  const account = findAnyAccount(id);
   if (!account) return;
   let current;
   try { current = await api(`/api/accounts/${id}/fingerprint`); }
@@ -4925,7 +4993,8 @@ async function importProxies() {
   } catch (e) { toast("导入失败:" + e.message, "err"); }
 }
 async function assignAllProxies() {
-  const noProxy = ACCOUNTS.filter(a => !a.has_proxy).length;
+  const poolTargets = (ALL_ACCOUNTS && ALL_ACCOUNTS.length) ? ALL_ACCOUNTS : ACCOUNTS;
+  const noProxy = poolTargets.filter(a => !a.has_proxy).length;
   if (!noProxy) { toast("所有账号都已配置代理", "info"); return; }
   if (!await uiConfirm({ title: "批量分配代理", message: `给 ${noProxy} 个未配代理的账号从池里自动分配(均衡,占用最少优先)?` })) return;
   const btn = event.target.closest("button"); if (btn) { btn.disabled = true; btn.textContent = "分配中…"; }
@@ -4987,7 +5056,7 @@ function pollReloginTask(tid) {
   tick();
 }
 async function delAccount(id) {
-  const a = ACCOUNTS.find(x => x.id === id);
+  const a = findAnyAccount(id);
   const warn = a && a.monitor_count > 0 ? `\n关联的 ${a.monitor_count} 个作品监控也会暂停。` : "";
   if (!await uiConfirm({ title: "删除账号", message: "删除该账号将取消未执行任务、停用关联规则并清理独占登录环境；历史内容保留。执行中的操作需要先结束。" + warn, okText: "删除并停止关联任务", danger: true })) return;
   try {
@@ -7957,29 +8026,46 @@ async function commentBatchDelete() {
 function srcOf(r) {
   return contentSourceMarkup(r);
 }
+let CONTENT_VIEW_MODE = (() => {
+  try { return localStorage.getItem("dym-content-view") || "auto"; } catch (e) { return "auto"; }
+})();
+function effectiveContentViewMode() {
+  if (CONTENT_VIEW_MODE === "cards" || CONTENT_VIEW_MODE === "table") return CONTENT_VIEW_MODE;
+  return PLATFORM === "xhs" ? "cards" : "cards";
+}
+function setContentViewMode(mode) {
+  CONTENT_VIEW_MODE = mode === "table" ? "table" : "cards";
+  try { localStorage.setItem("dym-content-view", CONTENT_VIEW_MODE); } catch (e) {}
+  refreshContents(false);
+}
 function noteCard(r) {
   const typeIc = r.media_type === "images" ? "i-image" : "i-play";
-  const typeLabel = r.media_type === "images" ? "图文" : "视频";
+  const durText = r.duration ? (typeof fmtDur === "function" ? " " + fmtDur(r.duration) : "") : "";
+  const typeLabel = (r.media_type === "images" ? "图文" : "视频") + durText;
   const cover = r.cover_url
-    ? `<img class="ncard-cover" src="${esc(safeMediaUrl(r.cover_url))}" alt="${esc((r.desc || "笔记").slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy" onclick="openPreview(${r.id})">`
-    : `<div class="ncard-cover ph" onclick="openPreview(${r.id})">${ic("i-image")}</div>`;
+    ? `<img class="ncard-cover" src="${esc(safeMediaUrl(r.cover_url))}" alt="${esc((r.desc || "作品").slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy" onclick="openPreview(${r.id})">`
+    : `<div class="ncard-cover ph" onclick="openPreview(${r.id})">${ic(r.media_type === "images" ? "i-image" : "i-film")}</div>`;
+  const hasLocal = Boolean(String(r.local_path || "").trim());
+  const canPickRepost = ["douyin", "bilibili", "instagram", "twitter"].includes(PLATFORM) && r.download_status === "done";
   return `<div class="ncard">
     ${cover}
-    <span class="ncard-type">${ic(typeIc)}${typeLabel}</span>
-    <label class="ncard-selection" title="选择这条笔记"><input type="checkbox" class="ncard-sel" data-id="${r.id}" aria-label="选择这条笔记" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></label>
+    <span class="ncard-type">${ic(typeIc)}${esc(typeLabel)}</span>
+    <label class="ncard-selection" title="选择这条作品"><input type="checkbox" class="ncard-sel" data-id="${r.id}" aria-label="选择这条作品" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></label>
     <div class="ncard-body">
-      <p class="ncard-title">${esc(r.desc || "(无标题)")}</p>
+      <p class="ncard-title" style="cursor:pointer" onclick="openPreview(${r.id})">${esc(r.desc || "(无标题)")}</p>
       ${srcOf(r)}
       <div class="ncard-captured"><span class="content-origin-label">抓取入库</span>${contentCapturedTime(r.captured_at)}</div>
       <div class="ncard-foot">
-        <span>发布 · ${fmtTime(r.create_time)}</span>
-        <span class="like">${ic("i-heart")}${fmtNum(r.like_count)}</span>
+        <span>${fmtTime(r.create_time)}</span>
+        <span class="like">${ic("i-heart")}${fmtNum(r.like_count)} · 💬${fmtNum(r.comment_count)}</span>
       </div>
       <div class="ncard-actions">
         <span class="pill ${r.download_status}" style="flex:1;justify-content:center" title="${esc(r.error || "")}">${contentStatusLabel(r.download_status)}${r.error ? " ⓘ" : ""}</span>
+        ${hasLocal ? `<button class="ghost sm" style="flex:0 0 auto" onclick="revealContentPath(${r.id},this)" title="打开文件夹">${ic("i-folder")}</button>` : ""}
         ${["failed", "skipped"].includes(r.download_status) ? `<button class="ghost sm" onclick="retryDl(${r.id})">${r.download_status === "skipped" ? "下载" : "重试"}</button>` : ""}
+        ${canPickRepost ? `<button class="ghost sm" onclick="pickRepostTarget(${r.id})">转发</button>` : ""}
         ${(PLATFORM === "xhs" && r.download_status === "done") ? `<button class="ghost sm" onclick="repostDouyin(${r.id})">发抖音</button>` : ""}
-        <button class="ghost sm danger" onclick="delContent(${r.id})">${ic("i-trash")}删除</button>
+        <button class="ghost sm danger" style="flex:0 0 auto" onclick="delContent(${r.id})" aria-label="删除">${ic("i-trash")}</button>
       </div>
     </div>
   </div>`;
@@ -8119,12 +8205,15 @@ async function refreshContents(resetPage = false) {
   if ($("content-filter-count")) $("content-filter-count").textContent =
     `显示 ${rows.length} / ${Number(meta.total || rows.length)}`;
   const xhs = PLATFORM === "xhs";
+  const useCards = effectiveContentViewMode() === "cards";
   $("content-title").textContent = xhs ? "笔记记录" : "作品记录";
-  $("content-table-wrap").style.display = xhs ? "none" : "";
-  $("content-cards").style.display = xhs ? "" : "none";
-  if (xhs) {
+  if ($("content-view-cards")) $("content-view-cards").classList.toggle("active", useCards);
+  if ($("content-view-table")) $("content-view-table").classList.toggle("active", !useCards);
+  $("content-table-wrap").style.display = useCards ? "none" : "";
+  $("content-cards").style.display = useCards ? "" : "none";
+  if (useCards) {
     $("content-cards").innerHTML = rows.map(noteCard).join("")
-      || `<div class="empty" style="columns:1">${ic("i-image")}<div class="empty-t">暂无笔记</div></div>`;
+      || `<div class="empty" style="columns:1">${ic("i-image")}<div class="empty-t">暂无作品记录</div></div>`;
     updateContentSelBar(); renderContentPager(meta);
     return;
   }
@@ -9215,7 +9304,7 @@ const PUB_ST = { draft: "待确认预约", pending: "排队中", publishing: "�
 const PUB_PILL = { draft: "pending", pending: "pending", publishing: "downloading", uncertain: "downloading", done: "done", failed: "failed", canceled: "invalid" };
 async function editPublish(id) {
   const task = PUBLISH_TASKS.find(x => x.id === id); if (!task) return;
-  const accounts = ACCOUNTS.filter(a => a.platform === task.platform);
+  const accounts = (ALL_ACCOUNTS.length ? ALL_ACCOUNTS : ACCOUNTS).filter(a => a.platform === task.platform);
   const accountOptions = accounts.map(a =>
     `<option value="${a.id}">${esc(a.nickname)}${a.has_creator ? " · 创作号" : ""}</option>`
   ).join("");
@@ -9315,15 +9404,17 @@ async function editPublish(id) {
 async function refreshPublish() {
   const isCurrent = beginViewRequest("publish");
   if (!$("pub-table")) return;
-  const rows = await api("/api/publish?platform=" + (pfHasPublish(PLATFORM) ? PLATFORM : "xhs"));
+  const rows = await api("/api/publish" + (GLOBAL_MODE ? "" : "?platform=" + (pfHasPublish(PLATFORM) ? PLATFORM : "xhs")));
   if (!isCurrent()) return;
   PUBLISH_TASKS = rows;
   if ($("tb-pub")) $("tb-pub").textContent = rows.length;
   $("pub-table").innerHTML = rows.map(t => {
-    const pubAcc = (ACCOUNTS.find(a => a.id === t.account_id) || {}).nickname || (t.account_id ? `账号 #${t.account_id}` : "—");
+    const accObj = (typeof findAnyAccount === "function" && findAnyAccount(t.account_id)) || ACCOUNTS.find(a => a.id === t.account_id);
+    const pubAcc = accObj ? (accObj.alias || accObj.nickname || `账号 #${t.account_id}`) : (t.account_id ? `账号 #${t.account_id}` : "—");
+    const pfBadge = GLOBAL_MODE ? `<span class="mx-mini-pf inline" style="margin-right:6px">${esc(PF_NAME[t.platform] || t.platform)}</span>` : "";
     return `<tr>
     <td class="wrap" style="max-width:240px"><b>${esc(t.title || "(无标题)")}</b></td>
-    <td>${esc(pubAcc)}</td>
+    <td>${pfBadge}${esc(pubAcc)}</td>
     <td>${t.platform === "twitter" && !(t.media_count || 0) ? "纯文本" : `${t.media_type === "video" ? "视频" : "图文"} · <span class="mut num">${t.media_count || 0}</span>`}</td>
     <td>${t.source_platform ? esc(PF_NAME[t.source_platform] || t.source_platform) + " 转发" : "手动"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>
@@ -10179,7 +10270,7 @@ async function refreshTaskQueueBadge() {
   const isCurrent = beginViewRequest("task-queue-badge");
   TASK_QUEUE_BADGE_LOADING = true;
   try {
-    const params = new URLSearchParams({ platform: PLATFORM, state: "active", page_size: "1" });
+    const params = new URLSearchParams({ platform: GLOBAL_MODE ? "all" : PLATFORM, state: "active", page_size: "1" });
     const data = await api("/api/task-queue?" + params.toString());
     if (!isCurrent() || CURRENT_TAB === "queue") return;
     globalThis.CreatorHubWorkbench?.queueSummary?.(data.summary || {});
@@ -10281,8 +10372,13 @@ $("collection-job-table").innerHTML = collectionTaskSkeleton(3);
 $("collection-content-list").innerHTML = collectionResultSkeleton(4);
 $("queue-table").innerHTML = skeleton(8);
 
+// restore last-selected platform & global mode BEFORE restoring tab so global-mode tab guards apply cleanly
+PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "rednote", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
+GLOBAL_MODE = (() => { try { const g = localStorage.getItem("dym-global"); return g === null ? true : g === "1"; } catch (e) { return true; } })();
+if ($("queue-platform") && GLOBAL_MODE) $("queue-platform").value = "all";
+
 // restore last-selected section (default: 总览);旧版四个独立页已并入「账号管理」
-const VALID_TABS = ["overview", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "tiktok-tools", "publish", "autocomment", "share-download", "notifications", "settings"];
+const VALID_TABS = ["overview", "media-hub", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "tiktok-tools", "publish", "autocomment", "share-download", "notifications", "settings"];
 const LEGACY_HUB_TABS = ["myworks", "following", "fans", "dm"];
 switchTab((() => {
   try {
@@ -10291,16 +10387,18 @@ switchTab((() => {
       window.CreatorHubOpenAssistant = true;
       return "overview";
     }
-    if (VALID_TABS.includes(hashTab)) return hashTab;
-    const t = localStorage.getItem("dym-tab");
-    if (LEGACY_HUB_TABS.includes(t)) { HUB_TAB = t; return "hub"; }
-    return VALID_TABS.includes(t) ? t : "overview";
+    const candidate = VALID_TABS.includes(hashTab)
+      ? hashTab
+      : (() => {
+          const t = localStorage.getItem("dym-tab");
+          if (LEGACY_HUB_TABS.includes(t)) { HUB_TAB = t; return "hub"; }
+          return VALID_TABS.includes(t) ? t : "overview";
+        })();
+    if (GLOBAL_MODE && SINGLE_PF_ONLY_TABS.includes(candidate)) return "overview";
+    return candidate;
   } catch (e) { return "overview"; }
 })());
 switchHubTab(HUB_TAB);   // 恢复上次停留的子标签(我的作品/关注/粉丝/私信)
-
-// restore last-selected platform (default: 抖音)
-PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "rednote", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
 applyPlatformUI();
 updateTaskQueuePlatformLabel();
 
@@ -10359,21 +10457,57 @@ window.addEventListener("scroll", () => {
 }, { passive: true });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loop(); });
 
+function launchPlatformLogin(pf, mode = "main") {
+  if (pf && pf !== "all" && PLATFORM !== pf) {
+    PLATFORM = pf;
+    ACCOUNTS = ALL_ACCOUNTS.filter(a => a.platform === PLATFORM);
+    applyPlatformUI();
+  }
+  if (mode === "cookie") {
+    toggleCookie();
+    requestAnimationFrame(() => $("ck-val")?.focus());
+    return;
+  }
+  const creator = mode === "creator";
+  if (pf === "xhs") return creator ? startXhsCreatorLogin() : startXhsLogin();
+  if (pf === "rednote") return creator ? startRednoteCreatorLogin() : startRednoteLogin();
+  if (pf === "kuaishou") return creator ? startKsCreatorLogin() : startKsLogin();
+  if (pf === "shipinhao") return startChannelsLogin();
+  if (pf === "tiktok") return startTikTokLogin();
+  if (pf === "bilibili") return startBilibiliLogin();
+  if (pf === "instagram") return startInstagramLogin();
+  if (pf === "twitter") return startTwitterLogin();
+  return creator ? startCreatorLogin() : startLogin();
+}
+
 // Narrow bridge for React islands; business mutations remain in their original handlers.
 window.CreatorHubBridge = {
   selectPlatform: switchPlatform,
-  getContext: () => ({ tab: CURRENT_TAB, platform: PLATFORM }),
+  getContext: () => ({ tab: CURRENT_TAB, platform: PLATFORM, scope: GLOBAL_MODE ? "all" : PLATFORM, globalMode: GLOBAL_MODE }),
   getAgentContext() {
     const job = CURRENT_TAB === "collections" && COLLECTION_JOB_ID
       ? COLLECTION_JOBS.find(item => item.id === COLLECTION_JOB_ID && item.platform === PLATFORM) : null;
-    return { tab: CURRENT_TAB, platform: PLATFORM, title: (PAGE_META[CURRENT_TAB] || PAGE_META.overview).title,
+    return { tab: CURRENT_TAB, platform: GLOBAL_MODE ? "all" : PLATFORM, title: (PAGE_META[CURRENT_TAB] || PAGE_META.overview).title,
       task: job ? { task_type: "collections", id: job.id, platform: job.platform, status: job.status } : null };
   },
   navigate: switchTab,
   openAccount: openAccountHub,
-  openQueue(state) {
-    // The overview summary describes this platform, not the user's previous scope.
-    if ($("queue-platform")) { $("queue-platform").value = "current"; $("queue-platform")._csSync?.(); }
+  openAggregatedDm,
+  launchPlatformLogin,
+  accountActions: {
+    openBrowser: id => openAccountBrowser(Number(id)),
+    relogin: (id, scope = "auto") => relogin(Number(id), scope),
+    refreshProfile: id => refreshProfile(Number(id)),
+    setProxy: id => setProxy(Number(id)),
+    testProxy: id => testProxy(Number(id)),
+    setBrowserBackend: id => setBrowserBackend(Number(id)),
+    manageFingerprint: id => manageFingerprint(Number(id)),
+    checkEnvironment: id => checkBrowserEnvironment(Number(id)),
+    delAccount: id => delAccount(Number(id)),
+    refreshAll: () => { refreshAccounts(); refreshProxies(); },
+  },
+  openQueue(state, allPlatforms = GLOBAL_MODE) {
+    if ($("queue-platform")) { $("queue-platform").value = allPlatforms ? "all" : "current"; $("queue-platform")._csSync?.(); }
     $("queue-state").value = state; $("queue-state")._csSync?.();
     $("queue-query").value = ""; $("queue-type").value = ""; $("queue-type")._csSync?.();
     TASK_QUEUE_PAGE = 1;
@@ -10381,14 +10515,15 @@ window.CreatorHubBridge = {
   },
   async retry() {
     const refreshers = {
-      overview: [refreshOverviewSummary, refreshOverviewChart, refreshTaskQueueBadge],
-      accounts: [refreshAccounts, refreshBrowserRuntimes, refreshProxies],
+      overview: [refreshOverviewSummary, refreshOverviewChart, refreshTaskQueueBadge, () => window.dispatchEvent(new Event("creatorhub:matrix:refresh"))],
+      "media-hub": [() => window.dispatchEvent(new Event("creatorhub:matrix:refresh"))],
+      accounts: [refreshAccounts, refreshBrowserRuntimes, refreshProxies, () => window.dispatchEvent(new Event("creatorhub:matrix:refresh"))],
       monitors: [refreshMonitors, refreshContents], comments: [refreshWatches, refreshComments],
       danmaku: [refreshDanmakuWatches, refreshDanmaku], collections: [refreshCollections],
-      queue: [refreshTaskQueue], publish: [refreshPublish],
+      queue: [refreshTaskQueue], publish: [refreshPublish, () => window.dispatchEvent(new Event("creatorhub:matrix:refresh"))],
       autocomment: [refreshCommentRules, refreshCommentTasks],
       notifications: [refreshChannels, refreshWebhooks], settings: [loadSettings],
-      "risk-control": [refreshRiskCenter], hub: [refreshHubSummary, refreshHubPanel],
+      "risk-control": [refreshRiskCenter], hub: [refreshHubSummary, refreshHubPanel, () => window.dispatchEvent(new Event("creatorhub:matrix:refresh"))],
       "share-download": [refreshShareHistory],
     };
     await Promise.allSettled((refreshers[CURRENT_TAB] || []).map(fn => Promise.resolve().then(() => fn())));

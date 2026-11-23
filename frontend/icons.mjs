@@ -17,6 +17,7 @@ export const icons = {
   cookie: "key-round", fingerprint: "fingerprint", network: "network", globe: "globe",
   alert: "circle-alert", offline: "wifi-off", chevron: "chevron-down", edit: "square-pen",
   save: "save", sparkles: "sparkles", palette: "palette", scan: "scan-line", calendar: "calendar-days", link: "link",
+  star: "star", grid: "layout-grid", layers: "layers",
 };
 
 export async function buildIcons() {

@@ -25,7 +25,16 @@ button.ghost { box-shadow:none; }
 .brand-mark svg { width:19px; height:19px; }
 .badge-lite { display:none; }
 .brand-sub { font-size:11px; letter-spacing:.3px; color:var(--mut); }
-.brand { flex-basis:calc(var(--sidebar-w) - 20px); }
+.brand { flex:0 0 auto; white-space:nowrap; }
+.header-actions, button.command-trigger, .theme-switch, .engine { flex-shrink:0; white-space:nowrap; }
+@media(min-width:861px) {
+  .header-inner { flex-wrap:nowrap; gap:12px; }
+  .pswitch { flex:0 1 auto; min-width:0; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; }
+  .pswitch::-webkit-scrollbar { display:none; }
+}
+@media(max-width:1380px) and (min-width:1101px) {
+  button.command-trigger kbd { display:none; }
+}
 .nav { gap:4px; }
 .navitem { border-radius:10px; font-size:13.5px; padding:9px 13px; min-height:40px; gap:11px; }
 .navitem.active {
@@ -1431,10 +1440,10 @@ button, input, textarea, select, .cs-trg, .dt-trg { border-radius:10px; }
 /* Typography, icon-to-text gap & component rhythm unification across panels, forms, and object tables */
 button { gap:7px; }
 button.sm { padding:6px 12px; gap:6px; }
-.header-actions { gap:10px; }
-.pswitch { padding:4px; gap:4px; }
-.pswitch button { padding:7px 15px; gap:7px; }
-.theme-switch { padding:3px; gap:3px; }
+.header-actions { gap:8px; }
+.pswitch { padding:3px; gap:2px; }
+.pswitch button { padding:5px 10px; min-height:32px; gap:5px; font-size:12.5px; }
+.theme-switch { padding:3px; gap:2px; }
 .shell main { gap:16px; }
 main .card-head {
   padding-bottom:11px;
@@ -1496,6 +1505,32 @@ label.field,
 .wb-char-count { margin-left:auto; }
 .wb-publish-layout > .stack { gap:16px; }
 input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
+textarea,
+select,
+.cs-trg,
+.dt-trg {
+  border-color:color-mix(in srgb,var(--line) 82%,var(--control-line) 28%);
+  background-color:var(--control-bg);
+  box-shadow:inset 0 1px 1.5px rgba(20,22,28,.03),0 1px 0 var(--glass-rim);
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):hover:not(:disabled),
+textarea:hover:not(:disabled),
+select:hover:not(:disabled),
+.cs-trg:hover:not(:disabled),
+.dt-trg:hover:not(:disabled) {
+  border-color:color-mix(in srgb,var(--line) 48%,var(--fg));
+  background-color:var(--control-bg-hover);
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]):focus,
+textarea:focus,
+select:focus,
+.cs.open .cs-trg,
+.dt.open .dt-trg {
+  border-color:var(--acc);
+  background-color:var(--surface);
+  box-shadow:0 0 0 3px var(--acc-ring);
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
 select,
 .cs-trg,
 .dt-trg {
@@ -1503,6 +1538,25 @@ select,
   line-height:1.4;
   padding-top:8px;
   padding-bottom:8px;
+}
+label.check-row,
+.check-row {
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  min-height:var(--control-h);
+  margin:0;
+  font-size:13px;
+  font-weight:520;
+  color:var(--fg);
+  cursor:pointer;
+  user-select:none;
+}
+.form-actions .check-row { min-height:36px; }
+@media(min-width:961px) {
+  .form-grid.tk-search-grid {
+    grid-template-columns:minmax(170px,1.15fr) minmax(200px,1.45fr) minmax(110px,.6fr) auto;
+  }
 }
 
 /* Consistent button height and baseline inside form action bars */

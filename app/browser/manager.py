@@ -459,7 +459,7 @@ class BrowserManager:
         )
 
     def environment_check_status(self, identity: Identity) -> Dict[str, Any]:
-        """Return the BrowserScan prompt state without launching a browser.
+        """Return the environment-check prompt state without launching a browser.
 
         A marker is valid only for the complete environment signature. Changing
         runtime, proxy, viewport or fingerprint settings therefore makes the
@@ -469,7 +469,7 @@ class BrowserManager:
         enabled = effective == FINGERPRINT_CHROMIUM_BACKEND
         base: Dict[str, Any] = {
             "enabled": enabled,
-            "provider": "BrowserScan",
+            "provider": "environment-check",
             "url": ENVIRONMENT_CHECK_URL,
             "required": False,
             "last_opened_at": None,
@@ -508,7 +508,7 @@ class BrowserManager:
             "version": _ENVIRONMENT_CHECK_MARKER_VERSION,
             "signature": self._environment_check_signature(identity),
             "opened_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "provider": "BrowserScan",
+            "provider": "environment-check",
             "url": ENVIRONMENT_CHECK_URL,
         }
         temporary = marker_path.with_suffix(".tmp")
@@ -521,7 +521,7 @@ class BrowserManager:
     async def open_environment_check(
             self, identity: Identity, *, context: BrowserContext | None = None,
             force: bool = False, bring_to_front: bool = False):
-        """Open BrowserScan in a separate tab for a fingerprint environment.
+        """Open the environment diagnostic page in a separate tab.
 
         The native startup ``about:blank`` tab is intentionally preserved. XHS
         login relies on that tab for its first platform navigation; consuming it
@@ -534,8 +534,8 @@ class BrowserManager:
         ctx = context or await self.context_for(identity)
         page = await ctx.new_page()
         try:
-            # ``commit`` keeps the login path responsive while BrowserScan
-            # continues rendering its detailed checks in the visible tab.
+            # ``commit`` keeps the login path responsive while the diagnostic
+            # page continues rendering its detailed checks in the visible tab.
             await page.goto(
                 ENVIRONMENT_CHECK_URL, wait_until="commit", timeout=12_000)
             self._mark_environment_check_opened(identity)

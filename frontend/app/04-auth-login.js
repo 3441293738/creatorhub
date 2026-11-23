@@ -52,7 +52,7 @@ async function choosePreLoginBrowserBackend({ platform = "" } = {}) {
     title: "选择扫码登录环境",
     hint: localOnly
       ? "小红书固定使用系统 Chrome/CDP 原生环境；扫码、Cookie 和后续任务共用同一持久 Profile。"
-      : "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。新的指纹环境会同时打开 BrowserScan 体检标签。",
+      : "扫码、Cookie 落地和后续账号任务将使用同一浏览器内核。新的指纹环境会同时打开环境体检标签。",
     options,
     value: localOnly ? "local" : preLoginBrowserBackend,
   });

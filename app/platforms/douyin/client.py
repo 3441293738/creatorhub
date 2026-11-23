@@ -112,7 +112,7 @@ class DouyinClient:
                                 or f"{self.locale},{self.locale.split('-', 1)[0]};q=0.9")
         self.screen_width = max(320, int(screen_width or 1536))
         self.screen_height = max(240, int(screen_height or 864))
-        self.impersonate = impersonate_for_ua(user_agent)  # TLS 指纹复刻,绕 JA3 风控
+        self.impersonate = impersonate_for_ua(user_agent)  # 对齐浏览器 TLS 握手指纹
         self._session: AsyncSession | None = None
         self._ms_token: str | None = None
         self._token_source = ""

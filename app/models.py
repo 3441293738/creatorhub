@@ -134,6 +134,24 @@ class DouyinAccount(SQLModel, table=True):
     browser_backend: str = "default"
     # fingerprint_chromium 下绑定的具体内核运行时；空=跟随默认内核。
     browser_runtime_id: str = ""
+    # ── 矩阵组织、职能角色与展示排序 ──
+    alias: str = ""                                     # 内部备注名(优先展示/搜索)
+    group_name: str = Field(default="", index=True)     # 跨平台矩阵组 / 业务分组名
+    tags: str = "[]"                                    # JSON 字符串数组,多维标签
+    account_role: str = Field(default="hybrid", index=True)  # publish | crawler | hybrid
+    pinned: bool = Field(default=False, index=True)     # 置顶标记
+    sort_order: int = 0                                 # 自定义排序权重
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class MatrixGroup(SQLModel, table=True):
+    """跨平台账号矩阵组 / IP 人设组配置。"""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(default="", index=True, unique=True)
+    color: str = "blue"             # blue | rose | emerald | amber | violet | cyan
+    description: str = ""           # 人设定位 / 运营备注
+    preferred_country: str = ""     # 期望代理国家/地区代码(可选)
+    sort_order: int = 0
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

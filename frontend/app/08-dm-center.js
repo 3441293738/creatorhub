@@ -420,7 +420,7 @@ async function refreshProfile(id) {
   await refreshAccounts();
 }
 async function setProxy(id) {
-  const a = ACCOUNTS.find(x => x.id === id);
+  const a = findAnyAccount(id);
   let opts = [];
   try { opts = await api("/api/proxies/options"); } catch (e) { }
   const cur = a && a.has_proxy ? a.proxy : "";
@@ -461,7 +461,7 @@ async function setProxy(id) {
 }
 
 async function setBrowserBackend(id) {
-  const account = ACCOUNTS.find(item => item.id === id);
+  const account = findAnyAccount(id);
   if (!account) return;
   let catalog;
   try {
@@ -819,7 +819,7 @@ function uiFingerprintEditor(account, fp, options = {}) {
 }
 
 async function manageFingerprint(id) {
-  const account = ACCOUNTS.find(item => item.id === id);
+  const account = findAnyAccount(id);
   if (!account) return;
   let current;
   try { current = await api(`/api/accounts/${id}/fingerprint`); }

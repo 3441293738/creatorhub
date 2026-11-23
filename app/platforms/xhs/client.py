@@ -6,7 +6,7 @@
 签名、请求字段与会话约定需要一起验证，
 本地签名函数可运行并不代表平台当前接受该请求。
 
-⚠️ TLS 指纹:走 curl_cffi 的 impersonate,复刻真实 Chrome 的 JA3/HTTP2 指纹。
+⚠️ TLS 指纹:走 curl_cffi 的 impersonate,对齐真实浏览器的 JA3/HTTP2 特征。
 纯 httpx 的 TLS 指纹与浏览器不同,容易被风控按"非浏览器客户端"识别;impersonate
 版本按下方 UA 的 Chrome 大版本自动选最接近的目标,UA 升级后无需改这里。
 """
@@ -68,7 +68,7 @@ class XhsApiClient:
         self.timeout = timeout
         # 规范化:裸 host:port 补成 http://...(curl_cffi 必须带 scheme)
         self.proxy = normalize_proxy(proxy) or None  # 该账号专属代理(防多账号同 IP 关联)
-        self.impersonate = impersonate_for_ua(user_agent)  # TLS/HTTP2 指纹复刻目标
+        self.impersonate = impersonate_for_ua(user_agent)  # TLS/HTTP2 浏览器特征目标
         coherent = _coherent_direct_headers(user_agent, self.impersonate)
         self._signer = Xhshow()
         self.base_headers = {

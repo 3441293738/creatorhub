@@ -244,7 +244,7 @@ def generate_xsc(a1: str, api: str, data="") -> dict:
 
 def cos_signature(message: str, file_id: str, content_length: int,
                   host: str = "ros-upload.xiaohongshu.com") -> str:
-    """复刻 static/xhs_creator_signature.js 的 getSignature(腾讯云 COS 风格 HMAC-SHA1)。"""
+    """计算对象存储上传请求签名（与 static/xhs_creator_signature.js 保持一致的 HMAC-SHA1 规范）。"""
     k1 = hmac.new(b"null", message.encode(), hashlib.sha1).hexdigest()
     new_message = (f"put\n/spectrum/{file_id}\n\n"
                    f"content-length={content_length}&host={host}\n")

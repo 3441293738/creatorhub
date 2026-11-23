@@ -35,17 +35,17 @@ class Scene:
 
 
 SCENES = (
-    Scene("overview-douyin.png", "overview", "#stat-acc", theme="dark"),
-    Scene("overview-xiaohongshu.png", "overview", "#stat-acc", platform="xhs"),
-    Scene("accounts-list.png", "accounts", "#acc-table [data-account-detail]"),
+    Scene("overview-douyin.png", "overview", ".mx-overview", theme="dark"),
+    Scene("overview-xiaohongshu.png", "overview", ".mx-overview", platform="xhs"),
+    Scene("accounts-list.png", "accounts", ".mx-acc-wrap"),
     Scene("accounts-proxy.png", "accounts", "#proxy-table tbody tr", subtab="代理池"),
     Scene("monitor-posts.png", "monitors", "#content-table input[data-id]", subtab="作品记录"),
     Scene("monitor-create.png", "monitors", "#mon-table button", action="monitor"),
     Scene("monitor-comments.png", "comments", "#comment-table input[data-id]", subtab="评论记录"),
-    Scene("publish-workflow.png", "publish", "#pub-title", action="publish"),
+    Scene("publish-workflow.png", "publish", "#pub-title", subtab="撰写内容", action="publish"),
     Scene("share-download.png", "share-download", "#sd-history-body input[data-id]", action="download"),
     Scene("autocomment-rules.png", "autocomment", "#ac-rule-table tr"),
-    Scene("account-hub-dm.png", "hub", "#hub-acc", theme="dark", action="dm"),
+    Scene("account-hub-dm.png", "hub", "#hub-acc", theme="dark", subtab="单账号精细管理", action="dm"),
 )
 
 

@@ -35,6 +35,7 @@ dist/
 # AI 本地技能与规则配置(不随仓库发布)
 .claude/
 .agents/
+.superpowers/
 GEMINI.md
 AGENTS.md
 
@@ -53,5 +54,5 @@ assets/brand/
 # 本地忽略的临时目录
 _ref/
 
-# pytest 临时目录(系统临时目录不可写时会落到项目根目录)
+# 本地临时缓存目录
 pytest-of-*/

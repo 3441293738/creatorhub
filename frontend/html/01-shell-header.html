@@ -97,9 +97,10 @@
     </div>
   </div>
   <div class="pswitch" role="tablist" aria-label="平台切换">
+    <button role="tab" data-pf="all" data-base-label="全平台" onclick="switchPlatform('all')" title="跨 9 大平台全局汇总与矩阵管理"><svg class="ps-ic" aria-hidden="true"><use href="#i-globe"/></svg><span class="ps-lbl">全平台</span></button>
     <button role="tab" data-pf="douyin" onclick="switchPlatform('douyin')">抖音</button>
     <button role="tab" data-pf="xhs" onclick="switchPlatform('xhs')">小红书</button>
-    <button role="tab" data-pf="rednote" onclick="switchPlatform('rednote')">海外小红书</button>
+    <button role="tab" data-pf="rednote" onclick="switchPlatform('rednote')" title="海外小红书 (Rednote)">海外小红书</button>
     <button role="tab" data-pf="kuaishou" onclick="switchPlatform('kuaishou')">快手</button>
     <button role="tab" data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
     <button role="tab" data-pf="tiktok" onclick="switchPlatform('tiktok')">TikTok</button>
@@ -115,7 +116,7 @@
       <button type="button" data-theme-choice="system" aria-label="跟随系统主题" aria-pressed="true" title="跟随系统"><svg aria-hidden="true"><use href="#i-monitor"/></svg></button>
     </div>
   </div>
-  <span class="engine" id="engine-status" role="status" aria-live="polite" title="后台任务引擎正在运行"><span class="dot live"></span><span class="engine-label">引擎运行中</span></span>
+  <span class="engine" id="engine-status" role="status" aria-live="polite" title="后台任务引擎正在运行"><span class="dot live"></span><span class="engine-label">服务已连接</span></span>
   </div>
 </header>
 
@@ -124,24 +125,25 @@
 <aside class="sidebar" id="main-sidebar" aria-label="功能导航">
   <div class="sidebar-mobile-head"><b>工作台导航</b><button class="ghost" id="nav-close" type="button" aria-label="关闭导航"><svg aria-hidden="true"><use href="#i-x"/></svg></button></div>
   <nav class="nav" aria-label="主导航">
-    <button class="navitem" data-tab="overview" onclick="switchTab('overview', true)"><svg><use href="#i-overview"/></svg><span class="nav-label">工作概览</span></button>
-    <button class="navitem" data-tab="accounts" onclick="switchTab('accounts', true)"><svg><use href="#i-card"/></svg><span class="nav-label">平台账号</span><span class="nav-badge" id="tb-acc">0</span></button>
-    <button class="navitem notsh-only" data-tab="monitors" onclick="switchTab('monitors', true)"><svg><use href="#i-target"/></svg><span class="nav-label">作品监控</span><span class="nav-badge" id="tb-mon">0</span></button>
-    <button class="navitem collect-only" data-tab="collections" onclick="switchTab('collections', true)"><svg><use href="#i-hash"/></svg><span class="nav-label" id="nav-collections-label">关键词采集</span><span class="nav-badge" id="tb-col">0</span></button>
-    <button class="navitem notsh-only" data-tab="comments" onclick="switchTab('comments', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">评论监控</span><span class="nav-badge" id="tb-watch">0</span></button>
-    <button class="navitem danmaku-only" data-tab="danmaku" onclick="switchTab('danmaku', true)"><svg><use href="#i-captions"/></svg><span class="nav-label">弹幕监控</span><span class="nav-badge" id="tb-danmaku">0</span></button>
-    <div class="nav-sep">本账号</div>
-    <button class="navitem" data-tab="hub" onclick="switchTab('hub', true)"><svg><use href="#i-library"/></svg><span class="nav-label">本账号管理</span></button>
-    <div class="nav-sep">工具</div>
+    <button class="navitem" data-tab="overview" onclick="switchTab('overview', true)"><svg><use href="#i-overview"/></svg><span class="nav-label">指挥概览</span></button>
+    <button class="navitem" data-tab="media-hub" onclick="switchTab('media-hub', true)"><svg><use href="#i-image"/></svg><span class="nav-label">汇总预览库</span></button>
+    <button class="navitem" data-tab="accounts" onclick="switchTab('accounts', true)"><svg><use href="#i-card"/></svg><span class="nav-label">账号矩阵</span><span class="nav-badge" id="tb-acc">0</span></button>
+    <div class="nav-sep single-pf-only" id="nav-sep-collect">采集与监控</div>
+    <button class="navitem single-pf-only notsh-only" data-tab="monitors" onclick="switchTab('monitors', true)"><svg><use href="#i-target"/></svg><span class="nav-label">作品监控</span><span class="nav-badge" id="tb-mon">0</span></button>
+    <button class="navitem single-pf-only collect-only" data-tab="collections" onclick="switchTab('collections', true)"><svg><use href="#i-hash"/></svg><span class="nav-label" id="nav-collections-label">关键词采集</span><span class="nav-badge" id="tb-col">0</span></button>
+    <button class="navitem single-pf-only notsh-only" data-tab="comments" onclick="switchTab('comments', true)"><svg><use href="#i-msg"/></svg><span class="nav-label">评论监控</span><span class="nav-badge" id="tb-watch">0</span></button>
+    <button class="navitem single-pf-only danmaku-only" data-tab="danmaku" onclick="switchTab('danmaku', true)"><svg><use href="#i-captions"/></svg><span class="nav-label">弹幕监控</span><span class="nav-badge" id="tb-danmaku">0</span></button>
+    <div class="nav-sep">运营与分发</div>
+    <button class="navitem" data-tab="hub" onclick="switchTab('hub', true)"><svg><use href="#i-library"/></svg><span class="nav-label" id="nav-hub-label">矩阵数据与私信</span></button>
+    <button class="navitem single-pf-only tk-only" data-tab="tiktok-tools" onclick="switchTab('tiktok-tools', true)"><svg><use href="#i-user"/></svg><span class="nav-label">用户互动</span></button>
+    <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish', true)"><svg><use href="#i-send"/></svg><span class="nav-label" id="nav-publish-label">内容发布</span><span class="nav-badge" id="tb-pub">0</span></button>
+    <button class="navitem single-pf-only notsh-only tk-hide rn-hide" data-tab="autocomment" onclick="switchTab('autocomment', true)"><svg><use href="#i-automation"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
     <button class="navitem" data-tab="queue" onclick="switchTab('queue', true)"><svg><use href="#i-list"/></svg><span class="nav-label">任务队列</span><span class="nav-badge" id="tb-queue">0</span></button>
-    <button class="navitem tk-only" data-tab="tiktok-tools" onclick="switchTab('tiktok-tools', true)"><svg><use href="#i-user"/></svg><span class="nav-label">用户互动</span></button>
-    <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish', true)"><svg><use href="#i-send"/></svg><span class="nav-label">发布</span><span class="nav-badge" id="tb-pub">0</span></button>
-    <button class="navitem notsh-only tk-hide rn-hide" data-tab="autocomment" onclick="switchTab('autocomment', true)"><svg><use href="#i-automation"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
     <button class="navitem" data-tab="share-download" onclick="switchTab('share-download', true)"><svg><use href="#i-download"/></svg><span class="nav-label">链接下载</span></button>
-    <button class="navitem" data-tab="notifications" onclick="switchTab('notifications', true)"><svg><use href="#i-bell"/></svg><span class="nav-label">通知</span></button>
-    <button class="navitem" data-tab="settings" onclick="switchTab('settings', true)"><svg><use href="#i-settings"/></svg><span class="nav-label">设置</span></button>
-    <div class="nav-sep">安全</div>
+    <div class="nav-sep">安全与系统</div>
     <button class="navitem" data-tab="risk-control" onclick="switchTab('risk-control', true)"><svg><use href="#i-shield"/></svg><span class="nav-label">风控中心</span><span class="nav-badge" id="tb-risk">0</span></button>
+    <button class="navitem" data-tab="notifications" onclick="switchTab('notifications', true)"><svg><use href="#i-bell"/></svg><span class="nav-label">通知渠道</span></button>
+    <button class="navitem" data-tab="settings" onclick="switchTab('settings', true)"><svg><use href="#i-settings"/></svg><span class="nav-label">系统设置</span></button>
   </nav>
 </aside>
 <main id="main-content" tabindex="-1">

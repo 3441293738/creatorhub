@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Icon, Tabs } from "./ui/primitives";
+import { Icon, Tabs, SelectBox } from "./ui/primitives";
 import { selectionMarker } from "./ui/motion";
 import { ModelDirectory, ModelPicker } from "./agent-models";
 import { ChannelList, channelName } from "./agent-channels";
@@ -338,10 +338,14 @@ export function AgentAssistant({ page }) {
         {streamIssue && <div className="agent-notice agent-banner agent-stream-issue" role="status">{streamIssue}</div>}
         {notice && <div className="agent-notice agent-banner" role="status">{notice}</div>}
         <div className="agent-chat-toolbar" hidden={view !== "chat"}>
-          <label htmlFor="agent-active-channel"><span>当前渠道</span><select id="agent-active-channel" value={activeChannelId} disabled={busy || dirty || addingModel}
-            onChange={event => activateChannel(event.target.value)}>{channels.map(item => <option key={item.id} value={item.id} disabled={!item.base_url || !item.model}>{channelName(item)}{!item.enabled ? "（未启用）" : ""}</option>)}</select></label>
-          <label htmlFor="agent-chat-model"><span>本次模型</span><select id="agent-chat-model" value={chatModel} disabled={busy || dirty || addingModel || !modelChoices.length} onChange={event => setChatModel(event.target.value)}>
-            {!modelChoices.length && <option value="">请先配置模型</option>}{modelChoices.map(item => <option key={item.id} value={item.id}>{item.name || item.id}</option>)}</select></label>
+          <div className="agent-toolbar-field"><label htmlFor="agent-active-channel">当前渠道</label>
+            <SelectBox id="agent-active-channel" full value={activeChannelId} disabled={busy || dirty || addingModel}
+              onChange={val => activateChannel(val)}
+              options={channels.map(item => ({ value: item.id, label: `${channelName(item)}${!item.enabled ? "（未启用）" : ""}`, disabled: !item.base_url || !item.model }))} /></div>
+          <div className="agent-toolbar-field"><label htmlFor="agent-chat-model">本次模型</label>
+            <SelectBox id="agent-chat-model" full value={chatModel} disabled={busy || dirty || addingModel || !modelChoices.length}
+              onChange={val => setChatModel(val)}
+              options={modelChoices.length ? modelChoices.map(item => ({ value: item.id, label: item.name || item.id })) : [{ value: "", label: "请先配置模型" }]} /></div>
           <button type="button" className="ghost agent-icon-button" disabled={busy || running(run)} aria-label="新建对话" title="新建对话（保留输入草稿）" onClick={newConversation}><Icon name="plus" /></button>
         </div>
         <div className="agent-scroll" ref={scroll} onScroll={() => {
@@ -352,15 +356,36 @@ export function AgentAssistant({ page }) {
           <Tabs.Content value="chat" forceMount hidden={view !== "chat"} className="agent-chat">
             <details className="agent-chat-options" ref={chatOptions}><summary>对话选项 · {mode === "diagnose" ? "任务诊断" : mode === "workflow" ? "工作流草稿" : "数据问答"} · {platformText[platform] || "全平台"}</summary>
               <div className="agent-form">
-                <div className="agent-scope-row"><label htmlFor="agent-scope">分析范围</label><select id="agent-scope" value={scope} onChange={event => setScope(event.target.value)} disabled={busy}>
-                  <option value="follow">跟随当前页面 · {platformText[page.platform] || "全平台"}</option><option value="">全平台</option>{Object.entries(platformText).map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></div>
-                <div className="agent-fields"><label htmlFor="agent-mode">工作模式<select id="agent-mode" value={mode} onChange={event => setMode(event.target.value)} disabled={busy}>
-                  <option value="chat">数据问答 / 报告</option><option value="diagnose">任务诊断</option><option value="workflow">生成工作流草稿</option></select></label>
-                  <label htmlFor="agent-account">分析账号<select id="agent-account" value={account} onChange={event => { setAccount(event.target.value); setTask(""); }} disabled={busy}>
-                    <option value="">{platform ? "当前范围全部账号" : "全平台全部账号"}</option>{accounts.map(item => <option key={item.id} value={item.id}>#{item.id} · {item.nickname || "未命名"}{!platform ? ` · ${platformText[item.platform]}` : ""}</option>)}</select></label></div>
-                {mode === "diagnose" && <label htmlFor="agent-task">诊断任务<select id="agent-task" value={task} onChange={event => setTask(event.target.value)} disabled={busy}>
-                  <option value="">选择最近的任务</option>{availableTasks.map(item => <option key={`${item.task_type}:${item.id}`} value={`${item.task_type}:${item.id}`}>
-                    {taskText[item.task_type]} #{item.id} · {item.status || (item.enabled ? "启用" : "暂停")}{!platform && item.platform ? ` · ${platformText[item.platform]}` : ""}{item.error || item.last_error ? " · 有错误记录" : ""}</option>)}</select></label>}
+                <div className="agent-scope-row"><label htmlFor="agent-scope">分析范围</label>
+                  <SelectBox id="agent-scope" full value={scope} onChange={val => setScope(val)} disabled={busy}
+                    options={[
+                      { value: "follow", label: `跟随当前页面 · ${platformText[page.platform] || "全平台"}` },
+                      { value: "", label: "全平台" },
+                      ...Object.entries(platformText).map(([key, name]) => ({ value: key, label: name })),
+                    ]} /></div>
+                <div className="agent-fields">
+                  <div className="agent-field-stack"><label htmlFor="agent-mode">工作模式</label>
+                    <SelectBox id="agent-mode" full value={mode} onChange={val => setMode(val)} disabled={busy}
+                      options={[
+                        { value: "chat", label: "数据问答 / 报告" },
+                        { value: "diagnose", label: "任务诊断" },
+                        { value: "workflow", label: "生成工作流草稿" },
+                      ]} /></div>
+                  <div className="agent-field-stack"><label htmlFor="agent-account">分析账号</label>
+                    <SelectBox id="agent-account" full value={account} onChange={val => { setAccount(val); setTask(""); }} disabled={busy}
+                      options={[
+                        { value: "", label: platform ? "当前范围全部账号" : "全平台全部账号" },
+                        ...accounts.map(item => ({ value: String(item.id), label: `#${item.id} · ${item.nickname || "未命名"}${!platform ? ` · ${platformText[item.platform]}` : ""}` })),
+                      ]} /></div></div>
+                {mode === "diagnose" && <div className="agent-field-stack"><label htmlFor="agent-task">诊断任务</label>
+                  <SelectBox id="agent-task" full value={task} onChange={val => setTask(val)} disabled={busy}
+                    options={[
+                      { value: "", label: "选择最近的任务" },
+                      ...availableTasks.map(item => ({
+                        value: `${item.task_type}:${item.id}`,
+                        label: `${taskText[item.task_type]} #${item.id} · ${item.status || (item.enabled ? "启用" : "暂停")}${!platform && item.platform ? ` · ${platformText[item.platform]}` : ""}${item.error || item.last_error ? " · 有错误记录" : ""}`,
+                      })),
+                    ]} /></div>}
                 <details className="agent-details agent-local-summary"><summary>本地数据摘要{metrics ? ` · ${metrics.accounts} 个账号 / ${total} 项任务` : ""}</summary>
                   <p className="field-help">近 7 天创建的任务中，失败 / 部分完成 / 结果不确定：{metrics ? failures : "—"} 项。按 UTC 创建时间筛选，统计当前状态，不代表历史成功率。数据未实时向平台刷新；账号选择仅限制本次分析。</p></details>
               </div>
@@ -402,8 +427,13 @@ export function AgentAssistant({ page }) {
               <label htmlFor="agent-base">API 地址<input id="agent-base" type="url" value={settings.base_url} maxLength={500} placeholder="https://HOST/v1" aria-describedby="agent-base-hint"
                 onChange={event => updateSetting("base_url", event.target.value)} disabled={busy} /></label>
               <p id="agent-base-hint" className="field-help agent-input-hint">可填域名或带 /v1 等前缀的基础地址，不带 /models 或查询参数。自动模式下，纯域名的推理接口使用 /v1 前缀；自定义根路径接口可在高级设置选「原样拼接」。</p>
-              <label htmlFor="agent-provider" className="agent-protocol-field">API 协议<select id="agent-provider" value={settings.provider} onChange={event => updateSetting("provider", event.target.value)} disabled={busy}>
-                <option value="openai_compatible">OpenAI Chat Completions</option><option value="openai_responses">OpenAI Responses</option><option value="anthropic">Anthropic Messages</option></select></label>
+              <div className="agent-field-stack agent-protocol-field"><label htmlFor="agent-provider">API 协议</label>
+                <SelectBox id="agent-provider" full value={settings.provider} onChange={val => updateSetting("provider", val)} disabled={busy}
+                  options={[
+                    { value: "openai_compatible", label: "OpenAI Chat Completions" },
+                    { value: "openai_responses", label: "OpenAI Responses" },
+                    { value: "anthropic", label: "Anthropic Messages" },
+                  ]} /></div>
               <label htmlFor="agent-key">API 密钥<input id="agent-key" type="password" autoComplete="off" value={settings.api_key} maxLength={4096}
                 placeholder={settings.api_key_set ? "已保存，留空保留" : "输入 API 密钥；本地无鉴权服务可留空"} onChange={event => updateSetting("api_key", event.target.value)} disabled={busy || settings.clear_api_key} /></label>
               {settings.api_key_set && <div className="agent-key-options"><label className="agent-check"><input type="checkbox" checked={settings.clear_api_key}
@@ -419,11 +449,12 @@ export function AgentAssistant({ page }) {
                   onRemove={id => updateSetting("models", settings.models.filter(item => item.id !== id))}
                   onEdit={item => { setEditingModel(item.id); setModelDraft({ id: item.id, name: item.name }); setModelDraftError(""); setAddingModel(true); }} />}
                 {!!settings.models.length && <label htmlFor="agent-model-catalog">当前使用的模型</label>}
-                <select id="agent-model-catalog" hidden={!settings.models.length} value={settings.models.some(item => item.id === settings.model) ? settings.model : ""}
-                  disabled={busy || !settings.models.length} onChange={event => { if (event.target.value) updateSetting("model", event.target.value); }} aria-describedby="agent-catalog-status">
-                  <option value="">{settings.models.length ? "选择模型，或在下方直接填写 ID" : "暂未添加模型"}</option>
-                  {settings.models.map(item => <option key={item.id} value={item.id}>{item.name && item.name !== item.id ? `${item.name} · ${item.id}` : item.id}</option>)}
-                </select>
+                <SelectBox id="agent-model-catalog" full hidden={!settings.models.length} value={settings.models.some(item => item.id === settings.model) ? settings.model : ""}
+                  disabled={busy || !settings.models.length} onChange={val => { if (val) updateSetting("model", val); }} ariaDescribedBy="agent-catalog-status"
+                  options={[
+                    { value: "", label: settings.models.length ? "选择模型，或在下方直接填写 ID" : "暂未添加模型" },
+                    ...settings.models.map(item => ({ value: item.id, label: item.name && item.name !== item.id ? `${item.name} · ${item.id}` : item.id })),
+                  ]} />
                 <p id="agent-catalog-status" className="field-help" role="status">{catalogLoading ? "正在读取上游模型目录…" : catalog
                   ? `本次获取 ${catalog.count} 个模型${catalog.truncated ? "（列表可能不完整）" : ""}${catalog.skipped ? `，已忽略 ${catalog.skipped} 个无效条目` : ""}。${catalog.count ? `目录共 ${settings.models.length} 个，勾选更新后再保存配置。` : "上游未返回可选模型，仍可手动填写模型 ID。"}${catalog.path_prefix_added ? "目录已使用 /v1/models 路径；推理路径由高级设置中的路径模式决定。" : ""}`
                   : settings.models.length ? `目录共 ${settings.models.length} 个模型。` : ""}</p>
@@ -449,14 +480,24 @@ export function AgentAssistant({ page }) {
               </div>
               <label className="agent-check"><input type="checkbox" checked={settings.enabled} onChange={event => updateSetting("enabled", event.target.checked)} disabled={busy} />启用 AI 助手</label>
               <details className="agent-details agent-advanced-settings"><summary>高级设置 · 工具调用与 MCP</summary><div className="agent-form">
-                <label htmlFor="agent-path-mode">推理接口路径<select id="agent-path-mode" value={settings.api_path_mode} onChange={event => updateSetting("api_path_mode", event.target.value)} disabled={busy}>
-                  <option value="auto">自动：纯域名补 /v1，已有前缀保留</option><option value="exact">原样拼接：保留自定义根路径</option></select></label>
+                <div className="agent-field-stack"><label htmlFor="agent-path-mode">推理接口路径</label>
+                  <SelectBox id="agent-path-mode" full value={settings.api_path_mode} onChange={val => updateSetting("api_path_mode", val)} disabled={busy}
+                    options={[
+                      { value: "auto", label: "自动：纯域名补 /v1，已有前缀保留" },
+                      { value: "exact", label: "原样拼接：保留自定义根路径" },
+                    ]} /></div>
                 <label className="agent-check"><input type="checkbox" checked={settings.tool_calling} onChange={event => updateSetting("tool_calling", event.target.checked)} disabled={busy} />模型支持原生工具调用</label>
                 <p className="field-help">模型目录不代表工具能力已通过验证。不支持工具调用时可关闭此项。</p>
-                <label htmlFor="agent-reasoning-mode">推理 / 思考请求<select id="agent-reasoning-mode" value={settings.reasoning_mode} onChange={event => updateSetting("reasoning_mode", event.target.value)} disabled={busy} aria-describedby="agent-reasoning-hint">
-                  <option value="default">跟随上游默认（不附加参数）</option>
-                  {settings.provider === "openai_responses" ? <option value="summary">请求可展示的推理摘要</option> : settings.provider === "anthropic" ? <><option value="adaptive">自适应思考（adaptive）</option><option value="enabled">预算思考（enabled，旧版模型）</option></> : <option value="enabled">启用 thinking 参数（如 DeepSeek 兼容接口）</option>}
-                </select></label>
+                <div className="agent-field-stack"><label htmlFor="agent-reasoning-mode">推理 / 思考请求</label>
+                  <SelectBox id="agent-reasoning-mode" full value={settings.reasoning_mode} onChange={val => updateSetting("reasoning_mode", val)} disabled={busy} ariaDescribedBy="agent-reasoning-hint"
+                    options={[
+                      { value: "default", label: "跟随上游默认（不附加参数）" },
+                      ...(settings.provider === "openai_responses"
+                        ? [{ value: "summary", label: "请求可展示的推理摘要" }]
+                        : settings.provider === "anthropic"
+                          ? [{ value: "adaptive", label: "自适应思考（adaptive）" }, { value: "enabled", label: "预算思考（enabled，旧版模型）" }]
+                          : [{ value: "enabled", label: "启用 thinking 参数（如 DeepSeek 兼容接口）" }]),
+                    ]} /></div>
                 <p id="agent-reasoning-hint" className="field-help">仅在所选模型与渠道支持时启用；可能增加耗时与消耗。所有模式均使用流式请求，随上游事件显示推理内容与回复。仅有加密内容或上游未返回时会明确提示；不生成模拟思考过程，也不回退到非流式。</p>
                 {settings.provider === "anthropic" && settings.reasoning_mode === "enabled" && <label htmlFor="agent-thinking-budget">思考预算（token）<input id="agent-thinking-budget" type="number" min="1024" max={Math.min(7168, settings.max_output_tokens - 1)} value={settings.thinking_budget} disabled={busy} onChange={event => updateSetting("thinking_budget", Number(event.target.value))} /><span className="field-help">预算须小于下方单次输出上限，给最终答复预留空间。</span></label>}
                 <div className="agent-fields agent-fields-3">
@@ -464,8 +505,12 @@ export function AgentAssistant({ page }) {
                   <label htmlFor="agent-timeout">单次超时（秒）<input id="agent-timeout" type="number" min="5" max="90" value={settings.timeout_seconds} onChange={event => updateSetting("timeout_seconds", Number(event.target.value))} disabled={busy} /></label>
                   <label htmlFor="agent-tokens">单次输出上限<input id="agent-tokens" type="number" min="256" max="8192" value={settings.max_output_tokens} onChange={event => updateSetting("max_output_tokens", Number(event.target.value))} disabled={busy} /></label>
                 </div>
-                <label htmlFor="agent-token-param">兼容接口输出参数<select id="agent-token-param" value={settings.output_token_parameter} onChange={event => updateSetting("output_token_parameter", event.target.value)} disabled={busy}>
-                  <option value="max_tokens">max_tokens</option><option value="max_completion_tokens">max_completion_tokens</option></select></label>
+                <div className="agent-field-stack"><label htmlFor="agent-token-param">兼容接口输出参数</label>
+                  <SelectBox id="agent-token-param" full value={settings.output_token_parameter} onChange={val => updateSetting("output_token_parameter", val)} disabled={busy}
+                    options={[
+                      { value: "max_tokens", label: "max_tokens" },
+                      { value: "max_completion_tokens", label: "max_completion_tokens" },
+                    ]} /></div>
               <label className="agent-check"><input type="checkbox" checked={settings.mcp_enabled} onChange={event => updateSetting("mcp_enabled", event.target.checked)} disabled={busy} />开放本机 MCP 查询</label>
               <p className="field-help">启用开关、工具调用和 MCP 随渠道保存与切换。MCP 使用独立 stdio 进程，仅开放 5 个查询工具。安装与客户端配置见使用指南。</p>
               </div></details>

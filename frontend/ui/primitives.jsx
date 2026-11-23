@@ -1,5 +1,4 @@
-// shadcn/ui composition, adapted to the existing semantic CSS and DOM forms.
-// https://ui.shadcn.com/docs/components/radix/{sheet,tabs,dropdown-menu}
+// Shared accessible dialog, menu, tabs, and select primitives built on Radix UI.
 import React, { useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Menu from "@radix-ui/react-dropdown-menu";
@@ -81,6 +80,86 @@ export function ActionMenu({ buttons, label = "更多操作", onOpenChange, trig
       </React.Fragment>)}
     </Menu.Content></Menu.Portal>
   </Menu.Root>;
+}
+
+export function SelectBox({
+  id,
+  value,
+  onChange,
+  options = [],
+  placeholder = "请选择",
+  ariaLabel,
+  ariaDescribedBy,
+  className = "",
+  full = false,
+  disabled = false,
+  hidden = false,
+  prefixIcon = null,
+}) {
+  const [open, setOpen] = useState(false);
+  if (hidden) return null;
+  const strVal = value === undefined || value === null ? "" : String(value);
+  const selected = options.find(opt => String(opt.value) === strVal) || null;
+  const displayLabel = selected ? selected.label : placeholder;
+  const leadIcon = selected?.icon || prefixIcon;
+  return (
+    <Menu.Root modal={false} open={open} onOpenChange={v => { if (!disabled) setOpen(v); }}>
+      <Menu.Trigger
+        id={id}
+        type="button"
+        disabled={disabled}
+        aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
+        className={`mx-select-trg ${full ? "full" : ""} ${!selected ? "is-ph" : ""} ${className}`.trim()}
+      >
+        <span className="mx-sel-main">
+          {selected?.dot && <span className="mx-sel-dot" style={{ background: selected.dot }} aria-hidden="true" />}
+          {!selected?.dot && leadIcon && <Icon name={leadIcon} className="mx-sel-ic" />}
+          <span className="mx-sel-lbl">{displayLabel}</span>
+          {selected?.count !== undefined && selected?.count !== null && (
+            <span className="mx-sel-cnt">{selected.count}</span>
+          )}
+        </span>
+        <span className="mx-sel-arr" aria-hidden="true"><Icon name="chevron" /></span>
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Content
+          className="wb-menu mx-select-menu"
+          inert={!open || undefined}
+          sideOffset={5}
+          align="start"
+          collisionPadding={10}
+          onPointerDown={e => e.stopPropagation()}
+          onClick={e => e.stopPropagation()}
+        >
+          {options.map((opt, idx) => {
+            const isSel = String(opt.value) === strVal;
+            return (
+              <Menu.Item
+                key={`${opt.value}-${idx}`}
+                className="wb-menu-item mx-select-opt"
+                data-selected={isSel || undefined}
+                disabled={opt.disabled}
+                onSelect={() => {
+                  if (!opt.disabled && String(opt.value) !== strVal) {
+                    onChange?.(opt.value);
+                  }
+                }}
+              >
+                {opt.dot && <span className="mx-sel-dot" style={{ background: opt.dot }} aria-hidden="true" />}
+                {!opt.dot && opt.icon && <Icon name={opt.icon} className="mx-sel-opt-ic" />}
+                <span className="mx-sel-opt-lbl">{opt.label}</span>
+                {opt.count !== undefined && opt.count !== null && (
+                  <span className="mx-sel-cnt">{opt.count}</span>
+                )}
+                <Icon name="check" className="mx-sel-check" />
+              </Menu.Item>
+            );
+          })}
+        </Menu.Content>
+      </Menu.Portal>
+    </Menu.Root>
+  );
 }
 
 export const Tabs = TabsPrimitive;

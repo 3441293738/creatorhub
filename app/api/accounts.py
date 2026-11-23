@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 import asyncio
 import hashlib
+import json
 import os
 import shutil
 import uuid
@@ -32,6 +33,82 @@ from app.transport_matrix import resolve_transport
 router = APIRouter()
 
 
+def _parse_account_tags(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        items = json.loads(raw)
+        if isinstance(items, list):
+            return [str(x).strip() for x in items if str(x).strip()][:12]
+    except Exception:
+        pass
+    return [x.strip() for x in str(raw).split(",") if x.strip()][:12]
+
+
+def _clean_account_tags(items: list[str] | str | None) -> list[str]:
+    if items is None:
+        return []
+    raw_list = items if isinstance(items, list) else str(items).replace("，", ",").split(",")
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw_list:
+        val = str(item or "").strip()[:24]
+        key = val.lower()
+        if not val or key in seen:
+            continue
+        seen.add(key)
+        out.append(val)
+        if len(out) >= 12:
+            break
+    return out
+
+
+class AccountMetaUpdateIn(BaseModel):
+    alias: str | None = None
+    group_name: str | None = None
+    tags: list[str] | str | None = None
+    account_role: str | None = None
+    pinned: bool | None = None
+    sort_order: int | None = None
+
+
+@router.put("/api/accounts/{account_id}/meta")
+async def update_account_meta(account_id: int, body: AccountMetaUpdateIn):
+    """更新单个账号的矩阵分组、备注别名、标签、角色定位与置顶状态。"""
+    with get_session() as s:
+        acc = s.get(DouyinAccount, account_id)
+        if not acc:
+            raise HTTPException(404, "账号不存在")
+        if body.alias is not None:
+            acc.alias = str(body.alias).strip()[:60]
+        if body.group_name is not None:
+            acc.group_name = str(body.group_name).strip()[:40]
+        if body.tags is not None:
+            acc.tags = json.dumps(_clean_account_tags(body.tags), ensure_ascii=False)
+        if body.account_role is not None:
+            role = str(body.account_role).strip().lower()
+            if role not in {"publish", "crawler", "hybrid"}:
+                raise HTTPException(400, "账号角色须为 publish、crawler 或 hybrid")
+            acc.account_role = role
+        if body.pinned is not None:
+            acc.pinned = bool(body.pinned)
+        if body.sort_order is not None:
+            acc.sort_order = int(body.sort_order)
+        s.add(acc)
+        s.commit()
+        s.refresh(acc)
+        return {
+            "ok": True,
+            "id": acc.id,
+            "alias": acc.alias,
+            "group_name": acc.group_name,
+            "tags": _parse_account_tags(acc.tags),
+            "account_role": acc.account_role or "hybrid",
+            "pinned": bool(acc.pinned),
+            "sort_order": int(acc.sort_order or 0),
+        }
+
+
 @router.get("/api/accounts")
 async def list_accounts(platform: str | None = None):
     risk_controller = app_runtime.engine.risk if app_runtime.engine else RiskController(app_runtime.cfg)
@@ -47,9 +124,12 @@ async def list_accounts(platform: str | None = None):
             profile_keys[account.id] = normalized
             profile_counts[normalized] = profile_counts.get(normalized, 0) + 1
         q = select(DouyinAccount)
-        if platform:
+        if platform and platform != "all":
             q = q.where(DouyinAccount.platform == platform)
-        accs = s.exec(q).all()
+        accs = sorted(
+            s.exec(q).all(),
+            key=lambda item: (not bool(item.pinned), int(item.sort_order or 0), item.id or 0),
+        )
         out = []
         for a in accs:
             profile_key = profile_keys.get(a.id or 0, "")
@@ -86,6 +166,12 @@ async def list_accounts(platform: str | None = None):
             )
             out.append({
                 "id": a.id, "platform": a.platform, "nickname": a.nickname, "status": a.status,
+                "alias": a.alias or "",
+                "group_name": a.group_name or "",
+                "tags": _parse_account_tags(a.tags),
+                "account_role": a.account_role or "hybrid",
+                "pinned": bool(a.pinned),
+                "sort_order": int(a.sort_order or 0),
                 "sec_uid": a.sec_uid, "douyin_id": a.douyin_id, "avatar": a.avatar,
                 "follower_count": a.follower_count,
                 "following_count": a.following_count,

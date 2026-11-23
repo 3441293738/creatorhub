@@ -470,29 +470,46 @@ async function commentBatchDelete() {
 function srcOf(r) {
   return contentSourceMarkup(r);
 }
+let CONTENT_VIEW_MODE = (() => {
+  try { return localStorage.getItem("dym-content-view") || "auto"; } catch (e) { return "auto"; }
+})();
+function effectiveContentViewMode() {
+  if (CONTENT_VIEW_MODE === "cards" || CONTENT_VIEW_MODE === "table") return CONTENT_VIEW_MODE;
+  return PLATFORM === "xhs" ? "cards" : "cards";
+}
+function setContentViewMode(mode) {
+  CONTENT_VIEW_MODE = mode === "table" ? "table" : "cards";
+  try { localStorage.setItem("dym-content-view", CONTENT_VIEW_MODE); } catch (e) {}
+  refreshContents(false);
+}
 function noteCard(r) {
   const typeIc = r.media_type === "images" ? "i-image" : "i-play";
-  const typeLabel = r.media_type === "images" ? "图文" : "视频";
+  const durText = r.duration ? (typeof fmtDur === "function" ? " " + fmtDur(r.duration) : "") : "";
+  const typeLabel = (r.media_type === "images" ? "图文" : "视频") + durText;
   const cover = r.cover_url
-    ? `<img class="ncard-cover" src="${esc(safeMediaUrl(r.cover_url))}" alt="${esc((r.desc || "笔记").slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy" onclick="openPreview(${r.id})">`
-    : `<div class="ncard-cover ph" onclick="openPreview(${r.id})">${ic("i-image")}</div>`;
+    ? `<img class="ncard-cover" src="${esc(safeMediaUrl(r.cover_url))}" alt="${esc((r.desc || "作品").slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy" onclick="openPreview(${r.id})">`
+    : `<div class="ncard-cover ph" onclick="openPreview(${r.id})">${ic(r.media_type === "images" ? "i-image" : "i-film")}</div>`;
+  const hasLocal = Boolean(String(r.local_path || "").trim());
+  const canPickRepost = ["douyin", "bilibili", "instagram", "twitter"].includes(PLATFORM) && r.download_status === "done";
   return `<div class="ncard">
     ${cover}
-    <span class="ncard-type">${ic(typeIc)}${typeLabel}</span>
-    <label class="ncard-selection" title="选择这条笔记"><input type="checkbox" class="ncard-sel" data-id="${r.id}" aria-label="选择这条笔记" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></label>
+    <span class="ncard-type">${ic(typeIc)}${esc(typeLabel)}</span>
+    <label class="ncard-selection" title="选择这条作品"><input type="checkbox" class="ncard-sel" data-id="${r.id}" aria-label="选择这条作品" onchange="contentToggleOne(${r.id}, this.checked)" ${selContent.has(r.id) ? "checked" : ""}></label>
     <div class="ncard-body">
-      <p class="ncard-title">${esc(r.desc || "(无标题)")}</p>
+      <p class="ncard-title" style="cursor:pointer" onclick="openPreview(${r.id})">${esc(r.desc || "(无标题)")}</p>
       ${srcOf(r)}
       <div class="ncard-captured"><span class="content-origin-label">抓取入库</span>${contentCapturedTime(r.captured_at)}</div>
       <div class="ncard-foot">
-        <span>发布 · ${fmtTime(r.create_time)}</span>
-        <span class="like">${ic("i-heart")}${fmtNum(r.like_count)}</span>
+        <span>${fmtTime(r.create_time)}</span>
+        <span class="like">${ic("i-heart")}${fmtNum(r.like_count)} · 💬${fmtNum(r.comment_count)}</span>
       </div>
       <div class="ncard-actions">
         <span class="pill ${r.download_status}" style="flex:1;justify-content:center" title="${esc(r.error || "")}">${contentStatusLabel(r.download_status)}${r.error ? " ⓘ" : ""}</span>
+        ${hasLocal ? `<button class="ghost sm" style="flex:0 0 auto" onclick="revealContentPath(${r.id},this)" title="打开文件夹">${ic("i-folder")}</button>` : ""}
         ${["failed", "skipped"].includes(r.download_status) ? `<button class="ghost sm" onclick="retryDl(${r.id})">${r.download_status === "skipped" ? "下载" : "重试"}</button>` : ""}
+        ${canPickRepost ? `<button class="ghost sm" onclick="pickRepostTarget(${r.id})">转发</button>` : ""}
         ${(PLATFORM === "xhs" && r.download_status === "done") ? `<button class="ghost sm" onclick="repostDouyin(${r.id})">发抖音</button>` : ""}
-        <button class="ghost sm danger" onclick="delContent(${r.id})">${ic("i-trash")}删除</button>
+        <button class="ghost sm danger" style="flex:0 0 auto" onclick="delContent(${r.id})" aria-label="删除">${ic("i-trash")}</button>
       </div>
     </div>
   </div>`;
@@ -632,12 +649,15 @@ async function refreshContents(resetPage = false) {
   if ($("content-filter-count")) $("content-filter-count").textContent =
     `显示 ${rows.length} / ${Number(meta.total || rows.length)}`;
   const xhs = PLATFORM === "xhs";
+  const useCards = effectiveContentViewMode() === "cards";
   $("content-title").textContent = xhs ? "笔记记录" : "作品记录";
-  $("content-table-wrap").style.display = xhs ? "none" : "";
-  $("content-cards").style.display = xhs ? "" : "none";
-  if (xhs) {
+  if ($("content-view-cards")) $("content-view-cards").classList.toggle("active", useCards);
+  if ($("content-view-table")) $("content-view-table").classList.toggle("active", !useCards);
+  $("content-table-wrap").style.display = useCards ? "none" : "";
+  $("content-cards").style.display = useCards ? "" : "none";
+  if (useCards) {
     $("content-cards").innerHTML = rows.map(noteCard).join("")
-      || `<div class="empty" style="columns:1">${ic("i-image")}<div class="empty-t">暂无笔记</div></div>`;
+      || `<div class="empty" style="columns:1">${ic("i-image")}<div class="empty-t">暂无作品记录</div></div>`;
     updateContentSelBar(); renderContentPager(meta);
     return;
   }

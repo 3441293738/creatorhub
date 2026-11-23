@@ -181,14 +181,18 @@ async function exportModuleReport(module, full = false, explicitBtn = null) {
 }
 
 let PLATFORM = "douyin";
+let GLOBAL_MODE = true;
 const PF_NAME = { douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram", twitter: "Twitter" };
 let CURRENT_TAB = "overview";
 const PAGE_META = {
   overview: {
-    title: "工作概览", desc: "查看待处理任务，接着推进今天的内容工作。"
+    title: "指挥概览", desc: "跨平台查看账号健康态势、高赞内容快览与今日发布排期。"
+  },
+  "media-hub": {
+    title: "汇总预览库", desc: "跨平台统一画廊预览监控作品、批量采集、自有作品与本地下载素材，支持右侧分栏快览。"
   },
   accounts: {
-    title: "平台账号", desc: "查看登录状态；网络与环境配置按需展开。"
+    title: "账号矩阵", desc: "按跨平台人设组管理多账号，支持异常快筛、批量配代理与连续扫码补登。"
   },
   "risk-control": {
     title: "风控中心", desc: "统一管理风控规则，查看账号状态、触发原因、恢复进度与事件记录。"
@@ -206,13 +210,13 @@ const PAGE_META = {
     title: "弹幕监控", desc: "监控短视频播放器内的弹幕，保留每条弹幕在视频中的时间点。"
   },
   hub: {
-    title: "本账号管理", desc: "查看当前登录账号自己的作品、数据与账号维护入口。"
+    title: "矩阵数据与私信", desc: "横向对比全部账号涨粉、播放、0播异常与全平台聚合私信，或下钻单账号明细。"
   },
   "tiktok-tools": {
     title: "用户互动", desc: "搜索其他 TikTok 用户并创建关注、取关、私信、评论或回复任务。"
   },
   publish: {
-    title: "内容发布", desc: "准备素材与文案，创建立即或定时发布任务。"
+    title: "内容发布", desc: "支持单账号精细发布或跨平台多账号错峰矩阵群发。"
   },
   queue: {
     title: "任务队列", desc: "统一查看采集、发布、评论、账号动作与下载任务的排队、执行和阻塞状态。"
@@ -230,13 +234,19 @@ const PAGE_META = {
     title: "设置", desc: "管理外观、下载、AI 文案与采集运行配置。"
   },
 };
+const SINGLE_PF_ONLY_TABS = ["monitors", "collections", "comments", "danmaku", "tiktok-tools", "autocomment"];
 function updatePageContext(name = CURRENT_TAB) {
   const meta = PAGE_META[name] || PAGE_META.overview;
-  if ($("page-title")) $("page-title").textContent = meta.title;
-  if ($("page-desc")) $("page-desc").textContent = meta.desc;
-  if ($("page-platform")) $("page-platform").textContent = PF_NAME[PLATFORM] || "当前平台";
-  if ($("page-kicker")) $("page-kicker").textContent = pfIsChannels(PLATFORM) ? "本账号工作台" : "多平台工作台";
-  document.title = `${meta.title} · ${PF_NAME[PLATFORM] || ""} | CreatorHub`;
+  const showGlobalLabel = GLOBAL_MODE && !SINGLE_PF_ONLY_TABS.includes(name);
+  const effectiveTitle = (GLOBAL_MODE && name === "publish") ? "矩阵群发与排期" : meta.title;
+  const effectiveDesc = (GLOBAL_MODE && name === "publish")
+    ? "一次上传素材与主文案，按跨平台矩阵组一键错峰群发，并统一追踪全平台发布进度。"
+    : meta.desc;
+  if ($("page-title")) $("page-title").textContent = effectiveTitle;
+  if ($("page-desc")) $("page-desc").textContent = effectiveDesc;
+  if ($("page-platform")) $("page-platform").textContent = showGlobalLabel ? "全平台矩阵" : (PF_NAME[PLATFORM] || "当前平台");
+  if ($("page-kicker")) $("page-kicker").textContent = showGlobalLabel ? "跨 9 大平台全局视角" : (pfIsChannels(PLATFORM) ? "本账号工作台" : "单平台精细工作台");
+  document.title = `${effectiveTitle} · ${showGlobalLabel ? "全平台" : (PF_NAME[PLATFORM] || "")} | CreatorHub`;
   globalThis.CreatorHubWorkbench?.navigate?.();
 }
 // 是否支持「发布」面板
@@ -244,9 +254,11 @@ function pfHasPublish(pf) { return ["xhs", "rednote", "kuaishou", "douyin", "shi
 // 视频号只有「本账号」数据(助手接口本账号),不支持监控他人作品/评论
 function pfIsChannels(pf) { return pf === "shipinhao"; }
 function switchPlatform(pf) {
-  if (!["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(pf)) pf = "douyin";
-  globalThis.CreatorHubWorkbench?.platformChanging?.(pf);
-  PLATFORM = pf;
+  const wantGlobal = pf === "all";
+  if (!wantGlobal && !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(pf)) pf = "douyin";
+  if (!wantGlobal) globalThis.CreatorHubWorkbench?.platformChanging?.(pf);
+  GLOBAL_MODE = wantGlobal;
+  if (!wantGlobal) PLATFORM = pf;
   VIEW_REQUESTS.clear();
   CONTENT_PAGE = COMMENT_PAGE = 1;
   COLLECTION_JOBS = []; closeCollectionResults(); renderCollectionJobs(); if ($("tb-col")) $("tb-col").textContent = "0";
@@ -270,10 +282,17 @@ function switchPlatform(pf) {
     const select = $(id);
     if (select) { select.value = ""; if (select._csSync) select._csSync(); }
   });
-  try { localStorage.setItem("dym-pf", pf); } catch (e) {}
+  try {
+    localStorage.setItem("dym-global", wantGlobal ? "1" : "0");
+    if (!wantGlobal) localStorage.setItem("dym-pf", pf);
+  } catch (e) {}
+  if ($("queue-platform")) {
+    $("queue-platform").value = wantGlobal ? "all" : "current";
+    $("queue-platform")._csSync?.();
+  }
   applyPlatformUI();
   ["t-interval", "w-interval", "d-w-interval"].forEach(id => $(id)?._monitorIntervalSync?.());
-  // 切换后立刻刷新该平台数据
+  // 切换后立刻刷新对应数据
   refreshAccounts(); refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshCollections();
   updateTaskQueuePlatformLabel();
   if (CURRENT_TAB === "queue") refreshTaskQueue(true); else refreshTaskQueueBadge();
@@ -283,20 +302,21 @@ function switchPlatform(pf) {
   if (CURRENT_TAB === "overview") loop();
 }
 function applyPlatformUI() {
-  document.body.classList.toggle("pf-douyin", PLATFORM === "douyin");
-  document.body.classList.toggle("pf-xhs", PLATFORM === "xhs");
-  document.body.classList.toggle("pf-kuaishou", PLATFORM === "kuaishou");
-  document.body.classList.toggle("pf-shipinhao", PLATFORM === "shipinhao");
-  document.body.classList.toggle("pf-tiktok", PLATFORM === "tiktok");
-  document.body.classList.toggle("pf-bilibili", PLATFORM === "bilibili");
-  document.body.classList.toggle("pf-rednote", PLATFORM === "rednote");
-  document.body.classList.toggle("pf-instagram", PLATFORM === "instagram");
-  document.body.classList.toggle("pf-twitter", PLATFORM === "twitter");
+  document.body.classList.toggle("pf-all", GLOBAL_MODE);
+  document.body.classList.toggle("pf-douyin", !GLOBAL_MODE && PLATFORM === "douyin");
+  document.body.classList.toggle("pf-xhs", !GLOBAL_MODE && PLATFORM === "xhs");
+  document.body.classList.toggle("pf-kuaishou", !GLOBAL_MODE && PLATFORM === "kuaishou");
+  document.body.classList.toggle("pf-shipinhao", !GLOBAL_MODE && PLATFORM === "shipinhao");
+  document.body.classList.toggle("pf-tiktok", !GLOBAL_MODE && PLATFORM === "tiktok");
+  document.body.classList.toggle("pf-bilibili", !GLOBAL_MODE && PLATFORM === "bilibili");
+  document.body.classList.toggle("pf-rednote", !GLOBAL_MODE && PLATFORM === "rednote");
+  document.body.classList.toggle("pf-instagram", !GLOBAL_MODE && PLATFORM === "instagram");
+  document.body.classList.toggle("pf-twitter", !GLOBAL_MODE && PLATFORM === "twitter");
   // 视频号:只有本账号数据,隐藏「监控他人作品/评论」相关入口(.notsh-only)
-  document.body.classList.toggle("pf-channels", pfIsChannels(PLATFORM));
+  document.body.classList.toggle("pf-channels", !GLOBAL_MODE && pfIsChannels(PLATFORM));
   if (!["douyin", "bilibili"].includes(PLATFORM) && CURRENT_TAB === "danmaku") switchTab("overview");
   document.querySelectorAll(".pswitch button").forEach(b => {
-    const active = b.dataset.pf === PLATFORM;
+    const active = GLOBAL_MODE ? b.dataset.pf === "all" : b.dataset.pf === PLATFORM;
     b.classList.toggle("active", active);
     b.setAttribute("aria-selected", active ? "true" : "false");
     b.tabIndex = active ? 0 : -1;
@@ -328,11 +348,19 @@ function applyPlatformUI() {
   });
   document.querySelectorAll(".collect-only").forEach(e => e.classList.toggle(
     "hidden", !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(PLATFORM)));
+  // 全平台模式下隐藏所有单平台专属采集/监控/互动入口与分组标题
+  if (GLOBAL_MODE) {
+    document.querySelectorAll(".single-pf-only").forEach(e => e.classList.add("hidden"));
+  } else {
+    document.querySelectorAll("#nav-sep-collect").forEach(e => e.classList.remove("hidden"));
+  }
+  if ($("nav-publish-label")) $("nav-publish-label").textContent = GLOBAL_MODE ? "矩阵群发" : "内容发布";
+  if ($("nav-hub-label")) $("nav-hub-label").textContent = GLOBAL_MODE ? "矩阵数据与私信" : "数据与私信";
   document.querySelectorAll(".meta-scope").forEach(e => {
     e.textContent = (PF_NAME[PLATFORM] || "当前平台") + "内独立";
   });
   // 发布面板入口
-  document.querySelectorAll(".pub-only").forEach(e => e.classList.toggle("hidden", !pfHasPublish(PLATFORM)));
+  document.querySelectorAll(".pub-only").forEach(e => e.classList.toggle("hidden", !GLOBAL_MODE && !pfHasPublish(PLATFORM)));
   // 发布面板文案随平台切换
   const ks = PLATFORM === "kuaishou", dy = PLATFORM === "douyin", sph = PLATFORM === "shipinhao", tk = PLATFORM === "tiktok", bili = PLATFORM === "bilibili", rn = PLATFORM === "rednote", ig = PLATFORM === "instagram", tw = PLATFORM === "twitter";
   const pubType = $("pub-type");
@@ -438,25 +466,31 @@ function applyPlatformUI() {
   applyCollectionForm();
   if (["douyin", "bilibili"].includes(PLATFORM)) applyDanmakuForm();
   if ($("t-kind") && !["xhs", "rednote"].includes(PLATFORM)) $("t-kind").value = "creator";
+  // 全平台视角下不展示单平台专属面板：若当前停留在单平台页，自动回到指挥概览
+  if (GLOBAL_MODE && SINGLE_PF_ONLY_TABS.includes(CURRENT_TAB)) {
+    switchTab("overview");
+    return;
+  }
   // 视频号不支持自动评论规则:若正停在自动评论面板,切回本账号管理
-  if (pfIsChannels(PLATFORM)) {
+  if (!GLOBAL_MODE && pfIsChannels(PLATFORM)) {
     const cur = (document.querySelector('.navitem.active') || {}).dataset;
     if (cur && cur.tab === "autocomment") switchTab("hub");
     // 视频号本账号只有「我的作品 / 数据」;若停在关注/粉丝/私信子页,切回我的作品
     if (["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
   }
-  if (PLATFORM === "tiktok" && CURRENT_TAB === "autocomment") switchTab("hub");
-  if (PLATFORM !== "tiktok" && CURRENT_TAB === "tiktok-tools") switchTab("accounts");
-  if (PLATFORM === "tiktok" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
-  if (PLATFORM === "rednote" && CURRENT_TAB === "autocomment") switchTab("hub");
-  if (PLATFORM === "rednote" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
-  if (!["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(PLATFORM) && CURRENT_TAB === "collections") switchTab("overview");
-  // 不支持发布的平台:若正停在该面板则回到总览(当前四平台均支持,兜底保留)
-  if (!pfHasPublish(PLATFORM)) {
+  if (!GLOBAL_MODE && PLATFORM === "tiktok" && CURRENT_TAB === "autocomment") switchTab("hub");
+  if (!GLOBAL_MODE && PLATFORM !== "tiktok" && CURRENT_TAB === "tiktok-tools") switchTab("accounts");
+  if (!GLOBAL_MODE && PLATFORM === "tiktok" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
+  if (!GLOBAL_MODE && PLATFORM === "rednote" && CURRENT_TAB === "autocomment") switchTab("hub");
+  if (!GLOBAL_MODE && PLATFORM === "rednote" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
+  if (!GLOBAL_MODE && !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(PLATFORM) && CURRENT_TAB === "collections") switchTab("overview");
+  // 不支持发布的平台:若正停在该面板则回到总览(当前九平台均支持,兜底保留)
+  if (!GLOBAL_MODE && !pfHasPublish(PLATFORM)) {
     const pub = document.querySelector('[data-panel="publish"]');
     if (pub && pub.style.display !== "none") switchTab("overview");
   }
   csSyncAll();   // 平台切换可能改了下拉选项/值,同步自定义下拉显示
+  requestAnimationFrame(() => window.dispatchEvent(new Event("creatorhub:layout")));
   updatePageContext();
 }
 const SMART_TARGET_PARSE_SEQ = Object.create(null);
@@ -804,6 +838,13 @@ function switchTab(name, pushHistory = false) {
     return;
   }
   if (!PAGE_META[name]) name = "overview";
+  // 若从全平台入口主动跳转到某个单平台功能（如去添加作品监控），自动退出全平台模式聚焦当前底层平台
+  if (GLOBAL_MODE && SINGLE_PF_ONLY_TABS.includes(name)) {
+    GLOBAL_MODE = false;
+    try { localStorage.setItem("dym-global", "0"); } catch (e) {}
+    CURRENT_TAB = name;
+    applyPlatformUI();
+  }
   globalThis.CreatorHubWorkbench?.beforeNavigate?.();
   const changed = CURRENT_TAB !== name;
   CURRENT_TAB = name;
