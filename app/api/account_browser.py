@@ -314,7 +314,7 @@ async def open_account_browser(
         # Window startup/navigation is brief and still serialized for XHS so
         # focus and native-page setup cannot race. Once the page is ready the
         # global gate is released; the account-specific Profile lock remains.
-        if platform == "xhs":
+        if platform in {"xhs", "rednote"}:
             async with app_runtime.browser.visible_action(
                     identity, keep_context=True):
                 yield
@@ -364,7 +364,7 @@ async def open_account_browser(
                     check_error = f"{type(check_exc).__name__}: {check_exc}"
                     print(f"[environment-check] 自动打开失败: {check_exc!r}")
             page = (await app_runtime.browser.new_page(identity, block_media=False)
-                    if platform == "xhs" else await ctx.new_page())
+                    if platform in {"xhs", "rednote"} else await ctx.new_page())
             xhs_evidence: dict = {}
             if platform == "xhs" and open_scope == "read":
                 page.on("response", _xhs_open_auth_response_handler(xhs_evidence))
@@ -395,7 +395,7 @@ async def open_account_browser(
                                 "invalid" if logged_out else "active")
                         s.add(opened_account)
                         s.commit()
-            if platform == "xhs":
+            if platform in {"xhs", "rednote"}:
                 try:
                     await page.bring_to_front()
                 except Exception:
@@ -426,7 +426,7 @@ async def open_account_browser(
     try:                       # 用户手动关窗后,从登记表移除
         ctx.on("close", lambda *_: asyncio.create_task(
             login_sessions_service._release_open_browser(account_id, lease)))
-        if platform == "xhs":
+        if platform in {"xhs", "rednote"}:
             page.on("close", lambda *_: asyncio.create_task(
                 login_sessions_service._release_open_browser(account_id, lease)))
     except Exception:

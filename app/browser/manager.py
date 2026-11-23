@@ -872,7 +872,7 @@ class BrowserManager:
 
     def _uses_xhs_cdp(self, identity: Identity) -> bool:
         return (
-            identity.platform == "xhs"
+            identity.platform in {"xhs", "rednote"}
             and self.xhs_browser_mode in {"auto", "cdp"}
             and self.effective_browser_backend(identity) == LOCAL_BACKEND
         )
@@ -885,7 +885,7 @@ class BrowserManager:
         try:
             return ProxyPlan.parse(raw)
         except ProxyConfigError as exc:
-            if identity.platform == "xhs":
+            if identity.platform in {"xhs", "rednote"}:
                 raise CdpProxyError(str(exc)) from None
             raise
 
@@ -1109,15 +1109,16 @@ class BrowserManager:
         # 使用沙箱，新旧账号都显式开启，避免安全警告和不必要的启动差异。
         if os.name == "nt":
             kwargs["chromium_sandbox"] = True
+        ignore_default_args: List[str] = []
         if fingerprint_plan is not None:
             kwargs["executable_path"] = fingerprint_plan.executable_path
             # Fingerprint Chromium provides its own native automation surface.
             # Patchright's Chromium default would otherwise add this switch,
             # expose an unsupported-command-line warning, and make the first
             # site navigation differ from a normal user-opened window.
-            kwargs["ignore_default_args"] = [
-                "--disable-blink-features=AutomationControlled",
-            ]
+            ignore_default_args.append(
+                "--disable-blink-features=AutomationControlled"
+            )
         elif self._browser_channel:
             kwargs["channel"] = self._browser_channel
         # Engine-level fingerprint runtimes own the entire identity surface;
@@ -1191,6 +1192,19 @@ class BrowserManager:
             kwargs["args"] = native_args
         if proxy:
             kwargs["proxy"] = proxy
+            if proxy_plan is not None and proxy_plan.scheme == "socks5":
+                # Patchright 遇到 socks5:// 会默认追加 --host-resolver-rules="MAP * ~NOTFOUND , EXCLUDE <host>"，
+                # 触发 Chromium 顶部「不受支持的命令行标记」警告横幅。Chromium 的 --proxy-server=socks5://
+                # 本身已由远端代理解析域名(ATYP=0x03)，配合默认 --disable-background-networking 即可避免本地预解析。
+                from urllib.parse import urlsplit
+                parsed_host = (urlsplit(proxy["server"]).hostname or "").lower()
+                socks_host = f"[{parsed_host}]" if ":" in parsed_host else parsed_host
+                if socks_host:
+                    ignore_default_args.append(
+                        f'--host-resolver-rules="MAP * ~NOTFOUND , EXCLUDE {socks_host}"'
+                    )
+        if ignore_default_args:
+            kwargs["ignore_default_args"] = ignore_default_args
         try:
             ctx = await self._pw.chromium.launch_persistent_context(**kwargs)
         except Exception as exc:
@@ -1495,6 +1509,8 @@ class BrowserManager:
                         for init_pg in list(getattr(ctx, "pages", ()) or ()):
                             await self._apply_cdp_locality_alignment(init_pg, identity)
                         await self._bridge_identity_cookies(ctx, identity)
+                        if identity.platform == "rednote":
+                            await install_rednote_domain_guard(ctx)
                         self._cdp_sessions[key] = session
                         self._backend_by_key[key] = "cdp"
                 else:
@@ -1711,18 +1727,26 @@ class BrowserManager:
             self._task_pages[identity.key] = candidate
             return candidate
 
-        for candidate in pages:
-            try:
-                if candidate.url != "about:blank" or candidate.is_closed():
+        is_patchright = self._backend_by_key.get(identity.key) == "patchright"
+        if not is_patchright:
+            for candidate in pages:
+                try:
+                    if candidate.url != "about:blank" or candidate.is_closed():
+                        continue
+                except Exception:
                     continue
-            except Exception:
-                continue
-            if needs_cdp_align:
-                await self._apply_cdp_locality_alignment(candidate, identity)
-            self._task_pages[identity.key] = candidate
-            return candidate
+                if needs_cdp_align:
+                    await self._apply_cdp_locality_alignment(candidate, identity)
+                self._task_pages[identity.key] = candidate
+                return candidate
 
         page = await self.new_page(identity, block_media=False)
+        if is_patchright:
+            # Patchright 本地 Chrome 启动时的第 1 个 about:blank 会挂载命令行提示横幅，新建干净标签后收起空白页
+            for candidate in pages:
+                with suppress(Exception):
+                    if candidate is not page and candidate.url == "about:blank" and not candidate.is_closed():
+                        await candidate.close()
         self._task_pages[identity.key] = page
         return page
 
@@ -1847,14 +1871,20 @@ class BrowserManager:
                     await self._set_chromium_window_state(
                         context, page, "minimized")
                 if foreground:
+                    if context is not None and (
+                        await self._chromium_window_state(context, page) == "minimized"
+                    ):
+                        await self._set_chromium_window_state(
+                            context, page, "normal")
                     with suppress(Exception):
                         await page.bring_to_front()
                     title = ""
                     with suppress(Exception):
                         title = await page.title()
+                    default_title = "Rednote" if identity.platform == "rednote" else "小红书"
                     await asyncio.to_thread(
                         bring_window_to_front, snapshot,
-                        CHROMIUM_WINDOW_CLASSES, title or "小红书", 1.5)
+                        CHROMIUM_WINDOW_CLASSES, title or default_title, 1.5)
                 yield page
             finally:
                 if minimize_task is not None:
