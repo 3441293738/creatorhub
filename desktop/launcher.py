@@ -246,6 +246,9 @@ def update_health_check() -> int:
             from app.platforms.channels.local_ca import LocalCaManager
             from app.browser.human_interaction import HumanInteractionEngine
             from app.services import thumb_cache
+            from app.logging_setup import configure_logging, read_log_tail
+            from app.diagnostics import build_diagnostic_summary, build_diagnostic_zip
+            from app.api import diagnostics as api_diagnostics, matrix as api_matrix
             from desktop.controller import Controller
             from desktop.installer_assets import render_brand_icon
             from desktop.web_shell import ShellServer
@@ -258,9 +261,10 @@ def update_health_check() -> int:
             assert InstagramClient and publish_instagram
             assert TwitterClient and publish_twitter
             assert HumanInteractionEngine and thumb_cache
+            assert configure_logging and read_log_tail and build_diagnostic_summary and build_diagnostic_zip and api_diagnostics and api_matrix
             assert websockets.asyncio.client and Controller and ShellServer and webview
             assert render_brand_icon(32).size == (32, 32)
-            for web_asset in ("index.html", "app.js", "workbench.js"):
+            for web_asset in ("index.html", "app.js", "workbench.js", "workbench.css", "agent.css"):
                 assert (WEB_DIR / web_asset).is_file(), web_asset
             assert (channels_js / "finder_proxy_bridge.js").is_file()
             assert (channels_js / "finder_native_protocol.js").is_file()

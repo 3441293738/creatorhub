@@ -9,10 +9,10 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Numeric version, for example 0.3.2
+        description: Numeric version, for example 0.4.0
         required: true
         type: string
-        default: "0.3.2"
+        default: "0.4.0"
       sign:
         description: Sign with Developer ID and notarize (requires configured secrets)
         default: false

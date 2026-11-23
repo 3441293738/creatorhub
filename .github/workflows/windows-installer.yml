@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Numeric version, for example 0.3.2
+        description: Numeric version, for example 0.4.0
         required: true
-        default: "0.3.2"
+        default: "0.4.0"
 
 concurrency:
   group: windows-installer-${{ github.ref }}
