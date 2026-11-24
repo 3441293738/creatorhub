@@ -2422,6 +2422,7 @@
   }
   .mx-acc-card:hover { border-color:var(--acc-ring); }
   .mx-acc-card.is-selected { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc-soft); }
+  .mx-acc-card.is-context-open { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc-ring); }
   .mx-acc-card.health-invalid { border-color:rgba(248,113,113,.45); }
   .mx-acc-card-top { display:flex; align-items:center; gap:6px; }
   .mx-acc-identity { display:flex; align-items:center; gap:10px; min-width:0; }
@@ -2429,13 +2430,16 @@
   .mx-acc-title-row { display:flex; align-items:center; gap:5px; min-width:0; }
   .mx-acc-title-row b { font-size:14px; color:var(--fg-strong); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .mx-acc-names small { font-size:11.5px; color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .mx-pin-btn {
+  .mx-pin-btn, .mx-card-more-btn {
     display:inline-grid; place-items:center; width:24px; height:24px; min-height:24px;
     padding:0; border:0; border-radius:6px; background:transparent; color:var(--mut-2, var(--mut));
     box-shadow:none; cursor:pointer; flex-shrink:0;
   }
-  .mx-pin-btn svg { width:14px !important; height:14px !important; }
-  .mx-pin-btn:hover { background:var(--surface-2); color:var(--fg-strong); }
+  .mx-pin-btn svg, .mx-card-more-btn svg { width:14px !important; height:14px !important; }
+  .mx-pin-btn:hover, .mx-card-more-btn:hover { background:var(--surface-2); color:var(--fg-strong); }
+  .mx-card-more-btn { width:26px; height:26px; min-height:26px; align-self:flex-start; }
+  .mx-card-more-btn svg { width:15px !important; height:15px !important; }
+  .mx-card-more-btn.active { background:var(--acc-soft); color:var(--acc); }
   .mx-pin-btn.pinned { color:#f59e0b; }
   .mx-pin-btn.pinned svg { fill:currentColor; }
   .mx-acc-stats-line { display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:12px; color:var(--mut); }
@@ -2461,6 +2465,7 @@
   .mx-acc-card-foot button { flex:1 1 auto; padding:5px 8px; font-size:12px; }
 
   .mx-dense-table tr.is-selected td { background:var(--acc-soft); }
+  .mx-dense-table tr.is-context-open td { background:var(--acc-soft); }
   .mx-td-acc { display:flex; align-items:center; gap:8px; min-width:180px; }
   .mx-td-acc .avatar.sm, .mx-td-acc .wb-avatar-fallback.sm { width:30px; height:30px; flex:0 0 30px; font-size:12px; }
   .mx-td-name { display:flex; align-items:center; gap:5px; }
@@ -2469,12 +2474,56 @@
 
   .mx-browser-wall-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:12px; font-size:12.5px; }
   .mx-browser-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:10px; }
-  .mx-bcard { padding:13px; border-radius:12px; background:var(--surface-2); border:1px solid var(--line); display:grid; gap:10px; }
+  .mx-bcard { padding:13px; border-radius:12px; background:var(--surface-2); border:1px solid var(--line); display:grid; gap:10px; transition:border-color .15s, box-shadow .15s; }
   .mx-bcard.state-open { border-color:rgba(52,211,153,.45); background:var(--surface); }
+  .mx-bcard.is-context-open { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc-ring); }
   .mx-bcard-head { display:flex; align-items:center; justify-content:space-between; gap:6px; }
   .mx-bcard-main { display:grid; gap:3px; }
   .mx-bcard-main small { color:var(--mut); font-size:11.5px; }
   .mx-bcard-actions { display:flex; gap:6px; }
+
+  .wb-menu.mx-context-menu {
+    position:fixed;
+    z-index:360;
+    min-width:214px;
+    max-width:min(280px, calc(100vw - 20px));
+    max-height:calc(100dvh - 20px);
+    outline:none;
+    transform-origin:top left;
+  }
+  .mx-ctx-head {
+    display:flex;
+    align-items:center;
+    gap:7px;
+    border-bottom:1px solid var(--line-soft);
+    margin-bottom:4px;
+    padding-bottom:8px;
+  }
+  .mx-ctx-title {
+    flex:1 1 auto;
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-weight:650;
+    color:var(--fg-strong);
+  }
+  .mx-ctx-pf {
+    flex:0 0 auto;
+    font-size:10.5px;
+    padding:1px 6px;
+    border-radius:999px;
+    background:var(--surface-2);
+    color:var(--mut);
+    font-weight:600;
+  }
+  .mx-ctx-lbl {
+    flex:1 1 auto;
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
 
   /* ── Unified Media Hub & Right Split-Pane Quick-Look ── */
   .mx-media-hub { display:grid; gap:13px; }

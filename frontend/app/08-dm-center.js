@@ -418,6 +418,7 @@ async function refreshProfile(id) {
     }
   });
   await refreshAccounts();
+  window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
 }
 async function setProxy(id) {
   const a = findAnyAccount(id);
@@ -497,6 +498,7 @@ async function setBrowserBackend(id) {
     });
     toast("浏览器环境已切换：" + loginEnvironmentText(result.environment), "ok");
     refreshAccounts();
+    window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
   } catch (e) {
     toast("切换失败:" + e.message, "err");
   }
@@ -844,9 +846,11 @@ async function manageFingerprint(id) {
       const result = await api(`/api/accounts/${id}/fingerprint/from-ip`, { method: "POST" });
       toast(`已恢复自动指纹：${result.fingerprint.fingerprint_id || "-"}`, "ok", 7000);
       await refreshAccounts();
+      window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
     } catch (e) { toast("自动生成失败:" + e.message, "err", 8000); }
     return;
   }
   toast(`指纹已保存：${savedFingerprint?.fingerprint?.fingerprint_id || "-"}`, "ok", 7000);
   await refreshAccounts();
+  window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
 }

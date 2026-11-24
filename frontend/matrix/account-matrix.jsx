@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { Icon, SelectBox } from "../ui/primitives";
 import {
   PLATFORMS,
@@ -32,6 +33,166 @@ const HEALTH_BADGE = {
   no_proxy: { text: "本机直连提醒", cls: "warn" },
 };
 
+function AccountContextMenu({ menu, items, onClose }) {
+  const menuRef = useRef(null);
+  const [pos, setPos] = useState(() => ({ left: menu.x, top: menu.y, ready: false }));
+  const [activeIdx, setActiveIdx] = useState(-1);
+
+  const actionItems = useMemo(
+    () => items.filter(it => it && it.type !== "separator" && !it.disabled),
+    [items]
+  );
+
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const pad = 10;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left;
+    let top;
+    if (menu.anchorRect) {
+      left = menu.anchorRect.right - rect.width;
+      top = menu.anchorRect.bottom + 6;
+      if (top + rect.height > vh - pad) {
+        top = menu.anchorRect.top - rect.height - 6;
+      }
+    } else {
+      left = menu.x;
+      top = menu.y;
+      if (left + rect.width > vw - pad) left = menu.x - rect.width;
+      if (top + rect.height > vh - pad) top = menu.y - rect.height;
+    }
+    left = Math.max(pad, Math.min(left, vw - rect.width - pad));
+    top = Math.max(pad, Math.min(top, vh - rect.height - pad));
+    setPos({ left, top, ready: true });
+    setActiveIdx(-1);
+    el.focus({ preventScroll: true });
+  }, [menu.x, menu.y, menu.anchorRect, menu.acc.id]);
+
+  const invokeItem = useCallback(item => {
+    if (!item || item.disabled) return;
+    onClose();
+    setTimeout(() => item.onSelect?.(), 0);
+  }, [onClose]);
+
+  useEffect(() => {
+    const onPointerDown = e => {
+      if (menuRef.current?.contains(e.target)) return;
+      const trigger = e.target?.closest?.("[data-mx-ctx-trigger]");
+      if (trigger && menu.fromButton && Number(trigger.dataset.mxCtxTrigger) === menu.acc.id) return;
+      onClose();
+    };
+    const onContextMenuOutside = e => {
+      if (menuRef.current?.contains(e.target)) {
+        e.preventDefault();
+        return;
+      }
+      onClose();
+    };
+    const onScroll = e => {
+      if (menuRef.current?.contains(e.target)) return;
+      onClose();
+    };
+    const onResizeOrBlur = () => onClose();
+    const onKeyDown = e => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (!actionItems.length) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActiveIdx(prev => (prev + 1) % actionItems.length);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveIdx(prev => (prev <= 0 ? actionItems.length - 1 : prev - 1));
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        setActiveIdx(0);
+      } else if (e.key === "End") {
+        e.preventDefault();
+        setActiveIdx(actionItems.length - 1);
+      } else if ((e.key === "Enter" || e.key === " ") && activeIdx >= 0 && actionItems[activeIdx]) {
+        e.preventDefault();
+        invokeItem(actionItems[activeIdx]);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("contextmenu", onContextMenuOutside, true);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResizeOrBlur);
+    window.addEventListener("blur", onResizeOrBlur);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("contextmenu", onContextMenuOutside, true);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResizeOrBlur);
+      window.removeEventListener("blur", onResizeOrBlur);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [onClose, actionItems, activeIdx, invokeItem, menu.acc.id, menu.fromButton]);
+
+  const pf = PF_MAP[menu.acc.platform] || { name: menu.acc.platform, short: menu.acc.platform, color: "#64748b" };
+  let cursor = -1;
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      role="menu"
+      tabIndex={-1}
+      aria-label={`${menu.acc.display_name} 账号操作菜单`}
+      className="wb-menu mx-context-menu"
+      data-state="open"
+      style={{
+        left: `${pos.left}px`,
+        top: `${pos.top}px`,
+        visibility: pos.ready ? "visible" : "hidden",
+      }}
+      onContextMenu={e => e.preventDefault()}
+    >
+      <div className="wb-menu-label mx-ctx-head">
+        <span className="mx-sel-dot" style={{ background: pf.color }} aria-hidden="true" />
+        <span className="mx-ctx-title" title={menu.acc.display_name}>{menu.acc.display_name}</span>
+        <span className="mx-ctx-pf">{pf.short}</span>
+      </div>
+      {items.map((item, idx) => {
+        if (!item) return null;
+        if (item.type === "separator") {
+          return <div key={`sep-${idx}`} role="separator" className="wb-menu-separator" />;
+        }
+        const actionIndex = item.disabled ? -1 : ++cursor;
+        const highlighted = actionIndex >= 0 && activeIdx === actionIndex;
+        return (
+          <div
+            key={item.key || idx}
+            role="menuitem"
+            tabIndex={-1}
+            className="wb-menu-item"
+            data-danger={item.danger ? "" : undefined}
+            data-disabled={item.disabled ? "" : undefined}
+            data-highlighted={highlighted ? "" : undefined}
+            aria-disabled={item.disabled || undefined}
+            onPointerEnter={() => { if (actionIndex >= 0) setActiveIdx(actionIndex); }}
+            onPointerLeave={() => { if (activeIdx === actionIndex) setActiveIdx(-1); }}
+            onClick={e => {
+              e.stopPropagation();
+              invokeItem(item);
+            }}
+          >
+            {item.icon && <Icon name={item.icon} />}
+            <span className="mx-ctx-lbl">{item.label}</span>
+          </div>
+        );
+      })}
+    </div>,
+    document.body
+  );
+}
+
 export function AccountMatrixCenter({ ctx }) {
   const bridge = window.CreatorHubBridge;
   const actions = bridge?.accountActions;
@@ -60,6 +221,9 @@ export function AccountMatrixCenter({ ctx }) {
   // Modals / Inline Wizards
   const [editingMeta, setEditingMeta] = useState(null); // single account meta editor
   const [groupModal, setGroupModal] = useState(null); // { mode: 'create'|'edit', name, rename_to, color, description, preferred_country }
+  const [contextMenu, setContextMenu] = useState(null); // { acc, x, y, anchorRect, fromButton }
+  const contextMenuRef = useRef(null);
+  contextMenuRef.current = contextMenu;
   const [batchProgress, setBatchProgress] = useState(null); // { label, done, total }
   const batchCancelRef = useRef(false);
 
@@ -72,15 +236,36 @@ export function AccountMatrixCenter({ ctx }) {
     if (!ctx.globalMode && ctx.platform) setLoginPf(ctx.platform);
   }, [ctx.globalMode, ctx.platform]);
 
+  useEffect(() => {
+    if (ctx.tab !== "accounts") setContextMenu(null);
+  }, [ctx.tab]);
+
   const effectivePf = pfFilter === "auto" ? (ctx.globalMode ? "all" : ctx.platform) : pfFilter;
 
   const load = useCallback(async () => {
     try {
       const res = await matrixApi("/api/matrix/accounts");
+      const items = Array.isArray(res.items) ? res.items : [];
       setPayload({
-        items: Array.isArray(res.items) ? res.items : [],
+        items,
         groups: Array.isArray(res.groups) ? res.groups : [],
         all_tags: Array.isArray(res.all_tags) ? res.all_tags : [],
+      });
+      const validIds = new Set(items.map(item => item.id));
+      setSelectedIds(prev => {
+        if (!prev.size) return prev;
+        let changed = false;
+        const next = new Set();
+        prev.forEach(id => {
+          if (validIds.has(id)) next.add(id);
+          else changed = true;
+        });
+        return changed ? next : prev;
+      });
+      setContextMenu(prev => {
+        if (!prev) return prev;
+        const updated = items.find(item => item.id === prev.acc.id);
+        return updated ? { ...prev, acc: updated } : null;
       });
     } catch (_) {
       // keep existing items on transient failure
@@ -101,7 +286,7 @@ export function AccountMatrixCenter({ ctx }) {
     window.addEventListener("creatorhub:matrix:refresh", onRefresh);
     window.addEventListener("creatorhub:account-filter", onPreset);
     const timer = setInterval(() => {
-      if (!document.hidden && ctx.tab === "accounts" && !editingMeta && !groupModal) load();
+      if (!document.hidden && ctx.tab === "accounts" && !editingMeta && !groupModal && !contextMenuRef.current) load();
     }, 9000);
     return () => {
       clearInterval(timer);
@@ -120,6 +305,7 @@ export function AccountMatrixCenter({ ctx }) {
   }, []);
 
   const switchView = mode => {
+    setContextMenu(null);
     setViewMode(mode);
     try { localStorage.setItem("dym-acc-view", mode); } catch {}
   };
@@ -385,6 +571,142 @@ export function AccountMatrixCenter({ ctx }) {
     matrixToast(`${title}完成：成功 ${okCount} 个${failCount ? `，未通过/跳过 ${failCount} 个` : ""}`, failCount ? "info" : "ok", 5500);
     await refreshEverything();
   };
+
+  const handleBatchDelete = async () => {
+    const ids = [...selectedIds];
+    if (!ids.length || batchProgress) return;
+    const targets = ids.map(id => payload.items.find(a => a.id === id)).filter(Boolean);
+    const preview = targets.slice(0, 5).map(a => a.display_name).join("、");
+    const suffix = targets.length > 5 ? ` 等共 ${targets.length} 个账号` : `（共 ${ids.length} 个账号）`;
+    const ok = await window.uiConfirm?.({
+      title: `批量删除 ${ids.length} 个账号`,
+      message: `即将删除：${preview || `所选账号`}${suffix}。\n删除后将取消未执行任务、停用关联规则与监控并清理独占登录环境，历史内容保留；有任务正在执行中的账号将自动跳过。`,
+      okText: `确认删除 (${ids.length})`,
+      danger: true,
+    });
+    if (!ok) return;
+    batchCancelRef.current = false;
+    setBatchProgress({ label: "批量删除账号", done: 0, total: ids.length });
+    const deletedIds = [];
+    const failed = [];
+    for (let i = 0; i < ids.length; i++) {
+      if (batchCancelRef.current) break;
+      setBatchProgress({ label: "批量删除账号", done: i, total: ids.length });
+      try {
+        await matrixApi(`/api/accounts/${ids[i]}`, { method: "DELETE" });
+        deletedIds.push(ids[i]);
+      } catch (e) {
+        const acc = payload.items.find(a => a.id === ids[i]);
+        failed.push(`${acc?.display_name || `#${ids[i]}`}：${e.message}`);
+      }
+    }
+    setBatchProgress(null);
+    if (deletedIds.length) {
+      const removedSet = new Set(deletedIds);
+      setSelectedIds(prev => {
+        const next = new Set();
+        prev.forEach(id => { if (!removedSet.has(id)) next.add(id); });
+        return next;
+      });
+    }
+    if (failed.length) {
+      matrixToast(`已删除 ${deletedIds.length} 个，跳过/失败 ${failed.length} 个（${failed[0]}）`, deletedIds.length ? "info" : "err", 7000);
+    } else {
+      matrixToast(`已成功删除 ${deletedIds.length} 个账号`, "ok", 5000);
+    }
+    await refreshEverything();
+    window.refreshMonitors?.();
+    window.refreshCommentRules?.();
+    window.refreshCommentTasks?.();
+    window.refreshPublish?.();
+  };
+
+  const openEditMeta = useCallback(acc => {
+    setEditingMeta({
+      id: acc.id,
+      nickname: acc.nickname,
+      platform: acc.platform,
+      alias: acc.alias || "",
+      group_name: acc.group_name || "",
+      account_role: acc.account_role || "hybrid",
+      tagsText: (acc.tags || []).join(", "),
+      pinned: !!acc.pinned,
+    });
+  }, []);
+
+  const closeSingleBrowser = useCallback(async acc => {
+    try {
+      await matrixApi("/api/matrix/accounts/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account_ids: [acc.id], action: "close_browsers" }),
+      });
+      matrixToast("已关闭该账号浏览器窗口", "ok");
+      load();
+    } catch (e) {
+      matrixToast("关闭浏览器失败：" + e.message, "err");
+    }
+  }, [load]);
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  const openAccountMenu = useCallback((acc, e, fromButton = false) => {
+    if (!fromButton && e.shiftKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (fromButton) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      setContextMenu(prev => (
+        prev && prev.fromButton && prev.acc.id === acc.id
+          ? null
+          : { acc, x: rect.right, y: rect.bottom + 6, anchorRect: rect, fromButton: true }
+      ));
+      return;
+    }
+    setContextMenu({ acc, x: e.clientX, y: e.clientY, anchorRect: null, fromButton: false });
+  }, []);
+
+  const contextMenuItems = useMemo(() => {
+    if (!contextMenu?.acc) return [];
+    const acc = contextMenu.acc;
+    const checked = selectedIds.has(acc.id);
+    const items = [];
+    if (acc.health_state === "invalid") {
+      items.push({ key: "relogin", icon: "qr", label: "重新扫码补登", onSelect: () => actions?.relogin?.(acc.id) });
+    } else {
+      items.push({
+        key: "browser",
+        icon: "external",
+        label: acc.browser_open ? "前置 / 重开浏览器" : "唤起独立浏览器",
+        onSelect: () => actions?.openBrowser?.(acc.id),
+      });
+    }
+    if (acc.browser_open) {
+      items.push({ key: "close-browser", icon: "x", label: "关闭浏览器窗口", onSelect: () => closeSingleBrowser(acc) });
+    }
+    items.push({ key: "hub", icon: "library", label: "查看数据 / 私信", onSelect: () => bridge?.openAccount?.(acc.id) });
+    items.push({ key: "refresh", icon: "refresh", label: "刷新资料与登录态", onSelect: () => actions?.refreshProfile?.(acc.id) });
+    if (acc.health_state !== "invalid") {
+      items.push({ key: "relogin-alt", icon: "qr", label: "重新扫码登录", onSelect: () => actions?.relogin?.(acc.id) });
+    }
+    items.push({ type: "separator" });
+    items.push({ key: "meta", icon: "edit", label: "编辑归类 / 备注 / 标签", onSelect: () => openEditMeta(acc) });
+    items.push({ key: "pin", icon: "star", label: acc.pinned ? "取消置顶" : "置顶核心账号", onSelect: () => togglePin(acc) });
+    items.push({ key: "select", icon: "check", label: checked ? "取消勾选" : "勾选此账号", onSelect: () => toggleOne(acc.id) });
+    items.push({ type: "separator" });
+    items.push({ key: "proxy", icon: "globe", label: "配置独立代理", onSelect: () => actions?.setProxy?.(acc.id) });
+    if (acc.has_proxy) {
+      items.push({ key: "test-proxy", icon: "network", label: "测试代理连通性", onSelect: () => actions?.testProxy?.(acc.id) });
+    }
+    items.push({ key: "fp", icon: "fingerprint", label: "设备指纹配置", onSelect: () => actions?.manageFingerprint?.(acc.id) });
+    items.push({ key: "backend", icon: "settings", label: "切换浏览器内核", onSelect: () => actions?.setBrowserBackend?.(acc.id) });
+    if (acc.browser_backend === "fingerprint_chromium") {
+      items.push({ key: "env-check", icon: "shield", label: "打开环境检测页", onSelect: () => actions?.checkEnvironment?.(acc.id) });
+    }
+    items.push({ type: "separator" });
+    items.push({ key: "delete", icon: "trash", label: "删除账号", danger: true, onSelect: () => actions?.delAccount?.(acc.id) });
+    return items;
+  }, [contextMenu, selectedIds, actions, bridge, closeSingleBrowser, openEditMeta]);
 
   // Sequential Relogin Wizard for invalid accounts
   const startSequentialRelogin = list => {
@@ -749,6 +1071,14 @@ export function AccountMatrixCenter({ ctx }) {
             >
               <Icon name="send" />去多号群发
             </button>
+            <button
+              type="button"
+              className="ghost sm danger"
+              disabled={!!batchProgress}
+              onClick={handleBatchDelete}
+            >
+              <Icon name="trash" />批量删除
+            </button>
           </div>
         </div>
       )}
@@ -832,8 +1162,13 @@ export function AccountMatrixCenter({ ctx }) {
                           const hb = HEALTH_BADGE[acc.health_state] || HEALTH_BADGE.healthy;
                           const role = ROLE_META[acc.account_role] || ROLE_META.hybrid;
                           const checked = selectedIds.has(acc.id);
+                          const menuOpenHere = contextMenu?.acc?.id === acc.id;
                           return (
-                            <div key={acc.id} className={`mx-acc-card ${checked ? "is-selected" : ""} health-${acc.health_state}`}>
+                            <div
+                              key={acc.id}
+                              className={`mx-acc-card ${checked ? "is-selected" : ""} ${menuOpenHere ? "is-context-open" : ""} health-${acc.health_state}`}
+                              onContextMenu={e => openAccountMenu(acc, e, false)}
+                            >
                               <div className="mx-acc-card-top">
                                 <input
                                   type="checkbox"
@@ -882,6 +1217,18 @@ export function AccountMatrixCenter({ ctx }) {
                                       {acc.douyin_id || `#${acc.id}`}
                                     </small>
                                   </div>
+                                  <button
+                                    type="button"
+                                    className={`mx-card-more-btn ${menuOpenHere ? "active" : ""}`}
+                                    data-mx-ctx-trigger={acc.id}
+                                    onClick={e => openAccountMenu(acc, e, true)}
+                                    title="更多操作（也可右键卡片打开菜单）"
+                                    aria-label={`更多操作：${acc.display_name}`}
+                                    aria-haspopup="menu"
+                                    aria-expanded={menuOpenHere}
+                                  >
+                                    <Icon name="more" />
+                                  </button>
                                 </div>
 
                                 <div className="mx-acc-stats-line">
@@ -919,16 +1266,7 @@ export function AccountMatrixCenter({ ctx }) {
                                 <button
                                   type="button"
                                   className="ghost sm"
-                                  onClick={() => setEditingMeta({
-                                    id: acc.id,
-                                    nickname: acc.nickname,
-                                    platform: acc.platform,
-                                    alias: acc.alias || "",
-                                    group_name: acc.group_name || "",
-                                    account_role: acc.account_role || "hybrid",
-                                    tagsText: (acc.tags || []).join(", "),
-                                    pinned: !!acc.pinned,
-                                  })}
+                                  onClick={() => openEditMeta(acc)}
                                   title="编辑备注别名、所属矩阵组、角色与标签"
                                 >
                                   归类
@@ -985,8 +1323,13 @@ export function AccountMatrixCenter({ ctx }) {
                   const hb = HEALTH_BADGE[acc.health_state] || HEALTH_BADGE.healthy;
                   const role = ROLE_META[acc.account_role] || ROLE_META.hybrid;
                   const checked = selectedIds.has(acc.id);
+                  const menuOpenHere = contextMenu?.acc?.id === acc.id;
                   return (
-                    <tr key={acc.id} className={checked ? "is-selected" : ""}>
+                    <tr
+                      key={acc.id}
+                      className={`${checked ? "is-selected" : ""} ${menuOpenHere ? "is-context-open" : ""}`.trim() || undefined}
+                      onContextMenu={e => openAccountMenu(acc, e, false)}
+                    >
                       <td>
                         <input type="checkbox" checked={checked} onChange={() => toggleOne(acc.id)} aria-label={`勾选 ${acc.display_name}`} />
                       </td>
@@ -1126,8 +1469,13 @@ export function AccountMatrixCenter({ ctx }) {
             {filteredItems.map(acc => {
               const pf = PF_MAP[acc.platform] || { name: acc.platform, color: "#64748b" };
               const state = acc.browser_open ? "open" : acc.worker_running ? "worker" : "idle";
+              const menuOpenHere = contextMenu?.acc?.id === acc.id;
               return (
-                <div key={acc.id} className={`mx-bcard state-${state}`}>
+                <div
+                  key={acc.id}
+                  className={`mx-bcard state-${state} ${menuOpenHere ? "is-context-open" : ""}`.trim()}
+                  onContextMenu={e => openAccountMenu(acc, e, false)}
+                >
                   <div className="mx-bcard-head">
                     <span className="mx-mini-pf inline" style={{ "--pf-c": pf.color }}>{pf.name}</span>
                     <span className={`mx-st-pill ${state === "open" ? "ok" : state === "worker" ? "info" : "muted"}`}>
@@ -1147,15 +1495,7 @@ export function AccountMatrixCenter({ ctx }) {
                       <button
                         type="button"
                         className="ghost sm"
-                        onClick={async () => {
-                          await matrixApi("/api/matrix/accounts/batch", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ account_ids: [acc.id], action: "close_browsers" }),
-                          });
-                          matrixToast("已关闭该账号浏览器窗口", "ok");
-                          load();
-                        }}
+                        onClick={() => closeSingleBrowser(acc)}
                       >
                         关闭
                       </button>
@@ -1310,6 +1650,13 @@ export function AccountMatrixCenter({ ctx }) {
             </div>
           </form>
         </div>
+      )}
+      {contextMenu && (
+        <AccountContextMenu
+          menu={contextMenu}
+          items={contextMenuItems}
+          onClose={closeContextMenu}
+        />
       )}
     </div>
   );

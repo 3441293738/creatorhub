@@ -647,12 +647,15 @@ async function assignAllProxies() {
   finally { if (btn) { btn.disabled = false; btn.innerHTML = oldHtml; } }
 }
 async function testProxy(id) {
-  const btn = event.target.closest("button"); btn.disabled = true; const old = btn.textContent; btn.textContent = "测试中…";
-  try {
-    const r = await api("/api/accounts/" + id + "/test-proxy", { method: "POST" });
-    toast((r.ok ? "代理可用 ✓ " : "代理不可用 ✗ ") + (r.detail || ""), r.ok ? "ok" : "err");
-  } catch (e) { toast("测试失败:" + e.message, "err"); }
-  finally { btn.disabled = false; btn.textContent = old; refreshAccounts(); }
+  const btn = evtBtn();
+  await withBusy(btn, "测试中", async () => {
+    try {
+      const r = await api("/api/accounts/" + id + "/test-proxy", { method: "POST" });
+      toast((r.ok ? "代理可用 ✓ " : "代理不可用 ✗ ") + (r.detail || ""), r.ok ? "ok" : "err");
+    } catch (e) { toast("测试失败:" + e.message, "err"); }
+  });
+  refreshAccounts();
+  window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
 }
 async function relogin(id, scope = "auto") {
   const btn = evtBtn();
@@ -675,6 +678,7 @@ function pollReloginTask(tid) {
         persistedShown = true;
         toast("扫码已确认，正在校验登录态", "info");
         refreshAccounts();
+        window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
       } else if (r.status === "confirmed") {
         clearTimeout(t);
         if (r.profile_status === "invalid") {
@@ -685,7 +689,9 @@ function pollReloginTask(tid) {
           const pxWarn = r.warning || r.environment?.proxy_warning || "";
           if (pxWarn) setTimeout(() => toast("⚠️ " + pxWarn, "info", 6500), 320);
         }
-        refreshAccounts(); return;
+        refreshAccounts();
+        window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
+        return;
       } else if (r.status === "expired") {
         clearTimeout(t); toast("超时未登录,请重试", "err"); return;
       } else if (r.status === "error") {
@@ -705,6 +711,7 @@ async function delAccount(id) {
     toast(`账号已删除，取消 ${result.canceled_tasks || 0} 个任务，暂停 ${(result.disabled_rules || 0) + (result.disabled_monitors || 0)} 项规则/监控`, "ok", 6000);
     if (result.profile_cleanup_error) toast(result.profile_cleanup_error, "info", 7000);
     refreshAccounts(); refreshMonitors(); refreshCommentRules(); refreshCommentTasks(); refreshPublish();
+    window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
   }
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }

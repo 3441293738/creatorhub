@@ -4126,6 +4126,7 @@ async function openAccountBrowser(id, url = "") {
         const scope = result.login_scope === "creator" ? "创作平台" : "主站读取";
         toast("已弹出该账号" + scope + "浏览器窗口;用完请关窗(关窗即保存登录态)。窗口开着时该账号后台同步会暂停。" + checkHint, "ok", 7000);
       }
+      window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
     } catch (e) { toast("打开失败:" + e.message, "err"); }
   });
 }
@@ -5089,6 +5090,7 @@ async function refreshProfile(id) {
     }
   });
   await refreshAccounts();
+  window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
 }
 async function setProxy(id) {
   const a = findAnyAccount(id);
@@ -5168,6 +5170,7 @@ async function setBrowserBackend(id) {
     });
     toast("浏览器环境已切换：" + loginEnvironmentText(result.environment), "ok");
     refreshAccounts();
+    window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
   } catch (e) {
     toast("切换失败:" + e.message, "err");
   }
@@ -5515,11 +5518,13 @@ async function manageFingerprint(id) {
       const result = await api(`/api/accounts/${id}/fingerprint/from-ip`, { method: "POST" });
       toast(`已恢复自动指纹：${result.fingerprint.fingerprint_id || "-"}`, "ok", 7000);
       await refreshAccounts();
+      window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
     } catch (e) { toast("自动生成失败:" + e.message, "err", 8000); }
     return;
   }
   toast(`指纹已保存：${savedFingerprint?.fingerprint?.fingerprint_id || "-"}`, "ok", 7000);
   await refreshAccounts();
+  window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
 }
 
 // 09-proxies-settings.js — 代理池增删改查、连通性归属地探测、兼容矩阵与全局下载/AI 设置。
@@ -6171,12 +6176,15 @@ async function assignAllProxies() {
   finally { if (btn) { btn.disabled = false; btn.innerHTML = oldHtml; } }
 }
 async function testProxy(id) {
-  const btn = event.target.closest("button"); btn.disabled = true; const old = btn.textContent; btn.textContent = "测试中…";
-  try {
-    const r = await api("/api/accounts/" + id + "/test-proxy", { method: "POST" });
-    toast((r.ok ? "代理可用 ✓ " : "代理不可用 ✗ ") + (r.detail || ""), r.ok ? "ok" : "err");
-  } catch (e) { toast("测试失败:" + e.message, "err"); }
-  finally { btn.disabled = false; btn.textContent = old; refreshAccounts(); }
+  const btn = evtBtn();
+  await withBusy(btn, "测试中", async () => {
+    try {
+      const r = await api("/api/accounts/" + id + "/test-proxy", { method: "POST" });
+      toast((r.ok ? "代理可用 ✓ " : "代理不可用 ✗ ") + (r.detail || ""), r.ok ? "ok" : "err");
+    } catch (e) { toast("测试失败:" + e.message, "err"); }
+  });
+  refreshAccounts();
+  window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
 }
 async function relogin(id, scope = "auto") {
   const btn = evtBtn();
@@ -6199,6 +6207,7 @@ function pollReloginTask(tid) {
         persistedShown = true;
         toast("扫码已确认，正在校验登录态", "info");
         refreshAccounts();
+        window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
       } else if (r.status === "confirmed") {
         clearTimeout(t);
         if (r.profile_status === "invalid") {
@@ -6209,7 +6218,9 @@ function pollReloginTask(tid) {
           const pxWarn = r.warning || r.environment?.proxy_warning || "";
           if (pxWarn) setTimeout(() => toast("⚠️ " + pxWarn, "info", 6500), 320);
         }
-        refreshAccounts(); return;
+        refreshAccounts();
+        window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
+        return;
       } else if (r.status === "expired") {
         clearTimeout(t); toast("超时未登录,请重试", "err"); return;
       } else if (r.status === "error") {
@@ -6229,6 +6240,7 @@ async function delAccount(id) {
     toast(`账号已删除，取消 ${result.canceled_tasks || 0} 个任务，暂停 ${(result.disabled_rules || 0) + (result.disabled_monitors || 0)} 项规则/监控`, "ok", 6000);
     if (result.profile_cleanup_error) toast(result.profile_cleanup_error, "info", 7000);
     refreshAccounts(); refreshMonitors(); refreshCommentRules(); refreshCommentTasks(); refreshPublish();
+    window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
   }
   catch (e) { toast("删除失败:" + e.message, "err"); }
 }

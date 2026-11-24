@@ -29,6 +29,7 @@ async function openAccountBrowser(id, url = "") {
         const scope = result.login_scope === "creator" ? "创作平台" : "主站读取";
         toast("已弹出该账号" + scope + "浏览器窗口;用完请关窗(关窗即保存登录态)。窗口开着时该账号后台同步会暂停。" + checkHint, "ok", 7000);
       }
+      window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
     } catch (e) { toast("打开失败:" + e.message, "err"); }
   });
 }
