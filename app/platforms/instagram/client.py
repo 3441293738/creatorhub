@@ -15,7 +15,7 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import quote, urlencode
 
@@ -80,6 +80,7 @@ class IgHttpResponse:
     status_code: int
     headers: Dict[str, str]
     text: str
+    set_cookies: List[str] = field(default_factory=list)
 
     def json(self) -> Any:
         return json.loads(self.text)
@@ -182,6 +183,8 @@ class InstagramClient:
         self._web_http: Optional[AsyncSession] = None
         self._mobile_http: Optional[AsyncSession] = None
         self._transport = transport
+        self._initial_cookies: Dict[str, str] = dict(self.session.browser_cookies)
+        self._captured_set_cookies: List[Tuple[str, str]] = []
 
     @property
     def self_uid(self) -> str:
@@ -245,7 +248,64 @@ class InstagramClient:
                     timeout=req_timeout,
                 )
         hdrs = {str(k): str(v) for k, v in (resp.headers or {}).items()}
-        return IgHttpResponse(status_code=int(resp.status_code), headers=hdrs, text=resp.text or "")
+        set_cookies: List[str] = []
+        try:
+            from ...services.session_keepalive import extract_set_cookie_lines
+            set_cookies = extract_set_cookie_lines(resp)
+        except Exception:
+            set_cookies = []
+        return IgHttpResponse(
+            status_code=int(resp.status_code),
+            headers=hdrs,
+            text=resp.text or "",
+            set_cookies=set_cookies,
+        )
+
+    def _record_response_cookies(self, url: str, resp: IgHttpResponse) -> None:
+        for line in resp.set_cookies or ():
+            self._captured_set_cookies.append((url, line))
+
+    def export_refreshed_state(
+        self,
+        base_state: str | Mapping[str, Any] | None,
+    ) -> Tuple[Optional[dict], bool]:
+        """将响应捕获的 Set-Cookie 与移动端/Web 响应头轮换出的凭据合并回 storage_state。"""
+        import base64 as _b64
+        from ...services.session_keepalive import merge_set_cookies_into_state
+
+        updates: Dict[str, str] = {}
+        if self.session.rur and self.session.rur != str(self._initial_cookies.get("rur") or "").strip('"'):
+            updates["rur"] = self.session.rur
+        if self.session.csrf_token and self.session.csrf_token != self._initial_cookies.get("csrftoken"):
+            updates["csrftoken"] = self.session.csrf_token
+        if self.session.auth_ds_user_id and self.session.auth_ds_user_id != self._initial_cookies.get("ds_user_id"):
+            updates["ds_user_id"] = self.session.auth_ds_user_id
+        if self.session.auth_bearer:
+            try:
+                raw_b64 = self.session.auth_bearer
+                if raw_b64.startswith("Bearer IGT:2:"):
+                    raw_b64 = raw_b64[len("Bearer IGT:2:"):]
+                padded = raw_b64 + "=" * (-len(raw_b64) % 4)
+                decoded = json.loads(_b64.b64decode(padded).decode("utf-8"))
+                if isinstance(decoded, Mapping):
+                    new_sid = str(decoded.get("sessionid") or "").strip()
+                    if new_sid and new_sid != self._initial_cookies.get("sessionid"):
+                        updates["sessionid"] = new_sid
+                    new_uid = str(decoded.get("ds_user_id") or "").strip()
+                    if new_uid.isdigit() and new_uid != self._initial_cookies.get("ds_user_id"):
+                        updates["ds_user_id"] = new_uid
+            except Exception:
+                pass
+
+        if not self._captured_set_cookies and not updates:
+            return None, False
+        return merge_set_cookies_into_state(
+            base_state,
+            self._captured_set_cookies,
+            platform="instagram",
+            url=WWW_BASE + "/",
+            cookie_updates=updates,
+        )
 
     async def _mobile_request(
         self,
@@ -282,6 +342,7 @@ class InstagramClient:
                 self.last_error = err
                 return None, None, err
             self.session.update_from_response_headers(resp.headers)
+            self._record_response_cookies(url, resp)
             if resp.status_code == 560 and attempt + 1 < attempts:
                 await asyncio.sleep(random.uniform(1.0, 3.0))
                 continue
@@ -335,6 +396,7 @@ class InstagramClient:
                 self.last_error = err
                 return None, None, err
             self.session.update_from_response_headers(resp.headers)
+            self._record_response_cookies(url, resp)
             if resp.status_code == 560 and attempt + 1 < attempts:
                 await asyncio.sleep(random.uniform(1.0, 3.0))
                 continue

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 
 from fastapi import HTTPException
@@ -141,12 +142,16 @@ class _OpenBrowserLease:
                 account = session.get(DouyinAccount, self.account_id)
                 if account is None:
                     return
+                now_utc = datetime.utcnow()
                 if self.open_scope == "creator" and account.platform in {"xhs", "rednote"}:
                     account.creator_storage_state = state_json
                 else:
                     account.storage_state = state_json
                     if account.platform in {"kuaishou", "shipinhao", "bilibili", "instagram", "twitter"}:
                         account.creator_storage_state = state_json
+                account.last_keepalive_at = now_utc
+                account.last_cookie_refresh_at = now_utc
+                account.keepalive_note = "已从账号浏览器窗口同步最新登录态"
                 session.add(account)
                 session.commit()
         except Exception:
@@ -218,7 +223,11 @@ def _persist_douyin_read_session(identity, profile: dict, state: dict, recipe: d
         binding = context_binding(account, state, ua)
         if not binding:
             return False
+        now_utc = datetime.utcnow()
         account.storage_state = json.dumps(state, ensure_ascii=False)
+        account.last_keepalive_at = now_utc
+        account.last_cookie_refresh_at = now_utc
+        account.keepalive_note = "抖音浏览器被动同步最新登录态"
         if account.identity_mode == "native":
             account.ua = ua
         session.add(account)
@@ -242,6 +251,10 @@ def _persist_douyin_api_cookies(account_id: int, original_state: str, state: dic
     with get_session() as session:
         account = session.get(DouyinAccount, account_id)
         if account and account.platform == "douyin" and account.storage_state == original_state:
+            now_utc = datetime.utcnow()
             account.storage_state = json.dumps(state, ensure_ascii=False)
+            account.last_keepalive_at = now_utc
+            account.last_cookie_refresh_at = now_utc
+            account.keepalive_note = "抖音 API 响应 Cookie 已同步"
             session.add(account)
             session.commit()

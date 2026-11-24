@@ -65,6 +65,10 @@ class EngineSettingsPatch(BaseModel):
     # remain outside this allowlist.
     scan_interval_seconds: int | None = Field(None, ge=1, le=86400)
     idle_keepalive_hours: float | None = Field(None, ge=0, le=168)
+    keepalive_cookie_sync_enabled: bool | None = None
+    bilibili_auto_cookie_refresh: bool | None = None
+    shipinhao_keepalive_interval_seconds: int | None = Field(None, ge=0, le=86400)
+    keepalive_notify_on_invalid: bool | None = None
     danmaku_probe_step_seconds: float | None = Field(None, ge=0.1, le=60)
     danmaku_max_probe_points: int | None = Field(None, ge=1, le=1000)
     danmaku_max_records_per_scan: int | None = Field(None, ge=0, le=100000)

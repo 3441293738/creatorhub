@@ -200,6 +200,8 @@ class TwitterClient:
         self.self_uid = extract_twid_uid(self.cookies)
         self._session: Optional[AsyncSession] = None
         self._session_bootstrapped = False
+        self._initial_cookies: Dict[str, str] = dict(self.cookies)
+        self._captured_set_cookies: List[Tuple[str, str]] = []
 
     def _gql_cache_key(self) -> str:
         return hashlib.sha256(
@@ -248,6 +250,12 @@ class TwitterClient:
                 cookies=(self.cookies if with_cookies else None),
             )
             if with_cookies:
+                try:
+                    from ...services.session_keepalive import extract_set_cookie_lines
+                    for line in extract_set_cookie_lines(resp):
+                        self._captured_set_cookies.append((url, line))
+                except Exception:
+                    pass
                 try:
                     for ck_name, ck_val in resp.cookies.items():
                         if ck_name and ck_val:
@@ -325,6 +333,29 @@ class TwitterClient:
             self.self_uid = extract_twid_uid(self.cookies)
         return self.cookies
 
+    def export_refreshed_state(
+        self,
+        base_state: str | Mapping[str, Any] | None,
+    ) -> Tuple[Optional[dict], bool]:
+        """将响应捕获的 Set-Cookie 与刷新的 ct0/twid/auth_token 合并回 storage_state。"""
+        from ...services.session_keepalive import merge_set_cookies_into_state
+
+        changed_kv = {
+            k: v for k, v in self.cookies.items()
+            if k and v and self._initial_cookies.get(k) != v
+        }
+        if not self._captured_set_cookies and not changed_kv:
+            return None, False
+        return merge_set_cookies_into_state(
+            base_state,
+            self._captured_set_cookies,
+            platform="twitter",
+            url="https://x.com/",
+            cookie_updates=changed_kv,
+            default_ttl_seconds=365 * 86400,
+            mirror_domains=(".x.com", ".twitter.com"),
+        )
+
     async def _get_json(
         self,
         url: str,
@@ -363,6 +394,12 @@ class TwitterClient:
             resp = await sess.get(full_url, headers=headers)
             status = int(resp.status_code)
             raw_text = resp.text or ""
+            try:
+                from ...services.session_keepalive import extract_set_cookie_lines
+                for line in extract_set_cookie_lines(resp):
+                    self._captured_set_cookies.append((full_url, line))
+            except Exception:
+                pass
             try:
                 for ck_name, ck_val in resp.cookies.items():
                     if ck_name and ck_val:

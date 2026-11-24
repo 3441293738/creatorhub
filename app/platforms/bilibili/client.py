@@ -211,6 +211,8 @@ class BilibiliClient:
         self._wbi_fetched_at: float = 0.0
         self._buvid_checked: bool = False
         self._mid: str = str(self.cookies.get("DedeUserID") or "")
+        self._initial_cookies: Dict[str, str] = dict(self.cookies)
+        self._captured_set_cookies: List[Tuple[str, str]] = []
 
     @property
     def csrf(self) -> str:
@@ -296,6 +298,12 @@ class BilibiliClient:
                     timeout=self.timeout,
                     quote=curl_quote,
                 )
+        try:
+            from ...services.session_keepalive import extract_set_cookie_lines
+            for line in extract_set_cookie_lines(resp):
+                self._captured_set_cookies.append((url, line))
+        except Exception:
+            pass
         try:
             for k, v in resp.cookies.items():
                 if k and v is not None:
@@ -461,16 +469,24 @@ class BilibiliClient:
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
         return data, ""
 
-    async def refresh_cookies(self, refresh_token: str) -> Tuple[dict, str]:
+    async def refresh_cookies(
+        self,
+        refresh_token: str,
+        *,
+        timestamp_ms: int | None = None,
+    ) -> Tuple[dict, str]:
         """通过 B 站官方 RSA-OAEP `correspond/1` 握手流程刷新即将过期的会话。"""
         old_token = str(refresh_token or "").strip()
         old_csrf = self.csrf
         if not old_token or not old_csrf:
             return {}, "缺 refresh_token 或 bili_jct"
-        info, err = await self.check_cookie_refresh()
-        if err:
-            return {}, err
-        ts = int(info.get("timestamp") or int(time.time() * 1000))
+        if timestamp_ms and int(timestamp_ms) > 0:
+            ts = int(timestamp_ms)
+        else:
+            info, err = await self.check_cookie_refresh()
+            if err:
+                return {}, err
+            ts = int(info.get("timestamp") or int(time.time() * 1000))
         correspond_path = get_correspond_path(ts)
         try:
             corr_resp = await self._request(
@@ -500,15 +516,119 @@ class BilibiliClient:
         if ref_err or not ref_payload:
             return {}, ref_err or "refresh_failed"
         data = ref_payload.get("data") if isinstance(ref_payload.get("data"), dict) else {}
-        new_token = str(data.get("refresh_token") or "")
+        new_token = str(data.get("refresh_token") or "").strip()
         new_csrf = self.csrf or old_csrf
-        await self._post_write_form(
-            f"{PASSPORT_BASE}/x/passport-login/web/confirm/refresh",
-            {"csrf": new_csrf, "refresh_token": old_token},
-            referer="https://www.bilibili.com/",
-            origin="https://www.bilibili.com",
-        )
+        if new_token:
+            _, confirm_err = await self._post_write_form(
+                f"{PASSPORT_BASE}/x/passport-login/web/confirm/refresh",
+                {"csrf": new_csrf, "refresh_token": old_token},
+                referer="https://www.bilibili.com/",
+                origin="https://www.bilibili.com",
+            )
+            if confirm_err:
+                return {
+                    "refresh_token": new_token,
+                    "cookies": dict(self.cookies),
+                    "confirm_warning": confirm_err,
+                }, ""
         return {"refresh_token": new_token, "cookies": dict(self.cookies)}, ""
+
+    def export_refreshed_state(
+        self,
+        base_state: str | Mapping[str, Any] | None,
+        *,
+        new_refresh_token: str = "",
+    ) -> Tuple[Optional[dict], bool]:
+        """将本次会话收到的 Set-Cookie、轮换 Cookie 及新 refresh_token 合并回 storage_state。"""
+        from ...services.session_keepalive import (
+            merge_set_cookies_into_state,
+            upsert_local_storage_value,
+        )
+
+        changed_kv = {
+            k: v for k, v in self.cookies.items()
+            if k and v and self._initial_cookies.get(k) != v
+        }
+        if not self._captured_set_cookies and not changed_kv and not new_refresh_token:
+            return None, False
+
+        merged, changed = merge_set_cookies_into_state(
+            base_state,
+            self._captured_set_cookies,
+            platform="bilibili",
+            url=WWW_BASE + "/",
+            cookie_updates=changed_kv,
+            default_ttl_seconds=180 * 86400 if new_refresh_token else 0,
+        )
+        if merged is None:
+            return None, False
+        token_changed = False
+        if new_refresh_token:
+            token_changed = upsert_local_storage_value(
+                merged,
+                WWW_BASE,
+                "ac_time_value",
+                new_refresh_token,
+                update_existing_hosts=("bilibili.com",),
+            )
+        return merged, bool(changed or token_changed)
+
+    async def maybe_refresh_cookies(
+        self,
+        base_state: str | Mapping[str, Any] | None,
+    ) -> Dict[str, Any]:
+        """按 B 站官方机制检查是否需要 Cookie 续期；若需要且具备 ac_time_value 则自动完成续期。"""
+        from ...services.session_keepalive import extract_bili_refresh_token
+
+        info, err = await self.check_cookie_refresh()
+        if err:
+            return {"checked": False, "refresh_needed": False, "refreshed": False, "error": err}
+        refresh_needed = bool(info.get("refresh"))
+        if not refresh_needed:
+            merged, changed = self.export_refreshed_state(base_state)
+            return {
+                "checked": True,
+                "refresh_needed": False,
+                "refreshed": False,
+                "state": merged,
+                "changed": changed,
+                "error": "",
+            }
+
+        old_token = extract_bili_refresh_token(base_state)
+        if not old_token:
+            return {
+                "checked": True,
+                "refresh_needed": True,
+                "refreshed": False,
+                "missing_refresh_token": True,
+                "state": None,
+                "changed": False,
+                "error": "missing_ac_time_value",
+            }
+
+        ts_ms = int(info.get("timestamp") or 0) or None
+        res, ref_err = await self.refresh_cookies(old_token, timestamp_ms=ts_ms)
+        if ref_err or not res:
+            return {
+                "checked": True,
+                "refresh_needed": True,
+                "refreshed": False,
+                "state": None,
+                "changed": False,
+                "error": ref_err or "refresh_failed",
+            }
+        new_token = str(res.get("refresh_token") or "").strip()
+        merged, changed = self.export_refreshed_state(base_state, new_refresh_token=new_token)
+        return {
+            "checked": True,
+            "refresh_needed": True,
+            "refreshed": bool(merged is not None),
+            "new_refresh_token": bool(new_token),
+            "state": merged,
+            "changed": bool(changed or merged is not None),
+            "error": "" if merged is not None else "invalid_refreshed_state",
+        }
 
     async def fetch_self_profile(self) -> Tuple[dict, str]:
         """校验登录态并拉取账号昵称、头像、UID、粉丝/关注数及投稿总数。"""

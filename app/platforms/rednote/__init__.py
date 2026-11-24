@@ -87,6 +87,7 @@ from .publish import (
     publish_rednote,
     publish_rednote_browser,
     rednote_creator_check,
+    rednote_creator_check_with_state,
     rednote_creator_profile,
     update_rednote_visibility,
 )
@@ -184,6 +185,7 @@ __all__ = [
     "publish_rednote",
     "rednote_creator_profile",
     "rednote_creator_check",
+    "rednote_creator_check_with_state",
     "list_published_rednote",
     "delete_rednote_work",
     "update_rednote_visibility",

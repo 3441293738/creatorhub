@@ -129,6 +129,9 @@ class DouyinAccount(SQLModel, table=True):
     exit_proxy_signature: str = ""
     exit_checked_at: Optional[datetime] = None
     last_active_at: Optional[datetime] = None  # 上次活跃(用于错峰调度)
+    last_keepalive_at: Optional[datetime] = None  # 最近一次保活/体检成功时间
+    last_cookie_refresh_at: Optional[datetime] = None  # 最近一次 Cookie/Token 续期或落库同步时间
+    keepalive_note: str = ""                       # 最近一次保活/续期结果说明
     write_paused_until: Optional[datetime] = None  # 平台风控后暂停自动写操作
     write_pause_reason: str = ""                    # 最近一次暂停原因
     identity_mode: str = "legacy"                  # legacy=保留存量画像 | native=浏览器原生画像

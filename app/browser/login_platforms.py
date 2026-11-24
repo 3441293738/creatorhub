@@ -542,7 +542,34 @@ async def interactive_bilibili_login(
 
         if logged:
             await human_wait(page, 1200)
-            state_json = json.dumps(await ctx.storage_state())
+            state_obj = await ctx.storage_state()
+            from ..services.session_keepalive import (
+                extract_bili_refresh_token,
+                upsert_local_storage_value,
+            )
+            if not extract_bili_refresh_token(state_obj):
+                try:
+                    if not str(page.url or "").startswith("https://www.bilibili.com"):
+                        await page.goto(
+                            "https://www.bilibili.com/",
+                            wait_until="domcontentloaded",
+                            timeout=20000,
+                        )
+                        await human_wait(page, 1500)
+                    ac_val = await page.evaluate(
+                        "() => (window.localStorage && window.localStorage.getItem('ac_time_value')) || ''"
+                    )
+                    state_obj = await ctx.storage_state()
+                    if ac_val and not extract_bili_refresh_token(state_obj):
+                        upsert_local_storage_value(
+                            state_obj,
+                            "https://www.bilibili.com",
+                            "ac_time_value",
+                            str(ac_val),
+                        )
+                except Exception:
+                    pass
+            state_json = json.dumps(state_obj, ensure_ascii=False)
     finally:
         try:
             page.remove_listener("response", on_response)

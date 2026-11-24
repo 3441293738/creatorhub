@@ -4,7 +4,8 @@ from .extract import (parse_note_brief, parse_note_detail, parse_comment,
                       flatten_comments, parse_self_user)
 from .client import (XhsApiClient, XhsApiError, cookie_str_from_state,
                      extract_b1_from_state, has_a1, has_creator_cookies)
-from .publish import publish_xhs, list_published, creator_check, creator_profile
+from .publish import (publish_xhs, list_published, creator_check,
+                      creator_check_with_state, creator_profile)
 from .browser_writes import (
     XhsWriteOutcome, publish_xhs_browser, comment_xhs_browser)
 
@@ -15,7 +16,7 @@ __all__ = [
     "XhsApiClient", "XhsApiError", "cookie_str_from_state",
     "extract_b1_from_state", "has_a1",
     "has_creator_cookies",
-    "publish_xhs", "list_published", "creator_check", "creator_profile",
+    "publish_xhs", "list_published", "creator_check", "creator_check_with_state", "creator_profile",
     "XhsWriteOutcome",
     "publish_xhs_browser", "comment_xhs_browser",
 ]

@@ -1196,6 +1196,44 @@ async def rednote_creator_profile(
     return None
 
 
+async def rednote_creator_check_with_state(
+    storage_state_json: str,
+    proxy: str = "",
+    *,
+    user_agent: str = _LIST_UA,
+    locale: str = "en-US",
+) -> tuple[bool | None, dict | None, bool]:
+    """校验海外小红书创作者/会话态，有效时同步返回合并后的最新 storage_state。"""
+    cookie_str = cookie_str_from_state(storage_state_json)
+    if not has_a1(cookie_str):
+        return False, None, False
+    client = RednoteApiClient(
+        cookie_str,
+        user_agent or _LIST_UA,
+        proxy=proxy,
+        locale=locale,
+        storage_state=storage_state_json,
+    )
+    try:
+        async with client.session_scope():
+            me = await client.self_info()
+            if isinstance(me, dict):
+                if me.get("guest") is True:
+                    return False, None, False
+                if me.get("user_id") or me.get("red_id"):
+                    refreshed, changed = client.export_refreshed_state(
+                        storage_state_json, scope="creator"
+                    )
+                    return True, refreshed, bool(changed)
+        return None, None, False
+    except RednoteApiError as exc:
+        if exc.category == "auth":
+            return False, None, False
+        return None, None, False
+    except Exception:
+        return None, None, False
+
+
 async def rednote_creator_check(
     storage_state_json: str,
     proxy: str = "",

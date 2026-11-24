@@ -27,8 +27,12 @@ class EngineConfig:
     danmaku_max_probe_points: int = 120       # 单条视频最多探测的时间点数
     danmaku_max_records_per_scan: int = 1000  # 单轮最多入库弹幕数,0=不限
     danmaku_max_records_total: int = 0        # 每个监控最多保留记录数,0=不限
-    account_check_interval_seconds: int = 1800  # 登录态独立体检间隔(0=关闭)，不受普通活跃时间影响
+    account_check_interval_seconds: int = 1800  # 登录态独立体检/保活间隔(0=关闭)，不受普通活跃时间影响
     idle_keepalive_hours: float = 6.0  # 兼容历史闲置保活配置；不再用于延迟登录态体检
+    keepalive_cookie_sync_enabled: bool = True       # 体检/保活成功后自动将最新响应/浏览器 Cookie 同步落库
+    bilibili_auto_cookie_refresh: bool = True        # B站检测到需续期时自动执行官方 RSA-OAEP Cookie 续期
+    shipinhao_keepalive_interval_seconds: int = 900  # 视频号独立保活间隔(秒,0=跟随 account_check_interval_seconds)
+    keepalive_notify_on_invalid: bool = True         # 账号登录态由有效转为失效时通过通知渠道告警
     # 自有账号评论模式:创作中心评论管理页(实验性,抖音改版时改这里)
     creator_comment_url: str = "https://creator.douyin.com/creator-micro/interaction/comment-management"
     # 自有账号弹幕模式:创作中心弹幕管理页(实验性,抖音改版时改这里)
@@ -302,6 +306,8 @@ def load_config(path: str | None = None) -> Config:
             0, min(600, int(cfg.engine.initial_scan_spread_seconds)))
         cfg.engine.quiet_hours_wake_jitter_minutes = max(
             0, min(120, int(cfg.engine.quiet_hours_wake_jitter_minutes)))
+        cfg.engine.shipinhao_keepalive_interval_seconds = max(
+            0, min(86400, int(cfg.engine.shipinhao_keepalive_interval_seconds or 0)))
         cfg.engine.browser_session_idle_seconds = max(
             0, int(cfg.engine.browser_session_idle_seconds))
         if cfg.engine.xhs_cdp_idle_seconds is not None:

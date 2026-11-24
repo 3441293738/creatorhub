@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import logging
 
@@ -21,6 +22,12 @@ from app.platforms.rednote import RednoteApiClient, parse_rednote_self_user, coo
 from app.platforms.twitter import TwitterClient, build_twitter_storage_state, cookie_str_from_state as twitter_cookie_str_from_state
 from app.platforms.xhs import XhsApiClient, XhsApiError, has_a1, parse_self_user as parse_xhs_self_user, cookie_str_from_state as xhs_cookie_str_from_state
 from app.risk import OperationKind, RiskCategory, classify_platform_error
+from app.services.session_keepalive import (
+    _cookies_meaningfully_changed,
+    _parse_state_dict,
+    merge_browser_state,
+    persist_refreshed_session,
+)
 from app.transport_matrix import douyin_client_environment, resolve_transport
 
 
@@ -59,7 +66,8 @@ def _xhs_has_read_login_state(state: str) -> bool:
 
 
 async def _xhs_profile(state: str, proxy: str = "", *,
-                       detailed: bool = False, user_agent: str = ""):
+                       detailed: bool = False, user_agent: str = "",
+                       account_id: int | None = None):
     """用签名直连 API 拿小红书账号资料(me 身份 + otherinfo 昵称/头像/粉丝)。
     返回 (user dict, error)。error == "logged_out" 表示登录态失效。"""
     cookie_str = xhs_cookie_str_from_state(state)
@@ -73,7 +81,8 @@ async def _xhs_profile(state: str, proxy: str = "", *,
         storage_state=state,
     )
     try:
-        me = await client.self_info()
+        async with client.session_scope():
+            me = await client.self_info()
     except XhsApiError as exc:
         if detailed:
             return {}, exc
@@ -93,6 +102,17 @@ async def _xhs_profile(state: str, proxy: str = "", *,
         if detailed and category in {
                 RiskCategory.RISK, RiskCategory.AUTH, RiskCategory.NETWORK}:
             return {}, exc
+    if account_id and getattr(app_runtime.cfg.engine, "keepalive_cookie_sync_enabled", True):
+        new_state, changed = client.export_refreshed_state(state)
+        if new_state and changed:
+            persist_refreshed_session(
+                account_id,
+                "xhs",
+                new_state,
+                expected_state=state,
+                scope="read",
+                keepalive_note="小红书主站 Cookie 已同步",
+            )
     return merged, ""
 
 
@@ -174,9 +194,80 @@ async def _enrich_account_profile(account_id: int, state: str, *,
     if platform not in {"douyin", "bilibili", "instagram", "twitter"} and app_runtime.browser is None:
         return _done("error", "browser_unavailable")
 
+    async def _sync_browser_state(
+        pf: str,
+        ident,
+        exp_state: str,
+        exp_creator_state: str = "",
+        *,
+        scope: str = "read",
+        sync_cookie_str: bool = False,
+        note: str = "已同步浏览器最新登录态",
+    ) -> bool:
+        if (
+            not getattr(app_runtime.cfg.engine, "keepalive_cookie_sync_enabled", True)
+            or app_runtime.browser is None
+            or ident is None
+        ):
+            return False
+        capture = getattr(app_runtime.browser, "capture_live_storage_state", None)
+        if not callable(capture):
+            return False
+        try:
+            live = await capture(ident)
+        except Exception:
+            return False
+        if not live:
+            return False
+        base = exp_creator_state if scope == "creator" else exp_state
+        merged, changed = merge_browser_state(base, live, platform=pf, scope=scope)
+        if not merged or not changed:
+            return False
+        return persist_refreshed_session(
+            account_id,
+            pf,
+            merged,
+            expected_state=exp_state,
+            expected_creator_state=exp_creator_state,
+            scope=scope,
+            sync_cookie_str=sync_cookie_str,
+            keepalive_note=note,
+        )
+
+    def _sync_api_state(
+        pf: str,
+        new_state: dict | None,
+        changed: bool,
+        *,
+        exp_state: str = "",
+        exp_creator_state: str = "",
+        scope: str = "read",
+        sync_cookie_str: bool = False,
+        note: str = "已同步平台最新 Cookie",
+    ) -> bool:
+        if (
+            not getattr(app_runtime.cfg.engine, "keepalive_cookie_sync_enabled", True)
+            or not new_state
+            or not changed
+        ):
+            return False
+        return persist_refreshed_session(
+            account_id,
+            pf,
+            new_state,
+            expected_state=exp_state,
+            expected_creator_state=exp_creator_state,
+            scope=scope,
+            sync_cookie_str=sync_cookie_str,
+            keepalive_note=note,
+        )
+
+    keepalive_note = ""
+    cookie_refreshed = False
+
     # XHS 创作者号:用创作平台「我的信息」拿资料 + 判活(www 接口对创作态拿不到)
     if platform == "xhs" and creator_state:
-        from app.platforms.xhs import creator_profile, creator_check
+        from app.platforms.xhs import creator_profile, creator_check_with_state
         xhs_ua = _direct_request_ua(identity) if identity is not None else (a0.ua or app_runtime.cfg.engine.user_agent)
         profile_error = ""
         try:
@@ -195,6 +286,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
             with get_session() as s:
                 acc = s.get(DouyinAccount, account_id)
                 if acc:
+                    now_utc = datetime.utcnow()
                     if prof.get("nickname"):
                         acc.nickname = prof["nickname"]
                     acc.sec_uid = prof.get("sec_uid") or acc.sec_uid
@@ -203,6 +295,9 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     acc.follower_count = prof.get("follower_count") or acc.follower_count
                     acc.aweme_count = prof.get("aweme_count") or acc.aweme_count
                     acc.status = "active"
+                    acc.last_active_at = now_utc
+                    acc.last_keepalive_at = now_utc
+                    acc.keepalive_note = "小红书创作者登录态有效"
                     s.add(acc); s.commit()
             return _done("ok")
         if profile_error:
@@ -212,24 +307,24 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     RiskCategory.NETWORK}:
                 status = "invalid" if category == RiskCategory.AUTH else "error"
                 return _done(status, profile_error)
-        check_error = ""
-        try:
-            if detailed:
-                chk, check_error = await creator_check(
-                    creator_state, proxy=proxy, preserve_error=True, user_agent=xhs_ua)
-            else:
-                chk = await creator_check(creator_state, proxy=proxy, user_agent=xhs_ua)
-        except TypeError:
-            if detailed:
-                chk, check_error = await creator_check(
-                    creator_state, proxy=proxy, preserve_error=True)
-            else:
-                chk = await creator_check(creator_state, proxy=proxy)
+        chk, check_error, c_new, c_changed = await creator_check_with_state(
+            creator_state, proxy=proxy, preserve_error=detailed, user_agent=xhs_ua
+        )
         if chk is True:
+            synced = _sync_api_state(
+                "xhs", c_new, c_changed,
+                exp_creator_state=creator_state,
+                scope="creator",
+                note="小红书创作者 Cookie 已同步",
+            )
             with get_session() as s:
                 acc = s.get(DouyinAccount, account_id)
                 if acc:
+                    now_utc = datetime.utcnow()
                     acc.status = "active"
+                    acc.last_active_at = now_utc
+                    acc.last_keepalive_at = now_utc
+                    acc.keepalive_note = "小红书创作者 Cookie 已同步" if synced else "小红书创作者登录态有效"
                     s.add(acc); s.commit()
             return _done("ok")
         if check_error:
@@ -245,6 +340,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
             acc = s.get(DouyinAccount, account_id)
             if acc:
                 acc.status = "invalid"
+                acc.keepalive_note = "登录态已失效，请重新登录"
                 s.add(acc); s.commit()
         return _done("invalid", check_error or "logged_out")
 
@@ -254,22 +350,47 @@ async def _enrich_account_profile(account_id: int, state: str, *,
             # UA/TLS/Client-Hints/profile that created the login cookies.
             if _xhs_browser_reads_enabled():
                 u, err = await fetch_xhs_self_profile(app_runtime.browser, identity)
+                if u and await _sync_browser_state(
+                    "xhs", identity, state, scope="read", note="小红书浏览器登录态已同步"
+                ):
+                    cookie_refreshed = True
+                    keepalive_note = "小红书浏览器登录态已同步"
             else:
                 u, err = await _xhs_profile(
                     state, proxy, detailed=detailed,
-                    user_agent=_direct_request_ua(identity))
+                    user_agent=_direct_request_ua(identity),
+                    account_id=account_id)
         elif platform == "kuaishou":
             u, err = await fetch_ks_self_profile(app_runtime.browser, identity)
+            if u and await _sync_browser_state(
+                "kuaishou", identity, state, creator_state,
+                scope="read", note="快手浏览器登录态已保活同步"
+            ):
+                cookie_refreshed = True
+                keepalive_note = "快手登录态已同步"
         elif platform == "shipinhao":
             # 视频号扫码授权后，服务端会话偶尔要数秒才在新页面中生效。
             # 单次打开被重定向到登录页不能立即把刚添加的账号判为失效。
             u, err = await _fetch_channels_profile_with_retry(identity)
+            if u and await _sync_browser_state(
+                "shipinhao", identity, state, creator_state,
+                scope="read", note="视频号助手会话已保活同步"
+            ):
+                cookie_refreshed = True
+                keepalive_note = "视频号会话 Cookie 已同步"
         elif platform == "tiktok":
             u, err = await fetch_tiktok_self_profile(
                 app_runtime.browser, identity, block_media=True)
+            if u and await _sync_browser_state(
+                "tiktok", identity, state, creator_state,
+                scope="read", note="TikTok 浏览器登录态已同步至直连快照"
+            ):
+                cookie_refreshed = True
+                keepalive_note = "TikTok Cookie 已同步"
         elif platform == "bilibili":
             bmode = str(getattr(app_runtime.cfg.engine, "bilibili_read_mode", "hybrid") or "hybrid").lower()
             u, err = None, ""
+            used_browser = False
             if bmode in {"api", "hybrid"} and state:
                 bcli_kwargs = {
                     "proxy": proxy,
@@ -285,16 +406,59 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                         state, a0.ua or app_runtime.cfg.engine.user_agent, **bcli_kwargs)
                 async with bcli.session_scope():
                     u, err = await bcli.fetch_self_profile()
+                    if u:
+                        if getattr(app_runtime.cfg.engine, "bilibili_auto_cookie_refresh", True):
+                            ref = await bcli.maybe_refresh_cookies(state)
+                            if ref.get("refreshed") and ref.get("state"):
+                                if _sync_api_state(
+                                    "bilibili", ref["state"], True,
+                                    exp_state=state, scope="read",
+                                    note="B站官方 RSA-OAEP Cookie 续期成功",
+                                ):
+                                    cookie_refreshed = True
+                                    keepalive_note = "B站官方 Cookie 续期成功"
+                            elif ref.get("missing_refresh_token") and bmode == "hybrid" and app_runtime.browser is not None and identity is not None:
+                                bu, _berr = await fetch_bili_self_profile(app_runtime.browser, identity)
+                                if bu:
+                                    u = bu
+                                    used_browser = True
+                                    keepalive_note = "B站已通过浏览器触发续期并补采令牌"
+                            elif ref.get("changed") and ref.get("state"):
+                                if _sync_api_state(
+                                    "bilibili", ref["state"], True,
+                                    exp_state=state, scope="read",
+                                    note="B站 API 响应 Cookie 已同步",
+                                ):
+                                    cookie_refreshed = True
+                                    keepalive_note = "B站响应 Cookie 已同步"
+                        else:
+                            b_new, b_changed = bcli.export_refreshed_state(state)
+                            if _sync_api_state(
+                                "bilibili", b_new, b_changed,
+                                exp_state=state, scope="read",
+                                note="B站 API 响应 Cookie 已同步",
+                            ):
+                                cookie_refreshed = True
+                                keepalive_note = "B站响应 Cookie 已同步"
             auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
             if not u and bmode == "hybrid" and not auth_failed and app_runtime.browser is not None:
                 u, err = await fetch_bili_self_profile(app_runtime.browser, identity)
+                used_browser = True
             elif not u and bmode == "browser":
                 if app_runtime.browser is None:
                     return _done("error", "browser_unavailable")
                 u, err = await fetch_bili_self_profile(app_runtime.browser, identity)
+                used_browser = True
+            if u and used_browser and await _sync_browser_state(
+                "bilibili", identity, state, creator_state,
+                scope="read", note="B站浏览器登录态与续期令牌已同步"
+            ):
+                cookie_refreshed = True
+                keepalive_note = keepalive_note or "B站浏览器登录态已同步"
         elif platform == "rednote":
             rmode = str(getattr(app_runtime.cfg.engine, "rednote_read_mode", "hybrid") or "hybrid").lower()
             u, err = None, ""
+            used_browser = False
             rn_state = state or creator_state
             rn_cookie = rednote_cookie_str_from_state(rn_state)
             if rmode in {"api", "hybrid"} and rn_cookie and rednote_has_a1(rn_cookie):
@@ -310,6 +474,17 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                         me = await rcli.self_info()
                     if me and not me.get("guest"):
                         u = me
+                        rn_scope = "read" if state else "creator"
+                        rn_new, rn_changed = rcli.export_refreshed_state(rn_state, scope=rn_scope)
+                        if _sync_api_state(
+                            "rednote", rn_new, rn_changed,
+                            exp_state=(state if rn_scope == "read" else ""),
+                            exp_creator_state=(creator_state if rn_scope == "creator" else ""),
+                            scope=rn_scope,
+                            note="Rednote API 响应 Cookie 已同步",
+                        ):
+                            cookie_refreshed = True
+                            keepalive_note = "Rednote Cookie 已同步"
                 except Exception as exc:
                     err = exc
             if not u and creator_state and rmode in {"api", "hybrid"}:
@@ -326,6 +501,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     with get_session() as s:
                         acc = s.get(DouyinAccount, account_id)
                         if acc:
+                            now_utc = datetime.utcnow()
                             if prof.get("nickname"):
                                 acc.nickname = prof["nickname"]
                             acc.sec_uid = prof.get("sec_uid") or acc.sec_uid
@@ -334,6 +510,9 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                             acc.follower_count = prof.get("follower_count") or acc.follower_count
                             acc.aweme_count = prof.get("aweme_count") or acc.aweme_count
                             acc.status = "active"
+                            acc.last_active_at = now_utc
+                            acc.last_keepalive_at = now_utc
+                            acc.keepalive_note = "Rednote 创作者登录态有效"
                             s.add(acc); s.commit()
                     return _done("ok")
                 if perr and not err:
@@ -343,9 +522,17 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 if app_runtime.browser is None:
                     return _done("error", "browser_unavailable")
                 u, err = await fetch_rednote_self_profile(app_runtime.browser, identity)
+                used_browser = True
+            if u and used_browser and await _sync_browser_state(
+                "rednote", identity, state, creator_state,
+                scope="read", note="Rednote 浏览器登录态已同步"
+            ):
+                cookie_refreshed = True
+                keepalive_note = "Rednote 浏览器登录态已同步"
         elif platform == "instagram":
             imode = str(getattr(app_runtime.cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower()
             u, err = None, ""
+            used_browser = False
             if imode in {"api", "hybrid"} and state:
                 icli = InstagramClient(
                     state,
@@ -357,16 +544,34 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 )
                 async with icli.session_scope():
                     u, err = await icli.fetch_self_profile()
+                if u:
+                    ig_new, ig_changed = icli.export_refreshed_state(state)
+                    if _sync_api_state(
+                        "instagram", ig_new, ig_changed,
+                        exp_state=state, scope="read",
+                        note="Instagram API 会话凭据/Cookie 已同步",
+                    ):
+                        cookie_refreshed = True
+                        keepalive_note = "Instagram 会话已同步"
             auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
             if not u and imode == "hybrid" and not auth_failed and app_runtime.browser is not None:
                 u, err = await fetch_ig_self_profile(app_runtime.browser, identity)
+                used_browser = True
             elif not u and imode == "browser":
                 if app_runtime.browser is None:
                     return _done("error", "browser_unavailable")
                 u, err = await fetch_ig_self_profile(app_runtime.browser, identity)
+                used_browser = True
+            if u and used_browser and await _sync_browser_state(
+                "instagram", identity, state, creator_state,
+                scope="read", note="Instagram 浏览器登录态已同步"
+            ):
+                cookie_refreshed = True
+                keepalive_note = "Instagram 浏览器登录态已同步"
         elif platform == "twitter":
             tmode = str(getattr(app_runtime.cfg.engine, "twitter_read_mode", "hybrid") or "hybrid").lower()
             u, err = None, ""
+            used_browser = False
             tw_enriched_state = ""
             if tmode in {"api", "hybrid"} and state:
                 tcli = TwitterClient(
@@ -379,18 +584,37 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     u, err = await tcli.fetch_self_profile(
                         hint_screen_name=(a0.douyin_id or a0.sec_uid or "")
                     )
-                if tcli.cookies.get("auth_token") and tcli.cookies.get("ct0"):
-                    tw_enriched_state = build_twitter_storage_state(tcli.cookies)
+                if u:
+                    tw_new, tw_changed = tcli.export_refreshed_state(state)
+                    if _sync_api_state(
+                        "twitter", tw_new, tw_changed,
+                        exp_state=state, scope="read", sync_cookie_str=True,
+                        note="X (Twitter) API Cookie/ct0 已同步",
+                    ):
+                        cookie_refreshed = True
+                        keepalive_note = "X Cookie/ct0 已同步"
+                    elif tcli.cookies.get("auth_token") and tcli.cookies.get("ct0"):
+                        tw_enriched_state = build_twitter_storage_state(tcli.cookies)
             auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
             if not u and tmode == "hybrid" and not auth_failed and app_runtime.browser is not None:
                 u, err = await fetch_twitter_self_profile(app_runtime.browser, identity)
+                used_browser = True
             elif not u and tmode == "browser":
                 if app_runtime.browser is None:
                     return _done("error", "browser_unavailable")
                 u, err = await fetch_twitter_self_profile(app_runtime.browser, identity)
+                used_browser = True
+            if u and used_browser and await _sync_browser_state(
+                "twitter", identity, state, creator_state,
+                scope="read", sync_cookie_str=True,
+                note="X (Twitter) 浏览器登录态已同步"
+            ):
+                cookie_refreshed = True
+                keepalive_note = "X 浏览器登录态已同步"
         else:
             mode = dy_transport["effective_mode"]
             u, err = None, ""
+            used_browser = False
             if mode in {"api", "hybrid"}:
                 cookie = douyin_cookie_from_state(state)
                 if not cookie:
@@ -400,10 +624,25 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                         client = DouyinClient(
                             cookie, a0.ua or app_runtime.cfg.engine.user_agent,
                             timeout=app_runtime.cfg.engine.request_timeout_seconds,
-                            proxy=proxy, **douyin_client_environment(a0))
+                            proxy=proxy,
+                            storage_state=state,
+                            **douyin_client_environment(a0))
                         async with client.session_scope():
                             u = await client.fetch_self_profile()
                         err = client.last_error or ("" if u else "empty_response")
+                        if u:
+                            exported = client.export_storage_state()
+                            changed = _cookies_meaningfully_changed(
+                                _parse_state_dict(state)["cookies"],
+                                exported.get("cookies") or [],
+                            )
+                            if _sync_api_state(
+                                "douyin", exported, changed,
+                                exp_state=state, scope="read",
+                                note="抖音 API 响应 Cookie/msToken 已续期同步",
+                            ):
+                                cookie_refreshed = True
+                                keepalive_note = "抖音 API Cookie 已同步"
                     except Exception as exc:
                         err = exc
             auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
@@ -412,10 +651,18 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     return _done("error", err or "browser_unavailable")
                 u, browser_err = await fetch_self_profile(app_runtime.browser, identity)
                 err = browser_err or err
+                used_browser = True
             elif not u and mode == "browser":
                 if app_runtime.browser is None:
                     return _done("error", "browser_unavailable")
                 u, err = await fetch_self_profile(app_runtime.browser, identity)
+                used_browser = True
+            if u and used_browser and await _sync_browser_state(
+                "douyin", identity, state, creator_state,
+                scope="read", note="抖音浏览器登录态已同步"
+            ):
+                cookie_refreshed = True
+                keepalive_note = "抖音浏览器登录态已同步"
     except Exception as exc:
         category, _signal = classify_platform_error(exc)
         status = "invalid" if detailed and category == RiskCategory.AUTH else "error"
@@ -425,6 +672,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
         if not acc:
             return _done("error", "error")
         if u:
+            now_utc = datetime.utcnow()
             if platform == "xhs":
                 p = parse_xhs_self_user(u)
             elif platform == "rednote":
@@ -445,7 +693,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 }
             elif platform in {"bilibili", "instagram", "twitter"}:
                 p = dict(u)
-                if platform == "twitter" and locals().get("tw_enriched_state"):
+                if platform == "twitter" and locals().get("tw_enriched_state") and not cookie_refreshed:
                     acc.storage_state = tw_enriched_state
                     acc.creator_storage_state = tw_enriched_state
                     acc.cookie = twitter_cookie_str_from_state(tw_enriched_state)
@@ -470,10 +718,17 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 acc.follower_count = p.get("follower_count") or acc.follower_count
                 acc.aweme_count = p.get("aweme_count") or acc.aweme_count
             acc.status = "active"
+            acc.last_active_at = now_utc
+            acc.last_keepalive_at = now_utc
+            acc.keepalive_note = (
+                keepalive_note
+                or ("已同步最新登录态" if cookie_refreshed else "登录态有效")
+            )[:200]
             s.add(acc); s.commit()
             return _done("ok")
         if classify_platform_error(err)[0] == RiskCategory.AUTH:
             acc.status = "invalid"
+            acc.keepalive_note = "登录态已失效，请重新登录"
             s.add(acc); s.commit()
             return _done("invalid", err or "logged_out")
     return _done("error", err or "error")

@@ -250,6 +250,65 @@ async def publish_xhs(mgr: BrowserManager, identity: Identity, storage_state_jso
         timeout_handle.cancel()
 
 
+async def creator_check_with_state(
+    storage_state_json: str,
+    proxy: str = "",
+    user_agent: str = "",
+    *,
+    preserve_error: bool = False,
+):
+    """校验创作者登录态，并在有效时同步导出刷新后的 creator_storage_state。
+
+    返回 ``(valid, error, refreshed_state, changed)``。
+    """
+    cookie_str = cookie_str_from_state(storage_state_json)
+    if not has_a1(cookie_str):
+        error = XhsApiError(
+            "登录态缺少 a1", category="auth", signal="auth_expired")
+        return False, (error if preserve_error else str(error)), None, False
+    try:
+        from . import creator_sign
+        if not creator_sign.available():
+            return None, "creator_sign_unavailable", None, False
+    except Exception as exc:
+        return None, (exc if preserve_error else str(exc)), None, False
+
+    def _run():
+        from .creator_api import XhsCreatorApi
+        api = XhsCreatorApi(
+            cookie_str,
+            proxy=proxy,
+            user_agent=user_agent,
+            b1=extract_b1_from_state(storage_state_json),
+            storage_state=storage_state_json,
+        )
+        try:
+            result = api.ping(detailed=True)
+            if len(result) == 3:
+                ok, msg, response = result
+            else:
+                ok, msg = result
+                response = {"success": ok, "msg": msg}
+            refreshed, changed = (
+                api.export_refreshed_state(storage_state_json)
+                if ok else (None, False)
+            )
+            return ok, msg, response, refreshed, changed
+        finally:
+            api.close()
+
+    try:
+        ok, msg, response, refreshed, changed = await asyncio.to_thread(_run)
+        if ok:
+            return True, "", refreshed, bool(changed)
+        error = _creator_response_error(response)
+        valid = False if isinstance(error, XhsApiError) and error.category == "auth" else None
+        return valid, (error if preserve_error else str(error)), None, False
+    except Exception as exc:
+        valid = False if isinstance(exc, XhsApiError) and exc.category == "auth" else None
+        return valid, (exc if preserve_error else str(exc)), None, False
+
+
 async def creator_check(storage_state_json: str, proxy: str = "",
                         user_agent: str = "", *, preserve_error: bool = False):
     """校验创作者登录态。True=有效,False=确已失效,None=不确定(网络/环境,勿据此判失效)。"""

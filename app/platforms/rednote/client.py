@@ -65,6 +65,8 @@ class RednoteApiClient:
         self._session_cls = AsyncSession
         self._session = None
         self._session_owner = None
+        self.storage_state = storage_state or ""
+        self._captured_set_cookies: list[tuple[str, str]] = []
         self.cookie_str = cookie_str or ""
         self.timeout = timeout
         self.proxy = curl_proxy_url(proxy) or None
@@ -126,18 +128,43 @@ class RednoteApiClient:
 
         async def send(session):
             request_fn = getattr(session, method)
-            return await request_fn(
+            resp = await request_fn(
                 url,
                 impersonate=self.impersonate,
                 proxy=self.proxy,
                 timeout=self.timeout,
                 **kwargs,
             )
+            try:
+                from ...services.session_keepalive import extract_set_cookie_lines
+                for line in extract_set_cookie_lines(resp):
+                    self._captured_set_cookies.append((url, line))
+            except Exception:
+                pass
+            return resp
 
         if self._session is not None and self._session_owner is asyncio.current_task():
             return await send(self._session)
         async with self._session_cls(discard_cookies=True, trust_env=False) as session:
             return await send(session)
+
+    def export_refreshed_state(
+        self,
+        base_state: str | None = None,
+        *,
+        scope: str = "read",
+    ) -> tuple[dict | None, bool]:
+        """将捕获的 rednote.com 第一方 Set-Cookie 合并回 storage_state。"""
+        if not self._captured_set_cookies:
+            return None, False
+        from ...services.session_keepalive import merge_set_cookies_into_state
+        return merge_set_cookies_into_state(
+            base_state if base_state is not None else self.storage_state,
+            self._captured_set_cookies,
+            platform="rednote",
+            url=WWW_URL + "/",
+            scope=scope,
+        )
 
     def _headers_for(self, *, is_creator: bool = False) -> dict[str, str]:
         if not is_creator:

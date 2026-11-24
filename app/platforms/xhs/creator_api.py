@@ -146,6 +146,7 @@ class XhsCreatorApi:
         }
         self._upload_cli = None
         self.cli = self._session_cls(**self._session_options)
+        self._captured_set_cookies: List[Tuple[str, str]] = []
 
     def _headers(self) -> dict:
         return {
@@ -181,7 +182,30 @@ class XhsCreatorApi:
             self._check_cancelled()
             raise
         self._check_cancelled()
+        if client is self.cli:
+            try:
+                from ...services.session_keepalive import extract_set_cookie_lines
+                for line in extract_set_cookie_lines(response):
+                    self._captured_set_cookies.append((url, line))
+            except Exception:
+                pass
         return response
+
+    def export_refreshed_state(
+        self,
+        base_state: str | None = None,
+    ) -> Tuple[Optional[dict], bool]:
+        """将创作者接口响应捕获的 Set-Cookie 合并回 creator_storage_state。"""
+        if not self._captured_set_cookies:
+            return None, False
+        from ...services.session_keepalive import merge_set_cookies_into_state
+        return merge_set_cookies_into_state(
+            base_state if base_state is not None else self.storage_state,
+            self._captured_set_cookies,
+            platform="xhs",
+            url=CREATOR_URL + "/",
+            scope="creator",
+        )
 
     def _request(self, method: str, url: str, **kwargs):
         return self._send(self.cli, method, url, **kwargs)

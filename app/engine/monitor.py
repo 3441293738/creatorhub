@@ -80,6 +80,7 @@ class MonitorEngine(
         self._actioning: set[int] = set()           # 正在执行的写操作任务 id
         self._collection_tasks: dict[int, asyncio.Task] = {}  # 一次性关键词采集
         self._last_acct_check = 0.0   # 启动后首轮校验，不沿用历史“正常”状态
+        self._last_shipinhao_check = 0.0  # 视频号独立高频保活计时
         self._pending_account_checks: set[int] = set()
         self._geo_checked: dict = {}          # account_id -> 已校验过地区的代理(避免重复探测)
         self.risk = RiskController(cfg)

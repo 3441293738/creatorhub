@@ -1963,6 +1963,23 @@ class BrowserManager:
         async with self._cv_lock:
             await self._close_key_unlocked(key)
 
+    async def capture_live_storage_state(self, identity: Identity) -> Optional[dict]:
+        """读取当前已常驻的账号 BrowserContext 最新 storage_state（不主动拉起新浏览器）。"""
+        key = identity.key
+        ctx = self._contexts.get(key)
+        if ctx is None:
+            return None
+        storage_fn = getattr(ctx, "storage_state", None)
+        if not callable(storage_fn):
+            return None
+        try:
+            state = await storage_fn()
+            if isinstance(state, dict) and isinstance(state.get("cookies"), list) and state["cookies"]:
+                return state
+        except Exception:
+            return None
+        return None
+
     async def collect_idle_sessions(self, now: float | None = None) -> int:
         """Close inactive account sessions across all browser backends."""
         if self.session_idle_seconds <= 0:

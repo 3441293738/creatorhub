@@ -127,6 +127,7 @@ class XhsApiClient:
         self._session = None
         self._session_owner = None
         self.storage_state = storage_state or ""
+        self._captured_set_cookies: List[tuple[str, str]] = []
         self.cookie_str = cookie_str or (
             cookie_str_from_state(self.storage_state) if self.storage_state else ""
         )
@@ -189,15 +190,38 @@ class XhsApiClient:
     async def _request(self, method: str, url: str, **kwargs):
         async def send(session):
             request = getattr(session, method)
-            return await request(
+            resp = await request(
                 url, impersonate=self.impersonate, proxy=self.proxy,
                 timeout=self.timeout, **kwargs)
+            try:
+                from ...services.session_keepalive import extract_set_cookie_lines
+                for line in extract_set_cookie_lines(resp):
+                    self._captured_set_cookies.append((url, line))
+            except Exception:
+                pass
+            return resp
         if self._session is not None and self._session_owner is asyncio.current_task():
             return await send(self._session)
         # A one-shot request owns only its own transport. Concurrent unscoped
         # requests must not borrow a session that another request will close.
         async with self._session_cls(discard_cookies=True, trust_env=False) as session:
             return await send(session)
+
+    def export_refreshed_state(
+        self,
+        base_state: str | None = None,
+    ) -> tuple[Optional[dict], bool]:
+        """将响应捕获的 Set-Cookie 合并回小红书 storage_state（不破坏会话隔离）。"""
+        if not self._captured_set_cookies:
+            return None, False
+        from ...services.session_keepalive import merge_set_cookies_into_state
+        return merge_set_cookies_into_state(
+            base_state if base_state is not None else self.storage_state,
+            self._captured_set_cookies,
+            platform="xhs",
+            url=_DOMAIN + "/",
+            scope="read",
+        )
 
     def _query(self, params: Dict[str, Any]) -> str:
         # 与签名串一致:保留逗号不编码(对齐小红书前端/浏览器行为)

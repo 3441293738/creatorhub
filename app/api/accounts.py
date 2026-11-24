@@ -28,6 +28,7 @@ from app.services import browser_runtimes as browser_runtimes_service
 from app.services import login_flows as login_flows_service
 from app.services import login_sessions as login_sessions_service
 from app.services import proxies as proxies_service
+from app.services.session_keepalive import inspect_session_expiry
 from app.transport_matrix import resolve_transport
 
 router = APIRouter()
@@ -262,6 +263,13 @@ async def list_accounts(platform: str | None = None):
                     if profile_key else ""),
                 "environment": environment,
                 "environment_check": environment_check,
+                "last_active_at": (a.last_active_at.isoformat() if a.last_active_at else None),
+                "last_keepalive_at": (a.last_keepalive_at.isoformat() if a.last_keepalive_at else None),
+                "last_cookie_refresh_at": (
+                    a.last_cookie_refresh_at.isoformat() if a.last_cookie_refresh_at else None),
+                "keepalive_note": a.keepalive_note or "",
+                "session_health": inspect_session_expiry(
+                    a.platform, a.storage_state, a.creator_storage_state),
                 "created_at": a.created_at.isoformat() if a.created_at else None,
             })
         return out
@@ -654,7 +662,75 @@ async def refresh_account_profile(account_id: int):
                 "login_scope": ("creator" if platform in ("xhs", "rednote") and creator_state and not has_read_login
                                   else "read"),
                 "has_read_login": has_read_login,
-                "has_creator": has_creator_login}
+                "has_creator": has_creator_login,
+                "last_keepalive_at": (acc.last_keepalive_at.isoformat() if acc.last_keepalive_at else None),
+                "last_cookie_refresh_at": (
+                    acc.last_cookie_refresh_at.isoformat() if acc.last_cookie_refresh_at else None),
+                "keepalive_note": acc.keepalive_note or "",
+                "session_health": inspect_session_expiry(
+                    acc.platform, acc.storage_state, acc.creator_storage_state)}
+
+
+class KeepaliveBatchIn(BaseModel):
+    platform: str = "all"
+    account_ids: list[int] | None = None
+
+
+@router.post("/api/accounts/keepalive-all")
+async def keepalive_all_accounts(body: KeepaliveBatchIn | None = None, platform: str = "all"):
+    """将指定平台或全部有效账号加入后台保活队列，按风控错峰节律依次执行续期/同步。"""
+    if app_runtime.engine is None:
+        raise HTTPException(503, "监控引擎未就绪")
+    eff_platform = (body.platform if body and body.platform else platform) or "all"
+    account_ids = body.account_ids if body else None
+    queued = app_runtime.engine.enqueue_keepalive_accounts(
+        platform=eff_platform,
+        account_ids=account_ids,
+    )
+    pending_total = len(getattr(app_runtime.engine, "_pending_account_checks", ()))
+    return {
+        "ok": True,
+        "platform": eff_platform,
+        "queued": queued,
+        "pending_total": pending_total,
+    }
+
+
+@router.post("/api/accounts/{account_id}/keepalive")
+async def keepalive_single_account(account_id: int):
+    """立即对单个账号执行一次完整保活检查、官方续期（如 B 站）与最新 Cookie 落库同步。"""
+    if app_runtime.engine is None:
+        raise HTTPException(503, "监控引擎未就绪")
+    with get_session() as s:
+        acc = s.get(DouyinAccount, account_id)
+        if not acc:
+            raise HTTPException(404, "账号不存在")
+        if not (acc.storage_state or acc.creator_storage_state):
+            raise HTTPException(400, "该账号缺少持久化登录态，请先扫码登录")
+        platform = acc.platform
+    manual_browser = app_runtime.open_browsers.get(account_id)
+    if manual_browser is not None and bool(getattr(manual_browser, "active", True)):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "该账号浏览器窗口正在人工使用，关闭后将自动保存登录态",
+            "blocked_by": "open_browser",
+            "platform": platform,
+        }
+    result = await app_runtime.engine.keepalive_account_now(account_id)
+    if result.get("deferred"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": str(result.get("reason") or "账号当前繁忙或处于风控冷却期"),
+            "next_allowed_at": (
+                result["next_allowed_at"].isoformat()
+                if hasattr(result.get("next_allowed_at"), "isoformat")
+                else result.get("next_allowed_at")
+            ),
+            "platform": platform,
+        }
+    return {**result, "account_id": account_id, "platform": platform}
 
 
 @router.post("/api/accounts/{account_id}/relogin/start")
