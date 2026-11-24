@@ -771,6 +771,7 @@ async function refreshTransportMatrix() {
     const data = await api("/api/settings/transport-matrix");
     TRANSPORT_MATRIX = data;
     renderTransportMatrix(data);
+    globalThis.CreatorHubEngineSettings?.syncPlatforms?.(data?.accounts);
     if (status) status.textContent = `已核对 ${data.rows?.length || 0} 项能力、${data.accounts?.length || 0} 个账号环境`;
     return data;
   } catch (error) {

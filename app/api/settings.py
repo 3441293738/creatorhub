@@ -10,7 +10,12 @@ from sqlmodel import select
 
 from app import runtime as app_runtime
 from app.db import get_session
-from app.engine_settings import EngineSettingsPatch, export_engine_settings, save_engine_settings
+from app.engine_settings import (
+    EngineSettingsPatch,
+    RESTART_REQUIRED_FIELDS,
+    export_engine_settings,
+    save_engine_settings,
+)
 from app.models import DouyinAccount
 from app.risk_admin import sync_shared_schedule_to_risk_store
 from app.services import metadata as metadata_service
@@ -85,10 +90,9 @@ async def put_engine_settings(body: Any = Body(...)):
     downloader = getattr(app_runtime.engine, "downloader", None)
     if downloader is not None and "download_timeout_seconds" in body:
         downloader.timeout = app_runtime.cfg.engine.download_timeout_seconds
-    # BrowserManager snapshots native write-gate values at construction. Keep
-    # those hot-reloadable switches in sync when they are edited from the UI;
-    # other browser executable/profile settings intentionally remain restart-only.
-    if app_runtime.browser is not None:
+    # BrowserManager snapshots several lifecycle/write-gate values at construction.
+    # Keep hot-reloadable fields in sync when edited from the UI.
+    if app_runtime.browser is not None and isinstance(body, dict):
         for key in (
                 "native_write_gate_enabled",
                 "native_write_require_system_chrome",
@@ -96,8 +100,20 @@ async def put_engine_settings(body: Any = Body(...)):
                 "native_write_proxy_max_age_seconds"):
             if key in body and hasattr(app_runtime.browser, key):
                 setattr(app_runtime.browser, key, getattr(app_runtime.cfg.engine, key))
+        if "max_live_contexts" in body and hasattr(app_runtime.browser, "max_live"):
+            app_runtime.browser.max_live = max(1, int(app_runtime.cfg.engine.max_live_contexts))
+        if "resident_browser_sessions" in body and hasattr(app_runtime.browser, "resident_sessions"):
+            app_runtime.browser.resident_sessions = bool(app_runtime.cfg.engine.resident_browser_sessions)
+        if "browser_session_idle_seconds" in body:
+            idle_sec = max(0, int(app_runtime.cfg.engine.browser_session_idle_seconds))
+            if hasattr(app_runtime.browser, "session_idle_seconds"):
+                app_runtime.browser.session_idle_seconds = idle_sec
+            if hasattr(app_runtime.browser, "xhs_cdp_idle_seconds"):
+                app_runtime.browser.xhs_cdp_idle_seconds = idle_sec
     if isinstance(body, dict):
         sync_shared_schedule_to_risk_store(body)
+        if any(key in RESTART_REQUIRED_FIELDS for key in body):
+            result = {**result, "restart_required": True}
     return result
 
 

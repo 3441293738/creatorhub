@@ -13,9 +13,24 @@ from .models import AppSetting
 
 ENGINE_SETTINGS_KEY = "engine.runtime.v1"
 
+# Concurrency semaphores are initialized once at engine startup, so edits to
+# these fields persist immediately and take effect on next restart.
+RESTART_REQUIRED_FIELDS = frozenset({
+    "worker_pool_size",
+    "scan_concurrency",
+    "active_accounts",
+})
+
 
 class EngineSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    worker_pool_size: int | None = Field(None, ge=1, le=16)
+    scan_concurrency: int | None = Field(None, ge=1, le=16)
+    active_accounts: int | None = Field(None, ge=1, le=32)
+    max_live_contexts: int | None = Field(None, ge=1, le=32)
+    resident_browser_sessions: bool | None = None
+    browser_session_idle_seconds: int | None = Field(None, ge=0, le=86400)
 
     xhs_read_mode: Literal["browser", "api"] | None = None
     rednote_read_mode: Literal["browser", "hybrid", "api"] | None = None
@@ -130,6 +145,7 @@ def _export(cfg: Config, saved: dict) -> dict:
         "values": {key: getattr(cfg.engine, key) for key in fields},
         "defaults": {key: getattr(defaults, key) for key in fields},
         "saved_fields": sorted(saved),
+        "restart_required_fields": sorted(RESTART_REQUIRED_FIELDS),
         "apply_scope": "next_operation",
     }
 
@@ -143,7 +159,7 @@ def save_engine_settings(cfg: Config, payload: dict) -> dict:
     """Validate and persist one atomic patch BEFORE changing live config.
 
     Store only edited fields: config.yaml remains the base configuration for
-    everything else. No credentials, paths or restart-only engine fields are
+    everything else. No credentials, paths or browser executable selections are
     accepted by this endpoint.
     """
     patch = _validated_patch(payload)
@@ -158,6 +174,8 @@ def save_engine_settings(cfg: Config, payload: dict) -> dict:
             session.commit()
         for key, value in patch.items():
             setattr(cfg.engine, key, value)
+        if "browser_session_idle_seconds" in patch:
+            cfg.engine.xhs_cdp_idle_seconds = None
         return _export(cfg, merged)
     return export_engine_settings(cfg)
 
@@ -167,4 +185,6 @@ def load_persisted_engine_settings(cfg: Config) -> bool:
         patch = _read_patch(session)
     for key, value in patch.items():
         setattr(cfg.engine, key, value)
+    if "browser_session_idle_seconds" in patch:
+        cfg.engine.xhs_cdp_idle_seconds = None
     return bool(patch)
