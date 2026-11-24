@@ -798,16 +798,208 @@ async def _locator_visible(locator: Any) -> bool:
         return False
 
 
+_XHS_COMMENT_CLOSED_KW = (
+    "作者已关闭评论", "评论已关闭", "暂不支持评论", "当前笔记已关闭评论",
+)
+_XHS_NOTE_UNAVAILABLE_KW = (
+    "当前笔记暂时无法浏览", "笔记已删除", "该笔记不存在",
+    "内容不存在", "页面不见了", "你访问的页面不见了",
+)
+_XHS_COMMENT_RISK_KW = (
+    "请求太频繁", "请求频繁", "操作频繁", "访问频繁",
+    "一分钟后再试", "安全验证", "扫码验证身份", "滑块验证",
+)
+
+
+async def _xhs_comment_page_error(
+        page: Any, *, allow_body_scan: bool = False) -> str:
+    """Detect explicit auth, risk, closed-comment or unavailable-note states."""
+    current_url = str(getattr(page, "url", "") or "").lower()
+    if "/website-login/captcha" in current_url or "error_code=300012" in current_url:
+        return "captcha:小红书要求安全验证"
+    if "login" in current_url or "passport" in current_url:
+        return "logged_out:账号未登录"
+
+    for sel in (
+        ".engage-bar .not-active",
+        ".engage-bar .inner-when-not-active",
+        ".engage-bar .content-edit",
+    ):
+        try:
+            loc = page.locator(sel).first
+            if await _locator_visible(loc):
+                txt = str(await loc.inner_text() or "").strip()
+                if "登录后评论" in txt:
+                    return "logged_out:账号未登录"
+        except Exception:
+            continue
+
+    for sel in (".login-container", ".login-modal"):
+        try:
+            if await _locator_visible(page.locator(sel).first):
+                return "logged_out:账号未登录"
+        except Exception:
+            continue
+
+    try:
+        engage = page.locator(".engage-bar").first
+        if await _locator_visible(engage):
+            engage_txt = str(await engage.inner_text() or "").strip()
+            if any(marker in engage_txt for marker in _XHS_COMMENT_CLOSED_KW):
+                return "该笔记已关闭评论，无法发送评论"
+    except Exception:
+        pass
+
+    if not allow_body_scan:
+        return ""
+
+    # Only scan full-page body text when the note detail container itself is
+    # absent, preventing user comment content from triggering false positives.
+    note_visible = False
+    try:
+        note_visible = await _locator_visible(page.locator("#noteContainer").first)
+    except Exception:
+        note_visible = False
+    if note_visible:
+        return ""
+
+    if "/404" in current_url:
+        return "目标笔记页面不存在(404)，请核对笔记链接或访问参数"
+
+    body_text = ""
+    try:
+        body_text = await page.evaluate(
+            "() => (document.body && document.body.innerText || '').slice(0, 2000)"
+        )
+    except Exception:
+        try:
+            body_text = await page.locator("body").inner_text(timeout=1200)
+        except Exception:
+            body_text = ""
+    normalized = " ".join(str(body_text or "").split())
+    if any(marker in normalized for marker in _XHS_COMMENT_RISK_KW):
+        return f"captcha:小红书平台频控/安全验证：{normalized[:120]}"
+    if any(marker in normalized for marker in _XHS_NOTE_UNAVAILABLE_KW):
+        return "目标笔记当前无法浏览（可能已删除、私密或访问参数已过期）"
+    return ""
+
+
+async def _wait_comment_page_ready(
+        page: Any, interaction: Any, *, attempts: int = 20) -> str:
+    """Wait briefly for Xiaohongshu's Vue note detail and engage-bar to mount."""
+    total = max(1, int(attempts))
+    for index in range(total):
+        page_err = await _xhs_comment_page_error(
+            page, allow_body_scan=(index >= 3))
+        if page_err:
+            return page_err
+        try:
+            if await _locator_visible(page.locator(".engage-bar").first):
+                return ""
+        except Exception:
+            pass
+        editor, _ = await find_visible(page, "comment.editor")
+        if editor is not None:
+            return ""
+        trigger, _ = await find_visible(page, "comment.trigger")
+        if trigger is not None:
+            return ""
+        try:
+            if page.is_closed():
+                break
+        except Exception:
+            break
+        if index + 1 < total:
+            await interaction.pause(0.18, 0.32)
+    return await _xhs_comment_page_error(page, allow_body_scan=False)
+
+
+async def _scroll_comment_list(page: Any, interaction: Any) -> None:
+    """Position the pointer inside the right-hand comment scroller before wheeling."""
+    human = getattr(interaction, "_human", None)
+    for sel in (".note-scroller", ".comments-container"):
+        try:
+            scroller = page.locator(sel).first
+            if not await _locator_visible(scroller):
+                continue
+            box = await scroller.bounding_box()
+            if (
+                isinstance(box, dict)
+                and float(box.get("width") or 0) >= 20.0
+                and float(box.get("height") or 0) >= 20.0
+            ):
+                if (
+                    human is not None
+                    and hasattr(human, "sample_box_point")
+                    and hasattr(human, "move_mouse")
+                ):
+                    tx, ty = human.sample_box_point(box)
+                    await human.move_mouse(page, tx, ty)
+                elif getattr(page, "mouse", None) is not None:
+                    tx = float(box["x"]) + float(box["width"]) * 0.5
+                    ty = float(box["y"]) + float(box["height"]) * 0.5
+                    await page.mouse.move(tx, ty)
+                break
+        except Exception:
+            continue
+    await interaction.scroll_step(page)
+
+
 async def _find_reply_target(page: Any, comment_id: str, target_text: str):
     if comment_id:
-        safe_id = str(comment_id).replace('"', '\\"')
-        locator = page.locator(f'[data-comment-id="{safe_id}"]').first
-        if await _locator_visible(locator):
-            return locator
+        safe_id = str(comment_id).replace("\\", "\\\\").replace('"', '\\"')
+        for sel in (
+            f'[id="comment-{safe_id}"]',
+            f'[data-comment-id="{safe_id}"]',
+        ):
+            try:
+                locator = page.locator(sel).first
+                if await _locator_visible(locator):
+                    return locator
+            except Exception:
+                continue
     if target_text:
-        locator = page.get_by_text(target_text, exact=True).first
-        if await _locator_visible(locator):
-            return locator
+        try:
+            locator = page.locator(".comment-item").filter(
+                has_text=target_text).first
+            if await _locator_visible(locator):
+                return locator
+        except Exception:
+            pass
+        try:
+            locator = page.get_by_text(target_text, exact=True).first
+            if await _locator_visible(locator):
+                return locator
+        except Exception:
+            pass
+    return None
+
+
+async def _find_reply_button(target: Any):
+    for sel in (
+        ".interactions .reply.icon-container",
+        ".interactions .reply",
+        ".reply.icon-container",
+    ):
+        try:
+            reply = target.locator(sel).first
+            if await _locator_visible(reply):
+                return reply
+        except Exception:
+            continue
+    try:
+        reply = target.get_by_text("回复", exact=True).first
+        if await _locator_visible(reply):
+            return reply
+    except Exception:
+        pass
+    try:
+        reply = target.locator(
+            'button:has-text("回复"),[class*="reply"]').first
+        if await _locator_visible(reply):
+            return reply
+    except Exception:
+        pass
     return None
 
 
@@ -816,20 +1008,197 @@ async def _find_comment_input(page: Any):
     return locator
 
 
-def _comment_response_handler(evidence: dict):
+async def _collapsed_overlay_visible(page: Any) -> bool:
+    for sel in (
+        ".engage-bar .not-active.inner-when-not-active",
+        ".engage-bar .inner-when-not-active",
+        "div.input-box div.content-edit .not-active",
+    ):
+        try:
+            if await _locator_visible(page.locator(sel).first):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _activate_comment_editor(
+        page: Any, interaction: Any, *, allow_chat_wrapper: bool = True):
+    """Expand a collapsed XHS .engage-bar overlay if needed, then return the editor."""
+    submit_visible, _ = await find_visible(page, "comment.submit")
+    if submit_visible is None:
+        trigger, trigger_name = await find_visible(page, "comment.trigger")
+        if trigger is not None and trigger_name != "comment_trigger_chat_wrapper":
+            try:
+                trigger_txt = str(await trigger.inner_text() or "").strip()
+            except Exception:
+                trigger_txt = ""
+            if "登录后评论" in trigger_txt:
+                return None
+            await interaction.click_visible(trigger)
+            await interaction.pause(0.2, 0.45)
+            # If the first click only focused the window and the collapsed
+            # overlay is still sitting over p#content-textarea, retry once on
+            # the .content-edit wrapper.
+            if (
+                await _collapsed_overlay_visible(page)
+                and not await _xhs_comment_page_error(page, allow_body_scan=False)
+            ):
+                content_edit = page.locator(".engage-bar .input-box .content-edit").first
+                if await _locator_visible(content_edit):
+                    await interaction.click_visible(content_edit)
+                    await interaction.pause(0.2, 0.45)
+
+    editor = await _find_comment_input(page)
+    if editor is not None:
+        return editor
+
+    if allow_chat_wrapper:
+        chat = page.locator(".engage-bar .chat-wrapper").first
+        if await _locator_visible(chat):
+            await interaction.click_visible(chat)
+            await interaction.pause(0.25, 0.5)
+            editor = await _find_comment_input(page)
+    return editor
+
+
+def _extract_comment_id(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    data = payload.get("data")
+    if isinstance(data, dict):
+        comment = data.get("comment")
+        if isinstance(comment, dict):
+            for key in ("id", "comment_id", "commentId"):
+                value = str(comment.get(key) or "").strip()
+                if value:
+                    return value
+        for key in ("comment_id", "commentId", "id"):
+            value = str(data.get(key) or "").strip()
+            if value:
+                return value
+    for key in ("comment_id", "commentId", "id"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _comment_payload_result(
+        payload: Any) -> Literal["accepted", "rejected", "unknown"]:
+    if not isinstance(payload, dict):
+        return "unknown"
+    root_success = payload.get("success")
+    data = payload.get("data")
+    data_success = data.get("success") if isinstance(data, dict) else None
+    if root_success is False or data_success is False:
+        return "rejected"
+    code_results: list[bool] = []
+    for key in ("code", "result_code"):
+        if key not in payload:
+            continue
+        value = payload[key]
+        accepted_code = not isinstance(value, bool) and (
+            value == 0 or str(value).strip().lower() in {"0", "ok", "success"})
+        code_results.append(accepted_code)
+        if not accepted_code:
+            return "rejected"
+    if root_success is True or data_success is True or any(code_results):
+        return "accepted"
+    return "unknown"
+
+
+def _comment_response_handler(evidence: dict, submitted: dict):
     def on_response(response):
         try:
+            if not submitted["clicked"]:
+                return
             url = str(response.url or "").lower()
             request = response.request
             method = str(getattr(request, "method", "") or "").upper()
             status = int(response.status)
-            if method == "POST" and 200 <= status < 300 and any(
+            if method == "POST" and any(
                     marker in url for marker in (
                         "/comment/post", "/comment/create", "/comment/add")):
-                evidence["accepted"] = True
+                if 200 <= status < 300:
+                    evidence["responses"].append(response)
+                else:
+                    evidence["business_rejected"] = True
+                    evidence["reject_msg"] = f"HTTP {status}"
+                    if status in (461, 471):
+                        evidence["verify_hint"] = f"小红书安全验证(HTTP {status})"
         except Exception:
             return
     return on_response
+
+
+async def _consume_comment_responses(evidence: dict) -> bool:
+    while evidence["responses"]:
+        response = evidence["responses"].pop(0)
+        try:
+            payload = await response.json()
+        except Exception:
+            continue
+        outcome = _comment_payload_result(payload)
+        if outcome == "accepted":
+            evidence["accepted"] = True
+            comment_id = _extract_comment_id(payload)
+            if comment_id:
+                evidence["comment_id"] = comment_id
+            return True
+        if outcome == "rejected":
+            evidence["business_rejected"] = True
+            msg = str(payload.get("msg") or payload.get("message") or "").strip()
+            if msg:
+                evidence["reject_msg"] = msg
+                if any(k in msg for k in ("验证", "滑块", "安全", "频繁", "异常")):
+                    evidence["verify_hint"] = msg
+    return bool(evidence["accepted"])
+
+
+async def _rendered_comment_count(page: Any, text: str) -> int | None:
+    """Count rendered comment items matching text, excluding the editor box."""
+    try:
+        return max(0, int(await page.evaluate(
+            """value => {
+              const target = String(value || '').trim();
+              if (!target) return 0;
+              const items = document.querySelectorAll(
+                '.comments-container .comment-item, .list-container .comment-item, [id^="comment-"]'
+              );
+              if (items.length || document.querySelector('.comments-container, .list-container, .comments-el')) {
+                let count = 0;
+                for (const item of items) {
+                  if (item.closest('.engage-bar, .input-box, .content-edit')) continue;
+                  const textEl = item.querySelector('.note-text') || item.querySelector('.content') || item;
+                  if ((textEl.textContent || '').trim() === target) count += 1;
+                }
+                return count;
+              }
+              const root = document.querySelector('#noteContainer') || document.body;
+              if (!root) return 0;
+              let count = 0;
+              const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+              let node = walker.nextNode();
+              while (node) {
+                const parent = node.parentElement;
+                if (
+                  parent
+                  && !parent.closest(
+                    '.engage-bar, .input-box, .content-edit, [contenteditable="true"], textarea, input, script, style'
+                  )
+                  && (node.textContent || '').trim() === target
+                ) {
+                  count += 1;
+                }
+                node = walker.nextNode();
+              }
+              return count;
+            }""",
+            text,
+        )))
+    except Exception:
+        return None
 
 
 async def comment_xhs_browser(
@@ -852,14 +1221,22 @@ async def comment_xhs_browser(
         url += f"?{query}"
     interaction = mgr.xhs_interaction
     submitted = {"clicked": False}
-    evidence = {"accepted": False}
-    on_response = _comment_response_handler(evidence)
+    evidence: dict[str, Any] = {
+        "accepted": False,
+        "comment_id": "",
+        "responses": [],
+        "business_rejected": False,
+        "reject_msg": "",
+        "verify_hint": "",
+    }
+    on_response = _comment_response_handler(evidence, submitted)
     page = None
 
     try:
         async with mgr.visible_page(identity, url=url) as page:
-            if "login" in page.url or "passport" in page.url:
-                return XhsWriteOutcome("failed", error="logged_out:账号未登录")
+            ready_err = await _wait_comment_page_ready(page, interaction)
+            if ready_err:
+                return XhsWriteOutcome("failed", error=ready_err)
 
             if target_comment_id:
                 target = await _find_reply_target(
@@ -867,51 +1244,60 @@ async def comment_xhs_browser(
                 for _ in range(max(0, int(max_scrolls))):
                     if target is not None:
                         break
-                    await interaction.scroll_step(page)
+                    await _scroll_comment_list(page, interaction)
                     target = await _find_reply_target(
                         page, target_comment_id, target_text)
                 if target is None:
                     return XhsWriteOutcome(
                         "failed", error="未找到目标评论，已停止且不会降级为顶层评论")
 
-                reply = None
-                try:
-                    reply = target.get_by_text("回复", exact=True).first
-                    if not await _locator_visible(reply):
-                        reply = None
-                except Exception:
-                    reply = None
-                if reply is None:
-                    try:
-                        reply = target.locator(
-                            'button:has-text("回复"),[class*="reply"]').first
-                        if not await _locator_visible(reply):
-                            reply = None
-                    except Exception:
-                        reply = None
+                reply = await _find_reply_button(target)
                 if reply is None:
                     return XhsWriteOutcome(
                         "failed", error="已找到目标评论，但未找到该评论的回复入口")
                 await interaction.click_visible(reply)
-                await interaction.pause(0.2, 0.45)
+                await interaction.pause(0.25, 0.5)
 
-            editor = await _find_comment_input(page)
-            for _ in range(max(0, int(max_scrolls))):
-                if editor is not None:
-                    break
-                await interaction.scroll_step(page)
-                editor = await _find_comment_input(page)
+            allow_chat_wrapper = not bool(target_comment_id)
+            editor = await _activate_comment_editor(
+                page, interaction, allow_chat_wrapper=allow_chat_wrapper)
+            if editor is None:
+                page_err = await _xhs_comment_page_error(
+                    page, allow_body_scan=True)
+                if page_err:
+                    return XhsWriteOutcome("failed", error=page_err)
+                for _ in range(max(0, int(max_scrolls))):
+                    if editor is not None:
+                        break
+                    if target_comment_id:
+                        await interaction.pause(0.2, 0.45)
+                    else:
+                        await _scroll_comment_list(page, interaction)
+                    editor = await _activate_comment_editor(
+                        page, interaction,
+                        allow_chat_wrapper=allow_chat_wrapper)
+            post_activate_err = await _xhs_comment_page_error(
+                page, allow_body_scan=(editor is None))
+            if post_activate_err:
+                return XhsWriteOutcome("failed", error=post_activate_err)
             if editor is None:
                 diagnostic = await selector_diagnostic(page, "comment.editor")
                 return XhsWriteOutcome(
                     "failed", error=f"未找到评论输入框(页面可能改版)；{diagnostic}")
+
+            existing_rendered = await _rendered_comment_count(page, content)
             if len(content) <= 80:
                 await interaction.type_short(editor, content)
             else:
                 await interaction.insert_long(editor, content, page=page)
 
-            send, _ = await find_visible(page, "comment.submit")
+            send, _ = await _wait_for_visible(
+                page, "comment.submit", interaction, attempts=12)
             if send is None:
+                page_err = await _xhs_comment_page_error(
+                    page, allow_body_scan=True)
+                if page_err:
+                    return XhsWriteOutcome("failed", error=page_err)
                 diagnostic = await selector_diagnostic(page, "comment.submit")
                 return XhsWriteOutcome(
                     "failed", error=f"未找到评论发送按钮(页面可能改版)；{diagnostic}")
@@ -919,12 +1305,14 @@ async def comment_xhs_browser(
                     send, interaction,
                     attempts=max(4, min(60, timeout_seconds * 2))):
                 return XhsWriteOutcome("failed", error="评论发送按钮当前不可用")
+
             existing_matches = 0
-            try:
-                existing_matches = int(await page.get_by_text(
-                    content, exact=True).count())
-            except Exception:
-                pass
+            if existing_rendered is None:
+                try:
+                    existing_matches = int(await page.get_by_text(
+                        content, exact=True).count())
+                except Exception:
+                    pass
             try:
                 page.on("response", on_response)
             except Exception:
@@ -939,22 +1327,56 @@ async def comment_xhs_browser(
                 return XhsWriteOutcome("failed", error=f"评论发送失败: {exc!r}")
 
             for _ in range(max(4, min(60, timeout_seconds * 2))):
-                own_text_added = False
-                try:
-                    own_text = page.get_by_text(content, exact=True)
-                    own_text_added = int(await own_text.count()) > existing_matches
-                except Exception:
-                    pass
-                if own_text_added:
-                    return XhsWriteOutcome("success", result="ok")
+                if await _consume_comment_responses(evidence):
+                    if evidence["accepted"] and not evidence["business_rejected"]:
+                        return XhsWriteOutcome(
+                            "success", result=evidence["comment_id"] or "ok")
+                if existing_rendered is not None:
+                    current_rendered = await _rendered_comment_count(page, content)
+                    if (
+                        current_rendered is not None
+                        and current_rendered > existing_rendered
+                    ):
+                        await _consume_comment_responses(evidence)
+                        return XhsWriteOutcome(
+                            "success", result=evidence["comment_id"] or "ok")
+                else:
+                    own_text_added = False
+                    try:
+                        own_text = page.get_by_text(content, exact=True)
+                        own_text_added = int(await own_text.count()) > existing_matches
+                    except Exception:
+                        pass
+                    if own_text_added:
+                        return XhsWriteOutcome(
+                            "success", result=evidence["comment_id"] or "ok")
+                if evidence["business_rejected"] and not evidence["accepted"]:
+                    break
                 try:
                     if page.is_closed():
                         break
                 except Exception:
                     break
                 await interaction.pause(0.2, 0.45)
-            detail = ("接口已接受但页面未显示新评论" if evidence["accepted"]
-                      else "评论按钮已点击一次，但未取得明确成功证据")
+
+            await _consume_comment_responses(evidence)
+            if evidence["accepted"] and not evidence["business_rejected"]:
+                return XhsWriteOutcome(
+                    "success", result=evidence["comment_id"] or "ok")
+            if evidence["verify_hint"]:
+                return XhsWriteOutcome(
+                    "uncertain",
+                    error=(f"评论提交触发平台安全验证（{evidence['verify_hint']}），"
+                           "请到平台核对"),
+                )
+            reject_note = (
+                f"（{evidence['reject_msg']}）" if evidence.get("reject_msg") else ""
+            )
+            detail = (
+                f"平台返回了业务拒绝结果{reject_note}，但提交状态仍需核对"
+                if evidence["business_rejected"]
+                else "评论按钮已点击一次，但未取得明确成功证据"
+            )
             return XhsWriteOutcome(
                 "uncertain", error=f"{detail}，请到平台核对")
     except Exception as exc:

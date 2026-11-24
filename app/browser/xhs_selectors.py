@@ -102,7 +102,63 @@ SELECTOR_GROUPS: Mapping[str, tuple[SelectorCandidate, ...]] = MappingProxyType(
         _text("upload_in_progress_text", "上传中"),
         _text("upload_processing_text", "处理中"),
     ),
+    "comment.trigger": (
+        # Xiaohongshu's explore note detail page renders a collapsed .engage-bar
+        # where .not-active.inner-when-not-active overlays p#content-textarea
+        # until clicked to expand the composer and reveal button.submit.
+        _css(
+            "comment_trigger_not_active",
+            ".engage-bar .not-active.inner-when-not-active",
+        ),
+        _css(
+            "comment_trigger_inner_not_active",
+            ".engage-bar .inner-when-not-active",
+        ),
+        _css(
+            "comment_trigger_content_edit_not_active",
+            "div.input-box div.content-edit .not-active",
+        ),
+        _css(
+            "comment_trigger_say_something",
+            '.engage-bar .content-edit:has-text("说点什么")',
+        ),
+        _css(
+            "comment_trigger_chat_wrapper",
+            ".engage-bar .chat-wrapper",
+        ),
+    ),
     "comment.editor": (
+        # Live Xiaohongshu explore detail pages mount p#content-textarea.content-input
+        # inside .engage-bar > .input-box > .content-edit without a placeholder attribute.
+        _css(
+            "comment_editor_content_textarea_id",
+            '#content-textarea[contenteditable="true"]',
+        ),
+        _css(
+            "comment_editor_content_textarea",
+            "#content-textarea",
+        ),
+        _css(
+            "comment_editor_content_input",
+            'div.input-box div.content-edit p.content-input[contenteditable="true"]',
+        ),
+        _css(
+            "comment_editor_engage_bar_contenteditable",
+            '.engage-bar .content-edit [contenteditable="true"]',
+        ),
+        _css(
+            "comment_editor_input_box_contenteditable",
+            'div.input-box [contenteditable="true"]',
+        ),
+        _css(
+            "comment_editor_contenteditable_say",
+            '[contenteditable="true"][placeholder*="说点什么"]',
+        ),
+        _css(
+            "comment_editor_contenteditable_data_placeholder",
+            '[contenteditable="true"][data-placeholder*="说点什么"], '
+            '[contenteditable="true"][data-placeholder*="评论"]',
+        ),
         _css(
             "comment_editor_contenteditable",
             '[contenteditable="true"][placeholder*="评论"]',
@@ -115,6 +171,10 @@ SELECTOR_GROUPS: Mapping[str, tuple[SelectorCandidate, ...]] = MappingProxyType(
         _css("comment_textarea", '[class*="comment"] textarea'),
     ),
     "comment.submit": (
+        _css("comment_engage_bar_submit", ".engage-bar button.submit"),
+        _css("comment_bottom_submit", "div.bottom button.submit"),
+        _css("comment_engage_bar_send", '.engage-bar button:has-text("发送")'),
+        _css("comment_submit_class", "button.btn.submit"),
         _css("comment_send_button", 'button:has-text("发送")'),
         _css("comment_send_class", '[class*="comment-send"]'),
         _css("comment_submit_button", 'button[type="submit"]'),
