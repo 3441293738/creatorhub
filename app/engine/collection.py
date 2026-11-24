@@ -1,4 +1,4 @@
-"""九平台关键词与创作者批量作品采集主调度器。"""
+"""十平台关键词与创作者批量作品采集主调度器。"""
 from __future__ import annotations
 
 import asyncio
@@ -14,6 +14,7 @@ from app.platforms.bilibili import BilibiliClient, parse_bili_aweme
 from app.platforms.channels import ChannelsProtocolClient, parse_channels_feed
 from app.platforms.douyin import DouyinClient, cookie_from_state as douyin_cookie_from_state, parse_aweme
 from app.platforms.douyin.extract import Aweme
+from app.platforms.facebook import FacebookClient, parse_facebook_aweme
 from app.platforms.instagram import InstagramClient, parse_ig_aweme
 from app.platforms.kuaishou import parse_ks_feed
 from app.platforms.rednote import RednoteApiClient, cookie_str_from_state as rednote_cookie_str_from_state, has_a1 as rednote_has_a1
@@ -329,6 +330,29 @@ class KeywordCollector(
                 return await self._run_keywords(
                     job_id, job, account, keywords, proxy,
                     identity=identity, tw_client=tw_client)
+        if job.platform == "facebook":
+            fb_state = (
+                (account.storage_state or account.creator_storage_state or account.cookie)
+                if account is not None
+                else ""
+            )
+            fb_client = FacebookClient(
+                fb_state,
+                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                proxy=proxy,
+                timeout=self.cfg.engine.request_timeout_seconds,
+            )
+            fb_mode = str(getattr(self.cfg.engine, "facebook_read_mode", "hybrid") or "hybrid").lower()
+            step_label = (
+                "启动 Facebook 纯协议采集" if fb_mode == "api"
+                else "启动 Facebook 浏览器采集" if fb_mode == "browser"
+                else "启动 Facebook 协议优先采集"
+            )
+            self._progress(job_id, step=step_label)
+            async with fb_client.session_scope():
+                return await self._run_keywords(
+                    job_id, job, account, keywords, proxy,
+                    identity=identity, fb_client=fb_client)
         if xhs_client is not None:
             async with xhs_client.session_scope():
                 return await self._run_keywords(
@@ -347,6 +371,7 @@ class KeywordCollector(
                              bili_client: BilibiliClient | None = None,
                              ig_client: InstagramClient | None = None,
                              tw_client: TwitterClient | None = None,
+                             fb_client: FacebookClient | None = None,
                              context=None, identity=None) -> dict:
 
         browser_reads = self._xhs_browser_reads_enabled()
@@ -372,16 +397,16 @@ class KeywordCollector(
                 await asyncio.sleep(1.0 * random.uniform(1.0, 1.35))
             elif job.platform == "bilibili" and keyword_index:
                 await asyncio.sleep(0.8 * random.uniform(1.0, 1.35))
-            elif job.platform in {"instagram", "twitter"} and keyword_index:
+            elif job.platform in {"instagram", "twitter", "facebook"} and keyword_index:
                 await asyncio.sleep(1.2 * random.uniform(1.0, 1.35))
             self._progress(
                 job_id,
                 keyword=keyword,
                 step=(
                     "同步本账号作品"
-                    if (job.platform in {"shipinhao", "bilibili", "instagram", "twitter"} and job.source_type == "account_works")
+                    if (job.platform in {"shipinhao", "bilibili", "instagram", "twitter", "facebook"} and job.source_type == "account_works")
                     else "读取创作者作品"
-                    if (job.platform in {"shipinhao", "bilibili", "instagram", "twitter"} and job.source_type == "creator")
+                    if (job.platform in {"shipinhao", "bilibili", "instagram", "twitter", "facebook"} and job.source_type == "creator")
                     else "搜索作品"
                 ),
                 processed_keyword_count=keyword_index,
@@ -436,6 +461,16 @@ class KeywordCollector(
                 else:
                     raw_items, search_error = await self._discover_twitter_keyword(
                         keyword, job, tw_client=tw_client, identity=identity)
+            elif job.platform == "facebook":
+                if job.source_type == "creator":
+                    raw_items, search_error = await self._discover_facebook_creator(
+                        job, fb_client=fb_client, identity=identity)
+                elif job.source_type == "account_works":
+                    raw_items, search_error = await self._discover_facebook_account(
+                        account, job, fb_client=fb_client, identity=identity)
+                else:
+                    raw_items, search_error = await self._discover_facebook_keyword(
+                        keyword, job, fb_client=fb_client, identity=identity)
             elif job.platform == "shipinhao":
                 if job.source_type == "creator":
                     raw_items, search_error = await self._discover_channels_creator(
@@ -612,6 +647,25 @@ class KeywordCollector(
                             aweme = full_aw
                             detail_raw = full_raw
                     token = ""
+                elif job.platform == "facebook":
+                    aweme = parse_facebook_aweme(raw)
+                    if (
+                        aweme is not None
+                        and job.download_media
+                        and not aweme.medias
+                        and fb_client is not None
+                        and aweme.source_url
+                    ):
+                        full_aw, _info_err = await fb_client.fetch_post_detail(aweme.source_url)
+                        if full_aw is not None and full_aw.medias:
+                            full_aw.like_count = max(full_aw.like_count, aweme.like_count)
+                            full_aw.comment_count = max(full_aw.comment_count, aweme.comment_count)
+                            if not full_aw.author_name:
+                                full_aw.author_name = aweme.author_name
+                            if not full_aw.desc:
+                                full_aw.desc = aweme.desc
+                            aweme = full_aw
+                    token = ""
                 elif browser_reads:
                     aweme, parts, detail_error = \
                         await self._materialize_xhs_browser(identity, raw)
@@ -644,7 +698,7 @@ class KeywordCollector(
                 if aweme is None:
                     self._record_error(job_id, f"{keyword}: 无法解析一条搜索结果")
                     continue
-                if job.platform in {"xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"} and not \
+                if job.platform in {"xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"} and not \
                         _collection_content_matches(aweme, job):
                     continue
 
@@ -745,6 +799,11 @@ class KeywordCollector(
                             identity, aweme.aweme_id,
                             job.max_comments_per_content, job.include_replies,
                             tw_client=tw_client, target_url=aweme.source_url)
+                    elif job.platform == "facebook":
+                        comments, comment_error = await self._facebook_comments(
+                            identity, aweme.aweme_id,
+                            job.max_comments_per_content, job.include_replies,
+                            fb_client=fb_client, target_url=aweme.source_url)
                     elif browser_reads:
                         comments, comment_error = await self._xhs_comments_browser(
                             identity, aweme.aweme_id, token, source,
@@ -769,7 +828,7 @@ class KeywordCollector(
                     if comment_error:
                         self._record_error(
                             job_id, f"{keyword}/{aweme.aweme_id}: {comment_error}")
-                        if job.platform in {"xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"} and classify_platform_error(
+                        if job.platform in {"xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"} and classify_platform_error(
                                 comment_error)[0] in {
                                 RiskCategory.RISK, RiskCategory.AUTH,
                                 RiskCategory.NETWORK}:

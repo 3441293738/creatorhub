@@ -323,7 +323,7 @@ export function MediaHubGallery({ ctx }) {
                           />
                           <div className="mx-mini-ph" style={{ display: "none" }}><Icon name={item.media_type === "images" ? "image" : "film"} /></div>
                         </>
-                      ) : item.platform === "twitter" && !item.local_ready && item.media_type !== "video" ? (
+                      ) : (item.platform === "twitter" || item.platform === "facebook") && !item.local_ready && item.media_type !== "video" ? (
                         <div className="mx-mini-ph" style={{ padding: "14px", textAlign: "left", alignItems: "flex-start" }}>
                           <span style={{ fontSize: "12.5px", lineHeight: 1.55, color: "var(--fg-2)", display: "-webkit-box", WebkitLineClamp: 5, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                             {item.desc}
@@ -333,7 +333,7 @@ export function MediaHubGallery({ ctx }) {
                         <div className="mx-mini-ph"><Icon name={item.media_type === "images" ? "image" : "film"} /></div>
                       )}
                       <span className="mx-mini-pf" style={{ "--pf-c": pf.color }}>{pf.short}</span>
-                      <span className="mx-mini-kind">{item.platform === "twitter" && !item.cover_url && !item.local_ready && item.media_type !== "video" ? "纯文本" : (item.media_type === "images" ? "图集" : "视频")}</span>
+                      <span className="mx-mini-kind">{(item.platform === "twitter" || item.platform === "facebook") && !item.cover_url && !item.local_ready && item.media_type !== "video" ? "纯文本" : (item.media_type === "images" ? "图集" : "视频")}</span>
                       {item.local_ready && <span className="mx-mini-local">已存本地</span>}
                     </div>
                     <div className="mx-gcard-body">

@@ -49,6 +49,7 @@ _PLATFORM_REFERERS: dict[str, str] = {
     "bilibili": "https://www.bilibili.com/",
     "instagram": "https://www.instagram.com/",
     "twitter": "https://x.com/",
+    "facebook": "https://www.facebook.com/",
 }
 
 _fetch_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
@@ -79,6 +80,8 @@ def detect_cdn_platform(url: str, hint: str = "") -> str:
         return "douyin"
     if host == "twimg.com" or host.endswith(".twimg.com") or host.endswith(".x.com") or host.endswith(".twitter.com"):
         return "twitter"
+    if host.endswith((".facebook.com", ".fbsbx.com")):
+        return "facebook"
     if host.endswith((".cdninstagram.com", ".fbcdn.net", ".instagram.com")):
         return "instagram"
     if "tiktokcdn" in host or host.endswith(".tiktok.com"):

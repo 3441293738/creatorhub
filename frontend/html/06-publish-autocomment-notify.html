@@ -186,6 +186,38 @@
             <input id="pub-tw-first-comment" maxlength="280" placeholder="发布成功后自动在主推文下追加一条自回复（如外链或补充说明）">
           </div>
         </fieldset>
+        <fieldset class="publish-permissions fb-only" id="pub-fb-opts">
+          <legend>Facebook 发布位置与互动设置</legend>
+          <div class="publish-permission">
+            <label class="field" for="pub-fb-target">发布目标</label>
+            <select id="pub-fb-target" aria-label="Facebook 发布目标">
+              <option value="profile">个人动态（Profile Feed）</option>
+              <option value="page">公共主页（Profile+ Page）</option>
+              <option value="group">Facebook 群组（Group）</option>
+              <option value="story">快拍（Story）</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-fb-page-id">公共主页 ID（可选，i_user 切换）</label>
+            <input id="pub-fb-page-id" maxlength="64" placeholder="发公共主页或以主页身份发群组时填写数字 Page ID">
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-fb-group-url">目标群组链接或 ID（群组发布时填写）</label>
+            <input id="pub-fb-group-url" maxlength="300" placeholder="例如 https://www.facebook.com/groups/123456789/">
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-fb-privacy">动态可见范围</label>
+            <select id="pub-fb-privacy" aria-label="Facebook 可见范围">
+              <option value="public">公开（Public）</option>
+              <option value="friends">仅好友（Friends）</option>
+              <option value="only_me">仅自己（Only Me）</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-fb-first-comment">发布后首评（可选）</label>
+            <input id="pub-fb-first-comment" maxlength="500" placeholder="发帖成功后自动在主帖下追加一条首评（如外链、引导文案）">
+          </div>
+        </fieldset>
         <fieldset class="publish-permissions ig-only" id="pub-ig-opts">
           <legend>Instagram 发布形态与互动设置</legend>
           <div class="publish-permission">

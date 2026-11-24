@@ -9,6 +9,7 @@ export const PLATFORMS = [
   { id: "bilibili", name: "哔哩哔哩", short: "B站", color: "#00aeec", hasCreatorLogin: false, hasCookie: true, titleCap: 80 },
   { id: "instagram", name: "Instagram", short: "IG", color: "#e1306c", hasCreatorLogin: false, hasCookie: true, titleCap: 2200 },
   { id: "twitter", name: "Twitter", short: "X", color: "#1d9bf0", hasCreatorLogin: false, hasCookie: true, titleCap: 280 },
+  { id: "facebook", name: "Facebook", short: "FB", color: "#1877f2", hasCreatorLogin: false, hasCookie: true, titleCap: 5000 },
 ];
 
 export const PF_MAP = Object.fromEntries(PLATFORMS.map(p => [p.id, p]));
@@ -82,6 +83,7 @@ export function platformExternalWorkUrl(platform, itemId) {
   if (platform === "bilibili") return `https://www.bilibili.com/video/${enc}`;
   if (platform === "kuaishou") return `https://www.kuaishou.com/short-video/${enc}`;
   if (platform === "twitter") return `https://x.com/i/web/status/${enc}`;
+  if (platform === "facebook") return /^https?:\/\//i.test(String(itemId)) ? String(itemId) : `https://www.facebook.com/${enc}`;
   if (platform === "instagram") return `https://www.instagram.com/p/${enc}/`;
   return `https://www.douyin.com/video/${enc}`;
 }
@@ -111,7 +113,7 @@ export function syncHeaderPlatformBadges(platformStrip, hideEmpty = false, activ
       if (totalDanger + totalWarn > 0) {
         btn.setAttribute("data-tip", `全平台共 ${totalAcc} 个账号 · ${totalDanger + totalWarn} 项待关注状态`);
       } else {
-        btn.setAttribute("data-tip", "跨 9 大平台全局汇总与矩阵管理");
+        btn.setAttribute("data-tip", "跨 10 大平台全局汇总与矩阵管理");
       }
       return;
     }

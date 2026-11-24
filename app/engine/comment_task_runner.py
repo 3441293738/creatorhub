@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.account_lifecycle import AccountUnavailableError
-from app.browser import douyin_secure_post_api, post_bili_comment, post_channels_comment, post_comment_browser, post_ig_comment, post_ks_comment, post_twitter_comment
+from app.browser import douyin_secure_post_api, post_bili_comment, post_channels_comment, post_comment_browser, post_facebook_comment, post_ig_comment, post_ks_comment, post_twitter_comment
 from app.browser.tiktok_actions import post_tiktok_comment
 from app.db import get_session
 from app.engine.monitor_helpers import log
@@ -195,6 +195,20 @@ class CommentTaskRunnerMixin:
                     headed=(True if native_mode else self.cfg.engine.comment_browser_headed),
                     on_submit=lambda: self._mark_write_submit(CommentTask, task_id, channel="browser"),
                 )
+            elif platform == "facebook":
+                from app.platforms.facebook import post_url as fb_post_url
+                method = "browser"
+                fb_url = target_url or fb_post_url(aweme_id)
+                ok, err = await post_facebook_comment(
+                    self.browser,
+                    identity,
+                    fb_url,
+                    content,
+                    reply_to_comment_id=target_cid,
+                    headed=(True if native_mode else self.cfg.engine.comment_browser_headed),
+                    on_submit=lambda: self._mark_write_submit(CommentTask, task_id, channel="browser"),
+                )
+                result = ""
             elif platform == "rednote":
                 method = "unavailable"
                 err = "unavailable:海外小红书暂未开放评论写入与自动计划"

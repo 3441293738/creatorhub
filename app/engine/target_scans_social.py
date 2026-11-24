@@ -1,4 +1,4 @@
-"""哔哩哔哩、Instagram 与 X (Twitter) 作品监控扫描。"""
+"""哔哩哔哩、Instagram、X (Twitter) 与 Facebook 作品监控扫描。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -6,12 +6,13 @@ import json
 
 from sqlmodel import select
 
-from app.browser import fetch_bili_search, fetch_bili_videos, fetch_ig_posts, fetch_ig_search, fetch_twitter_comments, fetch_twitter_search, fetch_twitter_user_tweets
+from app.browser import fetch_bili_search, fetch_bili_videos, fetch_facebook_comments, fetch_facebook_search, fetch_facebook_user_posts, fetch_ig_posts, fetch_ig_search, fetch_twitter_comments, fetch_twitter_search, fetch_twitter_user_tweets
 from app.db import get_session
 from app.engine.monitor_helpers import _douyin_scan_since, _monitor_content_matches, _monitor_strategy
 from app.models import ContentRecord, DouyinAccount, MonitorTarget
 from app.platforms.bilibili import BilibiliClient, cookie_map_from_state as bili_cookie_map, parse_bili_aweme
 from app.platforms.douyin.extract import Aweme
+from app.platforms.facebook import FacebookClient, get_slot_operation, parse_facebook_aweme
 from app.platforms.instagram import InstagramClient, parse_ig_aweme
 from app.platforms.twitter import TwitterClient, parse_twitter_aweme
 from app.risk import RiskCategory, classify_platform_error
@@ -809,6 +810,454 @@ class SocialTargetScanMixin:
                 self._dl_proxy(proxy),
                 user_agent=ua,
                 referer="https://x.com/",
+            )
+            with get_session() as s:
+                r = s.get(ContentRecord, rec.id)
+                if r:
+                    r.download_status = "done" if ok else "failed"
+                    r.local_path = path
+                    r.error = dl_err
+                    s.add(r)
+                    s.commit()
+
+        if not first_scan and new_records:
+            await self._notify_new(target_name, [aw for _, aw, _ in new_records])
+        return {
+            "ok": not error,
+            "new": len(new_records),
+            "new_works": len(new_records),
+            "scanned": len(candidates),
+            "filtered": filtered_count,
+            "backfill_count": backfill_count,
+            "error": error,
+        }
+
+    def _make_facebook_client(self, identity=None, state: str = "", ua: str = "", proxy: str = "") -> FacebookClient:
+        raw_state = state
+        if not raw_state and identity is not None:
+            b_states = getattr(identity, "bridge_states", None) or ()
+            if b_states:
+                raw_state = b_states[0]
+        eff_ua = ua or (getattr(identity, "ua", "") if identity is not None else "") or self.cfg.engine.user_agent
+        eff_proxy = proxy or (getattr(identity, "proxy", "") if identity is not None else "") or ""
+        return FacebookClient(
+            raw_state,
+            eff_ua,
+            proxy=eff_proxy,
+            timeout=self.cfg.engine.request_timeout_seconds,
+        )
+
+    @staticmethod
+    def _fb_merge_posts(primary: list[dict], extra: list[dict]) -> list[dict]:
+        by_id: dict[str, dict] = {}
+        scores: dict[str, int] = {}
+        for row in (*primary, *extra):
+            aw = parse_facebook_aweme(row)
+            if aw is None or not aw.aweme_id:
+                continue
+            sc = (
+                (10 if aw.medias else 0)
+                + (4 if aw.desc else 0)
+                + (3 if aw.author_name else 0)
+                + (3 if aw.create_time else 0)
+                + (2 if aw.like_count else 0)
+                + (2 if aw.comment_count else 0)
+            )
+            if aw.aweme_id not in by_id or sc > scores.get(aw.aweme_id, -1):
+                by_id[aw.aweme_id] = row
+                scores[aw.aweme_id] = sc
+        return list(by_id.values())
+
+    async def _fb_read_search(
+        self,
+        identity,
+        keyword: str,
+        *,
+        recent: bool = False,
+        content_type: str = "all",
+        max_pages: int = 4,
+        max_items: int = 40,
+        state: str = "",
+        ua: str = "",
+        proxy: str = "",
+    ) -> tuple[list[dict], str]:
+        mode = str(getattr(self.cfg.engine, "facebook_read_mode", "hybrid") or "hybrid").lower()
+        fcli = self._make_facebook_client(identity, state=state, ua=ua, proxy=proxy)
+        items: list[dict] = []
+        err = ""
+        if mode in {"api", "hybrid"} and fcli.has_login_cookies:
+            async with fcli.session_scope():
+                items, err = await fcli.search_posts(
+                    keyword,
+                    max_pages=max_pages,
+                    max_items=max_items,
+                    content_type=content_type,
+                    recent=recent,
+                )
+            if err.startswith(("logged_out:", "verification_required:", "rate_limit:")):
+                return items, err
+        need_fallback = (
+            mode == "browser"
+            or (
+                mode == "hybrid"
+                and (
+                    not items
+                    or (
+                        max_pages > 1
+                        and len(items) < min(max_items or 12, 8)
+                        and get_slot_operation("search_posts") is None
+                    )
+                )
+            )
+        )
+        if need_fallback and identity is not None:
+            b_items, b_err = await fetch_facebook_search(
+                self.browser,
+                identity,
+                keyword,
+                max_scrolls=max_pages,
+                max_items=max_items,
+                content_type=content_type,
+                recent=recent,
+            )
+            if b_items:
+                items = self._fb_merge_posts(b_items, items) if items else b_items
+                return items, ""
+            if mode == "browser" or not items:
+                err = b_err or err
+        if err in {"empty", "api_empty_search"}:
+            err = "" if items else err
+        return items, err
+
+    async def _fb_read_user_posts(
+        self,
+        identity,
+        user_ref: str,
+        known: set[str] | None = None,
+        *,
+        max_pages: int = 4,
+        max_items: int = 40,
+        state: str = "",
+        ua: str = "",
+        proxy: str = "",
+    ) -> tuple[list[dict], dict, str]:
+        mode = str(getattr(self.cfg.engine, "facebook_read_mode", "hybrid") or "hybrid").lower()
+        fcli = self._make_facebook_client(identity, state=state, ua=ua, proxy=proxy)
+        slot = "group_posts" if "/groups/" in str(user_ref or "").lower() else "profile_posts"
+        items: list[dict] = []
+        uinfo: dict = {}
+        err = ""
+        if mode in {"api", "hybrid"} and fcli.has_login_cookies:
+            async with fcli.session_scope():
+                items, uinfo, err = await fcli.fetch_user_posts(
+                    user_ref,
+                    known_ids=known,
+                    max_pages=max_pages,
+                    max_items=max_items,
+                )
+            if err.startswith(("logged_out:", "verification_required:", "rate_limit:")):
+                return items, uinfo, err
+        known_hit = bool(
+            known
+            and any((parse_facebook_aweme(r) is not None and parse_facebook_aweme(r).aweme_id in known) for r in items)  # type: ignore[union-attr]
+        )
+        need_fallback = (
+            mode == "browser"
+            or (
+                mode == "hybrid"
+                and (
+                    not items
+                    or (
+                        not known_hit
+                        and max_pages > 1
+                        and len(items) < min(max_items or 12, 8)
+                        and get_slot_operation(slot) is None
+                    )
+                )
+            )
+        )
+        if need_fallback and identity is not None:
+            b_items, b_author, b_err = await fetch_facebook_user_posts(
+                self.browser,
+                identity,
+                user_ref,
+                known or set(),
+                max_scrolls=max_pages,
+                max_items=max_items,
+            )
+            if b_items:
+                items = self._fb_merge_posts(b_items, items) if items else b_items
+                return items, (b_author or uinfo), ""
+            if mode == "browser" or not items:
+                err = b_err or err
+        if err in {"empty", "api_empty_timeline"}:
+            err = "" if items else err
+        return items, uinfo, err
+
+    async def _fb_read_comments(
+        self,
+        identity,
+        post_url_raw: str,
+        *,
+        max_pages: int = 4,
+        max_count: int = 60,
+        include_replies: bool = True,
+        state: str = "",
+        ua: str = "",
+        proxy: str = "",
+    ) -> tuple[list[dict], str, str]:
+        mode = str(getattr(self.cfg.engine, "facebook_read_mode", "hybrid") or "hybrid").lower()
+        fcli = self._make_facebook_client(identity, state=state, ua=ua, proxy=proxy)
+        rows: list[dict] = []
+        err = ""
+        source = "api"
+        if mode in {"api", "hybrid"} and fcli.has_login_cookies:
+            async with fcli.session_scope():
+                rows, err = await fcli.fetch_post_comments(
+                    post_url_raw,
+                    max_pages=max_pages,
+                    max_count=max_count,
+                    include_replies=include_replies,
+                )
+            if err.startswith(("logged_out:", "verification_required:", "rate_limit:")):
+                return rows, err, "api"
+        is_reel_or_video = any(p in str(post_url_raw or "").lower() for p in ("/reel/", "/reels/", "/videos/", "/watch"))
+        need_fallback = (
+            mode == "browser"
+            or (
+                mode == "hybrid"
+                and (
+                    (not rows and bool(err))
+                    or (
+                        len(rows) < min(max_count, 12)
+                        and (
+                            get_slot_operation("post_comments") is None
+                            or (is_reel_or_video and get_slot_operation("reel_comments") is None)
+                        )
+                    )
+                )
+            )
+        )
+        if need_fallback and identity is not None:
+            b_rows, b_err = await fetch_facebook_comments(
+                self.browser,
+                identity,
+                post_url_raw,
+                max_scrolls=max(2, min(12, max_pages)),
+            )
+            source = "browser_fallback" if mode == "hybrid" else "browser"
+            if b_rows:
+                by_cid: dict[str, dict] = {}
+                for c in (*b_rows, *rows):
+                    cid = str(c.get("comment_id") or "")
+                    if cid and cid not in by_cid:
+                        by_cid[cid] = c
+                merged = list(by_cid.values())
+                if not include_replies:
+                    merged = [c for c in merged if not c.get("reply_to")]
+                return merged[:max_count], "", source
+            if mode == "browser" or not rows:
+                err = b_err or err
+        if err in {"empty", "api_empty_comments"}:
+            err = ""
+        if not include_replies:
+            rows = [c for c in rows if not c.get("reply_to")]
+        return rows[:max_count], err, source
+
+    async def _scan_facebook_target_locked(self, target_id: int) -> dict:
+        with get_session() as s:
+            target = s.get(MonitorTarget, target_id)
+            if not target:
+                return {"ok": False, "error": "target not found"}
+            first_scan = target.last_scan_at is None
+            acc = s.get(DouyinAccount, target.account_id) if target.account_id else None
+            if not acc or acc.platform != "facebook" or acc.status != "active":
+                return self._mark_target_skip(
+                    target_id, "绑定的 Facebook 账号不存在或登录态已失效，请重新绑定/登录"
+                )
+            if self._proxy_bad(acc):
+                return self._mark_target_skip(
+                    target_id, "账号代理标记为不可用(proxy bad)，已跳过以免暴露真实 IP"
+                )
+            identity = (
+                self.browser.identity_for(acc)
+                if callable(getattr(self.browser, "identity_for", None))
+                else None
+            )
+            proxy = acc.proxy or ""
+            state = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
+            ua = acc.ua or self.cfg.engine.user_agent
+            known = set(
+                s.exec(select(ContentRecord.aweme_id).where(ContentRecord.target_id == target_id)).all()
+            )
+            known_create_times = list(
+                s.exec(select(ContentRecord.create_time).where(ContentRecord.target_id == target_id)).all()
+            )
+            target_kind = target.target_kind or "creator"
+            sec_uid = (target.sec_uid or "").strip()
+            keyword = (target.keyword or "").strip()
+            base_dir = target.download_dir or get_setting("download_dir", self.cfg.engine.media_dir)
+            monitor_since = int(target.created_at.timestamp())
+            scan_since = _douyin_scan_since(monitor_since, known_create_times)
+            backfill_count = target.initial_backfill_count
+            should_backfill = first_scan or (backfill_count != 0 and not known)
+            auto_download = target.download_enabled
+            media_filter = target.media_filter or "all"
+            strategy = _monitor_strategy(target, default_scrolls=4, default_items=0)
+
+        fb_mode = str(getattr(self.cfg.engine, "facebook_read_mode", "hybrid") or "hybrid").lower()
+        if identity is None and (fb_mode == "browser" or not state):
+            return self._mark_target_skip(target_id, "缺少 Facebook 账号浏览器隔离身份")
+
+        raw_items: list[dict] = []
+        author_name = ""
+        author_avatar = ""
+        error = ""
+        scrolls = max(1, min(6, strategy["max_scrolls"] or 3))
+
+        if target_kind == "keyword":
+            raw_items, error = await self._fb_read_search(
+                identity,
+                keyword,
+                recent=True,
+                content_type=strategy.get("media_type") or "all",
+                max_pages=scrolls,
+                max_items=max(20, int(strategy.get("max_items") or 0) * 2 or 40),
+                state=state,
+                ua=ua,
+                proxy=proxy,
+            )
+        else:
+            raw_items, b_author, error = await self._fb_read_user_posts(
+                identity,
+                sec_uid,
+                known,
+                max_pages=scrolls,
+                max_items=max(20, int(strategy.get("max_items") or 0) * 2 or 40),
+                state=state,
+                ua=ua,
+                proxy=proxy,
+            )
+            if isinstance(b_author, dict):
+                author_name = str(b_author.get("nickname") or author_name)
+                author_avatar = str(b_author.get("avatar") or author_avatar)
+        if error in {"empty", "api_empty_search", "api_empty_timeline"}:
+            error = ""
+
+        candidates: list[Aweme] = []
+        seen_ids: set[str] = set()
+        for r in raw_items:
+            aw = parse_facebook_aweme(r)
+            if aw is None or aw.aweme_id in known or aw.aweme_id in seen_ids:
+                continue
+            seen_ids.add(aw.aweme_id)
+            if aw.author_name and not author_name and target_kind == "creator":
+                author_name = aw.author_name
+            if aw.avatar and not author_avatar and target_kind == "creator":
+                author_avatar = aw.avatar
+            candidates.append(aw)
+
+        candidates.sort(key=lambda a: int(a.create_time or 0), reverse=True)
+        if should_backfill:
+            if backfill_count == 0:
+                candidates = [a for a in candidates if not a.create_time or a.create_time >= monitor_since]
+            elif backfill_count > 0:
+                candidates = candidates[:backfill_count]
+        else:
+            candidates = [a for a in candidates if not a.create_time or a.create_time >= scan_since]
+
+        fcli = FacebookClient(
+            state,
+            ua,
+            proxy=proxy,
+            timeout=self.cfg.engine.request_timeout_seconds,
+        )
+        new_records = []
+        filtered_count = 0
+        async with fcli.session_scope():
+            for aw in candidates:
+                if not _monitor_content_matches(aw, strategy):
+                    filtered_count += 1
+                    continue
+                if strategy["max_items"] and len(new_records) >= strategy["max_items"]:
+                    break
+                should_download = auto_download and (
+                    media_filter == "all" or aw.media_type == media_filter
+                )
+                if should_download and not aw.medias and aw.source_url:
+                    full_aw, _m_err = await fcli.fetch_post_detail(aw.source_url)
+                    if full_aw is not None and full_aw.medias:
+                        aw = full_aw
+                media_json = json.dumps([
+                    {
+                        "url": m.url,
+                        "kind": m.kind,
+                        "ext": m.ext,
+                        "index": m.index,
+                    }
+                    for m in aw.medias
+                ])
+                # 纯文本帖无附件属于正常情况，标记 skipped 避免误报下载失败
+                dl_status = (
+                    "pending"
+                    if (should_download and aw.medias)
+                    else "skipped"
+                )
+                rec = ContentRecord(
+                    platform="facebook",
+                    target_id=target_id,
+                    aweme_id=aw.aweme_id,
+                    desc=aw.desc,
+                    media_type=aw.media_type,
+                    quality=aw.quality_label,
+                    create_time=aw.create_time,
+                    cover_url=aw.cover or "",
+                    like_count=aw.like_count,
+                    comment_count=aw.comment_count,
+                    duration=aw.duration,
+                    media_json=media_json,
+                    download_status=dl_status,
+                    error="",
+                )
+                new_records.append((rec, aw, bool(should_download and aw.medias)))
+
+        target_name = ""
+        with get_session() as s:
+            for rec, _, _ in new_records:
+                s.add(rec)
+            t = s.get(MonitorTarget, target_id)
+            if t:
+                t.last_scan_at = datetime.utcnow()
+                t.last_error = error
+                if target_kind == "creator":
+                    if author_name and not t.nickname:
+                        t.nickname = author_name
+                    if author_avatar and not t.avatar:
+                        t.avatar = author_avatar
+                target_name = t.nickname or t.keyword or t.sec_uid
+                target_avatar = t.avatar or ""
+                s.add(t)
+            else:
+                target_avatar = ""
+            s.commit()
+            for rec, _, _ in new_records:
+                s.refresh(rec)
+
+        thumb_cache.schedule_thumb_prewarm(
+            [target_avatar, *(aw.cover for _, aw, dl in new_records if aw.cover and not dl)],
+            platform="facebook",
+            proxy=proxy,
+        )
+
+        for rec, aw, should_download in new_records:
+            if not should_download:
+                continue
+            ok, path, dl_err = await self.downloader.download_aweme(
+                aw,
+                base_dir,
+                self._dl_proxy(proxy),
+                user_agent=ua,
+                referer="https://www.facebook.com/",
             )
             with get_session() as s:
                 r = s.get(ContentRecord, rec.id)

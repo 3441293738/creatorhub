@@ -10,6 +10,7 @@ import json
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field as PydanticField
+from sqlalchemy import func
 from sqlmodel import select
 
 from app import runtime as app_runtime
@@ -29,6 +30,7 @@ from app.models import (
     ContentRecord,
     DmConversation,
     DouyinAccount,
+    FollowEdge,
     KeywordCollectionComment,
     KeywordCollectionContent,
     KeywordCollectionJob,
@@ -61,6 +63,7 @@ ALL_PLATFORMS: tuple[str, ...] = (
     "bilibili",
     "instagram",
     "twitter",
+    "facebook",
 )
 
 GROUP_COLORS = {"blue", "rose", "emerald", "amber", "violet", "cyan", "slate"}
@@ -90,7 +93,7 @@ def _account_login_flags(acc: DouyinAccount) -> tuple[bool, bool]:
     has_creator = (
         bool(acc.creator_storage_state)
         or (
-            acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter")
+            acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter", "facebook")
             and bool(acc.storage_state)
         )
         or (acc.platform == "xhs" and has_creator_cookies(acc.storage_state))
@@ -103,6 +106,23 @@ def _account_login_flags(acc: DouyinAccount) -> tuple[bool, bool]:
         else bool(acc.storage_state)
     )
     return has_read_login, has_creator
+
+
+def _compute_synced_follow_counts(session, account_ids: list[int]) -> tuple[dict[int, int], dict[int, int]]:
+    if not account_ids:
+        return {}, {}
+    fan_counts: dict[int, int] = {}
+    following_counts: dict[int, int] = {}
+    for aid, direction, cnt in session.exec(
+        select(FollowEdge.account_id, FollowEdge.direction, func.count(FollowEdge.id))
+        .where(FollowEdge.account_id.in_(account_ids))
+        .group_by(FollowEdge.account_id, FollowEdge.direction)
+    ).all():
+        if direction == "fan":
+            fan_counts[int(aid)] = int(cnt or 0)
+        elif direction == "following":
+            following_counts[int(aid)] = int(cnt or 0)
+    return fan_counts, following_counts
 
 
 def _compute_fans_deltas(session, account_ids: list[int]) -> dict[int, int]:
@@ -194,7 +214,7 @@ def _account_health_state(
     if same_platform_shared_proxy:
         return "shared_proxy"
     if not acc.proxy and (
-        acc.platform in {"tiktok", "rednote", "instagram", "twitter"}
+        acc.platform in {"tiktok", "rednote", "instagram", "twitter", "facebook"}
         or same_platform_total_count > 1
         or same_platform_direct_count > 1
     ):
@@ -347,7 +367,7 @@ async def matrix_overview(platform: str = ""):
             if not pf_filter or pf == pf_filter:
                 pending_reviews += 1
 
-        # 构建 9 平台态势条 (供顶部导航栏徽章 & 全局总览平台卡片墙共用)
+        # 构建 10 平台态势条 (供顶部导航栏徽章 & 全局总览平台卡片墙共用)
         strip_map: dict[str, dict[str, Any]] = {
             pf: {
                 "platform": pf,
@@ -372,6 +392,7 @@ async def matrix_overview(platform: str = ""):
         }
 
         acc_map = {a.id: a for a in all_accounts if a.id is not None}
+        ov_fan_counts, _ov_following_counts = _compute_synced_follow_counts(session, list(acc_map.keys()))
         for acc in all_accounts:
             entry = strip_map.get(acc.platform)
             if not entry:
@@ -406,7 +427,7 @@ async def matrix_overview(platform: str = ""):
                 entry["accounts_shared_proxy"] += 1
             elif h_state == "no_proxy":
                 entry["accounts_no_proxy"] += 1
-            entry["followers_total"] += int(acc.follower_count or 0)
+            entry["followers_total"] += int(acc.follower_count or 0) or ov_fan_counts.get(acc.id or 0, 0)
             entry["fans_delta"] += int(fans_deltas.get(acc.id or 0, 0))
             t_roll = rollups.get(acc.id or 0)
             if t_roll:
@@ -614,6 +635,7 @@ async def list_matrix_accounts(platform: str = ""):
             )
         }
         fans_deltas = _compute_fans_deltas(session, ids)
+        fan_counts, following_counts = _compute_synced_follow_counts(session, ids)
         rollups = _compute_task_rollups(session, ids, now)
 
         mon_counts: dict[int, int] = {}
@@ -625,11 +647,13 @@ async def list_matrix_accounts(platform: str = ""):
         for row in session.exec(select(DmConversation).where(DmConversation.unread_count > 0)).all():
             unread_map[row.account_id] = unread_map.get(row.account_id, 0) + int(row.unread_count or 0)
 
+        work_counts_map: dict[int, int] = {}
         zero_play_map: dict[int, int] = {}
         abnormal_work_map: dict[int, int] = {}
         for aid, zp, st_alert in session.exec(
             select(AccountWork.account_id, AccountWork.zero_play_alerted, AccountWork.status_alerted)
         ).all():
+            work_counts_map[aid] = work_counts_map.get(aid, 0) + 1
             if zp:
                 zero_play_map[aid] = zero_play_map.get(aid, 0) + 1
             if zp or bool(st_alert):
@@ -730,9 +754,9 @@ async def list_matrix_accounts(platform: str = ""):
                 "has_creator": has_creator,
                 "has_read_login": has_read,
                 "login_type": "cookie" if acc.cookie else "scan",
-                "follower_count": int(acc.follower_count or 0),
-                "following_count": int(acc.following_count or 0),
-                "aweme_count": int(acc.aweme_count or 0),
+                "follower_count": int(acc.follower_count or 0) or fan_counts.get(aid, 0),
+                "following_count": int(acc.following_count or 0) or following_counts.get(aid, 0),
+                "aweme_count": max(int(acc.aweme_count or 0), work_counts_map.get(aid, 0)),
                 "total_favorited": int(acc.total_favorited or 0),
                 "fans_delta": int(fans_deltas.get(aid, 0)),
                 "has_proxy": bool(acc.proxy),
@@ -1081,6 +1105,7 @@ async def matrix_hub_analytics(
         acc_ids = [a.id for a in accounts if a.id is not None]
         acc_map = {a.id: a for a in accounts if a.id is not None}
         fans_deltas = _compute_fans_deltas(session, acc_ids)
+        hub_fan_counts, _hub_following_counts = _compute_synced_follow_counts(session, acc_ids)
 
         unread_map: dict[int, int] = {}
         if acc_ids:
@@ -1143,7 +1168,7 @@ async def matrix_hub_analytics(
                 "account_role": acc.account_role or "hybrid",
                 "pinned": bool(acc.pinned),
                 "status": acc.status,
-                "follower_count": int(acc.follower_count or 0),
+                "follower_count": int(acc.follower_count or 0) or hub_fan_counts.get(aid, 0),
                 "fans_delta": int(fans_deltas.get(aid, 0)),
                 "aweme_count": max(int(acc.aweme_count or 0), int(st.get("works_synced", 0))),
                 "works_synced": int(st.get("works_synced", 0)),
@@ -1797,6 +1822,7 @@ class MatrixPublishOverrideIn(BaseModel):
     bili_options: dict[str, Any] = PydanticField(default_factory=dict)
     ig_options: dict[str, Any] = PydanticField(default_factory=dict)
     tw_options: dict[str, Any] = PydanticField(default_factory=dict)
+    fb_options: dict[str, Any] = PydanticField(default_factory=dict)
 
 
 class MatrixBatchPublishIn(BaseModel):
@@ -1866,12 +1892,14 @@ async def create_matrix_batch_publish(body: MatrixBatchPublishIn):
             if eff_vis not in {"public", "friends", "private"}:
                 eff_vis = "public"
 
-            # 校验该平台媒体合法性（Twitter 图集若超过 4 张自动截取前 4 张并提示，不中断整批任务）
+            # 校验该平台媒体合法性（Twitter 图集若超过 4 张自动截取前 4 张，Facebook 最多 20 张）
             candidate_paths = list(body.media_paths or [])
             if acc.platform == "twitter" and body.media_type == "images" and len(candidate_paths) > 4:
                 candidate_paths = candidate_paths[:4]
             if acc.platform == "instagram" and len(candidate_paths) > 10:
                 candidate_paths = candidate_paths[:10]
+            if acc.platform == "facebook" and body.media_type == "images" and len(candidate_paths) > 20:
+                candidate_paths = candidate_paths[:20]
 
             try:
                 if acc.platform in {"xhs", "rednote"}:
@@ -1879,8 +1907,8 @@ async def create_matrix_batch_publish(body: MatrixBatchPublishIn):
                     paths = validate_publish_files(body.media_type, candidate_paths)
                 else:
                     paths = _validate_non_xhs_publish_files(acc.platform, body.media_type, candidate_paths)
-                    if acc.platform == "twitter" and not paths and not (eff_title or eff_desc.strip()):
-                        raise ValueError("Twitter 发布需填写文本或上传媒体")
+                    if acc.platform in {"twitter", "facebook"} and not paths and not (eff_title or eff_desc.strip()):
+                        raise ValueError(f"{'Twitter' if acc.platform == 'twitter' else 'Facebook'} 发布需填写文本或上传媒体")
             except (HTTPException, ValueError) as exc:
                 reason = exc.detail if isinstance(exc, HTTPException) else str(exc)
                 skipped.append({
@@ -1918,6 +1946,7 @@ async def create_matrix_batch_publish(body: MatrixBatchPublishIn):
                 bili_options_json=json.dumps((ov.bili_options if ov else {}) or {}, ensure_ascii=False),
                 ig_options_json=json.dumps((ov.ig_options if ov else {}) or {}, ensure_ascii=False),
                 tw_options_json=json.dumps((ov.tw_options if ov else {}) or {}, ensure_ascii=False),
+                fb_options_json=json.dumps((ov.fb_options if ov else {}) or {}, ensure_ascii=False),
                 scheduled_at=sched_time,
                 scheduled_at_is_utc=True,
                 source_platform=body.source_platform or "",

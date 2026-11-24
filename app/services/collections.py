@@ -19,6 +19,7 @@ from app.platforms.instagram import looks_like_ig_work, resolve_ig_user_target
 from app.platforms.kuaishou import resolve_ks_user_id
 from app.platforms.rednote import build_rednote_note_url, resolve_rednote_user
 from app.platforms.twitter import looks_like_twitter_tweet, resolve_twitter_short_url, resolve_twitter_user_target
+from app.platforms.facebook import looks_like_facebook_post, resolve_facebook_short_url, resolve_facebook_user_target
 from app.risk import RiskController
 from app.services import metadata as metadata_service
 from app.services import thumb_cache
@@ -51,15 +52,15 @@ def _validated_collection_input(body: KeywordCollectionIn) \
         -> tuple[str, list[str], str, str, dict]:
     """校验创建/编辑共用的任务配置并返回规范化值。"""
     platform = body.platform.strip().lower()
-    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"}:
-        raise HTTPException(400, "批量采集仅支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram 或 Twitter")
+    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"}:
+        raise HTTPException(400, "批量采集仅支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram、Twitter 或 Facebook")
     source_type = body.source_type.strip().lower() or "keyword"
     if source_type not in {
             "keyword", "favorite_all", "favorite_board", "creator",
             "account_works"}:
         raise HTTPException(400, "采集来源须为关键词、创作者主页、全部收藏、指定收藏夹或本账号作品")
-    if platform not in {"shipinhao", "bilibili", "instagram", "twitter"} and source_type == "account_works":
-        raise HTTPException(400, "本账号作品来源仅支持视频号、哔哩哔哩、Instagram 或 Twitter")
+    if platform not in {"shipinhao", "bilibili", "instagram", "twitter", "facebook"} and source_type == "account_works":
+        raise HTTPException(400, "本账号作品来源仅支持视频号、哔哩哔哩、Instagram、Twitter 或 Facebook")
     if platform == "tiktok" and source_type != "keyword":
         raise HTTPException(400, "TikTok 首版批量采集仅支持关键词视频搜索")
     if source_type in {"favorite_all", "favorite_board"} and platform not in {"xhs", "rednote"}:
@@ -273,6 +274,37 @@ async def _resolve_twitter_creator_source(body: KeywordCollectionIn) -> None:
         body.source_ref = target
         if not body.source_name or body.source_name == f"创作者 {original_ref}":
             body.source_name = f"创作者 @{target}" if not target.isdigit() else f"创作者 {target}"
+
+
+async def _resolve_facebook_creator_source(body: KeywordCollectionIn) -> None:
+    """把 Facebook 创作者/公共主页/群组采集的 source_ref 规范化为用户名、数字 UID 或 `groups/<id>`。"""
+    if (
+        body.platform.strip().lower() == "facebook"
+        and body.source_type.strip().lower() == "creator"
+    ):
+        original_ref = body.source_ref.strip()
+        cleaned = metadata_service._clean_platform_target_input(original_ref, "facebook")
+        eff_proxy = metadata_service._resolve_ephemeral_proxy("facebook", body.account_id)
+        expanded = await metadata_service._call_resolver(
+            resolve_facebook_short_url,
+            cleaned,
+            user_agent=app_runtime.cfg.engine.user_agent,
+            proxy=eff_proxy,
+        )
+        if looks_like_facebook_post(expanded):
+            raise HTTPException(
+                400,
+                "检测到 Facebook 单条帖子/视频链接；创作者采集请填写个人主页、公共主页或群组链接 / 用户名 / 数字 UID",
+            )
+        target = resolve_facebook_user_target(expanded)
+        if not target:
+            raise HTTPException(
+                400,
+                "无法解析 Facebook 主页或群组标识，请填写 facebook.com/<主页>、profile.php?id=... 或 groups/<群组ID>",
+            )
+        body.source_ref = target
+        if not body.source_name or body.source_name == f"创作者 {original_ref}":
+            body.source_name = f"群组 {target[7:]}" if target.startswith("groups/") else f"主页 {target}"
 
 
 def _collection_keywords(values: list[str]) -> list[str]:
@@ -490,6 +522,8 @@ def _collection_content_dict(row: KeywordCollectionContent) -> dict:
         url = row.source_url or f"https://www.instagram.com/p/{row.aweme_id}/"
     elif row.platform == "twitter":
         url = row.source_url or f"https://x.com/i/web/status/{row.aweme_id}"
+    elif row.platform == "facebook":
+        url = row.source_url or f"https://www.facebook.com/permalink.php?story_fbid={row.aweme_id}"
     else:
         url = f"https://www.douyin.com/video/{row.aweme_id}"
     local_files = _collection_local_media_paths(row)

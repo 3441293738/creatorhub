@@ -187,6 +187,13 @@
             <p class="field-help" id="engine-tw-read-help">公开单帖下载与本账号资料/私信优先走 Syndication 与 REST 通道；主页时间线、搜索与评论自动在隔离浏览器内拦截原生 GraphQL 响应。</p>
           </div>
           <div class="form-field">
+            <label for="engine-facebook_read_mode">Facebook 读取方式</label>
+            <select id="engine-facebook_read_mode" name="facebook_read_mode" disabled aria-describedby="engine-fb-read-help">
+              <option value="hybrid">协议 API 优先，失败/冷启动浏览器回退（推荐）</option><option value="api">仅协议 API，不打开浏览器</option><option value="browser">仅隔离浏览器页面</option>
+            </select>
+            <p class="field-help" id="engine-fb-read-help">关键词搜索、主页/群组动态、单帖与评论均优先走纯 HTTP SSR 与动态学习的 RelayModern /api/graphql/ 协议直采（零硬编码过期 doc_id）；首次冷启动或版本变更时自动回退隔离浏览器一次并学习最新查询模板。</p>
+          </div>
+          <div class="form-field">
             <label for="engine-monitor_initial_backfill_count">抖音新监控的历史作品数量</label>
             <input id="engine-monitor_initial_backfill_count" name="monitor_initial_backfill_count" type="number" min="-1" max="1000" step="1" required disabled aria-describedby="engine-backfill-help">
             <p class="field-help" id="engine-backfill-help">0 = 只看新增，-1 = 尽可能读取全部历史。仅影响抖音新建时选择“跟随全局设置”的监控，已建监控不变。</p>
@@ -253,6 +260,7 @@
             <div class="form-field"><label for="engine-bilibili_write_mode">哔哩哔哩写入方式</label><select id="engine-bilibili_write_mode" name="bilibili_write_mode" disabled><option value="hybrid">API 优先，明确失败后浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">影响评论、回复、关注/取关、稿件可见性与私信发送；发布视频和图文动态走创作中心浏览器流程。网络结果不确定时不会重复提交或回退。</p></div>
             <div class="form-field"><label for="engine-instagram_write_mode">Instagram 写入与发布方式</label><select id="engine-instagram_write_mode" name="instagram_write_mode" disabled><option value="hybrid">API 优先，明确失败后浏览器回退（推荐）</option><option value="api">仅 API，不打开浏览器</option><option value="browser">仅浏览器</option></select><p class="field-help">支持 Photo / Reels / Story / Carousel 两阶段 rupload + configure 直连发布、user_breadcrumb 评论与回复、关注/取关及 Direct v2 私信；网络结果不确定时不会重复提交或回退。</p></div>
             <div class="form-field"><label for="engine-twitter_write_mode">Twitter 写入与发布方式</label><select id="engine-twitter_write_mode" name="twitter_write_mode" disabled><option value="browser">独立浏览器环境（推荐 · 原生生成 x-client-transaction-id）</option></select><p class="field-help">支持纯文本、最多 4 图或单视频/GIF 推文发布、回复权限控制、首评自回复串推、点赞、转推/引用、关注/取关与私信发送；网络结果不确定时不会重复提交。</p></div>
+            <div class="form-field"><label for="engine-facebook_write_mode">Facebook 写入与发布方式</label><select id="engine-facebook_write_mode" name="facebook_write_mode" disabled><option value="browser">独立浏览器环境（推荐 · 原生 GraphQL + i_user 主页切换）</option></select><p class="field-help">支持个人动态、公共主页（Profile+）、群组与 Story 发布（纯文本、最多 20 图或单视频）、首评追加、7 种表情回应、分享、加群/退群、关注/加好友与 Messenger 私信；网络结果不确定时不会重复提交。</p></div>
             <div class="form-field"><label class="switch-row" for="engine-comment_browser_headed"><input id="engine-comment_browser_headed" name="comment_browser_headed" type="checkbox" disabled><span class="switch-copy"><b>评论操作显示浏览器窗口</b><span>推荐开启，遇到登录或验证时可以直接处理；关闭后在后台运行。</span></span></label></div>
             <div class="form-field"><label class="switch-row" for="engine-xhs_comment_review_before_publish"><input id="engine-xhs_comment_review_before_publish" name="xhs_comment_review_before_publish" type="checkbox" disabled><span class="switch-copy"><b>小红书评论先审核</b><span>推荐开启。关闭后，新生成的评论可能直接进入发送队列。</span></span></label></div>
           </div>

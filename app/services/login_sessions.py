@@ -54,6 +54,7 @@ def _login_scope_label(platform: str, creator: bool) -> str:
         "bilibili": "哔哩哔哩",
         "instagram": "Instagram",
         "twitter": "Twitter",
+        "facebook": "Facebook",
         "douyin": "抖音",
     }.get(platform, platform or "平台")
     return f"{label}创作者" if creator else label
@@ -147,7 +148,7 @@ class _OpenBrowserLease:
                     account.creator_storage_state = state_json
                 else:
                     account.storage_state = state_json
-                    if account.platform in {"kuaishou", "shipinhao", "bilibili", "instagram", "twitter"}:
+                    if account.platform in {"kuaishou", "shipinhao", "bilibili", "instagram", "twitter", "facebook"}:
                         account.creator_storage_state = state_json
                 account.last_keepalive_at = now_utc
                 account.last_cookie_refresh_at = now_utc

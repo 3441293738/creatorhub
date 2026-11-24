@@ -112,6 +112,8 @@ class TargetScanMixin:
             return await self._scan_instagram_target_locked(target_id)
         if platform == "twitter":
             return await self._scan_twitter_target_locked(target_id)
+        if platform == "facebook":
+            return await self._scan_facebook_target_locked(target_id)
         with get_session() as s:
             target = s.get(MonitorTarget, target_id)
             if not target:

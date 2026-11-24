@@ -38,7 +38,7 @@ function browserChoiceOptions(catalog, { localOnly = false } = {}) {
 }
 // 新账号尚未落库，扫码前先确定浏览器内核；成功后该选择随账号持久化。
 function isDomesticPlatform(pf) {
-  return !["tiktok", "rednote", "instagram", "twitter"].includes(pf || "douyin");
+  return !["tiktok", "rednote", "instagram", "twitter", "facebook"].includes(pf || "douyin");
 }
 function isMainlandGeoClient(country, region, city) {
   const c = String(country || "").trim().toUpperCase();
@@ -1103,6 +1103,21 @@ async function startTwitterLogin() {
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("Twitter 登录启动失败:" + e.message, "err"); }
 }
 
+// ─── Facebook 独立浏览器登录（含个人号与公共主页 Profile+ 会话） ───
+async function startFacebookLogin() {
+  const session = await preparePreLoginEnvironment({ platform: "facebook" });
+  if (!session) return;
+  const { browserBackend, proxy, fingerprint } = session;
+  $("cookiebox").style.display = "none";
+  $("qrbox").style.display = "block";
+  $("qrstatus").textContent = "正在打开 Facebook 登录窗口…";
+  try {
+    const res = await api(loginStartUrl("/api/login/facebook/start", proxy, browserBackend), loginStartOptions(fingerprint));
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>Facebook 窗口已打开</b>，请在该窗口完成账号登录及安全验证/2FA。<br>登录成功后会自动同步 <code>c_user</code> 与 <code>xs</code>，支持采集、公共主页/群组发布、多表情互动与 Messenger 私信。`;
+    pollLogin(res.task_id);
+  } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("Facebook 登录启动失败:" + e.message, "err"); }
+}
+
 // ─── Cookie 登录 ───
 function toggleCookie() {
   $("qrbox").style.display = "none";
@@ -1120,7 +1135,7 @@ async function saveCookie() {
     });
     $("ck-val").value = ""; $("cookiebox").style.display = "none";
     if (res && res.warning) toast(`账号已保存(${res.nickname || ""})，但状态异常：${res.warning}`, "err");
-    else toast(PLATFORM === "twitter" && res && res.nickname ? `Token / Cookie 已导入：${res.nickname}` : "Cookie 已保存", "ok");
+    else toast((PLATFORM === "twitter" || PLATFORM === "facebook") && res && res.nickname ? `Cookie 已导入：${res.nickname}` : "Cookie 已保存", "ok");
     if (res && res.proxy_warning) setTimeout(() => toast("⚠️ " + res.proxy_warning, "info", 6500), 300);
     refreshAccounts();
   } catch (e) { toast("保存失败:" + e.message, "err"); }

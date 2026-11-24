@@ -4,6 +4,12 @@
 
 ## [未发布]
 
+### Facebook 平台完整接入（第十大平台）
+
+- **账号登录与安全防护**：支持 Facebook 独立隔离浏览器登录及 Cookie（`c_user` + `xs`）粘贴导入，自动适配 `www.facebook.com` / `web.facebook.com` 区域跳转与 `.facebook.com` Cookie Jar 保持，支持 `i_user` Cookie 公共主页（Profile+）无损切换与自动恢复；完整识别 `/checkpoint`、`/two_step_verification`、`/disabled`、功能限制弹窗与 Messenger 6 位 PIN 引导，绝不自动绕过验证码。
+- **协议直采引擎、监控与分享下载**：新增 `app/platforms/facebook/` 核心协议包（首屏 SSR 内联 Relay + 流式 `@defer` Reel 多块合并 + 零硬编码 `doc_id` 动态实时学习注册表 `gql_registry.py`）与 `app/browser/facebook_fetcher.py` 隔离浏览器回退及被动学习器，支持 `hybrid`（默认协议优先）/ `api`（纯协议直连）/ `browser` 三模式切换；完整覆盖关键词搜索、个人/公共主页（含 `/reels/`、`/videos/`、`/photos/`、`/posts/` 子标签页识别）、群组与本账号动态采集、作品监控、单帖/Reels 评论协议翻页与评论监控、Comet UFI 点赞/评论/分享精准计数、`/api/fb-media-thumb` 本地持久化封面缓存及 `facebook.com` / `fb.watch` / `fb.me` 链接下载。
+- **多目标发布、互动工具与 Messenger 私信**：支持纯文本、最多 20 图或单视频发布至个人动态、公共主页（Profile+）、Facebook 群组及 Story 快拍，支持可见范围设置与发布后自动首评；新增 `/api/facebook/pages`、`/api/facebook/groups`、`/api/facebook/search`（含公开群组筛选）与 `/api/facebook/interact`（7 种表情赞、分享至动态/群组、关注/主页赞/加好友、带问答加群/退群）；完整打通好友/关注同步、Messenger 收件箱与历史消息同步、私信发送及自动评论/回复规则，并同步升级十平台前端工作台、跨平台矩阵群发、桌面端、README 浅色 / 深色十平台动态架构预览图、使用指南与在线预览。
+
 ## [0.4.0]
 
 ### 全平台指挥概览与汇总预览库

@@ -46,6 +46,7 @@ function populatePubAcc() {
       : PLATFORM === "bilibili" ? "请先完成「哔哩哔哩扫码登录」"
       : PLATFORM === "instagram" ? "请先完成「Instagram 登录」"
       : PLATFORM === "twitter" ? "请先完成「Twitter 登录」"
+      : PLATFORM === "facebook" ? "请先完成「Facebook 登录」"
       : PLATFORM === "rednote" ? "请先完成「海外小红书创作者登录」"
       : "请先完成「小红书创作者登录」");
   sel.innerHTML = accOptions(list, ph);
@@ -60,15 +61,15 @@ let pubFilesDT = new DataTransfer();
 function onPubType() {
   const v = $("pub-type").value, inp = $("pub-files"), lbl = $("pub-files-label");
   if (!inp) return;
-  const ig = PLATFORM === "instagram", tw = PLATFORM === "twitter";
+  const ig = PLATFORM === "instagram", tw = PLATFORM === "twitter", fb = PLATFORM === "facebook";
   if (v === "video") {
     inp.accept = ig ? "video/*,image/*" : "video/*";
     inp.multiple = ig;
-    lbl.textContent = ig ? "选择视频文件（单个 Reels/Story，或多选最多 10 项混合轮播）" : tw ? "选择视频或 GIF（单个，留空可发纯文本推文）" : "选择视频文件(单个)";
+    lbl.textContent = ig ? "选择视频文件（单个 Reels/Story，或多选最多 10 项混合轮播）" : tw ? "选择视频或 GIF（单个，留空可发纯文本推文）" : fb ? "选择视频文件（单个，留空可发纯文本帖子）" : "选择视频文件(单个)";
   } else {
     inp.accept = ig ? "image/*,video/*" : "image/*";
     inp.multiple = true;
-    lbl.textContent = ig ? "选择图片/视频（可多选，最多 10 项轮播）" : tw ? "选择图片（可多选，最多 4 张；留空可发纯文本推文）" : "选择图片(可多选,最多 18 张)";
+    lbl.textContent = ig ? "选择图片/视频（可多选，最多 10 项轮播）" : tw ? "选择图片（可多选，最多 4 张；留空可发纯文本推文）" : fb ? "选择图片（可多选，最多 20 张；留空可发纯文本帖子）" : "选择图片(可多选,最多 18 张)";
   }
   pubFilesClear();
 }
@@ -76,8 +77,8 @@ function pubFilesClear() { pubFilesDT = new DataTransfer(); _pubSync(); }
 function _pubSync() { const inp = $("pub-files"); if (inp) inp.files = pubFilesDT.files; renderPubFiles(); }
 function pubAddFiles(files) {
   const isVideo = $("pub-type").value === "video";
-  const ig = PLATFORM === "instagram", tw = PLATFORM === "twitter";
-  const maxItems = tw ? 4 : ig ? 10 : 18;
+  const ig = PLATFORM === "instagram", tw = PLATFORM === "twitter", fb = PLATFORM === "facebook";
+  const maxItems = tw ? 4 : ig ? 10 : fb ? 20 : 18;
   for (const f of files) {
     if (isVideo && !ig) { pubFilesDT = new DataTransfer(); pubFilesDT.items.add(f); break; }
     if ([...pubFilesDT.files].some(x => x.name === f.name && x.size === f.size)) continue;
@@ -115,9 +116,9 @@ function bindPubFilePicker() {
 }
 let PUB_SUBMITTING = false, PUB_UPLOAD_CACHE = null;
 function publishFormPayload() {
-  const tiktok = PLATFORM === "tiktok", bili = PLATFORM === "bilibili", ig = PLATFORM === "instagram", tw = PLATFORM === "twitter";
+  const tiktok = PLATFORM === "tiktok", bili = PLATFORM === "bilibili", ig = PLATFORM === "instagram", tw = PLATFORM === "twitter", fb = PLATFORM === "facebook";
   const mediaType = $("pub-type").value;
-  let biliOptions, igOptions, twOptions;
+  let biliOptions, igOptions, twOptions, fbOptions;
   if (bili) {
     const copyright = +($("pub-bili-copyright")?.value || 1);
     const source = ($("pub-bili-source")?.value || "").trim();
@@ -145,6 +146,21 @@ function publishFormPayload() {
       first_comment: ($("pub-tw-first-comment")?.value || "").trim(),
     };
   }
+  if (fb) {
+    const targetType = $("pub-fb-target")?.value || "profile";
+    const groupUrl = ($("pub-fb-group-url")?.value || "").trim();
+    const pageId = ($("pub-fb-page-id")?.value || "").trim();
+    if (targetType === "group" && !groupUrl) {
+      throw new Error("发布到 Facebook 群组时请填写目标群组链接或群组 ID");
+    }
+    fbOptions = {
+      target_type: targetType,
+      page_id: pageId,
+      group_url: groupUrl,
+      privacy: $("pub-fb-privacy")?.value || "public",
+      first_comment: ($("pub-fb-first-comment")?.value || "").trim(),
+    };
+  }
   if (ig) {
     igOptions = {
       post_kind: $("pub-ig-kind")?.value || "auto",
@@ -155,22 +171,23 @@ function publishFormPayload() {
     title: $("pub-title").value.trim(), desc: $("pub-desc").value,
     topics: $("pub-topics").value.trim(), scheduled_at: scheduleToApi($("pub-when").value || null),
     location: $("pub-location") ? $("pub-location").value.trim() : "",
-    visibility: bili ? ($("pub-bili-visibility")?.value || "public") : (tiktok ? $("pub-tk-visibility").value : $("pub-visibility") ? $("pub-visibility").value : "public"),
+    visibility: fb ? (($("pub-fb-privacy")?.value || "public") === "only_me" ? "private" : ($("pub-fb-privacy")?.value || "public")) : bili ? ($("pub-bili-visibility")?.value || "public") : (tiktok ? $("pub-tk-visibility").value : $("pub-visibility") ? $("pub-visibility").value : "public"),
     allow_save: $("pub-allowsave") ? $("pub-allowsave").value !== "0" : true,
     allow_comment: bili ? ($("pub-bili-close-reply")?.value !== "1") : ig ? ($("pub-ig-comment")?.value !== "0") : tw ? (($("pub-tw-reply-perm")?.value || "everyone") !== "mentioned") : (tiktok ? $("pub-tk-comment").value !== "0" : true),
     allow_duet: tiktok ? $("pub-tk-duet").value !== "0" : true,
     allow_stitch: tiktok ? $("pub-tk-stitch").value !== "0" : true,
     ...(bili ? { bili_options: biliOptions } : {}),
     ...(ig ? { ig_options: igOptions } : {}),
-    ...(tw ? { tw_options: twOptions } : {}) };
+    ...(tw ? { tw_options: twOptions } : {}),
+    ...(fb ? { fb_options: fbOptions } : {}) };
 }
 async function addPublish() {
   if (PUB_SUBMITTING) return;
   const acc = $("pub-acc").value;
   if (!acc) { toast("请选择" + (PF_NAME[PLATFORM] || "发布") + "账号", "err"); return; }
   const files = Array.from($("pub-files").files);
-  if (!files.length && PLATFORM !== "twitter") { toast("请先选择要发布的文件", "err"); return; }
-  if (!files.length && PLATFORM === "twitter" && !($("pub-title").value.trim() || $("pub-desc").value.trim() || $("pub-topics").value.trim())) { toast("请填写推文文案或选择媒体文件", "err"); return; }
+  if (!files.length && PLATFORM !== "twitter" && PLATFORM !== "facebook") { toast("请先选择要发布的文件", "err"); return; }
+  if (!files.length && (PLATFORM === "twitter" || PLATFORM === "facebook") && !($("pub-title").value.trim() || $("pub-desc").value.trim() || $("pub-topics").value.trim())) { toast(PLATFORM === "facebook" ? "请填写帖子文案或选择媒体文件" : "请填写推文文案或选择媒体文件", "err"); return; }
   let body;
   try { body = publishFormPayload(); }
   catch (e) { $("pub-msg").textContent = e.message; toast(e.message, "err"); return; }
@@ -198,7 +215,7 @@ async function addPublish() {
           Array.from($("pub-files").files).length === files.length &&
           Array.from($("pub-files").files).every((file, index) => file === files[index]); } catch (_) {}
       if (unchanged) {
-        pubFilesClear(); $("pub-title").value = ""; $("pub-desc").value = ""; $("pub-topics").value = ""; $("pub-when").value = ""; if ($("pub-location")) $("pub-location").value = ""; if ($("pub-tw-first-comment")) $("pub-tw-first-comment").value = ""; dtSyncAll();
+        pubFilesClear(); $("pub-title").value = ""; $("pub-desc").value = ""; $("pub-topics").value = ""; $("pub-when").value = ""; if ($("pub-location")) $("pub-location").value = ""; if ($("pub-tw-first-comment")) $("pub-tw-first-comment").value = ""; if ($("pub-fb-first-comment")) $("pub-fb-first-comment").value = ""; dtSyncAll();
         PUB_UPLOAD_CACHE = null;
       }
       $("pub-msg").textContent = body.scheduled_at ? "已加入定时队列 ✓" : "已加入发布队列 ✓";
@@ -240,7 +257,7 @@ async function editPublish(id) {
         },
       } : {}),
     });
-    const editCap = task.platform === "twitter" ? (task.tw_options?.long_text ? 4000 : 280) : task.platform === "instagram" ? 2200 : task.platform === "bilibili" ? 80 : task.platform === "rednote" ? 40 : task.platform === "douyin" ? 30 : task.platform === "shipinhao" ? 16 : 20;
+    const editCap = task.platform === "facebook" ? 5000 : task.platform === "twitter" ? (task.tw_options?.long_text ? 4000 : 280) : task.platform === "instagram" ? 2200 : task.platform === "bilibili" ? 80 : task.platform === "rednote" ? 40 : task.platform === "douyin" ? 30 : task.platform === "shipinhao" ? 16 : 20;
     const showVisOpts = ["douyin", "xhs", "rednote", "kuaishou"].includes(task.platform);
     $("ui-body").innerHTML = `
       <div><label class="field" for="ep-account">发布账号</label>
@@ -322,7 +339,7 @@ async function refreshPublish() {
     return `<tr>
     <td class="wrap" style="max-width:240px"><b>${esc(t.title || "(无标题)")}</b></td>
     <td>${pfBadge}${esc(pubAcc)}</td>
-    <td>${t.platform === "twitter" && !(t.media_count || 0) ? "纯文本" : `${t.media_type === "video" ? "视频" : "图文"} · <span class="mut num">${t.media_count || 0}</span>`}</td>
+    <td>${(t.platform === "twitter" || t.platform === "facebook") && !(t.media_count || 0) ? "纯文本" : `${t.media_type === "video" ? "视频" : "图文"} · <span class="mut num">${t.media_count || 0}</span>`}</td>
     <td>${t.source_platform ? esc(PF_NAME[t.source_platform] || t.source_platform) + " 转发" : "手动"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>
     <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ((["kuaishou", "shipinhao", "tiktok"].includes(t.platform) || (t.platform === "bilibili" && String(t.result_url).includes("member.bilibili.com"))) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeHttpUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}${t.status === "publishing" ? `<div class="mut" id="pub-stage-${t.id}" style="margin-top:4px;white-space:normal;max-width:200px">${esc(t.live_stage || "执行中，请等待结果")}</div>` : ""}</td>
@@ -338,6 +355,7 @@ async function refreshPublish() {
       : PLATFORM === "bilibili" ? "上传视频稿件或图文动态加入队列(发布到哔哩哔哩创作中心)"
       : PLATFORM === "instagram" ? "上传单图 / 轮播 / Reels / Story 加入队列(发布到 Instagram)"
       : PLATFORM === "twitter" ? "编写纯文本推文，或上传最多 4 图 / 单个视频加入队列(发布到 X / Twitter)"
+      : PLATFORM === "facebook" ? "编写纯文本帖子，或上传最多 20 图 / 单个视频加入队列(发布到 Facebook 主页/公共主页/群组/Story)"
       : "上传图集/视频加入队列,或在抖音作品上点「发小红书」转发过来");
 }
 // 创作平台管理页必须复用账号自己的登录态，不能交给系统浏览器。
@@ -438,6 +456,7 @@ const repostBilibili = (id) => openRepost(id, "bilibili");
 const repostRednote = (id) => openRepost(id, "rednote");
 const repostInstagram = (id) => openRepost(id, "instagram");
 const repostTwitter = (id) => openRepost(id, "twitter");
+const repostFacebook = (id) => openRepost(id, "facebook");
 async function pickRepostTarget(id) {
   const rec = CONTENTS.find(r => r.id === id);
   const options = [
@@ -449,6 +468,7 @@ async function pickRepostTarget(id) {
     { value: "bilibili", label: "哔哩哔哩" },
     { value: "instagram", label: "Instagram" },
     { value: "twitter", label: "Twitter" },
+    { value: "facebook", label: "Facebook" },
   ];
   if (!rec || rec.media_type === "video") options.push({ value: "tiktok", label: "TikTok" });
   const target = await uiSelect({
@@ -485,6 +505,8 @@ async function openRepost(id, target) {
               : target === "instagram" ? "请先在 Instagram 账号页完成登录"
                 : target === "twitter"
                   ? "请先在 Twitter 账号页完成登录"
+                  : target === "facebook"
+                    ? "请先在 Facebook 账号页完成登录"
                 : "请先在抖音账号页完成登录(扫码/创作者/Cookie)";
     toast(loginHint, "err");
     return;
@@ -498,8 +520,9 @@ async function openRepost(id, target) {
   const isRn = target === "rednote";
   const isIg = target === "instagram";
   const isTw = target === "twitter";
-  const cap = isTw ? 280 : isIg ? 2200 : isBili ? 80 : isRn ? 40 : isDy ? 30 : isChannels ? 16 : 20;
-  const pname = isDy ? "抖音" : isChannels ? "视频号" : isKs ? "快手" : isTk ? "TikTok" : isBili ? "哔哩哔哩" : isIg ? "Instagram" : isTw ? "Twitter" : isRn ? "海外小红书" : "小红书";
+  const isFb = target === "facebook";
+  const cap = isFb ? 5000 : isTw ? 280 : isIg ? 2200 : isBili ? 80 : isRn ? 40 : isDy ? 30 : isChannels ? 16 : 20;
+  const pname = isDy ? "抖音" : isChannels ? "视频号" : isKs ? "快手" : isTk ? "TikTok" : isBili ? "哔哩哔哩" : isIg ? "Instagram" : isTw ? "Twitter" : isFb ? "Facebook" : isRn ? "海外小红书" : "小红书";
   $("rp-head").textContent = "发" + pname + " · 编辑后推送";
   $("rp-title-label").textContent = `标题(≤${cap} 字)`;
   $("rp-title").maxLength = cap;
@@ -639,6 +662,7 @@ async function submitRepost() {
     : REPOST_TARGET === "bilibili" ? "哔哩哔哩"
     : REPOST_TARGET === "instagram" ? "Instagram"
     : REPOST_TARGET === "twitter" ? "Twitter"
+    : REPOST_TARGET === "facebook" ? "Facebook"
     : REPOST_TARGET === "rednote" ? "海外小红书" : "小红书";
   try {
     body.scheduled_at = scheduleToApi(body.scheduled_at);

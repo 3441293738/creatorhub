@@ -242,6 +242,7 @@ def update_health_check() -> int:
             from app.platforms.rednote import RednoteApiClient, publish_rednote_browser
             from app.platforms.instagram import InstagramClient, publish_instagram
             from app.platforms.twitter import TwitterClient, publish_twitter
+            from app.platforms.facebook import FacebookClient, publish_facebook
             from app.platforms.channels import open_or_focus_wechat
             from app.platforms.channels.local_ca import LocalCaManager
             from app.browser.human_interaction import HumanInteractionEngine
@@ -260,6 +261,7 @@ def update_health_check() -> int:
             assert app and LocalCaManager and open_or_focus_wechat and BilibiliClient and receive_bili_broadcast and publish_bilibili and RednoteApiClient and publish_rednote_browser
             assert InstagramClient and publish_instagram
             assert TwitterClient and publish_twitter
+            assert FacebookClient and publish_facebook
             assert HumanInteractionEngine and thumb_cache
             assert configure_logging and read_log_tail and build_diagnostic_summary and build_diagnostic_zip and api_diagnostics and api_matrix
             assert websockets.asyncio.client and Controller and ShellServer and webview

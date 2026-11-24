@@ -2097,6 +2097,7 @@ _COOKIE_DOMAIN = {
     "bilibili": ".bilibili.com",
     "instagram": ".instagram.com",
     "twitter": ".x.com",
+    "facebook": ".facebook.com",
 }
 
 
@@ -2110,6 +2111,14 @@ def cookie_string_to_state(cookie_str: str, platform: str = "douyin") -> str:
         tw_cookies, _ = parse_twitter_credential_input(cookie_str)
         if tw_cookies:
             return build_twitter_storage_state(tw_cookies)
+    if platform == "facebook":
+        from ..platforms.facebook.protocol import (
+            build_facebook_storage_state,
+            parse_facebook_credential_input,
+        )
+        fb_cookies, _ = parse_facebook_credential_input(cookie_str)
+        if fb_cookies:
+            return build_facebook_storage_state(fb_cookies)
     domains = (
         [".x.com", ".twitter.com"]
         if platform == "twitter"

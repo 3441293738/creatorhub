@@ -26,7 +26,8 @@ _PLATFORM_HOST = {"douyin": "douyin.com", "xhs": "xiaohongshu.com",
                   "rednote": "rednote.com",
                   "kuaishou": "kuaishou.com", "shipinhao": "weixin.qq.com",
                   "tiktok": "tiktok.com", "bilibili": "bilibili.com",
-                  "instagram": "instagram.com", "twitter": "x.com"}
+                  "instagram": "instagram.com", "twitter": "x.com",
+                  "facebook": "facebook.com"}
 
 
 _XHS_USER_ME_API = "/api/sns/web/v2/user/me"
@@ -45,6 +46,11 @@ def _platform_url_allowed(platform: str, value: str) -> bool:
         return any(
             host == d or host.endswith("." + d)
             for d in ("x.com", "twitter.com")
+        )
+    if platform == "facebook":
+        return any(
+            host == d or host.endswith("." + d)
+            for d in ("facebook.com", "fb.watch", "fb.me", "fb.com")
         )
     return bool(host == expected or host.endswith("." + expected))
 
@@ -117,6 +123,19 @@ async def _opened_page_login_state(page, platform: str,
         try:
             cookies = await page.context.cookies(["https://x.com", "https://twitter.com"])
             if any(c.get("name") == "auth_token" and c.get("value") for c in cookies):
+                return "authenticated"
+        except Exception:
+            pass
+        return "unconfirmed"
+    if platform == "facebook":
+        if any(k in current_url for k in ("/checkpoint", "/two_step_verification", "/disabled", "/suspended")):
+            return "verification"
+        if "/login" in current_url and "checkpoint" not in current_url:
+            return "logged_out"
+        try:
+            cookies = await page.context.cookies(["https://www.facebook.com", "https://web.facebook.com"])
+            names = {c.get("name"): c.get("value") for c in cookies if c.get("value")}
+            if names.get("c_user") and names.get("xs"):
                 return "authenticated"
         except Exception:
             pass
@@ -213,6 +232,7 @@ async def open_account_browser(
             "bilibili": "https://www.bilibili.com/",
             "instagram": "https://www.instagram.com/",
             "twitter": "https://x.com/home",
+            "facebook": "https://www.facebook.com/",
             "shipinhao": "https://channels.weixin.qq.com/platform"}.get(
                 platform, "https://www.douyin.com/")
     # 传了 url 且属于本平台域名 -> 停在该地址(否则回首页,防被当跳转开任意站)

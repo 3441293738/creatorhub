@@ -54,6 +54,7 @@ _PROFILE_URL = {
     "bilibili": "https://space.bilibili.com/{uid}",
     "instagram": "https://www.instagram.com/{sec}/",
     "twitter": "https://x.com/{sec}",
+    "facebook": "https://www.facebook.com/{sec}",
 }
 
 
@@ -184,6 +185,11 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
         return await do_twitter_follow(
             mgr, identity, target_sec_uid or target_uid, unfollow=unfollow
         )
+    if platform == "facebook":
+        from app.browser.facebook_actions import do_facebook_follow
+        return await do_facebook_follow(
+            mgr, identity, target_sec_uid or target_uid, unfollow=unfollow
+        )
     if platform == "instagram":
         from app.platforms.instagram import InstagramClient
         cookie_s = await _ig_cookie_str(mgr, identity)
@@ -300,6 +306,7 @@ _DM_ENTRY_URL = {
     "bilibili": "https://message.bilibili.com/#/whisper/mid{uid}",
     "instagram": "https://www.instagram.com/direct/inbox/",
     "twitter": "https://x.com/messages",
+    "facebook": "https://www.facebook.com/messages/t/",
 }
 
 
@@ -363,6 +370,11 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
     if platform == "twitter":
         from app.browser.twitter_actions import send_twitter_dm
         return await send_twitter_dm(
+            mgr, identity, target_sec_uid or target_uid, text, on_submit=on_submit
+        )
+    if platform == "facebook":
+        from app.browser.facebook_actions import send_facebook_dm
+        return await send_facebook_dm(
             mgr, identity, target_sec_uid or target_uid, text, on_submit=on_submit
         )
     url = _DM_ENTRY_URL.get(platform, _DM_ENTRY_URL["douyin"]).format(

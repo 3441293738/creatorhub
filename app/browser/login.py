@@ -20,6 +20,8 @@ from app.browser.login_platforms import (
     interactive_tiktok_login,
     interactive_twitter_creator_login,
     interactive_twitter_login,
+    interactive_facebook_creator_login,
+    interactive_facebook_login,
 )
 from app.browser.login_rednote import (
     RednoteSecurityVerificationRequired,
@@ -27,4 +29,4 @@ from app.browser.login_rednote import (
     interactive_rednote_login,
 )
 
-__all__ = ['RednoteSecurityVerificationRequired', 'XhsSecurityVerificationRequired', 'interactive_bilibili_creator_login', 'interactive_bilibili_login', 'interactive_channels_creator_login', 'interactive_channels_login', 'interactive_creator_login', 'interactive_instagram_creator_login', 'interactive_instagram_login', 'interactive_ks_creator_login', 'interactive_ks_login', 'interactive_login', 'interactive_rednote_creator_login', 'interactive_rednote_login', 'interactive_tiktok_login', 'interactive_twitter_creator_login', 'interactive_twitter_login', 'interactive_xhs_creator_login', 'interactive_xhs_login']
+__all__ = ['RednoteSecurityVerificationRequired', 'XhsSecurityVerificationRequired', 'interactive_bilibili_creator_login', 'interactive_bilibili_login', 'interactive_channels_creator_login', 'interactive_channels_login', 'interactive_creator_login', 'interactive_facebook_creator_login', 'interactive_facebook_login', 'interactive_instagram_creator_login', 'interactive_instagram_login', 'interactive_ks_creator_login', 'interactive_ks_login', 'interactive_login', 'interactive_rednote_creator_login', 'interactive_rednote_login', 'interactive_tiktok_login', 'interactive_twitter_creator_login', 'interactive_twitter_login', 'interactive_xhs_creator_login', 'interactive_xhs_login']

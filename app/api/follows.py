@@ -1,7 +1,7 @@
 """账号关注/粉丝列表查询与后台异步关注同步任务接口。"""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 import logging
 import uuid
@@ -13,7 +13,7 @@ from sqlmodel import select
 from app import runtime as app_runtime
 from app.browser import fetch_follows
 from app.db import get_session
-from app.models import DouyinAccount, FollowEdge
+from app.models import AccountStatSnapshot, AccountWork, DouyinAccount, FollowEdge
 from app.platforms.bilibili import BilibiliClient
 from app.platforms.instagram import InstagramClient
 from app.risk import OperationKind
@@ -81,7 +81,7 @@ async def get_follow(edge_id: int, account_id: int):
 
 def _replace_follow_snapshot(account_id: int, platform: str, direction: str,
                              users: list[dict], now: datetime,
-                             progress=None) -> tuple[int, int]:
+                             progress=None, capped: bool = False) -> tuple[int, int]:
     incoming: dict[str, dict] = {}
     for user in users:
         uid = str(user.get("uid") or "")
@@ -117,6 +117,30 @@ def _replace_follow_snapshot(account_id: int, platform: str, direction: str,
                 if progress is not None:
                     progress({"phase": "saving", "saved": index,
                               "fetched": total})
+        acc_row = s.get(DouyinAccount, account_id)
+        if acc_row is not None:
+            if direction == "fan":
+                if (platform == "facebook" and not capped) or not acc_row.follower_count or acc_row.follower_count < total:
+                    acc_row.follower_count = total
+                    s.add(acc_row)
+            elif direction == "following":
+                if (platform == "facebook" and not capped) or not acc_row.following_count or acc_row.following_count < total:
+                    acc_row.following_count = total
+                    s.add(acc_row)
+            if direction == "fan":
+                day = (now + timedelta(hours=8)).strftime("%Y-%m-%d")
+                snap = s.exec(select(AccountStatSnapshot).where(
+                    AccountStatSnapshot.account_id == account_id,
+                    AccountStatSnapshot.date == day,
+                )).first()
+                if not snap:
+                    snap = AccountStatSnapshot(platform=platform, account_id=account_id, date=day)
+                works_cnt = len(s.exec(
+                    select(AccountWork.id).where(AccountWork.account_id == account_id)
+                ).all())
+                snap.follower_count = int(acc_row.follower_count or 0) or snap.follower_count
+                snap.aweme_count = max(int(acc_row.aweme_count or 0), works_cnt, int(snap.aweme_count or 0))
+                s.add(snap)
         s.commit()
     return sum(1 for uid in incoming if uid not in known), total
 
@@ -341,7 +365,7 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
     report(phase="saving", fetched=len(users), saved=0)
     added, stored = await asyncio.to_thread(
         _replace_follow_snapshot, account_id, platform, direction,
-        users, now, progress)
+        users, now, progress, capped)
     return {"ok": True, "fetched": len(users), "stored": stored,
             "added": added, "complete": True, "capped": capped,
             "source": source,

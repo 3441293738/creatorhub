@@ -30,7 +30,7 @@ function filterShareAccounts() {
   const old = sel.value;
   const platform = shareAccountPlatform();
   const hasDetectedLink = !!SHARE_LINKS.length;
-  const knownAccountPlatform = ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(platform);
+  const knownAccountPlatform = ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(platform);
   const rows = knownAccountPlatform
     ? SHARE_ACCOUNTS.filter(a => a.platform === platform)
     : [];
@@ -227,7 +227,7 @@ function populateShareHistoryFacets() {
   if (!select) return;
   const old = select.value;
   const platforms = [...new Set(SHARE_HISTORY.map(shareHistoryPlatform).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
-  const sharePf = { wechat: "视频号", channels: "视频号", youtube: "YouTube", weibo: "微博", twitter: "X", x: "X", generic: "通用站点" };
+  const sharePf = { wechat: "视频号", channels: "视频号", youtube: "YouTube", weibo: "微博", twitter: "X", x: "X", facebook: "Facebook", generic: "通用站点" };
   select.innerHTML = `<option value="">全部平台</option>` + platforms.map(platform =>
     `<option value="${esc(platform)}">${esc(PF_NAME[platform] || sharePf[platform] || platform)}</option>`).join("");
   select.value = platforms.includes(old) ? old : "";
@@ -258,7 +258,7 @@ function shareHistoryRow(row) {
   const typeName = type === "images" ? "图文" : type === "video" ? "视频" : (row.media_type || "媒体");
   const status = shareHistoryStatus(row);
   const platform = shareHistoryPlatform(row);
-  const sharePf = { wechat: "视频号", channels: "视频号", youtube: "YouTube", weibo: "微博", twitter: "X", x: "X", generic: "通用站点" };
+  const sharePf = { wechat: "视频号", channels: "视频号", youtube: "YouTube", weibo: "微博", twitter: "X", x: "X", facebook: "Facebook", generic: "通用站点" };
   const platformName = PF_NAME[platform] || sharePf[platform] || platform || "通用站点";
   const cover = row.cover_url || metadata.thumbnail || "";
   const title = shareHistoryTitle(row);

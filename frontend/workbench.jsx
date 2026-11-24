@@ -39,7 +39,7 @@ const composerSpecs = {
 };
 const composerTitle = (key, platform) => key === "collections"
   ? platform === "shipinhao" ? "新建视频号作品采集"
-    : `新建${({ douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram", twitter: "Twitter" })[platform] || "平台"}关键词采集`
+    : `新建${({ douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram", twitter: "Twitter", facebook: "Facebook" })[platform] || "平台"}关键词采集`
   : composerSpecs[key]?.[1] || "新建任务";
 // Notifications previously mixed configuration and saved objects in one card.
 const notificationCard = $("n-name").closest(".card");

@@ -373,7 +373,7 @@ export function HubMatrixDashboard({ ctx }) {
               {analytics.works.items.map(w => {
                 const pf = PF_MAP[w.platform] || { short: w.platform, color: "#64748b" };
                 const ext = platformExternalWorkUrl(w.platform, w.item_id);
-                const isTextPost = w.platform === "twitter" && !w.cover_url && w.media_type !== "video";
+                const isTextPost = (w.platform === "twitter" || w.platform === "facebook") && !w.cover_url && w.media_type !== "video";
                 const kindLabel = isTextPost ? "纯文本" : (w.media_type === "images" ? "图文" : "视频");
                 return (
                   <article key={w.id} className="mx-gcard">

@@ -7,13 +7,14 @@ import random
 
 from sqlmodel import select
 
-from app.browser import fetch_rednote_note_detail, fetch_twitter_tweet_detail, fetch_xhs_note_detail
+from app.browser import fetch_facebook_post_detail, fetch_rednote_note_detail, fetch_twitter_tweet_detail, fetch_xhs_note_detail
 from app.db import get_session
 from app.engine.monitor_helpers import MAX_AUTO_RETRY, _loads, _loads_list, _tiktok_download_session, log
 from app.models import ContentRecord, DouyinAccount, MonitorTarget, NotificationChannel
 from app.notifier import notify_all
 from app.platforms.bilibili import BilibiliClient, cookie_map_from_state as bili_cookie_map
 from app.platforms.douyin.extract import Aweme, MediaItem
+from app.platforms.facebook import FacebookClient, parse_facebook_aweme, post_url as fb_post_url
 from app.platforms.instagram import InstagramClient
 from app.platforms.rednote import parse_rednote_detail
 from app.platforms.tiktok.urls import profile_url as tiktok_profile_url, video_url as tiktok_video_url
@@ -165,10 +166,56 @@ class MediaDownloadMixin:
                 not media_json or not aw.medias)
             needs_tw_refetch = platform == "twitter" and (
                 not media_json or not aw.medias)
+            needs_fb_refetch = platform == "facebook" and (
+                not media_json or not aw.medias)
             rec.download_status = "downloading"
-            if not needs_xhs_refetch and not needs_bili_refetch and not needs_ig_refetch and not needs_tw_refetch:
+            if not needs_xhs_refetch and not needs_bili_refetch and not needs_ig_refetch and not needs_tw_refetch and not needs_fb_refetch:
                 rec.retry_count = (rec.retry_count or 0) + 1
             s.add(rec); s.commit()
+
+        if platform == "facebook" and (not media_json or not aw.medias):
+            async def _refetch_fb():
+                target_u = aw.source_url or (note_id if str(note_id).startswith("http") else fb_post_url(note_id))
+                fcli = FacebookClient(
+                    acc_state,
+                    (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
+                    proxy=acc_proxy,
+                    timeout=self.cfg.engine.request_timeout_seconds,
+                )
+                async with fcli.session_scope():
+                    aw_f, err_f = await fcli.fetch_post_detail(target_u)
+                if (aw_f is None or not aw_f.medias) and identity is not None:
+                    raw_node, b_err = await fetch_facebook_post_detail(self.browser, identity, target_u)
+                    if raw_node:
+                        aw_f = parse_facebook_aweme(raw_node)
+                    err_f = err_f or b_err
+                return aw_f, err_f or ""
+
+            if account_id:
+                aw2, _fb_err = await self.guarded_read_pair(
+                    account_id, OperationKind.READ_HEAVY,
+                    f"retry-download:{record_id}", _refetch_fb,
+                    empty_result=None,
+                )
+            else:
+                aw2, _fb_err = await _refetch_fb()
+            if aw2 and aw2.medias:
+                aw = aw2
+                media_json = json.dumps([
+                    {
+                        "url": m.url,
+                        "kind": m.kind,
+                        "ext": m.ext,
+                        "index": m.index,
+                    }
+                    for m in aw.medias
+                ])
+                with get_session() as s:
+                    rec = s.get(ContentRecord, record_id)
+                    if rec:
+                        rec.retry_count = (rec.retry_count or 0) + 1
+                        rec.media_json = media_json
+                        s.add(rec); s.commit()
 
         if platform == "twitter" and (not media_json or not aw.medias):
             async def _refetch_tw():
@@ -491,6 +538,9 @@ class MediaDownloadMixin:
         elif platform == "twitter":
             download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
             download_referer = "https://x.com/"
+        elif platform == "facebook":
+            download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
+            download_referer = "https://www.facebook.com/"
         ok, path, err = await self.downloader.download_aweme(
             aw, base_dir, self._dl_proxy(acc_proxy), user_agent=download_ua,
             cookies=download_cookies, referer=download_referer)

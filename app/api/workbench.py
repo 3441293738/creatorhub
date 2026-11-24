@@ -18,7 +18,7 @@ router = APIRouter()
 
 @router.get("/api/overview/summary")
 async def overview_summary(platform: str = "douyin"):
-    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"}:
+    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"}:
         raise HTTPException(422, "平台类型无效")
     with get_session() as session:
         def count(model, *conditions):
@@ -39,9 +39,10 @@ async def hub_summary(account_id: int):
     with get_session() as s:
         def _n(q):
             return len(s.exec(q).all())
+        works_cnt = _n(select(AccountWork.id)
+                       .where(AccountWork.account_id == account_id))
         return {
-            "works": _n(select(AccountWork.id)
-                        .where(AccountWork.account_id == account_id)),
+            "works": works_cnt,
             "following": _n(select(FollowEdge.id)
                             .where(FollowEdge.account_id == account_id,
                                    FollowEdge.direction == "following")),
@@ -50,6 +51,7 @@ async def hub_summary(account_id: int):
                               FollowEdge.direction == "fan")),
             "dm": _n(select(DmConversation.id)
                      .where(DmConversation.account_id == account_id)),
+            "stats": works_cnt,
         }
 
 

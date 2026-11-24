@@ -13,6 +13,7 @@ from app.engine.cadence import row_deadline
 from app.models import CommentRule, CommentTask, DouyinAccount
 from app.platforms.bilibili import resolve_bili_mid, resolve_bili_work
 from app.platforms.douyin import resolve_aweme_id, resolve_sec_uid
+from app.platforms.facebook import looks_like_facebook_post, resolve_facebook_post_ref, resolve_facebook_short_url, resolve_facebook_user_target
 from app.platforms.instagram import looks_like_ig_work, resolve_ig_user_target, resolve_ig_work_ref
 from app.platforms.kuaishou import resolve_ks_photo_id, resolve_ks_user_id
 from app.platforms.twitter import looks_like_twitter_tweet, resolve_twitter_short_url, resolve_twitter_tweet_ref, resolve_twitter_user_target
@@ -133,6 +134,18 @@ async def _resolve_rule_target(
                 sec_uid = resolve_twitter_user_target(expanded_tw)
                 if not sec_uid:
                     raise HTTPException(400, "无法解析 Twitter 创作者(@username / x.com/<username> / 数字 UID)")
+            elif platform == "facebook":
+                expanded_fb = await metadata_service._call_resolver(
+                    resolve_facebook_short_url,
+                    target,
+                    user_agent=app_runtime.cfg.engine.user_agent,
+                    proxy=eff_proxy,
+                )
+                if looks_like_facebook_post(expanded_fb):
+                    raise HTTPException(400, "创作者模式请填写 Facebook 个人主页、公共主页或群组链接，不要填写单条帖子链接")
+                sec_uid = resolve_facebook_user_target(expanded_fb)
+                if not sec_uid:
+                    raise HTTPException(400, "无法解析 Facebook 目标(主页/公共主页/群组链接、用户名或数字 ID)")
             else:
                 sec_uid = await metadata_service._call_resolver(
                     resolve_sec_uid, target, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
@@ -177,6 +190,17 @@ async def _resolve_rule_target(
                 aweme_id = tref.tweet_id if tref else ""
                 if not aweme_id:
                     raise HTTPException(400, "无法解析 Twitter 推文(x.com/<user>/status/<id> 链接、t.co 短链或数字推文 ID)")
+            elif platform == "facebook":
+                expanded_fb = await metadata_service._call_resolver(
+                    resolve_facebook_short_url,
+                    target,
+                    user_agent=app_runtime.cfg.engine.user_agent,
+                    proxy=eff_proxy,
+                )
+                fref = resolve_facebook_post_ref(expanded_fb)
+                aweme_id = fref.canonical_url or fref.post_id if fref else ""
+                if not aweme_id:
+                    raise HTTPException(400, "无法解析 Facebook 帖子(帖子/Reel/Watch 链接、fb.watch 短链或帖子 ID)")
             else:
                 aweme_id = await metadata_service._call_resolver(
                     resolve_aweme_id, target, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
@@ -203,12 +227,12 @@ async def add_comment_rule(body: CommentRuleIn, request: Request = None):
         previous = replay_if_exists(s, request=request, scope="comment-rule", body=body)
         if previous is not None:
             return previous
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "bilibili", "instagram", "twitter") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "bilibili", "instagram", "twitter", "facebook") else "douyin"
     mode = body.mode if body.mode in ("auto_reply", "auto_comment") else "auto_reply"
     templates = [t.strip() for t in body.templates if t.strip()]
     if not templates:
         raise HTTPException(400, "请至少配置一条文案模板(AI 生成失败时回退用)")
-    _pn = {"xhs": "小红书", "kuaishou": "快手", "bilibili": "哔哩哔哩", "instagram": "Instagram", "twitter": "Twitter"}.get(platform, "抖音")
+    _pn = {"xhs": "小红书", "kuaishou": "快手", "bilibili": "哔哩哔哩", "instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook"}.get(platform, "抖音")
     with get_session() as s:
         acc = s.get(DouyinAccount, body.account_id)
         if not acc or acc.platform != platform:
@@ -426,7 +450,7 @@ class CommentBatchApproveIn(BaseModel):
 @router.post("/api/comment-tasks/batch-approve")
 async def batch_approve_comment_tasks(body: CommentBatchApproveIn):
     """Only approve an explicit, scope-checked selection, atomically."""
-    if body.platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"}:
+    if body.platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"}:
         raise HTTPException(422, "平台类型无效")
     ids = list(dict.fromkeys(body.ids))
     if not ids or any(value <= 0 for value in ids):

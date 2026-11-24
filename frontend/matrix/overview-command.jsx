@@ -176,7 +176,7 @@ export function MatrixOverviewCommand({ ctx }) {
           )}
           <button type="button" className="ghost sm mx-fold-toggle" onClick={toggleIdle}>
             <Icon name={hideIdlePlatforms ? "eye" : "eye-off"} />
-            <span>{hideIdlePlatforms ? "显示全部 9 平台" : "收纳空置平台"}</span>
+            <span>{hideIdlePlatforms ? "显示全部 10 平台" : "收纳空置平台"}</span>
           </button>
         </div>
         <div className="mx-ov-quick-btns">
@@ -349,7 +349,7 @@ export function MatrixOverviewCommand({ ctx }) {
                         <div className="mx-mini-ph"><Icon name={item.media_type === "images" ? "image" : "play"} /></div>
                       )}
                       <span className="mx-mini-pf" style={{ "--pf-c": pf.color }}>{pf.short}</span>
-                      <span className="mx-mini-kind">{item.platform === "twitter" && !item.cover_url && !item.local_ready && item.media_type !== "video" ? "纯文本" : (item.media_type === "images" ? "图文" : "视频")}</span>
+                      <span className="mx-mini-kind">{(item.platform === "twitter" || item.platform === "facebook") && !item.cover_url && !item.local_ready && item.media_type !== "video" ? "纯文本" : (item.media_type === "images" ? "图文" : "视频")}</span>
                       {item.local_ready && <span className="mx-mini-local" title="已下载到本地">本地</span>}
                     </div>
                     <div className="mx-mini-body">

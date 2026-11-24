@@ -370,3 +370,27 @@ async def _twitter_cookie_str(mgr: BrowserManager, identity) -> str:
         if not fallback:
             fallback = s
     return fallback
+
+
+async def _facebook_cookie_str(mgr: BrowserManager, identity) -> str:
+    """从账号专属 context 或 bridge_states/storage_state 提取 facebook.com 完整 Cookie 串。"""
+    from app.platforms.facebook import cookie_str_from_state
+    try:
+        ctx = await mgr.context_for(identity)
+        cks = await ctx.cookies(["https://www.facebook.com", "https://web.facebook.com", "https://m.facebook.com"])
+        if cks:
+            merged = {c["name"]: c["value"] for c in cks if c.get("name")}
+            if merged.get("c_user") and merged.get("xs"):
+                return "; ".join(f"{k}={v}" for k, v in merged.items())
+    except Exception:
+        pass
+    fallback = ""
+    for raw in _iter_identity_states(identity):
+        s = cookie_str_from_state(raw)
+        if not s:
+            continue
+        if "c_user=" in s and "xs=" in s:
+            return s
+        if not fallback:
+            fallback = s
+    return fallback

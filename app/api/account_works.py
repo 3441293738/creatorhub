@@ -1,7 +1,7 @@
 """本账号作品同步、作品级评论/弹幕同步、统计快照及海外小红书作品管理接口。"""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 import logging
 
@@ -12,9 +12,10 @@ from sqlmodel import select
 from app import runtime as app_runtime
 from app.browser import fetch_account_works, fetch_douyin_account_works_api
 from app.db import get_session
-from app.models import AccountStatSnapshot, AccountWork, CommentRecord, DanmakuRecord, DouyinAccount
+from app.models import AccountStatSnapshot, AccountWork, CommentRecord, DanmakuRecord, DouyinAccount, FollowEdge
 from app.platforms.bilibili import BilibiliClient
 from app.platforms.douyin import cookie_from_state as douyin_cookie_from_state
+from app.platforms.facebook import FacebookClient
 from app.platforms.instagram import InstagramClient
 from app.platforms.rednote import delete_rednote_work, update_rednote_visibility
 from app.risk import OperationKind
@@ -66,22 +67,22 @@ async def sync_account_works(account_id: int):
         uid = (
             acc.douyin_id if platform == "tiktok"
             else (acc.douyin_id or acc.sec_uid or acc.uid) if platform == "twitter"
-            else (acc.sec_uid or acc.uid or acc.douyin_id) if platform == "instagram"
+            else (acc.sec_uid or acc.uid or acc.douyin_id) if platform in {"instagram", "facebook"}
             else acc.sec_uid
         ) or ""
         transport = (
             resolve_transport(app_runtime.cfg, platform, "account_works", acc)
-            if platform in {"douyin", "bilibili", "rednote", "instagram", "twitter"}
+            if platform in {"douyin", "bilibili", "rednote", "instagram", "twitter", "facebook"}
             else None
         )
         effective_mode = transport["effective_mode"] if transport else "browser"
         if app_runtime.browser is None and effective_mode in {"browser"}:
             raise HTTPException(503, "浏览器未就绪")
-        if app_runtime.browser is None and effective_mode == "hybrid" and platform not in {"bilibili", "rednote", "instagram"}:
+        if app_runtime.browser is None and effective_mode == "hybrid" and platform not in {"bilibili", "rednote", "instagram", "facebook"}:
             raise HTTPException(503, "浏览器未就绪")
         identity = (
             None
-            if platform in {"douyin", "bilibili", "rednote", "instagram"} and effective_mode == "api"
+            if platform in {"douyin", "bilibili", "rednote", "instagram", "facebook"} and effective_mode == "api"
             else (
                 app_runtime.browser.identity_for(acc)
                 if callable(getattr(app_runtime.browser, "identity_for", None))
@@ -99,6 +100,8 @@ async def sync_account_works(account_id: int):
         ig_proxy = (acc.proxy or "") if platform == "instagram" else ""
         ig_seed = (acc.fp_seed or acc.profile_dir or "") if platform == "instagram" else ""
         ig_tz = (acc.timezone_id or "Asia/Shanghai") if platform == "instagram" else "Asia/Shanghai"
+        fb_state = (acc.storage_state or acc.creator_storage_state or acc.cookie or "") if platform == "facebook" else ""
+        fb_proxy = (acc.proxy or "") if platform == "facebook" else ""
     async def _fetch():
         nonlocal source
         if platform == "douyin" and effective_mode in {"api", "hybrid"}:
@@ -154,6 +157,30 @@ async def sync_account_works(account_id: int):
                 source = "api"
                 return [], ig_err or "empty"
             source = "browser_fallback"
+        elif platform == "facebook" and effective_mode in {"api", "hybrid"} and fb_state:
+            fcli = FacebookClient(
+                fb_state,
+                direct_ua,
+                proxy=fb_proxy,
+                timeout=app_runtime.cfg.engine.request_timeout_seconds,
+            )
+            async with fcli.session_scope():
+                target_u = uid
+                if not target_u:
+                    prof, perr = await fcli.fetch_self_profile()
+                    if perr.startswith(("logged_out", "verification_required")):
+                        source = "api"
+                        return [], perr
+                    if prof:
+                        target_u = str(prof.get("unique_id") or prof.get("sec_uid") or prof.get("uid") or "")
+                fb_works, fb_err = await fcli.fetch_all_creator_works(target_u, max_pages=6)
+            if fb_works:
+                source = "api"
+                return fb_works, ""
+            if effective_mode == "api" or fb_err.startswith(("logged_out", "verification_required", "rate_limit")) or app_runtime.browser is None:
+                source = "api"
+                return [], fb_err or "empty"
+            source = "browser_fallback"
         else:
             source = "browser"
         return await fetch_account_works(app_runtime.browser, identity, platform, uid)
@@ -194,17 +221,37 @@ async def sync_account_works(account_id: int):
                 added += 1
         acc_row = s.get(DouyinAccount, account_id)
         if acc_row is not None:
-            total_works = len(s.exec(
-                select(AccountWork.id).where(AccountWork.account_id == account_id)
-            ).all())
+            all_works = s.exec(
+                select(AccountWork).where(AccountWork.account_id == account_id)
+            ).all()
+            total_works = len(all_works)
             if not acc_row.aweme_count or acc_row.aweme_count < total_works:
                 acc_row.aweme_count = total_works
                 s.add(acc_row)
+            fan_cnt = len(s.exec(
+                select(FollowEdge.id).where(
+                    FollowEdge.account_id == account_id,
+                    FollowEdge.direction == "fan",
+                )
+            ).all())
+            day = (now + timedelta(hours=8)).strftime("%Y-%m-%d")
+            snap = s.exec(select(AccountStatSnapshot).where(
+                AccountStatSnapshot.account_id == account_id,
+                AccountStatSnapshot.date == day,
+            )).first()
+            if not snap:
+                snap = AccountStatSnapshot(platform=platform, account_id=account_id, date=day)
+            snap.follower_count = int(acc_row.follower_count or 0) or fan_cnt or snap.follower_count
+            snap.aweme_count = max(int(acc_row.aweme_count or 0), total_works, int(snap.aweme_count or 0))
+            snap.total_like = sum(int(x.like_count or 0) for x in all_works)
+            snap.total_comment = sum(int(x.comment_count or 0) for x in all_works)
+            snap.total_play = sum(int(x.play_count or 0) for x in all_works)
+            s.add(snap)
         s.commit()
     thumb_cache.schedule_thumb_prewarm(
         [str(w.get("cover_url") or "") for w in items],
         platform=platform,
-        proxy=(bili_proxy or ig_proxy or (acc.proxy if acc else "") or ""),
+        proxy=(bili_proxy or ig_proxy or fb_proxy or (acc.proxy if acc else "") or ""),
     )
     return {"ok": True, "fetched": len(items), "added": added,
             "source": source,
@@ -212,7 +259,7 @@ async def sync_account_works(account_id: int):
                                 if transport else "browser")}
 
 
-# ─────────── 本账号数据分析(B4:粉丝/作品/互动趋势 + 单篇作品表)───────────
+# ─────────── 本账号数据分析(粉丝/作品/互动趋势 + 单篇作品表)───────────
 @router.get("/api/account-stats/{account_id}")
 async def account_stats(account_id: int, days: int = 30):
     """返回该账号近 days 天的每日快照趋势 + 当前本账号作品的单篇互动明细。
@@ -228,6 +275,15 @@ async def account_stats(account_id: int, days: int = 30):
         works = s.exec(select(AccountWork)
                        .where(AccountWork.account_id == account_id)
                        .order_by(AccountWork.create_time.desc()).limit(50)).all()
+        works_total = len(s.exec(
+            select(AccountWork.id).where(AccountWork.account_id == account_id)
+        ).all())
+        fan_total = len(s.exec(
+            select(FollowEdge.id).where(
+                FollowEdge.account_id == account_id,
+                FollowEdge.direction == "fan",
+            )
+        ).all())
     trend = [{"date": x.date, "follower_count": x.follower_count,
               "aweme_count": x.aweme_count, "total_like": x.total_like,
               "total_comment": x.total_comment, "total_play": x.total_play}
@@ -237,8 +293,13 @@ async def account_stats(account_id: int, days: int = 30):
     fans_delta = (latest.get("follower_count", 0) - prev.get("follower_count", 0)
                   if prev else 0)
     return {
-        "account": {"id": acc.id, "platform": acc.platform, "nickname": acc.nickname,
-                    "follower_count": acc.follower_count, "aweme_count": acc.aweme_count},
+        "account": {
+            "id": acc.id,
+            "platform": acc.platform,
+            "nickname": acc.nickname,
+            "follower_count": int(acc.follower_count or 0) or fan_total,
+            "aweme_count": max(int(acc.aweme_count or 0), works_total),
+        },
         "fans_delta": fans_delta,
         "trend": trend,
         "works": [_work_dict(w) for w in works],

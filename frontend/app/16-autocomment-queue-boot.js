@@ -10,7 +10,7 @@ let AC_TASKS = [];
 function acKindOptions() {
   if ($("ac-mode").value === "auto_comment") {
     let html = '<option value="creator">指定博主</option>';
-    if (["xhs", "bilibili", "instagram", "twitter"].includes(PLATFORM)) html += '<option value="keyword">搜索关键词</option>';
+    if (["xhs", "bilibili", "instagram", "twitter", "facebook"].includes(PLATFORM)) html += '<option value="keyword">搜索关键词</option>';
     return html;
   }
   return '<option value="self">自己近期作品</option><option value="work">指定作品</option>';
@@ -23,14 +23,14 @@ function onAcMode() {
   onAcKind();
 }
 function onAcKind() {
-  const mode = $("ac-mode").value, kind = $("ac-kind").value, xhs = PLATFORM === "xhs", bili = PLATFORM === "bilibili", ig = PLATFORM === "instagram", tw = PLATFORM === "twitter";
+  const mode = $("ac-mode").value, kind = $("ac-kind").value, xhs = PLATFORM === "xhs", bili = PLATFORM === "bilibili", ig = PLATFORM === "instagram", tw = PLATFORM === "twitter", fb = PLATFORM === "facebook";
   let show = true, label = "目标", ph = "";
   if (mode === "auto_reply") {
     if (kind === "self") show = false;
-    else { label = xhs ? "笔记链接 / id" : tw ? "推文链接 / status_id" : "作品链接 / id"; ph = xhs ? "explore 链接 / xhslink / note_id" : bili ? "视频链接 / BV或av号 / opus链接" : ig ? "instagram.com/p/... 或 /reel/... 链接" : tw ? "x.com/.../status/... 链接或数字推文 ID" : "作品链接 / 短链 / 数字 id"; }
+    else { label = xhs ? "笔记链接 / id" : tw ? "推文链接 / status_id" : fb ? "帖子 / Reel / Watch 链接" : "作品链接 / id"; ph = xhs ? "explore 链接 / xhslink / note_id" : bili ? "视频链接 / BV或av号 / opus链接" : ig ? "instagram.com/p/... 或 /reel/... 链接" : tw ? "x.com/.../status/... 链接或数字推文 ID" : fb ? "facebook.com 帖子/Reel/Watch 链接或 fb.watch 短链" : "作品链接 / 短链 / 数字 id"; }
   } else {
-    if (kind === "keyword") { label = "搜索关键词"; ph = tw ? "例如:AI agent / #buildinpublic" : ig ? "例如:#travel / skincare" : "例如:露营装备 / 口红试色"; }
-    else { label = xhs ? "博主主页 / id" : bili ? "UP 主空间主页 / mid" : (ig || tw) ? "创作者主页 / @username" : "博主主页 / sec_uid"; ph = xhs ? "主页链接 / xhslink / user_id" : bili ? "space.bilibili.com 链接 / mid" : ig ? "instagram.com/<username> 或 @username" : tw ? "x.com/<username> 或 @username" : "主页链接 / 短链 / sec_uid"; }
+    if (kind === "keyword") { label = "搜索关键词"; ph = tw ? "例如:AI agent / #buildinpublic" : fb ? "例如:跨境电商 / marketing tips" : ig ? "例如:#travel / skincare" : "例如:露营装备 / 口红试色"; }
+    else { label = xhs ? "博主主页 / id" : bili ? "UP 主空间主页 / mid" : (ig || tw) ? "创作者主页 / @username" : fb ? "主页 / 公共主页 / 群组链接" : "博主主页 / sec_uid"; ph = xhs ? "主页链接 / xhslink / user_id" : bili ? "space.bilibili.com 链接 / mid" : ig ? "instagram.com/<username> 或 @username" : tw ? "x.com/<username> 或 @username" : fb ? "facebook.com/<page>、/groups/<id> 或 profile.php?id=..." : "主页链接 / 短链 / sec_uid"; }
   }
   $("ac-target-wrap").style.display = show ? "" : "none";
   $("ac-target-label").textContent = label; $("ac-target").placeholder = ph;
@@ -620,7 +620,7 @@ $("collection-content-list").innerHTML = collectionResultSkeleton(4);
 $("queue-table").innerHTML = skeleton(8);
 
 // restore last-selected platform & global mode BEFORE restoring tab so global-mode tab guards apply cleanly
-PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "rednote", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
+PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "rednote", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
 GLOBAL_MODE = (() => { try { const g = localStorage.getItem("dym-global"); return g === null ? true : g === "1"; } catch (e) { return true; } })();
 if ($("queue-platform") && GLOBAL_MODE) $("queue-platform").value = "all";
 
@@ -724,6 +724,7 @@ function launchPlatformLogin(pf, mode = "main") {
   if (pf === "bilibili") return startBilibiliLogin();
   if (pf === "instagram") return startInstagramLogin();
   if (pf === "twitter") return startTwitterLogin();
+  if (pf === "facebook") return startFacebookLogin();
   return creator ? startCreatorLogin() : startLogin();
 }
 

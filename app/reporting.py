@@ -997,6 +997,8 @@ def build_keyword_collection_report(job: Any, contents: Sequence[Any],
             url = f"https://www.instagram.com/p/{aweme_id}/"
         elif platform == "twitter":
             url = f"https://x.com/i/web/status/{aweme_id}"
+        elif platform == "facebook":
+            url = f"https://www.facebook.com/permalink.php?story_fbid={aweme_id}"
         else:
             url = f"https://www.douyin.com/video/{aweme_id}"
         content_rows.append((

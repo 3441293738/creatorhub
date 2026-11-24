@@ -186,6 +186,21 @@ async def share_download(body: ShareDownloadIn):
                             )
                         except ShareDownloadFallback as exc:
                             fallback_error = str(exc)
+                    elif link.platform == "facebook":
+                        try:
+                            item = await share_native_social_service._facebook_native_share(
+                                link.url,
+                                account_id=body.account_id,
+                                output_root=output_root,
+                                quality=body.quality,
+                                should_download=body.download,
+                                save_metadata=body.save_metadata,
+                                save_thumbnail=body.save_thumbnail,
+                                proxy=proxy,
+                                user_agent=user_agent,
+                            )
+                        except ShareDownloadFallback as exc:
+                            fallback_error = str(exc)
                     elif link.platform == "wechat":
                         account_state = ""
                         if body.account_id:
@@ -213,11 +228,11 @@ async def share_download(body: ShareDownloadIn):
                         except ShareDownloadFallback:
                             # 非视频号的 qq.com 链接(如 v.qq.com)直接交由通用提取器处理
                             item = None
-                    # 9 大核心平台严禁把账号登录态 Cookie 交给 yt-dlp(Python OpenSSL TLS 栈)，避免同会话 TLS 指纹突变触发风控
+                    # 10 大核心平台严禁把账号登录态 Cookie 交给 yt-dlp(Python OpenSSL TLS 栈)，避免同会话 TLS 指纹突变触发风控
                     safe_ytdlp_cookie = (
                         "" if link.platform in {
                             "douyin", "xhs", "rednote", "kuaishou", "wechat",
-                            "shipinhao", "tiktok", "bilibili", "instagram", "twitter"
+                            "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"
                         } else cookie_file
                     )
                     if item is not None:
@@ -241,7 +256,7 @@ async def share_download(body: ShareDownloadIn):
                     item_warnings = list(item.get("warnings") or [])
                     if proxy_override_warning and proxy_override_warning not in item_warnings:
                         item_warnings.append(proxy_override_warning)
-                    if not proxy and link.platform in {"tiktok", "rednote", "instagram", "twitter"}:
+                    if not proxy and link.platform in {"tiktok", "rednote", "instagram", "twitter", "facebook"}:
                         direct_warn = "提醒：当前未配置代理（走本机直连），海外平台若遇到连接超时建议配置代理"
                         if direct_warn not in item_warnings:
                             item_warnings.append(direct_warn)

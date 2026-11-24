@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 540" width="1200" height="540" role="img" aria-labelledby="hero-title hero-desc">
   <title id="hero-title">CreatorHub 本地多平台内容管理工作台动态架构预览</title>
-  <desc id="hero-desc">支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram、Twitter 九大平台的账号管理、作品与评论弹幕监控、批量采集、无水印下载与发布互动，数据100%保存在本地。</desc>
+  <desc id="hero-desc">支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram、Twitter、Facebook 十大平台的账号管理、作品与评论弹幕监控、批量采集、无水印下载与发布互动，数据100%保存在本地。</desc>
 
   <defs>
     <!-- Ambient Canvas & Surface Gradients -->
@@ -83,6 +83,10 @@
       <stop offset="52%" stop-color="#1b2836"/>
       <stop offset="100%" stop-color="#1d9bf0"/>
     </linearGradient>
+    <linearGradient id="pf-fb" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0866ff"/>
+      <stop offset="100%" stop-color="#3b8eff"/>
+    </linearGradient>
 
     <!-- Chart Area Gradients -->
     <linearGradient id="chart-rose-fill" x1="0" y1="0" x2="0" y2="1">
@@ -127,16 +131,17 @@
       <rect x="392" y="28" width="780" height="456" rx="18"/>
     </clipPath>
 
-    <!-- Fiber Optic Paths from 9 Platforms to Workbench Intake -->
-    <path id="stream-1" d="M 276 65.5 C 332 65.5, 336 261.5, 392 261.5"/>
-    <path id="stream-2" d="M 276 114.5 C 328 114.5, 338 261.5, 392 261.5"/>
-    <path id="stream-3" d="M 276 163.5 C 324 163.5, 342 261.5, 392 261.5"/>
-    <path id="stream-4" d="M 276 212.5 C 320 212.5, 346 261.5, 392 261.5"/>
-    <path id="stream-5" d="M 276 261.5 C 320 261.5, 348 261.5, 392 261.5"/>
-    <path id="stream-6" d="M 276 310.5 C 320 310.5, 346 261.5, 392 261.5"/>
-    <path id="stream-7" d="M 276 359.5 C 324 359.5, 342 261.5, 392 261.5"/>
-    <path id="stream-8" d="M 276 408.5 C 328 408.5, 338 261.5, 392 261.5"/>
-    <path id="stream-9" d="M 276 457.5 C 332 457.5, 336 261.5, 392 261.5"/>
+    <!-- Fiber Optic Paths from 10 Platforms to Workbench Intake -->
+    <path id="stream-1" d="M 276 64 C 332 64, 336 262, 392 262"/>
+    <path id="stream-2" d="M 276 108 C 328 108, 338 262, 392 262"/>
+    <path id="stream-3" d="M 276 152 C 324 152, 342 262, 392 262"/>
+    <path id="stream-4" d="M 276 196 C 320 196, 346 262, 392 262"/>
+    <path id="stream-5" d="M 276 240 C 320 240, 348 262, 392 262"/>
+    <path id="stream-6" d="M 276 284 C 320 284, 348 262, 392 262"/>
+    <path id="stream-7" d="M 276 328 C 320 328, 346 262, 392 262"/>
+    <path id="stream-8" d="M 276 372 C 324 372, 342 262, 392 262"/>
+    <path id="stream-9" d="M 276 416 C 328 416, 338 262, 392 262"/>
+    <path id="stream-10" d="M 276 460 C 332 460, 336 262, 392 262"/>
   </defs>
 
   <style>
@@ -153,14 +158,15 @@
       stroke-dasharray: 6 12;
       animation: dash-flow 2.2s linear infinite;
     }
-    .stream-dash.d2 { animation-duration: 2.5s; animation-delay: -0.32s; }
-    .stream-dash.d3 { animation-duration: 2.1s; animation-delay: -0.64s; }
-    .stream-dash.d4 { animation-duration: 2.0s; animation-delay: -0.96s; }
-    .stream-dash.d5 { animation-duration: 2.6s; animation-delay: -1.28s; }
-    .stream-dash.d6 { animation-duration: 2.3s; animation-delay: -1.60s; }
-    .stream-dash.d7 { animation-duration: 2.4s; animation-delay: -1.92s; }
-    .stream-dash.d8 { animation-duration: 2.5s; animation-delay: -2.24s; }
-    .stream-dash.d9 { animation-duration: 2.3s; animation-delay: -2.56s; }
+    .stream-dash.d2 { animation-duration: 2.5s; animation-delay: -0.28s; }
+    .stream-dash.d3 { animation-duration: 2.1s; animation-delay: -0.56s; }
+    .stream-dash.d4 { animation-duration: 2.0s; animation-delay: -0.84s; }
+    .stream-dash.d5 { animation-duration: 2.6s; animation-delay: -1.12s; }
+    .stream-dash.d6 { animation-duration: 2.3s; animation-delay: -1.40s; }
+    .stream-dash.d7 { animation-duration: 2.4s; animation-delay: -1.68s; }
+    .stream-dash.d8 { animation-duration: 2.5s; animation-delay: -1.96s; }
+    .stream-dash.d9 { animation-duration: 2.3s; animation-delay: -2.24s; }
+    .stream-dash.d10 { animation-duration: 2.2s; animation-delay: -2.52s; }
 
     @keyframes dash-flow {
       from { stroke-dashoffset: 36; }
@@ -178,38 +184,40 @@
       50% { opacity: 0.45; transform: scale(1.35); }
     }
 
-    /* 9-Platform Sequential Spotlight (18s cycle = 2s per platform) */
-    .pf-spot-1 { animation: pf-glow 18s infinite 0s; }
-    .pf-spot-2 { animation: pf-glow 18s infinite 2s; }
-    .pf-spot-3 { animation: pf-glow 18s infinite 4s; }
-    .pf-spot-4 { animation: pf-glow 18s infinite 6s; }
-    .pf-spot-5 { animation: pf-glow 18s infinite 8s; }
-    .pf-spot-6 { animation: pf-glow 18s infinite 10s; }
-    .pf-spot-7 { animation: pf-glow 18s infinite 12s; }
-    .pf-spot-8 { animation: pf-glow 18s infinite 14s; }
-    .pf-spot-9 { animation: pf-glow 18s infinite 16s; }
+    /* 10-Platform Sequential Spotlight (20s cycle = 2s per platform) */
+    .pf-spot-1 { animation: pf-glow 20s infinite 0s; }
+    .pf-spot-2 { animation: pf-glow 20s infinite 2s; }
+    .pf-spot-3 { animation: pf-glow 20s infinite 4s; }
+    .pf-spot-4 { animation: pf-glow 20s infinite 6s; }
+    .pf-spot-5 { animation: pf-glow 20s infinite 8s; }
+    .pf-spot-6 { animation: pf-glow 20s infinite 10s; }
+    .pf-spot-7 { animation: pf-glow 20s infinite 12s; }
+    .pf-spot-8 { animation: pf-glow 20s infinite 14s; }
+    .pf-spot-9 { animation: pf-glow 20s infinite 16s; }
+    .pf-spot-10 { animation: pf-glow 20s infinite 18s; }
 
     @keyframes pf-glow {
-      0%, 9.8% { opacity: 1; }
-      12.5%, 96.5% { opacity: 0; }
+      0%, 8.8% { opacity: 1; }
+      11.2%, 97% { opacity: 0; }
       100% { opacity: 1; }
     }
 
-    /* Platform Switcher Sliding Pill inside Workbench Header (9 tabs, 53px step) */
+    /* Platform Switcher Sliding Pill inside Workbench Header (10 tabs, 48px step) */
     .pswitch-pill {
-      animation: slide-pswitch 18s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+      animation: slide-pswitch 20s cubic-bezier(0.22, 1, 0.36, 1) infinite;
     }
     @keyframes slide-pswitch {
-      0%, 9.5%     { transform: translateX(0px); }
-      11.1%, 20.6% { transform: translateX(53px); }
-      22.2%, 31.7% { transform: translateX(106px); }
-      33.3%, 42.8% { transform: translateX(159px); }
-      44.4%, 53.9% { transform: translateX(212px); }
-      55.5%, 65.0% { transform: translateX(265px); }
-      66.6%, 76.1% { transform: translateX(318px); }
-      77.7%, 87.2% { transform: translateX(371px); }
-      88.8%, 98.3% { transform: translateX(424px); }
-      100%         { transform: translateX(0px); }
+      0%, 8.5%   { transform: translateX(0px); }
+      10%, 18.5% { transform: translateX(48px); }
+      20%, 28.5% { transform: translateX(96px); }
+      30%, 38.5% { transform: translateX(144px); }
+      40%, 48.5% { transform: translateX(192px); }
+      50%, 58.5% { transform: translateX(240px); }
+      60%, 68.5% { transform: translateX(288px); }
+      70%, 78.5% { transform: translateX(336px); }
+      80%, 88.5% { transform: translateX(384px); }
+      90%, 98.5% { transform: translateX(432px); }
+      100%       { transform: translateX(0px); }
     }
 
     /* Chart Scanline and Pulsing Node */
@@ -243,7 +251,7 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .stream-dash, .live-dot, .pf-spot-1, .pf-spot-2, .pf-spot-3, .pf-spot-4, .pf-spot-5, .pf-spot-6, .pf-spot-7, .pf-spot-8, .pf-spot-9,
+      .stream-dash, .live-dot, .pf-spot-1, .pf-spot-2, .pf-spot-3, .pf-spot-4, .pf-spot-5, .pf-spot-6, .pf-spot-7, .pf-spot-8, .pf-spot-9, .pf-spot-10,
       .pswitch-pill, .chart-scan, .task-prog, .hub-ring {
         animation: none !important;
       }
@@ -259,12 +267,12 @@
     <rect width="1200" height="540" fill="url(#bg-grid)"/>
 
     <!-- ======================================================================= -->
-    <!-- 2. LEFT COLUMN: 9 MULTI-PLATFORM SOURCES (x=28..276)                    -->
+    <!-- 2. LEFT COLUMN: 10 MULTI-PLATFORM SOURCES (x=28..276)                   -->
     <!-- ======================================================================= -->
     <g transform="translate(28, 17)">
       <rect x="0" y="0" width="96" height="20" rx="10" fill="rgba(254,44,85,0.12)" stroke="rgba(254,44,85,0.28)" stroke-width="1"/>
       <circle cx="11" cy="10" r="3" fill="#fe2c55"/>
-      <text x="20" y="14" fill="#fe2c55" font-size="10" font-weight="700" letter-spacing="0.4">九平台接入</text>
+      <text x="20" y="14" fill="#fe2c55" font-size="10" font-weight="700" letter-spacing="0.4">十平台接入</text>
       <text x="104" y="14" fill="#9ca3b4" font-size="11" font-weight="600">统一登录 · 采集 · 互动</text>
     </g>
 
@@ -280,6 +288,7 @@
       <use href="#stream-7" stroke="rgba(255,255,255,0.07)" stroke-width="2"/>
       <use href="#stream-8" stroke="rgba(255,255,255,0.07)" stroke-width="2"/>
       <use href="#stream-9" stroke="rgba(255,255,255,0.07)" stroke-width="2"/>
+      <use href="#stream-10" stroke="rgba(255,255,255,0.07)" stroke-width="2"/>
 
       <!-- Animated Energy Streams -->
       <use href="#stream-1" class="stream-dash" stroke="#fe2c55" stroke-width="2.0" stroke-opacity="0.75"/>
@@ -291,157 +300,177 @@
       <use href="#stream-7" class="stream-dash d7" stroke="#00aeec" stroke-width="2.0" stroke-opacity="0.78"/>
       <use href="#stream-8" class="stream-dash d8" stroke="#d62976" stroke-width="2.0" stroke-opacity="0.80"/>
       <use href="#stream-9" class="stream-dash d9" stroke="#38bdf8" stroke-width="2.0" stroke-opacity="0.82"/>
+      <use href="#stream-10" class="stream-dash d10" stroke="#4f9cff" stroke-width="2.0" stroke-opacity="0.85"/>
 
       <!-- SMIL Animated Light Orbs Flowing into Workbench -->
-      <circle r="3.4" fill="#fe2c55" filter="url(#orb-glow)">
-        <animateMotion dur="2.4s" repeatCount="indefinite" path="M 276 65.5 C 332 65.5, 336 261.5, 392 261.5"/>
+      <circle r="3.3" fill="#fe2c55" filter="url(#orb-glow)">
+        <animateMotion dur="2.4s" repeatCount="indefinite" path="M 276 64 C 332 64, 336 262, 392 262"/>
       </circle>
-      <circle r="3.4" fill="#ff2442" filter="url(#orb-glow)">
-        <animateMotion dur="2.7s" begin="-0.32s" repeatCount="indefinite" path="M 276 114.5 C 328 114.5, 338 261.5, 392 261.5"/>
+      <circle r="3.3" fill="#ff2442" filter="url(#orb-glow)">
+        <animateMotion dur="2.7s" begin="-0.28s" repeatCount="indefinite" path="M 276 108 C 328 108, 338 262, 392 262"/>
       </circle>
-      <circle r="3.4" fill="#fb7185" filter="url(#orb-glow)">
-        <animateMotion dur="2.3s" begin="-0.64s" repeatCount="indefinite" path="M 276 163.5 C 324 163.5, 342 261.5, 392 261.5"/>
+      <circle r="3.3" fill="#fb7185" filter="url(#orb-glow)">
+        <animateMotion dur="2.3s" begin="-0.56s" repeatCount="indefinite" path="M 276 152 C 324 152, 342 262, 392 262"/>
       </circle>
-      <circle r="3.4" fill="#ff7902" filter="url(#orb-glow)">
-        <animateMotion dur="2.2s" begin="-0.96s" repeatCount="indefinite" path="M 276 212.5 C 320 212.5, 346 261.5, 392 261.5"/>
+      <circle r="3.3" fill="#ff7902" filter="url(#orb-glow)">
+        <animateMotion dur="2.2s" begin="-0.84s" repeatCount="indefinite" path="M 276 196 C 320 196, 346 262, 392 262"/>
       </circle>
-      <circle r="3.4" fill="#07c160" filter="url(#orb-glow)">
-        <animateMotion dur="2.8s" begin="-1.28s" repeatCount="indefinite" path="M 276 261.5 C 320 261.5, 348 261.5, 392 261.5"/>
+      <circle r="3.3" fill="#07c160" filter="url(#orb-glow)">
+        <animateMotion dur="2.8s" begin="-1.12s" repeatCount="indefinite" path="M 276 240 C 320 240, 348 262, 392 262"/>
       </circle>
-      <circle r="3.4" fill="#25f4ee" filter="url(#orb-glow)">
-        <animateMotion dur="2.5s" begin="-1.60s" repeatCount="indefinite" path="M 276 310.5 C 320 310.5, 346 261.5, 392 261.5"/>
+      <circle r="3.3" fill="#25f4ee" filter="url(#orb-glow)">
+        <animateMotion dur="2.5s" begin="-1.40s" repeatCount="indefinite" path="M 276 284 C 320 284, 348 262, 392 262"/>
       </circle>
-      <circle r="3.4" fill="#00aeec" filter="url(#orb-glow)">
-        <animateMotion dur="2.6s" begin="-1.92s" repeatCount="indefinite" path="M 276 359.5 C 324 359.5, 342 261.5, 392 261.5"/>
+      <circle r="3.3" fill="#00aeec" filter="url(#orb-glow)">
+        <animateMotion dur="2.6s" begin="-1.68s" repeatCount="indefinite" path="M 276 328 C 320 328, 346 262, 392 262"/>
       </circle>
-      <circle r="3.4" fill="#d62976" filter="url(#orb-glow)">
-        <animateMotion dur="2.5s" begin="-2.24s" repeatCount="indefinite" path="M 276 408.5 C 328 408.5, 338 261.5, 392 261.5"/>
+      <circle r="3.3" fill="#d62976" filter="url(#orb-glow)">
+        <animateMotion dur="2.5s" begin="-1.96s" repeatCount="indefinite" path="M 276 372 C 324 372, 342 262, 392 262"/>
       </circle>
-      <circle r="3.4" fill="#38bdf8" filter="url(#orb-glow)">
-        <animateMotion dur="2.4s" begin="-2.56s" repeatCount="indefinite" path="M 276 457.5 C 332 457.5, 336 261.5, 392 261.5"/>
+      <circle r="3.3" fill="#38bdf8" filter="url(#orb-glow)">
+        <animateMotion dur="2.4s" begin="-2.24s" repeatCount="indefinite" path="M 276 416 C 328 416, 338 262, 392 262"/>
+      </circle>
+      <circle r="3.3" fill="#60a5fa" filter="url(#orb-glow)">
+        <animateMotion dur="2.3s" begin="-2.52s" repeatCount="indefinite" path="M 276 460 C 332 460, 336 262, 392 262"/>
       </circle>
     </g>
 
-    <!-- Center Conduit Hub Badge (x=334, y=261.5) -->
-    <g transform="translate(334, 261.5)" filter="url(#sh-card)">
+    <!-- Center Conduit Hub Badge (x=334, y=262) -->
+    <g transform="translate(334, 262)" filter="url(#sh-card)">
       <circle r="24" fill="none" stroke="#fe2c55" stroke-width="1.2" class="hub-ring"/>
       <circle r="18" fill="#161c28" stroke="rgba(255,255,255,0.12)" stroke-width="1.5"/>
       <path d="M-5 -2 L1 -9 L0 -2 L5 -2 L-1 9 L0 2 Z" fill="url(#brand-mark-grad)"/>
     </g>
 
-    <!-- Platform 1: 抖音 Douyin (y=44..87) -->
+    <!-- Platform 1: 抖音 Douyin (y=44..84) -->
     <g transform="translate(28, 44)" filter="url(#sh-card)">
-      <rect width="248" height="43" rx="10.5" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
-      <rect width="248" height="43" rx="10.5" fill="none" stroke="#fe2c55" stroke-width="1.8" class="pf-spot-1"/>
-      <rect x="8" y="5.5" width="32" height="32" rx="8.5" fill="url(#pf-dy)"/>
-      <path d="M26.8 13.2v10a3.5 3.5 0 1 1-2.4-3.3V11.8h2.4a3.2 3.2 0 0 0 3.2 3.2v2.2a5.5 5.5 0 0 1-3.2-1Z" fill="#ffffff"/>
-      <text x="48" y="19.2" fill="#f6f8fb" font-size="11.8" font-weight="700">抖音 Douyin</text>
-      <rect x="172" y="6.5" width="66" height="15" rx="7.5" fill="rgba(254,44,85,0.12)"/>
-      <text x="205" y="16.8" fill="#fe2c55" font-size="8.8" font-weight="700" text-anchor="middle">全功能支持</text>
-      <text x="48" y="34.2" fill="#9ca3b4" font-size="9.2">作品 / 评论 / 弹幕 / 下载 / 发布 / 私信</text>
+      <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
+      <rect width="248" height="40" rx="10" fill="none" stroke="#fe2c55" stroke-width="1.8" class="pf-spot-1"/>
+      <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-dy)"/>
+      <g transform="translate(23, 20) scale(0.92) translate(-24, -21.5)">
+        <path d="M26.8 13.2v10a3.5 3.5 0 1 1-2.4-3.3V11.8h2.4a3.2 3.2 0 0 0 3.2 3.2v2.2a5.5 5.5 0 0 1-3.2-1Z" fill="#ffffff"/>
+      </g>
+      <text x="46" y="17.5" fill="#f6f8fb" font-size="11.4" font-weight="700">抖音 Douyin</text>
+      <rect x="174" y="5.5" width="66" height="14.5" rx="7.25" fill="rgba(254,44,85,0.12)"/>
+      <text x="207" y="15.4" fill="#fe2c55" font-size="8.5" font-weight="700" text-anchor="middle">全功能支持</text>
+      <text x="46" y="32" fill="#9ca3b4" font-size="9">作品 / 评论 / 弹幕 / 下载 / 发布 / 私信</text>
     </g>
 
-    <!-- Platform 2: 小红书 Xiaohongshu (y=93..136) -->
-    <g transform="translate(28, 93)" filter="url(#sh-card)">
-      <rect width="248" height="43" rx="10.5" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
-      <rect width="248" height="43" rx="10.5" fill="none" stroke="#ff2442" stroke-width="1.8" class="pf-spot-2" opacity="0"/>
-      <rect x="8" y="5.5" width="32" height="32" rx="8.5" fill="url(#pf-xhs)"/>
-      <text x="24" y="25.5" fill="#ffffff" font-size="11" font-weight="800" text-anchor="middle">RED</text>
-      <text x="48" y="19.2" fill="#f6f8fb" font-size="11.8" font-weight="700">小红书</text>
-      <rect x="172" y="6.5" width="66" height="15" rx="7.5" fill="rgba(255,36,66,0.12)"/>
-      <text x="205" y="16.8" fill="#ff2442" font-size="8.8" font-weight="700" text-anchor="middle">图文 &amp; 视频</text>
-      <text x="48" y="34.2" fill="#9ca3b4" font-size="9.2">笔记监控 / 关键词与收藏 / 发布 / 私信</text>
+    <!-- Platform 2: 小红书 Xiaohongshu (y=88..128) -->
+    <g transform="translate(28, 88)" filter="url(#sh-card)">
+      <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
+      <rect width="248" height="40" rx="10" fill="none" stroke="#ff2442" stroke-width="1.8" class="pf-spot-2" opacity="0"/>
+      <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-xhs)"/>
+      <text x="23" y="23.8" fill="#ffffff" font-size="10.4" font-weight="800" text-anchor="middle">RED</text>
+      <text x="46" y="17.5" fill="#f6f8fb" font-size="11.4" font-weight="700">小红书</text>
+      <rect x="174" y="5.5" width="66" height="14.5" rx="7.25" fill="rgba(255,36,66,0.12)"/>
+      <text x="207" y="15.4" fill="#ff2442" font-size="8.5" font-weight="700" text-anchor="middle">图文 &amp; 视频</text>
+      <text x="46" y="32" fill="#9ca3b4" font-size="9">笔记监控 / 关键词与收藏 / 发布 / 私信</text>
     </g>
 
-    <!-- Platform 3: 海外小红书 Rednote (y=142..185) -->
-    <g transform="translate(28, 142)" filter="url(#sh-card)">
-      <rect width="248" height="43" rx="10.5" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
-      <rect width="248" height="43" rx="10.5" fill="none" stroke="#fb7185" stroke-width="1.8" class="pf-spot-3" opacity="0"/>
-      <rect x="8" y="5.5" width="32" height="32" rx="8.5" fill="url(#pf-rn)"/>
-      <circle cx="24" cy="21.5" r="9.8" fill="none" stroke="rgba(255,255,255,0.45)" stroke-width="1.15"/>
-      <text x="24" y="25.2" fill="#ffffff" font-size="10.2" font-weight="800" text-anchor="middle">RN</text>
-      <text x="48" y="19.2" fill="#f6f8fb" font-size="11.8" font-weight="700">海外小红书</text>
-      <rect x="172" y="6.5" width="66" height="15" rx="7.5" fill="rgba(255,122,150,0.15)"/>
-      <text x="205" y="16.8" fill="#ff7a96" font-size="8.8" font-weight="700" text-anchor="middle">四域隔离</text>
-      <text x="48" y="34.2" fill="#9ca3b4" font-size="9.2">海外代理隔离 / 采集监控 / 作品与发布</text>
+    <!-- Platform 3: 海外小红书 Rednote (y=132..172) -->
+    <g transform="translate(28, 132)" filter="url(#sh-card)">
+      <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
+      <rect width="248" height="40" rx="10" fill="none" stroke="#fb7185" stroke-width="1.8" class="pf-spot-3" opacity="0"/>
+      <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-rn)"/>
+      <circle cx="23" cy="20" r="9.2" fill="none" stroke="rgba(255,255,255,0.45)" stroke-width="1.15"/>
+      <text x="23" y="23.6" fill="#ffffff" font-size="9.6" font-weight="800" text-anchor="middle">RN</text>
+      <text x="46" y="17.5" fill="#f6f8fb" font-size="11.4" font-weight="700">海外小红书</text>
+      <rect x="174" y="5.5" width="66" height="14.5" rx="7.25" fill="rgba(255,122,150,0.15)"/>
+      <text x="207" y="15.4" fill="#ff7a96" font-size="8.5" font-weight="700" text-anchor="middle">四域隔离</text>
+      <text x="46" y="32" fill="#9ca3b4" font-size="9">海外代理隔离 / 采集监控 / 作品与发布</text>
     </g>
 
-    <!-- Platform 4: 快手 Kuaishou (y=191..234) -->
-    <g transform="translate(28, 191)" filter="url(#sh-card)">
-      <rect width="248" height="43" rx="10.5" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
-      <rect width="248" height="43" rx="10.5" fill="none" stroke="#ff7902" stroke-width="1.8" class="pf-spot-4" opacity="0"/>
-      <rect x="8" y="5.5" width="32" height="32" rx="8.5" fill="url(#pf-ks)"/>
-      <circle cx="20.2" cy="18.6" r="2.9" fill="#ffffff"/>
-      <circle cx="27.8" cy="18.6" r="2.9" fill="#ffffff"/>
-      <rect x="16.6" y="23.4" width="14.8" height="5.5" rx="2.75" fill="#ffffff"/>
-      <text x="48" y="19.2" fill="#f6f8fb" font-size="11.8" font-weight="700">快手 Kuaishou</text>
-      <rect x="172" y="6.5" width="66" height="15" rx="7.5" fill="rgba(255,121,2,0.14)"/>
-      <text x="205" y="16.8" fill="#ff7902" font-size="8.8" font-weight="700" text-anchor="middle">签名与监控</text>
-      <text x="48" y="34.2" fill="#9ca3b4" font-size="9.2">作品与评论监控 / 批量采集 / 下载 / 发布</text>
+    <!-- Platform 4: 快手 Kuaishou (y=176..216) -->
+    <g transform="translate(28, 176)" filter="url(#sh-card)">
+      <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
+      <rect width="248" height="40" rx="10" fill="none" stroke="#ff7902" stroke-width="1.8" class="pf-spot-4" opacity="0"/>
+      <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-ks)"/>
+      <circle cx="19.5" cy="17.3" r="2.7" fill="#ffffff"/>
+      <circle cx="26.5" cy="17.3" r="2.7" fill="#ffffff"/>
+      <rect x="16.1" y="21.8" width="13.8" height="5.2" rx="2.6" fill="#ffffff"/>
+      <text x="46" y="17.5" fill="#f6f8fb" font-size="11.4" font-weight="700">快手 Kuaishou</text>
+      <rect x="174" y="5.5" width="66" height="14.5" rx="7.25" fill="rgba(255,121,2,0.14)"/>
+      <text x="207" y="15.4" fill="#ff7902" font-size="8.5" font-weight="700" text-anchor="middle">签名与监控</text>
+      <text x="46" y="32" fill="#9ca3b4" font-size="9">作品与评论监控 / 批量采集 / 下载 / 发布</text>
     </g>
 
-    <!-- Platform 5: 视频号 Channels (y=240..283) -->
-    <g transform="translate(28, 240)" filter="url(#sh-card)">
-      <rect width="248" height="43" rx="10.5" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
-      <rect width="248" height="43" rx="10.5" fill="none" stroke="#07c160" stroke-width="1.8" class="pf-spot-5" opacity="0"/>
-      <rect x="8" y="5.5" width="32" height="32" rx="8.5" fill="url(#pf-sph)"/>
-      <path d="M18.5 15.5l12 6-12 6v-12z" fill="#ffffff"/>
-      <text x="48" y="19.2" fill="#f6f8fb" font-size="11.8" font-weight="700">视频号</text>
-      <rect x="172" y="6.5" width="66" height="15" rx="7.5" fill="rgba(7,193,96,0.14)"/>
-      <text x="205" y="16.8" fill="#07c160" font-size="8.8" font-weight="700" text-anchor="middle">微信通道</text>
-      <text x="48" y="34.2" fill="#9ca3b4" font-size="9.2">搜索与主页采集 / 加密视频下载 / 发布</text>
+    <!-- Platform 5: 视频号 Channels (y=220..260) -->
+    <g transform="translate(28, 220)" filter="url(#sh-card)">
+      <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
+      <rect width="248" height="40" rx="10" fill="none" stroke="#07c160" stroke-width="1.8" class="pf-spot-5" opacity="0"/>
+      <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-sph)"/>
+      <path d="M18 14.4l11.2 5.6-11.2 5.6v-11.2z" fill="#ffffff"/>
+      <text x="46" y="17.5" fill="#f6f8fb" font-size="11.4" font-weight="700">视频号</text>
+      <rect x="174" y="5.5" width="66" height="14.5" rx="7.25" fill="rgba(7,193,96,0.14)"/>
+      <text x="207" y="15.4" fill="#07c160" font-size="8.5" font-weight="700" text-anchor="middle">微信通道</text>
+      <text x="46" y="32" fill="#9ca3b4" font-size="9">搜索与主页采集 / 加密视频下载 / 发布</text>
     </g>
 
-    <!-- Platform 6: TikTok (y=289..332) -->
-    <g transform="translate(28, 289)" filter="url(#sh-card)">
-      <rect width="248" height="43" rx="10.5" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
-      <rect width="248" height="43" rx="10.5" fill="none" stroke="#00d2cb" stroke-width="1.8" class="pf-spot-6" opacity="0"/>
-      <rect x="8" y="5.5" width="32" height="32" rx="8.5" fill="url(#pf-tk)"/>
-      <text x="24" y="25.8" fill="#ffffff" font-size="11.8" font-weight="800" text-anchor="middle">TK</text>
-      <text x="48" y="19.2" fill="#f6f8fb" font-size="11.8" font-weight="700">TikTok</text>
-      <rect x="172" y="6.5" width="66" height="15" rx="7.5" fill="rgba(37,244,238,0.14)"/>
-      <text x="205" y="16.8" fill="#25f4ee" font-size="8.8" font-weight="700" text-anchor="middle">海外内容流</text>
-      <text x="48" y="34.2" fill="#9ca3b4" font-size="9.2">关键词视频采集 / 作品与评论监控 / 互动</text>
+    <!-- Platform 6: TikTok (y=264..304) -->
+    <g transform="translate(28, 264)" filter="url(#sh-card)">
+      <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
+      <rect width="248" height="40" rx="10" fill="none" stroke="#00d2cb" stroke-width="1.8" class="pf-spot-6" opacity="0"/>
+      <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-tk)"/>
+      <text x="23" y="24" fill="#ffffff" font-size="11" font-weight="800" text-anchor="middle">TK</text>
+      <text x="46" y="17.5" fill="#f6f8fb" font-size="11.4" font-weight="700">TikTok</text>
+      <rect x="174" y="5.5" width="66" height="14.5" rx="7.25" fill="rgba(37,244,238,0.14)"/>
+      <text x="207" y="15.4" fill="#25f4ee" font-size="8.5" font-weight="700" text-anchor="middle">海外内容流</text>
+      <text x="46" y="32" fill="#9ca3b4" font-size="9">关键词视频采集 / 作品与评论监控 / 互动</text>
     </g>
 
-    <!-- Platform 7: 哔哩哔哩 Bilibili (y=338..381) -->
-    <g transform="translate(28, 338)" filter="url(#sh-card)">
-      <rect width="248" height="43" rx="10.5" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
-      <rect width="248" height="43" rx="10.5" fill="none" stroke="#00aeec" stroke-width="1.8" class="pf-spot-7" opacity="0"/>
-      <rect x="8" y="5.5" width="32" height="32" rx="8.5" fill="url(#pf-bili)"/>
-      <path d="M19.6 13l2.9 2.9M28.4 13l-2.9 2.9" fill="none" stroke="#ffffff" stroke-width="1.65" stroke-linecap="round"/>
-      <rect x="15.2" y="16" width="17.6" height="11.8" rx="3.2" fill="none" stroke="#ffffff" stroke-width="1.65"/>
-      <path d="M20.5 20.8l1.3 1.5M27.5 20.8l-1.3 1.5" fill="none" stroke="#ffffff" stroke-width="1.65" stroke-linecap="round"/>
-      <text x="48" y="19.2" fill="#f6f8fb" font-size="11.8" font-weight="700">哔哩哔哩</text>
-      <rect x="172" y="6.5" width="66" height="15" rx="7.5" fill="rgba(0,174,236,0.14)"/>
-      <text x="205" y="16.8" fill="#5cd1ff" font-size="8.8" font-weight="700" text-anchor="middle">弹幕 &amp; 投稿</text>
-      <text x="48" y="34.2" fill="#9ca3b4" font-size="9.2">WBI采集 / 弹幕监控 / 分区投稿 / 私信</text>
+    <!-- Platform 7: 哔哩哔哩 Bilibili (y=308..348) -->
+    <g transform="translate(28, 308)" filter="url(#sh-card)">
+      <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
+      <rect width="248" height="40" rx="10" fill="none" stroke="#00aeec" stroke-width="1.8" class="pf-spot-7" opacity="0"/>
+      <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-bili)"/>
+      <path d="M18.9 12.1l2.7 2.7M27.1 12.1l-2.7 2.7" fill="none" stroke="#ffffff" stroke-width="1.55" stroke-linecap="round"/>
+      <rect x="14.8" y="14.9" width="16.4" height="11" rx="3" fill="none" stroke="#ffffff" stroke-width="1.55"/>
+      <path d="M19.7 19.4l1.2 1.4M26.3 19.4l-1.2 1.4" fill="none" stroke="#ffffff" stroke-width="1.55" stroke-linecap="round"/>
+      <text x="46" y="17.5" fill="#f6f8fb" font-size="11.4" font-weight="700">哔哩哔哩</text>
+      <rect x="174" y="5.5" width="66" height="14.5" rx="7.25" fill="rgba(0,174,236,0.14)"/>
+      <text x="207" y="15.4" fill="#5cd1ff" font-size="8.5" font-weight="700" text-anchor="middle">弹幕 &amp; 投稿</text>
+      <text x="46" y="32" fill="#9ca3b4" font-size="9">WBI采集 / 弹幕监控 / 分区投稿 / 私信</text>
     </g>
 
-    <!-- Platform 8: Instagram (y=387..430) -->
-    <g transform="translate(28, 387)" filter="url(#sh-card)">
-      <rect width="248" height="43" rx="10.5" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
-      <rect width="248" height="43" rx="10.5" fill="none" stroke="#d62976" stroke-width="1.8" class="pf-spot-8" opacity="0"/>
-      <rect x="8" y="5.5" width="32" height="32" rx="8.5" fill="url(#pf-ig)"/>
-      <rect x="15.6" y="13.1" width="16.8" height="16.8" rx="4.6" fill="none" stroke="#ffffff" stroke-width="1.7"/>
-      <circle cx="24" cy="21.5" r="3.8" fill="none" stroke="#ffffff" stroke-width="1.7"/>
-      <circle cx="28.8" cy="16.7" r="1.1" fill="#ffffff"/>
-      <text x="48" y="19.2" fill="#f6f8fb" font-size="11.8" font-weight="700">Instagram</text>
-      <rect x="172" y="6.5" width="66" height="15" rx="7.5" fill="rgba(214,41,118,0.14)"/>
-      <text x="205" y="16.8" fill="#f472b6" font-size="8.8" font-weight="700" text-anchor="middle">轮播 &amp; Reels</text>
-      <text x="48" y="34.2" fill="#9ca3b4" font-size="9.2">话题与主页采集 / 轮播发布 / 私信</text>
+    <!-- Platform 8: Instagram (y=352..392) -->
+    <g transform="translate(28, 352)" filter="url(#sh-card)">
+      <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
+      <rect width="248" height="40" rx="10" fill="none" stroke="#d62976" stroke-width="1.8" class="pf-spot-8" opacity="0"/>
+      <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-ig)"/>
+      <rect x="15.2" y="12.2" width="15.6" height="15.6" rx="4.3" fill="none" stroke="#ffffff" stroke-width="1.6"/>
+      <circle cx="23" cy="20" r="3.5" fill="none" stroke="#ffffff" stroke-width="1.6"/>
+      <circle cx="27.5" cy="15.5" r="1.05" fill="#ffffff"/>
+      <text x="46" y="17.5" fill="#f6f8fb" font-size="11.4" font-weight="700">Instagram</text>
+      <rect x="174" y="5.5" width="66" height="14.5" rx="7.25" fill="rgba(214,41,118,0.14)"/>
+      <text x="207" y="15.4" fill="#f472b6" font-size="8.5" font-weight="700" text-anchor="middle">轮播 &amp; Reels</text>
+      <text x="46" y="32" fill="#9ca3b4" font-size="9">话题与主页采集 / 轮播发布 / 私信</text>
     </g>
 
-    <!-- Platform 9: Twitter / X (y=436..479) -->
-    <g transform="translate(28, 436)" filter="url(#sh-card)">
-      <rect width="248" height="43" rx="10.5" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
-      <rect width="248" height="43" rx="10.5" fill="none" stroke="#38bdf8" stroke-width="1.8" class="pf-spot-9" opacity="0"/>
-      <rect x="8" y="5.5" width="32" height="32" rx="8.5" fill="url(#pf-tw)"/>
-      <path d="M17.4 14.3h2.5l3.9 5.2 4.5-5.2h2.0l-5.5 6.4 5.9 8.0h-2.5l-4.2-5.7-4.9 5.7h-2.0l5.8-6.7-5.5-7.7z" fill="#ffffff"/>
-      <text x="48" y="19.2" fill="#f6f8fb" font-size="11.8" font-weight="700">Twitter</text>
-      <rect x="172" y="6.5" width="66" height="15" rx="7.5" fill="rgba(56,189,248,0.15)"/>
-      <text x="205" y="16.8" fill="#38bdf8" font-size="8.8" font-weight="700" text-anchor="middle">推文 &amp; 串推</text>
-      <text x="48" y="34.2" fill="#9ca3b4" font-size="9.2">推文与回复采集 / 多形态发推 / 私信</text>
+    <!-- Platform 9: Twitter / X (y=396..436) -->
+    <g transform="translate(28, 396)" filter="url(#sh-card)">
+      <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
+      <rect width="248" height="40" rx="10" fill="none" stroke="#38bdf8" stroke-width="1.8" class="pf-spot-9" opacity="0"/>
+      <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-tw)"/>
+      <g transform="translate(23, 20) scale(0.92) translate(-24, -21.5)">
+        <path d="M17.4 14.3h2.5l3.9 5.2 4.5-5.2h2.0l-5.5 6.4 5.9 8.0h-2.5l-4.2-5.7-4.9 5.7h-2.0l5.8-6.7-5.5-7.7z" fill="#ffffff"/>
+      </g>
+      <text x="46" y="17.5" fill="#f6f8fb" font-size="11.4" font-weight="700">Twitter</text>
+      <rect x="174" y="5.5" width="66" height="14.5" rx="7.25" fill="rgba(56,189,248,0.15)"/>
+      <text x="207" y="15.4" fill="#38bdf8" font-size="8.5" font-weight="700" text-anchor="middle">推文 &amp; 串推</text>
+      <text x="46" y="32" fill="#9ca3b4" font-size="9">推文与回复采集 / 多形态发推 / 私信</text>
+    </g>
+
+    <!-- Platform 10: Facebook (y=440..480) -->
+    <g transform="translate(28, 440)" filter="url(#sh-card)">
+      <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
+      <rect width="248" height="40" rx="10" fill="none" stroke="#4f9cff" stroke-width="1.8" class="pf-spot-10" opacity="0"/>
+      <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-fb)"/>
+      <path d="M24.4 29.4v-8.4h2.7l.45-3.2h-3.15v-2.05c0-.93.26-1.56 1.58-1.56h1.7v-2.85c-.3-.04-1.3-.14-2.5-.14-2.48 0-4.18 1.52-4.18 4.3v2.3h-2.8v3.2h2.8v8.4h3.4z" fill="#ffffff"/>
+      <text x="46" y="17.5" fill="#f6f8fb" font-size="11.4" font-weight="700">Facebook</text>
+      <rect x="174" y="5.5" width="66" height="14.5" rx="7.25" fill="rgba(79,156,255,0.16)"/>
+      <text x="207" y="15.4" fill="#60a5fa" font-size="8.5" font-weight="700" text-anchor="middle">主页 &amp; 群组</text>
+      <text x="46" y="32" fill="#9ca3b4" font-size="9">SSR协议采集 / 主页群组发布 / 私信</text>
     </g>
 
     <!-- ======================================================================= -->
@@ -459,7 +488,7 @@
       <line x1="392" y1="78" x2="1172" y2="78" stroke="rgba(255,255,255,0.07)" stroke-width="1"/>
 
       <!-- Brand Logo + Title -->
-      <g transform="translate(404, 38)">
+      <g transform="translate(403, 38)">
         <rect width="30" height="30" rx="9" fill="url(#brand-mark-grad)"/>
         <circle cx="14" cy="14" r="6" fill="none" stroke="#ffffff" stroke-width="2"/>
         <circle cx="14" cy="14" r="2" fill="#ffffff"/>
@@ -471,21 +500,22 @@
         <text x="38" y="27" fill="#6e778a" font-size="9.6">本地多平台内容工作台</text>
       </g>
 
-      <!-- Platform Switcher (.pswitch) in Header Center (x=558, y=39, 9 tabs) -->
-      <g transform="translate(558, 39)">
-        <rect width="483" height="28" rx="14" fill="#0c1018" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
+      <!-- Platform Switcher (.pswitch) in Header Center (x=556, y=39, 10 tabs) -->
+      <g transform="translate(556, 39)">
+        <rect width="486" height="28" rx="14" fill="#0c1018" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
         <g class="pswitch-pill">
-          <rect x="3" y="3" width="53" height="22" rx="11" fill="#263042" stroke="#fe2c55" stroke-width="1" stroke-opacity="0.55"/>
+          <rect x="3" y="3" width="48" height="22" rx="11" fill="#263042" stroke="#fe2c55" stroke-width="1" stroke-opacity="0.55"/>
         </g>
-        <text x="29.5"  y="18" fill="#f6f8fb" font-size="9.6" font-weight="700" text-anchor="middle">抖音</text>
-        <text x="82.5"  y="18" fill="#9ca3b4" font-size="9.6" font-weight="600" text-anchor="middle">小红书</text>
-        <text x="135.5" y="18" fill="#9ca3b4" font-size="8.6" font-weight="600" text-anchor="middle">海外小红书</text>
-        <text x="188.5" y="18" fill="#9ca3b4" font-size="9.6" font-weight="600" text-anchor="middle">快手</text>
-        <text x="241.5" y="18" fill="#9ca3b4" font-size="9.6" font-weight="600" text-anchor="middle">视频号</text>
-        <text x="294.5" y="18" fill="#9ca3b4" font-size="9.4" font-weight="600" text-anchor="middle">TikTok</text>
-        <text x="347.5" y="18" fill="#9ca3b4" font-size="9.2" font-weight="600" text-anchor="middle">哔哩哔哩</text>
-        <text x="400.5" y="18" fill="#9ca3b4" font-size="8.8" font-weight="600" text-anchor="middle">Instagram</text>
-        <text x="453.5" y="18" fill="#9ca3b4" font-size="9.2" font-weight="600" text-anchor="middle">Twitter</text>
+        <text x="27"  y="18" fill="#f6f8fb" font-size="9.2" font-weight="700" text-anchor="middle">抖音</text>
+        <text x="75"  y="18" fill="#9ca3b4" font-size="9.0" font-weight="600" text-anchor="middle">小红书</text>
+        <text x="123" y="18" fill="#9ca3b4" font-size="7.8" font-weight="600" text-anchor="middle">海外小红书</text>
+        <text x="171" y="18" fill="#9ca3b4" font-size="9.2" font-weight="600" text-anchor="middle">快手</text>
+        <text x="219" y="18" fill="#9ca3b4" font-size="9.0" font-weight="600" text-anchor="middle">视频号</text>
+        <text x="267" y="18" fill="#9ca3b4" font-size="8.6" font-weight="600" text-anchor="middle">TikTok</text>
+        <text x="315" y="18" fill="#9ca3b4" font-size="8.4" font-weight="600" text-anchor="middle">哔哩哔哩</text>
+        <text x="363" y="18" fill="#9ca3b4" font-size="8.0" font-weight="600" text-anchor="middle">Instagram</text>
+        <text x="411" y="18" fill="#9ca3b4" font-size="8.6" font-weight="600" text-anchor="middle">Twitter</text>
+        <text x="459" y="18" fill="#9ca3b4" font-size="8.2" font-weight="600" text-anchor="middle">Facebook</text>
       </g>
 
       <!-- Engine Status Pill in Header Right -->
@@ -508,8 +538,8 @@
 
         <g transform="translate(0, 34)">
           <text x="14" y="19" fill="#e5e9f0">平台账号</text>
-          <rect x="92" y="6" width="22" height="16" rx="8" fill="rgba(255,255,255,0.08)"/>
-          <text x="103" y="17" fill="#9ca3b4" font-size="10" text-anchor="middle" class="font-mono">9</text>
+          <rect x="88" y="6" width="26" height="16" rx="8" fill="rgba(255,255,255,0.08)"/>
+          <text x="101" y="17" fill="#9ca3b4" font-size="10" text-anchor="middle" class="font-mono">10</text>
         </g>
 
         <g transform="translate(0, 66)">
@@ -565,7 +595,7 @@
           <rect x="12" y="14" width="34" height="34" rx="9" fill="rgba(254,44,85,0.12)"/>
           <circle cx="29" cy="27" r="5" fill="none" stroke="#fe2c55" stroke-width="1.8"/>
           <path d="M21 39c1.5-4 14.5-4 16 0" fill="none" stroke="#fe2c55" stroke-width="1.8" stroke-linecap="round"/>
-          <text x="56" y="29" fill="#f6f8fb" font-size="17" font-weight="800" class="font-mono">9 <tspan font-size="10.5" font-weight="600" fill="#10b981">在线</tspan></text>
+          <text x="56" y="29" fill="#f6f8fb" font-size="17" font-weight="800" class="font-mono">10 <tspan font-size="10.5" font-weight="600" fill="#10b981">在线</tspan></text>
           <text x="56" y="45" fill="#9ca3b4" font-size="10.5">独立指纹账号</text>
         </g>
 
@@ -667,7 +697,7 @@
           <rect width="274" height="54" rx="10" fill="#10151f" stroke="rgba(6,182,212,0.30)" stroke-width="1"/>
           <rect x="10" y="10" width="58" height="16" rx="5" fill="rgba(255,122,150,0.16)"/>
           <text x="39" y="21" fill="#ff7a96" font-size="9.2" font-weight="700" text-anchor="middle">海外小红书</text>
-          <text x="75" y="21" fill="#f6f8fb" font-size="11.3" font-weight="700">关键词采集 · #StudioNomad</text>
+          <text x="74" y="21" fill="#f6f8fb" font-size="10.2" font-weight="700">关键词采集 · #StudioNomad</text>
           <rect x="214" y="9" width="50" height="18" rx="9" fill="rgba(6,182,212,0.15)"/>
           <text x="239" y="21" fill="#06b6d4" font-size="9.5" font-weight="700" text-anchor="middle">采集中</text>
           <rect x="12" y="34" width="204" height="6" rx="3" fill="#0c1018"/>
@@ -675,15 +705,15 @@
           <text x="226" y="40" fill="#9ca3b4" font-size="10" font-weight="700" class="font-mono">82%</text>
         </g>
 
-        <!-- Task Item 3: Twitter 推文采集与首评串推 -->
+        <!-- Task Item 3: Facebook 协议采集与群组发布 -->
         <g transform="translate(12, 162)">
           <rect width="274" height="48" rx="10" fill="#10151f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
-          <rect x="10" y="10" width="50" height="16" rx="5" fill="rgba(56,189,248,0.16)"/>
-          <text x="35" y="21" fill="#38bdf8" font-size="9.2" font-weight="700" text-anchor="middle">Twitter</text>
-          <text x="67" y="21" fill="#f6f8fb" font-size="11.3" font-weight="700">推文采集 &amp; 首评串推</text>
+          <rect x="10" y="10" width="56" height="16" rx="5" fill="rgba(79,156,255,0.17)"/>
+          <text x="38" y="21" fill="#60a5fa" font-size="9.1" font-weight="700" text-anchor="middle">Facebook</text>
+          <text x="72" y="21" fill="#f6f8fb" font-size="11.2" font-weight="700">主页 / Reels 协议采集</text>
           <rect x="214" y="9" width="50" height="18" rx="9" fill="rgba(245,158,11,0.15)"/>
           <text x="239" y="21" fill="#f59e0b" font-size="9.5" font-weight="700" text-anchor="middle">风控护航</text>
-          <text x="12" y="39" fill="#9ca3b4" font-size="10.2">Token / Cookie 会话 · 原图与 MP4 归档</text>
+          <text x="12" y="39" fill="#9ca3b4" font-size="10.2">SSR + 动态 GraphQL · 群组发布 &amp; 私信</text>
         </g>
       </g>
 

@@ -73,7 +73,7 @@ async def sync_dm(account_id: int):
             raise HTTPException(404, "账号不存在")
         platform = acc.platform
         dm_transport = (resolve_transport(app_runtime.cfg, platform, "dm_sync", acc)
-                        if platform in {"douyin", "instagram", "twitter"} else None)
+                        if platform in {"douyin", "instagram", "twitter", "facebook"} else None)
         if dm_transport and dm_transport["effective_mode"] == "unavailable":
             raise HTTPException(409, dm_transport["reason"] or "当前私信同步通道不可用")
         effective_mode = (dm_transport["effective_mode"]
@@ -373,7 +373,7 @@ async def fetch_dm_conversation_history(account_id: int, conv_id: str,
             if not mid or mid in seen:
                 continue
             seen.add(mid)
-            direction = (str(m.get("direction") or "") if platform in ("xhs", "bilibili", "instagram", "twitter") else
+            direction = (str(m.get("direction") or "") if platform in ("xhs", "bilibili", "instagram", "twitter", "facebook") else
                          "out" if self_uid and m.get("sender_uid") == self_uid else "in")
             card = m.get("card")
             existing = s.exec(select(DmMessage).where(

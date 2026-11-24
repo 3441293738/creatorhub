@@ -327,6 +327,11 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         return await fetch_twitter_follows(
             mgr, identity, uid, direction, max_pages=max(4, min(20, max_scrolls))
         )
+    if platform == "facebook":
+        from app.browser.facebook_fetcher import fetch_facebook_follows
+        return await fetch_facebook_follows(
+            mgr, identity, direction=direction, user_ref=uid, max_scrolls=max(4, min(20, max_scrolls))
+        )
     if platform == "instagram":
         from app.platforms.instagram import InstagramClient
         cookie_s = await _ig_cookie_str(mgr, identity)

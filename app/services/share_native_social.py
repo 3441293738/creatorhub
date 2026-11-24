@@ -8,12 +8,13 @@ import json
 from sqlmodel import select
 
 from app import runtime as app_runtime
-from app.browser import fetch_rednote_note_detail, fetch_twitter_tweet_detail, fetch_xhs_note_detail
+from app.browser import fetch_facebook_post_detail, fetch_rednote_note_detail, fetch_twitter_tweet_detail, fetch_xhs_note_detail
 from app.db import get_session
 from app.engine import Downloader
 from app.engine.share_downloader import ShareDownloadError, ShareDownloadFallback
 from app.models import DouyinAccount
 from app.platforms.douyin import safe_title
+from app.platforms.facebook import FacebookClient, parse_facebook_aweme
 from app.platforms.instagram import InstagramClient
 from app.platforms.rednote import RednoteApiClient, parse_rednote_detail, cookie_str_from_state as rednote_cookie_str_from_state, has_a1 as rednote_has_a1, resolve_rednote_note
 from app.platforms.twitter import TwitterClient, parse_twitter_aweme
@@ -312,6 +313,154 @@ async def _twitter_native_share(
     return {
         "ok": True,
         "job_id": f"twitter_{aweme.aweme_id}",
+        "url": source_url,
+        "output_dir": str(target_dir.resolve()),
+        "metadata": metadata,
+        "files": files,
+        "progress": {"status": "finished"},
+        "warnings": [],
+    }
+
+
+async def _facebook_native_share(
+    source_url: str,
+    *,
+    account_id: int | None,
+    output_root: Path,
+    quality: str = "highest",
+    should_download: bool,
+    save_metadata: bool,
+    save_thumbnail: bool,
+    proxy: str,
+    user_agent: str,
+) -> dict | None:
+    """使用 FacebookClient SSR 解析（及隔离浏览器 GraphQL 回退）下载 Facebook 帖子 / 视频 / Reels 媒体。"""
+    state_text = ""
+    acc_proxy = proxy
+    acc_ua = user_agent
+    identity = None
+    if account_id:
+        with get_session() as session:
+            acc = session.get(DouyinAccount, account_id)
+            if acc is not None and acc.platform == "facebook" and acc.status == "active":
+                state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
+                acc_proxy = proxy or (acc.proxy or "")
+                acc_ua = acc.ua or acc_ua
+                if app_runtime.browser is not None:
+                    identity = app_runtime.browser.identity_for(acc)
+
+    fcli = FacebookClient(
+        state_text,
+        acc_ua,
+        proxy=acc_proxy,
+        timeout=app_runtime.cfg.engine.request_timeout_seconds,
+    )
+    async with fcli.session_scope():
+        aweme, err = await fcli.fetch_post_detail(source_url)
+    raw_item: dict | None = None
+
+    if (aweme is None or not aweme.medias) and app_runtime.browser is not None and identity is not None and state_text:
+        node, b_err = await fetch_facebook_post_detail(app_runtime.browser, identity, source_url)
+        if node:
+            aweme = parse_facebook_aweme(node)
+            raw_item = node
+            err = ""
+        elif b_err:
+            err = err or b_err
+
+    if aweme is None or not aweme.medias:
+        if str(err or "").startswith(("logged_out:", "verification_required:")):
+            raise ShareDownloadError(f"Facebook 账号登录态异常: {err}")
+        raise ShareDownloadFallback(err or "Facebook 未提取到媒体直链，回退通用下载器")
+
+    if quality == "audio" and aweme.media_type == "video":
+        return None
+
+    metadata = share_native_service._native_aweme_metadata(aweme, aweme.source_url or source_url)
+    metadata["uploader"] = aweme.author_name or aweme.author_unique_id
+    metadata["uploader_id"] = aweme.author_unique_id
+    if not should_download:
+        return {
+            "ok": True,
+            "job_id": f"facebook_{aweme.aweme_id}",
+            "url": source_url,
+            "output_dir": str(output_root.resolve()),
+            "metadata": metadata,
+            "files": [],
+            "progress": {"status": "inspected"},
+            "warnings": [],
+        }
+
+    target_root = output_root / "facebook"
+    dl_ua = acc_ua or app_runtime.cfg.engine.user_agent
+    dl_timeout = max(30.0, float(app_runtime.cfg.engine.download_timeout_seconds))
+    downloader = Downloader(str(target_root), dl_ua, timeout=dl_timeout)
+    ok, saved_path, dl_err = await downloader.download_aweme(
+        aweme,
+        base_dir=str(target_root),
+        proxy=acc_proxy,
+        user_agent=dl_ua,
+        referer="https://www.facebook.com/",
+    )
+    if not ok:
+        raise ShareDownloadError(f"Facebook 媒体下载失败: {dl_err}")
+
+    saved = Path(saved_path)
+    target_dir = saved if saved.is_dir() else saved.parent
+    title = safe_title(aweme.desc) if str(aweme.desc or "").strip() else aweme.aweme_id
+    if save_metadata:
+        info_path = target_dir / f"{aweme.aweme_id}_{title}.info.json"
+        info_path.write_text(
+            json.dumps(
+                {
+                    **metadata,
+                    "media": [
+                        {"url": m.url, "kind": m.kind, "ext": m.ext, "index": m.index}
+                        for m in aweme.medias
+                    ],
+                    "raw": raw_item,
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+    if save_thumbnail and aweme.media_type == "video" and aweme.cover:
+        from curl_cffi.requests import AsyncSession
+        from app.netfp import curl_proxy_url, impersonate_for_ua
+
+        cover_path = target_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
+        headers = {"User-Agent": dl_ua, "Referer": "https://www.facebook.com/"}
+        try:
+            async with AsyncSession(
+                timeout=dl_timeout,
+                allow_redirects=True,
+                headers=headers,
+                proxy=curl_proxy_url(acc_proxy) or None,
+                impersonate=impersonate_for_ua(dl_ua),
+                trust_env=False,
+            ) as http:
+                await downloader._download_one(http, aweme.cover, cover_path)
+        except Exception:
+            pass
+
+    files = []
+    for path in sorted(target_dir.glob(f"{aweme.aweme_id}_*")):
+        if not path.is_file() or path.suffix.lower() in {".part", ".ytdl"}:
+            continue
+        files.append({
+            "name": path.name,
+            "path": str(path.resolve()),
+            "relative_path": path.relative_to(output_root).as_posix(),
+            "size": path.stat().st_size,
+            "role": share_downloads_service._share_file_role(path),
+        })
+    if not any(item["role"] == "media" for item in files):
+        raise ShareDownloadError("Facebook 作品解析成功，但本地未生成媒体文件")
+    return {
+        "ok": True,
+        "job_id": f"facebook_{aweme.aweme_id}",
         "url": source_url,
         "output_dir": str(target_dir.resolve()),
         "metadata": metadata,

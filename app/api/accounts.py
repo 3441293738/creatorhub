@@ -12,6 +12,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlmodel import select
 
 from app import runtime as app_runtime
@@ -19,7 +20,7 @@ from app.account_lifecycle import active_account_task, retire_account_tasks
 from app.browser.backends import ACCOUNT_BROWSER_BACKENDS, LOCAL_BACKEND, fingerprint_seed_u32
 from app.browser.ip_fingerprint import derive_ip_fingerprint
 from app.db import get_session
-from app.models import AccountRiskState, DouyinAccount, MonitorTarget
+from app.models import AccountRiskState, AccountWork, DouyinAccount, FollowEdge, MonitorTarget
 from app.platforms.rednote import has_web_session as rednote_has_web_session
 from app.platforms.xhs import has_creator_cookies
 from app.risk import OperationKind, RiskController
@@ -144,6 +145,26 @@ async def list_accounts(platform: str | None = None):
             s.exec(q).all(),
             key=lambda item: (not bool(item.pinned), int(item.sort_order or 0), item.id or 0),
         )
+        acc_ids = [a.id for a in accs if a.id is not None]
+        fan_counts: dict[int, int] = {}
+        following_counts: dict[int, int] = {}
+        work_counts: dict[int, int] = {}
+        if acc_ids:
+            for aid, direction, cnt in s.exec(
+                select(FollowEdge.account_id, FollowEdge.direction, func.count(FollowEdge.id))
+                .where(FollowEdge.account_id.in_(acc_ids))
+                .group_by(FollowEdge.account_id, FollowEdge.direction)
+            ).all():
+                if direction == "fan":
+                    fan_counts[int(aid)] = int(cnt or 0)
+                elif direction == "following":
+                    following_counts[int(aid)] = int(cnt or 0)
+            for aid, cnt in s.exec(
+                select(AccountWork.account_id, func.count(AccountWork.id))
+                .where(AccountWork.account_id.in_(acc_ids))
+                .group_by(AccountWork.account_id)
+            ).all():
+                work_counts[int(aid)] = int(cnt or 0)
         out = []
         for a in accs:
             profile_key = profile_keys.get(a.id or 0, "")
@@ -167,7 +188,7 @@ async def list_accounts(platform: str | None = None):
                     environment_check = None
             has_creator = (
                 bool(a.creator_storage_state)
-                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter")
+                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter", "facebook")
                     and bool(a.storage_state))
                 or (a.platform == "xhs" and has_creator_cookies(a.storage_state))
             )
@@ -187,9 +208,9 @@ async def list_accounts(platform: str | None = None):
                 "pinned": bool(a.pinned),
                 "sort_order": int(a.sort_order or 0),
                 "sec_uid": a.sec_uid, "douyin_id": a.douyin_id, "avatar": a.avatar,
-                "follower_count": a.follower_count,
-                "following_count": a.following_count,
-                "aweme_count": a.aweme_count,
+                "follower_count": int(a.follower_count or 0) or fan_counts.get(a.id or 0, 0),
+                "following_count": int(a.following_count or 0) or following_counts.get(a.id or 0, 0),
+                "aweme_count": max(int(a.aweme_count or 0), work_counts.get(a.id or 0, 0)),
                 "total_favorited": a.total_favorited,
                 "gender": a.gender,
                 "has_creator": has_creator,
@@ -638,6 +659,7 @@ async def refresh_account_profile(account_id: int):
                else "[ks_self_profile]" if platform == "kuaishou"
                else "[ig_self_profile]" if platform == "instagram"
                else "[tw_self_profile]" if platform == "twitter"
+               else "[fb_self_profile]" if platform == "facebook"
                else "[self_profile]")
         raise HTTPException(400, f"未能获取账号资料:请看服务端控制台 {tag} 那行日志"
                                  "(含它实际看到的请求),把它发我即可定位")
@@ -652,7 +674,7 @@ async def refresh_account_profile(account_id: int):
         )
         has_creator_login = bool(acc and (
             acc.creator_storage_state
-            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter")
+            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter", "facebook")
                 and acc.storage_state)
             or (acc.platform == "xhs" and has_creator_cookies(acc.storage_state))
         ))

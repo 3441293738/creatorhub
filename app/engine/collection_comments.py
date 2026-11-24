@@ -61,7 +61,7 @@ class CollectionCommentsMixin:
                 row.download_status = "skipped"
                 row.error = detail_error or "视频号未提供可直接下载媒体，仅保存作品元数据"
             elif (job.download_media and not aweme.medias
-                  and job.platform == "twitter" and not detail_error):
+                  and job.platform in {"twitter", "facebook"} and not detail_error):
                 row.download_status = "skipped"
                 row.error = ""
             elif job.download_media and not aweme.medias:
@@ -112,6 +112,10 @@ class CollectionCommentsMixin:
             if account is not None:
                 download_ua = download_ua or str(getattr(account, "ua", "") or "")
             download_referer = "https://x.com/"
+        elif job.platform == "facebook":
+            if account is not None:
+                download_ua = download_ua or str(getattr(account, "ua", "") or "")
+            download_referer = "https://www.facebook.com/"
         ok, local_path, error = await self.downloader.download_aweme(
             aweme, str(base_dir), routed_proxy,
             user_agent=download_ua,

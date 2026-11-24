@@ -1,4 +1,4 @@
-"""TikTok/Twitter 专有协议探测、用户搜索及小红书/B站创作辅助元数据接口。"""
+"""TikTok/Twitter/Facebook 专有协议探测、实体搜索/互动及小红书/B站创作辅助元数据接口。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,12 +8,26 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field as PydanticField
 
 from app import runtime as app_runtime
-from app.browser import do_twitter_like, do_twitter_retweet, fetch_rednote_favorite_boards, fetch_twitter_users, fetch_xhs_favorite_boards
+from app.browser import (
+    do_facebook_follow,
+    do_facebook_group_membership,
+    do_facebook_like,
+    do_facebook_share,
+    do_twitter_like,
+    do_twitter_retweet,
+    fetch_facebook_entities_search,
+    fetch_facebook_groups,
+    fetch_facebook_pages,
+    fetch_rednote_favorite_boards,
+    fetch_twitter_users,
+    fetch_xhs_favorite_boards,
+)
 from app.browser.tiktok_fetcher import fetch_tiktok_users, probe_tiktok_protocol
 from app.db import get_session
 from app.models import CommentTask, DouyinAccount
 from app.operations import record_account_operation
 from app.platforms.bilibili import CREATION_STATEMENT_OPTIONS as BILI_CREATION_STATEMENT_OPTIONS, FALLBACK_PARTITIONS as BILI_FALLBACK_PARTITIONS, BilibiliClient
+from app.platforms.facebook import FacebookClient, normalize_facebook_url, resolve_facebook_post_ref
 from app.platforms.rednote import RednoteApiClient, cookie_str_from_state as rednote_cookie_str_from_state, has_a1 as rednote_has_a1
 from app.platforms.tiktok import TikTokNativeClient, native_protocol_summary
 from app.platforms.tiktok.urls import parse_video_reference
@@ -306,6 +320,244 @@ async def twitter_interact(body: TwitterInteractIn):
     if not ok:
         raise HTTPException(400, err or f"Twitter {body.action} 执行失败")
     return {"ok": True, "action": body.action, "tweet_id": ref.tweet_id, "result": res_id}
+
+
+class FacebookSyncIn(BaseModel):
+    account_id: int
+    max_scrolls: int = PydanticField(default=8, ge=1, le=30)
+    force_browser: bool = False
+
+
+class FacebookEntitySearchIn(BaseModel):
+    account_id: int
+    keyword: str
+    scope: Literal["groups", "pages", "people"] = "groups"
+    public_only: bool = True
+    max_scrolls: int = PydanticField(default=6, ge=1, le=20)
+    limit: int = PydanticField(default=40, ge=1, le=200)
+
+
+class FacebookInteractIn(BaseModel):
+    account_id: int
+    action: Literal[
+        "like", "unlike", "share",
+        "follow", "unfollow", "like_page", "add_friend", "unfriend",
+        "join_group", "leave_group",
+    ]
+    target_url: str
+    reaction: Literal["like", "love", "care", "haha", "wow", "sad", "angry"] = "like"
+    comment_text: str = ""
+    group_url_target: str = ""
+    answers: list[str] = PydanticField(default_factory=list, max_length=10)
+    page_id: str = ""
+
+
+def _require_facebook_account(session, account_id: int) -> DouyinAccount:
+    account = session.get(DouyinAccount, account_id)
+    if (
+        not account
+        or account.platform != "facebook"
+        or account.status != "active"
+        or not (account.storage_state or account.creator_storage_state or account.cookie)
+    ):
+        raise HTTPException(400, "请选择有效的 Facebook 登录账号")
+    return account
+
+
+@router.post("/api/facebook/pages")
+async def sync_facebook_pages(body: FacebookSyncIn):
+    """同步账号管理的 Facebook 公共主页（Profile+ Pages）。"""
+    with get_session() as session:
+        account = _require_facebook_account(session, body.account_id)
+        state = account.storage_state or account.creator_storage_state or account.cookie or ""
+        ua = account.ua or app_runtime.cfg.engine.user_agent
+        proxy = account.proxy or ""
+        identity = app_runtime.browser.identity_for(account) if app_runtime.browser is not None else None
+
+    mode = str(getattr(app_runtime.cfg.engine, "facebook_read_mode", "hybrid") or "hybrid").lower()
+    api_err = ""
+    if not body.force_browser and mode in {"api", "hybrid"} and state:
+        fcli = FacebookClient(state, ua, proxy=proxy, timeout=app_runtime.cfg.engine.request_timeout_seconds)
+        async with fcli.session_scope():
+            pages, api_err = await fcli.fetch_managed_pages()
+        if pages or mode == "api" or api_err.startswith(("logged_out:", "verification_required:")):
+            return {"items": pages, "source": "api", "error": "" if api_err == "empty" else api_err}
+
+    if app_runtime.browser is None or identity is None:
+        return {"items": [], "source": "api", "error": api_err or "浏览器未就绪"}
+
+    if app_runtime.engine is not None:
+        async with app_runtime.engine.operation_guard(
+            body.account_id, OperationKind.READ_HEAVY,
+            fallback_key=f"fb-pages:{body.account_id}",
+            operation_target=identity,
+        ):
+            items, error = await fetch_facebook_pages(app_runtime.browser, identity)
+    else:
+        async with app_runtime.browser.lock_for(body.account_id):
+            items, error = await fetch_facebook_pages(app_runtime.browser, identity)
+    return {"items": items, "source": "browser", "error": "" if error == "empty" else (error or api_err)}
+
+
+@router.post("/api/facebook/groups")
+async def sync_facebook_groups(body: FacebookSyncIn):
+    """同步账号已加入的 Facebook 群组列表。"""
+    if app_runtime.browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    with get_session() as session:
+        account = _require_facebook_account(session, body.account_id)
+        identity = app_runtime.browser.identity_for(account)
+
+    if app_runtime.engine is not None:
+        async with app_runtime.engine.operation_guard(
+            body.account_id, OperationKind.READ_HEAVY,
+            fallback_key=f"fb-groups:{body.account_id}",
+            operation_target=identity,
+        ):
+            items, error = await fetch_facebook_groups(
+                app_runtime.browser, identity, max_scrolls=body.max_scrolls
+            )
+    else:
+        async with app_runtime.browser.lock_for(body.account_id):
+            items, error = await fetch_facebook_groups(
+                app_runtime.browser, identity, max_scrolls=body.max_scrolls
+            )
+    return {"items": items, "error": "" if error == "empty" else error}
+
+
+@router.post("/api/facebook/search")
+async def search_facebook_entities(body: FacebookEntitySearchIn):
+    """按关键词搜索 Facebook 群组（支持公开群组筛选）、公共主页或用户。"""
+    keyword = body.keyword.strip()
+    if not keyword:
+        raise HTTPException(422, "请输入搜索关键词")
+    if app_runtime.browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    with get_session() as session:
+        account = _require_facebook_account(session, body.account_id)
+        identity = app_runtime.browser.identity_for(account)
+
+    if app_runtime.engine is not None:
+        async with app_runtime.engine.operation_guard(
+            body.account_id, OperationKind.READ_HEAVY,
+            fallback_key=f"fb-search:{body.account_id}",
+            operation_target=identity,
+        ):
+            items, error = await fetch_facebook_entities_search(
+                app_runtime.browser,
+                identity,
+                keyword,
+                scope=body.scope,
+                public_only=body.public_only,
+                max_scrolls=body.max_scrolls,
+                limit=body.limit,
+            )
+    else:
+        async with app_runtime.browser.lock_for(body.account_id):
+            items, error = await fetch_facebook_entities_search(
+                app_runtime.browser,
+                identity,
+                keyword,
+                scope=body.scope,
+                public_only=body.public_only,
+                max_scrolls=body.max_scrolls,
+                limit=body.limit,
+            )
+    return {"items": items, "scope": body.scope, "error": "" if error == "empty" else error}
+
+
+@router.post("/api/facebook/interact")
+async def facebook_interact(body: FacebookInteractIn):
+    """受风控与节流门禁保护的 Facebook 互动接口（7 种表情赞、分享、关注/主页赞/加好友、加群/退群，支持 Page 身份切换）。"""
+    if app_runtime.browser is None or app_runtime.engine is None:
+        raise HTTPException(503, "浏览器或调度引擎未就绪")
+    target_raw = body.target_url.strip()
+    if not target_raw:
+        raise HTTPException(422, "请填写目标 Facebook 链接、用户名或群组地址")
+    target_url = normalize_facebook_url(target_raw) if "://" in target_raw else target_raw
+    post_ref = resolve_facebook_post_ref(target_raw) if body.action in {"like", "unlike", "share"} else None
+
+    with get_session() as session:
+        account = _require_facebook_account(session, body.account_id)
+        gate_err = app_runtime.engine._action_gate_error(body.account_id, 30, body.action)
+        if gate_err:
+            raise HTTPException(429, gate_err)
+        identity = app_runtime.browser.identity_for(account)
+
+    res_info = ""
+    async with app_runtime.engine.operation_guard(
+        body.account_id, OperationKind.SOCIAL,
+        fallback_key=f"fb-act:{body.account_id}",
+        operation_target=identity,
+    ):
+        if body.action in {"like", "unlike"}:
+            ok, err = await do_facebook_like(
+                app_runtime.browser,
+                identity,
+                post_ref.canonical_url if post_ref else target_url,
+                reaction=body.reaction,
+                unlike=(body.action == "unlike"),
+                page_id=body.page_id.strip(),
+                headed=True,
+            )
+            res_info = body.reaction if body.action == "like" else "unlike"
+        elif body.action == "share":
+            ok, res_info, err = await do_facebook_share(
+                app_runtime.browser,
+                identity,
+                post_ref.canonical_url if post_ref else target_url,
+                comment_text=body.comment_text.strip(),
+                group_url_target=body.group_url_target.strip(),
+                page_id=body.page_id.strip(),
+                headed=True,
+            )
+        elif body.action in {"join_group", "leave_group"}:
+            ok, err = await do_facebook_group_membership(
+                app_runtime.browser,
+                identity,
+                target_url,
+                leave=(body.action == "leave_group"),
+                answers=body.answers,
+                page_id=body.page_id.strip(),
+                headed=True,
+            )
+            res_info = body.action
+        else:
+            unfollow_flag = body.action in {"unfollow", "unfriend"}
+            action_mode = (
+                "like_page" if body.action == "like_page"
+                else "add_friend" if body.action in {"add_friend", "unfriend"}
+                else "follow"
+            )
+            ok, err = await do_facebook_follow(
+                app_runtime.browser,
+                identity,
+                target_url,
+                unfollow=unfollow_flag,
+                action_mode=action_mode,
+                headed=True,
+            )
+            res_info = body.action
+
+    if ok:
+        app_runtime.engine.risk.record_success(body.account_id, OperationKind.SOCIAL)
+    elif not str(err or "").startswith("write_uncertain:"):
+        app_runtime.engine.risk.record_failure(body.account_id, OperationKind.SOCIAL, err)
+
+    record_account_operation(
+        platform="facebook",
+        account_id=body.account_id,
+        task_type="actions",
+        task_id=(post_ref.post_id if post_ref and post_ref.post_id else target_url[:64]),
+        action=body.action,
+        status="done" if ok else ("uncertain" if str(err or "").startswith("write_uncertain:") else "failed"),
+        target=target_url,
+        channel="browser",
+        detail="" if ok else str(err or "")[:200],
+    )
+    if not ok:
+        raise HTTPException(400, err or f"Facebook {body.action} 执行失败")
+    return {"ok": True, "action": body.action, "target": target_url, "result": res_info}
 
 
 @router.get("/api/accounts/{account_id}/xhs/favorite-boards")

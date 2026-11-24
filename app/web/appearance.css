@@ -129,6 +129,12 @@ body.pf-twitter {
   --brand-shadow:0 4px 14px -4px rgba(29,155,240,.38);
   --acc:#0c7abf; --acc-solid:#0c7abf; --acc-hover:#09629b;
 }
+body.pf-facebook {
+  --brand:#1877f2; --brand-secondary:#0866ff;
+  --brand-mark:linear-gradient(135deg,#1877f2,#0a58ca);
+  --brand-shadow:0 4px 14px -4px rgba(24,119,242,.38);
+  --acc:#1565d8; --acc-solid:#1565d8; --acc-hover:#0f4eb0;
+}
 :root[data-theme="dark"] body.pf-xhs {
   --acc:#ff758a; --chart-secondary:#78d7f6;
   --bg:#171214; --bg-grad:#1b1518;
@@ -145,6 +151,7 @@ body.pf-twitter {
 :root[data-theme="dark"] body.pf-rednote { --acc:#ff7a96; }
 :root[data-theme="dark"] body.pf-instagram { --acc:#ff7ab8; }
 :root[data-theme="dark"] body.pf-twitter { --acc:#38bdf8; }
+:root[data-theme="dark"] body.pf-facebook { --acc:#60a5fa; }
 /* Resolve derived colors where platform tokens live, not at the root default. */
 body {
   --acc-soft:color-mix(in srgb,var(--acc) 10%,transparent);

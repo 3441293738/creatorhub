@@ -8,7 +8,7 @@ _log = logging.getLogger("creatorhub.browser.hub")
 
 from app.browser.channels_fetcher import fetch_channels_works
 from app.browser.fetcher import fetch_videos
-from app.browser.hub_common import _bili_cookie_str, _first, _ig_cookie_str, _num, _rednote_cookie_str, _self_profile_link, _twitter_cookie_str
+from app.browser.hub_common import _bili_cookie_str, _facebook_cookie_str, _first, _ig_cookie_str, _num, _rednote_cookie_str, _self_profile_link, _twitter_cookie_str
 from app.browser.ks_fetcher import fetch_ks_self_profile, fetch_ks_videos
 from app.browser.manager import BrowserManager
 from app.browser.rednote_fetcher import fetch_rednote_notes
@@ -221,6 +221,11 @@ def _norm_twitter_work(it: dict) -> Optional[dict]:
     return parse_twitter_creator_work(it)
 
 
+def _norm_facebook_work(it: dict) -> Optional[dict]:
+    from app.platforms.facebook import parse_facebook_creator_work
+    return parse_facebook_creator_work(it)
+
+
 async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid: str,
                               max_scrolls: int = 14) -> Tuple[List[dict], str]:
     """抓取登录账号自己发布的作品(复用各平台已有的主页拦截抓取)。
@@ -244,8 +249,8 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                 uid = self3x
         except Exception as e:
             _log.warning("快手本人主页 ID 反查失败: %r", e)
-    # 视频号 / B站 / 海外小红书创作中心 / Instagram / Twitter: 可先按本账号 Cookie 读取自身资料与作品
-    if not uid and not open_url and platform not in ("shipinhao", "bilibili", "rednote", "instagram", "twitter"):
+    # 视频号 / B站 / 海外小红书创作中心 / Instagram / Twitter / Facebook: 可先按本账号 Cookie 读取自身资料与作品
+    if not uid and not open_url and platform not in ("shipinhao", "bilibili", "rednote", "instagram", "twitter", "facebook"):
         return [], "missing_uid:账号缺自身 uid,请先点账号「刷新资料」再同步作品"
 
     known: Set[str] = set()
@@ -402,6 +407,45 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                 mgr, identity, target_ref, known, max_scrolls=max_scrolls
             )
             norm = _norm_twitter_work
+        elif platform == "facebook":
+            from app.platforms.facebook import FacebookClient, parse_facebook_creator_work
+            from app.browser.facebook_fetcher import fetch_facebook_self_profile, fetch_facebook_user_posts
+            cookie_s = await _facebook_cookie_str(mgr, identity)
+            target_ref = uid
+            if cookie_s:
+                client = FacebookClient(
+                    cookie_s,
+                    getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
+                    proxy=getattr(identity, "proxy", ""),
+                )
+                async with client.session_scope():
+                    if not target_ref:
+                        prof, perr = await client.fetch_self_profile()
+                        if perr.startswith(("logged_out:", "verification_required:")):
+                            return [], perr
+                        if prof:
+                            target_ref = str(prof.get("unique_id") or prof.get("sec_uid") or prof.get("uid") or "")
+                    if target_ref:
+                        raw_posts, _uinfo, cerr = await client.fetch_user_posts(
+                            target_ref,
+                            known_ids=known,
+                            max_pages=max(1, min(8, max_scrolls // 2 or 3)),
+                        )
+                        if raw_posts:
+                            works = [w for w in (parse_facebook_creator_work(x) for x in raw_posts) if w]
+                            if works:
+                                return works, ""
+                        if cerr.startswith(("logged_out:", "verification_required:", "rate_limit:")):
+                            return [], cerr
+            if not target_ref:
+                prof, perr = await fetch_facebook_self_profile(mgr, identity)
+                if perr.startswith(("logged_out:", "verification_required:")):
+                    return [], perr
+                target_ref = str(prof.get("unique_id") or prof.get("sec_uid") or prof.get("uid") or "")
+            items, _author, err = await fetch_facebook_user_posts(
+                mgr, identity, target_ref, known, max_scrolls=max_scrolls
+            )
+            norm = _norm_facebook_work
         elif platform == "tiktok":
             from app.browser.tiktok_fetcher import fetch_tiktok_profile_works
             items, err = await fetch_tiktok_profile_works(

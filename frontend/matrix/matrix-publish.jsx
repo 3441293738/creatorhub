@@ -138,9 +138,13 @@ export function MatrixBatchPublisher({ ctx }) {
       matrixToast("请至少勾选 1 个目标发布账号", "err");
       return;
     }
-    const nonTwitterExists = selectedAccounts.some(a => a.platform !== "twitter");
-    if (nonTwitterExists && uploadedFiles.length === 0) {
+    const requiresMedia = selectedAccounts.some(a => a.platform !== "twitter" && a.platform !== "facebook");
+    if (requiresMedia && uploadedFiles.length === 0) {
       matrixToast("所选平台需要上传至少 1 个视频或图片素材", "err");
+      return;
+    }
+    if (!requiresMedia && uploadedFiles.length === 0 && !(title.trim() || desc.trim())) {
+      matrixToast("纯文本发布请填写标题或正文内容，或上传图片/视频素材", "err");
       return;
     }
     setSubmitting(true);

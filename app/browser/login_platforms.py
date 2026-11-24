@@ -807,3 +807,114 @@ async def interactive_twitter_creator_login(
     return await interactive_twitter_login(
         mgr, identity, timeout_seconds=timeout_seconds, force_reauth=force_reauth
     )
+
+
+# ── Facebook 登录 ──
+_FACEBOOK_AUTH_BLOCKED_PATHS = (
+    "/login",
+    "/checkpoint",
+    "/two_step_verification",
+    "/disabled",
+    "/suspended",
+    "/recover/",
+    "/reg/",
+)
+
+
+async def interactive_facebook_login(
+    mgr: BrowserManager,
+    identity: Identity,
+    timeout_seconds: int = 300,
+    force_reauth: bool = False,
+) -> Tuple[bool, str, str]:
+    """Facebook 独立隔离浏览器登录（支持账号密码、2FA 动态口令与人工检查点验证）。
+
+    判定成功：`.facebook.com` 存在非空数字 `c_user` 与 `xs` Cookie，且当前页面已离开登录页、2FA 页及 `/checkpoint`。
+    """
+    ctx = await mgr.open_headed(identity)
+    if force_reauth:
+        await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
+    page = await ctx.new_page()
+    await _focus(page)
+    logged, nickname, state_json = False, "", ""
+
+    try:
+        await page.goto(
+            "https://www.facebook.com/",
+            wait_until="domcontentloaded",
+            timeout=45000,
+        )
+        await _focus(page)
+        waited = 0.0
+        stable_hits = 0
+        while waited < timeout_seconds:
+            if page.is_closed():
+                break
+            try:
+                cookies = await ctx.cookies(["https://www.facebook.com", "https://web.facebook.com", "https://m.facebook.com"])
+            except Exception:
+                break
+            cmap = {c.get("name"): c.get("value") for c in cookies if c.get("name")}
+            cur_url = str(page.url or "").lower()
+            on_fb = "facebook.com" in cur_url
+            on_blocked = any(p in cur_url for p in _FACEBOOK_AUTH_BLOCKED_PATHS)
+            c_user = str(cmap.get("c_user") or "").strip()
+            if c_user.isdigit() and cmap.get("xs") and on_fb and not on_blocked:
+                stable_hits += 1
+                if stable_hits >= 2:
+                    logged = True
+                    break
+            else:
+                stable_hits = 0
+            await asyncio.sleep(1.5)
+            waited += 1.5
+
+        if logged:
+            await human_wait(page, 1500)
+            cur_url = str(page.url or "").lower()
+            cookies = await ctx.cookies(["https://www.facebook.com", "https://web.facebook.com", "https://m.facebook.com"])
+            cmap = {c.get("name"): c.get("value") for c in cookies if c.get("name")}
+            c_user = str(cmap.get("c_user") or "").strip()
+            if c_user.isdigit() and cmap.get("xs") and not any(p in cur_url for p in _FACEBOOK_AUTH_BLOCKED_PATHS):
+                try:
+                    nav_name = await page.evaluate(
+                        """() => {
+                            const html = document.documentElement.innerHTML || '';
+                            const m = html.match(/"NAME"\\s*:\\s*"((?:\\\\.|[^"\\\\])+)"/);
+                            if (m) {
+                                try {
+                                    const decoded = JSON.parse('"' + m[1] + '"');
+                                    if (decoded && !/^facebook$/i.test(decoded)) return decoded;
+                                } catch (_) {}
+                            }
+                            const a = document.querySelector('div[role="navigation"] a[href*="profile.php"]');
+                            if (a && a.innerText) return a.innerText.trim().split('\\n')[0].trim();
+                            return '';
+                        }"""
+                    )
+                    if nav_name and str(nav_name).strip():
+                        nickname = str(nav_name).strip()[:40]
+                except Exception:
+                    pass
+                state_json = json.dumps(await ctx.storage_state())
+            else:
+                logged = False
+    finally:
+        try:
+            await ctx.close()
+        except Exception:
+            pass
+    return logged, state_json, nickname
+
+
+async def interactive_facebook_creator_login(
+    mgr: BrowserManager,
+    identity: Identity,
+    timeout_seconds: int = 300,
+    force_reauth: bool = False,
+) -> Tuple[bool, str, str]:
+    """Facebook 发布、公共主页与群组共用 `.facebook.com` 会话。"""
+    return await interactive_facebook_login(
+        mgr, identity, timeout_seconds=timeout_seconds, force_reauth=force_reauth
+    )

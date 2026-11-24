@@ -24,7 +24,7 @@ from .privacy import redact
 class WorkflowStep(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     kind: Literal["create_collection", "create_monitor"]
-    platform: Literal["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"]
+    platform: Literal["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"]
     account_id: int = Field(gt=0)
     keywords: list[str] = Field(default_factory=list, max_length=10)
     target: str = Field(default="", max_length=2000)
@@ -46,8 +46,8 @@ class WorkflowStep(BaseModel):
             if not self.target or self.keywords:
                 raise ValueError("监控需填写目标，关键词列表仅用于采集")
             if self.monitor_kind == "keyword":
-                if self.platform not in {"xhs", "rednote", "instagram", "twitter"} or len(self.target) > 80:
-                    raise ValueError("关键词监控适用于小红书/海外小红书/Instagram/Twitter，最多 80 字")
+                if self.platform not in {"xhs", "rednote", "instagram", "twitter", "facebook"} or len(self.target) > 80:
+                    raise ValueError("关键词监控适用于小红书/海外小红书/Instagram/Twitter/Facebook，最多 80 字")
             elif "://" in self.target:
                 parsed = urlsplit(self.target)
                 domains = {"douyin": ("douyin.com", "iesdouyin.com"), "xhs": ("xiaohongshu.com", "xhslink.com"),
@@ -56,7 +56,8 @@ class WorkflowStep(BaseModel):
                            "tiktok": ("tiktok.com",),
                            "bilibili": ("bilibili.com", "b23.tv"),
                            "instagram": ("instagram.com", "instagr.am"),
-                           "twitter": ("x.com", "twitter.com", "t.co")}[self.platform]
+                           "twitter": ("x.com", "twitter.com", "t.co"),
+                           "facebook": ("facebook.com", "fb.watch", "fb.me", "fb.com")}[self.platform]
                 host = (parsed.hostname or "").lower()
                 if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
                         or parsed.port not in {None, 80, 443}

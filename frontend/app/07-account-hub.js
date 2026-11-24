@@ -143,7 +143,7 @@ function switchHubTab(name) {
 // 计数徽章:纯查库汇总,进面板/换账号/切平台即刷新,不用点进子页才有数
 async function refreshHubSummary() {
   const isCurrent = beginViewRequest("hub-summary", () => String(HUB_ACC));
-  const ids = { works: "hb-myworks", following: "hb-following", fans: "hb-fans", dm: "hb-dm" };
+  const ids = { works: "hb-myworks", following: "hb-following", fans: "hb-fans", dm: "hb-dm", stats: "hb-stats" };
   const setAll = r => Object.entries(ids).forEach(([k, i]) => { const el = $(i); if (el) el.textContent = (r && r[k]) || 0; });
   if (!HUB_ACC) { setAll(null); return; }
   try { const data = await api("/api/hub/summary?account_id=" + HUB_ACC); if (isCurrent()) setAll(data); }
@@ -159,7 +159,7 @@ function refreshHubPanel() {
   else if (HUB_TAB === "stats") loadHubStats();
 }
 
-// ── 本账号数据分析(B4)──
+// ── 本账号数据分析 ──
 function _kpiCard(label, val, delta) {
   const d = (delta === undefined || delta === null || delta === 0) ? ""
     : `<span class="kpi-delta ${delta > 0 ? "pos" : "neg"}">较上次 ${delta > 0 ? "+" : "−"}${fmtNum(Math.abs(delta))}</span>`;
@@ -251,6 +251,11 @@ function workLink(platform, id) {
   if (platform === "twitter") {
     return "https://x.com/i/web/status/" + id;
   }
+  if (platform === "facebook") {
+    const raw = decodeURIComponent(id);
+    if (/^https?:\/\//i.test(raw)) return raw;
+    return "https://www.facebook.com/" + id;
+  }
   if (platform === "instagram") {
     return "https://www.instagram.com/p/" + id + "/";
   }
@@ -324,6 +329,9 @@ async function syncMyWorks() {
     catch (e) { toast("同步失败:" + e.message, "err"); }
   });
   refreshMyWorks();
+  refreshHubSummary();
+  if (typeof refreshAccounts === "function") refreshAccounts();
+  window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
 }
 
 // ── 作品评论(弹窗:抖音直连分页 / 小红书客户端 / 快手拦截,落库后展示)──
@@ -456,6 +464,8 @@ async function pollFollowSync(direction, jobId) {
           toast(`同步完成:共 ${fmtNum(job.saved || job.fetched || 0)} 条,新增 ${fmtNum(job.added || 0)}${transportSourceSuffix(job.source)}`, "ok", 5000);
           await refreshFollows(direction, 1);
           refreshHubSummary();
+          if (typeof refreshAccounts === "function") refreshAccounts();
+          window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
         } else if (job.status === "failed") toast("同步失败:" + (job.error || "未知错误"), "err");
         else if (job.status === "deferred") toast("同步暂缓:" + (job.error || "操作间隔尚未结束"), "info", 5000);
         return;

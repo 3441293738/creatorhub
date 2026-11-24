@@ -9,6 +9,7 @@
     bilibili_read_mode: "hybrid", bilibili_write_mode: "hybrid",
     instagram_read_mode: "hybrid", instagram_write_mode: "hybrid",
     twitter_read_mode: "hybrid", twitter_write_mode: "browser",
+    facebook_read_mode: "hybrid", facebook_write_mode: "browser",
     douyin_profile_mode: "hybrid", douyin_followers_mode: "hybrid",
     douyin_dm_sync_mode: "hybrid", douyin_creator_danmaku_mode: "hybrid",
     douyin_publish_mode: "browser",
@@ -128,11 +129,12 @@
     { id: 7, platform: "rednote", nickname: "Rednote 示例号", douyin_id: "rn_demo", sec_uid: "DEMO_REDNOTE_ACCOUNT", aweme_count: 19, follower_count: 540, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: true, proxy: "socks5://***:***@HOST:PORT", proxy_status: "ok" },
     { id: 8, platform: "instagram", nickname: "Instagram 示例号", douyin_id: "ig_creator_demo", sec_uid: "900100200", aweme_count: 31, follower_count: 2150, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: true, proxy: "http://***:***@HOST:PORT", proxy_status: "ok" },
     { id: 9, platform: "twitter", nickname: "Twitter 示例号", douyin_id: "x_creator_demo", sec_uid: "x_creator_demo", aweme_count: 48, follower_count: 3420, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: true, proxy: "http://***:***@HOST:PORT", proxy_status: "ok" },
+    { id: 10, platform: "facebook", nickname: "Facebook 示例号", douyin_id: "fb_creator_demo", sec_uid: "100080012345678", aweme_count: 27, follower_count: 4180, login_type: "browser", has_storage: true, has_creator: true, status: "active", monitor_count: 1, created_at: iso(86400 * 2), has_proxy: true, proxy: "http://***:***@HOST:PORT", proxy_status: "ok" },
   ];
 
   const platformAccount = (platform) => accounts.find((item) => item.platform === platform) || accounts[0];
-  const platformName = { douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram", twitter: "Twitter" };
-  const monitoredName = { douyin: "示例创作者", xhs: "城市生活研究所", rednote: "Studio Nomad", kuaishou: "影像日记", shipinhao: "本账号内容", tiktok: "GlobalCreator", bilibili: "科技美学示例 UP", instagram: "StudioVisuals", twitter: "IndieBuilder" };
+  const platformName = { douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram", twitter: "Twitter", facebook: "Facebook" };
+  const monitoredName = { douyin: "示例创作者", xhs: "城市生活研究所", rednote: "Studio Nomad", kuaishou: "影像日记", shipinhao: "本账号内容", tiktok: "GlobalCreator", bilibili: "科技美学示例 UP", instagram: "StudioVisuals", twitter: "IndieBuilder", facebook: "CreatorPageHub" };
 
   function monitor(platform) {
     const account = platformAccount(platform);
@@ -308,6 +310,12 @@
       row("twitter", "comment_write", "回复/点赞/转推/引用/关注", "twitter_write_mode", false, true),
       row("twitter", "dm_send", "私信发送", "twitter_write_mode", false, true),
       row("twitter", "publish", "纯文本/最多4图/单视频推文与首评串推", "twitter_write_mode", false, true),
+      row("facebook", "public_monitor", "主页/群组/搜索/评论读取", "facebook_read_mode", true, true),
+      row("facebook", "account_works", "本账号动态/好友/公共主页/群组读取", "facebook_read_mode", true, true),
+      row("facebook", "dm_sync", "Messenger 收件箱与历史消息同步", "facebook_read_mode", false, true),
+      row("facebook", "comment_write", "评论/7种表情赞/分享/关注/加群", "facebook_write_mode", false, true),
+      row("facebook", "dm_send", "Messenger 私信发送", "facebook_write_mode", false, true),
+      row("facebook", "publish", "个人动态/公共主页(i_user)/群组/Story与首评", "facebook_write_mode", false, true),
     ], accounts: accounts.map(account => ({
       account_id: account.id, platform: account.platform, nickname: account.nickname,
       profile_isolated: true, credential_isolated: true, api_session_isolated: true,
@@ -387,7 +395,7 @@
       return { items, unread: items.reduce((s, x) => s + x.unread_count, 0) };
     }
     if (path === "/api/matrix/overview") {
-      const pfs = ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"];
+      const pfs = ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"];
       const strip = pfs.map((pf, idx) => {
         const pfAccs = accounts.filter(a => a.platform === pf);
         return {

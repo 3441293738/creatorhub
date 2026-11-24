@@ -78,6 +78,9 @@ class EngineConfig:
     # X (Twitter) 读取与写入通道: hybrid=Syndication/REST直连优先、GraphQL时间线回退隔离浏览器; browser=全程隔离浏览器
     twitter_read_mode: str = "hybrid"         # hybrid | api | browser
     twitter_write_mode: str = "browser"       # browser
+    # Facebook 读取与写入通道: hybrid=Cookie SSR轻读优先、动态时间线/搜索/评论走隔离浏览器; browser=全程隔离浏览器
+    facebook_read_mode: str = "hybrid"        # hybrid | api | browser
+    facebook_write_mode: str = "browser"      # browser
     # 视频号读取模式: auto=优先桌面微信原生 Finder CDP 协议、回退创作者助手页面;
     # protocol=仅原生 Finder 协议; browser=仅创作者助手页面。
     channels_read_mode: str = "auto"          # auto | protocol | browser
@@ -150,7 +153,7 @@ class EngineConfig:
     native_write_require_verified_proxy: bool = True
     native_write_proxy_max_age_seconds: int = 86400
     browser_exit_probe_url: str = "https://ipinfo.io/json"
-    # ── 本账号作品健康监控(B5:盯自己作品的流量/0播/违规,发现异常推送通知)──
+    # ── 本账号作品健康监控(盯自己作品的流量/0播/违规,发现异常推送通知)──
     # 默认关闭；启用后需定期同步本账号作品，资源开销较高。
     work_health_enabled: bool = False         # 作品健康监控总开关
     work_health_interval_seconds: int = 3600  # 每个账号多久体检一次自己作品
@@ -279,7 +282,9 @@ def load_config(path: str | None = None) -> Config:
                 ("bilibili_read_mode", "hybrid"),
                 ("bilibili_write_mode", "hybrid"),
                 ("instagram_read_mode", "hybrid"),
-                ("instagram_write_mode", "hybrid")):
+                ("instagram_write_mode", "hybrid"),
+                ("twitter_read_mode", "hybrid"),
+                ("facebook_read_mode", "hybrid")):
             mode = str(getattr(cfg.engine, name, default) or default).strip().lower()
             setattr(cfg.engine, name, mode if mode in {"hybrid", "api", "browser"}
                     else default)

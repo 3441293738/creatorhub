@@ -125,6 +125,14 @@ class CommentWatchMixin:
                     w.last_error = msg
                     s.add(w); s.commit()
                     return {"ok": False, "new_comments": 0, "error": msg}
+            if platform == "facebook":
+                acc_fb = s.get(DouyinAccount, w.account_id) if w.account_id else None
+                if not w.account_id or not acc_fb or acc_fb.platform != "facebook" or acc_fb.status != "active" or not state:
+                    msg = "Facebook 评论监控必须绑定已登录且状态正常的 Facebook 账号"
+                    w.last_scan_at = datetime.utcnow()
+                    w.last_error = msg
+                    s.add(w); s.commit()
+                    return {"ok": False, "new_comments": 0, "error": msg}
 
         # 公开抖音读取可复用一个带 Cookie 的 Web API 会话；创作中心仍由
         # 浏览器处理。没有登录态时 hybrid 继续允许匿名浏览器回退。
@@ -214,6 +222,12 @@ class CommentWatchMixin:
             elif platform == "twitter":
                 total_new, author = await self._cw_twitter_video(
                     watch_id, identity, state, ua, proxy, aweme_id, name, first_scan)
+            elif platform == "facebook" and kind == "user":
+                total_new, author = await self._cw_facebook_user(
+                    watch_id, identity, state, ua, proxy, sec_uid, name, first_scan)
+            elif platform == "facebook":
+                total_new, author = await self._cw_facebook_video(
+                    watch_id, identity, state, ua, proxy, aweme_id, name, first_scan)
             elif kind == "user" and mode == "creator":
                 total_new, author = await self._cw_creator(watch_id, identity, has_creator,
                                                            name, first_scan)
@@ -244,10 +258,11 @@ class CommentWatchMixin:
                         not w.title
                         or (w.platform == "instagram" and w.title.startswith("IG "))
                         or (w.platform == "twitter" and w.title.startswith("推文 "))
+                        or (w.platform == "facebook" and w.title.startswith("FB "))
                     ):
                         w.title = author.get("nickname") or w.title
                     ava = (author.get("avatar_thumb") or {}).get("url_list") or []
-                    if ava and ava[0] and (not w.avatar or w.platform in {"instagram", "twitter"}):
+                    if ava and ava[0] and (not w.avatar or w.platform in {"instagram", "twitter", "facebook"}):
                         w.avatar = ava[0]
                 w.comment_count = len(s.exec(select(CommentRecord.id)
                                              .where(CommentRecord.watch_id == watch_id)).all())

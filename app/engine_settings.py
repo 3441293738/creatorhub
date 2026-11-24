@@ -28,6 +28,8 @@ class EngineSettingsPatch(BaseModel):
     instagram_write_mode: Literal["hybrid", "api", "browser"] | None = None
     twitter_read_mode: Literal["hybrid", "api", "browser"] | None = None
     twitter_write_mode: Literal["browser"] | None = None
+    facebook_read_mode: Literal["hybrid", "api", "browser"] | None = None
+    facebook_write_mode: Literal["browser"] | None = None
     douyin_profile_mode: Literal["hybrid", "api", "browser"] | None = None
     douyin_followers_mode: Literal["hybrid", "api", "browser"] | None = None
     douyin_dm_sync_mode: Literal["hybrid", "api", "browser"] | None = None

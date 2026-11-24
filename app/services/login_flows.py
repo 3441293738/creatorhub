@@ -1,4 +1,4 @@
-"""九平台交互式扫码/窗口登录流程编排与指纹前置校验。"""
+"""十平台交互式扫码/窗口登录流程编排与指纹前置校验。"""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -16,7 +16,7 @@ from app.account_merge import (
     duplicate_platform_account_ids,
     reconcile_platform_accounts,
 )
-from app.browser import interactive_bilibili_login, interactive_channels_login, interactive_creator_login, interactive_instagram_login, interactive_ks_creator_login, interactive_ks_login, interactive_login, interactive_rednote_creator_login, interactive_rednote_login, interactive_tiktok_login, interactive_twitter_login, interactive_xhs_creator_login, interactive_xhs_login
+from app.browser import interactive_bilibili_login, interactive_channels_login, interactive_creator_login, interactive_facebook_login, interactive_instagram_login, interactive_ks_creator_login, interactive_ks_login, interactive_login, interactive_rednote_creator_login, interactive_rednote_login, interactive_tiktok_login, interactive_twitter_login, interactive_xhs_creator_login, interactive_xhs_login
 from app.browser.backends import ACCOUNT_BROWSER_BACKENDS, LOCAL_BACKEND
 from app.browser.ip_fingerprint import derive_ip_fingerprint
 from app.db import get_session
@@ -70,6 +70,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
           else "哔哩哔哩账号" if platform == "bilibili"
           else "Instagram账号" if platform == "instagram"
           else "Twitter账号" if platform == "twitter"
+          else "Facebook账号" if platform == "facebook"
           else "TikTok账号" if platform == "tiktok"
           else "创作者账号" if creator else "扫码账号")
     try:
@@ -281,6 +282,10 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 reauth_options = {"force_reauth": True} if account_id else {}
                 ok, state_json, nickname = await interactive_twitter_login(
                     app_runtime.browser, identity, **reauth_options)
+            elif platform == "facebook":
+                reauth_options = {"force_reauth": True} if account_id else {}
+                ok, state_json, nickname = await interactive_facebook_login(
+                    app_runtime.browser, identity, **reauth_options)
             elif creator:
                 reauth_options = {"force_reauth": True} if account_id else {}
                 ok, state_json, nickname = await interactive_creator_login(
@@ -402,8 +407,8 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     # 视频号一套登录态即读取又发布,两处都写
                     acc.storage_state = state_json
                     acc.creator_storage_state = state_json
-                elif platform in {"bilibili", "instagram", "twitter"}:
-                    # B站 / Instagram / Twitter 顶域登录态同时支持读取、发布与私信
+                elif platform in {"bilibili", "instagram", "twitter", "facebook"}:
+                    # B站 / Instagram / Twitter / Facebook 顶域登录态同时支持读取、发布与私信
                     acc.storage_state = state_json
                     acc.creator_storage_state = state_json
                 elif platform == "rednote":
@@ -435,7 +440,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 acc.status = "active"
                 s.add(acc); s.commit()
 
-            if fresh_account and platform in {"xhs", "rednote", "tiktok", "instagram", "twitter"}:
+            if fresh_account and platform in {"xhs", "rednote", "tiktok", "instagram", "twitter", "facebook"}:
                 # Promote the successful temporary login session to the new
                 # durable account id without closing/reopening Chromium.
                 rebound = getattr(app_runtime.browser, "rebind_context", None)

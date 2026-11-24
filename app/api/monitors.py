@@ -14,6 +14,7 @@ from app.engine.cadence import row_deadline
 from app.models import ContentRecord, DouyinAccount, MonitorTarget
 from app.platforms.bilibili import resolve_bili_mid
 from app.platforms.douyin import resolve_sec_uid
+from app.platforms.facebook import looks_like_facebook_post, resolve_facebook_short_url, resolve_facebook_user_target
 from app.platforms.instagram import looks_like_ig_work, resolve_ig_user_target
 from app.platforms.kuaishou import resolve_ks_user_id
 from app.platforms.rednote import resolve_rednote_user
@@ -120,12 +121,12 @@ async def add_monitor(body: TargetIn, request: Request = None):
         replay = replay_if_exists(session, request=request, scope="monitor", body=body)
         if replay is not None:
             return replay
-    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook") else "douyin"
     sec_uid = keyword = xsec_token = ""
     nickname = avatar = ""
     kind = "creator"
 
-    if platform in ("xhs", "rednote", "instagram", "twitter") and body.target_kind == "keyword":
+    if platform in ("xhs", "rednote", "instagram", "twitter", "facebook") and body.target_kind == "keyword":
         kind = "keyword"
         keyword = body.url_or_secuid.strip()
         if not keyword:
@@ -194,6 +195,20 @@ async def add_monitor(body: TargetIn, request: Request = None):
             raise HTTPException(400, "无法解析 X (Twitter) 创作者，请粘贴 x.com/<username> 主页链接、@username 或数字 UID")
         if not sec_uid.isdigit():
             nickname = f"@{sec_uid}"
+    elif platform == "facebook" and kind != "keyword":
+        expanded_fb = await metadata_service._call_resolver(
+            resolve_facebook_short_url,
+            target_input,
+            user_agent=app_runtime.cfg.engine.user_agent,
+            proxy=eff_proxy,
+        )
+        if looks_like_facebook_post(expanded_fb):
+            raise HTTPException(400, "检测到 Facebook 单条帖子链接；作品监控请填写个人主页、公共主页、群组链接或切换为关键词监控")
+        sec_uid = resolve_facebook_user_target(expanded_fb)
+        if not sec_uid:
+            raise HTTPException(400, "无法解析 Facebook 目标，请粘贴个人主页/公共主页/群组链接、用户名或数字 ID")
+        if not sec_uid.isdigit() and not sec_uid.startswith("http"):
+            nickname = sec_uid
     elif platform == "douyin":
         sec_uid = await metadata_service._call_resolver(
             resolve_sec_uid, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
@@ -220,11 +235,12 @@ async def add_monitor(body: TargetIn, request: Request = None):
             raise HTTPException(400, f"下载目录不可用: {e}")
     with get_session() as s:
         def create():
-            if platform in {"douyin", "tiktok", "instagram", "twitter"}:
+            if platform in {"douyin", "tiktok", "instagram", "twitter", "facebook"}:
                 platform_name = (
                     "TikTok" if platform == "tiktok"
                     else "Instagram" if platform == "instagram"
                     else "Twitter" if platform == "twitter"
+                    else "Facebook" if platform == "facebook"
                     else "抖音"
                 )
                 if not body.account_id:
@@ -234,7 +250,7 @@ async def add_monitor(body: TargetIn, request: Request = None):
                 if (not monitor_acc or monitor_acc.platform != platform
                         or monitor_acc.status != "active"):
                     raise HTTPException(400, f"所选{platform_name}账号不存在或登录态已失效")
-                if (platform in {"tiktok", "instagram", "twitter"}
+                if (platform in {"tiktok", "instagram", "twitter", "facebook"}
                         and not (monitor_acc.storage_state
                                  or monitor_acc.creator_storage_state
                                  or monitor_acc.cookie)):
@@ -375,9 +391,9 @@ async def update_monitor(tid: int, body: TargetUpdate):
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != t.platform or acc.status != "active":
                 raise HTTPException(400, "账号不存在、登录态失效或与监控平台不匹配")
-            if (t.platform in {"tiktok", "instagram", "twitter"}
+            if (t.platform in {"tiktok", "instagram", "twitter", "facebook"}
                     and not (acc.storage_state or acc.creator_storage_state or acc.cookie)):
-                pname_t = "Instagram" if t.platform == "instagram" else "Twitter" if t.platform == "twitter" else "TikTok"
+                pname_t = {"instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook"}.get(t.platform, "TikTok")
                 raise HTTPException(400, f"所选 {pname_t} 账号缺少登录会话，请重新登录")
             if t.target_kind != "keyword":
                 _ensure_creator_monitor_available(

@@ -12,6 +12,7 @@ const platforms = {
   bilibili: { name: "哔哩哔哩", task: "下载第一条视频或监控弹幕", target: "share-download", hint: "粘贴整段哔哩哔哩分享文案或 BV 号到链接下载，也可在弹幕监控中拉取视频时间轴弹幕。" },
   instagram: { name: "Instagram", task: "下载第一条帖子或采集话题", target: "share-download", hint: "登录 Instagram 账号后，粘贴 /p/ 或 /reel/ 链接到链接下载保存原图、轮播或视频，也可在关键词采集中搜索 #话题。" },
   twitter: { name: "Twitter", task: "下载推文原片或实时搜索采集", target: "share-download", hint: "绑定海外代理并登录 X (Twitter) 账号后，粘贴 x.com/.../status/... 或 t.co 短链下载最高清视频与原图，或进行关键词与创作者批量采集。" },
+  facebook: { name: "Facebook", task: "下载帖子视频或采集主页/群组动态", target: "share-download", hint: "绑定海外代理并登录 Facebook 账号后，粘贴帖子/Reel/Watch 链接或 fb.watch 短链下载原片，也可批量采集公共主页与群组动态，或使用 i_user 切换公共主页发布内容。" },
 };
 function savedState() {
   try {

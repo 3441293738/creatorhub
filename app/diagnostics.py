@@ -108,6 +108,7 @@ def _safe_engine_snapshot() -> dict[str, Any]:
             "bilibili": eng.bilibili_read_mode,
             "instagram": eng.instagram_read_mode,
             "twitter": eng.twitter_read_mode,
+            "facebook": eng.facebook_read_mode,
             "channels": eng.channels_read_mode,
         },
         "write_modes": {
@@ -118,6 +119,7 @@ def _safe_engine_snapshot() -> dict[str, Any]:
             "bilibili": eng.bilibili_write_mode,
             "instagram": eng.instagram_write_mode,
             "twitter": eng.twitter_write_mode,
+            "facebook": eng.facebook_write_mode,
         },
         "quiet_hours": {
             "enabled": eng.quiet_hours_enabled,

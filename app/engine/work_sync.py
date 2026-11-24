@@ -359,6 +359,32 @@ class WorkSyncMixin:
                         if cid and cid not in known and cid not in dedup_tw:
                             dedup_tw[cid] = c
                     fresh = list(dedup_tw.values())
+            elif platform == "facebook":
+                from app.platforms.facebook import post_url as fb_post_url
+                configured_mode = str(
+                    getattr(self.cfg.engine, "facebook_read_mode", "hybrid") or "hybrid"
+                ).lower()
+                if identity is None and (configured_mode == "browser" or not state):
+                    error = "缺少 Facebook 账号浏览器身份"
+                else:
+                    target_u = item_id if str(item_id).startswith("http") else fb_post_url(item_id)
+                    fb_rows, fb_err, source = await self._fb_read_comments(
+                        identity,
+                        target_u,
+                        max_pages=6,
+                        max_count=200,
+                        include_replies=True,
+                        state=state,
+                        ua=ua,
+                        proxy=proxy,
+                    )
+                    error = "" if fb_rows or fb_err in {"empty", "api_empty_comments"} else fb_err
+                    dedup_fb: dict[str, dict] = {}
+                    for c in fb_rows:
+                        cid = c.get("comment_id")
+                        if cid and cid not in known and cid not in dedup_fb:
+                            dedup_fb[cid] = c
+                    fresh = list(dedup_fb.values())
             else:
                 return {"ok": False, "fetched": 0, "added": 0,
                         "error": f"不支持的平台:{platform}",

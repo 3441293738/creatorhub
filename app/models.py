@@ -393,6 +393,7 @@ class PublishTask(SQLModel, table=True):
     bili_options_json: str = "{}"                      # B站投稿扩展参数(tid/copyright/source/recreate/声明/互动开关等)
     ig_options_json: str = "{}"                        # Instagram发布扩展参数(post_kind=auto|reel|post|story, share_to_feed等)
     tw_options_json: str = "{}"                        # Twitter发布扩展参数(reply_permission/first_comment/long_text等)
+    fb_options_json: str = "{}"                        # Facebook发布扩展参数(target_type=profile|page|group|story, page_id, group_url, privacy, first_comment等)
     scheduled_at: Optional[datetime] = None            # UTC；空=尽快发
     scheduled_at_is_utc: bool = True  # 存量无时区预约需要人工确认，不自动猜时区
     status: str = "pending"        # draft | pending | publishing | uncertain | done | failed | canceled
@@ -776,14 +777,14 @@ class AccountWork(SQLModel, table=True):
     xsec_token: str = ""               # 小红书:打开笔记/抓评论所需令牌(其余平台空)
     raw_json: str = ""                 # 原始项快照
     fetched_at: Optional[datetime] = None  # 上次同步时间
-    # ── 作品健康监控(B5)去重标记:同一异常只推一次 ──
+    # ── 作品健康监控去重标记:同一异常只推一次 ──
     zero_play_alerted: bool = False    # 已就「发布满 N 小时仍 0 播」推过预警
     status_alerted: str = ""           # 已就此状态(如「违规/已删除」)推过预警(存已告警的状态文案)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class AccountStatSnapshot(SQLModel, table=True):
-    """本账号每日数据快照(B4:粉丝/作品/互动趋势)。每账号每天一行,体检时写入。"""
+    """本账号每日数据快照(粉丝/作品/互动趋势)。每账号每天一行,体检时写入。"""
     id: Optional[int] = Field(default=None, primary_key=True)
     platform: str = Field(default="douyin", index=True)
     account_id: int = Field(index=True)

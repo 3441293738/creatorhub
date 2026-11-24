@@ -33,10 +33,19 @@ class Downloader:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    @staticmethod
+    def _safe_id(aweme_id: str) -> str:
+        raw_id = str(aweme_id or "").strip()
+        if len(raw_id) > 64:
+            import hashlib
+            return f"{raw_id[:16]}_{hashlib.md5(raw_id.encode('utf-8')).hexdigest()[:12]}"
+        return raw_id
+
     def _filename(self, aweme: Aweme, m, title: str) -> str:
+        raw_id = self._safe_id(aweme.aweme_id)
         if aweme.media_type == "images" or len(getattr(aweme, "medias", ()) or ()) > 1:
-            return f"{aweme.aweme_id}_{title}_{m.index}.{m.ext}"
-        return f"{aweme.aweme_id}_{title}.{m.ext}"
+            return f"{raw_id}_{title}_{m.index}.{m.ext}"
+        return f"{raw_id}_{title}.{m.ext}"
 
     async def download_aweme(self, aweme: Aweme, base_dir: str = "",
                              proxy: str = "", *,
@@ -59,6 +68,7 @@ class Downloader:
             "https://www.bilibili.com/" if _pf == "bilibili" else
             "https://www.instagram.com/" if _pf == "instagram" else
             "https://x.com/" if _pf == "twitter" else
+            "https://www.facebook.com/" if _pf == "facebook" else
             "https://www.douyin.com/"
         )
         effective_ua = str(user_agent or self.ua)
@@ -148,7 +158,7 @@ class Downloader:
                     cover_u = str(getattr(aweme, "cover", "") or "").strip()
                     if not cover_u or any(getattr(m, "kind", "") == "image" for m in (aweme.medias or ())):
                         return
-                    cover_dest = out_dir / f"{aweme.aweme_id}_{title}.cover.jpg"
+                    cover_dest = out_dir / f"{self._safe_id(aweme.aweme_id)}_{title}.cover.jpg"
                     if cover_dest.exists() and cover_dest.stat().st_size > 0:
                         return
                     try:

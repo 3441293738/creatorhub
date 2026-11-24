@@ -116,6 +116,10 @@ def _author_id(raw: dict, platform: str) -> str:
         core_u = ((raw.get("core") or {}).get("user_results") or {}).get("result") if isinstance(raw.get("core"), dict) else raw.get("user")
         u_info = parse_twitter_user(core_u) if core_u else {}
         return str(u_info.get("unique_id") or u_info.get("uid") or raw.get("author_unique_id") or raw.get("screen_name") or "")
+    if platform == "facebook":
+        actors = raw.get("actors")
+        first_actor = actors[0] if isinstance(actors, list) and actors and isinstance(actors[0], dict) else {}
+        return str(first_actor.get("id") or raw.get("author_unique_id") or raw.get("author_name") or "")
     return str((parse_note_brief(raw) or {}).get("author_id") or "")
 
 
@@ -240,7 +244,7 @@ def _collection_content_matches(aweme: Aweme, job: KeywordCollectionJob,
                                 *, now: int | None = None) -> bool:
     if job.content_type != "all" and aweme.media_type != job.content_type:
         return False
-    if job.content_type == "images" and job.platform == "twitter" and not aweme.medias:
+    if job.content_type == "images" and job.platform in {"twitter", "facebook"} and not aweme.medias:
         return False
     if aweme.like_count < max(0, int(job.min_likes or 0)):
         return False

@@ -1077,6 +1077,8 @@ kbd, .key-button {
 .pf-instagram { background: rgba(225, 48, 108, 0.14); color: #b81d58; }
 .pf-twitter { background: rgba(29, 155, 240, 0.15); color: #0c7abf; }
 :root[data-theme=dark] .pf-twitter { background: rgba(56, 189, 248, 0.18); color: #38bdf8; }
+.pf-facebook { background: rgba(24, 119, 242, 0.15); color: #1565d8; }
+:root[data-theme=dark] .pf-facebook { background: rgba(96, 165, 250, 0.18); color: #60a5fa; }
 
 .guide-detail {
   min-width: 0;

@@ -7,7 +7,7 @@ import json
 from sqlmodel import select
 
 from app.account_lifecycle import AccountUnavailableError
-from app.browser import do_follow, do_twitter_follow, douyin_secure_post_api, send_dm, send_dm_api, send_twitter_dm
+from app.browser import do_facebook_follow, do_follow, do_twitter_follow, douyin_secure_post_api, send_dm, send_dm_api, send_facebook_dm, send_twitter_dm
 from app.browser.tiktok_actions import do_tiktok_follow, send_tiktok_dm
 from app.db import get_session
 from app.engine.monitor_helpers import _loads, log
@@ -221,6 +221,9 @@ class ActionJobMixin:
                         self.browser, identity, target_sec_uid or target_uid,
                         on_submit=lambda: self._mark_write_submit(
                             AccountActionTask, task_id))
+                elif platform == "facebook":
+                    ok, err = await do_facebook_follow(
+                        self.browser, identity, target_sec_uid or target_uid)
                 else:
                     ok, err = await do_follow(self.browser, identity, platform,
                                               target_uid, target_sec_uid)
@@ -238,6 +241,10 @@ class ActionJobMixin:
                         unfollow=True,
                         on_submit=lambda: self._mark_write_submit(
                             AccountActionTask, task_id))
+                elif platform == "facebook":
+                    ok, err = await do_facebook_follow(
+                        self.browser, identity, target_sec_uid or target_uid,
+                        unfollow=True)
                 else:
                     ok, err = await do_follow(self.browser, identity, platform,
                                               target_uid, target_sec_uid, unfollow=True)
@@ -250,6 +257,12 @@ class ActionJobMixin:
                             AccountActionTask, task_id))
                 elif platform == "twitter":
                     ok, err = await send_twitter_dm(
+                        self.browser, identity, target_sec_uid or target_uid, content,
+                        conv_id=dm_conv_id,
+                        on_submit=lambda: self._mark_write_submit(
+                            AccountActionTask, task_id))
+                elif platform == "facebook":
+                    ok, err = await send_facebook_dm(
                         self.browser, identity, target_sec_uid or target_uid, content,
                         conv_id=dm_conv_id,
                         on_submit=lambda: self._mark_write_submit(

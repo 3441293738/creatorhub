@@ -14,6 +14,14 @@ from app import runtime as app_runtime
 from app.browser import cookie_string_to_state
 from app.db import get_session
 from app.models import DouyinAccount
+from app.platforms.facebook import (
+    FacebookClient,
+    build_facebook_storage_state,
+    cookie_str_from_state as facebook_cookie_str_from_state,
+    extract_c_user_uid,
+    has_facebook_login_cookies,
+    parse_facebook_credential_input,
+)
 from app.platforms.twitter import TwitterClient, build_twitter_storage_state, parse_twitter_credential_input, cookie_str_from_state as twitter_cookie_str_from_state
 from app.profiles import assign_proxy_from_pool, ensure_identity, inspect_account_proxy_risk
 from app.services import login_flows as login_flows_service
@@ -361,6 +369,32 @@ async def login_twitter_start(proxy: str = "auto", browser_backend: str = "defau
             "hint": "已打开 X (Twitter) 登录窗口，请完成登录及两步验证(如有)"}
 
 
+@router.post("/api/login/facebook/start")
+async def login_facebook_start(proxy: str = "auto", browser_backend: str = "default",
+                               browser_runtime_id: str = "",
+                               fingerprint: dict[str, Any] | None = None):
+    """Facebook 独立浏览器登录；`.facebook.com` 会话同时用于采集、互动、私信与发布。"""
+    if app_runtime.browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = login_flows_service._validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
+    fingerprint_overrides = login_flows_service._validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await login_sessions_service._reuse_or_reject_interactive_login("facebook", False)
+    if reused is not None:
+        return reused
+    task_id = uuid.uuid4().hex
+    app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
+        status="opening", platform="facebook", creator=False, account_id=None)
+    asyncio.create_task(login_flows_service._run_login(
+        task_id, platform="facebook", proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
+    return {"task_id": task_id, "status": "opening",
+            "hint": "已打开 Facebook 登录窗口，请完成登录及双重验证/安全检查(如有)"}
+
+
 @router.get("/api/login/browser/poll")
 async def login_browser_poll(task_id: str):
     info = app_runtime.login_tasks.get(task_id)
@@ -380,8 +414,126 @@ class CookieIn(BaseModel):
 
 @router.post("/api/login/cookie")
 async def login_cookie(body: CookieIn):
-    """Cookie / Token 粘贴兜底登录:转成浏览器登录态（Twitter 支持 40 位 auth_token、多字段导出文本或 JSON Cookie）。"""
-    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter") else "douyin"
+    """Cookie / Token 粘贴兜底登录:转成浏览器登录态（Twitter 支持 auth_token，Facebook 支持 c_user/xs Cookie 字符串或 JSON Cookie）。"""
+    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook") else "douyin"
+    if platform == "facebook":
+        cookie_raw = (body.cookie or "").strip()
+        fb_cookies, fb_hint = parse_facebook_credential_input(cookie_raw)
+        if not has_facebook_login_cookies(fb_cookies):
+            raise HTTPException(
+                400,
+                "未识别到有效的 Facebook 登录 Cookie（必须同时包含 c_user 和 xs），可粘贴浏览器 Cookie 字符串、JSON Cookie 数组或含 c_user/xs 的账号导出行",
+            )
+        initial_state = build_facebook_storage_state(fb_cookies)
+        c_user = extract_c_user_uid(fb_cookies)
+        with get_session() as s:
+            existing_acc = None
+            if c_user:
+                existing_acc = s.exec(
+                    select(DouyinAccount).where(
+                        DouyinAccount.platform == "facebook",
+                        DouyinAccount.uid == c_user,
+                    )
+                ).first()
+            probe_proxy = (
+                (existing_acc.proxy or "")
+                if existing_acc and existing_acc.proxy
+                else assign_proxy_from_pool(s, app_runtime.cfg, platform="facebook")
+            )
+            probe_ua = (
+                existing_acc.ua
+                if existing_acc and existing_acc.ua
+                else app_runtime.cfg.engine.user_agent
+            )
+        fcli = FacebookClient(
+            initial_state,
+            probe_ua,
+            proxy=probe_proxy,
+            timeout=15.0,
+        )
+        try:
+            async with fcli.session_scope():
+                prof, err = await fcli.fetch_self_profile()
+        except Exception as exc:
+            prof, err = {}, str(exc)
+        prof = prof if isinstance(prof, dict) else {}
+
+        if err.startswith("logged_out:"):
+            raise HTTPException(400, "该 Facebook Cookie (c_user/xs) 无效或已过期，请核对后重试")
+
+        final_cookies = fcli.cookies if has_facebook_login_cookies(fcli.cookies) else fb_cookies
+        final_state = build_facebook_storage_state(final_cookies)
+        final_cookie_str = facebook_cookie_str_from_state(final_state)
+        resolved_uid = str(prof.get("uid") or c_user or "").strip()
+        resolved_handle = str(prof.get("douyin_id") or prof.get("unique_id") or fb_hint or resolved_uid).strip()
+        resolved_nick = (
+            body.nickname.strip()
+            or str(prof.get("nickname") or "").strip()
+            or (f"FB {resolved_uid}" if resolved_uid else "Facebook账号")
+        )
+
+        with get_session() as s:
+            acc = None
+            if resolved_uid:
+                acc = s.exec(
+                    select(DouyinAccount).where(
+                        DouyinAccount.platform == "facebook",
+                        DouyinAccount.uid == resolved_uid,
+                    )
+                ).first()
+            if acc is None and resolved_handle:
+                acc = s.exec(
+                    select(DouyinAccount).where(
+                        DouyinAccount.platform == "facebook",
+                        DouyinAccount.sec_uid == resolved_handle,
+                    )
+                ).first()
+            if acc is None:
+                acc = DouyinAccount(
+                    nickname=resolved_nick,
+                    platform="facebook",
+                    identity_mode="native",
+                )
+            elif body.nickname.strip():
+                acc.nickname = body.nickname.strip()
+            elif prof.get("nickname"):
+                acc.nickname = str(prof["nickname"]).strip()
+
+            acc.cookie = final_cookie_str
+            acc.storage_state = final_state
+            acc.creator_storage_state = final_state
+            if resolved_uid:
+                acc.uid = resolved_uid
+            if resolved_handle:
+                acc.sec_uid = resolved_handle
+                acc.douyin_id = resolved_handle
+            if prof.get("avatar"):
+                acc.avatar = str(prof["avatar"])
+            if prof:
+                acc.follower_count = int(prof.get("follower_count") or 0)
+                acc.following_count = int(prof.get("following_count") or 0)
+                acc.aweme_count = int(prof.get("aweme_count") or 0)
+                acc.status = "active"
+            elif err.startswith("verification_required:"):
+                acc.status = "verify"
+            if not acc.proxy and probe_proxy:
+                acc.proxy = probe_proxy
+            s.add(acc); s.commit(); s.refresh(acc)
+            ensure_identity(acc, app_runtime.cfg, session=s, assign_proxy=True)
+            s.add(acc); s.commit(); s.refresh(acc)
+            proxy_warns = inspect_account_proxy_risk(
+                s,
+                platform="facebook",
+                proxy_url=acc.proxy or "",
+                exclude_account_id=acc.id,
+                candidate_exit_ip=acc.exit_ip or "",
+            )
+            return {
+                "account_id": acc.id,
+                "nickname": acc.nickname,
+                "warning": err if err.startswith("verification_required:") else "",
+                "proxy_warning": "；".join(proxy_warns),
+            }
     if platform == "twitter":
         cookie_raw = (body.cookie or "").strip()
         tw_cookies, hint_user = parse_twitter_credential_input(cookie_raw)
@@ -513,7 +665,7 @@ async def login_cookie(body: CookieIn):
             identity_mode="native", cookie=body.cookie.strip(), storage_state=state,
             proxy=allocated_proxy,
             require_proxy=False,
-            creator_storage_state=(state if platform in {"bilibili", "rednote", "instagram", "twitter"} else ""))
+            creator_storage_state=(state if platform in {"bilibili", "rednote", "instagram", "twitter", "facebook"} else ""))
         s.add(acc); s.commit(); s.refresh(acc)
         ensure_identity(acc, app_runtime.cfg, session=s, assign_proxy=True)
         s.add(acc); s.commit(); s.refresh(acc)

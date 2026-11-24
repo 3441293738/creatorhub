@@ -315,6 +315,9 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
                 if rows or err.startswith(("logged_out:", "verification_required:")):
                     return rows, err
         return await fetch_twitter_dm_conversations(mgr, identity, self_uid=self_uid)
+    if platform == "facebook":
+        from app.browser.facebook_fetcher import fetch_facebook_dm_conversations
+        return await fetch_facebook_dm_conversations(mgr, identity, max_scrolls=max(3, min(12, max_scrolls)))
     if platform == "instagram":
         from app.platforms.instagram import InstagramClient
         cookie_s = await _ig_cookie_str(mgr, identity)
@@ -824,6 +827,12 @@ async def fetch_dm_history(mgr: BrowserManager, identity, platform: str,
         msgs, err = await fetch_twitter_dm_history(
             mgr, identity, conv_id, self_uid=eff_self, max_msgs=count
         )
+        if err and not msgs:
+            return {}, err
+        return {"messages": msgs, "next_cursor": "", "has_more": False}, ""
+    if platform == "facebook":
+        from app.browser.facebook_fetcher import fetch_facebook_dm_history
+        msgs, err = await fetch_facebook_dm_history(mgr, identity, conv_id)
         if err and not msgs:
             return {}, err
         return {"messages": msgs, "next_cursor": "", "has_more": False}, ""

@@ -67,7 +67,7 @@ _PLATFORM_DOMAINS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("youtube", ("youtube.com", "youtu.be")),
     ("tiktok", ("tiktok.com",)),
     ("instagram", ("instagram.com", "instagr.am")),
-    ("facebook", ("facebook.com", "fb.watch")),
+    ("facebook", ("facebook.com", "fb.watch", "fb.me", "fb.com")),
     ("twitter", ("twitter.com", "x.com", "t.co", "vxtwitter.com", "fxtwitter.com")),
     ("vimeo", ("vimeo.com",)),
     ("acfun", ("acfun.cn",)),

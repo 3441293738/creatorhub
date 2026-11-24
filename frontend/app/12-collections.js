@@ -64,10 +64,11 @@ function rebuildCollectionSources(xhs, channels, tiktok) {
   const rednote = PLATFORM === "rednote";
   const instagram = PLATFORM === "instagram";
   const twitter = PLATFORM === "twitter";
+  const facebook = PLATFORM === "facebook";
   sel.innerHTML = "";
   for (const o of COL_SOURCE_DEFS) {
     let keep;
-    if (o.channels) keep = channels || bilibili || instagram || twitter;
+    if (o.channels) keep = channels || bilibili || instagram || twitter || facebook;
     else if (o.xhs) keep = xhs || rednote;
     else keep = !(tiktok && o.value !== "keyword");
     if (!keep) continue;
@@ -98,7 +99,8 @@ function applyCollectionForm() {
   const biliAccountOnly = PLATFORM === "bilibili" && source === "account_works";
   const igAccountOnly = PLATFORM === "instagram" && source === "account_works";
   const twAccountOnly = PLATFORM === "twitter" && source === "account_works";
-  const accountWorksOnly = channelsAccountOnly || biliAccountOnly || igAccountOnly || twAccountOnly;
+  const fbAccountOnly = PLATFORM === "facebook" && source === "account_works";
+  const accountWorksOnly = channelsAccountOnly || biliAccountOnly || igAccountOnly || twAccountOnly || fbAccountOnly;
   const favorite = ["favorite_all", "favorite_board"].includes(source);
   const alternate = source !== "keyword";
   if ($("col-keywords-wrap")) $("col-keywords-wrap").style.display = alternate ? "none" : "";
@@ -113,19 +115,21 @@ function applyCollectionForm() {
       ? "新建 Instagram 本账号作品采集"
       : twAccountOnly
       ? "新建 Twitter 本账号作品采集"
+      : fbAccountOnly
+      ? "新建 Facebook 本账号作品采集"
       : favorite
       ? `新建${platformName}收藏采集`
       : source === "creator"
         ? `新建${platformName}创作者采集`
         : `新建${platformName}关键词采集`;
   }
-  if ($("collection-create-sub")) $("collection-create-sub").textContent = channelsAccountOnly ? "同步当前登录账号的视频与图文，并按需采集评论与解密媒体" : biliAccountOnly ? "同步当前登录账号的投稿稿件，并按需采集评论与下载视频" : igAccountOnly ? "同步当前登录账号的帖子与 Reels，并按需采集评论与下载原图/视频" : twAccountOnly ? "同步当前登录账号的推文与媒体，并按需采集回复与下载高清原图/视频" : channels ? "通过微信原生 Finder 协议采集作品、解密视频并拉取全量评论线程" : favorite ? "导入收藏笔记并继续抓取详情与评论" : source === "creator" ? "导入创作者公开作品并抓取评论" : xhs ? "批量搜索笔记并抓取评论" : tiktok ? "通过离线签名 API 批量搜索 TikTok 视频并抓取评论" : PLATFORM === "bilibili" ? "通过离线 WBI 签名接口批量搜索视频并抓取评论" : PLATFORM === "instagram" ? "通过 Instagram 双栈协议接口批量搜索话题/帖子并抓取评论" : PLATFORM === "twitter" ? "通过 Twitter 混合协议搜索推文并采集回复线程" : "批量搜索视频并抓取评论";
+  if ($("collection-create-sub")) $("collection-create-sub").textContent = channelsAccountOnly ? "同步当前登录账号的视频与图文，并按需采集评论与解密媒体" : biliAccountOnly ? "同步当前登录账号的投稿稿件，并按需采集评论与下载视频" : igAccountOnly ? "同步当前登录账号的帖子与 Reels，并按需采集评论与下载原图/视频" : twAccountOnly ? "同步当前登录账号的推文与媒体，并按需采集回复与下载高清原图/视频" : fbAccountOnly ? "同步当前登录账号的 Facebook 动态与媒体，并按需采集评论与下载图片/视频" : channels ? "通过微信原生 Finder 协议采集作品、解密视频并拉取全量评论线程" : favorite ? "导入收藏笔记并继续抓取详情与评论" : source === "creator" ? "导入创作者公开作品并抓取评论" : xhs ? "批量搜索笔记并抓取评论" : tiktok ? "通过离线签名 API 批量搜索 TikTok 视频并抓取评论" : PLATFORM === "bilibili" ? "通过离线 WBI 签名接口批量搜索视频并抓取评论" : PLATFORM === "instagram" ? "通过 Instagram 双栈协议接口批量搜索话题/帖子并抓取评论" : PLATFORM === "twitter" ? "通过 Twitter 混合协议搜索推文并采集回复线程" : PLATFORM === "facebook" ? "通过 Facebook 隔离浏览器拦截 GraphQL 搜索帖子、群组或主页并采集评论" : "批量搜索视频并抓取评论";
   if ($("nav-collections-label")) $("nav-collections-label").textContent = channels ? "作品批量采集" : "关键词采集";
   if ($("col-content-limit-label")) $("col-content-limit-label").textContent = accountWorksOnly ? "作品上限" : "每词作品上限";
   if ($("col-page-limit-label")) $("col-page-limit-label").innerHTML = accountWorksOnly ? '作品页采集深度 <span class="field-scope">1–40 页</span>' : '每词采集深度 <span class="field-scope">1–40 页</span>';
   if ($("col-sort-wrap")) $("col-sort-wrap").style.display = (accountWorksOnly || source === "creator") ? "none" : "";
-  if ($("col-page-help")) $("col-page-help").textContent = channelsAccountOnly ? "依次读取视频与图文管理页(或复用微信原生 Finder 主页协议)。" : biliAccountOnly ? "依次读取创作中心稿件列表接口分页。" : igAccountOnly ? "依次读取 Instagram 用户时间线 feed/user 分页。" : twAccountOnly ? "依次读取当前账号时间线 UserTweets 分页。" : channels ? "一页对应一次微信原生 Finder 搜索或主页翻页请求。" : (xhs || PLATFORM === "rednote") ? "一页对应一次搜索结果下滑或接口翻页。" : PLATFORM === "bilibili" ? "一页对应一次 WBI 搜索或 UP 主空间投稿接口翻页。" : PLATFORM === "instagram" ? "一页对应一次 tags/sections 或 feed/user 接口翻页。" : PLATFORM === "twitter" ? "一页对应一次 SearchTimeline 或 UserTweets 时间线翻页。" : "一页对应一次搜索结果下滑。";
-  if ($("col-source-ref")) $("col-source-ref").placeholder = PLATFORM === "douyin" ? "抖音 sec_uid" : PLATFORM === "xhs" ? "小红书 user_id" : PLATFORM === "rednote" ? "海外小红书 user_id / www.rednote.com 主页链接" : PLATFORM === "shipinhao" ? "视频号 v2_...@finder / sph 标识 / 主页链接" : PLATFORM === "bilibili" ? "哔哩哔哩 UP 主 mid / space 主页链接 / 视频分享文案" : PLATFORM === "instagram" ? "Instagram @username / 主页链接 / 数字 UID" : PLATFORM === "twitter" ? "Twitter @username / x.com 主页链接 / 数字 UID" : "快手 user_id / 主页链接 / 短链 / 分享文案";
+  if ($("col-page-help")) $("col-page-help").textContent = channelsAccountOnly ? "依次读取视频与图文管理页(或复用微信原生 Finder 主页协议)。" : biliAccountOnly ? "依次读取创作中心稿件列表接口分页。" : igAccountOnly ? "依次读取 Instagram 用户时间线 feed/user 分页。" : twAccountOnly ? "依次读取当前账号时间线 UserTweets 分页。" : fbAccountOnly ? "依次读取当前 Facebook 账号主页时间线滚动分页。" : channels ? "一页对应一次微信原生 Finder 搜索或主页翻页请求。" : (xhs || PLATFORM === "rednote") ? "一页对应一次搜索结果下滑或接口翻页。" : PLATFORM === "bilibili" ? "一页对应一次 WBI 搜索或 UP 主空间投稿接口翻页。" : PLATFORM === "instagram" ? "一页对应一次 tags/sections 或 feed/user 接口翻页。" : PLATFORM === "twitter" ? "一页对应一次 SearchTimeline 或 UserTweets 时间线翻页。" : PLATFORM === "facebook" ? "一页对应一次 Facebook 搜索或主页/群组时间线滚动拦截。" : "一页对应一次搜索结果下滑。";
+  if ($("col-source-ref")) $("col-source-ref").placeholder = PLATFORM === "douyin" ? "抖音 sec_uid" : PLATFORM === "xhs" ? "小红书 user_id" : PLATFORM === "rednote" ? "海外小红书 user_id / www.rednote.com 主页链接" : PLATFORM === "shipinhao" ? "视频号 v2_...@finder / sph 标识 / 主页链接" : PLATFORM === "bilibili" ? "哔哩哔哩 UP 主 mid / space 主页链接 / 视频分享文案" : PLATFORM === "instagram" ? "Instagram @username / 主页链接 / 数字 UID" : PLATFORM === "twitter" ? "Twitter @username / x.com 主页链接 / 数字 UID" : PLATFORM === "facebook" ? "Facebook 个人主页 / 公共主页 / 群组链接或数字 ID" : "快手 user_id / 主页链接 / 短链 / 分享文案";
   resetCollectionCreatorState();
   if ($("col-replies-help")) $("col-replies-help").textContent = `采集${platformName}当前可返回的回复`;
   if ($("collection-callout-title")) $("collection-callout-title").textContent = channelsAccountOnly ? "支持创作者助手本账号同步与微信原生 Finder 协议增强" : channels ? "连接本机已登录微信即可搜索、采主页、抓全量评论与解密下载（无需网页账号）" : "作品上限、采集深度和停止条件任一满足即结束";
@@ -139,6 +143,8 @@ function applyCollectionForm() {
     ? "Instagram 默认使用 Mobile v1 / Web API 直连搜索标签与关键词、读取创作者主页与 Reels、通过 stream_comments 抓取评论与回复，并按序号保存单帖或混合轮播原图/视频；普通兼容失败时自动回退独立浏览器。"
     : PLATFORM === "twitter"
     ? "Twitter 默认结合轻量 Syndication/REST 与独立浏览器拦截 GraphQL 时间线，支持关键词搜索、创作者主页、本账号推文及回复线程采集，并自动选取最高码率 MP4 与 ?name=orig 原图下载。"
+    : PLATFORM === "facebook"
+    ? "Facebook 采用独立隔离浏览器拦截原生 GraphQL 与 DOM 双层提取，支持关键词帖子搜索、个人/公共主页、公开或已加入群组及本账号动态采集与评论抓取；纯文字帖子将自动标记跳过媒体下载。"
     : xhs
     ? "小红书采集复用所选账号的可见浏览器或显式 API 读取模式；最新、类型、时间和数据门槛会在入库前复核；任务串行执行，可随时取消，已入库结果会保留。"
     : PLATFORM === "kuaishou"
@@ -288,7 +294,7 @@ function renderCollectionJobs() {
       (sourceValues.length > 5 ? `<span class="meta-chip more">+${sourceValues.length - 5}</span>` : "");
     const canCancel = ["pending", "running"].includes(job.status);
     const canRetry = ["done", "partial", "failed", "canceled"].includes(job.status);
-    const canEdit = canRetry && ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(job.platform);
+    const canEdit = canRetry && ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(job.platform);
     const needsManualClear = !!(job.manual_review_required && Number(job.account_id) > 0);
     const errorText = collectionLastError(job);
     const sortLabel = { general: "综合", latest: "最新", most_liked: "最多点赞" }[job.search_sort] || "综合";
@@ -316,7 +322,7 @@ function renderCollectionJobs() {
 }
 async function refreshCollections() {
   const isCurrent = beginViewRequest("collections");
-  if (!$("collection-job-table") || !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter"].includes(PLATFORM)) return;
+  if (!$("collection-job-table") || !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(PLATFORM)) return;
   try {
     const requestedPlatform = PLATFORM;
     const jobs = await api("/api/collections?platform=" + encodeURIComponent(requestedPlatform));
@@ -510,13 +516,13 @@ function collectionFileDisplay(item) {
 function collectionResultCard(item) {
   const title = item.desc || item.aweme_id || "未命名作品";
   const isGallery = item.media_type === "images";
-  const isTextOnly = item.platform === "twitter" && !item.media_count && !item.cover_url && item.media_type !== "video";
+  const isTextOnly = (item.platform === "twitter" || item.platform === "facebook") && !item.media_count && !item.cover_url && item.media_type !== "video";
   const typeLabel = isTextOnly ? "纯文本" : (isGallery ? `图集${item.media_count > 1 ? ` · ${item.media_count} 张` : ""}` : "视频");
   const canPreview = Boolean(item.preview_available);
   const file = collectionFileDisplay(item);
   const fileExists = Boolean(item.local_exists);
   const downloadClass = fileExists ? "done" : (!isTextOnly && item.download_status === "failed") ? "failed" : "skipped";
-  const downloadLabel = fileExists ? "已下载" : isTextOnly ? "纯文字推文" : item.download_status === "failed" ? "下载失败" : item.download_status === "done" ? "文件缺失" : "未下载";
+  const downloadLabel = fileExists ? "已下载" : isTextOnly ? "纯文字帖" : item.download_status === "failed" ? "下载失败" : item.download_status === "done" ? "文件缺失" : "未下载";
   const byline = [item.author_name || "未知作者", item.create_time ? fmtTime(item.create_time) : "", item.aweme_id || ""].filter(Boolean);
   const authorId = String(item.author_id || "").trim();
   const authorRow = authorId

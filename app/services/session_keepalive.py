@@ -36,6 +36,7 @@ PLATFORM_DEFAULT_DOMAIN: dict[str, str] = {
     "bilibili": ".bilibili.com",
     "instagram": ".instagram.com",
     "twitter": ".x.com",
+    "facebook": ".facebook.com",
 }
 
 PLATFORM_ALLOWED_ROOTS: dict[str, tuple[str, ...]] = {
@@ -48,6 +49,7 @@ PLATFORM_ALLOWED_ROOTS: dict[str, tuple[str, ...]] = {
     "bilibili": ("bilibili.com",),
     "instagram": ("instagram.com", "instagr.am"),
     "twitter": ("x.com", "twitter.com"),
+    "facebook": ("facebook.com", "messenger.com", "fb.com"),
 }
 
 # 各平台核心登录凭据 Cookie（用于防止误删核心凭据、以及估算会话临期状态）
@@ -61,6 +63,7 @@ PLATFORM_CORE_COOKIES: dict[str, tuple[str, ...]] = {
     "bilibili": ("SESSDATA", "bili_jct", "DedeUserID"),
     "instagram": ("sessionid", "ds_user_id", "csrftoken"),
     "twitter": ("auth_token", "ct0", "twid"),
+    "facebook": ("c_user", "xs", "datr", "sb"),
 }
 
 XHS_CREATOR_CORE_COOKIES: tuple[str, ...] = (
@@ -79,7 +82,7 @@ REDNOTE_CREATOR_CORE_COOKIES: tuple[str, ...] = (
 )
 
 _COOKIE_FIELDS = ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")
-_DUAL_SYNC_CREATOR_PLATFORMS = {"kuaishou", "shipinhao", "bilibili", "instagram", "twitter"}
+_DUAL_SYNC_CREATOR_PLATFORMS = {"kuaishou", "shipinhao", "bilibili", "instagram", "twitter", "facebook"}
 
 
 def _clean_domain(domain: Any) -> str:
@@ -899,12 +902,15 @@ def persist_refreshed_session(
                 account.creator_storage_state = state_json
 
         if scope == "read" and (
-            sync_cookie_str or (account.cookie and pf in {"twitter", "bilibili", "instagram", "douyin", "xhs", "rednote"})
+            sync_cookie_str or (account.cookie and pf in {"twitter", "facebook", "bilibili", "instagram", "douyin", "xhs", "rednote"})
         ):
             try:
                 if pf == "twitter":
                     from app.platforms.twitter.protocol import cookie_str_from_state as tw_cookie_str
                     account.cookie = tw_cookie_str(state_dict)
+                elif pf == "facebook":
+                    from app.platforms.facebook.protocol import cookie_str_from_state as fb_cookie_str
+                    account.cookie = fb_cookie_str(state_dict)
                 elif pf == "bilibili":
                     from app.platforms.bilibili.client import cookie_str_from_state as bili_cookie_str
                     account.cookie = bili_cookie_str(state_dict)
