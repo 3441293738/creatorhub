@@ -32,6 +32,7 @@ class CollectionDiscoverMixin:
                     keyword,
                     max_results=job.max_contents_per_keyword,
                     max_pages=job.max_pages_per_keyword,
+                    stagnant_pages=job.stagnant_pages,
                     search_sort=job.search_sort,
                     publish_time=job.publish_time,
                     content_type=job.content_type,

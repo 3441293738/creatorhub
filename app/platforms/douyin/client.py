@@ -54,7 +54,8 @@ SEARCH_STREAM_PATH = "/aweme/v1/web/general/search/stream/"
 SEARCH_SINGLE_PATH = "/aweme/v1/web/general/search/single/"
 SEARCH_PATHS = frozenset({SEARCH_SINGLE_PATH, SEARCH_STREAM_PATH})
 SEARCH_MAX_PAGE_SIZE = 20
-SEARCH_PAGE_DELAY_RANGE = (0.45, 0.85)
+SEARCH_PAGE_DELAY_RANGE = (0.65, 1.25)
+SEARCH_EMPTY_RETRY_DELAYS = (1.6, 3.0)
 
 
 def cookie_from_state(storage_state_json: str) -> str:
@@ -996,6 +997,16 @@ class DouyinClient:
                 await cli.close()
                 self._ms_token = None
 
+    @staticmethod
+    def _as_bool_flag(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() not in {"", "0", "false", "none", "null"}
+        return bool(value)
+
     async def search_awemes_page(self, keyword: str, *, offset: int = 0,
                                  count: int = 20, search_sort: str = "general",
                                  publish_time: str = "all",
@@ -1004,17 +1015,18 @@ class DouyinClient:
         from ...browser.fetcher import extract_search_awemes
         sort_codes = {"general": "0", "most_liked": "1", "latest": "2"}
         time_codes = {"all": "0", "day": "1", "week": "7", "half_year": "180"}
+        current_offset = max(0, int(offset or 0))
         params = {
             "keyword": keyword,
             "search_channel": "aweme_general",
             "search_source": "tab_search",
             "query_correct_type": "1",
             "is_filter_search": "0",
-            "offset": max(0, int(offset or 0)),
+            "offset": current_offset,
             "count": max(1, min(SEARCH_MAX_PAGE_SIZE, int(count or 15))),
             "list_type": "multi",
             "search_id": self._search_id,
-            "need_filter_settings": "1",
+            "need_filter_settings": "1" if current_offset == 0 else "0",
             "enable_history": "1",
             "from_group_id": "",
             "type": "video" if content_type == "video" else None,
@@ -1042,15 +1054,18 @@ class DouyinClient:
                 SEARCH_STREAM_PATH, stream_params,
                 referer=f"{BASE}/search/{urllib.parse.quote(keyword, safe='')}")
         if not payloads:
-            return {"items": [], "has_more": False, "offset": offset,
-                    "error": self.last_error or "empty_response"}
+            return {"items": [], "has_more": False, "offset": current_offset,
+                    "raw_count": 0, "error": self.last_error or "empty_response"}
         found: Dict[str, dict] = {}
         has_more = False
-        next_offset = offset
+        server_next_offset = 0
+        raw_entry_count = 0
         for data in payloads:
             next_search_id = str(
                 (data.get("extra") or {}).get("logid")
-                or (data.get("log_pb") or {}).get("impr_id") or "")
+                or (data.get("log_pb") or {}).get("impr_id")
+                or data.get("search_id")
+                or "")
             if next_search_id:
                 self._search_id = next_search_id
             code = data.get("status_code")
@@ -1060,48 +1075,86 @@ class DouyinClient:
                 if str(code) in {"8", "2483"} or any(word in marker for word in (
                         "未登录", "登录后", "请先登录", "login")):
                     self.last_error = "logged_out"
-                    return {"items": [], "has_more": False, "offset": offset,
-                            "error": "logged_out"}
+                    return {"items": [], "has_more": False, "offset": current_offset,
+                            "raw_count": 0, "error": "logged_out"}
                 if any(word in marker for word in (
                         "verify", "captcha", "risk", "验证", "风控")):
                     self.last_error = "verification_required"
-                    return {"items": [], "has_more": False, "offset": offset,
-                            "error": "verification_required"}
+                    return {"items": [], "has_more": False, "offset": current_offset,
+                            "raw_count": 0, "error": "verification_required"}
                 self.last_error = f"api_rejected:status_code={code}"
-                return {"items": [], "has_more": False, "offset": offset,
-                        "error": self.last_error}
+                return {"items": [], "has_more": False, "offset": current_offset,
+                        "raw_count": 0, "error": self.last_error}
             nil_info = data.get("search_nil_info") or {}
             marker = " ".join(str(nil_info.get(k) or "") for k in
                               ("search_nil_type", "search_nil_item", "text_type"))
             if any(word in marker.casefold() for word in ("verify", "captcha", "risk")):
                 self.last_error = "verification_required"
-                return {"items": [], "has_more": False, "offset": offset,
-                        "error": "verification_required"}
+                return {"items": [], "has_more": False, "offset": current_offset,
+                        "raw_count": 0, "error": "verification_required"}
+            for list_key in ("data", "aweme_list"):
+                raw_list = data.get(list_key)
+                if isinstance(raw_list, list):
+                    raw_entry_count += len(raw_list)
             for item in extract_search_awemes(data):
                 found.setdefault(str(item.get("aweme_id") or ""), item)
-            has_more = has_more or bool(data.get("has_more") or data.get("has_more_item"))
-            next_offset = max(next_offset, int(data.get("offset") or 0))
+            has_more = (
+                has_more
+                or self._as_bool_flag(data.get("has_more"))
+                or self._as_bool_flag(data.get("has_more_item"))
+            )
+            # 抖音 general/search/single 与 stream 响应的下一页游标字段通常是 cursor，
+            # 兼容 offset / next_offset，且不再用当前 offset 兜底短路递增逻辑。
+            for cursor_key in ("cursor", "offset", "next_offset"):
+                cursor_val = self._pos_int(data.get(cursor_key))
+                if cursor_val > server_next_offset:
+                    server_next_offset = cursor_val
         items = [item for key, item in found.items() if key]
+        step = max(len(items), raw_entry_count)
+        computed_offset = (
+            server_next_offset
+            if server_next_offset > current_offset
+            else (current_offset + step if step > 0 else current_offset)
+        )
         return {"items": items,
                 "has_more": has_more,
-                "offset": next_offset or (offset + len(items)),
+                "offset": computed_offset,
+                "raw_count": raw_entry_count,
                 "error": ""}
 
     async def search_awemes(self, keyword: str, *, max_results: int = 20,
-                            max_pages: int = 3, search_sort: str = "general",
+                            max_pages: int = 3, stagnant_pages: int = 3,
+                            search_sort: str = "general",
                             publish_time: str = "all", content_type: str = "all",
                             min_likes: int = 0, min_comments: int = 0,
                             page_delay_seconds: float | None = None) -> tuple[List[dict], str]:
-        """分页搜索并做本地筛选；返回 (作品列表, 可回退原因)。"""
+        """分页搜索并做本地筛选；返回 (作品列表, 可回退或截断原因)。"""
         # search_id belongs to one keyword pagination chain, not the account.
         self._search_id = ""
         found: Dict[str, dict] = {}
+        seen_raw_ids: Set[str] = set()
         offset = 0
         raw_candidates_seen = 0
+        stagnant = 0
+        pages_fetched = 0
+        stop_reason = "max_pages"
+        truncation_error = ""
+        max_pages_limit = max(1, min(40, int(max_pages or 1)))
+        stagnant_limit = max(1, min(8, int(stagnant_pages or 3)))
         # 抖音网页端搜索单页 count 超过 20 会触发网关参数异常/验证码风控；
-        # 大上限（如 50/100）必须按网页端正常每页 <=20 条配合分页间隔逐步拉取。
-        page_size = min(SEARCH_MAX_PAGE_SIZE, max(1, int(max_results or SEARCH_MAX_PAGE_SIZE)))
-        for page_index in range(max(1, min(40, int(max_pages or 1)))):
+        # 存在本地筛选门槛时按满页 20 条拉取，避免小上限叠加高赞门槛导致扫描效率过低。
+        has_local_filter = bool(
+            publish_time != "all"
+            or content_type != "all"
+            or int(min_likes or 0) > 0
+            or int(min_comments or 0) > 0
+        )
+        page_size = (
+            SEARCH_MAX_PAGE_SIZE
+            if has_local_filter
+            else min(SEARCH_MAX_PAGE_SIZE, max(1, int(max_results or SEARCH_MAX_PAGE_SIZE)))
+        )
+        for page_index in range(max_pages_limit):
             if page_index > 0:
                 delay = (random.uniform(*SEARCH_PAGE_DELAY_RANGE)
                          if page_delay_seconds is None
@@ -1112,12 +1165,45 @@ class DouyinClient:
                 keyword, offset=offset, count=page_size,
                 search_sort=search_sort, publish_time=publish_time,
                 content_type=content_type)
-            if page.get("error"):
-                page_error = str(page["error"])
+            page_error = str(page.get("error") or "")
+            if page_error and page_index > 0 and page_error in {"empty_body", "empty_response"}:
+                # 后续分页偶发空包时先温和退避重试，避免瞬时限速导致直接截断。
+                for retry_base in SEARCH_EMPTY_RETRY_DELAYS:
+                    retry_delay = (
+                        0.0
+                        if page_delay_seconds is not None and float(page_delay_seconds) <= 0
+                        else retry_base * random.uniform(0.9, 1.25)
+                    )
+                    if retry_delay > 0:
+                        await asyncio.sleep(retry_delay)
+                    page = await self.search_awemes_page(
+                        keyword, offset=offset, count=page_size,
+                        search_sort=search_sort, publish_time=publish_time,
+                        content_type=content_type)
+                    page_error = str(page.get("error") or "")
+                    if not page_error:
+                        break
+            if page_error:
                 if found and page_error in {"empty_body", "empty_response"}:
+                    stop_reason = f"partial_{page_error}"
+                    truncation_error = (
+                        f"第 {page_index + 1} 页返回空响应({page_error})，"
+                        f"已保留前 {len(found)} 条符合条件的作品"
+                    )
+                    logging.getLogger("creatorhub.douyin.client").warning(
+                        "抖音搜索分页提前截断: keyword=%r page=%d offset=%d raw_seen=%d matched=%d err=%s",
+                        keyword, page_index + 1, offset, raw_candidates_seen, len(found), page_error,
+                    )
                     break
                 return list(found.values())[:max_results], page_error
-            for item in page.get("items") or []:
+            pages_fetched += 1
+            page_items = page.get("items") or []
+            new_raw_in_page = 0
+            for item in page_items:
+                aid = str(item.get("aweme_id") or "")
+                if aid and aid not in seen_raw_ids:
+                    seen_raw_ids.add(aid)
+                    new_raw_in_page += 1
                 raw_candidates_seen += 1
                 stats = item.get("statistics") or {}
                 if content_type == "video" and not item.get("video"):
@@ -1133,21 +1219,37 @@ class DouyinClient:
                     created = int(item.get("create_time") or 0)
                     if created and created < time.time() - windows.get(publish_time, 0):
                         continue
-                aid = str(item.get("aweme_id") or "")
                 if aid:
                     found.setdefault(aid, item)
-            if len(found) >= max_results or not page.get("has_more"):
+            stagnant = stagnant + 1 if new_raw_in_page == 0 else 0
+            if len(found) >= max_results:
+                stop_reason = "max_results"
                 break
-            next_offset = int(page.get("offset") or offset + len(page.get("items") or []))
+            if not page.get("has_more"):
+                stop_reason = "no_more"
+                break
+            if stagnant >= stagnant_limit:
+                stop_reason = "stagnant"
+                break
+            page_step = max(len(page_items), int(page.get("raw_count") or 0))
+            next_offset = int(page.get("offset") or 0)
+            if next_offset <= offset and page_step > 0:
+                next_offset = offset + page_step
             if next_offset <= offset:
+                stop_reason = "offset_stalled"
                 break
             offset = next_offset
-        items = list(found.values())[:max_results]
+        items = list(found.values())
         if search_sort == "latest":
             items.sort(key=lambda x: int(x.get("create_time") or 0), reverse=True)
         elif search_sort == "most_liked":
             items.sort(key=lambda x: int((x.get("statistics") or {}).get("digg_count") or 0), reverse=True)
-        return items, ("" if (items or raw_candidates_seen > 0) else "empty_response")
+        items = items[:max_results]
+        logging.getLogger("creatorhub.douyin.client").info(
+            "抖音搜索完成: keyword=%r pages=%d raw_unique=%d matched=%d stop=%s",
+            keyword, pages_fetched, len(seen_raw_ids), len(items), stop_reason,
+        )
+        return items, (truncation_error or ("" if (items or raw_candidates_seen > 0) else "empty_response"))
 
     async def fetch_all_video_list(self, sec_uid: str, max_pages: int = 10,
                                    count: int = 20) -> List[dict]:

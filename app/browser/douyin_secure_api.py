@@ -114,7 +114,8 @@ async def douyin_secure_search_api(
             else ""
         ) or "zh-CN"
 
-        for _ in range(max(1, min(10, int(max_pages or 1)))):
+        search_id = ""
+        for _ in range(max(1, min(40, int(max_pages or 1)))):
             params = {
                 "device_platform": "webapp",
                 "aid": "6383",
@@ -144,7 +145,8 @@ async def douyin_secure_search_api(
                 # when callers only consume a smaller result limit.
                 "count": "10",
                 "list_type": "single",
-                "need_filter_settings": "1",
+                "search_id": search_id,
+                "need_filter_settings": "1" if offset == 0 else "0",
                 "enable_history": "1",
                 "disable_rs": "0",
                 "from_group_id": "",
@@ -187,8 +189,18 @@ async def douyin_secure_search_api(
             if not payloads:
                 return list(found.values()), "invalid_stream_response"
             has_more = False
-            next_offset = offset
+            server_next_offset = 0
+            page_item_count = 0
+            raw_entry_count = 0
             for payload in payloads:
+                next_search_id = str(
+                    (payload.get("extra") or {}).get("logid")
+                    or (payload.get("log_pb") or {}).get("impr_id")
+                    or payload.get("search_id")
+                    or ""
+                )
+                if next_search_id:
+                    search_id = next_search_id
                 code = payload.get("status_code")
                 message = str(payload.get("status_msg") or payload.get("message") or "")
                 marker = message.casefold()
@@ -213,7 +225,12 @@ async def douyin_secure_search_api(
                     for word in ("verify", "captcha", "risk")
                 ):
                     return list(found.values()), "verification_required"
+                for list_key in ("data", "aweme_list"):
+                    raw_list = payload.get(list_key)
+                    if isinstance(raw_list, list):
+                        raw_entry_count += len(raw_list)
                 for item in extract_search_awemes(payload):
+                    page_item_count += 1
                     aid = str(item.get("aweme_id") or "")
                     if aid and _douyin_search_item_matches(
                         item,
@@ -226,10 +243,23 @@ async def douyin_secure_search_api(
                 has_more = has_more or bool(
                     payload.get("has_more") or payload.get("has_more_item")
                 )
-                next_offset = max(next_offset, int(payload.get("offset") or 0))
+                for cursor_key in ("cursor", "offset", "next_offset"):
+                    raw_val = payload.get(cursor_key)
+                    if raw_val is not None and not isinstance(raw_val, bool):
+                        try:
+                            val = int(raw_val)
+                        except (TypeError, ValueError):
+                            val = 0
+                        if val > server_next_offset:
+                            server_next_offset = val
             if len(found) >= max_results or not has_more:
                 break
-            new_offset = next_offset or (offset + 10)
+            step = max(page_item_count, raw_entry_count)
+            new_offset = (
+                server_next_offset
+                if server_next_offset > offset
+                else (offset + step if step > 0 else offset)
+            )
             if new_offset <= offset:
                 break
             offset = new_offset

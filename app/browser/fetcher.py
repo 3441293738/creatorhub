@@ -64,6 +64,35 @@ _FIND_PROFILE_SCROLL_BOX_JS = """() => {
   return null;
 }"""
 
+_FIND_SEARCH_SCROLL_BOX_JS = """() => {
+  const vw = window.innerWidth || 1280;
+  const vh = window.innerHeight || 800;
+  const docEl = document.scrollingElement || document.documentElement;
+  const docRange = docEl ? Math.max(0, (docEl.scrollHeight || 0) - (docEl.clientHeight || vh)) : 0;
+  const nodes = [...document.querySelectorAll('main,section,div')];
+  let best = null;
+  let bestRange = 0;
+  const minW = Math.max(360, vw * 0.4);
+  for (const el of nodes) {
+    if (!el) continue;
+    const s = getComputedStyle(el);
+    if (s.overflowY !== 'auto' && s.overflowY !== 'scroll' && s.overflowY !== 'overlay') continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < minW || r.height < 240) continue;
+    const range = (el.scrollHeight || 0) - (el.clientHeight || 0);
+    if (range > 40 && range > bestRange) { best = r; bestRange = range; }
+  }
+  if (best && bestRange >= docRange) {
+    return { x: best.x, y: best.y, width: best.width, height: best.height };
+  }
+  return { x: vw * 0.25, y: vh * 0.2, width: vw * 0.55, height: vh * 0.6 };
+}"""
+
+_SEARCH_BOTTOM_PROBE_JS = """() => {
+  const txt = (document.body && document.body.innerText ? document.body.innerText : '').slice(-1500);
+  return /暂时没有更多了|没有更多了|已经到底了/.test(txt);
+}"""
+
 _DOUYIN_SEARCH_INPUTS = (
     'input[data-e2e="searchbar-input"]',
     'input[data-e2e="search-input"]',
@@ -72,7 +101,7 @@ _DOUYIN_SEARCH_INPUTS = (
 )
 
 
-async def _douyin_scroll_box(page, finder_js: str = "") -> None:
+async def _douyin_scroll_box(page, finder_js: str = "", *, distance: int | None = None) -> None:
     if finder_js:
         try:
             box = await page.evaluate(finder_js)
@@ -81,7 +110,7 @@ async def _douyin_scroll_box(page, finder_js: str = "") -> None:
                 await DEFAULT_HUMAN_ENGINE.move_mouse(page, tx, ty)
         except Exception:
             pass
-    await human_scroll(page, settle=False)
+    await human_scroll(page, distance=distance, settle=False)
 
 
 async def _submit_douyin_search(page, keyword: str) -> bool:
@@ -420,11 +449,14 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
                                context=None) -> Tuple[List[dict], str]:
     """打开抖音视频搜索页，拦截站内搜索响应并返回作品原始对象。"""
     collected: Dict[str, dict] = {}
+    seen_raw_ids: Set[str] = set()
     api_seen: List[str] = []
     error = ""
     verification_active = False
     verification_seen = False
     search_candidates_seen = 0
+    search_api_responses = 0
+    last_has_more: Optional[bool] = None
     search_sort = search_sort if search_sort in _SEARCH_SORT_CODES else "general"
     publish_time = publish_time if publish_time in _SEARCH_TIME_CODES else "all"
     content_type = content_type if content_type in {"all", "video", "images"} else "all"
@@ -440,47 +472,81 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
 
     def collect_payload(payload) -> int:
         nonlocal search_candidates_seen
-        before = len(collected)
+        raw_before = len(seen_raw_ids)
         for raw in extract_search_awemes(payload):
             search_candidates_seen += 1
             aid = str(raw.get("aweme_id") or "")
-            if aid and _douyin_search_item_matches(
+            if not aid:
+                continue
+            seen_raw_ids.add(aid)
+            if _douyin_search_item_matches(
                     raw, content_type=content_type, publish_time=publish_time,
                     min_likes=min_likes, min_comments=min_comments):
                 collected.setdefault(aid, raw)
-        return len(collected) - before
+        return len(seen_raw_ids) - raw_before
+
+    def _flag(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() not in {"", "0", "false", "none", "null"}
+        return bool(value)
 
     async def on_response(resp):
-        nonlocal verification_active, verification_seen
+        nonlocal verification_active, verification_seen, search_api_responses, last_has_more
         url = resp.url
         # 保留已知接口，同时接受路径中含 search 的新版本网页接口，避免平台只改
         # 路径就被误报成“没有发出搜索接口”。
-        is_search_api = any(marker in url for marker in SEARCH_API_MARKERS)
-        is_search_api = is_search_api or (
+        is_feed_marker = any(marker in url for marker in SEARCH_API_MARKERS)
+        is_search_api = is_feed_marker or (
             "/aweme/v1/web/" in url and "search" in urlsplit(url).path.casefold())
         if not is_search_api:
             return
         if len(api_seen) < 40:
             api_seen.append(f"{resp.status} {url.split('?')[0]}")
         try:
-            payloads = [await resp.json()]
+            parsed_json = await resp.json()
+            payloads = [parsed_json] if isinstance(parsed_json, dict) else []
         except Exception:
             try:
                 payloads = decode_douyin_search_payloads(await resp.body())
             except Exception:
                 return
+        raw_added_in_resp = 0
+        has_feed_container = False
+        response_has_more_flag: Optional[bool] = None
         for payload in payloads:
+            if not isinstance(payload, dict):
+                continue
             if _douyin_search_needs_verification(payload):
                 verification_active = True
                 verification_seen = True
                 continue
-            if collect_payload(payload):
+            added = collect_payload(payload)
+            if added:
+                raw_added_in_resp += added
                 verification_active = False
+            if (added or isinstance(payload.get("data"), list)
+                    or isinstance(payload.get("aweme_list"), list)):
+                has_feed_container = True
+            if (is_feed_marker or has_feed_container) and (
+                    "has_more" in payload or "has_more_item" in payload):
+                flag = _flag(payload.get("has_more")) or _flag(payload.get("has_more_item"))
+                response_has_more_flag = (
+                    flag if response_has_more_flag is None else (response_has_more_flag or flag)
+                )
+        if payloads and (is_feed_marker or raw_added_in_resp > 0):
+            search_api_responses += 1
+        if (is_feed_marker or has_feed_container) and response_has_more_flag is not None:
+            last_has_more = response_has_more_flag
 
     async def wait_for_verification() -> bool:
         """Bring the browser forward and wait for manual verification."""
         if not verification_active:
             return True
+        raw_at_start = len(seen_raw_ids)
         try:
             await page.bring_to_front()
         except Exception:
@@ -488,7 +554,7 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
         rounds = max(1, min(600, int(captcha_wait_seconds)))
         for _ in range(rounds):
             await human_wait(page, 1000)
-            if collected or not verification_active:
+            if len(seen_raw_ids) > raw_at_start or not verification_active:
                 return True
         return False
 
@@ -519,7 +585,7 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
 
         # 某些 AB 页面进入 URL 后不会自动提交首屏搜索。此时只操作一次页面搜索框，
         # 由抖音页面生成参数和签名；不再使用 context.request/page.fetch 兜底。
-        if not collected and not challenge_error:
+        if not seen_raw_ids and not challenge_error:
             submitted = await _submit_douyin_search(page, keyword)
             if submitted:
                 try:
@@ -536,17 +602,39 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
         for _ in range(0 if challenge_error else max(1, min(max_scrolls, 40))):
             if len(collected) >= max_results:
                 break
-            before = len(collected)
-            await _douyin_scroll_box(page, _FIND_PROFILE_SCROLL_BOX_JS)
+            raw_before = len(seen_raw_ids)
+            resp_before = search_api_responses
+            # 搜索结果每页卡片总高度通常在 2000~4500px 以上，单次小幅滚轮不足以触底
+            # 触发下一页接口；每轮执行多段拟人阻尼滚轮脉冲，一旦拦截到新搜索响应即停手等待。
+            for stroke in range(4):
+                stroke_distance = int(DEFAULT_HUMAN_ENGINE.rng.randint(850, 1350))
+                await _douyin_scroll_box(
+                    page,
+                    _FIND_SEARCH_SCROLL_BOX_JS if stroke == 0 else "",
+                    distance=stroke_distance,
+                )
+                await human_wait(page, 320)
+                if (search_api_responses > resp_before
+                        or len(collected) >= max_results
+                        or verification_active):
+                    break
             await human_wait(page, settle_ms)
             if verification_active and not await wait_for_verification():
                 challenge_error = (
                     "抖音要求完成滑块验证；本次任务已停止后续请求，"
                     "请完成验证并等待冷却后再续跑")
                 break
-            if len(collected) == before:
+            if len(seen_raw_ids) == raw_before:
                 stagnant += 1
-                if collected and stagnant >= stagnant_limit:
+                if seen_raw_ids and last_has_more is False:
+                    break
+                if seen_raw_ids and search_api_responses == resp_before:
+                    try:
+                        if await page.evaluate(_SEARCH_BOTTOM_PROBE_JS):
+                            break
+                    except Exception:
+                        pass
+                if seen_raw_ids and stagnant >= stagnant_limit:
                     break
             else:
                 stagnant = 0
@@ -568,6 +656,8 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
                 "请完成验证并等待冷却后再续跑"
                 if verification_seen else "") or douyin_search_empty_error(
                 page_title, page_text, final_url, api_seen)
+        elif challenge_error:
+            error = challenge_error
     except Exception as exc:
         error = douyin_search_exception_error(exc)
     finally:
@@ -579,10 +669,15 @@ async def fetch_douyin_search(mgr: BrowserManager, identity: Identity, keyword: 
 
     if not collected:
         _log.warning(
-            "抖音页面搜索无结果: final_url=%r title=%r api_seen=%d",
-            final_url, page_title, len(api_seen),
+            "抖音页面搜索无结果: final_url=%r title=%r api_seen=%d raw_unique=%d",
+            final_url, page_title, len(api_seen), len(seen_raw_ids),
         )
         _log.debug("抖音页面搜索 api_seen=%s", api_seen[:10])
+    else:
+        _log.info(
+            "抖音页面搜索完成: keyword=%r api_responses=%d raw_unique=%d matched=%d",
+            keyword, search_api_responses, len(seen_raw_ids), min(len(collected), max_results),
+        )
     return _sort_douyin_search_items(list(collected.values()), search_sort)[:max_results], error
 
 
