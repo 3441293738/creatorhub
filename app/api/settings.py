@@ -9,6 +9,15 @@ from pydantic import BaseModel, ValidationError
 from sqlmodel import select
 
 from app import runtime as app_runtime
+from app.ai_copywriting import (
+    CopywritingConfigUpdate,
+    get_copywriting_config,
+    get_shared_channels_summary,
+    migrate_custom_to_shared_channel,
+    public_copywriting_config,
+    resolve_runtime_ai,
+    save_copywriting_config,
+)
 from app.db import get_session
 from app.engine_settings import (
     EngineSettingsPatch,
@@ -28,7 +37,9 @@ router = APIRouter()
 class SettingsIn(BaseModel):
     download_dir: str | None = None
     video_quality: str | None = None
-    # 大模型 API 文案生成(自动评论用;OpenAI 兼容接口)
+    # 新版统一 AI 文案配置（复用 AI 助手共享渠道或独立多协议接口）
+    ai_config: CopywritingConfigUpdate | None = None
+    # 兼容旧版扁平字段
     ai_enabled: bool | None = None
     ai_base_url: str | None = None
     ai_api_key: str | None = None        # 留空=不改(避免误清空已存的 key)
@@ -38,16 +49,22 @@ class SettingsIn(BaseModel):
 
 
 def _settings_dict() -> dict:
+    ai_cfg = get_copywriting_config()
+    ai_public = public_copywriting_config(ai_cfg)
+    ai_channels = get_shared_channels_summary()
     return {
         "download_dir": get_setting("download_dir", app_runtime.cfg.engine.media_dir),
         "video_quality": get_setting("video_quality", "highest"),
-        "ai_enabled": get_setting("ai_enabled", "0") == "1",
-        "ai_base_url": get_setting("ai_base_url", ""),
-        "ai_model": get_setting("ai_model", ""),
-        "ai_prompt": get_setting("ai_prompt", ""),
-        "ai_temperature": get_setting("ai_temperature", "0.9"),
-        # 不回传明文 key,只告知是否已配置
-        "ai_api_key_set": bool(get_setting("ai_api_key", "")),
+        # 保留兼容字段
+        "ai_enabled": ai_cfg.enabled,
+        "ai_base_url": ai_cfg.base_url if ai_cfg.source == "custom" else "",
+        "ai_model": ai_public["resolved"].get("model", ""),
+        "ai_prompt": ai_cfg.custom_prompt,
+        "ai_temperature": "" if ai_cfg.temperature is None else str(ai_cfg.temperature),
+        "ai_api_key_set": bool(ai_cfg.api_key),
+        # 新版结构化 AI 文案配置与共享渠道列表
+        "ai_config": ai_public,
+        "ai_channels": ai_channels,
     }
 
 
@@ -132,23 +149,67 @@ async def put_settings(body: SettingsIn):
         if q not in metadata_service.QUALITY_CHOICES:
             raise HTTPException(400, f"画质取值无效: {q}")
         set_setting("video_quality", q)
-    if body.ai_enabled is not None:
-        set_setting("ai_enabled", "1" if body.ai_enabled else "0")
-    if body.ai_base_url is not None:
-        set_setting("ai_base_url", body.ai_base_url.strip())
-    if body.ai_model is not None:
-        set_setting("ai_model", body.ai_model.strip())
-    if body.ai_prompt is not None:
-        set_setting("ai_prompt", body.ai_prompt)
-    if body.ai_temperature is not None:
-        set_setting("ai_temperature", (body.ai_temperature or "0.9").strip())
-    if body.ai_api_key:    # 仅在传了非空值时更新,留空=保留原 key
-        set_setting("ai_api_key", body.ai_api_key.strip())
+
+    if body.ai_config is not None:
+        try:
+            save_copywriting_config(body.ai_config)
+        except ValidationError as exc:
+            details = exc.errors(include_url=False, include_context=False, include_input=False)
+            raise HTTPException(422, details) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    elif any(
+        val is not None
+        for val in (body.ai_enabled, body.ai_base_url, body.ai_api_key, body.ai_model, body.ai_prompt, body.ai_temperature)
+    ):
+        # 兼容旧版扁平字段更新
+        old = get_copywriting_config()
+        raw = old.model_dump(exclude={"api_key"})
+        raw["api_key"] = body.ai_api_key.strip() if body.ai_api_key else ""
+        if body.ai_enabled is not None:
+            raw["enabled"] = bool(body.ai_enabled)
+        if body.ai_base_url is not None:
+            raw["base_url"] = body.ai_base_url.strip()
+            if raw["base_url"]:
+                raw["source"] = "custom"
+        if body.ai_model is not None:
+            if raw.get("source") == "custom":
+                raw["model"] = body.ai_model.strip()
+            else:
+                raw["model_override"] = body.ai_model.strip()
+        if body.ai_prompt is not None:
+            raw["custom_prompt"] = body.ai_prompt
+        if body.ai_temperature is not None:
+            t = body.ai_temperature.strip()
+            if not t:
+                raw["temperature"] = None
+            else:
+                try:
+                    raw["temperature"] = float(t)
+                except ValueError as exc:
+                    raise HTTPException(400, "生成温度需为 0~2 之间的数字") from exc
+        try:
+            save_copywriting_config(CopywritingConfigUpdate.model_validate(raw))
+        except ValidationError as exc:
+            details = exc.errors(include_url=False, include_context=False, include_input=False)
+            raise HTTPException(422, details) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     return _settings_dict()
 
 
 class AiTestIn(BaseModel):
-    # 可选覆盖(便于保存前先测);留空则用已保存设置。key 留空=用已存的
+    # 新版：可直接传入未保存的完整 ai_config 草稿 + 实景测试参数
+    ai_config: CopywritingConfigUpdate | None = None
+    preset_id: str | None = None
+    rule_prompt: str | None = None
+    sample_platform: str = "douyin"
+    sample_mode: str = "auto_reply"
+    sample_work_desc: str = "周末露营实测：轻量化天幕搭建全过程，新手 5 分钟搞定"
+    sample_source_text: str = "这条视频拍得太治愈了，请问天幕是什么牌子的呀？期待更新！"
+    sample_nick: str = "山风旅人"
+    sample_kw: str = ""
+    # 兼容旧版扁平参数
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
@@ -158,23 +219,86 @@ class AiTestIn(BaseModel):
 
 @router.post("/api/settings/ai-test")
 async def ai_test(body: AiTestIn):
-    """用当前(或传入的)AI 配置做一次最小生成,验证连通性。返回 {ok, sample/error}。"""
+    """用当前(或传入的)AI 配置做一次实景生成，验证连通性与生成效果。"""
+    import time
     from app.engine import compose
-    ai = {
-        "base_url": body.base_url if body.base_url is not None else get_setting("ai_base_url", ""),
-        "api_key": body.api_key if body.api_key else get_setting("ai_api_key", ""),
-        "model": body.model if body.model is not None else get_setting("ai_model", ""),
-        "prompt": body.prompt if body.prompt is not None else get_setting("ai_prompt", ""),
-        "temperature": body.temperature or get_setting("ai_temperature", "0.9"),
-        "timeout": 25,
+
+    try:
+        if body.ai_config is not None:
+            override = {}
+            if body.preset_id:
+                override["ai_preset_id"] = body.preset_id
+            if body.rule_prompt:
+                override["ai_prompt"] = body.rule_prompt
+            ai = resolve_runtime_ai(draft=body.ai_config, rule_override=override, require_enabled=False)
+        elif any(v is not None for v in (body.base_url, body.api_key, body.model, body.prompt, body.temperature)):
+            old = get_copywriting_config()
+            raw = old.model_dump(exclude={"api_key"})
+            raw["api_key"] = body.api_key.strip() if body.api_key else ""
+            if body.base_url is not None:
+                raw["base_url"] = body.base_url.strip()
+                raw["source"] = "custom"
+            if body.model is not None:
+                if raw.get("source") == "custom":
+                    raw["model"] = body.model.strip()
+                else:
+                    raw["model_override"] = body.model.strip()
+            if body.prompt is not None:
+                raw["custom_prompt"] = body.prompt
+            if body.temperature is not None:
+                t = body.temperature.strip()
+                raw["temperature"] = float(t) if t else None
+            draft = CopywritingConfigUpdate.model_validate(raw)
+            override = {"ai_preset_id": body.preset_id or "", "ai_prompt": body.rule_prompt or ""}
+            ai = resolve_runtime_ai(draft=draft, rule_override=override, require_enabled=False)
+        else:
+            override = {"ai_preset_id": body.preset_id or "", "ai_prompt": body.rule_prompt or ""}
+            ai = resolve_runtime_ai(rule_override=override, require_enabled=False)
+    except ValidationError as exc:
+        details = exc.errors(include_url=False, include_context=False, include_input=False)
+        raise HTTPException(422, details) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    if not ai or not (ai.get("base_url") and ai.get("model")):
+        raise HTTPException(400, "请先选择有效的模型渠道，或填写接口地址与模型名称")
+
+    mode = body.sample_mode if body.sample_mode in ("auto_reply", "auto_comment") else "auto_reply"
+    ctx = {
+        "source_text": (body.sample_source_text or "").strip() or "这条视频拍得太治愈了,期待更新!",
+        "work_desc": (body.sample_work_desc or "").strip(),
+        "nick": (body.sample_nick or "").strip() or "测试用户",
+        "kw": (body.sample_kw or "").strip(),
+        "platform": (body.sample_platform or "douyin").strip().lower(),
+        "mode": mode,
     }
-    if not (ai["base_url"] and ai["api_key"] and ai["model"]):
-        raise HTTPException(400, "请先填写 Base URL / 模型,并保存或填入 API Key")
-    ctx = {"source_text": "这条视频拍得太治愈了,期待更新!", "nick": "测试用户",
-           "kw": "", "platform": "douyin", "mode": "auto_reply"}
+    t0 = time.monotonic()
     try:
         text = await compose.generate(ctx, ai)
-        return {"ok": True, "sample": text}
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return {
+            "ok": True,
+            "sample": text,
+            "elapsed_ms": elapsed_ms,
+            "provider": ai.get("provider"),
+            "model": ai.get("model"),
+            "preset_name": ai.get("preset_name"),
+            "source_label": ai.get("source_label"),
+        }
     except Exception as e:
         msg = str(e) or e.__class__.__name__
-        return {"ok": False, "error": f"{msg}(检查 Base URL / Key / 模型 / 网络/代理)"}
+        return {"ok": False, "error": msg, "provider": ai.get("provider"), "model": ai.get("model")}
+
+
+class AiMigrateIn(BaseModel):
+    display_name: str = "AI 文案渠道"
+
+
+@router.post("/api/settings/ai-migrate-to-channel")
+async def ai_migrate_to_channel(body: AiMigrateIn):
+    """将当前独立自定义 AI 文案接口一键转存为 AI 助手共享渠道，并切换为渠道复用模式。"""
+    try:
+        result = migrate_custom_to_shared_channel(body.display_name)
+        return {"ok": True, **result, "ai_channels": get_shared_channels_summary()}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc

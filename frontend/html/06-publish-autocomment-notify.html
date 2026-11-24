@@ -280,66 +280,223 @@
     <div class="card">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-plus"/></svg></span>
-        <h2>新建自动评论规则 <span class="sub">自动回复自己作品 / 自动评论他人</span></h2>
+        <h2>新建自动评论规则 <span class="sub">规则默认关闭 · 建议先试跑预览确认效果再启用</span></h2>
       </div>
       <div class="stack">
-        <div class="row">
-          <select id="ac-mode" aria-label="模式" onchange="onAcMode()">
-            <option value="auto_reply">自动回复(回自己作品评论 · 仍有写入风控)</option>
-            <option value="auto_comment">自动评论(去别人帖子 · 高风险)</option>
-          </select>
-          <select id="ac-kind" aria-label="目标类型" onchange="onAcKind()"></select>
-          <select id="ac-acc" aria-label="使用账号"></select>
+        <div class="ac-policy-strip" id="ac-create-policy-banner" data-state="ok">
+          <div class="ac-policy-copy">
+            <b id="ac-create-policy-title">正在读取当前平台生效约束…</b>
+            <p id="ac-create-policy-desc">将结合账号风控规则、小红书审核策略与 AI 文案模型自动计算最终生效行为。</p>
+          </div>
+          <div class="ac-policy-actions">
+            <button type="button" class="ghost sm" onclick="openAiSettingsSection()">配置 AI 文案 →</button>
+            <button type="button" class="ghost sm" onclick="openRiskRulesSection()">风控规则 →</button>
+          </div>
         </div>
-        <div id="ac-target-wrap">
-          <label class="field" id="ac-target-label" for="ac-target">目标</label>
-          <input id="ac-target" placeholder="">
+
+        <!-- 1. 规则与目标 -->
+        <div class="ac-section-box">
+          <div class="ac-section-title"><span>1. 规则与互动目标</span></div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="ac-name">规则名称</label>
+              <input id="ac-name" maxlength="100" placeholder="例如：露营视频粉丝答疑 / 户外关键词互动">
+            </div>
+            <div class="form-field">
+              <label for="ac-acc">执行账号</label>
+              <select id="ac-acc" aria-label="使用账号" onchange="syncAcCreatePolicySummary()"></select>
+              <div class="field-help" id="ac-acc-role-hint">发布主号（publish）仅允许回复自己作品，禁止去他人作品引流。</div>
+            </div>
+            <div class="form-field">
+              <label for="ac-mode">互动模式</label>
+              <select id="ac-mode" aria-label="模式" onchange="onAcMode()">
+                <option value="auto_reply">自动回复（回自己作品评论 · 相对温和）</option>
+                <option value="auto_comment">自动评论（去他人作品下互动 · 高风险）</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label for="ac-kind">目标范围</label>
+              <select id="ac-kind" aria-label="目标类型" onchange="onAcKind()"></select>
+            </div>
+          </div>
+          <div id="ac-target-wrap" class="form-field">
+            <label id="ac-target-label" for="ac-target">目标</label>
+            <input id="ac-target" placeholder="">
+          </div>
         </div>
-        <div>
-          <label class="field" for="ac-templates">文案模板(每行一条;支持 {nick} 对方昵称、{kw} 关键词、同义随机 {好棒|不错|赞})</label>
-          <textarea id="ac-templates" rows="4" placeholder="谢谢支持~{记得关注我哦|有空常来}&#10;写得真好,{学到了|涨知识了}"></textarea>
+
+        <!-- 2. 文案与 AI 策略 -->
+        <div class="ac-section-box">
+          <div class="ac-section-title"><span>2. 文案生成与 AI 策略</span></div>
+          <div class="form-field">
+            <label for="ac-compose-mode">生成方式</label>
+            <select id="ac-compose-mode" onchange="onAcComposeModeChange()">
+              <option value="template_only">仅使用本地模板库（支持 Spintax 随机词组）</option>
+              <option value="ai_with_fallback">AI 生成优先，失败自动回退本地模板（推荐）</option>
+              <option value="ai_only_draft">仅用 AI 生成，失败存为空草稿待人工处理（无需填模板）</option>
+              <option value="ai_only_skip">仅用 AI 生成，失败直接跳过该条（无需填模板）</option>
+            </select>
+          </div>
+          <div id="ac-ai-opts" class="stack" hidden>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="ac-ai-preset">文案人设预设</label>
+                <select id="ac-ai-preset"></select>
+              </div>
+              <div class="form-field">
+                <label for="ac-ai-max-chars">回复字数上限（0 = 跟随预设）</label>
+                <input id="ac-ai-max-chars" type="number" min="0" max="300" value="0">
+              </div>
+              <div class="form-field">
+                <label for="ac-ai-channel">指定模型渠道（可选覆盖）</label>
+                <select id="ac-ai-channel"></select>
+              </div>
+              <div class="form-field">
+                <label for="ac-ai-model">指定模型 ID（可选覆盖）</label>
+                <input id="ac-ai-model" maxlength="160" placeholder="留空跟随全局 / 渠道默认模型">
+              </div>
+            </div>
+            <div class="form-field">
+              <label for="ac-ai-prompt">本规则专属 AI 指令（可选）</label>
+              <textarea id="ac-ai-prompt" rows="2" maxlength="2000" placeholder="例如：有人问教程就说主页置顶合集里看；不要提价格。"></textarea>
+            </div>
+          </div>
+          <div id="ac-tpl-wrap" class="form-field">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px">
+              <label for="ac-templates" id="ac-tpl-label" style="margin:0">本地文案模板（每行一条）</label>
+              <button type="button" class="ghost sm" onclick="previewAcTemplates('ac-templates')">随机预览一条</button>
+            </div>
+            <textarea id="ac-templates" rows="4" placeholder="谢谢支持~{记得关注我哦|有空常来}&#10;写得真好,{学到了|涨知识了}"></textarea>
+            <div class="ai-var-chips">
+              <span class="mut" style="font-size:11.5px">点击插入：</span>
+              <button type="button" class="ai-var-chip" onclick="insertTextVar('ac-templates','{nick}')">{nick} 对方昵称</button>
+              <button type="button" class="ai-var-chip" onclick="insertTextVar('ac-templates','{kw}')">{kw} 关键词</button>
+              <button type="button" class="ai-var-chip" onclick="insertTextVar('ac-templates','{author}')">{author} 作者</button>
+              <button type="button" class="ai-var-chip" onclick="insertTextVar('ac-templates','{work_title}')">{work_title} 作品标题</button>
+              <button type="button" class="ai-var-chip" onclick="insertTextVar('ac-templates','{好棒|不错|赞}')">{a|b|c} 同义随机</button>
+            </div>
+          </div>
         </div>
-        <label class="mut" style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" id="ac-use-ai" style="width:auto"> 用大模型生成文案(需在「设置」里配好 API;失败自动回退上面的模板)
-        </label>
-        <label class="mut" style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" id="ac-review" style="width:auto"> 草稿审核(只生成不自动发,人工通过后再批量发出)
-        </label>
-        <div class="row" id="ac-filter-wrap">
-          <input id="ac-reply-filter" placeholder="仅回复正文含此关键词的评论(留空=全回)" aria-label="回复过滤">
-          <input id="ac-skip" placeholder="跳过含这些词的评论/作品(逗号分隔)" aria-label="跳过关键词">
+
+        <!-- 3. 筛选条件与发现范围 -->
+        <details class="collection-advanced" id="ac-filter-details">
+          <summary>3. 精准筛选与发现范围（关键词 / 排除词 / 评论层级 / 时效与作品数覆盖）</summary>
+          <div class="collection-advanced-body stack">
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="ac-match-mode">包含词匹配方式</label>
+                <select id="ac-match-mode">
+                  <option value="any">命中任一包含词（留空 = 全部通过）</option>
+                  <option value="all_terms">同时包含全部词</option>
+                  <option value="regex">正则表达式匹配（每行或逗号一个）</option>
+                  <option value="all">不过滤（忽略下方包含词）</option>
+                </select>
+              </div>
+              <div class="form-field" id="ac-scope-wrap">
+                <label for="ac-comment-scope">评论层级过滤</label>
+                <select id="ac-comment-scope">
+                  <option value="all">全部评论（一级 + 二级回复）</option>
+                  <option value="top_only">仅回复一级顶层评论（避免楼中楼刷屏）</option>
+                  <option value="reply_only">仅回复二级子评论</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="ac-include-kw">包含关键词（支持中英文逗号、分号或换行分隔）</label>
+                <input id="ac-include-kw" placeholder="例如：链接, 哪里买, 教程, 多少钱（留空=不限）">
+              </div>
+              <div class="form-field">
+                <label for="ac-skip">排除 / 跳过关键词（命中任一即跳过）</label>
+                <input id="ac-skip" placeholder="例如：广告, 互关, 兼职, 抽奖">
+              </div>
+            </div>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="ac-min-len">忽略过短内容（最少字数，0 = 不限）</label>
+                <input type="number" id="ac-min-len" value="0" min="0" max="500">
+              </div>
+              <div class="form-field">
+                <label for="ac-max-age">仅处理最近 N 小时内（0 = 跟随天数）</label>
+                <input type="number" id="ac-max-age" value="0" min="0" max="8760">
+              </div>
+              <div class="form-field">
+                <label for="ac-recent-works">扫描近期作品数（0 = 跟随全局默认）</label>
+                <input type="number" id="ac-recent-works" value="0" min="0" max="50">
+              </div>
+              <div class="form-field">
+                <label for="ac-recent-days">扫描近期天数（0 = 跟随全局默认）</label>
+                <input type="number" id="ac-recent-days" value="0" min="0" max="365">
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- 4. 审核与频率 -->
+        <div class="ac-section-box">
+          <div class="ac-section-title"><span>4. 审核方式与执行频率</span></div>
+          <label class="switch-row">
+            <input type="checkbox" id="ac-review" onchange="syncAcCreatePolicySummary()">
+            <span class="switch-copy"><b>发布前先存草稿人工审核</b><span id="ac-review-help">推荐开启：生成后进入「任务与审核」页核对原文与回复，人工通过后再按节流发送。</span></span>
+          </label>
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="ac-cap">本规则每日上限（0 = 跟随账号风控）</label>
+              <input type="number" id="ac-cap" value="20" min="0" oninput="syncAcCreatePolicySummary()">
+            </div>
+            <div class="form-field">
+              <label for="ac-gap">本规则最小间隔（秒）</label>
+              <input type="number" id="ac-gap" value="90" min="1" oninput="syncAcCreatePolicySummary()">
+            </div>
+            <div class="form-field">
+              <label for="ac-max">单轮最多生成条数</label>
+              <input type="number" id="ac-max" value="5" min="1" max="100">
+            </div>
+            <div class="form-field">
+              <label for="ac-interval">后台检查频率</label>
+              <select id="ac-interval" aria-label="运行频率">
+                <option value="900">每 15 分钟跑一轮</option>
+                <option value="1800" selected>每 30 分钟跑一轮</option>
+                <option value="3600">每小时跑一轮</option>
+                <option value="7200">每 2 小时跑一轮</option>
+              </select>
+            </div>
+          </div>
         </div>
-        <div class="row" style="flex-wrap:wrap;gap:10px;justify-content:flex-start">
-          <label class="mut" style="display:flex;align-items:center;gap:6px">每日上限 <input type="number" id="ac-cap" value="20" min="0" style="width:72px"></label>
-          <label class="mut" style="display:flex;align-items:center;gap:6px">最小间隔秒 <input type="number" id="ac-gap" value="90" min="1" style="width:84px"></label>
-          <label class="mut" style="display:flex;align-items:center;gap:6px">每轮最多 <input type="number" id="ac-max" value="5" min="1" style="width:72px"></label>
-          <select id="ac-interval" aria-label="运行频率" style="flex:0 0 auto">
-            <option value="900">每 15 分钟跑一轮</option>
-            <option value="1800" selected>每 30 分钟跑一轮</option>
-            <option value="3600">每小时跑一轮</option>
-          </select>
+
+        <div class="form-actions">
+          <span class="status-text" id="ac-msg" role="status" aria-live="polite"></span>
+          <button type="button" onclick="addCommentRule()"><svg><use href="#i-msg"/></svg>创建规则（默认关闭）</button>
         </div>
-        <div class="row" style="justify-content:flex-start">
-          <button onclick="addCommentRule()" style="flex:0 0 auto"><svg><use href="#i-msg"/></svg>创建规则(默认关闭)</button>
-          <span class="mut" id="ac-msg" style="flex:1"></span>
-        </div>
-        <div class="form-note warn"><svg aria-hidden="true"><use href="#i-info"/></svg><span>自动评论是平台较敏感的动作：同质化文案可能被判定为垃圾营销。规则<b>默认关闭</b>，建议先「试跑」检查生成内容，再手动启用。每个账号仍受每日总量限制。</span></div>
       </div>
     </div>
 
     <!-- 规则列表 -->
     <div class="card" data-section="rules">
-      <div class="card-head"><span class="card-ic"><svg><use href="#i-list"/></svg></span><h2>评论规则</h2></div>
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-list"/></svg></span>
+        <h2>评论规则 <span class="sub">先「试跑预览」核对命中与文案，再手动启用</span></h2>
+      </div>
+      <div class="ac-policy-strip" id="ac-rules-policy-bar" data-state="ok" style="margin-bottom:12px">
+        <div class="ac-policy-copy">
+          <b id="ac-rules-policy-title">当前平台全局生效策略</b>
+          <p id="ac-rules-policy-desc">正在加载风控限额、审核策略与 AI 文案状态…</p>
+        </div>
+        <div class="ac-policy-actions">
+          <button type="button" class="ghost sm" onclick="openAiSettingsSection()">AI 文案设置 →</button>
+          <button type="button" class="ghost sm" onclick="openRiskRulesSection()">风控规则 →</button>
+        </div>
+      </div>
       <div class="table-wrap"><table aria-label="自动评论规则列表"><thead><tr>
-        <th>名称</th><th>模式</th><th>目标</th><th>账号</th><th>每日/间隔</th><th>上次运行</th><th>状态</th><th>操作</th>
+        <th>名称与策略</th><th>模式</th><th>目标</th><th>账号</th><th>每日 / 间隔</th><th>上次运行</th><th>状态</th><th style="text-align:right">操作</th>
       </tr></thead><tbody id="ac-rule-table"></tbody></table></div>
     </div>
 
     <!-- 任务列表 -->
     <div class="card" data-section="tasks">
-      <div class="card-head"><span class="card-ic"><svg><use href="#i-msg"/></svg></span><h2>任务与审核 <span class="sub">待审草稿与自动发送记录</span></h2></div>
+      <div class="card-head"><span class="card-ic"><svg><use href="#i-msg"/></svg></span><h2>任务与审核 <span class="sub">原文与拟发文案对照审核 · 支持单条 AI 重写与批量处理</span></h2></div>
       <div class="wb-list-tools">
-        <label class="wb-search-field"><svg aria-hidden="true"><use href="#i-logo"/></svg><input type="search" id="ac-task-search" placeholder="搜索文案、作品 ID 或昵称" aria-label="搜索评论任务" oninput="renderCommentTaskRows()"></label>
+        <label class="wb-search-field"><svg aria-hidden="true"><use href="#i-logo"/></svg><input type="search" id="ac-task-search" placeholder="搜索对方原文、拟发文案、作品 ID 或昵称" aria-label="搜索评论任务" oninput="renderCommentTaskRows()"></label>
         <select id="ac-task-filter" onchange="refreshCommentTasks()" style="max-width:170px;flex:0 0 auto" aria-label="按状态筛选评论任务">
           <option value="">全部状态</option>
           <option value="draft">草稿待审</option>
@@ -351,12 +508,19 @@
         </select>
         <span class="filter-count" id="ac-task-count" role="status" aria-live="polite"></span>
       </div>
+      <div id="ac-sel-bar" class="ac-sel-bar" hidden>
+        <span id="ac-sel-info" style="flex:1;font-size:12.5px">已选 0 条</span>
+        <button type="button" class="sm" onclick="approveSelectedDrafts()"><svg><use href="#i-check"/></svg>通过所选草稿</button>
+        <button type="button" class="ghost sm danger" onclick="cancelSelectedTasks()">批量弃用/取消</button>
+        <button type="button" class="ghost sm" onclick="clearAcTaskSelection()">清空选择</button>
+      </div>
       <div id="ac-draft-bar" class="hint" style="display:none;align-items:center;gap:10px;border-left:3px solid var(--info);padding:8px 12px;margin-bottom:10px;background:var(--info-soft);border-radius:var(--r-xs)">
         <span id="ac-draft-count" style="flex:1"></span>
-        <button class="sm" onclick="approveAllDrafts()"><svg><use href="#i-check"/></svg>全部通过</button>
+        <button type="button" class="sm" onclick="approveAllDrafts()"><svg><use href="#i-check"/></svg>通过全部可发草稿</button>
       </div>
       <div class="table-wrap"><table aria-label="自动评论任务记录"><thead><tr>
-        <th>评论文案</th><th>目标与账号</th><th>互动类型</th><th>计划时间</th><th>执行通道</th><th>状态</th><th style="text-align:right">操作</th>
+        <th style="width:34px"><input type="checkbox" id="ac-task-check-all" aria-label="全选当前列表任务" onchange="toggleSelectAllAcTasks(this.checked)"></th>
+        <th>原文与拟发文案</th><th>目标与账号</th><th>互动类型</th><th>计划时间</th><th>执行通道</th><th>状态</th><th style="text-align:right">操作</th>
       </tr></thead><tbody id="ac-task-table"></tbody></table></div>
     </div>
   </section>

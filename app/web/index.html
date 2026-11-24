@@ -3570,6 +3570,103 @@
     .eng-sticky-bar { position:static; }
     .eng-sticky-actions { width:100%; justify-content:flex-end; }
   }
+
+  /* ── AI 文案配置中心与自动评论规则升级样式 ── */
+  .ai-status-strip,
+  .ac-policy-strip {
+    display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+    padding:12px 14px; border-radius:var(--r-sm);
+    border:1px solid var(--line); background:var(--surface-2);
+  }
+  .ai-status-strip[data-state="ready"],
+  .ac-policy-strip[data-state="ok"] {
+    border-color:color-mix(in srgb, var(--success) 32%, var(--line));
+    background:color-mix(in srgb, var(--success-soft) 55%, var(--surface));
+  }
+  .ai-status-strip[data-state="warn"],
+  .ac-policy-strip[data-state="warn"] {
+    border-color:color-mix(in srgb, var(--warn) 38%, var(--line));
+    background:color-mix(in srgb, var(--warn-soft) 55%, var(--surface));
+  }
+  .ai-status-copy,
+  .ac-policy-copy { min-width:0; flex:1 1 280px; }
+  .ai-status-copy b,
+  .ac-policy-copy b { display:block; font-size:13px; color:var(--fg-strong); }
+  .ai-status-copy p,
+  .ac-policy-copy p { margin:3px 0 0; font-size:12px; color:var(--mut); line-height:1.45; }
+  .ai-status-actions,
+  .ac-policy-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .ai-var-chips { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:6px; }
+  .ai-var-chip {
+    display:inline-flex; align-items:center; gap:4px;
+    padding:2px 8px; border-radius:999px; font:500 11.5px/1.4 var(--mono);
+    border:1px solid var(--line); background:var(--surface-2); color:var(--fg);
+    cursor:pointer; min-height:24px; transition:border-color .15s ease, background .15s ease;
+  }
+  .ai-var-chip:hover { border-color:var(--acc); background:var(--acc-soft); color:var(--acc); }
+  .ai-source-seg { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+  .ai-source-opt {
+    display:flex; align-items:flex-start; gap:10px; padding:11px 12px;
+    border-radius:var(--r-sm); border:1px solid var(--line); background:var(--surface);
+    cursor:pointer; transition:border-color .15s ease, background .15s ease;
+  }
+  .ai-source-opt:has(input:checked) {
+    border-color:var(--acc); background:color-mix(in srgb, var(--acc-soft) 55%, var(--surface));
+  }
+  .ai-source-opt input { width:auto; margin-top:2px; flex:0 0 auto; }
+  .ai-source-opt b { display:block; font-size:13px; color:var(--fg-strong); }
+  .ai-source-opt small { display:block; margin-top:2px; font-size:11.5px; color:var(--mut); line-height:1.4; }
+  .ai-test-result {
+    padding:10px 12px; border-radius:var(--r-xs);
+    border:1px solid var(--line); background:var(--surface-2); font-size:12.5px; line-height:1.55;
+  }
+  .ai-test-result[data-tone="ok"] { border-color:color-mix(in srgb, var(--success) 38%, var(--line)); background:var(--success-soft); }
+  .ai-test-result[data-tone="err"] { border-color:color-mix(in srgb, var(--danger) 38%, var(--line)); background:var(--danger-soft); color:var(--danger); }
+  .ai-preset-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+  .ai-preset-item {
+    display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
+    padding:10px 12px; border-radius:var(--r-xs); border:1px solid var(--line); background:var(--surface-2);
+  }
+  .ai-preset-item b { font-size:13px; color:var(--fg-strong); }
+  .ai-preset-item p { margin:3px 0 0; font-size:12px; color:var(--mut); line-height:1.4; }
+  .ac-section-box {
+    border:1px solid var(--line); border-radius:var(--r-sm); padding:12px 13px;
+    background:var(--surface); display:flex; flex-direction:column; gap:10px;
+  }
+  .ac-section-title { font-size:12.5px; font-weight:700; color:var(--fg-strong); display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .ac-task-pair { display:flex; flex-direction:column; gap:6px; max-width:340px; }
+  .ac-task-origin {
+    padding:6px 8px; border-radius:var(--r-xs);
+    background:var(--surface-2); border-left:2px solid var(--line);
+    font-size:11.5px; color:var(--mut); line-height:1.45; word-break:break-word;
+  }
+  .ac-task-origin b { color:var(--fg); font-weight:600; }
+  .ac-task-reply { font-size:12.5px; color:var(--fg-strong); line-height:1.5; word-break:break-word; }
+  .ac-task-reply.empty-reply { color:var(--warn); font-style:italic; }
+  .ac-src-tag {
+    display:inline-flex; align-items:center; gap:3px; padding:1px 6px; border-radius:999px;
+    font-size:10.5px; font-weight:600; border:1px solid var(--line); background:var(--surface-2); color:var(--mut);
+  }
+  .ac-src-tag.ai { background:var(--info-soft); color:var(--info); border-color:rgba(56,189,248,.3); }
+  .ac-src-tag.fallback { background:var(--warn-soft); color:var(--warn); border-color:rgba(251,191,36,.3); }
+  .ac-src-tag.empty { background:var(--danger-soft); color:var(--danger); border-color:rgba(248,113,113,.3); }
+  .ac-preview-list { display:flex; flex-direction:column; gap:10px; max-height:46vh; overflow:auto; padding-right:2px; }
+  .ac-preview-item {
+    border:1px solid var(--line); border-radius:var(--r-xs); padding:10px 12px; background:var(--surface-2);
+    display:flex; flex-direction:column; gap:6px;
+  }
+  .ac-preview-meta { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:11.5px; color:var(--mut); }
+  .ac-rule-meta { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+  .ac-sel-bar {
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    padding:8px 12px; margin-bottom:10px; border-radius:var(--r-xs);
+    border:1px solid color-mix(in srgb, var(--acc) 30%, var(--line));
+    background:color-mix(in srgb, var(--acc-soft) 50%, var(--surface));
+  }
+  .ac-sel-bar[hidden] { display:none; }
+  @media(max-width:680px) {
+    .ai-source-seg { grid-template-columns:1fr; }
+  }
 </style>
 <link rel="stylesheet" href="/static/appearance.css">
 <link rel="stylesheet" href="/static/workbench.css">
@@ -4811,53 +4908,238 @@
     </div>
   </div>
 
-  <!-- 大模型 API(自动评论文案)-->
+  <!-- 大模型 API(统一 AI 文案配置中心)-->
   <div class="card" data-section="ai">
     <div class="card-head">
       <span class="card-ic"><svg><use href="#i-bolt"/></svg></span>
-      <h2>大模型 API <span class="sub">自动评论文案生成(OpenAI 兼容接口)</span></h2>
+      <h2>AI 文案大模型 <span class="sub">复用共享模型渠道 · 支持多协议、人设预设与自动评论场景路由</span></h2>
     </div>
     <div class="stack">
+      <div class="ai-status-strip" id="ai-status-strip" data-state="off">
+        <div class="ai-status-copy">
+          <b id="ai-status-title">AI 文案生成未启用</b>
+          <p id="ai-status-desc">启用后，自动评论规则可直接使用大模型结合作品与评论上下文生成自然回复。</p>
+        </div>
+        <div class="ai-status-actions">
+          <button type="button" class="ghost sm" onclick="openAiChannelsManager()"><svg><use href="#i-settings"/></svg>管理共享模型渠道 →</button>
+        </div>
+      </div>
+
       <label class="switch-row">
-        <input type="checkbox" id="ai-enabled">
-        <span class="switch-copy"><b>启用大模型生成文案</b><span>关闭后只使用规则中的本地模板库</span></span>
+        <input type="checkbox" id="ai-enabled" onchange="syncAiStatusBanner()">
+        <span class="switch-copy"><b>启用 AI 文案生成（全局总开关）</b><span>关闭后，所有自动评论规则仅使用本地模板库；开启后按各规则的文案策略生效。</span></span>
       </label>
-      <div class="form-grid">
-        <div class="form-field">
-          <label for="ai-base">接口地址</label>
-          <input id="ai-base" type="url" inputmode="url" autocomplete="url" placeholder="https://api.deepseek.com/v1" onblur="validateAiField(this,$('ai-enabled').checked)">
-        </div>
-        <div class="form-field">
-          <label for="ai-model">模型名称</label>
-          <input id="ai-model" autocomplete="off" placeholder="deepseek-chat / qwen-plus / gpt-4o-mini" onblur="validateAiField(this,$('ai-enabled').checked)">
-        </div>
-        <div class="form-field">
-          <label for="ai-key">API Key</label>
-          <div class="input-affix">
-            <input id="ai-key" type="password" autocomplete="new-password" placeholder="留空则不修改已保存的 Key">
-            <button class="input-action" type="button" onclick="toggleSecretInput('ai-key',this)" aria-label="显示 API Key" aria-pressed="false" title="显示或隐藏 API Key"><svg><use href="#i-eye"/></svg></button>
-          </div>
-          <div class="field-help">仅保存在本地数据库，不会回显</div>
-        </div>
-        <div class="form-field">
-          <label for="ai-temp">生成温度</label>
-          <input id="ai-temp" type="number" inputmode="decimal" min="0" max="2" step="0.1" placeholder="0.9" onblur="validateAiField(this)">
-          <div class="field-help">建议 0.7–1.0；数值越高，表达越多样</div>
-        </div>
-      </div>
+
       <div class="form-field">
-        <label for="ai-prompt">提示词模板</label>
-        <textarea id="ai-prompt" rows="3" placeholder="留空使用内置提示词"></textarea>
-        <div class="field-help">可用变量：{source_text}、{nick}、{kw}、{platform}、{kind_label}</div>
+        <label>模型来源</label>
+        <div class="ai-source-seg" role="radiogroup" aria-label="AI 文案模型来源">
+          <label class="ai-source-opt">
+            <input type="radio" name="ai-source" id="ai-source-channel" value="channel" checked onchange="onAiSourceChange()">
+            <span><b>复用 AI 助手共享渠道（推荐）</b><small>无需重复填地址和 API Key，支持 OpenAI / Responses / Anthropic 全协议与模型目录。</small></span>
+          </label>
+          <label class="ai-source-opt">
+            <input type="radio" name="ai-source" id="ai-source-custom" value="custom" onchange="onAiSourceChange()">
+            <span><b>使用独立自定义接口</b><small>单独配置文案专用模型（如便宜高速小模型或本地 Ollama / vLLM），支持多协议。</small></span>
+          </label>
+        </div>
       </div>
-      <div class="form-note">
-        <svg aria-hidden="true"><use href="#i-info"/></svg>
-        <span>兼容 OpenAI <code>/chat/completions</code> 的服务。调用失败时会自动回退到当前规则的模板库。</span>
+
+      <!-- 来源 1：复用 AI 助手共享模型渠道 -->
+      <div class="ac-section-box" id="ai-panel-channel">
+        <div class="ac-section-title">
+          <span>共享模型渠道路由</span>
+          <div style="display:flex;gap:6px">
+            <button type="button" class="ghost sm" onclick="refreshAiSharedChannels()">刷新渠道</button>
+            <button type="button" class="ghost sm" onclick="openAiChannelsManager()">添加/编辑渠道 →</button>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="ai-channel-id">选择模型渠道</label>
+            <select id="ai-channel-id" onchange="onAiChannelChange()"></select>
+            <div class="field-help" id="ai-channel-help">默认跟随 AI 助手当前激活渠道；也可为自动评论固定指定更低成本的渠道。</div>
+          </div>
+          <div class="form-field">
+            <label for="ai-channel-model-override">指定模型 ID（可选覆盖）</label>
+            <input id="ai-channel-model-override" list="ai-channel-models-datalist" autocomplete="off" placeholder="留空使用该渠道默认模型" oninput="syncAiStatusBanner()">
+            <datalist id="ai-channel-models-datalist"></datalist>
+            <div class="field-help">例如渠道默认用强模型分析数据，文案这里可覆盖为 <code>deepseek-chat</code> / <code>gpt-4o-mini</code>。</div>
+          </div>
+        </div>
       </div>
+
+      <!-- 来源 2：独立自定义多协议接口 -->
+      <div class="ac-section-box" id="ai-panel-custom" hidden>
+        <div class="ac-section-title">
+          <span>独立模型接口配置</span>
+          <button type="button" class="ghost sm" id="ai-migrate-btn" onclick="migrateAiToChannel()" hidden>一键转存为共享渠道</button>
+        </div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="ai-provider">接口协议</label>
+            <select id="ai-provider" onchange="syncAiStatusBanner()">
+              <option value="openai_compatible">OpenAI Chat Completions（兼容主流模型）</option>
+              <option value="openai_responses">OpenAI Responses</option>
+              <option value="anthropic">Anthropic Messages (Claude)</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="ai-path-mode">推理路径拼接</label>
+            <select id="ai-path-mode">
+              <option value="auto">自动：纯域名自动补 /v1，已有前缀保留</option>
+              <option value="exact">原样拼接：直接追加协议端点</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="ai-base">接口基础地址</label>
+            <input id="ai-base" type="url" inputmode="url" autocomplete="url" placeholder="https://api.deepseek.com/v1 或 http://127.0.0.1:11434/v1" onblur="validateAiField(this,isAiCustomRequired())" oninput="syncAiStatusBanner()">
+          </div>
+          <div class="form-field">
+            <label for="ai-model">模型名称 / ID</label>
+            <input id="ai-model" autocomplete="off" placeholder="deepseek-chat / qwen-plus / gpt-4o-mini" onblur="validateAiField(this,isAiCustomRequired())" oninput="syncAiStatusBanner()">
+          </div>
+          <div class="form-field">
+            <label for="ai-key">API Key（本地无鉴权模型可留空）</label>
+            <div class="input-affix">
+              <input id="ai-key" type="password" autocomplete="new-password" placeholder="留空不修改已保存密钥；本地模型可不填">
+              <button class="input-action" type="button" onclick="toggleSecretInput('ai-key',this)" aria-label="显示 API Key" aria-pressed="false" title="显示或隐藏 API Key"><svg><use href="#i-eye"/></svg></button>
+            </div>
+            <label class="mut" id="ai-clear-key-wrap" style="display:none;align-items:center;gap:6px;margin-top:6px;font-size:12px">
+              <input type="checkbox" id="ai-clear-key" style="width:auto" onchange="onAiClearKeyToggle()"> 清除已保存的 API Key（更换地址/协议时需重填或勾选清除）
+            </label>
+          </div>
+          <div class="form-field">
+            <label for="ai-token-param">输出长度参数名</label>
+            <select id="ai-token-param">
+              <option value="max_tokens">max_tokens（默认）</option>
+              <option value="max_completion_tokens">max_completion_tokens（OpenAI 新模型/推理模型）</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- 人设预设与生成控制 -->
+      <div class="ac-section-box">
+        <div class="ac-section-title">
+          <span>默认文案人设与生成规范</span>
+          <button type="button" class="ghost sm" onclick="manageAiPresets()">管理自定义人设</button>
+        </div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="ai-default-preset">默认人设预设</label>
+            <select id="ai-default-preset" onchange="onAiPresetChange()"></select>
+            <div class="field-help" id="ai-preset-desc">单条自动评论规则可单独覆盖人设与补充指令。</div>
+          </div>
+          <div class="form-field">
+            <label for="ai-language-mode">目标语种策略</label>
+            <select id="ai-language-mode">
+              <option value="auto">自动匹配平台与对方原文语种（推荐）</option>
+              <option value="zh">始终使用自然中文</option>
+              <option value="en">始终使用自然英文</option>
+            </select>
+            <div class="field-help">海外平台（IG / X / Facebook）选自动即可跟评外语内容。</div>
+          </div>
+          <div class="form-field">
+            <label for="ai-max-chars">单条评论字数上限</label>
+            <input id="ai-max-chars" type="number" min="15" max="300" step="5" value="60">
+            <div class="field-help">控制生成长度（15–300 字），推荐 45–80 字。</div>
+          </div>
+          <div class="form-field">
+            <label for="ai-temp">生成温度（留空跟随模型默认）</label>
+            <input id="ai-temp" type="number" inputmode="decimal" min="0" max="2" step="0.1" placeholder="0.85" onblur="validateAiField(this)">
+            <div class="field-help">建议 0.7–1.0；使用 o1/o3 等推理模型建议留空。</div>
+          </div>
+        </div>
+        <div class="form-field">
+          <label for="ai-prompt">全局补充提示词（可选）</label>
+          <textarea id="ai-prompt" rows="3" placeholder="例如：禁止提及具体价格；遇到夸奖可顺带邀请关注主页。支持下方变量占位符（花括号安全替换，不会报错）。"></textarea>
+          <div class="ai-var-chips" aria-label="点击插入可用变量">
+            <span class="mut" style="font-size:11.5px">点击插入变量：</span>
+            <button type="button" class="ai-var-chip" onclick="insertTextVar('ai-prompt','{source_text}')">{source_text} 对方原文</button>
+            <button type="button" class="ai-var-chip" onclick="insertTextVar('ai-prompt','{work_desc}')">{work_desc} 作品简介</button>
+            <button type="button" class="ai-var-chip" onclick="insertTextVar('ai-prompt','{nick}')">{nick} 对方昵称</button>
+            <button type="button" class="ai-var-chip" onclick="insertTextVar('ai-prompt','{kw}')">{kw} 关键词</button>
+            <button type="button" class="ai-var-chip" onclick="insertTextVar('ai-prompt','{platform_name}')">{platform_name} 平台</button>
+            <button type="button" class="ai-var-chip" onclick="insertTextVar('ai-prompt','{max_chars}')">{max_chars} 字数上限</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 高级参数与网络代理 -->
+      <details class="collection-advanced">
+        <summary>高级生成参数与网络代理（Token 上限 / 超时 / 代理通道）</summary>
+        <div class="collection-advanced-body stack">
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="ai-max-output-tokens">最大输出 Token</label>
+              <input id="ai-max-output-tokens" type="number" min="64" max="2048" step="32" value="256">
+              <div class="field-help">推理/思考模型若返回空正文，可调大至 512–1024。</div>
+            </div>
+            <div class="form-field">
+              <label for="ai-timeout">单次请求超时（秒）</label>
+              <input id="ai-timeout" type="number" min="5" max="90" step="1" value="25">
+            </div>
+            <div class="form-field">
+              <label for="ai-proxy-mode">模型请求网络代理</label>
+              <select id="ai-proxy-mode" onchange="onAiProxyModeChange()">
+                <option value="direct">直连（不走系统代理）</option>
+                <option value="system">跟随本机系统代理</option>
+                <option value="custom">自定义代理地址</option>
+              </select>
+            </div>
+            <div class="form-field" id="ai-proxy-url-wrap" hidden>
+              <label for="ai-proxy-url">自定义代理地址</label>
+              <input id="ai-proxy-url" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" onblur="validateAiField(this)">
+            </div>
+          </div>
+          <label class="switch-row">
+            <input type="checkbox" id="ai-disable-thinking" checked>
+            <span class="switch-copy"><b>跳过长思考链（推荐开启）</b><span>短评场景不主动附加推理参数，并自动清理部分本地模型输出的 <code>&lt;think&gt;</code> 标签。</span></span>
+          </label>
+        </div>
+      </details>
+
+      <!-- 实景生成测试 -->
+      <details class="collection-advanced" id="ai-test-drawer">
+        <summary>实景生成测试（保存前即可验证连通性、语种与人设效果）</summary>
+        <div class="collection-advanced-body stack">
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="ai-test-platform">模拟平台</label>
+              <select id="ai-test-platform">
+                <option value="douyin">抖音</option>
+                <option value="xhs">小红书</option>
+                <option value="bilibili">哔哩哔哩</option>
+                <option value="kuaishou">快手</option>
+                <option value="instagram">Instagram</option>
+                <option value="twitter">X (Twitter)</option>
+                <option value="facebook">Facebook</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label for="ai-test-mode">模拟场景</label>
+              <select id="ai-test-mode">
+                <option value="auto_reply">回复自己作品下的评论</option>
+                <option value="auto_comment">在他人作品下发评论</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-field">
+            <label for="ai-test-work">模拟作品标题/简介</label>
+            <input id="ai-test-work" value="周末露营实测：轻量化天幕搭建全过程，新手 5 分钟搞定">
+          </div>
+          <div class="form-field">
+            <label for="ai-test-source">模拟对方评论 / 原帖内容</label>
+            <input id="ai-test-source" value="这条视频拍得太治愈了，请问天幕是什么牌子的呀？期待更新！">
+          </div>
+          <div id="ai-test-output" class="ai-test-result" hidden></div>
+        </div>
+      </details>
+
       <div class="form-actions">
         <span class="status-text" id="ai-msg" role="status" aria-live="polite"></span>
-        <button class="ghost" onclick="testAi()"><svg><use href="#i-bolt"/></svg>测试连通性</button>
-        <button onclick="saveAiSettings()"><svg><use href="#i-check"/></svg>保存 AI 设置</button>
+        <button type="button" class="ghost" onclick="testAi()"><svg><use href="#i-bolt"/></svg>实景测试生成</button>
+        <button type="button" onclick="saveAiSettings()"><svg><use href="#i-check"/></svg>保存 AI 文案设置</button>
       </div>
     </div>
   </div>
@@ -6017,66 +6299,223 @@
     <div class="card">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-plus"/></svg></span>
-        <h2>新建自动评论规则 <span class="sub">自动回复自己作品 / 自动评论他人</span></h2>
+        <h2>新建自动评论规则 <span class="sub">规则默认关闭 · 建议先试跑预览确认效果再启用</span></h2>
       </div>
       <div class="stack">
-        <div class="row">
-          <select id="ac-mode" aria-label="模式" onchange="onAcMode()">
-            <option value="auto_reply">自动回复(回自己作品评论 · 仍有写入风控)</option>
-            <option value="auto_comment">自动评论(去别人帖子 · 高风险)</option>
-          </select>
-          <select id="ac-kind" aria-label="目标类型" onchange="onAcKind()"></select>
-          <select id="ac-acc" aria-label="使用账号"></select>
+        <div class="ac-policy-strip" id="ac-create-policy-banner" data-state="ok">
+          <div class="ac-policy-copy">
+            <b id="ac-create-policy-title">正在读取当前平台生效约束…</b>
+            <p id="ac-create-policy-desc">将结合账号风控规则、小红书审核策略与 AI 文案模型自动计算最终生效行为。</p>
+          </div>
+          <div class="ac-policy-actions">
+            <button type="button" class="ghost sm" onclick="openAiSettingsSection()">配置 AI 文案 →</button>
+            <button type="button" class="ghost sm" onclick="openRiskRulesSection()">风控规则 →</button>
+          </div>
         </div>
-        <div id="ac-target-wrap">
-          <label class="field" id="ac-target-label" for="ac-target">目标</label>
-          <input id="ac-target" placeholder="">
+
+        <!-- 1. 规则与目标 -->
+        <div class="ac-section-box">
+          <div class="ac-section-title"><span>1. 规则与互动目标</span></div>
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="ac-name">规则名称</label>
+              <input id="ac-name" maxlength="100" placeholder="例如：露营视频粉丝答疑 / 户外关键词互动">
+            </div>
+            <div class="form-field">
+              <label for="ac-acc">执行账号</label>
+              <select id="ac-acc" aria-label="使用账号" onchange="syncAcCreatePolicySummary()"></select>
+              <div class="field-help" id="ac-acc-role-hint">发布主号（publish）仅允许回复自己作品，禁止去他人作品引流。</div>
+            </div>
+            <div class="form-field">
+              <label for="ac-mode">互动模式</label>
+              <select id="ac-mode" aria-label="模式" onchange="onAcMode()">
+                <option value="auto_reply">自动回复（回自己作品评论 · 相对温和）</option>
+                <option value="auto_comment">自动评论（去他人作品下互动 · 高风险）</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label for="ac-kind">目标范围</label>
+              <select id="ac-kind" aria-label="目标类型" onchange="onAcKind()"></select>
+            </div>
+          </div>
+          <div id="ac-target-wrap" class="form-field">
+            <label id="ac-target-label" for="ac-target">目标</label>
+            <input id="ac-target" placeholder="">
+          </div>
         </div>
-        <div>
-          <label class="field" for="ac-templates">文案模板(每行一条;支持 {nick} 对方昵称、{kw} 关键词、同义随机 {好棒|不错|赞})</label>
-          <textarea id="ac-templates" rows="4" placeholder="谢谢支持~{记得关注我哦|有空常来}&#10;写得真好,{学到了|涨知识了}"></textarea>
+
+        <!-- 2. 文案与 AI 策略 -->
+        <div class="ac-section-box">
+          <div class="ac-section-title"><span>2. 文案生成与 AI 策略</span></div>
+          <div class="form-field">
+            <label for="ac-compose-mode">生成方式</label>
+            <select id="ac-compose-mode" onchange="onAcComposeModeChange()">
+              <option value="template_only">仅使用本地模板库（支持 Spintax 随机词组）</option>
+              <option value="ai_with_fallback">AI 生成优先，失败自动回退本地模板（推荐）</option>
+              <option value="ai_only_draft">仅用 AI 生成，失败存为空草稿待人工处理（无需填模板）</option>
+              <option value="ai_only_skip">仅用 AI 生成，失败直接跳过该条（无需填模板）</option>
+            </select>
+          </div>
+          <div id="ac-ai-opts" class="stack" hidden>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="ac-ai-preset">文案人设预设</label>
+                <select id="ac-ai-preset"></select>
+              </div>
+              <div class="form-field">
+                <label for="ac-ai-max-chars">回复字数上限（0 = 跟随预设）</label>
+                <input id="ac-ai-max-chars" type="number" min="0" max="300" value="0">
+              </div>
+              <div class="form-field">
+                <label for="ac-ai-channel">指定模型渠道（可选覆盖）</label>
+                <select id="ac-ai-channel"></select>
+              </div>
+              <div class="form-field">
+                <label for="ac-ai-model">指定模型 ID（可选覆盖）</label>
+                <input id="ac-ai-model" maxlength="160" placeholder="留空跟随全局 / 渠道默认模型">
+              </div>
+            </div>
+            <div class="form-field">
+              <label for="ac-ai-prompt">本规则专属 AI 指令（可选）</label>
+              <textarea id="ac-ai-prompt" rows="2" maxlength="2000" placeholder="例如：有人问教程就说主页置顶合集里看；不要提价格。"></textarea>
+            </div>
+          </div>
+          <div id="ac-tpl-wrap" class="form-field">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px">
+              <label for="ac-templates" id="ac-tpl-label" style="margin:0">本地文案模板（每行一条）</label>
+              <button type="button" class="ghost sm" onclick="previewAcTemplates('ac-templates')">随机预览一条</button>
+            </div>
+            <textarea id="ac-templates" rows="4" placeholder="谢谢支持~{记得关注我哦|有空常来}&#10;写得真好,{学到了|涨知识了}"></textarea>
+            <div class="ai-var-chips">
+              <span class="mut" style="font-size:11.5px">点击插入：</span>
+              <button type="button" class="ai-var-chip" onclick="insertTextVar('ac-templates','{nick}')">{nick} 对方昵称</button>
+              <button type="button" class="ai-var-chip" onclick="insertTextVar('ac-templates','{kw}')">{kw} 关键词</button>
+              <button type="button" class="ai-var-chip" onclick="insertTextVar('ac-templates','{author}')">{author} 作者</button>
+              <button type="button" class="ai-var-chip" onclick="insertTextVar('ac-templates','{work_title}')">{work_title} 作品标题</button>
+              <button type="button" class="ai-var-chip" onclick="insertTextVar('ac-templates','{好棒|不错|赞}')">{a|b|c} 同义随机</button>
+            </div>
+          </div>
         </div>
-        <label class="mut" style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" id="ac-use-ai" style="width:auto"> 用大模型生成文案(需在「设置」里配好 API;失败自动回退上面的模板)
-        </label>
-        <label class="mut" style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" id="ac-review" style="width:auto"> 草稿审核(只生成不自动发,人工通过后再批量发出)
-        </label>
-        <div class="row" id="ac-filter-wrap">
-          <input id="ac-reply-filter" placeholder="仅回复正文含此关键词的评论(留空=全回)" aria-label="回复过滤">
-          <input id="ac-skip" placeholder="跳过含这些词的评论/作品(逗号分隔)" aria-label="跳过关键词">
+
+        <!-- 3. 筛选条件与发现范围 -->
+        <details class="collection-advanced" id="ac-filter-details">
+          <summary>3. 精准筛选与发现范围（关键词 / 排除词 / 评论层级 / 时效与作品数覆盖）</summary>
+          <div class="collection-advanced-body stack">
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="ac-match-mode">包含词匹配方式</label>
+                <select id="ac-match-mode">
+                  <option value="any">命中任一包含词（留空 = 全部通过）</option>
+                  <option value="all_terms">同时包含全部词</option>
+                  <option value="regex">正则表达式匹配（每行或逗号一个）</option>
+                  <option value="all">不过滤（忽略下方包含词）</option>
+                </select>
+              </div>
+              <div class="form-field" id="ac-scope-wrap">
+                <label for="ac-comment-scope">评论层级过滤</label>
+                <select id="ac-comment-scope">
+                  <option value="all">全部评论（一级 + 二级回复）</option>
+                  <option value="top_only">仅回复一级顶层评论（避免楼中楼刷屏）</option>
+                  <option value="reply_only">仅回复二级子评论</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="ac-include-kw">包含关键词（支持中英文逗号、分号或换行分隔）</label>
+                <input id="ac-include-kw" placeholder="例如：链接, 哪里买, 教程, 多少钱（留空=不限）">
+              </div>
+              <div class="form-field">
+                <label for="ac-skip">排除 / 跳过关键词（命中任一即跳过）</label>
+                <input id="ac-skip" placeholder="例如：广告, 互关, 兼职, 抽奖">
+              </div>
+            </div>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="ac-min-len">忽略过短内容（最少字数，0 = 不限）</label>
+                <input type="number" id="ac-min-len" value="0" min="0" max="500">
+              </div>
+              <div class="form-field">
+                <label for="ac-max-age">仅处理最近 N 小时内（0 = 跟随天数）</label>
+                <input type="number" id="ac-max-age" value="0" min="0" max="8760">
+              </div>
+              <div class="form-field">
+                <label for="ac-recent-works">扫描近期作品数（0 = 跟随全局默认）</label>
+                <input type="number" id="ac-recent-works" value="0" min="0" max="50">
+              </div>
+              <div class="form-field">
+                <label for="ac-recent-days">扫描近期天数（0 = 跟随全局默认）</label>
+                <input type="number" id="ac-recent-days" value="0" min="0" max="365">
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- 4. 审核与频率 -->
+        <div class="ac-section-box">
+          <div class="ac-section-title"><span>4. 审核方式与执行频率</span></div>
+          <label class="switch-row">
+            <input type="checkbox" id="ac-review" onchange="syncAcCreatePolicySummary()">
+            <span class="switch-copy"><b>发布前先存草稿人工审核</b><span id="ac-review-help">推荐开启：生成后进入「任务与审核」页核对原文与回复，人工通过后再按节流发送。</span></span>
+          </label>
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="ac-cap">本规则每日上限（0 = 跟随账号风控）</label>
+              <input type="number" id="ac-cap" value="20" min="0" oninput="syncAcCreatePolicySummary()">
+            </div>
+            <div class="form-field">
+              <label for="ac-gap">本规则最小间隔（秒）</label>
+              <input type="number" id="ac-gap" value="90" min="1" oninput="syncAcCreatePolicySummary()">
+            </div>
+            <div class="form-field">
+              <label for="ac-max">单轮最多生成条数</label>
+              <input type="number" id="ac-max" value="5" min="1" max="100">
+            </div>
+            <div class="form-field">
+              <label for="ac-interval">后台检查频率</label>
+              <select id="ac-interval" aria-label="运行频率">
+                <option value="900">每 15 分钟跑一轮</option>
+                <option value="1800" selected>每 30 分钟跑一轮</option>
+                <option value="3600">每小时跑一轮</option>
+                <option value="7200">每 2 小时跑一轮</option>
+              </select>
+            </div>
+          </div>
         </div>
-        <div class="row" style="flex-wrap:wrap;gap:10px;justify-content:flex-start">
-          <label class="mut" style="display:flex;align-items:center;gap:6px">每日上限 <input type="number" id="ac-cap" value="20" min="0" style="width:72px"></label>
-          <label class="mut" style="display:flex;align-items:center;gap:6px">最小间隔秒 <input type="number" id="ac-gap" value="90" min="1" style="width:84px"></label>
-          <label class="mut" style="display:flex;align-items:center;gap:6px">每轮最多 <input type="number" id="ac-max" value="5" min="1" style="width:72px"></label>
-          <select id="ac-interval" aria-label="运行频率" style="flex:0 0 auto">
-            <option value="900">每 15 分钟跑一轮</option>
-            <option value="1800" selected>每 30 分钟跑一轮</option>
-            <option value="3600">每小时跑一轮</option>
-          </select>
+
+        <div class="form-actions">
+          <span class="status-text" id="ac-msg" role="status" aria-live="polite"></span>
+          <button type="button" onclick="addCommentRule()"><svg><use href="#i-msg"/></svg>创建规则（默认关闭）</button>
         </div>
-        <div class="row" style="justify-content:flex-start">
-          <button onclick="addCommentRule()" style="flex:0 0 auto"><svg><use href="#i-msg"/></svg>创建规则(默认关闭)</button>
-          <span class="mut" id="ac-msg" style="flex:1"></span>
-        </div>
-        <div class="form-note warn"><svg aria-hidden="true"><use href="#i-info"/></svg><span>自动评论是平台较敏感的动作：同质化文案可能被判定为垃圾营销。规则<b>默认关闭</b>，建议先「试跑」检查生成内容，再手动启用。每个账号仍受每日总量限制。</span></div>
       </div>
     </div>
 
     <!-- 规则列表 -->
     <div class="card" data-section="rules">
-      <div class="card-head"><span class="card-ic"><svg><use href="#i-list"/></svg></span><h2>评论规则</h2></div>
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-list"/></svg></span>
+        <h2>评论规则 <span class="sub">先「试跑预览」核对命中与文案，再手动启用</span></h2>
+      </div>
+      <div class="ac-policy-strip" id="ac-rules-policy-bar" data-state="ok" style="margin-bottom:12px">
+        <div class="ac-policy-copy">
+          <b id="ac-rules-policy-title">当前平台全局生效策略</b>
+          <p id="ac-rules-policy-desc">正在加载风控限额、审核策略与 AI 文案状态…</p>
+        </div>
+        <div class="ac-policy-actions">
+          <button type="button" class="ghost sm" onclick="openAiSettingsSection()">AI 文案设置 →</button>
+          <button type="button" class="ghost sm" onclick="openRiskRulesSection()">风控规则 →</button>
+        </div>
+      </div>
       <div class="table-wrap"><table aria-label="自动评论规则列表"><thead><tr>
-        <th>名称</th><th>模式</th><th>目标</th><th>账号</th><th>每日/间隔</th><th>上次运行</th><th>状态</th><th>操作</th>
+        <th>名称与策略</th><th>模式</th><th>目标</th><th>账号</th><th>每日 / 间隔</th><th>上次运行</th><th>状态</th><th style="text-align:right">操作</th>
       </tr></thead><tbody id="ac-rule-table"></tbody></table></div>
     </div>
 
     <!-- 任务列表 -->
     <div class="card" data-section="tasks">
-      <div class="card-head"><span class="card-ic"><svg><use href="#i-msg"/></svg></span><h2>任务与审核 <span class="sub">待审草稿与自动发送记录</span></h2></div>
+      <div class="card-head"><span class="card-ic"><svg><use href="#i-msg"/></svg></span><h2>任务与审核 <span class="sub">原文与拟发文案对照审核 · 支持单条 AI 重写与批量处理</span></h2></div>
       <div class="wb-list-tools">
-        <label class="wb-search-field"><svg aria-hidden="true"><use href="#i-logo"/></svg><input type="search" id="ac-task-search" placeholder="搜索文案、作品 ID 或昵称" aria-label="搜索评论任务" oninput="renderCommentTaskRows()"></label>
+        <label class="wb-search-field"><svg aria-hidden="true"><use href="#i-logo"/></svg><input type="search" id="ac-task-search" placeholder="搜索对方原文、拟发文案、作品 ID 或昵称" aria-label="搜索评论任务" oninput="renderCommentTaskRows()"></label>
         <select id="ac-task-filter" onchange="refreshCommentTasks()" style="max-width:170px;flex:0 0 auto" aria-label="按状态筛选评论任务">
           <option value="">全部状态</option>
           <option value="draft">草稿待审</option>
@@ -6088,12 +6527,19 @@
         </select>
         <span class="filter-count" id="ac-task-count" role="status" aria-live="polite"></span>
       </div>
+      <div id="ac-sel-bar" class="ac-sel-bar" hidden>
+        <span id="ac-sel-info" style="flex:1;font-size:12.5px">已选 0 条</span>
+        <button type="button" class="sm" onclick="approveSelectedDrafts()"><svg><use href="#i-check"/></svg>通过所选草稿</button>
+        <button type="button" class="ghost sm danger" onclick="cancelSelectedTasks()">批量弃用/取消</button>
+        <button type="button" class="ghost sm" onclick="clearAcTaskSelection()">清空选择</button>
+      </div>
       <div id="ac-draft-bar" class="hint" style="display:none;align-items:center;gap:10px;border-left:3px solid var(--info);padding:8px 12px;margin-bottom:10px;background:var(--info-soft);border-radius:var(--r-xs)">
         <span id="ac-draft-count" style="flex:1"></span>
-        <button class="sm" onclick="approveAllDrafts()"><svg><use href="#i-check"/></svg>全部通过</button>
+        <button type="button" class="sm" onclick="approveAllDrafts()"><svg><use href="#i-check"/></svg>通过全部可发草稿</button>
       </div>
       <div class="table-wrap"><table aria-label="自动评论任务记录"><thead><tr>
-        <th>评论文案</th><th>目标与账号</th><th>互动类型</th><th>计划时间</th><th>执行通道</th><th>状态</th><th style="text-align:right">操作</th>
+        <th style="width:34px"><input type="checkbox" id="ac-task-check-all" aria-label="全选当前列表任务" onchange="toggleSelectAllAcTasks(this.checked)"></th>
+        <th>原文与拟发文案</th><th>目标与账号</th><th>互动类型</th><th>计划时间</th><th>执行通道</th><th>状态</th><th style="text-align:right">操作</th>
       </tr></thead><tbody id="ac-task-table"></tbody></table></div>
     </div>
   </section>

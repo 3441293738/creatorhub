@@ -107,7 +107,10 @@ export function AgentAssistant({ page }) {
     setError(""); setNotice("");
     if (focus) requestAnimationFrame(() => document.getElementById("agent-display-name")?.focus());
   };
-  const acceptChannels = data => { setChannels(data.channels); setActiveChannelId(data.active_channel_id); };
+  const acceptChannels = data => {
+    setChannels(data.channels); setActiveChannelId(data.active_channel_id);
+    window.dispatchEvent(new CustomEvent("creatorhub:ai-channels:updated", { detail: data }));
+  };
   const updateSetting = (key, value) => {
     const connectionChanged = ["provider", "base_url", "api_key", "clear_api_key"].includes(key);
     setDirty(true); setSettings(previous => ({ ...previous, ...(connectionChanged ? { models: [] } : {}), ...(key === "provider" ? { reasoning_mode: "default" } : {}), [key]: value })); setNotice("");
@@ -143,11 +146,14 @@ export function AgentAssistant({ page }) {
     mounted.current = true;
     window.CreatorHubOpenAssistant = false;
     const refreshPage = () => setPageContext(readPage());
+    const showSettings = () => { setPageContext(readPage()); setOpen(true); setView("settings"); };
     window.addEventListener("creatorhub:assistant:open", show);
+    window.addEventListener("creatorhub:assistant:open-settings", showSettings);
     window.addEventListener("creatorhub:agent-context", refreshPage);
     return () => {
       mounted.current = false;
       window.removeEventListener("creatorhub:assistant:open", show);
+      window.removeEventListener("creatorhub:assistant:open-settings", showSettings);
       window.removeEventListener("creatorhub:agent-context", refreshPage);
     };
   }, []);

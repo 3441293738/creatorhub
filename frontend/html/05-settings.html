@@ -69,53 +69,238 @@
     </div>
   </div>
 
-  <!-- 大模型 API(自动评论文案)-->
+  <!-- 大模型 API(统一 AI 文案配置中心)-->
   <div class="card" data-section="ai">
     <div class="card-head">
       <span class="card-ic"><svg><use href="#i-bolt"/></svg></span>
-      <h2>大模型 API <span class="sub">自动评论文案生成(OpenAI 兼容接口)</span></h2>
+      <h2>AI 文案大模型 <span class="sub">复用共享模型渠道 · 支持多协议、人设预设与自动评论场景路由</span></h2>
     </div>
     <div class="stack">
+      <div class="ai-status-strip" id="ai-status-strip" data-state="off">
+        <div class="ai-status-copy">
+          <b id="ai-status-title">AI 文案生成未启用</b>
+          <p id="ai-status-desc">启用后，自动评论规则可直接使用大模型结合作品与评论上下文生成自然回复。</p>
+        </div>
+        <div class="ai-status-actions">
+          <button type="button" class="ghost sm" onclick="openAiChannelsManager()"><svg><use href="#i-settings"/></svg>管理共享模型渠道 →</button>
+        </div>
+      </div>
+
       <label class="switch-row">
-        <input type="checkbox" id="ai-enabled">
-        <span class="switch-copy"><b>启用大模型生成文案</b><span>关闭后只使用规则中的本地模板库</span></span>
+        <input type="checkbox" id="ai-enabled" onchange="syncAiStatusBanner()">
+        <span class="switch-copy"><b>启用 AI 文案生成（全局总开关）</b><span>关闭后，所有自动评论规则仅使用本地模板库；开启后按各规则的文案策略生效。</span></span>
       </label>
-      <div class="form-grid">
-        <div class="form-field">
-          <label for="ai-base">接口地址</label>
-          <input id="ai-base" type="url" inputmode="url" autocomplete="url" placeholder="https://api.deepseek.com/v1" onblur="validateAiField(this,$('ai-enabled').checked)">
-        </div>
-        <div class="form-field">
-          <label for="ai-model">模型名称</label>
-          <input id="ai-model" autocomplete="off" placeholder="deepseek-chat / qwen-plus / gpt-4o-mini" onblur="validateAiField(this,$('ai-enabled').checked)">
-        </div>
-        <div class="form-field">
-          <label for="ai-key">API Key</label>
-          <div class="input-affix">
-            <input id="ai-key" type="password" autocomplete="new-password" placeholder="留空则不修改已保存的 Key">
-            <button class="input-action" type="button" onclick="toggleSecretInput('ai-key',this)" aria-label="显示 API Key" aria-pressed="false" title="显示或隐藏 API Key"><svg><use href="#i-eye"/></svg></button>
-          </div>
-          <div class="field-help">仅保存在本地数据库，不会回显</div>
-        </div>
-        <div class="form-field">
-          <label for="ai-temp">生成温度</label>
-          <input id="ai-temp" type="number" inputmode="decimal" min="0" max="2" step="0.1" placeholder="0.9" onblur="validateAiField(this)">
-          <div class="field-help">建议 0.7–1.0；数值越高，表达越多样</div>
-        </div>
-      </div>
+
       <div class="form-field">
-        <label for="ai-prompt">提示词模板</label>
-        <textarea id="ai-prompt" rows="3" placeholder="留空使用内置提示词"></textarea>
-        <div class="field-help">可用变量：{source_text}、{nick}、{kw}、{platform}、{kind_label}</div>
+        <label>模型来源</label>
+        <div class="ai-source-seg" role="radiogroup" aria-label="AI 文案模型来源">
+          <label class="ai-source-opt">
+            <input type="radio" name="ai-source" id="ai-source-channel" value="channel" checked onchange="onAiSourceChange()">
+            <span><b>复用 AI 助手共享渠道（推荐）</b><small>无需重复填地址和 API Key，支持 OpenAI / Responses / Anthropic 全协议与模型目录。</small></span>
+          </label>
+          <label class="ai-source-opt">
+            <input type="radio" name="ai-source" id="ai-source-custom" value="custom" onchange="onAiSourceChange()">
+            <span><b>使用独立自定义接口</b><small>单独配置文案专用模型（如便宜高速小模型或本地 Ollama / vLLM），支持多协议。</small></span>
+          </label>
+        </div>
       </div>
-      <div class="form-note">
-        <svg aria-hidden="true"><use href="#i-info"/></svg>
-        <span>兼容 OpenAI <code>/chat/completions</code> 的服务。调用失败时会自动回退到当前规则的模板库。</span>
+
+      <!-- 来源 1：复用 AI 助手共享模型渠道 -->
+      <div class="ac-section-box" id="ai-panel-channel">
+        <div class="ac-section-title">
+          <span>共享模型渠道路由</span>
+          <div style="display:flex;gap:6px">
+            <button type="button" class="ghost sm" onclick="refreshAiSharedChannels()">刷新渠道</button>
+            <button type="button" class="ghost sm" onclick="openAiChannelsManager()">添加/编辑渠道 →</button>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="ai-channel-id">选择模型渠道</label>
+            <select id="ai-channel-id" onchange="onAiChannelChange()"></select>
+            <div class="field-help" id="ai-channel-help">默认跟随 AI 助手当前激活渠道；也可为自动评论固定指定更低成本的渠道。</div>
+          </div>
+          <div class="form-field">
+            <label for="ai-channel-model-override">指定模型 ID（可选覆盖）</label>
+            <input id="ai-channel-model-override" list="ai-channel-models-datalist" autocomplete="off" placeholder="留空使用该渠道默认模型" oninput="syncAiStatusBanner()">
+            <datalist id="ai-channel-models-datalist"></datalist>
+            <div class="field-help">例如渠道默认用强模型分析数据，文案这里可覆盖为 <code>deepseek-chat</code> / <code>gpt-4o-mini</code>。</div>
+          </div>
+        </div>
       </div>
+
+      <!-- 来源 2：独立自定义多协议接口 -->
+      <div class="ac-section-box" id="ai-panel-custom" hidden>
+        <div class="ac-section-title">
+          <span>独立模型接口配置</span>
+          <button type="button" class="ghost sm" id="ai-migrate-btn" onclick="migrateAiToChannel()" hidden>一键转存为共享渠道</button>
+        </div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="ai-provider">接口协议</label>
+            <select id="ai-provider" onchange="syncAiStatusBanner()">
+              <option value="openai_compatible">OpenAI Chat Completions（兼容主流模型）</option>
+              <option value="openai_responses">OpenAI Responses</option>
+              <option value="anthropic">Anthropic Messages (Claude)</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="ai-path-mode">推理路径拼接</label>
+            <select id="ai-path-mode">
+              <option value="auto">自动：纯域名自动补 /v1，已有前缀保留</option>
+              <option value="exact">原样拼接：直接追加协议端点</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="ai-base">接口基础地址</label>
+            <input id="ai-base" type="url" inputmode="url" autocomplete="url" placeholder="https://api.deepseek.com/v1 或 http://127.0.0.1:11434/v1" onblur="validateAiField(this,isAiCustomRequired())" oninput="syncAiStatusBanner()">
+          </div>
+          <div class="form-field">
+            <label for="ai-model">模型名称 / ID</label>
+            <input id="ai-model" autocomplete="off" placeholder="deepseek-chat / qwen-plus / gpt-4o-mini" onblur="validateAiField(this,isAiCustomRequired())" oninput="syncAiStatusBanner()">
+          </div>
+          <div class="form-field">
+            <label for="ai-key">API Key（本地无鉴权模型可留空）</label>
+            <div class="input-affix">
+              <input id="ai-key" type="password" autocomplete="new-password" placeholder="留空不修改已保存密钥；本地模型可不填">
+              <button class="input-action" type="button" onclick="toggleSecretInput('ai-key',this)" aria-label="显示 API Key" aria-pressed="false" title="显示或隐藏 API Key"><svg><use href="#i-eye"/></svg></button>
+            </div>
+            <label class="mut" id="ai-clear-key-wrap" style="display:none;align-items:center;gap:6px;margin-top:6px;font-size:12px">
+              <input type="checkbox" id="ai-clear-key" style="width:auto" onchange="onAiClearKeyToggle()"> 清除已保存的 API Key（更换地址/协议时需重填或勾选清除）
+            </label>
+          </div>
+          <div class="form-field">
+            <label for="ai-token-param">输出长度参数名</label>
+            <select id="ai-token-param">
+              <option value="max_tokens">max_tokens（默认）</option>
+              <option value="max_completion_tokens">max_completion_tokens（OpenAI 新模型/推理模型）</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- 人设预设与生成控制 -->
+      <div class="ac-section-box">
+        <div class="ac-section-title">
+          <span>默认文案人设与生成规范</span>
+          <button type="button" class="ghost sm" onclick="manageAiPresets()">管理自定义人设</button>
+        </div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="ai-default-preset">默认人设预设</label>
+            <select id="ai-default-preset" onchange="onAiPresetChange()"></select>
+            <div class="field-help" id="ai-preset-desc">单条自动评论规则可单独覆盖人设与补充指令。</div>
+          </div>
+          <div class="form-field">
+            <label for="ai-language-mode">目标语种策略</label>
+            <select id="ai-language-mode">
+              <option value="auto">自动匹配平台与对方原文语种（推荐）</option>
+              <option value="zh">始终使用自然中文</option>
+              <option value="en">始终使用自然英文</option>
+            </select>
+            <div class="field-help">海外平台（IG / X / Facebook）选自动即可跟评外语内容。</div>
+          </div>
+          <div class="form-field">
+            <label for="ai-max-chars">单条评论字数上限</label>
+            <input id="ai-max-chars" type="number" min="15" max="300" step="5" value="60">
+            <div class="field-help">控制生成长度（15–300 字），推荐 45–80 字。</div>
+          </div>
+          <div class="form-field">
+            <label for="ai-temp">生成温度（留空跟随模型默认）</label>
+            <input id="ai-temp" type="number" inputmode="decimal" min="0" max="2" step="0.1" placeholder="0.85" onblur="validateAiField(this)">
+            <div class="field-help">建议 0.7–1.0；使用 o1/o3 等推理模型建议留空。</div>
+          </div>
+        </div>
+        <div class="form-field">
+          <label for="ai-prompt">全局补充提示词（可选）</label>
+          <textarea id="ai-prompt" rows="3" placeholder="例如：禁止提及具体价格；遇到夸奖可顺带邀请关注主页。支持下方变量占位符（花括号安全替换，不会报错）。"></textarea>
+          <div class="ai-var-chips" aria-label="点击插入可用变量">
+            <span class="mut" style="font-size:11.5px">点击插入变量：</span>
+            <button type="button" class="ai-var-chip" onclick="insertTextVar('ai-prompt','{source_text}')">{source_text} 对方原文</button>
+            <button type="button" class="ai-var-chip" onclick="insertTextVar('ai-prompt','{work_desc}')">{work_desc} 作品简介</button>
+            <button type="button" class="ai-var-chip" onclick="insertTextVar('ai-prompt','{nick}')">{nick} 对方昵称</button>
+            <button type="button" class="ai-var-chip" onclick="insertTextVar('ai-prompt','{kw}')">{kw} 关键词</button>
+            <button type="button" class="ai-var-chip" onclick="insertTextVar('ai-prompt','{platform_name}')">{platform_name} 平台</button>
+            <button type="button" class="ai-var-chip" onclick="insertTextVar('ai-prompt','{max_chars}')">{max_chars} 字数上限</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 高级参数与网络代理 -->
+      <details class="collection-advanced">
+        <summary>高级生成参数与网络代理（Token 上限 / 超时 / 代理通道）</summary>
+        <div class="collection-advanced-body stack">
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="ai-max-output-tokens">最大输出 Token</label>
+              <input id="ai-max-output-tokens" type="number" min="64" max="2048" step="32" value="256">
+              <div class="field-help">推理/思考模型若返回空正文，可调大至 512–1024。</div>
+            </div>
+            <div class="form-field">
+              <label for="ai-timeout">单次请求超时（秒）</label>
+              <input id="ai-timeout" type="number" min="5" max="90" step="1" value="25">
+            </div>
+            <div class="form-field">
+              <label for="ai-proxy-mode">模型请求网络代理</label>
+              <select id="ai-proxy-mode" onchange="onAiProxyModeChange()">
+                <option value="direct">直连（不走系统代理）</option>
+                <option value="system">跟随本机系统代理</option>
+                <option value="custom">自定义代理地址</option>
+              </select>
+            </div>
+            <div class="form-field" id="ai-proxy-url-wrap" hidden>
+              <label for="ai-proxy-url">自定义代理地址</label>
+              <input id="ai-proxy-url" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080" onblur="validateAiField(this)">
+            </div>
+          </div>
+          <label class="switch-row">
+            <input type="checkbox" id="ai-disable-thinking" checked>
+            <span class="switch-copy"><b>跳过长思考链（推荐开启）</b><span>短评场景不主动附加推理参数，并自动清理部分本地模型输出的 <code>&lt;think&gt;</code> 标签。</span></span>
+          </label>
+        </div>
+      </details>
+
+      <!-- 实景生成测试 -->
+      <details class="collection-advanced" id="ai-test-drawer">
+        <summary>实景生成测试（保存前即可验证连通性、语种与人设效果）</summary>
+        <div class="collection-advanced-body stack">
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="ai-test-platform">模拟平台</label>
+              <select id="ai-test-platform">
+                <option value="douyin">抖音</option>
+                <option value="xhs">小红书</option>
+                <option value="bilibili">哔哩哔哩</option>
+                <option value="kuaishou">快手</option>
+                <option value="instagram">Instagram</option>
+                <option value="twitter">X (Twitter)</option>
+                <option value="facebook">Facebook</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label for="ai-test-mode">模拟场景</label>
+              <select id="ai-test-mode">
+                <option value="auto_reply">回复自己作品下的评论</option>
+                <option value="auto_comment">在他人作品下发评论</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-field">
+            <label for="ai-test-work">模拟作品标题/简介</label>
+            <input id="ai-test-work" value="周末露营实测：轻量化天幕搭建全过程，新手 5 分钟搞定">
+          </div>
+          <div class="form-field">
+            <label for="ai-test-source">模拟对方评论 / 原帖内容</label>
+            <input id="ai-test-source" value="这条视频拍得太治愈了，请问天幕是什么牌子的呀？期待更新！">
+          </div>
+          <div id="ai-test-output" class="ai-test-result" hidden></div>
+        </div>
+      </details>
+
       <div class="form-actions">
         <span class="status-text" id="ai-msg" role="status" aria-live="polite"></span>
-        <button class="ghost" onclick="testAi()"><svg><use href="#i-bolt"/></svg>测试连通性</button>
-        <button onclick="saveAiSettings()"><svg><use href="#i-check"/></svg>保存 AI 设置</button>
+        <button type="button" class="ghost" onclick="testAi()"><svg><use href="#i-bolt"/></svg>实景测试生成</button>
+        <button type="button" onclick="saveAiSettings()"><svg><use href="#i-check"/></svg>保存 AI 文案设置</button>
       </div>
     </div>
   </div>

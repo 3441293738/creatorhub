@@ -59,7 +59,12 @@ class CommentTaskRunnerMixin:
             target_url = getattr(t, "target_url", "") or ""
             target_cid, target_nick = t.target_comment_id, t.target_nick
             target_text = getattr(t, "target_text", "") or ""
-            content = t.content
+            content = (t.content or "").strip()
+            if not content:
+                t.status = "draft"
+                t.error = "评论文案为空，请先编辑文案或使用 AI 重写后再通过发送"
+                s.add(t); s.commit()
+                return {"ok": False, "error": t.error}
             acc = s.get(DouyinAccount, t.account_id) if t.account_id else None
             # 写操作必须有登录账号:绑定账号不存在(被删/重登成新号)时直接失败,
             # 绝不退回匿名 profile(那会开一个未登录窗口,看着像"发了"其实没登录)

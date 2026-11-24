@@ -781,7 +781,233 @@ async function refreshTransportMatrix() {
 }
 globalThis.CreatorHubTransportMatrix = { load: refreshTransportMatrix, route: transportRoute };
 
-// ─── 下载设置 ───
+// ─── 下载与统一 AI 文案设置 ───
+let AI_CONFIG_STATE = null;
+let AI_CHANNELS_STATE = { active_channel_id: "default", channels: [] };
+let AI_CUSTOM_PRESETS = [];
+let AI_ALL_PRESETS = [];
+
+const AI_PROTO_LABELS = {
+  openai_compatible: "Chat Completions",
+  openai_responses: "OpenAI Responses",
+  anthropic: "Anthropic Messages",
+};
+
+function openAiChannelsManager() {
+  window.dispatchEvent(new Event("creatorhub:assistant:open-settings"));
+}
+function openAiSettingsSection() {
+  if (typeof switchTab === "function") switchTab("settings", true);
+  globalThis.CreatorHubWorkbench?.showSection?.("settings", "ai");
+}
+function _aiSelectedChannel() {
+  const cid = $("ai-channel-id")?.value || AI_CHANNELS_STATE.active_channel_id || "default";
+  return (AI_CHANNELS_STATE.channels || []).find(c => c.id === cid) || null;
+}
+function populateAiChannelSelectors(selectedId = "") {
+  const sel = $("ai-channel-id");
+  if (!sel) return;
+  const channels = AI_CHANNELS_STATE.channels || [];
+  const active = channels.find(c => c.id === AI_CHANNELS_STATE.active_channel_id);
+  const activeHint = active
+    ? `${active.display_name}${active.model ? `（${active.model}）` : "（未配模型）"}`
+    : "默认渠道";
+  const opts = [`<option value="">跟随 AI 助手当前渠道 · ${esc(activeHint)}</option>`];
+  channels.forEach(c => {
+    const status = c.configured ? (AI_PROTO_LABELS[c.provider] || c.provider) : "未完成配置";
+    opts.push(`<option value="${esc(c.id)}">${esc(c.display_name)} · ${esc(c.model || "未选模型")}（${esc(status)}）</option>`);
+  });
+  sel.innerHTML = opts.join("");
+  if (selectedId && [...sel.options].some(o => o.value === selectedId)) sel.value = selectedId;
+  else sel.value = "";
+  onAiChannelChange();
+}
+function onAiChannelChange() {
+  const ch = _aiSelectedChannel();
+  const dl = $("ai-channel-models-datalist");
+  if (dl) {
+    const models = ch?.models || [];
+    dl.innerHTML = models.map(m => `<option value="${esc(m.id)}">${esc(m.name && m.name !== m.id ? `${m.name} (${m.id})` : m.id)}</option>`).join("");
+  }
+  const help = $("ai-channel-help");
+  if (help) {
+    if (!ch) {
+      help.textContent = "暂无可用共享渠道，请点击右上角「添加/编辑渠道」在 AI 助手中先配置一个模型渠道。";
+    } else if (!ch.configured) {
+      help.textContent = `当前渠道「${ch.display_name}」尚未配置接口地址或模型 ID，请先到 AI 助手模型设置中补全保存。`;
+    } else {
+      help.textContent = `当前指向：${ch.display_name} · ${AI_PROTO_LABELS[ch.provider] || ch.provider} · 默认模型 ${ch.model}。`;
+    }
+  }
+  syncAiStatusBanner();
+  csSyncAll();
+}
+function populateAiPresetSelect(selectedId = "") {
+  const sel = $("ai-default-preset");
+  if (!sel) return;
+  sel.innerHTML = (AI_ALL_PRESETS || []).map(p =>
+    `<option value="${esc(p.id)}">${esc(p.name)}${p.builtin ? "" : "（自定义）"}</option>`
+  ).join("");
+  if (selectedId && [...sel.options].some(o => o.value === selectedId)) sel.value = selectedId;
+  onAiPresetChange();
+}
+function onAiPresetChange() {
+  const pid = $("ai-default-preset")?.value || "natural_cn";
+  const preset = (AI_ALL_PRESETS || []).find(p => p.id === pid);
+  const desc = $("ai-preset-desc");
+  if (desc && preset) {
+    desc.textContent = `${preset.description || preset.style_prompt.slice(0, 80)}（建议 ≤${preset.max_chars} 字；单条规则可单独覆盖）`;
+  }
+}
+function onAiSourceChange() {
+  const isCustom = Boolean($("ai-source-custom")?.checked);
+  if ($("ai-panel-channel")) $("ai-panel-channel").hidden = isCustom;
+  if ($("ai-panel-custom")) $("ai-panel-custom").hidden = !isCustom;
+  syncAiStatusBanner();
+  csSyncAll();
+}
+function onAiProxyModeChange() {
+  const mode = $("ai-proxy-mode")?.value || "direct";
+  const wrap = $("ai-proxy-url-wrap");
+  if (wrap) wrap.hidden = mode !== "custom";
+  if (mode !== "custom") setFieldError($("ai-proxy-url"), "");
+}
+function onAiClearKeyToggle() {
+  const keyEl = $("ai-key");
+  const clr = Boolean($("ai-clear-key")?.checked);
+  if (keyEl) {
+    keyEl.disabled = clr;
+    if (clr) keyEl.value = "";
+  }
+}
+function syncAiStatusBanner() {
+  const strip = $("ai-status-strip");
+  const title = $("ai-status-title");
+  const desc = $("ai-status-desc");
+  if (!strip || !title || !desc) return;
+  const enabled = Boolean($("ai-enabled")?.checked);
+  const isCustom = Boolean($("ai-source-custom")?.checked);
+  let ready = false, routeText = "", reason = "";
+  if (isCustom) {
+    const base = ($("ai-base")?.value || "").trim();
+    const model = ($("ai-model")?.value || "").trim();
+    const proto = AI_PROTO_LABELS[$("ai-provider")?.value || "openai_compatible"] || "OpenAI";
+    ready = Boolean(base && model);
+    routeText = ready ? `独立接口 · ${proto} · ${model}` : "独立接口尚未填完地址或模型";
+    reason = ready ? "" : "请填写接口基础地址与模型名称";
+  } else {
+    const ch = _aiSelectedChannel();
+    const ovModel = ($("ai-channel-model-override")?.value || "").trim();
+    const model = ovModel || ch?.model || "";
+    ready = Boolean(ch?.base_url && model);
+    const proto = AI_PROTO_LABELS[ch?.provider || "openai_compatible"] || "";
+    routeText = ch
+      ? `复用共享渠道「${ch.display_name}」· ${proto} · ${model || "未选模型"}`
+      : "尚未配置共享模型渠道";
+    reason = ready ? "" : "请先在「管理共享模型渠道」中配置接口地址与模型";
+  }
+  if (!enabled) {
+    strip.dataset.state = "off";
+    title.textContent = "AI 文案生成当前未启用";
+    desc.textContent = `当前路由：${routeText}。开启下方总开关并保存后，勾选 AI 的自动评论规则即可生效。`;
+  } else if (ready) {
+    strip.dataset.state = "ready";
+    title.textContent = `AI 文案已就绪 · ${routeText}`;
+    desc.textContent = "自动评论规则可直接使用此配置，也可按单条规则覆盖人设预设或指定模型。";
+  } else {
+    strip.dataset.state = "warn";
+    title.textContent = "AI 文案已开启但模型未就绪";
+    desc.textContent = `${routeText} — ${reason}。`;
+  }
+}
+function buildAiConfigDraft() {
+  const isCustom = Boolean($("ai-source-custom")?.checked);
+  const rawTemp = ($("ai-temp")?.value ?? "").trim();
+  const tempVal = rawTemp === "" ? null : Number(rawTemp);
+  return {
+    enabled: Boolean($("ai-enabled")?.checked),
+    source: isCustom ? "custom" : "channel",
+    channel_id: $("ai-channel-id")?.value || "",
+    model_override: ($("ai-channel-model-override")?.value || "").trim(),
+    provider: $("ai-provider")?.value || "openai_compatible",
+    base_url: ($("ai-base")?.value || "").trim(),
+    api_key: ($("ai-key")?.value || "").trim(),
+    clear_api_key: Boolean($("ai-clear-key")?.checked),
+    api_path_mode: $("ai-path-mode")?.value || "auto",
+    model: ($("ai-model")?.value || "").trim(),
+    output_token_parameter: $("ai-token-param")?.value || "max_tokens",
+    temperature: Number.isFinite(tempVal) ? tempVal : null,
+    max_output_tokens: Math.max(64, Math.min(2048, Number($("ai-max-output-tokens")?.value) || 256)),
+    timeout_seconds: Math.max(5, Math.min(90, Number($("ai-timeout")?.value) || 25)),
+    max_chars: Math.max(15, Math.min(300, Number($("ai-max-chars")?.value) || 60)),
+    language_mode: $("ai-language-mode")?.value || "auto",
+    disable_thinking: Boolean($("ai-disable-thinking")?.checked),
+    proxy_mode: $("ai-proxy-mode")?.value || "direct",
+    proxy_url: ($("ai-proxy-url")?.value || "").trim(),
+    default_preset_id: $("ai-default-preset")?.value || "natural_cn",
+    custom_prompt: $("ai-prompt")?.value || "",
+    custom_presets: AI_CUSTOM_PRESETS || [],
+  };
+}
+function applyAiSettingsData(s, { force = false } = {}) {
+  if (!s) return;
+  AI_CHANNELS_STATE = s.ai_channels || AI_CHANNELS_STATE;
+  const cfg = s.ai_config || {};
+  AI_CONFIG_STATE = cfg;
+  AI_ALL_PRESETS = Array.isArray(cfg.presets) ? cfg.presets : [];
+  AI_CUSTOM_PRESETS = Array.isArray(cfg.custom_presets) ? cfg.custom_presets : [];
+  if (!$("ai-enabled")) return;
+  const assign = (id, prop, val) => {
+    const el = $(id);
+    if (!el) return;
+    if (force) {
+      delete el.dataset.wbEdited;
+      el[prop] = val;
+    } else if (!globalThis.CreatorHubWorkbench?.isDirty?.(id)) {
+      el[prop] = val;
+    }
+  };
+  assign("ai-enabled", "checked", !!cfg.enabled);
+  const isCustom = cfg.source === "custom";
+  if ($("ai-source-channel")) $("ai-source-channel").checked = !isCustom;
+  if ($("ai-source-custom")) $("ai-source-custom").checked = isCustom;
+  populateAiChannelSelectors(cfg.channel_id || "");
+  assign("ai-channel-model-override", "value", cfg.model_override || "");
+  assign("ai-provider", "value", cfg.provider || "openai_compatible");
+  assign("ai-path-mode", "value", cfg.api_path_mode || "auto");
+  assign("ai-base", "value", cfg.base_url || "");
+  assign("ai-model", "value", cfg.model || "");
+  assign("ai-token-param", "value", cfg.output_token_parameter || "max_tokens");
+  assign("ai-temp", "value", cfg.temperature === null || cfg.temperature === undefined ? "" : String(cfg.temperature));
+  assign("ai-max-chars", "value", String(cfg.max_chars || 60));
+  assign("ai-language-mode", "value", cfg.language_mode || "auto");
+  assign("ai-max-output-tokens", "value", String(cfg.max_output_tokens || 256));
+  assign("ai-timeout", "value", String(cfg.timeout_seconds || 25));
+  assign("ai-proxy-mode", "value", cfg.proxy_mode || "direct");
+  assign("ai-proxy-url", "value", cfg.proxy_url || "");
+  assign("ai-disable-thinking", "checked", cfg.disable_thinking !== false);
+  assign("ai-prompt", "value", cfg.custom_prompt || "");
+  populateAiPresetSelect(cfg.default_preset_id || "natural_cn");
+  if ($("ai-key")) {
+    $("ai-key").value = "";
+    $("ai-key").disabled = false;
+    $("ai-key").placeholder = cfg.api_key_set ? "已保存（留空保留原密钥）" : "输入 API Key；本地无鉴权服务可留空";
+  }
+  if ($("ai-clear-key")) $("ai-clear-key").checked = false;
+  if ($("ai-clear-key-wrap")) $("ai-clear-key-wrap").style.display = cfg.api_key_set ? "flex" : "none";
+  if ($("ai-migrate-btn")) $("ai-migrate-btn").hidden = !(isCustom && cfg.base_url && cfg.model);
+  onAiProxyModeChange();
+  onAiSourceChange();
+  csSyncAll();
+}
+async function refreshAiSharedChannels() {
+  try {
+    const s = await api("/api/settings");
+    AI_CHANNELS_STATE = s.ai_channels || AI_CHANNELS_STATE;
+    populateAiChannelSelectors($("ai-channel-id")?.value || "");
+    toast("已刷新共享模型渠道列表", "ok", 2200);
+  } catch (e) { toast("刷新渠道失败：" + e.message, "err"); }
+}
 async function loadSettings() {
   globalThis.CreatorHubEngineSettings?.load();
   globalThis.CreatorHubChannelsProtocol?.load?.();
@@ -790,59 +1016,211 @@ async function loadSettings() {
   try {
     const s = await api("/api/settings");
     const assign = (id, property, value) => {
-      if (!globalThis.CreatorHubWorkbench?.isDirty?.(id)) $(id)[property] = value;
+      if ($(id) && !globalThis.CreatorHubWorkbench?.isDirty?.(id)) $(id)[property] = value;
     };
     assign("dl-dir", "value", s.download_dir || "");
     assign("dl-quality", "value", s.video_quality || "highest");
-    if ($("ai-enabled")) {
-      assign("ai-enabled", "checked", !!s.ai_enabled);
-      assign("ai-base", "value", s.ai_base_url || "");
-      assign("ai-model", "value", s.ai_model || "");
-      assign("ai-temp", "value", s.ai_temperature || "0.9");
-      assign("ai-prompt", "value", s.ai_prompt || "");
-      $("ai-key").placeholder = s.ai_api_key_set ? "已保存(留空=不修改)" : "API Key";
-    }
+    applyAiSettingsData(s);
     csSyncAll();
   } catch (e) {}
 }
 async function saveAiSettings() {
   if (!validateAiSettings(false)) return;
   $("ai-msg").textContent = "保存中…";
-  const body = {
-    ai_enabled: $("ai-enabled").checked, ai_base_url: $("ai-base").value.trim(),
-    ai_model: $("ai-model").value.trim(), ai_temperature: $("ai-temp").value.trim() || "0.9",
-    ai_prompt: $("ai-prompt").value,
-  };
-  const key = $("ai-key").value.trim();
-  if (key) body.ai_api_key = key;
+  const ai_config = buildAiConfigDraft();
   await withBusy(evtBtn(), "保存中", async () => {
-  try {
-    const s = await api("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    $("ai-key").value = ""; $("ai-key").placeholder = s.ai_api_key_set ? "已保存(留空=不修改)" : "API Key";
-    $("ai-msg").textContent = "已保存 ✓ " + (s.ai_enabled ? "(规则勾选「用 AI」即生效)" : "(当前未启用)");
-    toast("AI 设置已保存", "ok");
-  } catch (e) { $("ai-msg").textContent = "失败: " + e.message; toast("保存失败:" + e.message, "err"); }
+    try {
+      const s = await api("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ai_config }),
+      });
+      applyAiSettingsData(s, { force: true });
+      $("ai-msg").textContent = "已保存 ✓ " + (s.ai_config?.enabled ? "（已生效于自动评论规则）" : "（当前总开关未启用）");
+      toast("AI 文案设置已保存", "ok");
+      window.dispatchEvent(new Event("creatorhub:ai-config:updated"));
+    } catch (e) {
+      $("ai-msg").textContent = "保存失败：" + e.message;
+      toast("保存失败：" + e.message, "err", 7000);
+    }
   });
+}
+async function migrateAiToChannel() {
+  const name = await uiPrompt({
+    title: "转存为共享模型渠道",
+    hint: "将把当前独立接口的地址、协议、密钥和模型保存为一个共享渠道（与 AI 助手互通），并自动切换为「复用共享渠道」模式。",
+    value: "AI 文案渠道",
+    placeholder: "输入渠道显示名称",
+  });
+  if (name === null) return;
+  try {
+    const res = await api("/api/settings/ai-migrate-to-channel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ display_name: name.trim() || "AI 文案渠道" }),
+    });
+    applyAiSettingsData({ ai_config: res.ai_config, ai_channels: res.ai_channels }, { force: true });
+    toast("已转存为共享渠道并自动切换 ✓", "ok", 5000);
+    window.dispatchEvent(new Event("creatorhub:ai-config:updated"));
+  } catch (e) {
+    toast("转存失败：" + e.message, "err", 7000);
+  }
 }
 async function testAi() {
   const btn = evtBtn();
   if (!validateAiSettings(true)) return;
-  $("ai-msg").textContent = "测试中…";
-  // 用当前表单值测(key 留空则用已保存的),方便保存前先验证
-  const body = {
-    base_url: $("ai-base").value.trim(), model: $("ai-model").value.trim(),
-    prompt: $("ai-prompt").value, temperature: $("ai-temp").value.trim() || "0.9",
+  if ($("ai-test-drawer")) $("ai-test-drawer").open = true;
+  $("ai-msg").textContent = "实景测试生成中…";
+  const out = $("ai-test-output");
+  if (out) { out.hidden = false; out.removeAttribute("data-tone"); out.textContent = "正在调用模型生成样例文案…"; }
+  const payload = {
+    ai_config: buildAiConfigDraft(),
+    preset_id: $("ai-default-preset")?.value || "natural_cn",
+    sample_platform: $("ai-test-platform")?.value || "douyin",
+    sample_mode: $("ai-test-mode")?.value || "auto_reply",
+    sample_work_desc: $("ai-test-work")?.value || "",
+    sample_source_text: $("ai-test-source")?.value || "",
   };
-  const key = $("ai-key").value.trim();
-  if (key) body.api_key = key;
   await withBusy(btn, "测试中", async () => {
     try {
-      const r = await api("/api/settings/ai-test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (r.ok) { $("ai-msg").innerHTML = `连通正常 ✓ 样例文案:<b>${esc(r.sample || "")}</b>`; toast("AI 连通正常 ✓", "ok", 6000); }
-      else { $("ai-msg").textContent = "连通失败:" + (r.error || ""); toast("AI 连通失败:" + (r.error || ""), "err", 8000); }
-    } catch (e) { $("ai-msg").textContent = "失败:" + e.message; toast("测试失败:" + e.message, "err"); }
+      const r = await api("/api/settings/ai-test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (r.ok) {
+        const meta = [r.source_label, r.model, r.preset_name, r.elapsed_ms ? `${r.elapsed_ms}ms` : ""].filter(Boolean).join(" · ");
+        $("ai-msg").textContent = `测试成功 ✓（${r.elapsed_ms || 0}ms）`;
+        if (out) {
+          out.dataset.tone = "ok";
+          out.innerHTML = `<div class="mut" style="font-size:11.5px;margin-bottom:4px">${esc(meta)}</div><b>${esc(r.sample || "")}</b>`;
+        }
+        toast("AI 实景生成正常 ✓", "ok", 5000);
+      } else {
+        $("ai-msg").textContent = "生成失败：" + (r.error || "");
+        if (out) { out.dataset.tone = "err"; out.textContent = "测试失败：" + (r.error || ""); }
+        toast("AI 测试失败：" + (r.error || ""), "err", 8000);
+      }
+    } catch (e) {
+      $("ai-msg").textContent = "失败：" + e.message;
+      if (out) { out.dataset.tone = "err"; out.textContent = "测试失败：" + e.message; }
+      toast("测试失败：" + e.message, "err", 8000);
+    }
   });
 }
+async function manageAiPresets() {
+  let working = (AI_CUSTOM_PRESETS || []).map(x => ({ ...x }));
+  const builtins = (AI_ALL_PRESETS || []).filter(p => p.builtin);
+  let editingIndex = -1;
+
+  const renderModalBody = () => {
+    const body = $("ui-body");
+    if (!body) return;
+    body.innerHTML = `
+      <div class="stack" style="gap:12px">
+        <div class="ac-section-box">
+          <div class="ac-section-title"><span>${editingIndex >= 0 ? "编辑自定义人设" : "新建自定义人设"}</span></div>
+          <div class="form-grid">
+            <div class="form-field"><label for="ap-name">人设名称</label><input id="ap-name" maxlength="60" placeholder="例如：美妆博主闺蜜口吻 / 跨境独立站客服"></div>
+            <div class="form-field"><label for="ap-lang">语种</label><select id="ap-lang"><option value="auto">自动匹配</option><option value="zh">中文</option><option value="en">英文</option></select></div>
+            <div class="form-field"><label for="ap-chars">建议字数上限</label><input id="ap-chars" type="number" min="15" max="300" value="60"></div>
+            <div class="form-field"><label for="ap-desc">简短说明</label><input id="ap-desc" maxlength="200" placeholder="说明适用场景（可选）"></div>
+          </div>
+          <div class="form-field"><label for="ap-style">风格与人设要求</label><textarea id="ap-style" rows="3" maxlength="2000" placeholder="描述语气、口吻、禁忌词与互动策略…"></textarea></div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            ${editingIndex >= 0 ? `<button type="button" class="ghost sm" id="ap-cancel-edit">取消编辑</button>` : ""}
+            <button type="button" class="sm" id="ap-add-btn">${editingIndex >= 0 ? "更新此人设" : "添加到自定义人设"}</button>
+          </div>
+        </div>
+        <div class="ac-section-box">
+          <div class="ac-section-title"><span>已保存的自定义人设（${working.length} / 20）</span></div>
+          ${working.length ? `<ul class="ai-preset-list">${working.map((p, idx) => `
+            <li class="ai-preset-item">
+              <div style="min-width:0;flex:1"><b>${esc(p.name)}</b> <span class="mut" style="font-size:11px">≤${p.max_chars}字 · ${p.language_mode}</span><p>${esc(p.style_prompt || p.description || "")}</p></div>
+              <div style="display:flex;gap:6px;flex:0 0 auto">
+                <button type="button" class="ghost sm" data-ap-edit="${idx}">编辑</button>
+                <button type="button" class="ghost sm danger" data-ap-del="${idx}">删除</button>
+              </div>
+            </li>`).join("")}</ul>` : `<div class="mut" style="font-size:12px">还没有自定义人设；内置的 ${builtins.length} 套常用预设可直接使用。</div>`}
+        </div>
+      </div>`;
+    if (editingIndex >= 0 && working[editingIndex]) {
+      const cur = working[editingIndex];
+      $("ap-name").value = cur.name || "";
+      $("ap-lang").value = cur.language_mode || "auto";
+      $("ap-chars").value = String(cur.max_chars || 60);
+      $("ap-desc").value = cur.description || "";
+      $("ap-style").value = cur.style_prompt || "";
+    }
+    enhanceSelect($("ap-lang"));
+    if ($("ap-cancel-edit")) $("ap-cancel-edit").onclick = () => { editingIndex = -1; renderModalBody(); };
+    $("ap-add-btn").onclick = () => {
+      const name = ($("ap-name").value || "").trim();
+      const style = ($("ap-style").value || "").trim();
+      if (!name) { toast("请填写人设名称", "err"); $("ap-name").focus(); return; }
+      if (!style) { toast("请填写风格与人设要求", "err"); $("ap-style").focus(); return; }
+      const item = {
+        id: editingIndex >= 0 ? working[editingIndex].id : `custom_${Date.now().toString(36)}`,
+        name: name.slice(0, 60),
+        description: ($("ap-desc").value || "").trim().slice(0, 200),
+        style_prompt: style.slice(0, 2000),
+        max_chars: Math.max(15, Math.min(300, Number($("ap-chars").value) || 60)),
+        temperature: 0.85,
+        language_mode: $("ap-lang").value || "auto",
+        builtin: false,
+      };
+      if (editingIndex >= 0) { working[editingIndex] = item; editingIndex = -1; }
+      else {
+        if (working.length >= 20) { toast("最多创建 20 个自定义人设", "err"); return; }
+        working.push(item);
+      }
+      renderModalBody();
+    };
+    body.querySelectorAll("[data-ap-edit]").forEach(btn => {
+      btn.onclick = () => { editingIndex = Number(btn.dataset.apEdit); renderModalBody(); };
+    });
+    body.querySelectorAll("[data-ap-del]").forEach(btn => {
+      btn.onclick = () => {
+        const idx = Number(btn.dataset.apDel);
+        working.splice(idx, 1);
+        if (editingIndex === idx) editingIndex = -1;
+        renderModalBody();
+      };
+    });
+  };
+
+  const saved = await new Promise(resolve => {
+    _uiResolve = resolve; _uiCancelVal = null;
+    _uiGetVal = () => working;
+    renderModalBody();
+    _uiOpen("管理自定义文案人设", "保存后会立即同步到 AI 文案设置与所有自动评论规则的人设下拉列表。", {
+      okText: "保存人设列表",
+      wide: true,
+      icon: "i-sparkles",
+      submit: async list => {
+        AI_CUSTOM_PRESETS = list;
+        const draft = buildAiConfigDraft();
+        draft.custom_presets = list;
+        const s = await api("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ai_config: draft }),
+        });
+        applyAiSettingsData(s, { force: true });
+      },
+    });
+  });
+  if (saved) {
+    toast("自定义人设已保存 ✓", "ok");
+    window.dispatchEvent(new Event("creatorhub:ai-config:updated"));
+  }
+}
+window.addEventListener("creatorhub:ai-channels:updated", () => {
+  api("/api/settings").then(s => {
+    AI_CHANNELS_STATE = s.ai_channels || AI_CHANNELS_STATE;
+    populateAiChannelSelectors($("ai-channel-id")?.value || "");
+  }).catch(() => {});
+});
 async function saveSettings() {
   $("dl-msg").textContent = "保存中…";
   await withBusy(evtBtn(), "保存中", async () => {

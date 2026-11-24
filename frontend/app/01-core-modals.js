@@ -270,6 +270,23 @@ function toggleSecretInput(id, btn) {
   }
   input.focus({ preventScroll: true });
 }
+function insertTextVar(inputId, token) {
+  const el = $(inputId);
+  if (!el) return;
+  const start = el.selectionStart ?? el.value.length;
+  const end = el.selectionEnd ?? el.value.length;
+  el.value = el.value.slice(0, start) + token + el.value.slice(end);
+  const next = start + token.length;
+  el.focus();
+  try { el.setSelectionRange(next, next); } catch (e) {}
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+function isAiCustomSource() {
+  return Boolean($("ai-source-custom")?.checked);
+}
+function isAiCustomRequired() {
+  return isAiCustomSource() && Boolean($("ai-enabled")?.checked);
+}
 function validateAiField(el, required = false) {
   if (!el) return true;
   const value = el.value.trim();
@@ -280,20 +297,35 @@ function validateAiField(el, required = false) {
       if (!/^https?:$/.test(url.protocol)) throw new Error("protocol");
     } catch (e) { return setFieldError(el, "请输入以 http:// 或 https:// 开头的有效地址"); }
   }
+  if (el.id === "ai-proxy-url" && $("ai-proxy-mode")?.value === "custom") {
+    if (!value) return setFieldError(el, "选择自定义代理时请填写代理地址");
+    try {
+      const url = new URL(value);
+      if (!/^(https?|socks5h?):$/.test(url.protocol)) throw new Error("protocol");
+    } catch (e) { return setFieldError(el, "请输入合法代理地址（http:// 或 socks5://）"); }
+  }
   if (el.id === "ai-temp" && value) {
     const n = Number(value);
-    if (!Number.isFinite(n) || n < 0 || n > 2) return setFieldError(el, "温度需填写 0–2 之间的数字");
+    if (!Number.isFinite(n) || n < 0 || n > 2) return setFieldError(el, "温度需填写 0–2 之间的数字，或留空");
   }
   return setFieldError(el, "");
 }
 function validateAiSettings(requireConfigured = false) {
-  const required = requireConfigured || $("ai-enabled").checked;
-  const fields = [$("ai-base"), $("ai-model"), $("ai-temp")];
-  const valid = fields.map(el => validateAiField(el, required && (el.id === "ai-base" || el.id === "ai-model"))).every(Boolean);
+  const custom = isAiCustomSource();
+  const required = requireConfigured || Boolean($("ai-enabled")?.checked);
+  const fields = [$("ai-temp"), $("ai-proxy-url")];
+  if (custom) fields.unshift($("ai-base"), $("ai-model"));
+  else {
+    setFieldError($("ai-base"), "");
+    setFieldError($("ai-model"), "");
+  }
+  const valid = fields.filter(Boolean).map(el =>
+    validateAiField(el, custom && required && (el.id === "ai-base" || el.id === "ai-model"))
+  ).every(Boolean);
   if (!valid) {
-    const first = fields.find(el => el.getAttribute("aria-invalid") === "true");
+    const first = fields.find(el => el && el.getAttribute("aria-invalid") === "true");
     if (first) first.focus({ preventScroll: false });
-    $("ai-msg").textContent = "请先修正标红的配置项";
+    if ($("ai-msg")) $("ai-msg").textContent = "请先修正标红的配置项";
   }
   return valid;
 }

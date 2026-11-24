@@ -712,14 +712,29 @@ class CommentRule(SQLModel, table=True):
     sec_uid: str = ""                    # creator 模式:目标博主 user_id / sec_uid
     aweme_id: str = ""                   # work 模式:指定作品 / 笔记 note_id
     xsec_token: str = ""                 # 小红书:打开目标所需令牌(可选)
-    # ── 文案 ──
-    templates: str = ""                  # JSON 字符串数组,支持 {nick} 变量与 spintax {a|b|c}
-    use_ai: bool = False                 # 用大模型 API 生成文案(失败/未配置时回退模板库)
-    reply_filter: str = ""               # auto_reply:仅回复正文含此关键词的评论(空=全回)
-    skip_keywords: str = ""              # 命中任一(逗号分隔)则跳过该评论/作品
+    # ── 文案与 AI ──
+    templates: str = ""                  # JSON 字符串数组,支持 {nick}/{kw}/{author}/{work_title} 与 spintax {a|b|c}
+    use_ai: bool = False                 # 兼容旧字段:开启 AI 文案生成(与 compose_mode 同步)
+    compose_mode: str = ""               # template_only | ai_with_fallback | ai_only_draft | ai_only_skip (空=按 use_ai 推导)
+    ai_channel_id: str = ""              # 可选覆盖全局 AI 共享渠道 ID(空=跟随设置→AI文案默认)
+    ai_model: str = ""                   # 可选覆盖模型 ID(空=跟随渠道/全局默认)
+    ai_preset_id: str = ""               # 可选人设预设 ID(空=跟随全局默认)
+    ai_prompt: str = ""                  # 规则专属补充提示词
+    ai_max_chars: int = 0                # 规则专属回复字数上限(0=跟随预设/全局)
+    # ── 筛选与发现范围 ──
+    reply_filter: str = ""               # 兼容旧字段:单关键词过滤(会与 include_keywords 合并)
+    skip_keywords: str = ""              # 兼容旧字段:逗号分隔跳过词(会与 exclude_keywords 合并)
+    match_mode: str = "any"              # all(不限) | any(任一命中) | all_terms(全部命中) | regex(正则)
+    include_keywords: str = "[]"         # JSON 字符串数组:包含关键词
+    exclude_keywords: str = "[]"         # JSON 字符串数组:排除关键词
+    comment_scope: str = "all"           # auto_reply: all | top_only(仅一级评论) | reply_only(仅二级回复)
+    min_source_length: int = 0           # 忽略正文少于 N 字的评论/作品(0=不限)
+    max_source_age_hours: int = 0        # 仅处理最近 N 小时内的评论/作品(0=跟随 recent_days)
+    recent_works: int = 0                # 规则级覆盖:检查最近 N 条作品(0=跟随全局 comment_recent_works)
+    recent_days: int = 0                 # 规则级覆盖:仅看最近 N 天作品/评论(0=跟随全局 comment_recent_days)
     # ── 节流 / 风控闸 ──
-    daily_cap: int = 20                  # 该规则每日最多发多少条(每账号每日另有全局上限)
-    min_gap_seconds: int = 90            # 同规则两条任务最小间隔(实际叠加 jitter)
+    daily_cap: int = 20                  # 该规则每日最多生成/发送多少条(0=规则不单独限额,跟随账号风控上限)
+    min_gap_seconds: int = 90            # 同规则两条任务最小间隔(实际取与风控中心/全局间隔的最大值)
     max_per_run: int = 5                 # 单轮最多生成多少条任务(避免一次铺太多)
     interval_seconds: int = 1800         # 规则多久跑一轮(发现+生成任务)
     require_review: bool = False         # 草稿审核:生成的任务为 draft,人工通过后才发
@@ -741,7 +756,10 @@ class CommentTask(SQLModel, table=True):
     target_comment_id: str = ""                           # 非空=回复该条评论;空=作品下顶层评论
     target_nick: str = ""                                 # 被回复者昵称(供 {nick} 用)
     target_text: str = ""                                 # 目标评论原文(定位回复目标)
+    work_desc: str = ""                                   # 原作品标题/文案摘要(供 AI 上下文与审稿参考)
     content: str = ""                                     # 已渲染好的文案
+    content_source: str = ""                              # ai | template | ai_fallback | ai_empty_draft | manual
+    ai_error: str = ""                                    # AI 生成失败回退原因(不含密钥)
     scheduled_at: Optional[datetime] = None               # 计划发送时间(错峰)
     # draft=草稿待审;uncertain=已提交但未取得明确结果,不可自动重试
     status: str = "pending"        # draft | pending | doing | uncertain | done | failed | canceled
