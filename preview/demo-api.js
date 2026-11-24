@@ -4,6 +4,8 @@
   let demoDiagLevel = "info";
   const realFetch = window.fetch.bind(window);
   const engineDefaults = {
+    worker_pool_size: 2, scan_concurrency: 2, active_accounts: 3, max_live_contexts: 6,
+    resident_browser_sessions: true, browser_session_idle_seconds: 1800,
     xhs_read_mode: "api", rednote_read_mode: "hybrid", douyin_read_mode: "hybrid", douyin_write_mode: "browser",
     tiktok_read_mode: "native", channels_read_mode: "auto",
     bilibili_read_mode: "hybrid", bilibili_write_mode: "hybrid",
@@ -24,6 +26,8 @@
     work_health_enabled: false, work_health_interval_seconds: 3600, work_health_zero_play_hours: 6,
     work_health_recent_days: 7, work_health_stat_snapshots: true,
     scan_interval_seconds: 300, idle_keepalive_hours: 6,
+    keepalive_cookie_sync_enabled: true, bilibili_auto_cookie_refresh: true,
+    shipinhao_keepalive_interval_seconds: 900, keepalive_notify_on_invalid: true,
     danmaku_probe_step_seconds: 1, danmaku_max_probe_points: 120,
     danmaku_max_records_per_scan: 1000, danmaku_max_records_total: 0,
     xhs_dm_monitor_enabled: false, xhs_dm_poll_interval_seconds: 120,
@@ -35,11 +39,34 @@
     action_daily_cap_per_account: 0, action_hourly_cap_per_account: 0,
     action_min_gap_seconds: 0, verify_proxy_region: true,
     strict_proxy_required: false, forbid_same_platform_shared_proxy: false,
-    quiet_hours_include_reads: false, quiet_hours_wake_jitter_minutes: 0,
+    quiet_hours_enabled: false, quiet_hours_include_reads: false, quiet_hours_wake_jitter_minutes: 0,
     native_write_gate_enabled: false, native_write_require_system_chrome: true,
     native_write_require_verified_proxy: true, native_write_proxy_max_age_seconds: 86400,
   };
   const engineValues = { ...engineDefaults };
+  const demoAiPresets = [
+    { id: "natural_cn", name: "自然口语互动", description: "简短真诚、像真实网友或创作者日常互动，无营销腔和 AI 味。", style_prompt: "语气自然真诚、像真人日常随手打字，不要书面语、不要官腔、不要推销感。", max_chars: 45, temperature: 0.85, language_mode: "auto", builtin: true },
+    { id: "friendly_cs", name: "亲切客服答疑", description: "适合回复自己作品下的提问、咨询、求攻略类评论，礼貌高效。", style_prompt: "以作品作者身份亲切回复粉丝，先回应对方具体问题或夸奖，表达感谢。", max_chars: 75, temperature: 0.7, language_mode: "auto", builtin: true },
+    { id: "xhs_seeding", name: "小红书种草共鸣", description: "轻松有网感、强调情绪共鸣与体验分享，适配小红书社区氛围。", style_prompt: "贴合小红书社区的轻松真实分享风格，多从个人感受或共鸣点切入。", max_chars: 55, temperature: 0.9, language_mode: "zh", builtin: true },
+    { id: "bili_humor", name: "B站轻松玩梗", description: "适合 B 站评论区互动，接地气、简洁带一点轻松幽默。", style_prompt: "贴近 B 站评论区接地气、轻松友好的互动感，结合作品或评论内容简短接话。", max_chars: 55, temperature: 0.9, language_mode: "zh", builtin: true },
+    { id: "global_social", name: "海外社媒自然互动", description: "适合 Instagram / X / Facebook，自动跟随原文语种写出地道简短互动。", style_prompt: "Write a concise, genuine, conversational social-media comment or reply.", max_chars: 120, temperature: 0.85, language_mode: "auto", builtin: true },
+  ];
+  const demoAiChannels = {
+    active_channel_id: "default",
+    channels: [{
+      id: "default", display_name: "示例默认渠道", provider: "openai_compatible",
+      base_url: "", model: "", models: [], enabled: false, api_key_set: false, configured: false, is_active: true,
+    }],
+  };
+  const demoAiConfig = {
+    enabled: false, source: "channel", channel_id: "", model_override: "",
+    provider: "openai_compatible", base_url: "", api_path_mode: "auto", model: "",
+    output_token_parameter: "max_tokens", temperature: 0.85, max_output_tokens: 256,
+    timeout_seconds: 25, max_chars: 60, language_mode: "auto", disable_thinking: true,
+    proxy_mode: "direct", proxy_url: "", default_preset_id: "natural_cn",
+    custom_prompt: "", custom_presets: [], api_key_set: false, presets: demoAiPresets,
+    resolved: { ready: false, source: "channel", label: "示例默认渠道 · 未选模型", provider: "openai_compatible", model: "", channel_id: "default", channel_name: "示例默认渠道", following_active: true, reason: "在线演示不连接模型，请在本地配置共享渠道后启用" },
+  };
   const demoRiskConfig = {
     risk_control: {
       enabled: false, mode: "custom",
@@ -267,11 +294,27 @@
   }
 
   function commentRules(platform) {
-    return [{ id: 61, platform, name: "示例自动回复规则", mode: "auto_reply", target_kind: "self", account_id: platformAccount(platform).id, templates: ["谢谢支持，欢迎常来。"], use_ai: false, require_review: true, reply_filter: "", skip_keywords: "", daily_cap: 20, min_gap_seconds: 90, max_per_run: 5, interval_seconds: 1800, enabled: false, last_run_at: iso(86400), last_error: "" }];
+    return [{
+      id: 61, platform, name: "示例自动回复规则", mode: "auto_reply", target_kind: "self",
+      account_id: platformAccount(platform).id, templates: ["谢谢支持，欢迎常来。"],
+      use_ai: false, compose_mode: "template_only", ai_channel_id: "", ai_model: "",
+      ai_preset_id: "", ai_prompt: "", ai_max_chars: 0, require_review: true,
+      match_mode: "any", include_keywords: [], exclude_keywords: [],
+      reply_filter: "", skip_keywords: "", comment_scope: "all",
+      min_source_length: 0, max_source_age_hours: 0, recent_works: 0, recent_days: 0,
+      daily_cap: 20, min_gap_seconds: 90, max_per_run: 5, interval_seconds: 1800,
+      enabled: false, last_run_at: iso(86400), last_error: "",
+    }];
   }
 
   function commentTasks(platform) {
-    return [{ id: 71, platform, content: "谢谢支持，欢迎常来看看。", aweme_id: "DEMO_WORK_001", target_comment_id: "DEMO_COMMENT", target_nick: "示例用户", scheduled_at: iso(-1800), method: "browser", status: "draft", error: "" }];
+    return [{
+      id: 71, rule_id: 61, platform, account_id: platformAccount(platform).id,
+      content: "谢谢支持，欢迎常来看看。", content_source: "template", ai_model: "", ai_error: "",
+      source_text: "这条视频拍得太治愈了，期待更新！", work_desc: "周末城市漫游路线分享",
+      aweme_id: "DEMO_WORK_001", target_comment_id: "DEMO_COMMENT", target_nick: "示例用户",
+      scheduled_at: iso(-1800), method: "browser", status: "draft", error: "",
+    }];
   }
 
   const shareHistory = [
@@ -398,15 +441,48 @@
     if (path === "/api/stats/series") return series();
     if (path === "/api/publish") return publishTasks(platform);
     if (path === "/api/publish/published") return [];
+    if (path === "/api/comment-rules/effective-policy") {
+      const ruleCap = Number(url.searchParams.get("rule_daily_cap") || 0);
+      const ruleGap = Math.max(1, Number(url.searchParams.get("rule_min_gap") || 90));
+      const ruleReview = url.searchParams.get("rule_require_review") === "true";
+      const xhsManual = platform === "xhs" && engineValues.xhs_comment_write_mode === "manual";
+      const xhsReview = platform === "xhs" && Boolean(engineValues.xhs_comment_review_before_publish);
+      return {
+        policy: {
+          platform, rule_daily_cap: ruleCap, account_daily_cap: 0, account_hourly_cap: 0,
+          effective_min_gap_seconds: ruleGap, risk_write_limits_active: false,
+          risk_comment_min_gap_seconds: 0, risk_comment_daily_cap: 0, risk_comment_hourly_cap: 0,
+          legacy_comment_min_gap_seconds: 0, legacy_comment_daily_cap: 0,
+          jitter_enabled: false, comment_jitter: 0, quiet_hours_enabled: false, active_hours: [8, 24],
+          xhs_manual_only: xhsManual, xhs_review_forced: xhsReview,
+          effective_review_required: ruleReview || xhsReview || xhsManual,
+          global_recent_works: engineValues.comment_recent_works,
+          global_recent_days: engineValues.comment_recent_days,
+          ai_enabled: demoAiConfig.enabled, ai_route: demoAiConfig.resolved,
+        },
+        ai_channels: demoAiChannels,
+        ai_presets: demoAiPresets,
+        ai_default_preset_id: demoAiConfig.default_preset_id,
+      };
+    }
     if (path === "/api/comment-rules") return ["shipinhao", "rednote", "tiktok"].includes(platform) ? [] : commentRules(platform);
     if (path === "/api/comment-tasks") return ["shipinhao", "rednote", "tiktok"].includes(platform) ? [] : commentTasks(platform);
     if (path === "/api/share-download/history") return shareHistory;
     if (/^\/api\/share-download\/history\/\d+\/preview$/.test(path)) return { media_type: "video", cover_url: "", medias: [] };
     if (path === "/api/notifications") return [{ id: 91, name: "演示通知渠道", type: "bark", enabled: true, config: {} }];
-    if (path === "/api/settings") return { download_dir: "data/media", video_quality: "highest", ai_enabled: false, ai_base_url: "", ai_model: "", ai_temperature: "0.9", ai_prompt: "", ai_api_key_set: false };
+    if (path === "/api/settings") return {
+      download_dir: "data/media", video_quality: "highest",
+      ai_enabled: demoAiConfig.enabled, ai_base_url: "", ai_model: demoAiConfig.resolved.model,
+      ai_temperature: String(demoAiConfig.temperature), ai_prompt: demoAiConfig.custom_prompt,
+      ai_api_key_set: false, ai_config: demoAiConfig, ai_channels: demoAiChannels,
+    };
     if (path === "/api/channels/protocol/status" || path === "/api/channels/protocol/config") return channelsProtoPayload();
     if (path === "/api/channels/protocol/discover") return { endpoints: [], wechat_processes: [], bridge: channelsProtoPayload().bridge };
-    if (path === "/api/settings/engine") return {values: {...engineValues}, defaults: engineDefaults, saved_fields: [], apply_scope: "next_operation"};
+    if (path === "/api/settings/engine") return {
+      values: { ...engineValues }, defaults: engineDefaults, saved_fields: [],
+      restart_required_fields: ["active_accounts", "scan_concurrency", "worker_pool_size"],
+      apply_scope: "next_operation",
+    };
     if (path === "/api/settings/transport-matrix") return transportMatrix();
     if (path === "/api/hub/summary") return { works: 3, following: 20, fans: 168, dm: 4 };
     if (path === "/api/account-works") return contents(platform).map((item, index) => ({ ...item, id: 201 + index, item_id: item.aweme_id, play_count: 6800 - index * 1200, comment_count: 32 - index * 7, status: "正常" }));
@@ -558,7 +634,8 @@
         if (rc.jitter_enabled) activeModules.push("jitter");
       }
       if (sc.native_write_gate_enabled) activeModules.push("native_write_gate");
-      const scoped = pf ? accounts.filter(a => a.platform === pf) : accounts;
+      const rawPlatform = url.searchParams.get("platform") || "";
+      const scoped = rawPlatform && rawPlatform !== "all" ? accounts.filter(a => a.platform === rawPlatform) : accounts;
       return {
         total: scoped.length,
         counts: { normal: scoped.length, cooldown: 0, recovering: 0, auth_invalid: 0, proxy_error: 0, network_circuit: 0, write_paused: 0, verification_required: 0, network_backoff: 0 },
@@ -569,7 +646,8 @@
       };
     }
     if (path === "/api/risk-control/accounts") {
-      const scoped = pf ? accounts.filter(a => a.platform === pf) : accounts;
+      const rawPlatform = url.searchParams.get("platform") || "";
+      const scoped = rawPlatform && rawPlatform !== "all" ? accounts.filter(a => a.platform === rawPlatform) : accounts;
       return scoped.map(a => ({
         account_id: a.id, platform_account_id: a.douyin_id || a.sec_uid, platform_account_id_label: "账号 ID",
         nickname: a.nickname, platform: a.platform, account_status: a.status,
@@ -624,6 +702,23 @@
     }
     if (path === "/api/share-download/links") return { count: 1, links: [{ platform: "douyin", host: "v.douyin.com", url: "https://v.douyin.com/DEMO/" }] };
     if (path === "/api/share-download") return { ok: true, results: [{ ok: true, platform: "douyin", title: "示例作品", author: "示例创作者", media_type: "video", media_count: 1, output_dir: "data/media/demo", files: [] }] };
+    if (/^\/api\/comment-rules\/\d+\/preview$/.test(path)) {
+      return {
+        ok: true, dry_run: true, candidates: 3, matched: 1, skipped: { dup: 1, filter: 1 },
+        items: [{
+          aweme_id: "DEMO_WORK_001", target_comment_id: "DEMO_COMMENT", target_nick: "示例用户",
+          source_text: "这条视频拍得太治愈了，期待更新！", work_desc: "周末城市漫游路线分享",
+          content: "谢谢喜欢呀，下期准备分享详细攻略～", content_source: "template",
+        }],
+      };
+    }
+    if (/^\/api\/comment-rules\/\d+\/duplicate$/.test(path)) return { ...commentRules("douyin")[0], id: 62, name: "示例自动回复规则（副本）" };
+    if (/^\/api\/comment-tasks\/\d+\/regenerate$/.test(path)) return { ok: true, content: "感谢支持，后续会持续更新更多实用内容！", content_source: "template" };
+    if (path === "/api/comment-tasks/batch-cancel") return { ok: true, canceled: 1 };
+    if (path === "/api/accounts/keepalive-all") return { ok: true, platform: "all", queued: accounts.length, pending_total: accounts.length };
+    if (/^\/api\/accounts\/\d+\/keepalive$/.test(path)) return { ok: true, status: "active", refreshed: false, message: "在线演示：会话状态正常" };
+    if (path === "/api/settings/ai-test") return { ok: false, error: "在线演示模式不连接外部大模型接口，请在本地运行后测试" };
+    if (path === "/api/settings/ai-migrate-to-channel") return { ok: true, ai_channels: demoAiChannels };
     if (/\/run-now$/.test(path)) return { ok: true, created: 1, candidates: 1, review: true, new: 1, new_comments: 1 };
     if (/\/sync$/.test(path)) return { ok: true, fetched: 3, added: 1, source: "api" };
     if (/\/test$/.test(path)) return { ok: true, detail: "在线演示" };
