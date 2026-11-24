@@ -135,6 +135,11 @@ def _safe_engine_snapshot() -> dict[str, Any]:
         "risk_control": {
             "enabled": rc.enabled,
             "mode": rc.mode,
+            "cooldown_enabled": bool(getattr(rc, "cooldown_enabled", False)),
+            "write_limits_enabled": bool(getattr(rc, "write_limits_enabled", False)),
+            "pacing_enabled": bool(getattr(rc, "pacing_enabled", False)),
+            "network_guard_enabled": bool(getattr(rc, "network_guard_enabled", False)),
+            "jitter_enabled": bool(getattr(rc, "jitter_enabled", False)),
             "network_group_concurrency": rc.network_group_concurrency,
         },
     }

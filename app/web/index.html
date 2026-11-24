@@ -2027,8 +2027,256 @@
   .risk-config-group legend { padding:0 7px; color:var(--fg-strong); font-weight:650; }
   .risk-config-group .form-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
   .risk-config-group.wide { grid-column:1/-1; }
-  .risk-limit-table input { min-width:76px; width:100%; }
-  .risk-limit-table th { font-size:11px; }
+  .risk-limit-table input { min-width:68px; width:100%; }
+  .risk-limit-table th { font-size:11px; white-space:nowrap; }
+  .risk-limit-table td:first-child { font-weight:600; white-space:nowrap; color:var(--fg-strong); }
+
+  /* ── 风控中心：状态条、场景方案与分项规则卡片 ── */
+  .risk-policy-strip {
+    display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+    padding:10px 14px; margin-bottom:12px; border-radius:var(--r-md, 12px);
+    background:var(--surface-inset, var(--surface-2));
+    border:1px solid var(--line-soft, var(--line));
+    font-size:12.5px;
+  }
+  .risk-policy-strip[data-state="on"] {
+    background:color-mix(in srgb,var(--acc) 5.5%,var(--surface-2));
+    border-color:color-mix(in srgb,var(--acc) 26%,var(--line));
+  }
+  .risk-policy-strip-main { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0; }
+  .risk-policy-strip-main b { color:var(--fg-strong); font-weight:650; }
+  .risk-policy-strip-main span:last-child { color:var(--mut); }
+  .risk-policy-dot {
+    width:8px; height:8px; border-radius:50%; flex:0 0 8px;
+    background:var(--mut-2, var(--mut));
+  }
+  .risk-policy-strip[data-state="on"] .risk-policy-dot {
+    background:var(--success); box-shadow:0 0 0 3px color-mix(in srgb,var(--success) 20%,transparent);
+  }
+
+  .risk-rules-layout { display:grid; gap:18px; }
+  .risk-hero {
+    display:grid; gap:12px; padding:16px 18px; border-radius:14px;
+    background:var(--surface-inset, var(--surface-2));
+    border:1px solid var(--line);
+    transition:border-color .18s ease, background-color .18s ease;
+  }
+  .risk-hero[data-state="on"] {
+    background:
+      radial-gradient(520px 160px at 0% -10%, color-mix(in srgb,var(--acc) 8%,transparent), transparent 72%),
+      var(--surface-card, var(--surface));
+    border-color:color-mix(in srgb,var(--acc) 30%,var(--line));
+  }
+  .risk-hero[data-state="empty"] {
+    background:color-mix(in srgb,var(--warn) 5%,var(--surface-2));
+    border-color:color-mix(in srgb,var(--warn) 32%,var(--line));
+  }
+  .risk-hero-top {
+    display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  }
+  .risk-hero-copy { display:flex; align-items:flex-start; gap:12px; flex:1 1 360px; min-width:0; }
+  .risk-hero-badge {
+    width:38px; height:38px; flex:0 0 38px; border-radius:11px;
+    display:grid; place-items:center;
+    background:var(--surface); border:1px solid var(--line); color:var(--mut);
+  }
+  .risk-hero[data-state="on"] .risk-hero-badge {
+    background:color-mix(in srgb,var(--acc) 12%,var(--surface));
+    border-color:var(--acc-ring); color:var(--acc);
+  }
+  .risk-hero-badge svg { width:18px; height:18px; }
+  .risk-hero-text { min-width:0; }
+  .risk-hero-title-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .risk-hero-title-row h3 { margin:0; font-size:14.5px; font-weight:700; color:var(--fg-strong); line-height:1.35; }
+  .risk-hero-pill {
+    display:inline-flex; align-items:center; padding:2px 8px; border-radius:999px;
+    font-size:11px; font-weight:650;
+    background:var(--surface); border:1px solid var(--line); color:var(--mut);
+  }
+  .risk-hero[data-state="on"] .risk-hero-pill {
+    background:var(--success-soft); border-color:color-mix(in srgb,var(--success) 32%,transparent); color:var(--success);
+  }
+  .risk-hero[data-state="empty"] .risk-hero-pill {
+    background:var(--warn-soft); border-color:color-mix(in srgb,var(--warn) 32%,transparent); color:var(--warn);
+  }
+  .risk-hero-text p { margin:4px 0 0; font-size:12px; line-height:1.5; color:var(--mut); }
+  .risk-master-switch { flex:0 0 auto; min-width:252px; background:var(--surface); }
+
+  .risk-hero-chips { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding-top:4px; }
+  .risk-active-chip {
+    display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:999px;
+    font-size:11.5px; font-weight:600;
+    background:color-mix(in srgb,var(--acc) 9%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--acc) 26%,var(--line));
+    color:var(--fg-strong);
+  }
+  .risk-active-chip::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--acc); }
+  .risk-active-chip.env {
+    background:color-mix(in srgb,var(--warn) 10%,var(--surface));
+    border-color:color-mix(in srgb,var(--warn) 30%,var(--line));
+  }
+  .risk-active-chip.env::before { background:var(--warn); }
+
+  .risk-legacy-note {
+    display:flex; align-items:center; gap:8px; padding:8px 11px; border-radius:10px;
+    background:color-mix(in srgb,var(--warn) 8%,var(--surface));
+    border:1px solid color-mix(in srgb,var(--warn) 28%,var(--line));
+    color:var(--fg); font-size:12px; line-height:1.45;
+  }
+  .risk-legacy-note svg { width:15px; height:15px; flex:0 0 15px; color:var(--warn); }
+
+  .risk-section-block { display:grid; gap:10px; }
+  .risk-section-head {
+    display:flex; align-items:flex-end; justify-content:space-between; gap:10px; flex-wrap:wrap;
+  }
+  .risk-section-head h3 { margin:0; font-size:13.5px; font-weight:700; color:var(--fg-strong); }
+  .risk-section-head p { margin:3px 0 0; font-size:12px; color:var(--mut); line-height:1.45; }
+  .risk-master-off-hint {
+    font-size:11.5px; color:var(--mut); padding:3px 9px; border-radius:999px;
+    background:var(--surface-2); border:1px solid var(--line-soft, var(--line));
+  }
+  .risk-master-off-hint[hidden] { display:none; }
+
+  .risk-presets { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+  button.risk-preset {
+    display:grid; align-content:start; gap:6px; text-align:left;
+    padding:12px 14px; border-radius:12px; min-height:88px; height:auto;
+    background:var(--surface-card, var(--surface));
+    border:1px solid var(--line); color:var(--fg); font-weight:500; white-space:normal;
+    box-shadow:none; filter:none;
+    transition:border-color .16s ease, background-color .16s ease, box-shadow .16s ease;
+  }
+  button.risk-preset:hover {
+    border-color:color-mix(in srgb,var(--acc) 45%,var(--line));
+    background:var(--control-bg-hover, var(--surface-2));
+    box-shadow:none; filter:none;
+  }
+  button.risk-preset.active {
+    border-color:var(--acc);
+    background:color-mix(in srgb,var(--acc) 7%,var(--surface));
+    box-shadow:0 0 0 1px color-mix(in srgb,var(--acc) 22%,transparent);
+  }
+  .risk-preset-top { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; }
+  .risk-preset-top b { font-size:13.5px; font-weight:700; color:var(--fg-strong); }
+  .risk-preset-tag {
+    font-size:10.5px; font-weight:650; padding:1.5px 7px; border-radius:999px;
+    background:var(--surface-2); border:1px solid var(--line-soft, var(--line)); color:var(--mut);
+    white-space:nowrap;
+  }
+  button.risk-preset.active .risk-preset-tag {
+    background:var(--acc-soft); border-color:var(--acc-ring); color:var(--acc);
+  }
+  button.risk-preset p {
+    margin:0; font-size:11.5px; font-weight:450; line-height:1.48; color:var(--mut);
+    white-space:normal;
+  }
+
+  .risk-modules { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; align-items:start; }
+  .risk-module {
+    border:1px solid var(--line); border-radius:12px;
+    background:var(--surface-card, var(--surface));
+    transition:border-color .18s ease, opacity .18s ease, background-color .18s ease;
+    overflow:hidden; min-width:0;
+  }
+  .risk-module.is-active {
+    border-color:color-mix(in srgb,var(--acc) 32%,var(--line));
+    background:linear-gradient(180deg, color-mix(in srgb,var(--acc) 3.5%,var(--surface)), var(--surface) 76px);
+  }
+  .risk-modules.is-master-off .risk-module {
+    opacity:.72; background:var(--surface-inset, var(--surface-2));
+    border-color:var(--line-soft, var(--line));
+  }
+  .risk-modules.is-master-off .risk-module:hover { opacity:.96; }
+  .risk-module-head {
+    display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
+    padding:14px 15px 12px;
+  }
+  .risk-module-title-wrap { display:flex; align-items:flex-start; gap:10px; min-width:0; flex:1; }
+  .risk-module-ic {
+    width:32px; height:32px; flex:0 0 32px; border-radius:9px;
+    display:grid; place-items:center; margin-top:1px;
+    background:var(--surface-2); border:1px solid var(--line-soft, var(--line)); color:var(--mut);
+  }
+  .risk-module.is-active .risk-module-ic {
+    background:var(--acc-soft); border-color:var(--acc-ring); color:var(--acc);
+  }
+  .risk-module-ic svg { width:16px; height:16px; }
+  .risk-module-copy { min-width:0; flex:1; }
+  .risk-module-title-line { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  .risk-module-title-line b { font-size:13.5px; font-weight:700; color:var(--fg-strong); }
+  .risk-module-badge {
+    font-size:10.5px; font-weight:650; padding:1.5px 7px; border-radius:999px;
+    background:var(--surface-2); color:var(--mut); border:1px solid var(--line-soft, var(--line));
+    white-space:nowrap;
+  }
+  .risk-module.is-active .risk-module-badge {
+    background:var(--success-soft); color:var(--success);
+    border-color:color-mix(in srgb,var(--success) 30%,transparent);
+  }
+  .risk-module-copy p { margin:4px 0 0; font-size:12px; line-height:1.45; color:var(--mut); }
+  .risk-module-summary {
+    margin-top:6px; font-size:11.5px; color:var(--fg); line-height:1.4;
+    font-family:var(--sans);
+  }
+  .risk-module-summary:empty { display:none; }
+  .risk-modules.is-master-off .risk-module-summary { color:var(--mut); }
+
+  /* 独立卡片开关 */
+  .risk-switch {
+    position:relative; display:inline-flex; align-items:center; flex:0 0 auto; cursor:pointer;
+    margin-top:2px;
+  }
+  .risk-switch input {
+    position:absolute; opacity:0; width:1px; height:1px; min-width:0; min-height:0;
+    margin:0; padding:0; border:0; pointer-events:none;
+  }
+  .risk-switch-track {
+    position:relative; width:42px; height:24px; border-radius:999px;
+    background:rgba(120,120,128,.24);
+    transition:background-color .2s cubic-bezier(.2,.8,.25,1);
+  }
+  .risk-switch-track::before {
+    content:""; position:absolute; left:2px; top:2px; width:20px; height:20px;
+    border-radius:50%; background:#fff;
+    box-shadow:0 2px 6px rgba(0,0,0,.18);
+    transition:transform .22s cubic-bezier(.2,.85,.32,1.2);
+  }
+  .risk-switch input:checked + .risk-switch-track { background:var(--acc-solid, var(--acc)); }
+  .risk-switch input:checked + .risk-switch-track::before { transform:translateX(18px); }
+  .risk-switch input:focus-visible + .risk-switch-track { box-shadow:0 0 0 3px var(--acc-ring); }
+
+  .risk-module-details {
+    border-top:1px solid var(--line-soft, var(--line));
+    background:var(--surface-inset, var(--surface-2));
+  }
+  .risk-module-details > summary {
+    display:flex; align-items:center; gap:7px; cursor:pointer; list-style:none;
+    padding:9px 15px; font-size:12px; font-weight:600; color:var(--mut);
+    user-select:none; transition:color .15s ease, background-color .15s ease;
+  }
+  .risk-module-details > summary::-webkit-details-marker { display:none; }
+  .risk-module-details > summary::before {
+    content:"▸"; font-size:11px; color:var(--acc); transition:transform .16s ease;
+  }
+  .risk-module-details[open] > summary::before { transform:rotate(90deg); }
+  .risk-module-details > summary:hover { color:var(--fg-strong); background:var(--control-bg-hover); }
+  .risk-module-body { padding:12px 15px 14px; border-top:1px solid var(--line-soft, var(--line)); }
+  .risk-module-body .form-grid { gap:10px; }
+  .risk-module-body .form-grid.cols-2 { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .risk-module-body .form-grid.cols-3 { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .risk-module-body .field-help { margin:8px 0 0; }
+
+  .risk-env-gate-box {
+    display:grid; gap:10px; padding:12px; border-radius:11px;
+    background:var(--surface); border:1px solid var(--line-soft, var(--line));
+  }
+  .risk-env-gate-sub { grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; transition:opacity .15s ease; }
+  .risk-env-gate-sub.is-disabled { opacity:.52; }
+  .risk-rules-footer { margin-top:14px; padding-top:14px; border-top:1px solid var(--line-soft, var(--line)); }
+  #risk-config-msg[data-state="dirty"] { color:var(--warn); font-weight:600; }
+  #risk-config-msg[data-state="ok"] { color:var(--success); font-weight:600; }
+  #risk-config-msg[data-state="err"] { color:var(--danger); font-weight:600; }
+
   .risk-event-list { display:grid; gap:0; max-height:62vh; overflow:auto; }
   .risk-event { display:grid; grid-template-columns:116px 90px 96px 1fr; gap:12px; padding:11px 4px; border-bottom:1px solid var(--line-soft); align-items:start; }
   .risk-event time { font:500 11px/1.45 var(--mono); color:var(--mut); }
@@ -2038,10 +2286,17 @@
     .risk-stats { grid-template-columns:repeat(3,1fr); }
     .risk-config-shell { grid-template-columns:1fr; }
     .risk-config-group.wide { grid-column:auto; }
+    .risk-presets { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .risk-modules { grid-template-columns:1fr; }
+    .risk-env-gate-sub { grid-template-columns:1fr; }
   }
   @media(max-width:640px) {
     .risk-stats { grid-template-columns:repeat(2,1fr); }
     .risk-config-group .form-grid { grid-template-columns:1fr; }
+    .risk-presets { grid-template-columns:1fr; }
+    .risk-module-body .form-grid.cols-2,
+    .risk-module-body .form-grid.cols-3 { grid-template-columns:1fr; }
+    .risk-master-switch { width:100%; min-width:0; }
     .risk-event { grid-template-columns:92px 74px 1fr; }
     .risk-event-detail { grid-column:1/-1; }
   }
@@ -3456,6 +3711,14 @@
         <span class="card-ic"><svg><use href="#i-shield"/></svg></span>
         <h2>账号风险态势 <span class="sub">状态、原因、恢复进度与待执行任务</span></h2>
       </div>
+      <div class="risk-policy-strip" id="risk-status-policy-banner" data-state="off" role="status" aria-live="polite">
+        <div class="risk-policy-strip-main">
+          <span class="risk-policy-dot" aria-hidden="true"></span>
+          <b id="risk-status-policy-title">风控规则默认未开启</b>
+          <span id="risk-status-policy-desc">当前所有任务直接按计划执行，不做额外拦截或冷却。</span>
+        </div>
+        <button class="ghost sm" type="button" onclick="openRiskRulesSection()">调整风控规则<svg aria-hidden="true"><use href="#i-next"/></svg></button>
+      </div>
       <div class="risk-toolbar">
         <input id="risk-account-search" type="search" placeholder="搜索账号或原因" aria-label="搜索风险账号" oninput="renderRiskAccounts()">
         <select id="risk-status-filter" aria-label="筛选风险状态" onchange="renderRiskAccounts()">
@@ -3479,81 +3742,327 @@
     <div class="card" data-section="rules">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-settings"/></svg></span>
-        <h2>风控规则 <span class="sub">保存后立即作用于后台调度</span></h2>
+        <h2>风控规则 <span class="sub">默认全部关闭 · 按需一键套用方案或独立开关，所见即所得</span></h2>
         <span class="right status-text" id="risk-config-msg" role="status" aria-live="polite"></span>
       </div>
-      <div class="form-grid" style="margin-bottom:12px">
-        <label class="switch-row"><input type="checkbox" id="risk-enabled"><span class="switch-copy"><b>启用统一风控</b><span>关闭后平台操作不经过持久化风控闸门</span></span></label>
-        <div class="form-field"><label for="risk-mode">策略模式</label><select id="risk-mode"><option value="conservative">保守模式（保留安全下限）</option><option value="custom">自定义模式</option></select></div>
-        <div class="form-field"><label for="risk-retention">事件保留天数</label><input id="risk-retention" type="number" min="1" max="3650"></div>
+
+      <div class="risk-rules-layout">
+        <!-- 1. 顶部实时生效态势与总开关 -->
+        <div class="risk-hero" id="risk-rules-hero" data-state="off">
+          <div class="risk-hero-top">
+            <div class="risk-hero-copy">
+              <span class="risk-hero-badge" aria-hidden="true"><svg><use href="#i-shield"/></svg></span>
+              <div class="risk-hero-text">
+                <div class="risk-hero-title-row">
+                  <h3 id="risk-hero-title">风控规则当前全部关闭</h3>
+                  <span class="risk-hero-pill" id="risk-hero-pill">默认不拦截</span>
+                </div>
+                <p id="risk-hero-desc">所有采集、发布、评论与互动任务将直接按计划执行，不做额外拦截、冷却或随机延迟。如需防护，可在下方选择场景方案或单独开启规则。</p>
+              </div>
+            </div>
+            <label class="switch-row risk-master-switch" for="risk-enabled">
+              <input type="checkbox" id="risk-enabled" onchange="onRiskMasterToggle()">
+              <span class="switch-copy"><b>启用统一风控</b><span>总开关关闭时，下方全部风控规则均不生效</span></span>
+            </label>
+          </div>
+          <div class="risk-hero-chips" id="risk-hero-chips" hidden></div>
+          <div class="risk-legacy-note" id="risk-legacy-mode-note" hidden>
+            <svg aria-hidden="true"><use href="#i-info"/></svg>
+            <span>当前加载自旧版「保守下限模式」；点击保存后将切换为所见即所得模式，界面中显示的数值即为真实生效值，不再暗中覆盖。</span>
+          </div>
+        </div>
+
+        <!-- 2. 一键场景方案 -->
+        <div class="risk-section-block">
+          <div class="risk-section-head">
+            <div>
+              <h3>快捷场景方案</h3>
+              <p>无需逐项填写参数，按运营场景一键切换；套用后仍可自由增减下方规则或展开微调。</p>
+            </div>
+          </div>
+          <div class="risk-presets" role="group" aria-label="风控场景快捷方案">
+            <button type="button" class="risk-preset" data-risk-preset="off" onclick="applyRiskPreset('off')">
+              <div class="risk-preset-top"><b>关闭风控</b><span class="risk-preset-tag">默认</span></div>
+              <p>关闭全部冷却、限额、休眠与错峰，任务直接执行，零额外等待。</p>
+            </button>
+            <button type="button" class="risk-preset" data-risk-preset="light" onclick="applyRiskPreset('light')">
+              <div class="risk-preset-top"><b>轻度防护</b><span class="risk-preset-tag">日常单号</span></div>
+              <p>遇平台风控/验证码自动冷却，温和读写防抖与错峰；不限夜间时段与写额度。</p>
+            </button>
+            <button type="button" class="risk-preset" data-risk-preset="balanced" onclick="applyRiskPreset('balanced')">
+              <div class="risk-preset-top"><b>稳妥防护</b><span class="risk-preset-tag">多号矩阵</span></div>
+              <p>开启异常冷却、适中写额度、操作节奏、同出口串行与夜间休眠（08:00–24:00）。</p>
+            </button>
+            <button type="button" class="risk-preset" data-risk-preset="strict" onclick="applyRiskPreset('strict')">
+              <div class="risk-preset-top"><b>严格保守</b><span class="risk-preset-tag">高敏养号</span></div>
+              <p>低频写额度、长冷却阶梯、连续操作休息、夜间休眠与 native 写入门禁全开。</p>
+            </button>
+          </div>
+        </div>
+
+        <!-- 3. 分模块独立开关与按需微调 -->
+        <div class="risk-section-block">
+          <div class="risk-section-head">
+            <div>
+              <h3>分项规则开关</h3>
+              <p>每项规则可独立开启或关闭；直接勾选任意规则会自动打开上方总开关，参数默认折叠，按需展开微调。</p>
+            </div>
+            <span class="risk-master-off-hint" id="risk-master-off-hint">总开关未开启 · 勾选任意规则即可启用</span>
+          </div>
+          <div class="risk-modules" id="risk-modules-grid">
+
+            <!-- 模块 1：异常自动冷却与恢复 -->
+            <article class="risk-module" data-risk-module="cooldown">
+              <div class="risk-module-head">
+                <div class="risk-module-title-wrap">
+                  <span class="risk-module-ic" aria-hidden="true"><svg><use href="#i-shield"/></svg></span>
+                  <div class="risk-module-copy">
+                    <div class="risk-module-title-line">
+                      <b>异常自动冷却与恢复</b>
+                      <span class="risk-module-badge" id="risk-badge-cooldown">未开启</span>
+                    </div>
+                    <p>命中频控、限流或验证码时自动暂停账号并阶梯冷却，到期后通过轻量探测自动恢复。</p>
+                    <div class="risk-module-summary" id="risk-summary-cooldown"></div>
+                  </div>
+                </div>
+                <label class="risk-switch" aria-label="开关：异常自动冷却与恢复">
+                  <input type="checkbox" id="risk-cooldown-enabled" onchange="onRiskModuleToggle('cooldown')">
+                  <span class="risk-switch-track"></span>
+                </label>
+              </div>
+              <details class="risk-module-details">
+                <summary>微调冷却与恢复参数</summary>
+                <div class="risk-module-body">
+                  <div class="form-grid cols-2">
+                    <div class="form-field" style="grid-column:1/-1">
+                      <label for="risk-cooldown-steps">阶梯冷却时长（分钟，逗号分隔，由短到长）</label>
+                      <input id="risk-cooldown-steps" placeholder="30, 120, 360, 1440" oninput="onRiskFieldChange()">
+                    </div>
+                    <div class="form-field">
+                      <label for="risk-probe-gap">恢复探测间隔（分钟）</label>
+                      <input id="risk-probe-gap" type="number" min="1" max="1440" oninput="onRiskFieldChange()">
+                    </div>
+                    <div class="form-field">
+                      <label for="risk-recovery-count">连续成功恢复次数</label>
+                      <input id="risk-recovery-count" type="number" min="1" max="20" oninput="onRiskFieldChange()">
+                    </div>
+                  </div>
+                  <p class="field-help">触发滑块/人机验证时自动暂停该账号自动任务，在账号浏览器手动完成验证后解除即可。</p>
+                </div>
+              </details>
+            </article>
+
+            <!-- 模块 2：写操作频率与额度 -->
+            <article class="risk-module" data-risk-module="write_limits">
+              <div class="risk-module-head">
+                <div class="risk-module-title-wrap">
+                  <span class="risk-module-ic" aria-hidden="true"><svg><use href="#i-edit"/></svg></span>
+                  <div class="risk-module-copy">
+                    <div class="risk-module-title-line">
+                      <b>写操作频率与额度</b>
+                      <span class="risk-module-badge" id="risk-badge-write_limits">未开启</span>
+                    </div>
+                    <p>统一控制评论、关注/取关、私信与发布的最小间隔及每小时/每日次数上限（填 0 表示不限制）。</p>
+                    <div class="risk-module-summary" id="risk-summary-write_limits"></div>
+                  </div>
+                </div>
+                <label class="risk-switch" aria-label="开关：写操作频率与额度">
+                  <input type="checkbox" id="risk-write-limits-enabled" onchange="onRiskModuleToggle('write_limits')">
+                  <span class="risk-switch-track"></span>
+                </label>
+              </div>
+              <details class="risk-module-details">
+                <summary>微调间隔与每小时 / 每日额度</summary>
+                <div class="risk-module-body">
+                  <div class="table-wrap"><table class="risk-limit-table" aria-label="写操作风控额度">
+                    <thead><tr><th>操作</th><th>最小间隔（分）</th><th>每小时上限</th><th>每日上限</th></tr></thead>
+                    <tbody>
+                      <tr><td>评论 / 回复</td><td><input id="risk-comment-gap" type="number" min="0" max="1440" aria-label="评论或回复最小间隔（分钟）" oninput="onRiskFieldChange()"></td><td><input id="risk-comment-hourly" type="number" min="0" max="10000" aria-label="评论或回复每小时上限" oninput="onRiskFieldChange()"></td><td><input id="risk-comment-daily" type="number" min="0" max="100000" aria-label="评论或回复每日上限" oninput="onRiskFieldChange()"></td></tr>
+                      <tr><td>关注 / 取关</td><td><input id="risk-social-gap" type="number" min="0" max="1440" aria-label="关注或取关最小间隔（分钟）" oninput="onRiskFieldChange()"></td><td><input id="risk-social-hourly" type="number" min="0" max="10000" aria-label="关注或取关每小时上限" oninput="onRiskFieldChange()"></td><td><input id="risk-social-daily" type="number" min="0" max="100000" aria-label="关注或取关每日上限" oninput="onRiskFieldChange()"></td></tr>
+                      <tr><td>私信</td><td><input id="risk-dm-gap" type="number" min="0" max="1440" aria-label="私信最小间隔（分钟）" oninput="onRiskFieldChange()"></td><td><input id="risk-dm-hourly" type="number" min="0" max="10000" aria-label="私信每小时上限" oninput="onRiskFieldChange()"></td><td><input id="risk-dm-daily" type="number" min="0" max="100000" aria-label="私信每日上限" oninput="onRiskFieldChange()"></td></tr>
+                      <tr><td>发布</td><td><input id="risk-publish-gap" type="number" min="0" max="10080" aria-label="发布最小间隔（分钟）" oninput="onRiskFieldChange()"></td><td><input id="risk-publish-hourly" type="number" min="0" max="10000" aria-label="发布每小时上限" oninput="onRiskFieldChange()"></td><td><input id="risk-publish-daily" type="number" min="0" max="100000" aria-label="发布每日上限" oninput="onRiskFieldChange()"></td></tr>
+                    </tbody>
+                  </table></div>
+                  <div class="form-grid cols-3" style="margin-top:10px">
+                    <div class="form-field"><label for="risk-shared-write">跨功能共享写间隔（分）</label><input id="risk-shared-write" type="number" min="0" max="1440" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-combined-hourly">互动动作小时总上限</label><input id="risk-combined-hourly" type="number" min="0" max="10000" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-combined-daily">互动动作每日总上限</label><input id="risk-combined-daily" type="number" min="0" max="100000" oninput="onRiskFieldChange()"></div>
+                  </div>
+                </div>
+              </details>
+            </article>
+
+            <!-- 模块 3：读写防抖与连续休息 -->
+            <article class="risk-module" data-risk-module="pacing">
+              <div class="risk-module-head">
+                <div class="risk-module-title-wrap">
+                  <span class="risk-module-ic" aria-hidden="true"><svg><use href="#i-clock"/></svg></span>
+                  <div class="risk-module-copy">
+                    <div class="risk-module-title-line">
+                      <b>读写防抖与连续休息</b>
+                      <span class="risk-module-badge" id="risk-badge-pacing">未开启</span>
+                    </div>
+                    <p>为单账号读写操作加入随机停顿，连续执行一定次数后自动短暂休息，避免机器匀速高频请求。</p>
+                    <div class="risk-module-summary" id="risk-summary-pacing"></div>
+                  </div>
+                </div>
+                <label class="risk-switch" aria-label="开关：读写防抖与连续休息">
+                  <input type="checkbox" id="risk-pacing-enabled" onchange="onRiskModuleToggle('pacing')">
+                  <span class="risk-switch-track"></span>
+                </label>
+              </div>
+              <details class="risk-module-details">
+                <summary>微调读写间隔与连续休息参数</summary>
+                <div class="risk-module-body">
+                  <div class="form-grid cols-2">
+                    <div class="form-field"><label for="risk-read-light">轻量读取间隔（秒）</label><input id="risk-read-light" type="number" min="0" max="86400" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-read-heavy">重读取间隔（秒）</label><input id="risk-read-heavy" type="number" min="0" max="86400" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-operation-min">跨功能最小间隔（秒）</label><input id="risk-operation-min" type="number" min="0" max="3600" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-operation-max">跨功能最大间隔（秒）</label><input id="risk-operation-max" type="number" min="0" max="3600" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field" style="grid-column:1/-1"><label for="risk-session-limit">连续操作次数阈值（填 0 关闭连续休息）</label><input id="risk-session-limit" type="number" min="0" max="1000" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-rest-min">休息最短时长（秒）</label><input id="risk-rest-min" type="number" min="1" max="86400" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-rest-max">休息最长时长（秒）</label><input id="risk-rest-max" type="number" min="1" max="86400" oninput="onRiskFieldChange()"></div>
+                  </div>
+                  <p class="field-help">轻量读取指监控与资料检查；重读取指批量采集与评论翻页。登录和媒体下载不计入连续操作。</p>
+                </div>
+              </details>
+            </article>
+
+            <!-- 模块 4：夜间休眠（活跃时段） -->
+            <article class="risk-module" data-risk-module="quiet_hours">
+              <div class="risk-module-head">
+                <div class="risk-module-title-wrap">
+                  <span class="risk-module-ic" aria-hidden="true"><svg><use href="#i-moon"/></svg></span>
+                  <div class="risk-module-copy">
+                    <div class="risk-module-title-line">
+                      <b>夜间休眠（活跃时段）</b>
+                      <span class="risk-module-badge" id="risk-badge-quiet_hours">未开启</span>
+                    </div>
+                    <p>仅在设定的活跃时段内执行自动任务，非活跃时段保留在队列等待，手动即时查看不受影响。</p>
+                    <div class="risk-module-summary" id="risk-summary-quiet_hours"></div>
+                  </div>
+                </div>
+                <label class="risk-switch" aria-label="开关：夜间休眠（活跃时段）">
+                  <input type="checkbox" id="risk-quiet-enabled" onchange="onRiskModuleToggle('quiet_hours')">
+                  <span class="risk-switch-track"></span>
+                </label>
+              </div>
+              <details class="risk-module-details">
+                <summary>微调活跃时段与夜间休眠范围</summary>
+                <div class="risk-module-body">
+                  <div class="form-grid cols-3">
+                    <div class="form-field"><label for="risk-active-start">活跃开始小时</label><input id="risk-active-start" type="number" min="0" max="23" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-active-end">活跃结束小时</label><input id="risk-active-end" type="number" min="1" max="47" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-quiet-jitter">每日随机错峰（分）</label><input id="risk-quiet-jitter" type="number" min="0" max="120" oninput="onRiskFieldChange()"></div>
+                  </div>
+                  <label class="switch-row" for="risk-quiet-include-reads" style="margin-top:10px">
+                    <input type="checkbox" id="risk-quiet-include-reads" onchange="onRiskFieldChange()">
+                    <span class="switch-copy"><b>夜间休眠同步暂停后台监控与采集</b><span>关闭时仅暂停自动发布/评论/私信/关注等写操作，后台定时读取照常运行。</span></span>
+                  </label>
+                  <p class="field-help">按账号所在时区判定；结束小时大于 24 表示跨零点（例如 25 代表次日凌晨 1 点）。</p>
+                </div>
+              </details>
+            </article>
+
+            <!-- 模块 5：同出口防连坐 -->
+            <article class="risk-module" data-risk-module="network_guard">
+              <div class="risk-module-head">
+                <div class="risk-module-title-wrap">
+                  <span class="risk-module-ic" aria-hidden="true"><svg><use href="#i-network"/></svg></span>
+                  <div class="risk-module-copy">
+                    <div class="risk-module-title-line">
+                      <b>同出口防连坐（并发与熔断）</b>
+                      <span class="risk-module-badge" id="risk-badge-network_guard">未开启</span>
+                    </div>
+                    <p>限制共用同一代理或直连出口的账号并发操作，多号短时间内命中风控时自动触发同出口熔断。</p>
+                    <div class="risk-module-summary" id="risk-summary-network_guard"></div>
+                  </div>
+                </div>
+                <label class="risk-switch" aria-label="开关：同出口防连坐">
+                  <input type="checkbox" id="risk-network-guard-enabled" onchange="onRiskModuleToggle('network_guard')">
+                  <span class="risk-switch-track"></span>
+                </label>
+              </div>
+              <details class="risk-module-details">
+                <summary>微调同出口并发与熔断阈值</summary>
+                <div class="risk-module-body">
+                  <div class="form-grid cols-2">
+                    <div class="form-field"><label for="risk-network-concurrency">同出口最大并发数</label><input id="risk-network-concurrency" type="number" min="1" max="32" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-network-accounts">熔断账号阈值（0 关闭）</label><input id="risk-network-accounts" type="number" min="0" max="1000" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-network-window">熔断统计窗口（分钟）</label><input id="risk-network-window" type="number" min="1" max="10080" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-network-cooldown">熔断冷却时长（分钟）</label><input id="risk-network-cooldown" type="number" min="1" max="10080" oninput="onRiskFieldChange()"></div>
+                  </div>
+                </div>
+              </details>
+            </article>
+
+            <!-- 模块 6：自动任务随机错峰 -->
+            <article class="risk-module" data-risk-module="jitter">
+              <div class="risk-module-head">
+                <div class="risk-module-title-wrap">
+                  <span class="risk-module-ic" aria-hidden="true"><svg><use href="#i-sparkles"/></svg></span>
+                  <div class="risk-module-copy">
+                    <div class="risk-module-title-line">
+                      <b>自动任务随机错峰</b>
+                      <span class="risk-module-badge" id="risk-badge-jitter">未开启</span>
+                    </div>
+                    <p>在定时监控、评论排队、私信轮询、新监控首跑和网络重试上叠加随机额外等待，避免整点齐发。</p>
+                    <div class="risk-module-summary" id="risk-summary-jitter"></div>
+                  </div>
+                </div>
+                <label class="risk-switch" aria-label="开关：自动任务随机错峰">
+                  <input type="checkbox" id="risk-jitter-enabled" onchange="onRiskModuleToggle('jitter')">
+                  <span class="risk-switch-track"></span>
+                </label>
+              </div>
+              <details class="risk-module-details">
+                <summary>微调各项随机错峰比例与上限</summary>
+                <div class="risk-module-body">
+                  <div class="form-grid cols-2">
+                    <div class="form-field"><label for="risk-scan-jitter">周期扫描额外等待上限（%）</label><input id="risk-scan-jitter" type="number" min="0" max="100" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-comment-jitter">评论间隔额外等待上限（%）</label><input id="risk-comment-jitter" type="number" min="0" max="100" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-dm-poll-jitter">私信轮询额外等待上限（%）</label><input id="risk-dm-poll-jitter" type="number" min="0" max="100" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field"><label for="risk-initial-spread">新监控首次错峰上限（秒）</label><input id="risk-initial-spread" type="number" min="0" max="600" oninput="onRiskFieldChange()"></div>
+                    <div class="form-field" style="grid-column:1/-1"><label for="risk-retry-jitter">网络异常重试额外等待上限（秒）</label><input id="risk-retry-jitter" type="number" min="0" max="300" oninput="onRiskFieldChange()"></div>
+                  </div>
+                  <p class="field-help">只增加随机等待，不缩短基础周期；不影响用户指定的预约发布时间，填 0 关闭对应子项。</p>
+                </div>
+              </details>
+            </article>
+
+          </div>
+        </div>
+
+        <!-- 4. 低频维护与写入环境门禁（默认折叠） -->
+        <details class="collection-advanced" id="risk-advanced-maintenance">
+          <summary>高级与维护参数 <span>账号体检周期、验证码等待、native 写入环境门禁与日志保留</span></summary>
+          <div class="collection-advanced-body stack">
+            <div class="form-grid cols-3">
+              <div class="form-field"><label for="risk-account-check">账号登录态体检间隔（分钟，0 关闭）</label><input id="risk-account-check" type="number" min="0" max="10080" oninput="onRiskFieldChange()"></div>
+              <div class="form-field"><label for="risk-captcha-wait">浏览器验证码人工等待（分钟）</label><input id="risk-captcha-wait" type="number" min="0" max="1440" oninput="onRiskFieldChange()"></div>
+              <div class="form-field"><label for="risk-retention">风控事件记录保留天数</label><input id="risk-retention" type="number" min="1" max="3650" oninput="onRiskFieldChange()"></div>
+            </div>
+            <div class="risk-env-gate-box">
+              <label class="switch-row" for="risk-native-gate-enabled">
+                <input type="checkbox" id="risk-native-gate-enabled" onchange="onRiskFieldChange()">
+                <span class="switch-copy"><b>启用 native 账号写入环境门禁（默认关闭）</b><span>开启后，新建 native 账号在执行写操作前会强制校验系统 Chrome 与代理出口验证基线；关闭则不拦截。</span></span>
+              </label>
+              <div class="form-grid cols-3 risk-env-gate-sub" id="risk-native-gate-sub">
+                <label class="switch-row" for="risk-native-chrome"><input type="checkbox" id="risk-native-chrome" onchange="onRiskFieldChange()"><span class="switch-copy"><b>要求使用系统 Chrome</b><span>提升浏览器环境一致性</span></span></label>
+                <label class="switch-row" for="risk-native-proxy"><input type="checkbox" id="risk-native-proxy" onchange="onRiskFieldChange()"><span class="switch-copy"><b>要求代理通过出口测试</b><span>已配代理需先建立出口基线</span></span></label>
+                <div class="form-field"><label for="risk-native-proxy-age">代理验证有效期（小时，0 不过期）</label><input id="risk-native-proxy-age" type="number" min="0" max="168" oninput="onRiskFieldChange()"></div>
+              </div>
+            </div>
+          </div>
+        </details>
       </div>
-      <div class="risk-config-shell">
-        <fieldset class="risk-config-group">
-          <legend>读取与恢复</legend>
-          <div class="form-grid">
-            <div class="form-field"><label for="risk-read-light">轻量读取间隔（秒）</label><input id="risk-read-light" type="number" min="0"></div>
-            <div class="form-field"><label for="risk-read-heavy">重读取间隔（秒）</label><input id="risk-read-heavy" type="number" min="0"></div>
-            <div class="form-field"><label for="risk-recovery-count">恢复成功次数</label><input id="risk-recovery-count" type="number" min="1" max="20"></div>
-            <div class="form-field"><label for="risk-probe-gap">探测间隔（分钟）</label><input id="risk-probe-gap" type="number" min="1"></div>
-            <div class="form-field" style="grid-column:span 2"><label for="risk-cooldown-steps">冷却阶梯（分钟，逗号分隔）</label><input id="risk-cooldown-steps" placeholder="30, 120, 360, 1440"></div>
-          </div>
-        </fieldset>
-        <fieldset class="risk-config-group">
-          <legend>网络与时间策略</legend>
-          <div class="form-grid">
-            <div class="form-field"><label for="risk-network-concurrency">同出口并发</label><input id="risk-network-concurrency" type="number" min="1" max="32"></div>
-            <div class="form-field"><label for="risk-network-accounts">熔断账号阈值</label><input id="risk-network-accounts" type="number" min="0"></div>
-            <div class="form-field"><label for="risk-network-window">统计窗口（分钟）</label><input id="risk-network-window" type="number" min="1"></div>
-            <div class="form-field"><label for="risk-network-cooldown">出口冷却（分钟）</label><input id="risk-network-cooldown" type="number" min="1"></div>
-            <div class="form-field"><label for="risk-account-check">账号体检间隔（分钟）</label><input id="risk-account-check" type="number" min="0"></div>
-            <div class="form-field"><label for="risk-captcha-wait">验证码等待（分钟）</label><input id="risk-captcha-wait" type="number" min="0"></div>
-            <label class="switch-row" style="grid-column:1/-1"><input type="checkbox" id="risk-quiet-enabled"><span class="switch-copy"><b>启用写操作活跃时段</b><span>时段外的自动写操作保持等待</span></span></label>
-            <div class="form-field"><label for="risk-active-start">开始小时</label><input id="risk-active-start" type="number" min="0" max="23"></div>
-            <div class="form-field"><label for="risk-active-end">结束小时</label><input id="risk-active-end" type="number" min="1" max="47"></div>
-          </div>
-        </fieldset>
-        <fieldset class="risk-config-group wide">
-          <legend>账号操作节奏</legend>
-          <div class="form-grid">
-            <div class="form-field"><label for="risk-operation-min">跨功能间隔下限（秒）</label><input id="risk-operation-min" type="number" min="0" max="3600"></div>
-            <div class="form-field"><label for="risk-operation-max">跨功能间隔上限（秒）</label><input id="risk-operation-max" type="number" min="0" max="3600"></div>
-            <div class="form-field"><label for="risk-session-limit">连续操作次数（0 关闭休息）</label><input id="risk-session-limit" type="number" min="0" max="1000"></div>
-            <div class="form-field"><label for="risk-rest-min">连续操作后休息下限（秒）</label><input id="risk-rest-min" type="number" min="1" max="86400"></div>
-            <div class="form-field"><label for="risk-rest-max">连续操作后休息上限（秒）</label><input id="risk-rest-max" type="number" min="1" max="86400"></div>
-          </div>
-          <p class="mut">同一账号的读写任务共享节奏，失败尝试也计数；等待时间在重启后保留，原有最小间隔和额度继续生效。登录与媒体下载不计入连续操作。遇到平台安全验证时暂停自动操作，留待人工处理。</p>
-        </fieldset>
-        <fieldset class="risk-config-group wide">
-          <legend>自动任务错峰</legend>
-          <div class="form-grid">
-            <div class="form-field"><label for="risk-scan-jitter">周期扫描额外等待上限（%）</label><input id="risk-scan-jitter" type="number" min="0" max="100" aria-describedby="risk-jitter-help"></div>
-            <div class="form-field"><label for="risk-comment-jitter">评论基础间隔额外等待上限（%）</label><input id="risk-comment-jitter" type="number" min="0" max="100" aria-describedby="risk-jitter-help"></div>
-            <div class="form-field"><label for="risk-dm-poll-jitter">私信轮询额外等待上限（%）</label><input id="risk-dm-poll-jitter" type="number" min="0" max="100" aria-describedby="risk-jitter-help"></div>
-            <div class="form-field"><label for="risk-initial-spread">新监控首次错峰上限（秒）</label><input id="risk-initial-spread" type="number" min="0" max="600" aria-describedby="risk-jitter-help"></div>
-            <div class="form-field"><label for="risk-retry-jitter">网络重试额外等待上限（秒）</label><input id="risk-retry-jitter" type="number" min="0" max="300" aria-describedby="risk-jitter-help"></div>
-          </div>
-          <p id="risk-jitter-help" class="mut">只增加等待，不缩短基础间隔。例：300 秒扫描周期加 15%，最早调度间隔为 300–345 秒；同一轮不会因轮询或重启重新抽取。首次错峰适用于新监控和评论规则，不改变预约发布。评论排队参数用于新生成任务，仍会叠加连续休息及账号风控等待；已有排队时间保持不变。网络重试在至少 5 分钟退避后再增加等待；验证仍需人工处理。填 0 关闭对应的额外等待。</p>
-        </fieldset>
-        <fieldset class="risk-config-group wide">
-          <legend>写操作间隔与额度</legend>
-          <div class="table-wrap"><table class="risk-limit-table" aria-label="写操作风控额度">
-            <thead><tr><th>操作</th><th>最小间隔（分钟）</th><th>每小时上限</th><th>每日上限</th></tr></thead>
-            <tbody>
-              <tr><td>评论 / 回复</td><td><input id="risk-comment-gap" type="number" min="0" aria-label="评论或回复最小间隔（分钟）"></td><td><input id="risk-comment-hourly" type="number" min="0" aria-label="评论或回复每小时上限"></td><td><input id="risk-comment-daily" type="number" min="0" aria-label="评论或回复每日上限"></td></tr>
-              <tr><td>关注 / 取关</td><td><input id="risk-social-gap" type="number" min="0" aria-label="关注或取关最小间隔（分钟）"></td><td><input id="risk-social-hourly" type="number" min="0" aria-label="关注或取关每小时上限"></td><td><input id="risk-social-daily" type="number" min="0" aria-label="关注或取关每日上限"></td></tr>
-              <tr><td>私信</td><td><input id="risk-dm-gap" type="number" min="0" aria-label="私信最小间隔（分钟）"></td><td><input id="risk-dm-hourly" type="number" min="0" aria-label="私信每小时上限"></td><td><input id="risk-dm-daily" type="number" min="0" aria-label="私信每日上限"></td></tr>
-              <tr><td>发布</td><td><input id="risk-publish-gap" type="number" min="0" aria-label="发布最小间隔（分钟）"></td><td><input id="risk-publish-hourly" type="number" min="0" aria-label="发布每小时上限"></td><td><input id="risk-publish-daily" type="number" min="0" aria-label="发布每日上限"></td></tr>
-            </tbody>
-          </table></div>
-          <div class="form-grid" style="margin-top:10px">
-            <div class="form-field"><label for="risk-shared-write">共享写间隔（分钟）</label><input id="risk-shared-write" type="number" min="0"></div>
-            <div class="form-field"><label for="risk-combined-hourly">综合动作小时上限</label><input id="risk-combined-hourly" type="number" min="0"></div>
-            <div class="form-field"><label for="risk-combined-daily">综合动作每日上限</label><input id="risk-combined-daily" type="number" min="0"></div>
-          </div>
-        </fieldset>
+
+      <div class="form-actions risk-rules-footer">
+        <button class="ghost" type="button" onclick="showRiskAudit()"><svg><use href="#i-list"/></svg>查看变更记录</button>
+        <button class="ghost" type="button" onclick="resetRiskConfigToOff()"><svg><use href="#i-x"/></svg>恢复默认（全部关闭）</button>
+        <span class="actions-spacer"></span>
+        <button type="button" id="risk-save-btn" onclick="saveRiskConfig()"><svg><use href="#i-check"/></svg>保存并立即生效</button>
       </div>
-      <div class="form-note" style="margin-top:12px"><svg aria-hidden="true"><use href="#i-info"/></svg><span>保守模式会强制保留评论、社交、私信、发布和共享写入间隔的安全下限；需要完全按输入值运行时选择自定义模式。</span></div>
-      <div class="form-actions"><button class="ghost" type="button" onclick="showRiskAudit()"><svg><use href="#i-list"/></svg>查看变更记录</button><span class="actions-spacer"></span><button type="button" onclick="saveRiskConfig()"><svg><use href="#i-check"/></svg>保存并立即生效</button></div>
     </div>
   </section>
 
@@ -4237,9 +4746,12 @@
         </div>
       </details>
       <details class="collection-advanced" id="engine-settings-write-guards">
-        <summary>写操作基础限制</summary>
+        <summary>写操作基础限制（默认不限）</summary>
         <div class="collection-advanced-body stack">
-          <p class="field-help">这些是 config.yaml 中的账号级基础限制；风控中心的统一策略可能设置更严格的实际值。0 表示该项不额外限制。</p>
+          <div class="row-between gap-wrap">
+            <p class="field-help" style="margin:0">默认均为 0（不限制）；需要写操作频控、冷却或休眠保护时，推荐前往「风控中心 → 风控规则」一键开启与统一管理。</p>
+            <button type="button" class="ghost sm" onclick="openRiskRulesSection()">前往风控规则 →</button>
+          </div>
           <div class="form-grid">
             <div class="form-field"><label for="engine-comment_daily_cap_per_account">每账号每日自动评论上限</label><input id="engine-comment_daily_cap_per_account" name="comment_daily_cap_per_account" type="number" min="0" max="100000" step="1" required disabled></div>
             <div class="form-field"><label for="engine-comment_hourly_cap_per_account">每账号每小时自动评论上限</label><input id="engine-comment_hourly_cap_per_account" name="comment_hourly_cap_per_account" type="number" min="0" max="10000" step="1" required disabled></div>
@@ -4251,15 +4763,18 @@
         </div>
       </details>
       <details class="collection-advanced" id="engine-settings-isolation">
-        <summary>代理防关联提醒与写入门禁</summary>
+        <summary>代理防关联提醒与写入门禁（默认不拦截）</summary>
         <div class="collection-advanced-body stack">
-          <p class="field-help">防关联提醒策略：系统不强制要求「一号一代理」，也不阻断「本机直连」——多号复用同一代理或无代理本机直连均可正常登录与运行任务，仅在登录选择、账号矩阵和风控中心高亮提示共用出口 IP / 直连风险。同平台多账号与海外平台仍强烈建议尽量配置独立住宅代理。</p>
+          <div class="row-between gap-wrap">
+            <p class="field-help" style="margin:0">防关联提醒策略：系统不强制要求「一号一代理」，也不阻断「本机直连」，以下门禁与休眠开关均默认关闭；也可在「风控中心 → 风控规则」统一调整。</p>
+            <button type="button" class="ghost sm" onclick="openRiskRulesSection()">前往风控规则 →</button>
+          </div>
           <div class="form-grid">
-            <div class="form-field"><label class="switch-row" for="engine-quiet_hours_include_reads"><input id="engine-quiet_hours_include_reads" name="quiet_hours_include_reads" type="checkbox" disabled><span class="switch-copy"><b>夜间休眠覆盖后台监控与采集</b><span>推荐开启。活跃时段外同步静默非交互式定时监控、采集与探活，并为每个账号生成每日随机苏醒偏移。</span></span></label></div>
-            <div class="form-field"><label class="switch-row" for="engine-verify_proxy_region"><input id="engine-verify_proxy_region" name="verify_proxy_region" type="checkbox" disabled><span class="switch-copy"><b>校验代理出口地区</b><span>将代理出口国家与账号时区进行比对并记录告警。</span></span></label></div>
-            <div class="form-field"><label class="switch-row" for="engine-native_write_gate_enabled"><input id="engine-native_write_gate_enabled" name="native_write_gate_enabled" type="checkbox" disabled><span class="switch-copy"><b>启用 native 写入门禁</b><span>写操作前检查账号浏览器和网络基线。</span></span></label></div>
-            <div class="form-field"><label class="switch-row" for="engine-native_write_require_system_chrome"><input id="engine-native_write_require_system_chrome" name="native_write_require_system_chrome" type="checkbox" disabled><span class="switch-copy"><b>写入必须使用系统 Chrome</b><span>提高多账号浏览器环境一致性。</span></span></label></div>
-            <div class="form-field"><label class="switch-row" for="engine-native_write_require_verified_proxy"><input id="engine-native_write_require_verified_proxy" name="native_write_require_verified_proxy" type="checkbox" disabled><span class="switch-copy"><b>写入必须通过代理验证</b><span>已配置代理的账号需先建立出口基线。</span></span></label></div>
+            <div class="form-field"><label class="switch-row" for="engine-quiet_hours_include_reads"><input id="engine-quiet_hours_include_reads" name="quiet_hours_include_reads" type="checkbox" disabled><span class="switch-copy"><b>夜间休眠覆盖后台监控与采集</b><span>默认关闭。仅在「风控规则」开启夜间休眠后生效，同步静默非交互式定时监控、采集与探活。</span></span></label></div>
+            <div class="form-field"><label class="switch-row" for="engine-verify_proxy_region"><input id="engine-verify_proxy_region" name="verify_proxy_region" type="checkbox" disabled><span class="switch-copy"><b>校验代理出口地区</b><span>将代理出口国家与账号时区进行比对并记录告警（仅提醒不拦截）。</span></span></label></div>
+            <div class="form-field"><label class="switch-row" for="engine-native_write_gate_enabled"><input id="engine-native_write_gate_enabled" name="native_write_gate_enabled" type="checkbox" disabled><span class="switch-copy"><b>启用 native 写入门禁</b><span>默认关闭。开启后写操作前强制检查系统 Chrome 与代理出口基线。</span></span></label></div>
+            <div class="form-field"><label class="switch-row" for="engine-native_write_require_system_chrome"><input id="engine-native_write_require_system_chrome" name="native_write_require_system_chrome" type="checkbox" disabled><span class="switch-copy"><b>写入必须使用系统 Chrome</b><span>仅在上方启用写入门禁后生效，提高多账号浏览器环境一致性。</span></span></label></div>
+            <div class="form-field"><label class="switch-row" for="engine-native_write_require_verified_proxy"><input id="engine-native_write_require_verified_proxy" name="native_write_require_verified_proxy" type="checkbox" disabled><span class="switch-copy"><b>写入必须通过代理验证</b><span>仅在上方启用写入门禁后生效，已配置代理的账号需先建立出口基线。</span></span></label></div>
             <div class="form-field"><label for="engine-native_write_proxy_max_age_seconds">代理基线有效期（小时）</label><input id="engine-native_write_proxy_max_age_seconds" name="native_write_proxy_max_age_seconds" data-scale="3600" type="number" min="0" max="168" step="1" required disabled><p class="field-help">0 表示不自动过期；过期后需重新测试代理。</p></div>
           </div>
         </div>

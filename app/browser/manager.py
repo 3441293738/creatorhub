@@ -249,7 +249,7 @@ class BrowserManager:
                  xhs_cdp_idle_seconds: int | None = None,
                  resident_sessions: bool = True,
                  session_idle_seconds: int = 1800,
-                 native_write_gate_enabled: bool = True,
+                 native_write_gate_enabled: bool = False,
                  native_write_require_system_chrome: bool = True,
                  native_write_require_verified_proxy: bool = True,
                  native_write_proxy_max_age_seconds: int = 86400,

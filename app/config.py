@@ -111,18 +111,18 @@ class EngineConfig:
     xhs_dm_realtime_debounce_seconds: float = 1.5
     xhs_dm_fallback_interval_seconds: int = 600
     xhs_dm_max_conversations_per_poll: int = 2
-    xhs_dm_poll_jitter: float = 0.35
+    xhs_dm_poll_jitter: float = 0.0
     xhs_dm_auto_reply_enabled: bool = False
     active_accounts: int = 3                # 同一时刻最多并发活跃的账号数(错峰)
-    scan_jitter: float = 0.15              # 周期扫描额外等待 0–15%，同一轮稳定，不缩短基础周期
-    initial_scan_spread_seconds: int = 60  # 新监控/规则首次自动执行额外等待 0–60 秒；0 关闭
+    scan_jitter: float = 0.0                # 周期扫描额外等待上限比例(0=关闭,由风控中心随机错峰开关统一管理)
+    initial_scan_spread_seconds: int = 0    # 新监控/规则首次自动执行额外等待上限(秒,0=关闭)
     route_download_via_proxy: bool = True   # 媒体下载是否走账号代理(避免 CDN 拉流暴露真实 IP)
-    # ── 自动评论风控闸(写操作最敏感,宁慢勿快)──
-    comment_daily_cap_per_account: int = 30  # 每账号每日自动评论总上限(跨所有规则),0=不限
-    comment_min_gap_seconds: int = 60        # 同账号两条评论的全局最小间隔(秒)
-    comment_jitter: float = 0.4              # 评论排队间隔额外增加 0–40%，不缩短最小间隔
-    comment_hourly_cap_per_account: int = 10  # 每账号每小时自动评论上限(比日上限更贴人类节律),0=不限
-    comment_risk_cooldown_seconds: int = 21600  # 平台拒绝/验证后暂停该账号写操作(默认6小时)
+    # ── 自动评论基础限制(默认全部关闭/0=不限,需要限制时建议在「风控中心 → 风控规则」统一开启)──
+    comment_daily_cap_per_account: int = 0   # 每账号每日自动评论总上限(跨所有规则),0=不限
+    comment_min_gap_seconds: int = 0         # 同账号两条评论的全局最小间隔(秒),0=不限
+    comment_jitter: float = 0.0              # 评论排队间隔额外等待上限比例(0=关闭)
+    comment_hourly_cap_per_account: int = 0  # 每账号每小时自动评论上限,0=不限
+    comment_risk_cooldown_seconds: int = 21600  # 平台拒绝/验证后暂停该账号写操作参考时长(默认6小时)
     # 小红书评论发布通道:browser=页面操作;api=显式兼容;manual=只保留草稿。
     xhs_comment_write_mode: str = "browser"  # browser | api | manual
     # true=先存草稿,人工点击“通过”后由队列自动发布; false=生成后直接排队发布。
@@ -130,25 +130,22 @@ class EngineConfig:
     # 抖音发评论用有头浏览器(弹真实窗口):抖音对无头写操作常降级/拦截,有头更稳,
     # 且能让你手动过验证码;量大嫌弹窗可设 false 试无头。
     comment_browser_headed: bool = True
-    # ── 本账号写操作风控闸(取关/回关/私信,与自动评论同级)──
-    #   关注/取关是抖音封号重灾区,默认比评论更保守。
-    action_daily_cap_per_account: int = 20   # 每账号每日写操作总上限(跨所有动作),0=不限
-    action_hourly_cap_per_account: int = 6   # 每账号每小时写操作上限,0=不限
-    action_min_gap_seconds: int = 90         # 同账号两次写操作全局最小间隔(与任务级 min_gap 取大)
-    # ── 活跃时段(夜间静默与人类作息节律)──
-    #   默认同时约束自动写操作与后台自动抓爬/体检(手动即时查看不受影响)，
-    #   并按「账号 ID + 当地日期」叠加每日独立随机苏醒/入睡偏移，彻底消除矩阵整点齐发与凌晨 3 点机器爬虫特征。
-    quiet_hours_enabled: bool = True         # 夜间静默总开关
-    quiet_hours_include_reads: bool = True   # 夜间静默期间同步休眠后台监控/评论采集/登录态体检
-    quiet_hours_wake_jitter_minutes: int = 35  # 每账号每日独立苏醒/入睡随机偏移上限(0-120 分钟)
+    # ── 本账号写操作基础限制(取关/回关/私信,默认0=不限,需要限制时在「风控中心 → 风控规则」统一开启)──
+    action_daily_cap_per_account: int = 0    # 每账号每日写操作总上限(跨所有动作),0=不限
+    action_hourly_cap_per_account: int = 0   # 每账号每小时写操作上限,0=不限
+    action_min_gap_seconds: int = 0          # 同账号两次写操作全局最小间隔(秒),0=不限
+    # ── 活跃时段(夜间静默与人类作息节律,默认关闭,按需在「风控中心 → 风控规则」开启)──
+    quiet_hours_enabled: bool = False        # 夜间静默总开关(默认关闭)
+    quiet_hours_include_reads: bool = False  # 夜间静默期间是否同步休眠后台监控/评论采集/登录态体检(默认关闭)
+    quiet_hours_wake_jitter_minutes: int = 0  # 每账号每日独立苏醒/入睡随机偏移上限(0-120 分钟,0=关闭)
     active_hours_start: int = 8              # 活跃起点小时(含),0-23
     active_hours_end: int = 24               # 活跃止点小时(不含);可 >24 表示跨零点(如 25=次日 1 点)
     verify_proxy_region: bool = True         # 体检时探测代理出口国家,与账号时区不一致则告警
     # ── 代理防关联提醒策略（默认仅提醒不强拦，允许本机直连与多号共用代理）──
     strict_proxy_required: bool = False      # 兼容保留字段；已改为非阻断式风险提醒，不再强制拦截本机直连
     forbid_same_platform_shared_proxy: bool = False  # 兼容保留字段；已改为非阻断式风险提醒，不再强制拦截一号多绑
-    # 新建 native 账号的写操作环境门禁。存量 legacy 账号不受这组开关影响。
-    native_write_gate_enabled: bool = True
+    # 新建 native 账号的写操作环境门禁(默认关闭，按需在「风控中心 → 风控规则 → 高级与维护」开启)。
+    native_write_gate_enabled: bool = False
     native_write_require_system_chrome: bool = True
     native_write_require_verified_proxy: bool = True
     native_write_proxy_max_age_seconds: int = 86400
@@ -182,44 +179,53 @@ class LoggingConfig:
 
 @dataclass
 class RiskControlConfig:
-    """Conservative cross-feature limits for platform-facing account activity."""
-    enabled: bool = True
-    mode: str = "conservative"
+    """Unified, opt-in cross-feature risk control rules (all disabled by default)."""
+    # 总开关默认关闭；开启后仅生效下方已勾选的子规则模块
+    enabled: bool = False
+    # custom=所见即所得（输入值直接生效）；conservative 保留用于兼容旧配置文件
+    mode: str = "custom"
+    # 分模块独立开关（全部默认关闭，用户可按需勾选或在 UI 一键套用场景方案）
+    cooldown_enabled: bool = False        # 异常自动冷却与渐进恢复
+    write_limits_enabled: bool = False    # 写操作间隔与每小时/每日额度保护
+    pacing_enabled: bool = False          # 读写防抖与连续操作自动休息
+    network_guard_enabled: bool = False   # 同网络出口串行与多号熔断保护
+    jitter_enabled: bool = False          # 自动任务随机错峰（扫描/评论/私信/首跑/重试）
+    # 以下参数仅在对应模块开启时生效，默认预填稳妥均衡参考值便于一键开启
     network_group_concurrency: int = 1
-    read_light_gap_seconds: int = 20
-    read_heavy_gap_seconds: int = 60
-    shared_write_gap_seconds: int = 300
-    comment_min_gap_seconds: int = 600
-    comment_hourly_cap: int = 3
-    comment_daily_cap: int = 10
-    social_min_gap_seconds: int = 900
-    social_hourly_cap: int = 2
-    social_daily_cap: int = 8
-    dm_min_gap_seconds: int = 900
-    dm_hourly_cap: int = 2
-    dm_daily_cap: int = 8
-    publish_min_gap_seconds: int = 7200
-    publish_hourly_cap: int = 1
-    publish_daily_cap: int = 3
-    combined_action_hourly_cap: int = 3
-    combined_action_daily_cap: int = 10
+    read_light_gap_seconds: int = 15
+    read_heavy_gap_seconds: int = 45
+    shared_write_gap_seconds: int = 180
+    comment_min_gap_seconds: int = 300
+    comment_hourly_cap: int = 6
+    comment_daily_cap: int = 20
+    social_min_gap_seconds: int = 480
+    social_hourly_cap: int = 4
+    social_daily_cap: int = 15
+    dm_min_gap_seconds: int = 480
+    dm_hourly_cap: int = 4
+    dm_daily_cap: int = 15
+    publish_min_gap_seconds: int = 3600
+    publish_hourly_cap: int = 2
+    publish_daily_cap: int = 5
+    combined_action_hourly_cap: int = 6
+    combined_action_daily_cap: int = 20
     cooldown_steps_seconds: List[int] = field(
         default_factory=lambda: [1800, 7200, 21600, 86400])
     recovery_successes: int = 3
     recovery_probe_gap_seconds: int = 600
     event_retention_days: int = 30
     # 同一网络出口下多个 native 账号在短时间内同时命中平台风险时，
-    # 暂停该出口下所有 native 账号的写操作。
+    # 暂停该出口下所有 native 账号的写操作（仅在 network_guard_enabled=True 时生效）。
     network_group_risk_accounts: int = 2
     network_group_risk_window_seconds: int = 900
     network_group_cooldown_seconds: int = 7200
-    # Account-wide pacing supplements, never replaces, per-operation limits.
-    operation_gap_min_seconds: int = 8
-    operation_gap_max_seconds: int = 25
-    session_operation_limit: int = 12
-    session_rest_min_seconds: int = 180
-    session_rest_max_seconds: int = 480
-    network_retry_jitter_seconds: int = 30  # 网络失败在至少 5 分钟退避上额外等待 0–30 秒
+    # 账号级操作节奏与连续操作休息（仅在 pacing_enabled=True 时生效）。
+    operation_gap_min_seconds: int = 6
+    operation_gap_max_seconds: int = 18
+    session_operation_limit: int = 15
+    session_rest_min_seconds: int = 120
+    session_rest_max_seconds: int = 300
+    network_retry_jitter_seconds: int = 30  # 网络失败退避额外随机等待上限（仅 jitter_enabled=True 时生效）
 
 
 @dataclass
@@ -336,9 +342,24 @@ def load_config(path: str | None = None) -> Config:
             k: v for k, v in risk.items()
             if k in RiskControlConfig.__dataclass_fields__
         }
-        mode = str(risk_values.get("mode", "conservative") or "").strip().lower()
+        mode = str(risk_values.get("mode", "custom") or "").strip().lower()
         risk_values["mode"] = (
-            mode if mode in {"conservative", "custom"} else "conservative")
+            mode if mode in {"conservative", "custom"} else "custom")
+        module_keys = (
+            "cooldown_enabled", "write_limits_enabled", "pacing_enabled",
+            "network_guard_enabled", "jitter_enabled",
+        )
+        if risk_values.get("enabled") is True and not any(k in risk_values for k in module_keys):
+            risk_values["cooldown_enabled"] = True
+            risk_values["write_limits_enabled"] = True
+            risk_values["pacing_enabled"] = True
+            risk_values["network_guard_enabled"] = True
+            risk_values["jitter_enabled"] = any((
+                cfg.engine.scan_jitter > 0,
+                cfg.engine.comment_jitter > 0,
+                cfg.engine.xhs_dm_poll_jitter > 0,
+                cfg.engine.initial_scan_spread_seconds > 0,
+            ))
         cfg.risk_control = RiskControlConfig(**risk_values)
         log_raw = raw.get("logging", {}) or {}
         if isinstance(log_raw, dict):

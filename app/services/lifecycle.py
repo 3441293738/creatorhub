@@ -60,10 +60,10 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             log.warning("账号去重或残留目录清理失败(不影响启动): %r", e)
 
-        if load_persisted_risk_settings(app_runtime.cfg):
-            loaded_overrides.append("risk")
         if load_persisted_engine_settings(app_runtime.cfg):
             loaded_overrides.append("engine")
+        if load_persisted_risk_settings(app_runtime.cfg):
+            loaded_overrides.append("risk")
 
         app_runtime.channels_bridge.configure_data_dir(Path(app_runtime.cfg.db_path).resolve().parent)
         channels_proxy_dir = Path(app_runtime.cfg.db_path).resolve().parent

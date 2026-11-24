@@ -30,16 +30,46 @@
     xhs_dm_realtime_enabled: true, xhs_dm_realtime_debounce_seconds: 1.5,
     xhs_dm_fallback_interval_seconds: 600, xhs_dm_max_conversations_per_poll: 2,
     xhs_dm_auto_reply_enabled: false,
-    comment_daily_cap_per_account: 30, comment_min_gap_seconds: 60,
-    comment_hourly_cap_per_account: 10,
-    action_daily_cap_per_account: 20, action_hourly_cap_per_account: 6,
-    action_min_gap_seconds: 90, verify_proxy_region: true,
+    comment_daily_cap_per_account: 0, comment_min_gap_seconds: 0,
+    comment_hourly_cap_per_account: 0,
+    action_daily_cap_per_account: 0, action_hourly_cap_per_account: 0,
+    action_min_gap_seconds: 0, verify_proxy_region: true,
     strict_proxy_required: false, forbid_same_platform_shared_proxy: false,
-    quiet_hours_include_reads: true, quiet_hours_wake_jitter_minutes: 35,
-    native_write_gate_enabled: true, native_write_require_system_chrome: true,
+    quiet_hours_include_reads: false, quiet_hours_wake_jitter_minutes: 0,
+    native_write_gate_enabled: false, native_write_require_system_chrome: true,
     native_write_require_verified_proxy: true, native_write_proxy_max_age_seconds: 86400,
   };
   const engineValues = { ...engineDefaults };
+  const demoRiskConfig = {
+    risk_control: {
+      enabled: false, mode: "custom",
+      cooldown_enabled: false, write_limits_enabled: false, pacing_enabled: false,
+      network_guard_enabled: false, jitter_enabled: false,
+      network_group_concurrency: 1, read_light_gap_seconds: 15, read_heavy_gap_seconds: 45,
+      shared_write_gap_seconds: 180,
+      comment_min_gap_seconds: 300, comment_hourly_cap: 6, comment_daily_cap: 20,
+      social_min_gap_seconds: 480, social_hourly_cap: 4, social_daily_cap: 15,
+      dm_min_gap_seconds: 480, dm_hourly_cap: 4, dm_daily_cap: 15,
+      publish_min_gap_seconds: 3600, publish_hourly_cap: 2, publish_daily_cap: 5,
+      combined_action_hourly_cap: 6, combined_action_daily_cap: 20,
+      cooldown_steps_seconds: [1800, 7200, 21600, 86400],
+      recovery_successes: 3, recovery_probe_gap_seconds: 600, event_retention_days: 30,
+      network_group_risk_accounts: 2, network_group_risk_window_seconds: 900,
+      network_group_cooldown_seconds: 7200,
+      operation_gap_min_seconds: 6, operation_gap_max_seconds: 18,
+      session_operation_limit: 15, session_rest_min_seconds: 120, session_rest_max_seconds: 300,
+      network_retry_jitter_seconds: 30,
+    },
+    schedule: {
+      quiet_hours_enabled: false, quiet_hours_include_reads: false, quiet_hours_wake_jitter_minutes: 0,
+      active_hours_start: 8, active_hours_end: 24,
+      account_check_interval_seconds: 1800, douyin_captcha_wait_seconds: 300,
+      scan_jitter: 0, comment_jitter: 0, xhs_dm_poll_jitter: 0, initial_scan_spread_seconds: 0,
+      native_write_gate_enabled: false, native_write_require_system_chrome: true,
+      native_write_require_verified_proxy: true, native_write_proxy_max_age_seconds: 86400,
+    },
+    admin_token_required: false,
+  };
   const channelsProto = {
     connection_mode: "none",
     proxy_enabled: false,
@@ -515,6 +545,45 @@
         entries: filtered,
       };
     }
+    if (path === "/api/risk-control/config") return demoRiskConfig;
+    if (path === "/api/risk-control/summary") {
+      const rc = demoRiskConfig.risk_control, sc = demoRiskConfig.schedule;
+      const activeModules = [];
+      if (rc.enabled) {
+        if (rc.cooldown_enabled) activeModules.push("cooldown");
+        if (rc.write_limits_enabled) activeModules.push("write_limits");
+        if (rc.pacing_enabled) activeModules.push("pacing");
+        if (sc.quiet_hours_enabled) activeModules.push("quiet_hours");
+        if (rc.network_guard_enabled) activeModules.push("network_guard");
+        if (rc.jitter_enabled) activeModules.push("jitter");
+      }
+      if (sc.native_write_gate_enabled) activeModules.push("native_write_gate");
+      const scoped = pf ? accounts.filter(a => a.platform === pf) : accounts;
+      return {
+        total: scoped.length,
+        counts: { normal: scoped.length, cooldown: 0, recovering: 0, auth_invalid: 0, proxy_error: 0, network_circuit: 0, write_paused: 0, verification_required: 0, network_backoff: 0 },
+        abnormal: 0, risk_events_today: 0, blocked_tasks: 0,
+        policy_enabled: rc.enabled, mode: rc.mode, active_modules: activeModules,
+        quiet_hours_enabled: sc.quiet_hours_enabled, native_write_gate_enabled: sc.native_write_gate_enabled,
+        sampled_at: new Date().toISOString(),
+      };
+    }
+    if (path === "/api/risk-control/accounts") {
+      const scoped = pf ? accounts.filter(a => a.platform === pf) : accounts;
+      return scoped.map(a => ({
+        account_id: a.id, platform_account_id: a.douyin_id || a.sec_uid, platform_account_id_label: "账号 ID",
+        nickname: a.nickname, platform: a.platform, account_status: a.status,
+        status: "normal", status_label: "正常", status_tone: "success", risk_level: 0,
+        reason: "未检测到风险信号", cooldown_until: null, cooldown_remaining_seconds: 0,
+        next_probe_at: null, recovery_successes: 0, recovery_target: 3, last_risk_at: null,
+        last_operation_at: null, manual_review_required: false, retry_not_before: null,
+        operation_not_before: null, session_rest_until: null, session_operation_count: 0,
+        last_operation_kind: "", proxy: a.has_proxy ? "127.0.0.1:****" : "", proxy_status: a.has_proxy ? "ok" : "direct",
+        proxy_warning: "", network_key: a.has_proxy ? "proxy:demo" : "direct",
+        queued_tasks: { collections: 0, publishes: 0, comments: 0, actions: 0, total: 0 },
+        blocked_tasks: 0, blocked_signals: {}, task_next_allowed_at: null, latest_block_reason: "",
+      }));
+    }
     if (path === "/api/diagnostics/summary") {
       return { app_version: "demo", run_mode: "preview", logging: { level: demoDiagLevel, total_bytes: 48640 } };
     }
@@ -602,6 +671,12 @@
       return new Response(JSON.stringify({ ok: true, cleared: 2, log_dir: "./logs" }), { status: 200, headers: { "Content-Type": "application/json; charset=utf-8" } });
     }
     if (method === "PUT" && url.pathname === "/api/settings/engine") Object.assign(engineValues, JSON.parse(init.body));
+    if (method === "PUT" && url.pathname === "/api/risk-control/config") {
+      const body = JSON.parse(init.body || "{}");
+      if (body.risk_control) Object.assign(demoRiskConfig.risk_control, body.risk_control);
+      if (body.schedule) Object.assign(demoRiskConfig.schedule, body.schedule);
+      return new Response(JSON.stringify({ ...demoRiskConfig, woken_tasks: 0 }), { status: 200, headers: { "Content-Type": "application/json; charset=utf-8" } });
+    }
     if (url.pathname === "/api/channels/protocol/config") {
       if (method === "PUT") {
         const body = JSON.parse(init.body || "{}");

@@ -516,7 +516,7 @@ class MonitorEngine(
 
     def _write_pause_error(self, account_id) -> str:
         """Return a persisted account write pause, clearing an expired one."""
-        if not self.risk.policy.enabled:
+        if not self.risk.policy.enabled or not self.risk._cooldown_active():
             return ""
         if not account_id:
             return ""
@@ -921,9 +921,9 @@ class MonitorEngine(
                 # 不能再记 success，否则会立即放行下一次重读并覆盖风险信号。
                 failure = self.risk.record_failure(
                     account_id, OperationKind.READ_HEAVY, job_error)
-                if category == RiskCategory.RISK:
+                if category == RiskCategory.RISK and self.risk._cooldown_active():
                     manual_hold = bool(
-                        self.risk.policy.enabled
+                        self.risk._cooldown_active()
                         and self.risk._needs_manual_review(job_error, signal)
                     )
                     with get_session() as s:

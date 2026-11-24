@@ -12,6 +12,7 @@ from app import runtime as app_runtime
 from app.db import get_session
 from app.engine_settings import EngineSettingsPatch, export_engine_settings, save_engine_settings
 from app.models import DouyinAccount
+from app.risk_admin import sync_shared_schedule_to_risk_store
 from app.services import metadata as metadata_service
 from app.settings import get_setting, set_setting
 from app.transport_matrix import build_transport_matrix
@@ -95,6 +96,8 @@ async def put_engine_settings(body: Any = Body(...)):
                 "native_write_proxy_max_age_seconds"):
             if key in body and hasattr(app_runtime.browser, key):
                 setattr(app_runtime.browser, key, getattr(app_runtime.cfg.engine, key))
+    if isinstance(body, dict):
+        sync_shared_schedule_to_risk_store(body)
     return result
 
 

@@ -24,8 +24,15 @@ from app.settings import get_setting
 
 class TargetScanMixin:
     def _due(self, last_scan_at, interval_seconds, *, key: str = "") -> bool:
-        deadline = periodic_deadline(last_scan_at, interval_seconds, key=key,
-                                     jitter=self.cfg.engine.scan_jitter)
+        rc = getattr(self.cfg, "risk_control", None)
+        jitter_on = bool(
+            rc is not None
+            and getattr(rc, "enabled", False)
+            and getattr(rc, "jitter_enabled", True)
+        )
+        deadline = periodic_deadline(
+            last_scan_at, interval_seconds, key=key,
+            jitter=self.cfg.engine.scan_jitter if jitter_on else 0.0)
         return deadline is None or datetime.utcnow() >= deadline
 
     def _periodic_due(self, row, kind: str) -> bool:

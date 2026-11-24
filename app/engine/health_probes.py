@@ -1001,6 +1001,8 @@ class HealthProbeMixin:
 
     async def _process_risk_recovery(self) -> int:
         """Probe recovering accounts independently of idle keepalive cadence."""
+        if not self.risk.policy.enabled or not self.risk._cooldown_active():
+            return 0
         now = datetime.utcnow()
         gap = max(1, self.cfg.risk_control.recovery_probe_gap_seconds)
         with get_session() as session:

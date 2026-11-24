@@ -12,15 +12,47 @@ from .settings import get_setting, set_setting
 
 RISK_SETTINGS_KEY = "risk_control.runtime.v1"
 
+_RISK_MODULE_BOOLS = (
+    "cooldown_enabled",
+    "write_limits_enabled",
+    "pacing_enabled",
+    "network_guard_enabled",
+    "jitter_enabled",
+)
+
 _SCHEDULE_FIELDS = {
     "quiet_hours_enabled",
+    "quiet_hours_include_reads",
+    "quiet_hours_wake_jitter_minutes",
     "active_hours_start",
     "active_hours_end",
     "account_check_interval_seconds",
     "douyin_captcha_wait_seconds",
     "scan_jitter", "comment_jitter", "xhs_dm_poll_jitter",
     "initial_scan_spread_seconds",
+    "native_write_gate_enabled",
+    "native_write_require_system_chrome",
+    "native_write_require_verified_proxy",
+    "native_write_proxy_max_age_seconds",
 }
+
+_SCHEDULE_BOOLS = (
+    "quiet_hours_enabled",
+    "quiet_hours_include_reads",
+    "native_write_gate_enabled",
+    "native_write_require_system_chrome",
+    "native_write_require_verified_proxy",
+)
+
+SHARED_ENGINE_SCHEDULE_FIELDS = (
+    "quiet_hours_enabled",
+    "quiet_hours_include_reads",
+    "quiet_hours_wake_jitter_minutes",
+    "native_write_gate_enabled",
+    "native_write_require_system_chrome",
+    "native_write_require_verified_proxy",
+    "native_write_proxy_max_age_seconds",
+)
 
 _RISK_BOUNDS: dict[str, tuple[int, int]] = {
     "network_group_concurrency": (1, 32),
@@ -58,9 +90,11 @@ _RISK_BOUNDS: dict[str, tuple[int, int]] = {
 _SCHEDULE_BOUNDS: dict[str, tuple[int, int]] = {
     "active_hours_start": (0, 23),
     "active_hours_end": (1, 47),
+    "quiet_hours_wake_jitter_minutes": (0, 120),
     "account_check_interval_seconds": (0, 604800),
     "douyin_captcha_wait_seconds": (0, 86400),
     "initial_scan_spread_seconds": (0, 600),
+    "native_write_proxy_max_age_seconds": (0, 604800),
 }
 
 
@@ -126,6 +160,26 @@ def apply_risk_settings(cfg: Config, payload: dict[str, Any]) -> dict[str, Any]:
     merged.update(risk_patch)
     if not isinstance(merged.get("enabled"), bool):
         raise RiskSettingsError("enabled 必须是布尔值")
+
+    # 兼容旧版持久化载荷：显式 enabled=True 且未携带任何新分模块开关字段时，
+    # 自动补齐对应模块开启状态，避免老用户已启用的风控在升级后静默失效。
+    has_module_patch = any(key in risk_patch for key in _RISK_MODULE_BOOLS)
+    had_any_module = any(bool(getattr(cfg.risk_control, key, False)) for key in _RISK_MODULE_BOOLS)
+    if risk_patch.get("enabled") is True and not has_module_patch and not had_any_module:
+        merged["cooldown_enabled"] = True
+        merged["write_limits_enabled"] = True
+        merged["pacing_enabled"] = True
+        merged["network_guard_enabled"] = True
+        merged["jitter_enabled"] = any((
+            float(schedule_patch.get("scan_jitter", getattr(cfg.engine, "scan_jitter", 0)) or 0) > 0,
+            float(schedule_patch.get("comment_jitter", getattr(cfg.engine, "comment_jitter", 0)) or 0) > 0,
+            float(schedule_patch.get("xhs_dm_poll_jitter", getattr(cfg.engine, "xhs_dm_poll_jitter", 0)) or 0) > 0,
+            int(schedule_patch.get("initial_scan_spread_seconds", getattr(cfg.engine, "initial_scan_spread_seconds", 0)) or 0) > 0,
+        ))
+    for flag in _RISK_MODULE_BOOLS:
+        if not isinstance(merged.get(flag), bool):
+            raise RiskSettingsError(f"{flag} 必须是布尔值")
+
     mode = str(merged.get("mode", "")).strip().lower()
     if mode not in {"conservative", "custom"}:
         raise RiskSettingsError("mode 只能是 conservative 或 custom")
@@ -153,8 +207,9 @@ def apply_risk_settings(cfg: Config, payload: dict[str, Any]) -> dict[str, Any]:
         for key in _SCHEDULE_FIELDS
     }
     next_schedule.update(schedule_patch)
-    if not isinstance(next_schedule["quiet_hours_enabled"], bool):
-        raise RiskSettingsError("quiet_hours_enabled 必须是布尔值")
+    for flag in _SCHEDULE_BOOLS:
+        if not isinstance(next_schedule[flag], bool):
+            raise RiskSettingsError(f"{flag} 必须是布尔值")
     for name, bounds in _SCHEDULE_BOUNDS.items():
         next_schedule[name] = _bounded_int(next_schedule[name], name, bounds)
     for name in ("scan_jitter", "comment_jitter", "xhs_dm_poll_jitter"):
@@ -170,9 +225,62 @@ def apply_risk_settings(cfg: Config, payload: dict[str, Any]) -> dict[str, Any]:
     return export_risk_settings(cfg)
 
 
+def sync_shared_schedule_to_engine_store(cfg: Config) -> None:
+    """Keep overlapping fields in engine.runtime.v1 aligned when saved from risk rules."""
+    from .engine_settings import ENGINE_SETTINGS_KEY
+    raw = get_setting(ENGINE_SETTINGS_KEY, "")
+    if not raw:
+        return
+    try:
+        stored = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return
+    if not isinstance(stored, dict):
+        return
+    changed = False
+    for key in SHARED_ENGINE_SCHEDULE_FIELDS:
+        if key in stored:
+            new_val = getattr(cfg.engine, key)
+            if stored[key] != new_val:
+                stored[key] = new_val
+                changed = True
+    if changed:
+        set_setting(ENGINE_SETTINGS_KEY, json.dumps(stored, ensure_ascii=False))
+
+
+def sync_shared_schedule_to_risk_store(patch: dict[str, Any]) -> None:
+    """Keep overlapping fields in risk_control.runtime.v1 aligned when saved from engine settings."""
+    if not isinstance(patch, dict):
+        return
+    overlap = {k: patch[k] for k in SHARED_ENGINE_SCHEDULE_FIELDS if k in patch}
+    if not overlap:
+        return
+    raw = get_setting(RISK_SETTINGS_KEY, "")
+    if not raw:
+        return
+    try:
+        stored = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return
+    if not isinstance(stored, dict):
+        return
+    schedule = stored.get("schedule")
+    if not isinstance(schedule, dict):
+        schedule = {}
+        stored["schedule"] = schedule
+    changed = False
+    for key, value in overlap.items():
+        if schedule.get(key) != value:
+            schedule[key] = value
+            changed = True
+    if changed:
+        set_setting(RISK_SETTINGS_KEY, json.dumps(stored, ensure_ascii=False))
+
+
 def save_risk_settings(cfg: Config) -> dict[str, Any]:
     payload = export_risk_settings(cfg)
     set_setting(RISK_SETTINGS_KEY, json.dumps(payload, ensure_ascii=False))
+    sync_shared_schedule_to_engine_store(cfg)
     return payload
 
 

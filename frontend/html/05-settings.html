@@ -297,9 +297,12 @@
         </div>
       </details>
       <details class="collection-advanced" id="engine-settings-write-guards">
-        <summary>写操作基础限制</summary>
+        <summary>写操作基础限制（默认不限）</summary>
         <div class="collection-advanced-body stack">
-          <p class="field-help">这些是 config.yaml 中的账号级基础限制；风控中心的统一策略可能设置更严格的实际值。0 表示该项不额外限制。</p>
+          <div class="row-between gap-wrap">
+            <p class="field-help" style="margin:0">默认均为 0（不限制）；需要写操作频控、冷却或休眠保护时，推荐前往「风控中心 → 风控规则」一键开启与统一管理。</p>
+            <button type="button" class="ghost sm" onclick="openRiskRulesSection()">前往风控规则 →</button>
+          </div>
           <div class="form-grid">
             <div class="form-field"><label for="engine-comment_daily_cap_per_account">每账号每日自动评论上限</label><input id="engine-comment_daily_cap_per_account" name="comment_daily_cap_per_account" type="number" min="0" max="100000" step="1" required disabled></div>
             <div class="form-field"><label for="engine-comment_hourly_cap_per_account">每账号每小时自动评论上限</label><input id="engine-comment_hourly_cap_per_account" name="comment_hourly_cap_per_account" type="number" min="0" max="10000" step="1" required disabled></div>
@@ -311,15 +314,18 @@
         </div>
       </details>
       <details class="collection-advanced" id="engine-settings-isolation">
-        <summary>代理防关联提醒与写入门禁</summary>
+        <summary>代理防关联提醒与写入门禁（默认不拦截）</summary>
         <div class="collection-advanced-body stack">
-          <p class="field-help">防关联提醒策略：系统不强制要求「一号一代理」，也不阻断「本机直连」——多号复用同一代理或无代理本机直连均可正常登录与运行任务，仅在登录选择、账号矩阵和风控中心高亮提示共用出口 IP / 直连风险。同平台多账号与海外平台仍强烈建议尽量配置独立住宅代理。</p>
+          <div class="row-between gap-wrap">
+            <p class="field-help" style="margin:0">防关联提醒策略：系统不强制要求「一号一代理」，也不阻断「本机直连」，以下门禁与休眠开关均默认关闭；也可在「风控中心 → 风控规则」统一调整。</p>
+            <button type="button" class="ghost sm" onclick="openRiskRulesSection()">前往风控规则 →</button>
+          </div>
           <div class="form-grid">
-            <div class="form-field"><label class="switch-row" for="engine-quiet_hours_include_reads"><input id="engine-quiet_hours_include_reads" name="quiet_hours_include_reads" type="checkbox" disabled><span class="switch-copy"><b>夜间休眠覆盖后台监控与采集</b><span>推荐开启。活跃时段外同步静默非交互式定时监控、采集与探活，并为每个账号生成每日随机苏醒偏移。</span></span></label></div>
-            <div class="form-field"><label class="switch-row" for="engine-verify_proxy_region"><input id="engine-verify_proxy_region" name="verify_proxy_region" type="checkbox" disabled><span class="switch-copy"><b>校验代理出口地区</b><span>将代理出口国家与账号时区进行比对并记录告警。</span></span></label></div>
-            <div class="form-field"><label class="switch-row" for="engine-native_write_gate_enabled"><input id="engine-native_write_gate_enabled" name="native_write_gate_enabled" type="checkbox" disabled><span class="switch-copy"><b>启用 native 写入门禁</b><span>写操作前检查账号浏览器和网络基线。</span></span></label></div>
-            <div class="form-field"><label class="switch-row" for="engine-native_write_require_system_chrome"><input id="engine-native_write_require_system_chrome" name="native_write_require_system_chrome" type="checkbox" disabled><span class="switch-copy"><b>写入必须使用系统 Chrome</b><span>提高多账号浏览器环境一致性。</span></span></label></div>
-            <div class="form-field"><label class="switch-row" for="engine-native_write_require_verified_proxy"><input id="engine-native_write_require_verified_proxy" name="native_write_require_verified_proxy" type="checkbox" disabled><span class="switch-copy"><b>写入必须通过代理验证</b><span>已配置代理的账号需先建立出口基线。</span></span></label></div>
+            <div class="form-field"><label class="switch-row" for="engine-quiet_hours_include_reads"><input id="engine-quiet_hours_include_reads" name="quiet_hours_include_reads" type="checkbox" disabled><span class="switch-copy"><b>夜间休眠覆盖后台监控与采集</b><span>默认关闭。仅在「风控规则」开启夜间休眠后生效，同步静默非交互式定时监控、采集与探活。</span></span></label></div>
+            <div class="form-field"><label class="switch-row" for="engine-verify_proxy_region"><input id="engine-verify_proxy_region" name="verify_proxy_region" type="checkbox" disabled><span class="switch-copy"><b>校验代理出口地区</b><span>将代理出口国家与账号时区进行比对并记录告警（仅提醒不拦截）。</span></span></label></div>
+            <div class="form-field"><label class="switch-row" for="engine-native_write_gate_enabled"><input id="engine-native_write_gate_enabled" name="native_write_gate_enabled" type="checkbox" disabled><span class="switch-copy"><b>启用 native 写入门禁</b><span>默认关闭。开启后写操作前强制检查系统 Chrome 与代理出口基线。</span></span></label></div>
+            <div class="form-field"><label class="switch-row" for="engine-native_write_require_system_chrome"><input id="engine-native_write_require_system_chrome" name="native_write_require_system_chrome" type="checkbox" disabled><span class="switch-copy"><b>写入必须使用系统 Chrome</b><span>仅在上方启用写入门禁后生效，提高多账号浏览器环境一致性。</span></span></label></div>
+            <div class="form-field"><label class="switch-row" for="engine-native_write_require_verified_proxy"><input id="engine-native_write_require_verified_proxy" name="native_write_require_verified_proxy" type="checkbox" disabled><span class="switch-copy"><b>写入必须通过代理验证</b><span>仅在上方启用写入门禁后生效，已配置代理的账号需先建立出口基线。</span></span></label></div>
             <div class="form-field"><label for="engine-native_write_proxy_max_age_seconds">代理基线有效期（小时）</label><input id="engine-native_write_proxy_max_age_seconds" name="native_write_proxy_max_age_seconds" data-scale="3600" type="number" min="0" max="168" step="1" required disabled><p class="field-help">0 表示不自动过期；过期后需重新测试代理。</p></div>
           </div>
         </div>

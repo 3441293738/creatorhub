@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
+import asyncio
 import json
 import os
 
@@ -100,11 +101,21 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
                        latest_event: RiskEvent | None,
                        queued: dict[str, Any],
                        proxy_warning: str = "") -> dict[str, Any]:
-    risk_level = state.risk_level if state else 0
-    reason = state.last_risk_reason if state else ""
-    cooldown_until = state.cooldown_until if state else None
+    rc = app_runtime.cfg.risk_control
+    policy_enabled = bool(rc.enabled)
+    cooldown_active = bool(policy_enabled and getattr(rc, "cooldown_enabled", True))
+    pacing_active = bool(policy_enabled and getattr(rc, "pacing_enabled", True))
+
+    risk_level = (state.risk_level if state else 0) if cooldown_active else 0
+    reason = state.last_risk_reason if (state and cooldown_active) else ""
+    cooldown_until = (state.cooldown_until if state else None) if cooldown_active else None
+    retry_not_before = (state.retry_not_before if state else None) if cooldown_active else None
+    operation_not_before = (state.operation_not_before if state else None) if pacing_active else None
+    session_rest_until = (state.session_rest_until if state else None) if pacing_active else None
+    manual_review_required = bool(state and state.manual_review_required and cooldown_active)
+
     status_code, status_label, status_tone = "normal", "正常", "success"
-    if state and state.manual_review_required:
+    if manual_review_required:
         status_code, status_label, status_tone = "verification_required", "待人工验证", "danger"
         reason = state.manual_review_reason or "请在账号浏览器中处理验证，然后人工解除暂停"
     elif account.status == "invalid":
@@ -125,30 +136,30 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
     elif risk_level > 0:
         status_code, status_label, status_tone = "recovering", "渐进恢复", "warn"
         reason = reason or "冷却已结束，等待轻量探测确认账号恢复"
-    elif account.write_paused_until and account.write_paused_until > now:
+    elif cooldown_active and account.write_paused_until and account.write_paused_until > now:
         status_code, status_label, status_tone = "write_paused", "写入暂停", "warn"
         reason = account.write_pause_reason or "账号写操作暂时停用"
-    elif state and state.retry_not_before and state.retry_not_before > now:
+    elif retry_not_before and retry_not_before > now:
         status_code, status_label, status_tone = "network_backoff", "网络退避", "warn"
         reason = "网络异常后等待再尝试"
-    elif state and state.session_rest_until and state.session_rest_until > now:
+    elif session_rest_until and session_rest_until > now:
         reason = "连续操作后的正常休息，任务保留在队列中"
-    elif state and state.operation_not_before and state.operation_not_before > now:
+    elif operation_not_before and operation_not_before > now:
         reason = "正常操作间隔，任务保留在队列中"
     elif status_code == "normal":
-        reason = "未检测到风险信号"
+        reason = "未检测到风险信号" if policy_enabled else "统一风控未开启，任务直接放行"
 
-    recovery_successes = state.recovery_successes if state else 0
-    recovery_target = max(1, app_runtime.cfg.risk_control.recovery_successes)
+    recovery_successes = (state.recovery_successes if state else 0) if cooldown_active else 0
+    recovery_target = max(1, rc.recovery_successes)
     next_probe = None
-    if risk_level > 0 and not (state and state.manual_review_required):
+    if risk_level > 0 and not manual_review_required:
         if cooldown_until and cooldown_until > now:
             next_probe = cooldown_until
         elif state and (state.last_recovery_at or state.last_operation_at):
             anchor = max(value for value in (
                 state.last_recovery_at, state.last_operation_at) if value is not None)
             next_probe = anchor + timedelta(
-                seconds=app_runtime.cfg.risk_control.recovery_probe_gap_seconds)
+                seconds=rc.recovery_probe_gap_seconds)
         else:
             next_probe = now
 
@@ -188,10 +199,10 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
         "recovery_target": recovery_target,
         "last_risk_at": _risk_iso(state.last_risk_at if state else None),
         "last_operation_at": _risk_iso(state.last_operation_at if state else None),
-        "manual_review_required": bool(state and state.manual_review_required),
-        "retry_not_before": _risk_iso(state.retry_not_before if state else None),
-        "operation_not_before": _risk_iso(state.operation_not_before if state else None),
-        "session_rest_until": _risk_iso(state.session_rest_until if state else None),
+        "manual_review_required": manual_review_required,
+        "retry_not_before": _risk_iso(retry_not_before),
+        "operation_not_before": _risk_iso(operation_not_before),
+        "session_rest_until": _risk_iso(session_rest_until),
         "session_operation_count": state.session_operation_count if state else 0,
         "last_operation_kind": latest_event.operation_kind if latest_event else "",
         "proxy": proxies_service._mask_proxy(account.proxy),
@@ -249,6 +260,79 @@ class RiskSettingsIn(BaseModel):
     schedule: Dict[str, Any]
 
 
+def _wake_policy_deferred_tasks(
+    *,
+    policy_enabled: bool,
+    native_gate_enabled: bool,
+    disabled_signals: set[str],
+) -> int:
+    """Release pending tasks blocked by risk rules that are now disabled."""
+    if policy_enabled and not disabled_signals and native_gate_enabled:
+        return 0
+    woken = 0
+    woke_collections = False
+    non_policy_signals = {"auth_required", "proxy_unavailable"}
+
+    def _should_wake(row) -> bool:
+        reason = str(getattr(row, "blocked_reason", "") or "")
+        if not reason:
+            return False
+        signal = str(getattr(row, "blocked_signal", "") or "")
+        if reason.startswith("write_env_blocked:"):
+            return not native_gate_enabled
+        if signal in non_policy_signals:
+            return False
+        if not policy_enabled:
+            return True
+        return signal in disabled_signals
+
+    with get_session() as session:
+        for model in (PublishTask, CommentTask, AccountActionTask):
+            rows = session.exec(select(model).where(
+                model.status == "pending",
+                model.blocked_reason != "",
+            )).all()
+            for row in rows:
+                if not _should_wake(row):
+                    continue
+                row.error = ""
+                row.blocked_reason = ""
+                row.blocked_signal = ""
+                row.blocked_operation = ""
+                row.blocked_at = None
+                row.next_allowed_at = None
+                session.add(row)
+                woken += 1
+        jobs = session.exec(select(KeywordCollectionJob).where(
+            KeywordCollectionJob.status == "pending",
+            KeywordCollectionJob.blocked_reason != "",
+        )).all()
+        for job in jobs:
+            if not _should_wake(job):
+                continue
+            job.current_step = "风控规则已放宽，等待继续"
+            job.error_count = 0
+            job.error = ""
+            job.blocked_reason = ""
+            job.blocked_signal = ""
+            job.blocked_operation = ""
+            job.blocked_at = None
+            job.next_allowed_at = None
+            session.add(job)
+            woken += 1
+            woke_collections = True
+        if woken:
+            session.commit()
+    engine = app_runtime.engine
+    if woke_collections and engine is not None and getattr(engine, "_running", False) \
+            and not getattr(engine, "_collection_tasks", None):
+        try:
+            asyncio.create_task(engine._process_collection_jobs())
+        except RuntimeError:
+            pass
+    return woken
+
+
 @router.put("/api/risk-control/config")
 async def put_risk_control_config(body: RiskSettingsIn, request: Request):
     actor = metadata_service._require_risk_admin(request)
@@ -260,11 +344,44 @@ async def put_risk_control_config(body: RiskSettingsIn, request: Request):
     save_risk_settings(app_runtime.cfg)
     if app_runtime.engine is not None:
         app_runtime.engine.risk.update_policy(app_runtime.cfg.risk_control)
+    if app_runtime.browser is not None:
+        for key in (
+            "native_write_gate_enabled",
+            "native_write_require_system_chrome",
+            "native_write_require_verified_proxy",
+            "native_write_proxy_max_age_seconds",
+        ):
+            if hasattr(app_runtime.browser, key):
+                setattr(app_runtime.browser, key, getattr(app_runtime.cfg.engine, key))
     after = export_risk_settings(app_runtime.cfg)
+    before_rc = before.get("risk_control", {})
+    after_rc = after.get("risk_control", {})
+    before_sc = before.get("schedule", {})
+    after_sc = after.get("schedule", {})
+    disabled_signals: set[str] = set()
+    if before_rc.get("cooldown_enabled") and not after_rc.get("cooldown_enabled"):
+        disabled_signals.update({
+            "cooldown", "probe_only", "probe_gap", "network_backoff", "manual_review_required",
+        })
+    if before_rc.get("write_limits_enabled") and not after_rc.get("write_limits_enabled"):
+        disabled_signals.update({
+            "kind_gap", "shared_write_gap", "hourly_cap", "daily_cap",
+            "combined_hourly_cap", "combined_daily_cap", "quota", "operation_gap",
+        })
+    if before_rc.get("pacing_enabled") and not after_rc.get("pacing_enabled"):
+        disabled_signals.update({"session_rest", "operation_pacing", "kind_gap"})
+    if before_sc.get("quiet_hours_enabled") and not after_sc.get("quiet_hours_enabled"):
+        disabled_signals.add("quiet_hours")
+    woken = _wake_policy_deferred_tasks(
+        policy_enabled=bool(after_rc.get("enabled")),
+        native_gate_enabled=bool(after_sc.get("native_write_gate_enabled")),
+        disabled_signals=disabled_signals,
+    )
     _record_risk_admin_audit(
         "policy_updated", actor=actor,
-        detail={"changes": _risk_config_diff(before, after)})
+        detail={"changes": _risk_config_diff(before, after), "woken_tasks": woken})
     after["admin_token_required"] = _risk_admin_required()
+    after["woken_tasks"] = woken
     return after
 
 
@@ -305,6 +422,7 @@ async def get_risk_control_summary(platform: str | None = None):
                     "proxy_error", "network_circuit", "write_paused",
                     "verification_required", "network_backoff")
     }
+    controller = app_runtime.engine.risk if app_runtime.engine else RiskController(app_runtime.cfg)
     return {
         "total": len(rows),
         "counts": counts,
@@ -313,6 +431,9 @@ async def get_risk_control_summary(platform: str | None = None):
         "blocked_tasks": sum(row["blocked_tasks"] for row in rows),
         "policy_enabled": app_runtime.cfg.risk_control.enabled,
         "mode": app_runtime.cfg.risk_control.mode,
+        "active_modules": controller.active_modules(),
+        "quiet_hours_enabled": bool(app_runtime.cfg.engine.quiet_hours_enabled),
+        "native_write_gate_enabled": bool(app_runtime.cfg.engine.native_write_gate_enabled),
         "sampled_at": _risk_iso(now),
     }
 

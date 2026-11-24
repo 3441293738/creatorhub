@@ -45,7 +45,13 @@ def row_deadline(row, cfg, *, kind: str) -> datetime | None:
     interval = row.interval_seconds
     if kind == "danmaku" and not interval:
         interval = cfg.engine.scan_interval_seconds
+    rc = getattr(cfg, "risk_control", None)
+    jitter_on = bool(
+        rc is not None
+        and getattr(rc, "enabled", False)
+        and getattr(rc, "jitter_enabled", True)
+    )
     return periodic_deadline(
         last_at, interval, key=f"{kind}:{row.id}", created_at=row.created_at,
-        jitter=cfg.engine.scan_jitter,
-        first_spread_seconds=cfg.engine.initial_scan_spread_seconds)
+        jitter=cfg.engine.scan_jitter if jitter_on else 0.0,
+        first_spread_seconds=cfg.engine.initial_scan_spread_seconds if jitter_on else 0)

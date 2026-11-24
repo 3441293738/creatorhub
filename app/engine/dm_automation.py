@@ -118,7 +118,14 @@ class XhsDmAutomation:
             self.cfg.engine.xhs_dm_fallback_interval_seconds
             if connected and bool(self.cfg.engine.xhs_dm_realtime_enabled)
             else self.cfg.engine.xhs_dm_poll_interval_seconds))
-        jitter = min(1.0, max(0.0, float(self.cfg.engine.xhs_dm_poll_jitter)))
+        jitter_on = bool(
+            self.cfg.risk_control.enabled
+            and getattr(self.cfg.risk_control, "jitter_enabled", True)
+        )
+        jitter = (
+            min(1.0, max(0.0, float(self.cfg.engine.xhs_dm_poll_jitter)))
+            if jitter_on else 0.0
+        )
         delay = base * random.uniform(1.0, 1.0 + jitter)
         self._next_poll[account_id] = (now if now is not None else time.time()) + delay
 
@@ -601,6 +608,14 @@ class XhsDmAutomation:
                 return "empty_template"
             low = max(15, int(matched.min_delay_seconds))
             high = max(low, int(matched.max_delay_seconds))
+            dm_gap = (
+                max(60, int(self.cfg.risk_control.dm_min_gap_seconds))
+                if (
+                    self.cfg.risk_control.enabled
+                    and getattr(self.cfg.risk_control, "write_limits_enabled", True)
+                )
+                else max(0, int(self.cfg.engine.action_min_gap_seconds))
+            )
             task = AccountActionTask(
                 platform="xhs", account_id=account_id, action="send_dm",
                 target_uid=conv.peer_uid or conv.conv_id,
@@ -609,7 +624,7 @@ class XhsDmAutomation:
                 source_msg_id=msg.msg_id, source_rule_id=matched.id,
                 scheduled_at=now + timedelta(seconds=random.randint(low, high)),
                 status="draft" if matched.review_before_send else "pending",
-                min_gap_seconds=max(60, int(self.cfg.risk_control.dm_min_gap_seconds)),
+                min_gap_seconds=dm_gap,
             )
             session.add(task); session.flush()
             msg.auto_reply_state = "draft" if matched.review_before_send else "queued"

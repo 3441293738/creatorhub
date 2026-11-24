@@ -28,7 +28,7 @@ class CommentRuleRunnerMixin:
     # ── 活跃时段(夜间静默)──
     def _in_active_window(self, account_id=None) -> bool:
         """Check active hours in the bound account's persisted timezone."""
-        if not self.cfg.engine.quiet_hours_enabled:
+        if not self.cfg.risk_control.enabled or not self.cfg.engine.quiet_hours_enabled:
             return True
         account = self._load_account(account_id)
         if account is not None:
@@ -269,7 +269,11 @@ class CommentRuleRunnerMixin:
 
             base = datetime.utcnow()
             gap = max(1, rf["min_gap"], self.cfg.engine.comment_min_gap_seconds)
-            jitter = bounded_ratio(self.cfg.engine.comment_jitter)
+            jitter_on = bool(
+                self.cfg.risk_control.enabled
+                and getattr(self.cfg.risk_control, "jitter_enabled", True)
+            )
+            jitter = bounded_ratio(self.cfg.engine.comment_jitter) if jitter_on else 0.0
             offset = 0.0
             to_rest = random.randint(3, 6)   # 突发+休息:连发几条后插一段长歇,别匀速排队
             skip = {"dup": 0, "skip_kw": 0, "filter": 0, "empty": 0, "cap": 0}

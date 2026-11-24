@@ -41,7 +41,7 @@ engine:
   xhs_dm_realtime_debounce_seconds: 1.5
   xhs_dm_fallback_interval_seconds: 600
   xhs_dm_max_conversations_per_poll: 2
-  xhs_dm_poll_jitter: 0.35
+  xhs_dm_poll_jitter: 0           # 私信轮询随机错峰上限比例(0=关闭)
   xhs_dm_auto_reply_enabled: false # 开启后仍需创建并启用账号规则
   monitor_initial_backfill_count: 0  # 新增博主时回填最近 N 条;0=只下载订阅后的新作品,-1=尽可能全量
   comment_recent_works: 5         # 监控评论时,只看每个目标最近 N 条作品
@@ -80,22 +80,24 @@ engine:
   fingerprint_chromium_allow_headless: false # 上游无头画像不完整,默认所有指纹环境使用可见窗口
   fingerprint_chromium_platform: auto # auto=跟随宿主系统;也可指定 windows/linux/macos
   active_accounts: 3              # 同一时刻最多并发活跃的账号数(错峰,降低"多号同时活跃"特征)
-  scan_jitter: 0.15              # 扫描周期额外增加 0–15%；按任务和上次执行时间稳定错峰
-  initial_scan_spread_seconds: 60 # 新监控/评论规则首次自动执行额外等待 0–60 秒；0 关闭
+  scan_jitter: 0                  # 扫描周期随机错峰比例(0=关闭;建议在「风控中心 → 风控规则」统一管理)
+  initial_scan_spread_seconds: 0  # 新监控/评论规则首次自动执行错峰上限(秒,0=关闭)
   route_download_via_proxy: true  # 媒体下载是否走账号代理(避免 CDN 拉流暴露真实 IP)
   strict_proxy_required: false    # 兼容保留字段:默认仅提醒不强拦,允许本机直连
   forbid_same_platform_shared_proxy: false # 兼容保留字段:默认仅提醒不强拦,允许同平台复用代理
   verify_proxy_region: true       # 体检时探测代理出口国家,与账号时区(默认东八区)不一致则告警
-  native_write_gate_enabled: true # 仅新建 native 账号:写操作执行前检查浏览器/代理基线
-  native_write_require_system_chrome: true # 写操作必须使用系统稳定版 Chrome
-  native_write_require_verified_proxy: true # 已配代理的账号必须先通过“测试”建立出口基线
+  native_write_gate_enabled: false # 新建 native 账号写操作环境门禁(默认关闭,按需在风控规则中开启)
+  native_write_require_system_chrome: true # 开启门禁后要求使用系统稳定版 Chrome
+  native_write_require_verified_proxy: true # 开启门禁后已配代理的账号需先通过“测试”建立出口基线
   native_write_proxy_max_age_seconds: 86400 # 出口基线有效期;过期后需重新测试代理
   browser_exit_probe_url: https://ipinfo.io/json
 
-  # ── 写操作风控闸(取关/回关/私信 + 自动评论)──
-  comment_hourly_cap_per_account: 10   # 每账号每小时自动评论上限(0=不限)
-  comment_jitter: 0.4                 # 评论排队间隔额外增加 0–40%，不缩短最小间隔
-  comment_risk_cooldown_seconds: 21600 # 平台拒绝/验证后暂停该账号写操作(默认6小时)
+  # ── 写操作基础限制(默认全部关闭/0=不限,建议在「风控中心 → 风控规则」统一开关与配置)──
+  comment_daily_cap_per_account: 0     # 每账号每日自动评论总上限(0=不限)
+  comment_hourly_cap_per_account: 0    # 每账号每小时自动评论上限(0=不限)
+  comment_min_gap_seconds: 0           # 同账号两条评论全局最小间隔(秒,0=不限)
+  comment_jitter: 0                    # 评论排队随机错峰比例(0=关闭)
+  comment_risk_cooldown_seconds: 21600 # 平台拒绝/验证后暂停该账号写操作参考时长(默认6小时)
   xhs_comment_write_mode: browser      # browser=页面发布;api=显式兼容;manual=只保存草稿
   xhs_comment_review_before_publish: true # true=人工审核后自动发布;false=生成后直接发布
   channels_read_mode: auto             # auto=优先桌面微信 Finder 原生协议,回退创作者助手;protocol=仅原生协议;browser=仅助手页面
@@ -103,16 +105,16 @@ engine:
   channels_cdp_endpoint_file: ""       # 可选:wmpf_cdp 生成的单会话本地回环端点描述文件路径
   channels_proxy_enabled: false        # 可选:启用内置本机视频号 HTTPS 代理桥接(配合普通版已登录桌面微信)
   channels_proxy_port: 2023            # 可选:内置视频号本机代理监听端口(127.0.0.1)
-  action_daily_cap_per_account: 20     # 每账号每日写操作(关注/取关/私信)总上限(0=不限)
-  action_hourly_cap_per_account: 6     # 每账号每小时写操作上限(0=不限)
-  action_min_gap_seconds: 90           # 同账号两次写操作全局最小间隔(与任务级 min_gap 取大)
+  action_daily_cap_per_account: 0      # 每账号每日写操作(关注/取关/私信)总上限(0=不限)
+  action_hourly_cap_per_account: 0     # 每账号每小时写操作上限(0=不限)
+  action_min_gap_seconds: 0            # 同账号两次写操作全局最小间隔(秒,0=不限)
 
-  # ── 活跃时段(夜间静默与人类作息节律)—— 按账号所在时区判定 ──
-  quiet_hours_enabled: true       # 夜间静默总开关，手动「立即执行」也遵守写操作风控
-  quiet_hours_include_reads: true # 活跃时段外同步休眠后台定时监控、评论采集与登录态体检(手动即时查看不受影响)
-  quiet_hours_wake_jitter_minutes: 35 # 每账号每日独立随机苏醒/入睡偏移上限(0–120 分钟),消除整点齐发特征
-  active_hours_start: 8           # 活跃起点小时(含)
-  active_hours_end: 24            # 活跃止点小时(不含);可 >24 跨零点(如 25=次日 1 点)
+  # ── 活跃时段(夜间静默与人类作息节律)—— 默认关闭，按需在「风控中心 → 风控规则」开启 ──
+  quiet_hours_enabled: false       # 夜间静默总开关(默认关闭)
+  quiet_hours_include_reads: false # 活跃时段外是否同步休眠后台定时监控、评论采集与登录态体检(默认关闭)
+  quiet_hours_wake_jitter_minutes: 0 # 每账号每日独立随机苏醒/入睡偏移上限(0–120 分钟,0=关闭)
+  active_hours_start: 8            # 活跃起点小时(含)
+  active_hours_end: 24             # 活跃止点小时(不含);可 >24 跨零点(如 25=次日 1 点)
 
   # ── 本账号作品健康监控(盯自己作品的流量/0播/违规,异常推送通知)──
   #    默认关:开启后每 interval 用各账号登录态打开自己主页抓作品列表(较重),
@@ -123,41 +125,45 @@ engine:
   work_health_recent_days: 7            # 只体检最近 N 天内发布的作品
   work_health_stat_snapshots: true      # 记录账号粉丝/作品/互动每日快照(「本账号→数据」趋势;不占额外抓取)
 
-# 统一平台风控：所有读取、评论、关注/取关、私信和发布共用同一套账号预算。
-# conservative 模式保留写操作间隔下限与额度上限；写操作额度的 0 表示沿用保护线而非不限。
-# 需要完全自定义时显式改为 mode: custom；engine 中更严格的旧限制仍然生效。
+# 统一平台风控：默认全部关闭，任务按计划直接执行；可在「风控中心 → 风控规则」一键选择场景方案或按模块独立开启。
+# mode: custom 表示所有参数所见即所得（不再暗中覆盖输入值）。
 risk_control:
-  enabled: true
-  mode: conservative
-  network_group_concurrency: 1   # 同一代理出口（含直连出口）同时只做一个平台操作
-  read_light_gap_seconds: 20
-  read_heavy_gap_seconds: 60
-  operation_gap_min_seconds: 8  # 账号跨功能操作间隔；补充现有读取/写入限速
-  operation_gap_max_seconds: 25
-  session_operation_limit: 12   # 连续完成的读写尝试，失败也计数；0 关闭连续休息
-  session_rest_min_seconds: 180 # 连续操作后休息，截止时间持久化，重启不清零
-  session_rest_max_seconds: 480
-  network_retry_jitter_seconds: 30 # 在至少 5 分钟网络退避上额外等待 0–30 秒，重启后保留
-  shared_write_gap_seconds: 300  # 评论/账号动作/私信/发布之间的跨功能共享间隔
-  comment_min_gap_seconds: 600
-  comment_hourly_cap: 3
-  comment_daily_cap: 10
-  social_min_gap_seconds: 900
-  social_hourly_cap: 2
-  social_daily_cap: 8
-  dm_min_gap_seconds: 900
-  dm_hourly_cap: 2
-  dm_daily_cap: 8
-  publish_min_gap_seconds: 7200
-  publish_hourly_cap: 1
-  publish_daily_cap: 3
-  combined_action_hourly_cap: 3
-  combined_action_daily_cap: 10
+  enabled: false
+  mode: custom
+  cooldown_enabled: false        # 异常自动冷却与渐进恢复
+  write_limits_enabled: false    # 写操作间隔与小时/每日额度保护
+  pacing_enabled: false          # 读写防抖与连续操作自动休息
+  network_guard_enabled: false   # 同出口并发控制与多号熔断
+  jitter_enabled: false          # 自动任务随机错峰
+  network_group_concurrency: 1   # 同出口防连坐开启时：同一代理/直连出口并发数
+  read_light_gap_seconds: 15
+  read_heavy_gap_seconds: 45
+  operation_gap_min_seconds: 6   # 操作节奏开启时：账号跨功能操作最小间隔（秒）
+  operation_gap_max_seconds: 18
+  session_operation_limit: 15    # 连续操作次数上限；0 关闭连续休息
+  session_rest_min_seconds: 120  # 连续操作后自动休息时长（秒）
+  session_rest_max_seconds: 300
+  network_retry_jitter_seconds: 30 # 网络失败退避额外随机等待上限（秒）
+  shared_write_gap_seconds: 180  # 评论/账号动作/私信/发布之间的跨功能共享写间隔（秒）
+  comment_min_gap_seconds: 300
+  comment_hourly_cap: 6
+  comment_daily_cap: 20
+  social_min_gap_seconds: 480
+  social_hourly_cap: 4
+  social_daily_cap: 15
+  dm_min_gap_seconds: 480
+  dm_hourly_cap: 4
+  dm_daily_cap: 15
+  publish_min_gap_seconds: 3600
+  publish_hourly_cap: 2
+  publish_daily_cap: 5
+  combined_action_hourly_cap: 6
+  combined_action_daily_cap: 20
   cooldown_steps_seconds: [1800, 7200, 21600, 86400] # 30 分钟、2 小时、6 小时、24 小时
   recovery_successes: 3
   recovery_probe_gap_seconds: 600
   event_retention_days: 30
-  network_group_risk_accounts: 2 # 同出口多少个 native 账号同时命中风险后熔断
+  network_group_risk_accounts: 2 # 同出口多少个 native 账号同时命中风险后熔断（0 关闭）
   network_group_risk_window_seconds: 900
   network_group_cooldown_seconds: 7200
 
