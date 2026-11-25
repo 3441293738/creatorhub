@@ -85,7 +85,7 @@ def main():
                "--paths", str(ROOT), "--target-arch", args.arch,
                "--osx-bundle-identifier", "io.github.creatorhub.desktop"]
     command += dependency_options("macos")
-    for source, destination in ((ROOT / "config.example.yaml", "."), node_module_data(ROOT),
+    for source, destination in ((ROOT / "config.example.yaml", "."), (ROOT / "LICENSE", "."), node_module_data(ROOT),
             (ROOT / "desktop/web", "desktop/web"), (staging / "desktop-version.txt", "."),
             (staging / "build-runtime.json", "."), (staging / "desktop-guide", "desktop-guide")):
         command += ["--add-data", f"{source}:{destination}"]

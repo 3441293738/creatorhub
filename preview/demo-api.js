@@ -674,7 +674,11 @@
     return [];
   }
 
-  function actionData(path) {
+  function actionData(path, rawBody) {
+    let body = {};
+    if (typeof rawBody === "string" && rawBody.trim()) {
+      try { body = JSON.parse(rawBody); } catch (_) {}
+    }
     if (path === "/api/channels/protocol/probe") return { ok: false, ready: false, configured: false, error: "在线演示模式不连接本机微信进程" };
     if (path === "/api/channels/protocol/proxy/start") {
       channelsProto.ca_trusted = true;
@@ -721,6 +725,14 @@
     if (/^\/api\/comment-rules\/\d+\/duplicate$/.test(path)) return { ...commentRules("douyin")[0], id: 62, name: "示例自动回复规则（副本）" };
     if (/^\/api\/comment-tasks\/\d+\/regenerate$/.test(path)) return { ok: true, content: "感谢支持，后续会持续更新更多实用内容！", content_source: "template" };
     if (path === "/api/comment-tasks/batch-cancel") return { ok: true, canceled: 1 };
+    if (path === "/api/collections/batch-delete") {
+      const ids = Array.isArray(body.ids) ? body.ids.map(Number).filter(n => n > 0) : [];
+      return { ok: true, deleted: ids.length, deleted_ids: ids, skipped_running: [] };
+    }
+    if (path === "/api/monitors/batch-delete" || path === "/api/comment-watches/batch-delete" || path === "/api/danmaku-watches/batch-delete") {
+      const ids = Array.isArray(body.ids) ? body.ids.map(Number).filter(n => n > 0) : [];
+      return { ok: true, deleted: ids.length };
+    }
     if (path === "/api/accounts/keepalive-all") return { ok: true, platform: "all", queued: accounts.length, pending_total: accounts.length };
     if (/^\/api\/accounts\/\d+\/keepalive$/.test(path)) return { ok: true, status: "active", refreshed: false, message: "在线演示：会话状态正常" };
     if (path === "/api/settings/ai-test") return { ok: false, error: "在线演示模式不连接外部大模型接口，请在本地运行后测试" };
@@ -826,7 +838,7 @@
       }
       return new Response(JSON.stringify(channelsProtoPayload()), { status: 200, headers: { "Content-Type": "application/json; charset=utf-8" } });
     }
-    const data = method === "GET" || url.pathname === "/api/settings/engine" ? getData(url) : actionData(url.pathname);
+    const data = method === "GET" || url.pathname === "/api/settings/engine" ? getData(url) : actionData(url.pathname, init && init.body);
     return new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json; charset=utf-8" } });
   };
 

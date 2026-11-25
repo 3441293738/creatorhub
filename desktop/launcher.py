@@ -244,10 +244,11 @@ def update_health_check() -> int:
             from app.platforms.twitter import TwitterClient, publish_twitter
             from app.platforms.facebook import FacebookClient, publish_facebook
             from app.platforms.youtube import YouTubeClient, publish_youtube
+            from app.browser import youtube_actions, youtube_fetcher
             from app.platforms.channels import open_or_focus_wechat
             from app.platforms.channels.local_ca import LocalCaManager
             from app.browser.human_interaction import HumanInteractionEngine
-            from app.services import session_keepalive, thumb_cache
+            from app.services import login_sessions, session_keepalive, thumb_cache
             from app import ai_copywriting, risk_admin
             from app.logging_setup import configure_logging, read_log_tail
             from app.diagnostics import build_diagnostic_summary, build_diagnostic_zip
@@ -256,6 +257,8 @@ def update_health_check() -> int:
             from desktop.installer_assets import render_brand_icon
             from desktop.web_shell import ShellServer
             import websockets.asyncio.client
+            import yt_dlp
+            from yt_dlp_ejs.yt import solver as yt_dlp_ejs_solver
             from patchright._impl._driver import compute_driver_executable
             from imageio_ffmpeg import get_ffmpeg_exe
             import webview
@@ -264,17 +267,19 @@ def update_health_check() -> int:
             assert InstagramClient and publish_instagram
             assert TwitterClient and publish_twitter
             assert FacebookClient and publish_facebook
-            assert YouTubeClient and publish_youtube
+            assert YouTubeClient and publish_youtube and youtube_fetcher and youtube_actions
             assert HumanInteractionEngine and thumb_cache and session_keepalive and ai_copywriting and risk_admin
+            assert login_sessions.has_active_open_browser and login_sessions.close_open_browser_for_account
             assert configure_logging and read_log_tail and build_diagnostic_summary and build_diagnostic_zip and api_diagnostics and api_matrix
             assert websockets.asyncio.client and Controller and ShellServer and webview
+            assert yt_dlp and yt_dlp_ejs_solver.core() and yt_dlp_ejs_solver.lib()
             assert render_brand_icon(32).size == (32, 32)
             for web_asset in ("index.html", "app.js", "engine-settings.js", "workbench.js", "workbench.css", "agent.css"):
                 assert (WEB_DIR / web_asset).is_file(), web_asset
             assert (channels_js / "finder_proxy_bridge.js").is_file()
             assert (channels_js / "finder_native_protocol.js").is_file()
             assert (channels_js / "finder_protocol_browser_bootstrap.js").is_file()
-            for name in ("desktop/web/app.js", "desktop/web/index.html", "config.example.yaml"):
+            for name in ("desktop/web/app.js", "desktop/web/index.html", "config.example.yaml", "LICENSE"):
                 assert (resources() / name).is_file(), name
             assert all(Path(path).is_file() for path in compute_driver_executable())
             assert Path(get_ffmpeg_exe()).is_file()
