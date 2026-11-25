@@ -12998,7 +12998,7 @@ function renderCommentTaskRows() {
     const hasContent = Boolean((t.content || "").trim());
     return `<tr>
     <td><input type="checkbox" ${selectable ? "" : "disabled"} ${checked ? "checked" : ""} onchange="onAcTaskSelect(${t.id}, this.checked)" aria-label="选择任务 #${t.id}"></td>
-    <td><div class="ac-task-pair">
+    <td class="wrap"><div class="ac-task-pair">
       ${(t.target_text || t.work_desc) ? `<div class="ac-task-origin">${t.target_text ? `<b>${t.target_comment_id ? "对方评论：" : "目标作品："}</b>${esc(t.target_text)}` : ""}${t.work_desc && t.work_desc !== t.target_text ? `<div style="margin-top:2px;opacity:.85">作品：${esc(t.work_desc.slice(0, 70))}</div>` : ""}</div>` : ""}
       <div class="ac-task-reply${hasContent ? "" : " empty-reply"}">${hasContent ? esc(t.content) : "（文案为空，请点击「AI 重写」或「编辑」补充）"}</div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">

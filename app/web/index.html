@@ -3634,18 +3634,27 @@
     background:var(--surface); display:flex; flex-direction:column; gap:10px;
   }
   .ac-section-title { font-size:12.5px; font-weight:700; color:var(--fg-strong); display:flex; align-items:center; justify-content:space-between; gap:8px; }
-  .ac-task-pair { display:flex; flex-direction:column; gap:6px; max-width:340px; }
+  .ac-task-pair {
+    display:flex; flex-direction:column; gap:6px;
+    min-width:260px; max-width:360px;
+    white-space:normal; overflow-wrap:anywhere;
+  }
   .ac-task-origin {
     padding:6px 8px; border-radius:var(--r-xs);
     background:var(--surface-2); border-left:2px solid var(--line);
-    font-size:11.5px; color:var(--mut); line-height:1.45; word-break:break-word;
+    font-size:11.5px; color:var(--mut); line-height:1.45;
+    white-space:normal; word-break:break-word; overflow-wrap:anywhere;
   }
   .ac-task-origin b { color:var(--fg); font-weight:600; }
-  .ac-task-reply { font-size:12.5px; color:var(--fg-strong); line-height:1.5; word-break:break-word; }
+  .ac-task-reply {
+    font-size:12.5px; color:var(--fg-strong); line-height:1.5;
+    white-space:normal; word-break:break-word; overflow-wrap:anywhere;
+  }
   .ac-task-reply.empty-reply { color:var(--warn); font-style:italic; }
   .ac-src-tag {
     display:inline-flex; align-items:center; gap:3px; padding:1px 6px; border-radius:999px;
     font-size:10.5px; font-weight:600; border:1px solid var(--line); background:var(--surface-2); color:var(--mut);
+    white-space:nowrap;
   }
   .ac-src-tag.ai { background:var(--info-soft); color:var(--info); border-color:rgba(56,189,248,.3); }
   .ac-src-tag.fallback { background:var(--warn-soft); color:var(--warn); border-color:rgba(251,191,36,.3); }

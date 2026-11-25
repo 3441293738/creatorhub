@@ -733,7 +733,8 @@ main .publish-permissions { grid-template-columns:repeat(2,minmax(0,1fr)); }
   table[data-object-table] .acttd { text-align:left; padding-top:4px; white-space:normal; }
   table[data-object-table] .acttd button { margin:4px 4px 0 0; }
   table[data-object-table] .user-cell { max-width:none; }
-  table[data-object-table] .queue-copy, table[data-object-table] .queue-reason, table[data-object-table] .queue-time { min-width:0; max-width:none; }
+  table[data-object-table] .queue-copy, table[data-object-table] .queue-reason, table[data-object-table] .queue-time, table[data-object-table] .ac-task-pair { min-width:0; max-width:none; }
+  table[data-object-table] td:has(.ac-task-pair) { grid-column:1/-1; }
   table[data-object-table] .queue-copy b { white-space:normal; }
   .wb-connection { flex-wrap:wrap; }
 }
