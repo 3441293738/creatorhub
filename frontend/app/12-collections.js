@@ -280,6 +280,102 @@ function collectionJobResultSig(job, page = COLLECTION_PAGE) {
     Number(job.current_item_index || 0),
   ].join(":");
 }
+const selCollection = new Set();
+function collectionSelectableCheckboxes() {
+  return [...document.querySelectorAll('#collection-job-table .collection-task:not([hidden]) input[type="checkbox"][data-id]:not(:disabled)')];
+}
+function collectionToggleOne(id, on) {
+  const numId = Number(id);
+  if (!numId) return;
+  on ? selCollection.add(numId) : selCollection.delete(numId);
+  const card = document.querySelector(`#collection-job-table .collection-task[data-job-id="${numId}"]`);
+  if (card) card.classList.toggle("is-selected", !!on);
+  updateCollectionSelBar();
+}
+function collectionToggleAll(on) {
+  collectionSelectableCheckboxes().forEach(cb => {
+    const id = Number(cb.dataset.id);
+    if (!id) return;
+    cb.checked = !!on;
+    on ? selCollection.add(id) : selCollection.delete(id);
+    cb.closest(".collection-task")?.classList.toggle("is-selected", !!on);
+  });
+  updateCollectionSelBar();
+}
+function collectionSelAllToggle() {
+  const ids = collectionSelectableCheckboxes().map(cb => Number(cb.dataset.id)).filter(Boolean);
+  const allSel = ids.length > 0 && ids.every(id => selCollection.has(id));
+  collectionToggleAll(!allSel);
+}
+function collectionSelClear() {
+  selCollection.clear();
+  document.querySelectorAll('#collection-job-table input[type="checkbox"][data-id]').forEach(cb => {
+    cb.checked = false;
+    cb.closest(".collection-task")?.classList.remove("is-selected");
+  });
+  updateCollectionSelBar();
+}
+function updateCollectionSelBar() {
+  const n = selCollection.size;
+  const ids = collectionSelectableCheckboxes().map(cb => Number(cb.dataset.id)).filter(Boolean);
+  const selectedInView = ids.filter(id => selCollection.has(id)).length;
+  const allSel = ids.length > 0 && selectedInView === ids.length;
+  const countEl = $("collection-selcount"), bar = $("collection-selbar");
+  if (countEl) {
+    countEl.textContent = (n && selectedInView !== n)
+      ? `已选 ${n} 项（当前视图 ${selectedInView} 项）`
+      : `已选 ${n} 项`;
+  }
+  if (bar) bar.style.display = n ? "inline-flex" : "none";
+  const barWrap = $("collection-bulk-bar") || bar?.closest?.(".wb-bulk-bar");
+  if (barWrap) barWrap.hidden = !n;
+  const btn = $("collection-selall-btn");
+  if (btn) {
+    btn.textContent = allSel ? "取消全选" : "全选";
+    btn.disabled = ids.length === 0;
+  }
+}
+async function collectionBatchDelete() {
+  if (!selCollection.size) return;
+  const ids = [...selCollection];
+  const btn = evtBtn();
+  if (!await uiConfirm({
+    title: "批量删除采集任务",
+    message: `确认删除选中的 ${ids.length} 个采集任务及其作品、评论记录吗？本地已下载文件不会被删除。`,
+    okText: "删除",
+    danger: true,
+  })) return;
+  await withBusy(btn, "删除中", async () => {
+    try {
+      const r = await api("/api/collections/batch-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      const deletedIds = new Set(Array.isArray(r.deleted_ids) ? r.deleted_ids.map(Number) : ids);
+      const skipped = Array.isArray(r.skipped_running) ? r.skipped_running.length : 0;
+      const deleted = Number(r.deleted || 0);
+      selCollection.clear();
+      if (COLLECTION_RENDERED_JOB_ID && deletedIds.has(Number(COLLECTION_RENDERED_JOB_ID))) {
+        COLLECTION_RENDERED_JOB_ID = 0;
+        COLLECTION_RENDERED_SIG = "";
+      }
+      if (COLLECTION_JOB_ID && deletedIds.has(Number(COLLECTION_JOB_ID))) {
+        closeCollectionResults();
+      }
+      if (deleted > 0 && skipped > 0) {
+        toast(`已删除 ${deleted} 个采集任务，另有 ${skipped} 个正在执行中已跳过（请先取消）`, "info", 6000);
+      } else if (deleted === 0 && skipped > 0) {
+        toast(`所选 ${skipped} 个任务正在执行中，请先取消后再删除`, "err", 5000);
+      } else {
+        toast(`已删除 ${deleted} 个采集任务，本地文件已保留`, "ok");
+      }
+      await refreshCollections();
+    } catch (e) {
+      toast("批量删除失败：" + e.message, "err");
+    }
+  });
+}
 function renderCollectionJobs() {
   const body = $("collection-job-table"); if (!body) return;
   const html = COLLECTION_JOBS.map(job => {
@@ -295,14 +391,16 @@ function renderCollectionJobs() {
     const canCancel = ["pending", "running"].includes(job.status);
     const canRetry = ["done", "partial", "failed", "canceled"].includes(job.status);
     const canEdit = canRetry && ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(job.platform);
+    const isRunning = job.status === "running";
+    const isSelected = !isRunning && selCollection.has(job.id);
     const needsManualClear = !!(job.manual_review_required && Number(job.account_id) > 0);
     const errorText = collectionLastError(job);
     const sortLabel = { general: "综合", latest: "最新", most_liked: "最多点赞" }[job.search_sort] || "综合";
     const timeLabel = { all: "不限时间", day: "一天内", week: "一周内", half_year: "半年内" }[job.publish_time] || "不限时间";
     const typeLabel = { all: "全部类型", video: "视频", images: "图文" }[job.content_type] || "全部类型";
     const threshold = [Number(job.min_likes) > 0 ? `≥${fmtNum(job.min_likes)} 赞` : "", Number(job.min_comments) > 0 ? `≥${fmtNum(job.min_comments)} 评` : ""].filter(Boolean).join(" · ");
-    return `<article class="collection-task" role="listitem" aria-label="任务 ${job.id}，${status.label}">
-      <div class="collection-task-meta"><div><span class="collection-task-label">任务状态</span><span class="pill ${status.cls}">${status.label}</span></div><time class="collection-task-created" datetime="${esc(job.created_at || "")}">${collectionDate(job.created_at)}</time></div>
+    return `<article class="collection-task${isSelected ? " is-selected" : ""}" role="listitem" data-job-id="${job.id}" aria-label="任务 ${job.id}，${status.label}">
+      <div class="collection-task-meta"><div class="collection-task-meta-head"><label class="collection-task-check${isRunning ? " is-disabled" : ""}" title="${isRunning ? "正在执行中的任务需先取消后再删除" : `选择采集任务 #${job.id}`}"><input type="checkbox" data-id="${job.id}" aria-label="选择采集任务 #${job.id}" onchange="collectionToggleOne(${job.id}, this.checked)"${isSelected ? " checked" : ""}${isRunning ? " disabled" : ""}></label><div><span class="collection-task-label">任务状态</span><span class="pill ${status.cls}">${status.label}</span></div></div><time class="collection-task-created" datetime="${esc(job.created_at || "")}">${collectionDate(job.created_at)}</time></div>
       <div class="collection-task-keywords"><span class="collection-task-label">${sourceLabel}</span><div class="keyword-stack">${keywords}</div>${job.current_keyword ? `<div class="collection-step">当前：${esc(job.current_keyword)}</div>` : ""}</div>
       <div class="collection-task-config"><span class="collection-task-label">采集配置</span><div class="collection-task-config-main">${job.max_contents_per_keyword} 作品/${job.source_type === "keyword" ? "词" : "来源"} · ${job.max_pages_per_keyword || 12} 深度页${job.source_type === "keyword" ? ` · ${sortLabel}` : ""}</div><div class="collection-task-config-sub">${timeLabel} · ${typeLabel}${threshold ? ` · ${threshold}` : ""} · ${job.max_comments_per_content} 评论/作品<br>${job.include_replies ? "含二级评论 · " : ""}${job.download_media ? "下载媒体" : "仅采数据"} · 连续 ${job.stagnant_pages || 3} 页无新增停止</div></div>
       <div class="collection-task-progress"><span class="collection-task-label">执行进度</span><div class="job-progress"><div class="job-progress-head"><span>${esc(job.current_step || "等待执行")}</span><b>${percent}%</b></div><div class="progress-track" role="progressbar" aria-label="任务 ${job.id} 进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="progress-fill" style="width:${percent}%"></div></div><div class="collection-step">${keywordProgress}${itemProgress} · 已采 ${fmtNum(job.content_count)} 作品 / ${fmtNum(job.comment_count)} 评论</div></div></div>
@@ -319,6 +417,7 @@ function renderCollectionJobs() {
     </article>`;
   }).join("") || collectionTaskEmpty();
   setHtmlIfChanged(body, html);
+  updateCollectionSelBar();
 }
 async function refreshCollections() {
   const isCurrent = beginViewRequest("collections");
@@ -330,6 +429,7 @@ async function refreshCollections() {
     // Keep platform data isolated even if an older backend ignores the filter.
     COLLECTION_JOBS = (Array.isArray(jobs) ? jobs : [])
       .filter(job => job.platform === requestedPlatform);
+    pruneSel(selCollection, COLLECTION_JOBS.filter(j => j.status !== "running").map(j => j.id));
     const active = COLLECTION_JOBS.filter(j => ["pending", "running"].includes(j.status)).length;
     if ($("tb-col")) $("tb-col").textContent = active || COLLECTION_JOBS.length;
     renderCollectionJobs();
@@ -741,7 +841,7 @@ async function deleteCollection(jobId) {
   const btn = evtBtn();
   if (!await uiConfirm({ title: "删除采集任务", message: "将删除任务及其作品、评论记录；本地已下载文件不会被删除。", okText: "删除", danger: true })) return;
   await withBusy(btn, "删除中", async () => {
-    try { await api(`/api/collections/${jobId}`, { method: "DELETE" }); if (COLLECTION_RENDERED_JOB_ID === Number(jobId)) { COLLECTION_RENDERED_JOB_ID = 0; COLLECTION_RENDERED_SIG = ""; } if (COLLECTION_JOB_ID === jobId) closeCollectionResults(); toast("任务记录已删除，本地文件已保留", "ok"); await refreshCollections(); }
+    try { await api(`/api/collections/${jobId}`, { method: "DELETE" }); selCollection.delete(Number(jobId)); if (COLLECTION_RENDERED_JOB_ID === Number(jobId)) { COLLECTION_RENDERED_JOB_ID = 0; COLLECTION_RENDERED_SIG = ""; } if (COLLECTION_JOB_ID === jobId) closeCollectionResults(); toast("任务记录已删除，本地文件已保留", "ok"); await refreshCollections(); }
     catch (e) { toast("删除失败：" + e.message, "err"); }
   });
 }

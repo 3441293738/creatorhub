@@ -7,6 +7,7 @@ import json
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field as PydanticField
 from sqlalchemy import func
 from sqlmodel import select
 
@@ -438,6 +439,10 @@ async def retry_keyword_collection(job_id: int):
     return payload
 
 
+class CollectionBatchDeleteIn(BaseModel):
+    ids: list[int] = PydanticField(default_factory=list)
+
+
 @router.delete("/api/collections/{job_id}")
 async def delete_keyword_collection(job_id: int):
     with get_session() as session:
@@ -456,6 +461,41 @@ async def delete_keyword_collection(job_id: int):
             session.delete(row)
         session.delete(job); session.commit()
     return {"ok": True, "deleted": 1}
+
+
+@router.post("/api/collections/batch-delete")
+async def batch_delete_keyword_collections(body: CollectionBatchDeleteIn):
+    job_ids = list(dict.fromkeys(int(i) for i in body.ids if int(i) > 0))
+    deleted = 0
+    deleted_ids: list[int] = []
+    skipped_running: list[int] = []
+    if job_ids:
+        with get_session() as session:
+            for job_id in job_ids:
+                job = session.get(KeywordCollectionJob, job_id)
+                if not job:
+                    continue
+                if job.status == "running":
+                    skipped_running.append(job_id)
+                    continue
+                for row in session.exec(
+                        select(KeywordCollectionComment)
+                        .where(KeywordCollectionComment.job_id == job_id)).all():
+                    session.delete(row)
+                for row in session.exec(
+                        select(KeywordCollectionContent)
+                        .where(KeywordCollectionContent.job_id == job_id)).all():
+                    session.delete(row)
+                session.delete(job)
+                deleted += 1
+                deleted_ids.append(job_id)
+            session.commit()
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "deleted_ids": deleted_ids,
+        "skipped_running": skipped_running,
+    }
 
 
 @router.get("/api/collections/{job_id}/export.xlsx")

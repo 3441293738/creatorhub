@@ -269,6 +269,78 @@ function monitorStrategySummary(t) {
   const filterLabel = filters.length ? filters.join(" · ") : "无入库筛选";
   return `<span class="pill q bare" title="${esc(filterLabel)}">深度 ${depth}</span><span class="pill q bare" title="${esc(filterLabel)}">上限 ${limit || "不限"}</span>${filters.length ? `<span class="pill q bare" title="${esc(filterLabel)}">${esc(filterLabel)}</span>` : ""}`;
 }
+const selMon = new Set();
+const MON_CBS = '#mon-table input[type="checkbox"][data-id]';
+function monToggleOne(id, on) {
+  on ? selMon.add(id) : selMon.delete(id);
+  const cb = document.querySelector(`#mon-table input[type="checkbox"][data-id="${id}"]`);
+  cb?.closest("tr")?.classList.toggle("is-selected", !!on);
+  updateMonSelBar();
+}
+function monToggleAll(on) {
+  document.querySelectorAll(MON_CBS).forEach(cb => {
+    const id = +cb.dataset.id; if (!id) return;
+    cb.checked = !!on;
+    on ? selMon.add(id) : selMon.delete(id);
+    cb.closest("tr")?.classList.toggle("is-selected", !!on);
+  });
+  updateMonSelBar();
+}
+function monSelAllToggle() {
+  const ids = [...document.querySelectorAll(MON_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
+  const allSel = ids.length > 0 && ids.every(id => selMon.has(id));
+  monToggleAll(!allSel);
+}
+function monSelClear() {
+  selMon.clear();
+  document.querySelectorAll(MON_CBS).forEach(cb => {
+    cb.checked = false;
+    cb.closest("tr")?.classList.remove("is-selected");
+  });
+  updateMonSelBar();
+}
+function updateMonSelBar() {
+  const n = selMon.size;
+  const ids = [...document.querySelectorAll(MON_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
+  const selectedInView = ids.filter(id => selMon.has(id)).length;
+  const allSel = ids.length > 0 && selectedInView === ids.length;
+  const countEl = $("mon-selcount"), bar = $("mon-selbar");
+  if (countEl) {
+    countEl.textContent = (n && selectedInView !== n)
+      ? `已选 ${n} 项（当前视图 ${selectedInView} 项）`
+      : `已选 ${n} 项`;
+  }
+  if (bar) bar.style.display = n ? "inline-flex" : "none";
+  const barWrap = bar?.closest?.(".wb-bulk-bar");
+  if (barWrap) barWrap.hidden = !n;
+  const btn = $("mon-selall-btn");
+  if (btn) { btn.textContent = allSel ? "取消全选" : "全选"; btn.disabled = ids.length === 0; }
+  const sa = $("mon-selall");
+  if (sa) { sa.checked = allSel; sa.indeterminate = selectedInView > 0 && !allSel; sa.disabled = ids.length === 0; }
+}
+async function monBatchDelete() {
+  if (!selMon.size) return;
+  const ids = [...selMon];
+  const btn = evtBtn();
+  if (!await uiConfirm({
+    title: "批量删除作品监控",
+    message: `确认删除选中的 ${ids.length} 个作品监控任务吗？已抓取的作品记录与本地文件会保留。`,
+    okText: "删除",
+    danger: true,
+  })) return;
+  await withBusy(btn, "删除中", async () => {
+    try {
+      const r = await api("/api/monitors/batch-delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      toast(`已删除 ${r.deleted || 0} 个作品监控`, "ok");
+      selMon.clear();
+      await refreshMonitors();
+      refreshContents();
+    } catch (e) { toast("批量删除失败:" + e.message, "err"); }
+  });
+}
 function monRow(t) {
   const plainLabel = t.target_kind === "keyword"
     ? `#${t.keyword || ""}` : (t.nickname || (t.sec_uid || "").slice(0, 12));
@@ -283,7 +355,9 @@ function monRow(t) {
     : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--danger)">${ic("i-info")}未绑定账号</div>`;
   const downloadLabel = t.download_enabled === false ? "仅记录"
     : ({ all: "全部下载", video: "仅视频", images: "仅图集" }[t.media_filter] || "全部下载");
-  return `<tr>
+  const selected = selMon.has(t.id);
+  return `<tr${selected ? ' class="is-selected"' : ""}>
+    <td class="task-check-cell"><label class="task-selection" title="选择此作品监控"><input type="checkbox" data-id="${t.id}" aria-label="选择作品监控 ${esc(plainLabel)}" onchange="monToggleOne(${t.id}, this.checked)"${selected ? " checked" : ""}></label></td>
     <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(t.avatar))}" alt="" referrerpolicy="no-referrer">` : `<span class="wb-avatar-fallback" style="width:30px;height:30px;flex:0 0 30px;font-size:13px;border-radius:50%" aria-hidden="true">${esc((plainLabel || "监").replace(/^#/, "").slice(0, 1))}</span>`}<div><span title="${esc(plainLabel)}">${label}</span>${t.alias ? `<div class="alias-line" title="${esc(t.alias)}">${esc(t.alias)}</div>` : ""}${accTag}</div></div></td>
     <td>${metaChips(t)}</td>
     <td class="num"><button type="button" class="ghost sm monitor-record-link" data-monitor-records="${t.id}" onclick="showMonitorRecords(${t.id})">查看记录 <span>${t.content_count || 0}</span></button></td>
@@ -316,18 +390,19 @@ function renderMonitorRows() {
   });
   if ($("mon-filter-count")) $("mon-filter-count").textContent = `显示 ${rows.length} / ${MONITORS.length}`;
   $("mon-table").innerHTML = rows.map(monRow).join("")
-    || empty(8, "没有匹配的监控", "i-target", MONITORS.length ? "调整分组、标签或搜索条件" : "添加目标后，在这里查看采集进度。", MONITORS.length ? "" : "monitors");
+    || empty(9, "没有匹配的监控", "i-target", MONITORS.length ? "调整分组、标签或搜索条件" : "添加目标后，在这里查看采集进度。", MONITORS.length ? "" : "monitors");
+  updateMonSelBar();
 }
 async function refreshMonitors() {
   const isCurrent = beginViewRequest("monitors");
   let ts;
   try { ts = await api("/api/monitors?platform=" + PLATFORM); }
   catch (e) {
-    if (isCurrent() && !MONITORS.length) $("mon-table").innerHTML = empty(8, "监控暂未加载", "i-info", "请检查连接并重新加载。");
+    if (isCurrent() && !MONITORS.length) $("mon-table").innerHTML = empty(9, "监控暂未加载", "i-info", "请检查连接并重新加载。");
     return;
   }
   if (!isCurrent()) return;
-  MONITORS = ts; populateMonitorFacets(); populateContentSrc();
+  MONITORS = ts; pruneSel(selMon, ts.map(t => t.id)); populateMonitorFacets(); populateContentSrc();
   $("stat-mon").textContent = ts.filter(t => t.enabled).length;
   if ($("tb-mon")) $("tb-mon").textContent = ts.length;
   renderMonitorRows();
@@ -351,7 +426,7 @@ async function runNow(id) {
   refreshMonitors(); refreshContents();
 }
 async function toggleMon(id) { try { await api("/api/monitors/" + id + "/toggle", { method: "POST" }); refreshMonitors(); } catch (e) { toast("操作失败:" + e.message, "err"); } }
-async function delMon(id) { if (await uiConfirm({ title: "删除监控", message: "删除该监控?", okText: "删除", danger: true })) { try { await api("/api/monitors/" + id, { method: "DELETE" }); toast("监控已删除", "ok"); refreshMonitors(); } catch (e) { toast("删除失败:" + e.message, "err"); } } }
+async function delMon(id) { if (await uiConfirm({ title: "删除监控", message: "删除该监控?", okText: "删除", danger: true })) { try { await api("/api/monitors/" + id, { method: "DELETE" }); selMon.delete(id); toast("监控已删除", "ok"); refreshMonitors(); } catch (e) { toast("删除失败:" + e.message, "err"); } } }
 
 // ─── 内容 ───
 function fmtTime(unix) { return unix ? new Date(unix * 1000).toLocaleString() : "—"; }

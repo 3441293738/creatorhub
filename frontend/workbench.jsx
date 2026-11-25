@@ -155,11 +155,12 @@ for (const [id, key, label, selector] of [
 ]) {
   const container = $(id);
   const target = container.closest(".table-wrap") || container;
+  const anchor = id === "collection-job-table" ? ($("collection-bulk-bar") || target) : target;
   const toolbar = document.createElement("div"); toolbar.className = "wb-list-tools";
   toolbar.innerHTML = `<label class="wb-search-field"><svg aria-hidden="true"><use href="#i-logo"/></svg><input type="search" id="wb-${key}-search" aria-label="搜索已加载的${label}" placeholder="搜索${label}"></label><span class="mut" role="status"></span>`;
   const notice = document.createElement("div"); notice.className = "empty"; notice.hidden = true;
   notice.innerHTML = `<b>没有匹配的记录</b><span>试试其他关键词，或清除搜索条件。</span><button type="button" class="ghost sm">清除搜索</button>`;
-  target.before(toolbar); target.after(notice);
+  anchor.before(toolbar); target.after(notice);
   const input = toolbar.querySelector("input"), count = toolbar.querySelector("[role=status]");
   const filter = () => {
     const query = input.value.trim().toLocaleLowerCase();
@@ -168,6 +169,7 @@ for (const [id, key, label, selector] of [
     const visible = items.filter(item => !item.hidden).length;
     count.textContent = query ? `${visible} / ${items.length} 条已加载记录` : "";
     notice.hidden = !items.length || visible > 0;
+    if (key === "collection") globalThis.updateCollectionSelBar?.();
   };
   input.addEventListener("input", filter);
   notice.querySelector("button").onclick = () => { input.value = ""; filter(); input.focus(); };

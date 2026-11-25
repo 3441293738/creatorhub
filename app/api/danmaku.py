@@ -346,6 +346,11 @@ async def update_danmaku_watch(wid: int, body: DanmakuWatchUpdate):
         return _danmaku_watch_dict(watch)
 
 
+class DanmakuWatchBatchDeleteIn(BaseModel):
+    ids: list[int] = PydanticField(default_factory=list)
+    with_records: bool = False
+
+
 @router.delete("/api/danmaku-watches/{wid}")
 async def delete_danmaku_watch(wid: int, with_records: bool = False):
     with get_session() as s:
@@ -362,6 +367,29 @@ async def delete_danmaku_watch(wid: int, with_records: bool = False):
         s.delete(watch)
         s.commit()
         return {"ok": True, "records_deleted": deleted}
+
+
+@router.post("/api/danmaku-watches/batch-delete")
+async def batch_delete_danmaku_watches(body: DanmakuWatchBatchDeleteIn):
+    watch_ids = list(dict.fromkeys(int(i) for i in body.ids if int(i) > 0))
+    deleted = 0
+    records_deleted = 0
+    if watch_ids:
+        with get_session() as s:
+            for wid in watch_ids:
+                watch = s.get(DanmakuWatch, wid)
+                if not watch:
+                    continue
+                if body.with_records:
+                    rows = s.exec(select(DanmakuRecord).where(
+                        DanmakuRecord.watch_id == wid)).all()
+                    for row in rows:
+                        s.delete(row)
+                    records_deleted += len(rows)
+                s.delete(watch)
+                deleted += 1
+            s.commit()
+    return {"ok": True, "deleted": deleted, "records_deleted": records_deleted}
 
 
 @router.post("/api/danmaku-watches/{wid}/scan-now")

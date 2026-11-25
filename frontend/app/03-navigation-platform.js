@@ -261,8 +261,9 @@ function switchPlatform(pf) {
   if (!wantGlobal) PLATFORM = pf;
   VIEW_REQUESTS.clear();
   CONTENT_PAGE = COMMENT_PAGE = 1;
-  COLLECTION_JOBS = []; closeCollectionResults(); renderCollectionJobs(); if ($("tb-col")) $("tb-col").textContent = "0";
+  COLLECTION_JOBS = []; selCollection.clear(); closeCollectionResults(); renderCollectionJobs(); if ($("tb-col")) $("tb-col").textContent = "0";
   selContent.clear(); selComment.clear();
+  monSelClear(); watchSelClear(); danmakuWatchSelClear();
   CONTENT_SRC = CONTENT_GROUP = CONTENT_TAG = "";
   CONTENT_SOURCE_CACHE.clear();
   ["content-captured-from", "content-captured-to"].forEach(id => { if ($(id)) $(id).value = ""; });

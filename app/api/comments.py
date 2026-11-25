@@ -472,6 +472,11 @@ async def update_watch(wid: int, body: WatchUpdate):
         return _watch_dict(w)
 
 
+class WatchBatchDeleteIn(BaseModel):
+    ids: list[int] = PydanticField(default_factory=list)
+    with_comments: bool = False
+
+
 @router.delete("/api/comment-watches/{wid}")
 async def del_watch(wid: int, with_comments: bool = False):
     with get_session() as s:
@@ -483,6 +488,25 @@ async def del_watch(wid: int, with_comments: bool = False):
                 s.delete(c)
         s.delete(w); s.commit()
     return {"ok": True}
+
+
+@router.post("/api/comment-watches/batch-delete")
+async def batch_del_watches(body: WatchBatchDeleteIn):
+    watch_ids = list(dict.fromkeys(int(i) for i in body.ids if int(i) > 0))
+    deleted = 0
+    if watch_ids:
+        with get_session() as s:
+            for wid in watch_ids:
+                w = s.get(CommentWatch, wid)
+                if not w:
+                    continue
+                if body.with_comments:
+                    for c in s.exec(select(CommentRecord).where(CommentRecord.watch_id == wid)).all():
+                        s.delete(c)
+                s.delete(w)
+                deleted += 1
+            s.commit()
+    return {"ok": True, "deleted": deleted}
 
 
 @router.post("/api/comment-watches/{wid}/scan-now")

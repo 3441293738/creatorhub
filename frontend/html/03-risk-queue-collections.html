@@ -484,6 +484,16 @@
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-list"/></svg></span>
         <h2>采集任务 <span class="sub">进度、编辑、续跑与导出</span></h2>
+        <div class="right">
+          <button type="button" class="ghost sm" id="collection-selall-btn" onclick="collectionSelAllToggle()" disabled>全选</button>
+        </div>
+      </div>
+      <div class="wb-bulk-bar" id="collection-bulk-bar" hidden>
+        <span id="collection-selbar" style="display:none;align-items:center;gap:8px">
+          <span class="mut" id="collection-selcount">已选 0 项</span>
+          <button class="ghost sm" type="button" onclick="collectionSelClear()">取消</button>
+          <button class="sm danger" type="button" onclick="collectionBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button>
+        </span>
       </div>
       <div class="collection-task-list" id="collection-job-table" role="list" aria-label="关键词采集任务列表" aria-live="polite"></div>
     </div>

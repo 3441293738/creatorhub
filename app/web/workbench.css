@@ -478,6 +478,14 @@ button.export-btn.filtered, button.export-btn.full {
   border-color:color-mix(in srgb,var(--acc) 28%,var(--border-card));
   box-shadow:var(--sh-sm),inset 0 1px 0 var(--glass-rim);
 }
+.collection-task.is-selected, .collection-task.is-selected:hover {
+  background:color-mix(in srgb,var(--selected-surface) 78%,var(--surface));
+  border-color:color-mix(in srgb,var(--acc) 46%,var(--border-card));
+  box-shadow:var(--sh-sm),inset 0 1px 0 var(--glass-rim);
+}
+table tbody tr.is-selected {
+  background:color-mix(in srgb,var(--selected-surface) 72%,transparent);
+}
 .collection-task-label { font-size:11px; letter-spacing:.03em; }
 .collection-task-created, .collection-task-config-sub { font-size:12px; }
 .collection-task-actions { background:transparent; border:0; padding-top:8px; }
@@ -726,8 +734,13 @@ main .publish-permissions { grid-template-columns:repeat(2,minmax(0,1fr)); }
   table[data-object-table], table[data-object-table] tbody { display:block; min-width:0 !important; width:100%; }
   table[data-object-table] > thead { display:none; }
   table[data-object-table] tbody > tr { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); border-bottom:1px solid var(--line-soft); padding:14px 0; gap:10px 16px; }
+  table[data-object-table] tbody > tr:has(> td.task-check-cell) { position:relative; }
   table[data-object-table] tbody > tr > td { display:block; width:auto !important; min-width:0 !important; max-width:100% !important; border:0; padding:0 4px; white-space:normal; overflow-wrap:anywhere; }
   table[data-object-table] td:first-child, table[data-object-table] td:last-child, table[data-object-table] td[colspan] { grid-column:1/-1; }
+  table[data-object-table] td.task-check-cell { position:absolute; top:10px; right:4px; grid-column:auto; padding:0; z-index:1; }
+  table[data-object-table] td.task-check-cell + td { grid-column:1/-1; padding-right:46px; }
+  table[data-object-table] .task-selection { width:40px; height:40px; }
+  table[data-object-table] .task-selection input { width:18px; height:18px; }
   table[data-object-table] td[data-label]::before { content:attr(data-label); display:block; font-size:11px; line-height:1.5; color:var(--mut); margin-bottom:5px; }
   table[data-object-table] td.acttd::before { display:none; }
   table[data-object-table] .acttd { text-align:left; padding-top:4px; white-space:normal; }

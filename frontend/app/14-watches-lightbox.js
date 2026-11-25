@@ -8,6 +8,78 @@ function populateDanmakuFacets() {
   setFacetOptions("danmaku-watch-tag", "全部标签", DANMAKU_WATCHES.flatMap(itemTags));
   populateWatchRecordSource("danmaku");
 }
+const selDanmakuWatch = new Set();
+const DANMAKU_WATCH_CBS = '#danmaku-watch-table input[type="checkbox"][data-id]';
+function danmakuWatchToggleOne(id, on) {
+  on ? selDanmakuWatch.add(id) : selDanmakuWatch.delete(id);
+  const cb = document.querySelector(`#danmaku-watch-table input[type="checkbox"][data-id="${id}"]`);
+  cb?.closest("tr")?.classList.toggle("is-selected", !!on);
+  updateDanmakuWatchSelBar();
+}
+function danmakuWatchToggleAll(on) {
+  document.querySelectorAll(DANMAKU_WATCH_CBS).forEach(cb => {
+    const id = +cb.dataset.id; if (!id) return;
+    cb.checked = !!on;
+    on ? selDanmakuWatch.add(id) : selDanmakuWatch.delete(id);
+    cb.closest("tr")?.classList.toggle("is-selected", !!on);
+  });
+  updateDanmakuWatchSelBar();
+}
+function danmakuWatchSelAllToggle() {
+  const ids = [...document.querySelectorAll(DANMAKU_WATCH_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
+  const allSel = ids.length > 0 && ids.every(id => selDanmakuWatch.has(id));
+  danmakuWatchToggleAll(!allSel);
+}
+function danmakuWatchSelClear() {
+  selDanmakuWatch.clear();
+  document.querySelectorAll(DANMAKU_WATCH_CBS).forEach(cb => {
+    cb.checked = false;
+    cb.closest("tr")?.classList.remove("is-selected");
+  });
+  updateDanmakuWatchSelBar();
+}
+function updateDanmakuWatchSelBar() {
+  const n = selDanmakuWatch.size;
+  const ids = [...document.querySelectorAll(DANMAKU_WATCH_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
+  const selectedInView = ids.filter(id => selDanmakuWatch.has(id)).length;
+  const allSel = ids.length > 0 && selectedInView === ids.length;
+  const countEl = $("danmaku-watch-selcount"), bar = $("danmaku-watch-selbar");
+  if (countEl) {
+    countEl.textContent = (n && selectedInView !== n)
+      ? `已选 ${n} 项（当前视图 ${selectedInView} 项）`
+      : `已选 ${n} 项`;
+  }
+  if (bar) bar.style.display = n ? "inline-flex" : "none";
+  const barWrap = bar?.closest?.(".wb-bulk-bar");
+  if (barWrap) barWrap.hidden = !n;
+  const btn = $("danmaku-watch-selall-btn");
+  if (btn) { btn.textContent = allSel ? "取消全选" : "全选"; btn.disabled = ids.length === 0; }
+  const sa = $("danmaku-watch-selall");
+  if (sa) { sa.checked = allSel; sa.indeterminate = selectedInView > 0 && !allSel; sa.disabled = ids.length === 0; }
+}
+async function danmakuWatchBatchDelete() {
+  if (!selDanmakuWatch.size) return;
+  const ids = [...selDanmakuWatch];
+  const btn = evtBtn();
+  if (!await uiConfirm({
+    title: "批量删除弹幕监控",
+    message: `确认删除选中的 ${ids.length} 个弹幕监控配置吗？已抓取的弹幕记录会保留，并标注原任务已删除。`,
+    okText: "删除",
+    danger: true,
+  })) return;
+  await withBusy(btn, "删除中", async () => {
+    try {
+      const r = await api("/api/danmaku-watches/batch-delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, with_records: false }),
+      });
+      toast(`已删除 ${r.deleted || 0} 个弹幕监控，弹幕记录已保留`, "ok");
+      selDanmakuWatch.clear();
+      await refreshDanmakuWatches();
+      await refreshDanmaku(true);
+    } catch (e) { toast("批量删除失败:" + e.message, "err"); }
+  });
+}
 function danmakuWatchRow(w) {
   const base = esc(danmakuWatchBaseName(w));
   const source = w.mode === "creator" ? "创作中心" : "公开视频";
@@ -24,7 +96,9 @@ function danmakuWatchRow(w) {
       (w.recent_works ? "近 " + w.recent_works + " 个" : "全局 " + (w.effective_recent_works || "") + " 个") +
       " · " + (w.recent_days ? "近 " + w.recent_days + " 天" : "全局 " + (w.effective_recent_days || "") + " 天") +
       "</div>" : "";
-  return '<tr>' +
+  const selected = selDanmakuWatch.has(w.id);
+  return '<tr' + (selected ? ' class="is-selected"' : '') + '>' +
+    '<td class="task-check-cell"><label class="task-selection" title="选择此弹幕监控"><input type="checkbox" data-id="' + w.id + '" aria-label="选择弹幕监控 ' + base + '" onchange="danmakuWatchToggleOne(' + w.id + ', this.checked)"' + (selected ? ' checked' : '') + '></label></td>' +
     '<td><div class="user-cell">' + avatar + '<div><span title="' + base + '">' + base + "</span>" + alias + scope + "</div></div></td>" +
     "<td>" + metaChips(w) + "</td>" +
     "<td>" + (w.kind === "video" ? "单条视频" : "账号作品") + ' · <span class="mut">' + source + "</span></td>" +
@@ -60,8 +134,9 @@ function renderDanmakuWatchRows() {
       "显示 " + rows.length + " / " + DANMAKU_WATCHES.length;
   }
   $("danmaku-watch-table").innerHTML = rows.map(danmakuWatchRow).join("") ||
-    empty(8, "没有匹配的弹幕监控", "i-msg",
+    empty(9, "没有匹配的弹幕监控", "i-msg",
           DANMAKU_WATCHES.length ? "调整筛选条件" : "添加目标后，在这里查看弹幕监控状态。", DANMAKU_WATCHES.length ? "" : "danmaku");
+  updateDanmakuWatchSelBar();
 }
 async function addDanmakuWatch() {
   const btn = evtBtn() || document.querySelector('button[onclick="addDanmakuWatch()"]');
@@ -121,6 +196,7 @@ async function refreshDanmakuWatches() {
   const rows = await api("/api/danmaku-watches?platform=" + encodeURIComponent(PLATFORM));
   if (!isCurrent()) return;
   DANMAKU_WATCHES = rows;
+  pruneSel(selDanmakuWatch, rows.map(w => w.id));
   populateDanmakuFacets();
   if ($("tb-danmaku")) $("tb-danmaku").textContent = rows.length;
   renderDanmakuWatchRows();
@@ -240,6 +316,7 @@ async function delDanmakuWatch(id) {
                          okText: "删除", danger: true })) return;
   try {
     await api("/api/danmaku-watches/" + id + "?with_records=false", { method: "DELETE" });
+    selDanmakuWatch.delete(id);
     toast("监控已删除，弹幕记录已保留", "ok"); await refreshDanmakuWatches(); await refreshDanmaku(true);
   } catch (e) { toast("删除失败:" + e.message, "err"); }
 }
@@ -420,12 +497,86 @@ async function addWatch() {
   refreshWatches();
   });
 }
+const selWatch = new Set();
+const WATCH_CBS = '#watch-table input[type="checkbox"][data-id]';
+function watchToggleOne(id, on) {
+  on ? selWatch.add(id) : selWatch.delete(id);
+  const cb = document.querySelector(`#watch-table input[type="checkbox"][data-id="${id}"]`);
+  cb?.closest("tr")?.classList.toggle("is-selected", !!on);
+  updateWatchSelBar();
+}
+function watchToggleAll(on) {
+  document.querySelectorAll(WATCH_CBS).forEach(cb => {
+    const id = +cb.dataset.id; if (!id) return;
+    cb.checked = !!on;
+    on ? selWatch.add(id) : selWatch.delete(id);
+    cb.closest("tr")?.classList.toggle("is-selected", !!on);
+  });
+  updateWatchSelBar();
+}
+function watchSelAllToggle() {
+  const ids = [...document.querySelectorAll(WATCH_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
+  const allSel = ids.length > 0 && ids.every(id => selWatch.has(id));
+  watchToggleAll(!allSel);
+}
+function watchSelClear() {
+  selWatch.clear();
+  document.querySelectorAll(WATCH_CBS).forEach(cb => {
+    cb.checked = false;
+    cb.closest("tr")?.classList.remove("is-selected");
+  });
+  updateWatchSelBar();
+}
+function updateWatchSelBar() {
+  const n = selWatch.size;
+  const ids = [...document.querySelectorAll(WATCH_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
+  const selectedInView = ids.filter(id => selWatch.has(id)).length;
+  const allSel = ids.length > 0 && selectedInView === ids.length;
+  const countEl = $("watch-selcount"), bar = $("watch-selbar");
+  if (countEl) {
+    countEl.textContent = (n && selectedInView !== n)
+      ? `已选 ${n} 项（当前视图 ${selectedInView} 项）`
+      : `已选 ${n} 项`;
+  }
+  if (bar) bar.style.display = n ? "inline-flex" : "none";
+  const barWrap = bar?.closest?.(".wb-bulk-bar");
+  if (barWrap) barWrap.hidden = !n;
+  const btn = $("watch-selall-btn");
+  if (btn) { btn.textContent = allSel ? "取消全选" : "全选"; btn.disabled = ids.length === 0; }
+  const sa = $("watch-selall");
+  if (sa) { sa.checked = allSel; sa.indeterminate = selectedInView > 0 && !allSel; sa.disabled = ids.length === 0; }
+}
+async function watchBatchDelete() {
+  if (!selWatch.size) return;
+  const ids = [...selWatch];
+  const btn = evtBtn();
+  if (!await uiConfirm({
+    title: "批量删除评论监控",
+    message: `确认删除选中的 ${ids.length} 个评论监控配置吗？已抓取的评论记录会保留，并标注原任务已删除。`,
+    okText: "删除",
+    danger: true,
+  })) return;
+  await withBusy(btn, "删除中", async () => {
+    try {
+      const r = await api("/api/comment-watches/batch-delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, with_comments: false }),
+      });
+      toast(`已删除 ${r.deleted || 0} 个评论监控，评论记录已保留`, "ok");
+      selWatch.clear();
+      await refreshWatches();
+      await refreshComments(true);
+    } catch (e) { toast("批量删除失败:" + e.message, "err"); }
+  });
+}
 function watchRow(w) {
   const base = esc(watchBaseName(w));
   const isNotePlatform = w.platform === "xhs" || w.platform === "rednote";
   const kindLabel = w.kind === "video" ? (isNotePlatform ? "笔记" : "视频") : (isNotePlatform ? "创作者" : "账号");
   const srcLabel = isNotePlatform ? "公开" : (SRC[w.mode] || w.mode);
-  return `<tr>
+  const selected = selWatch.has(w.id);
+  return `<tr${selected ? ' class="is-selected"' : ""}>
+    <td class="task-check-cell"><label class="task-selection" title="选择此评论监控"><input type="checkbox" data-id="${w.id}" aria-label="选择评论监控 ${base}" onchange="watchToggleOne(${w.id}, this.checked)"${selected ? " checked" : ""}></label></td>
     <td><div class="user-cell">${w.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(w.avatar))}" referrerpolicy="no-referrer">` : `<span class="wb-avatar-fallback" style="width:30px;height:30px;flex:0 0 30px;font-size:13px;border-radius:50%" aria-hidden="true">${esc((watchBaseName(w) || "评").slice(0, 1))}</span>`}<div><span title="${base}">${base}</span>${w.alias ? `<div class="alias-line" title="${esc(w.alias)}">${esc(w.alias)}</div>` : ""}</div></div></td>
     <td>${metaChips(w)}</td>
     <td>${kindLabel} · <span class="mut">${srcLabel}</span></td>
@@ -457,13 +608,14 @@ function renderWatchRows() {
   });
   if ($("watch-filter-count")) $("watch-filter-count").textContent = `显示 ${rows.length} / ${WATCHES.length}`;
   $("watch-table").innerHTML = rows.map(watchRow).join("")
-    || empty(8, "没有匹配的评论监控", "i-msg", WATCHES.length ? "调整分组、标签或搜索条件" : "添加作品或账号，开始收集新评论。", WATCHES.length ? "" : "comments");
+    || empty(9, "没有匹配的评论监控", "i-msg", WATCHES.length ? "调整分组、标签或搜索条件" : "添加作品或账号，开始收集新评论。", WATCHES.length ? "" : "comments");
+  updateWatchSelBar();
 }
 async function refreshWatches() {
   const isCurrent = beginViewRequest("watches");
   const ws = await api("/api/comment-watches?platform=" + PLATFORM);
   if (!isCurrent()) return;
-  WATCHES = ws; populateWatchFacets(); populateCommentSrc();
+  WATCHES = ws; pruneSel(selWatch, ws.map(w => w.id)); populateWatchFacets(); populateCommentSrc();
   if ($("tb-watch")) $("tb-watch").textContent = ws.length;
   renderWatchRows();
 }
@@ -565,6 +717,7 @@ async function delWatch(id) {
   if (!await uiConfirm({ title: "删除评论监控", message: "仅删除该监控配置，已抓取的评论记录会保留，并标注原任务已删除。", okText: "删除", danger: true })) return;
   try {
     await api("/api/comment-watches/" + id + "?with_comments=false", { method: "DELETE" });
+    selWatch.delete(id);
     toast("监控已删除，评论记录已保留", "ok"); await refreshWatches(); await refreshComments(true);
   } catch (e) { toast("删除失败:" + e.message, "err"); }
 }

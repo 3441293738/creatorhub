@@ -1192,8 +1192,9 @@ function switchPlatform(pf) {
   if (!wantGlobal) PLATFORM = pf;
   VIEW_REQUESTS.clear();
   CONTENT_PAGE = COMMENT_PAGE = 1;
-  COLLECTION_JOBS = []; closeCollectionResults(); renderCollectionJobs(); if ($("tb-col")) $("tb-col").textContent = "0";
+  COLLECTION_JOBS = []; selCollection.clear(); closeCollectionResults(); renderCollectionJobs(); if ($("tb-col")) $("tb-col").textContent = "0";
   selContent.clear(); selComment.clear();
+  monSelClear(); watchSelClear(); danmakuWatchSelClear();
   CONTENT_SRC = CONTENT_GROUP = CONTENT_TAG = "";
   CONTENT_SOURCE_CACHE.clear();
   ["content-captured-from", "content-captured-to"].forEach(id => { if ($(id)) $(id).value = ""; });
@@ -9657,6 +9658,102 @@ function collectionJobResultSig(job, page = COLLECTION_PAGE) {
     Number(job.current_item_index || 0),
   ].join(":");
 }
+const selCollection = new Set();
+function collectionSelectableCheckboxes() {
+  return [...document.querySelectorAll('#collection-job-table .collection-task:not([hidden]) input[type="checkbox"][data-id]:not(:disabled)')];
+}
+function collectionToggleOne(id, on) {
+  const numId = Number(id);
+  if (!numId) return;
+  on ? selCollection.add(numId) : selCollection.delete(numId);
+  const card = document.querySelector(`#collection-job-table .collection-task[data-job-id="${numId}"]`);
+  if (card) card.classList.toggle("is-selected", !!on);
+  updateCollectionSelBar();
+}
+function collectionToggleAll(on) {
+  collectionSelectableCheckboxes().forEach(cb => {
+    const id = Number(cb.dataset.id);
+    if (!id) return;
+    cb.checked = !!on;
+    on ? selCollection.add(id) : selCollection.delete(id);
+    cb.closest(".collection-task")?.classList.toggle("is-selected", !!on);
+  });
+  updateCollectionSelBar();
+}
+function collectionSelAllToggle() {
+  const ids = collectionSelectableCheckboxes().map(cb => Number(cb.dataset.id)).filter(Boolean);
+  const allSel = ids.length > 0 && ids.every(id => selCollection.has(id));
+  collectionToggleAll(!allSel);
+}
+function collectionSelClear() {
+  selCollection.clear();
+  document.querySelectorAll('#collection-job-table input[type="checkbox"][data-id]').forEach(cb => {
+    cb.checked = false;
+    cb.closest(".collection-task")?.classList.remove("is-selected");
+  });
+  updateCollectionSelBar();
+}
+function updateCollectionSelBar() {
+  const n = selCollection.size;
+  const ids = collectionSelectableCheckboxes().map(cb => Number(cb.dataset.id)).filter(Boolean);
+  const selectedInView = ids.filter(id => selCollection.has(id)).length;
+  const allSel = ids.length > 0 && selectedInView === ids.length;
+  const countEl = $("collection-selcount"), bar = $("collection-selbar");
+  if (countEl) {
+    countEl.textContent = (n && selectedInView !== n)
+      ? `已选 ${n} 项（当前视图 ${selectedInView} 项）`
+      : `已选 ${n} 项`;
+  }
+  if (bar) bar.style.display = n ? "inline-flex" : "none";
+  const barWrap = $("collection-bulk-bar") || bar?.closest?.(".wb-bulk-bar");
+  if (barWrap) barWrap.hidden = !n;
+  const btn = $("collection-selall-btn");
+  if (btn) {
+    btn.textContent = allSel ? "取消全选" : "全选";
+    btn.disabled = ids.length === 0;
+  }
+}
+async function collectionBatchDelete() {
+  if (!selCollection.size) return;
+  const ids = [...selCollection];
+  const btn = evtBtn();
+  if (!await uiConfirm({
+    title: "批量删除采集任务",
+    message: `确认删除选中的 ${ids.length} 个采集任务及其作品、评论记录吗？本地已下载文件不会被删除。`,
+    okText: "删除",
+    danger: true,
+  })) return;
+  await withBusy(btn, "删除中", async () => {
+    try {
+      const r = await api("/api/collections/batch-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      const deletedIds = new Set(Array.isArray(r.deleted_ids) ? r.deleted_ids.map(Number) : ids);
+      const skipped = Array.isArray(r.skipped_running) ? r.skipped_running.length : 0;
+      const deleted = Number(r.deleted || 0);
+      selCollection.clear();
+      if (COLLECTION_RENDERED_JOB_ID && deletedIds.has(Number(COLLECTION_RENDERED_JOB_ID))) {
+        COLLECTION_RENDERED_JOB_ID = 0;
+        COLLECTION_RENDERED_SIG = "";
+      }
+      if (COLLECTION_JOB_ID && deletedIds.has(Number(COLLECTION_JOB_ID))) {
+        closeCollectionResults();
+      }
+      if (deleted > 0 && skipped > 0) {
+        toast(`已删除 ${deleted} 个采集任务，另有 ${skipped} 个正在执行中已跳过（请先取消）`, "info", 6000);
+      } else if (deleted === 0 && skipped > 0) {
+        toast(`所选 ${skipped} 个任务正在执行中，请先取消后再删除`, "err", 5000);
+      } else {
+        toast(`已删除 ${deleted} 个采集任务，本地文件已保留`, "ok");
+      }
+      await refreshCollections();
+    } catch (e) {
+      toast("批量删除失败：" + e.message, "err");
+    }
+  });
+}
 function renderCollectionJobs() {
   const body = $("collection-job-table"); if (!body) return;
   const html = COLLECTION_JOBS.map(job => {
@@ -9672,14 +9769,16 @@ function renderCollectionJobs() {
     const canCancel = ["pending", "running"].includes(job.status);
     const canRetry = ["done", "partial", "failed", "canceled"].includes(job.status);
     const canEdit = canRetry && ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(job.platform);
+    const isRunning = job.status === "running";
+    const isSelected = !isRunning && selCollection.has(job.id);
     const needsManualClear = !!(job.manual_review_required && Number(job.account_id) > 0);
     const errorText = collectionLastError(job);
     const sortLabel = { general: "综合", latest: "最新", most_liked: "最多点赞" }[job.search_sort] || "综合";
     const timeLabel = { all: "不限时间", day: "一天内", week: "一周内", half_year: "半年内" }[job.publish_time] || "不限时间";
     const typeLabel = { all: "全部类型", video: "视频", images: "图文" }[job.content_type] || "全部类型";
     const threshold = [Number(job.min_likes) > 0 ? `≥${fmtNum(job.min_likes)} 赞` : "", Number(job.min_comments) > 0 ? `≥${fmtNum(job.min_comments)} 评` : ""].filter(Boolean).join(" · ");
-    return `<article class="collection-task" role="listitem" aria-label="任务 ${job.id}，${status.label}">
-      <div class="collection-task-meta"><div><span class="collection-task-label">任务状态</span><span class="pill ${status.cls}">${status.label}</span></div><time class="collection-task-created" datetime="${esc(job.created_at || "")}">${collectionDate(job.created_at)}</time></div>
+    return `<article class="collection-task${isSelected ? " is-selected" : ""}" role="listitem" data-job-id="${job.id}" aria-label="任务 ${job.id}，${status.label}">
+      <div class="collection-task-meta"><div class="collection-task-meta-head"><label class="collection-task-check${isRunning ? " is-disabled" : ""}" title="${isRunning ? "正在执行中的任务需先取消后再删除" : `选择采集任务 #${job.id}`}"><input type="checkbox" data-id="${job.id}" aria-label="选择采集任务 #${job.id}" onchange="collectionToggleOne(${job.id}, this.checked)"${isSelected ? " checked" : ""}${isRunning ? " disabled" : ""}></label><div><span class="collection-task-label">任务状态</span><span class="pill ${status.cls}">${status.label}</span></div></div><time class="collection-task-created" datetime="${esc(job.created_at || "")}">${collectionDate(job.created_at)}</time></div>
       <div class="collection-task-keywords"><span class="collection-task-label">${sourceLabel}</span><div class="keyword-stack">${keywords}</div>${job.current_keyword ? `<div class="collection-step">当前：${esc(job.current_keyword)}</div>` : ""}</div>
       <div class="collection-task-config"><span class="collection-task-label">采集配置</span><div class="collection-task-config-main">${job.max_contents_per_keyword} 作品/${job.source_type === "keyword" ? "词" : "来源"} · ${job.max_pages_per_keyword || 12} 深度页${job.source_type === "keyword" ? ` · ${sortLabel}` : ""}</div><div class="collection-task-config-sub">${timeLabel} · ${typeLabel}${threshold ? ` · ${threshold}` : ""} · ${job.max_comments_per_content} 评论/作品<br>${job.include_replies ? "含二级评论 · " : ""}${job.download_media ? "下载媒体" : "仅采数据"} · 连续 ${job.stagnant_pages || 3} 页无新增停止</div></div>
       <div class="collection-task-progress"><span class="collection-task-label">执行进度</span><div class="job-progress"><div class="job-progress-head"><span>${esc(job.current_step || "等待执行")}</span><b>${percent}%</b></div><div class="progress-track" role="progressbar" aria-label="任务 ${job.id} 进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="progress-fill" style="width:${percent}%"></div></div><div class="collection-step">${keywordProgress}${itemProgress} · 已采 ${fmtNum(job.content_count)} 作品 / ${fmtNum(job.comment_count)} 评论</div></div></div>
@@ -9696,6 +9795,7 @@ function renderCollectionJobs() {
     </article>`;
   }).join("") || collectionTaskEmpty();
   setHtmlIfChanged(body, html);
+  updateCollectionSelBar();
 }
 async function refreshCollections() {
   const isCurrent = beginViewRequest("collections");
@@ -9707,6 +9807,7 @@ async function refreshCollections() {
     // Keep platform data isolated even if an older backend ignores the filter.
     COLLECTION_JOBS = (Array.isArray(jobs) ? jobs : [])
       .filter(job => job.platform === requestedPlatform);
+    pruneSel(selCollection, COLLECTION_JOBS.filter(j => j.status !== "running").map(j => j.id));
     const active = COLLECTION_JOBS.filter(j => ["pending", "running"].includes(j.status)).length;
     if ($("tb-col")) $("tb-col").textContent = active || COLLECTION_JOBS.length;
     renderCollectionJobs();
@@ -10118,7 +10219,7 @@ async function deleteCollection(jobId) {
   const btn = evtBtn();
   if (!await uiConfirm({ title: "删除采集任务", message: "将删除任务及其作品、评论记录；本地已下载文件不会被删除。", okText: "删除", danger: true })) return;
   await withBusy(btn, "删除中", async () => {
-    try { await api(`/api/collections/${jobId}`, { method: "DELETE" }); if (COLLECTION_RENDERED_JOB_ID === Number(jobId)) { COLLECTION_RENDERED_JOB_ID = 0; COLLECTION_RENDERED_SIG = ""; } if (COLLECTION_JOB_ID === jobId) closeCollectionResults(); toast("任务记录已删除，本地文件已保留", "ok"); await refreshCollections(); }
+    try { await api(`/api/collections/${jobId}`, { method: "DELETE" }); selCollection.delete(Number(jobId)); if (COLLECTION_RENDERED_JOB_ID === Number(jobId)) { COLLECTION_RENDERED_JOB_ID = 0; COLLECTION_RENDERED_SIG = ""; } if (COLLECTION_JOB_ID === jobId) closeCollectionResults(); toast("任务记录已删除，本地文件已保留", "ok"); await refreshCollections(); }
     catch (e) { toast("删除失败：" + e.message, "err"); }
   });
 }
@@ -10400,6 +10501,78 @@ function monitorStrategySummary(t) {
   const filterLabel = filters.length ? filters.join(" · ") : "无入库筛选";
   return `<span class="pill q bare" title="${esc(filterLabel)}">深度 ${depth}</span><span class="pill q bare" title="${esc(filterLabel)}">上限 ${limit || "不限"}</span>${filters.length ? `<span class="pill q bare" title="${esc(filterLabel)}">${esc(filterLabel)}</span>` : ""}`;
 }
+const selMon = new Set();
+const MON_CBS = '#mon-table input[type="checkbox"][data-id]';
+function monToggleOne(id, on) {
+  on ? selMon.add(id) : selMon.delete(id);
+  const cb = document.querySelector(`#mon-table input[type="checkbox"][data-id="${id}"]`);
+  cb?.closest("tr")?.classList.toggle("is-selected", !!on);
+  updateMonSelBar();
+}
+function monToggleAll(on) {
+  document.querySelectorAll(MON_CBS).forEach(cb => {
+    const id = +cb.dataset.id; if (!id) return;
+    cb.checked = !!on;
+    on ? selMon.add(id) : selMon.delete(id);
+    cb.closest("tr")?.classList.toggle("is-selected", !!on);
+  });
+  updateMonSelBar();
+}
+function monSelAllToggle() {
+  const ids = [...document.querySelectorAll(MON_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
+  const allSel = ids.length > 0 && ids.every(id => selMon.has(id));
+  monToggleAll(!allSel);
+}
+function monSelClear() {
+  selMon.clear();
+  document.querySelectorAll(MON_CBS).forEach(cb => {
+    cb.checked = false;
+    cb.closest("tr")?.classList.remove("is-selected");
+  });
+  updateMonSelBar();
+}
+function updateMonSelBar() {
+  const n = selMon.size;
+  const ids = [...document.querySelectorAll(MON_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
+  const selectedInView = ids.filter(id => selMon.has(id)).length;
+  const allSel = ids.length > 0 && selectedInView === ids.length;
+  const countEl = $("mon-selcount"), bar = $("mon-selbar");
+  if (countEl) {
+    countEl.textContent = (n && selectedInView !== n)
+      ? `已选 ${n} 项（当前视图 ${selectedInView} 项）`
+      : `已选 ${n} 项`;
+  }
+  if (bar) bar.style.display = n ? "inline-flex" : "none";
+  const barWrap = bar?.closest?.(".wb-bulk-bar");
+  if (barWrap) barWrap.hidden = !n;
+  const btn = $("mon-selall-btn");
+  if (btn) { btn.textContent = allSel ? "取消全选" : "全选"; btn.disabled = ids.length === 0; }
+  const sa = $("mon-selall");
+  if (sa) { sa.checked = allSel; sa.indeterminate = selectedInView > 0 && !allSel; sa.disabled = ids.length === 0; }
+}
+async function monBatchDelete() {
+  if (!selMon.size) return;
+  const ids = [...selMon];
+  const btn = evtBtn();
+  if (!await uiConfirm({
+    title: "批量删除作品监控",
+    message: `确认删除选中的 ${ids.length} 个作品监控任务吗？已抓取的作品记录与本地文件会保留。`,
+    okText: "删除",
+    danger: true,
+  })) return;
+  await withBusy(btn, "删除中", async () => {
+    try {
+      const r = await api("/api/monitors/batch-delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      toast(`已删除 ${r.deleted || 0} 个作品监控`, "ok");
+      selMon.clear();
+      await refreshMonitors();
+      refreshContents();
+    } catch (e) { toast("批量删除失败:" + e.message, "err"); }
+  });
+}
 function monRow(t) {
   const plainLabel = t.target_kind === "keyword"
     ? `#${t.keyword || ""}` : (t.nickname || (t.sec_uid || "").slice(0, 12));
@@ -10414,7 +10587,9 @@ function monRow(t) {
     : `<div class="ic-text" style="font-size:11px;margin-top:2px;color:var(--danger)">${ic("i-info")}未绑定账号</div>`;
   const downloadLabel = t.download_enabled === false ? "仅记录"
     : ({ all: "全部下载", video: "仅视频", images: "仅图集" }[t.media_filter] || "全部下载");
-  return `<tr>
+  const selected = selMon.has(t.id);
+  return `<tr${selected ? ' class="is-selected"' : ""}>
+    <td class="task-check-cell"><label class="task-selection" title="选择此作品监控"><input type="checkbox" data-id="${t.id}" aria-label="选择作品监控 ${esc(plainLabel)}" onchange="monToggleOne(${t.id}, this.checked)"${selected ? " checked" : ""}></label></td>
     <td><div class="user-cell">${t.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(t.avatar))}" alt="" referrerpolicy="no-referrer">` : `<span class="wb-avatar-fallback" style="width:30px;height:30px;flex:0 0 30px;font-size:13px;border-radius:50%" aria-hidden="true">${esc((plainLabel || "监").replace(/^#/, "").slice(0, 1))}</span>`}<div><span title="${esc(plainLabel)}">${label}</span>${t.alias ? `<div class="alias-line" title="${esc(t.alias)}">${esc(t.alias)}</div>` : ""}${accTag}</div></div></td>
     <td>${metaChips(t)}</td>
     <td class="num"><button type="button" class="ghost sm monitor-record-link" data-monitor-records="${t.id}" onclick="showMonitorRecords(${t.id})">查看记录 <span>${t.content_count || 0}</span></button></td>
@@ -10447,18 +10622,19 @@ function renderMonitorRows() {
   });
   if ($("mon-filter-count")) $("mon-filter-count").textContent = `显示 ${rows.length} / ${MONITORS.length}`;
   $("mon-table").innerHTML = rows.map(monRow).join("")
-    || empty(8, "没有匹配的监控", "i-target", MONITORS.length ? "调整分组、标签或搜索条件" : "添加目标后，在这里查看采集进度。", MONITORS.length ? "" : "monitors");
+    || empty(9, "没有匹配的监控", "i-target", MONITORS.length ? "调整分组、标签或搜索条件" : "添加目标后，在这里查看采集进度。", MONITORS.length ? "" : "monitors");
+  updateMonSelBar();
 }
 async function refreshMonitors() {
   const isCurrent = beginViewRequest("monitors");
   let ts;
   try { ts = await api("/api/monitors?platform=" + PLATFORM); }
   catch (e) {
-    if (isCurrent() && !MONITORS.length) $("mon-table").innerHTML = empty(8, "监控暂未加载", "i-info", "请检查连接并重新加载。");
+    if (isCurrent() && !MONITORS.length) $("mon-table").innerHTML = empty(9, "监控暂未加载", "i-info", "请检查连接并重新加载。");
     return;
   }
   if (!isCurrent()) return;
-  MONITORS = ts; populateMonitorFacets(); populateContentSrc();
+  MONITORS = ts; pruneSel(selMon, ts.map(t => t.id)); populateMonitorFacets(); populateContentSrc();
   $("stat-mon").textContent = ts.filter(t => t.enabled).length;
   if ($("tb-mon")) $("tb-mon").textContent = ts.length;
   renderMonitorRows();
@@ -10482,7 +10658,7 @@ async function runNow(id) {
   refreshMonitors(); refreshContents();
 }
 async function toggleMon(id) { try { await api("/api/monitors/" + id + "/toggle", { method: "POST" }); refreshMonitors(); } catch (e) { toast("操作失败:" + e.message, "err"); } }
-async function delMon(id) { if (await uiConfirm({ title: "删除监控", message: "删除该监控?", okText: "删除", danger: true })) { try { await api("/api/monitors/" + id, { method: "DELETE" }); toast("监控已删除", "ok"); refreshMonitors(); } catch (e) { toast("删除失败:" + e.message, "err"); } } }
+async function delMon(id) { if (await uiConfirm({ title: "删除监控", message: "删除该监控?", okText: "删除", danger: true })) { try { await api("/api/monitors/" + id, { method: "DELETE" }); selMon.delete(id); toast("监控已删除", "ok"); refreshMonitors(); } catch (e) { toast("删除失败:" + e.message, "err"); } } }
 
 // ─── 内容 ───
 function fmtTime(unix) { return unix ? new Date(unix * 1000).toLocaleString() : "—"; }
@@ -10854,6 +11030,78 @@ function populateDanmakuFacets() {
   setFacetOptions("danmaku-watch-tag", "全部标签", DANMAKU_WATCHES.flatMap(itemTags));
   populateWatchRecordSource("danmaku");
 }
+const selDanmakuWatch = new Set();
+const DANMAKU_WATCH_CBS = '#danmaku-watch-table input[type="checkbox"][data-id]';
+function danmakuWatchToggleOne(id, on) {
+  on ? selDanmakuWatch.add(id) : selDanmakuWatch.delete(id);
+  const cb = document.querySelector(`#danmaku-watch-table input[type="checkbox"][data-id="${id}"]`);
+  cb?.closest("tr")?.classList.toggle("is-selected", !!on);
+  updateDanmakuWatchSelBar();
+}
+function danmakuWatchToggleAll(on) {
+  document.querySelectorAll(DANMAKU_WATCH_CBS).forEach(cb => {
+    const id = +cb.dataset.id; if (!id) return;
+    cb.checked = !!on;
+    on ? selDanmakuWatch.add(id) : selDanmakuWatch.delete(id);
+    cb.closest("tr")?.classList.toggle("is-selected", !!on);
+  });
+  updateDanmakuWatchSelBar();
+}
+function danmakuWatchSelAllToggle() {
+  const ids = [...document.querySelectorAll(DANMAKU_WATCH_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
+  const allSel = ids.length > 0 && ids.every(id => selDanmakuWatch.has(id));
+  danmakuWatchToggleAll(!allSel);
+}
+function danmakuWatchSelClear() {
+  selDanmakuWatch.clear();
+  document.querySelectorAll(DANMAKU_WATCH_CBS).forEach(cb => {
+    cb.checked = false;
+    cb.closest("tr")?.classList.remove("is-selected");
+  });
+  updateDanmakuWatchSelBar();
+}
+function updateDanmakuWatchSelBar() {
+  const n = selDanmakuWatch.size;
+  const ids = [...document.querySelectorAll(DANMAKU_WATCH_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
+  const selectedInView = ids.filter(id => selDanmakuWatch.has(id)).length;
+  const allSel = ids.length > 0 && selectedInView === ids.length;
+  const countEl = $("danmaku-watch-selcount"), bar = $("danmaku-watch-selbar");
+  if (countEl) {
+    countEl.textContent = (n && selectedInView !== n)
+      ? `已选 ${n} 项（当前视图 ${selectedInView} 项）`
+      : `已选 ${n} 项`;
+  }
+  if (bar) bar.style.display = n ? "inline-flex" : "none";
+  const barWrap = bar?.closest?.(".wb-bulk-bar");
+  if (barWrap) barWrap.hidden = !n;
+  const btn = $("danmaku-watch-selall-btn");
+  if (btn) { btn.textContent = allSel ? "取消全选" : "全选"; btn.disabled = ids.length === 0; }
+  const sa = $("danmaku-watch-selall");
+  if (sa) { sa.checked = allSel; sa.indeterminate = selectedInView > 0 && !allSel; sa.disabled = ids.length === 0; }
+}
+async function danmakuWatchBatchDelete() {
+  if (!selDanmakuWatch.size) return;
+  const ids = [...selDanmakuWatch];
+  const btn = evtBtn();
+  if (!await uiConfirm({
+    title: "批量删除弹幕监控",
+    message: `确认删除选中的 ${ids.length} 个弹幕监控配置吗？已抓取的弹幕记录会保留，并标注原任务已删除。`,
+    okText: "删除",
+    danger: true,
+  })) return;
+  await withBusy(btn, "删除中", async () => {
+    try {
+      const r = await api("/api/danmaku-watches/batch-delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, with_records: false }),
+      });
+      toast(`已删除 ${r.deleted || 0} 个弹幕监控，弹幕记录已保留`, "ok");
+      selDanmakuWatch.clear();
+      await refreshDanmakuWatches();
+      await refreshDanmaku(true);
+    } catch (e) { toast("批量删除失败:" + e.message, "err"); }
+  });
+}
 function danmakuWatchRow(w) {
   const base = esc(danmakuWatchBaseName(w));
   const source = w.mode === "creator" ? "创作中心" : "公开视频";
@@ -10870,7 +11118,9 @@ function danmakuWatchRow(w) {
       (w.recent_works ? "近 " + w.recent_works + " 个" : "全局 " + (w.effective_recent_works || "") + " 个") +
       " · " + (w.recent_days ? "近 " + w.recent_days + " 天" : "全局 " + (w.effective_recent_days || "") + " 天") +
       "</div>" : "";
-  return '<tr>' +
+  const selected = selDanmakuWatch.has(w.id);
+  return '<tr' + (selected ? ' class="is-selected"' : '') + '>' +
+    '<td class="task-check-cell"><label class="task-selection" title="选择此弹幕监控"><input type="checkbox" data-id="' + w.id + '" aria-label="选择弹幕监控 ' + base + '" onchange="danmakuWatchToggleOne(' + w.id + ', this.checked)"' + (selected ? ' checked' : '') + '></label></td>' +
     '<td><div class="user-cell">' + avatar + '<div><span title="' + base + '">' + base + "</span>" + alias + scope + "</div></div></td>" +
     "<td>" + metaChips(w) + "</td>" +
     "<td>" + (w.kind === "video" ? "单条视频" : "账号作品") + ' · <span class="mut">' + source + "</span></td>" +
@@ -10906,8 +11156,9 @@ function renderDanmakuWatchRows() {
       "显示 " + rows.length + " / " + DANMAKU_WATCHES.length;
   }
   $("danmaku-watch-table").innerHTML = rows.map(danmakuWatchRow).join("") ||
-    empty(8, "没有匹配的弹幕监控", "i-msg",
+    empty(9, "没有匹配的弹幕监控", "i-msg",
           DANMAKU_WATCHES.length ? "调整筛选条件" : "添加目标后，在这里查看弹幕监控状态。", DANMAKU_WATCHES.length ? "" : "danmaku");
+  updateDanmakuWatchSelBar();
 }
 async function addDanmakuWatch() {
   const btn = evtBtn() || document.querySelector('button[onclick="addDanmakuWatch()"]');
@@ -10967,6 +11218,7 @@ async function refreshDanmakuWatches() {
   const rows = await api("/api/danmaku-watches?platform=" + encodeURIComponent(PLATFORM));
   if (!isCurrent()) return;
   DANMAKU_WATCHES = rows;
+  pruneSel(selDanmakuWatch, rows.map(w => w.id));
   populateDanmakuFacets();
   if ($("tb-danmaku")) $("tb-danmaku").textContent = rows.length;
   renderDanmakuWatchRows();
@@ -11086,6 +11338,7 @@ async function delDanmakuWatch(id) {
                          okText: "删除", danger: true })) return;
   try {
     await api("/api/danmaku-watches/" + id + "?with_records=false", { method: "DELETE" });
+    selDanmakuWatch.delete(id);
     toast("监控已删除，弹幕记录已保留", "ok"); await refreshDanmakuWatches(); await refreshDanmaku(true);
   } catch (e) { toast("删除失败:" + e.message, "err"); }
 }
@@ -11266,12 +11519,86 @@ async function addWatch() {
   refreshWatches();
   });
 }
+const selWatch = new Set();
+const WATCH_CBS = '#watch-table input[type="checkbox"][data-id]';
+function watchToggleOne(id, on) {
+  on ? selWatch.add(id) : selWatch.delete(id);
+  const cb = document.querySelector(`#watch-table input[type="checkbox"][data-id="${id}"]`);
+  cb?.closest("tr")?.classList.toggle("is-selected", !!on);
+  updateWatchSelBar();
+}
+function watchToggleAll(on) {
+  document.querySelectorAll(WATCH_CBS).forEach(cb => {
+    const id = +cb.dataset.id; if (!id) return;
+    cb.checked = !!on;
+    on ? selWatch.add(id) : selWatch.delete(id);
+    cb.closest("tr")?.classList.toggle("is-selected", !!on);
+  });
+  updateWatchSelBar();
+}
+function watchSelAllToggle() {
+  const ids = [...document.querySelectorAll(WATCH_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
+  const allSel = ids.length > 0 && ids.every(id => selWatch.has(id));
+  watchToggleAll(!allSel);
+}
+function watchSelClear() {
+  selWatch.clear();
+  document.querySelectorAll(WATCH_CBS).forEach(cb => {
+    cb.checked = false;
+    cb.closest("tr")?.classList.remove("is-selected");
+  });
+  updateWatchSelBar();
+}
+function updateWatchSelBar() {
+  const n = selWatch.size;
+  const ids = [...document.querySelectorAll(WATCH_CBS)].map(cb => +cb.dataset.id).filter(Boolean);
+  const selectedInView = ids.filter(id => selWatch.has(id)).length;
+  const allSel = ids.length > 0 && selectedInView === ids.length;
+  const countEl = $("watch-selcount"), bar = $("watch-selbar");
+  if (countEl) {
+    countEl.textContent = (n && selectedInView !== n)
+      ? `已选 ${n} 项（当前视图 ${selectedInView} 项）`
+      : `已选 ${n} 项`;
+  }
+  if (bar) bar.style.display = n ? "inline-flex" : "none";
+  const barWrap = bar?.closest?.(".wb-bulk-bar");
+  if (barWrap) barWrap.hidden = !n;
+  const btn = $("watch-selall-btn");
+  if (btn) { btn.textContent = allSel ? "取消全选" : "全选"; btn.disabled = ids.length === 0; }
+  const sa = $("watch-selall");
+  if (sa) { sa.checked = allSel; sa.indeterminate = selectedInView > 0 && !allSel; sa.disabled = ids.length === 0; }
+}
+async function watchBatchDelete() {
+  if (!selWatch.size) return;
+  const ids = [...selWatch];
+  const btn = evtBtn();
+  if (!await uiConfirm({
+    title: "批量删除评论监控",
+    message: `确认删除选中的 ${ids.length} 个评论监控配置吗？已抓取的评论记录会保留，并标注原任务已删除。`,
+    okText: "删除",
+    danger: true,
+  })) return;
+  await withBusy(btn, "删除中", async () => {
+    try {
+      const r = await api("/api/comment-watches/batch-delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, with_comments: false }),
+      });
+      toast(`已删除 ${r.deleted || 0} 个评论监控，评论记录已保留`, "ok");
+      selWatch.clear();
+      await refreshWatches();
+      await refreshComments(true);
+    } catch (e) { toast("批量删除失败:" + e.message, "err"); }
+  });
+}
 function watchRow(w) {
   const base = esc(watchBaseName(w));
   const isNotePlatform = w.platform === "xhs" || w.platform === "rednote";
   const kindLabel = w.kind === "video" ? (isNotePlatform ? "笔记" : "视频") : (isNotePlatform ? "创作者" : "账号");
   const srcLabel = isNotePlatform ? "公开" : (SRC[w.mode] || w.mode);
-  return `<tr>
+  const selected = selWatch.has(w.id);
+  return `<tr${selected ? ' class="is-selected"' : ""}>
+    <td class="task-check-cell"><label class="task-selection" title="选择此评论监控"><input type="checkbox" data-id="${w.id}" aria-label="选择评论监控 ${base}" onchange="watchToggleOne(${w.id}, this.checked)"${selected ? " checked" : ""}></label></td>
     <td><div class="user-cell">${w.avatar ? `<img class="avatar" src="${esc(safeMediaUrl(w.avatar))}" referrerpolicy="no-referrer">` : `<span class="wb-avatar-fallback" style="width:30px;height:30px;flex:0 0 30px;font-size:13px;border-radius:50%" aria-hidden="true">${esc((watchBaseName(w) || "评").slice(0, 1))}</span>`}<div><span title="${base}">${base}</span>${w.alias ? `<div class="alias-line" title="${esc(w.alias)}">${esc(w.alias)}</div>` : ""}</div></div></td>
     <td>${metaChips(w)}</td>
     <td>${kindLabel} · <span class="mut">${srcLabel}</span></td>
@@ -11303,13 +11630,14 @@ function renderWatchRows() {
   });
   if ($("watch-filter-count")) $("watch-filter-count").textContent = `显示 ${rows.length} / ${WATCHES.length}`;
   $("watch-table").innerHTML = rows.map(watchRow).join("")
-    || empty(8, "没有匹配的评论监控", "i-msg", WATCHES.length ? "调整分组、标签或搜索条件" : "添加作品或账号，开始收集新评论。", WATCHES.length ? "" : "comments");
+    || empty(9, "没有匹配的评论监控", "i-msg", WATCHES.length ? "调整分组、标签或搜索条件" : "添加作品或账号，开始收集新评论。", WATCHES.length ? "" : "comments");
+  updateWatchSelBar();
 }
 async function refreshWatches() {
   const isCurrent = beginViewRequest("watches");
   const ws = await api("/api/comment-watches?platform=" + PLATFORM);
   if (!isCurrent()) return;
-  WATCHES = ws; populateWatchFacets(); populateCommentSrc();
+  WATCHES = ws; pruneSel(selWatch, ws.map(w => w.id)); populateWatchFacets(); populateCommentSrc();
   if ($("tb-watch")) $("tb-watch").textContent = ws.length;
   renderWatchRows();
 }
@@ -11411,6 +11739,7 @@ async function delWatch(id) {
   if (!await uiConfirm({ title: "删除评论监控", message: "仅删除该监控配置，已抓取的评论记录会保留，并标注原任务已删除。", okText: "删除", danger: true })) return;
   try {
     await api("/api/comment-watches/" + id + "?with_comments=false", { method: "DELETE" });
+    selWatch.delete(id);
     toast("监控已删除，评论记录已保留", "ok"); await refreshWatches(); await refreshComments(true);
   } catch (e) { toast("删除失败:" + e.message, "err"); }
 }

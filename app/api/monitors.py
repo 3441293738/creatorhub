@@ -446,6 +446,10 @@ async def run_now(tid: int):
     return await app_runtime.engine.scan_target(tid)
 
 
+class TargetBatchDeleteIn(BaseModel):
+    ids: list[int] = PydanticField(default_factory=list)
+
+
 @router.delete("/api/monitors/{tid}")
 async def del_monitor(tid: int):
     with get_session() as s:
@@ -453,6 +457,21 @@ async def del_monitor(tid: int):
         if t:
             s.delete(t); s.commit()
     return {"ok": True}
+
+
+@router.post("/api/monitors/batch-delete")
+async def batch_del_monitors(body: TargetBatchDeleteIn):
+    target_ids = list(dict.fromkeys(int(i) for i in body.ids if int(i) > 0))
+    deleted = 0
+    if target_ids:
+        with get_session() as s:
+            for tid in target_ids:
+                t = s.get(MonitorTarget, tid)
+                if t:
+                    s.delete(t)
+                    deleted += 1
+            s.commit()
+    return {"ok": True, "deleted": deleted}
 
 
 @router.get("/api/monitors/{tid}/contents")
