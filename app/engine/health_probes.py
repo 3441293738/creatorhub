@@ -35,6 +35,7 @@ from app.platforms.xhs import (
 )
 from app.risk import OperationKind, RiskCategory, classify_platform_error
 from app.services import thumb_cache
+from app.services.login_sessions import has_active_open_browser
 from app.services.session_keepalive import (
     _cookies_meaningfully_changed,
     _parse_state_dict,
@@ -270,7 +271,7 @@ class HealthProbeMixin:
         aid, platform, state, creator_state, proxy, identity = probe
         # A user-held window owns this lock for its whole lifetime. Never let
         # one busy account stall the scheduler and every other account's check.
-        if self.browser.lock_for(f"acc:{aid}").locked():
+        if await has_active_open_browser(aid) or self.browser.lock_for(f"acc:{aid}").locked():
             return {"ok": False, "deferred": True, "reason": "account_busy"}
         decision = self.risk.preflight(
             aid,
@@ -1183,11 +1184,13 @@ class HealthProbeMixin:
                     for a in s.exec(select(DouyinAccount)).all()
                     if a.status != "invalid" and (a.storage_state or a.creator_storage_state)]
         for aid, platform, uid, identity in accs:
+            if await has_active_open_browser(aid) or self.browser.lock_for(f"acc:{aid}").locked():
+                continue
             decision = self.risk.preflight(aid, OperationKind.READ_HEAVY)
             if not decision.allowed:
                 continue
             try:
-                async with self._operation_guard(aid, OperationKind.READ_HEAVY):
+                async with self._operation_guard(aid, OperationKind.READ_HEAVY, skip_busy=True):
                     if not self.risk.preflight(
                             aid, OperationKind.READ_HEAVY).allowed:
                         continue
@@ -1213,6 +1216,8 @@ class HealthProbeMixin:
                         self.risk.record_failure(aid, OperationKind.READ_HEAVY, err)
                     else:
                         self.risk.record_success(aid, OperationKind.READ_HEAVY)
+            except _AccountCheckBusy:
+                continue
             except Exception as e:
                 self.risk.record_failure(aid, OperationKind.READ_HEAVY, e)
                 log.warning("作品健康:账号 %s 抓取失败 %s", aid, e)

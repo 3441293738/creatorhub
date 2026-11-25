@@ -359,7 +359,7 @@ async function refreshPublish() {
     <td>${(t.platform === "twitter" || t.platform === "facebook") && !(t.media_count || 0) ? "纯文本" : `${t.media_type === "video" ? "视频" : "图文"} · <span class="mut num">${t.media_count || 0}</span>`}</td>
     <td>${t.source_platform ? esc(PF_NAME[t.source_platform] || t.source_platform) + " 转发" : "手动"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>
-    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ((["kuaishou", "shipinhao", "tiktok"].includes(t.platform) || (t.platform === "bilibili" && String(t.result_url).includes("member.bilibili.com"))) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeHttpUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}${t.status === "publishing" ? `<div class="mut" id="pub-stage-${t.id}" style="margin-top:4px;white-space:normal;max-width:200px">${esc(t.live_stage || "执行中，请等待结果")}</div>` : ""}</td>
+    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ((["kuaishou", "shipinhao", "tiktok"].includes(t.platform) || (t.platform === "bilibili" && String(t.result_url).includes("member.bilibili.com"))) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeHttpUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}${t.status === "publishing" ? `<div class="mut" id="pub-stage-${t.id}" style="margin-top:4px;white-space:normal;max-width:200px">${esc(t.live_stage || "执行中，请等待结果")}</div>` : (t.status === "pending" && t.blocked_reason ? `<div class="mut" style="margin-top:4px;white-space:normal;max-width:220px;color:var(--warn)">${esc(t.blocked_reason)}</div>` : "")}</td>
     <td class="acttd">
       ${["pending", "failed"].includes(t.status) ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
       ${["draft", "pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">${t.schedule_needs_confirmation ? "确认预约时间" : "编辑"}</button>` : ""}
@@ -387,9 +387,9 @@ async function openPubInBrowser(accountId, url, platform = "shipinhao") {
     await api("/api/accounts/" + accountId + "/open-browser?url=" + encodeURIComponent(url || ""), { method: "POST" });
   } catch (e) { toast("打开失败:" + e.message, "err"); }
 }
-async function runPublish(id) {
-  const btn = evtBtn();
-  toast("发布中…会弹出浏览器窗口完成发布", "info", 8000);
+async function runPublish(id, closeOpenBrowser = false) {
+  const btn = closeOpenBrowser ? null : evtBtn();
+  toast(closeOpenBrowser ? "正在关闭该账号浏览器窗口并开始发布…" : "正在启动发布…会弹出浏览器窗口完成发布", "info", 6000);
   let lastStage = "";
   const stageTimer = setInterval(async () => {
     try {
@@ -410,11 +410,34 @@ async function runPublish(id) {
       }
     } catch (_) {}
   }, 2000);
+  let res = null;
   await withBusy(btn, "发布中", async () => {
-    try { const r = await api("/api/publish/" + id + "/run-now", { method: "POST" }); toast(r.ok ? "发布成功 ✓" : "发布未成功:" + (r.error || ""), r.ok ? "ok" : "err", 6000); }
+    try {
+      const qs = closeOpenBrowser ? "?close_open_browser=true" : "";
+      res = await api("/api/publish/" + id + "/run-now" + qs, { method: "POST" });
+      if (!res?.ok && res?.blocked_by === "open_browser" && !closeOpenBrowser) {
+        return;
+      }
+      toast(res.ok ? "发布成功 ✓" : "发布未成功:" + (res.error || ""), res.ok ? "ok" : "err", 6000);
+    }
     catch (e) { toast("发布失败:" + e.message, "err"); }
     finally { clearInterval(stageTimer); _busyHint = ""; }
   });
+  if (res && !res.ok && res.blocked_by === "open_browser" && !closeOpenBrowser) {
+    const task = PUBLISH_TASKS.find(item => item.id === id);
+    const aid = res.account_id || task?.account_id;
+    const accObj = aid ? ((typeof findAnyAccount === "function" && findAnyAccount(aid)) || ACCOUNTS.find(a => a.id === aid)) : null;
+    const accLabel = accObj ? (accObj.alias || accObj.nickname || `账号 #${aid}`) : (aid ? `账号 #${aid}` : "该账号");
+    const ok = await uiConfirm({
+      title: "该账号的浏览器窗口仍开着",
+      message: `账号「${accLabel}」手动打开的独立浏览器窗口尚未关闭，为避免 Profile 冲突当前无法同时执行发布。是否先自动保存登录态并关闭该窗口，然后立即发布？`,
+      okText: "关闭窗口并发布",
+    });
+    if (ok) {
+      return runPublish(id, true);
+    }
+    toast("已暂缓发布，关闭该账号浏览器窗口后将自动执行", "info", 5000);
+  }
   refreshPublish();
 }
 async function delPublish(id) {

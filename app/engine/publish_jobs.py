@@ -13,9 +13,20 @@ import inspect
 
 from app.account_lifecycle import AccountUnavailableError
 from app.db import get_session
-from app.engine.monitor_helpers import _WRITE_SUBMIT_PREFIX, _loads, _loads_list, log
+from app.engine.monitor_helpers import (
+    _AccountCheckBusy,
+    _WRITE_SUBMIT_PREFIX,
+    _loads,
+    _loads_list,
+    _round_robin_by_account,
+    log,
+)
 from app.models import ContentRecord, DouyinAccount, NotificationChannel, PublishTask
 from app.notifier import notify_all
+from app.services.login_sessions import (
+    close_open_browser_for_account,
+    has_active_open_browser,
+)
 from app.platforms.bilibili import publish_bilibili
 from app.platforms.channels import publish_channels
 from app.platforms.douyin import publish_douyin
@@ -134,12 +145,59 @@ class PublishJobMixin:
                 s.commit(); s.refresh(task)
             return task.id
 
+    def _mark_publish_open_browser_blocked(
+        self,
+        task_id: int,
+        account_id: int | None,
+        platform: str,
+        *,
+        log_once: bool = True,
+    ) -> None:
+        reason = "该账号手动浏览器窗口仍开着，关闭窗口后将自动发布"
+        prev_signal = ""
+        with get_session() as s:
+            t = s.get(PublishTask, task_id)
+            if t and t.status == "pending":
+                prev_signal = str(t.blocked_signal or "")
+                t.blocked_reason = reason
+                t.blocked_signal = "open_browser"
+                t.blocked_operation = OperationKind.PUBLISH.value
+                t.blocked_at = datetime.utcnow()
+                t.next_allowed_at = None
+                t.error = reason
+                s.add(t)
+                s.commit()
+        if not log_once or prev_signal != "open_browser":
+            log.warning(
+                "发布任务 #%s(%s, 账号#%s) 暂缓：该账号手动浏览器窗口仍开着，请关闭窗口后再发布",
+                task_id,
+                platform or "-",
+                account_id or "-",
+            )
+
+    def nudge_publish_queue(self) -> None:
+        """账号手动窗口释放后尽快唤醒待发队列，避免干等下一轮轮询。"""
+        if not getattr(self, "_running", False):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if not loop.is_closed():
+            loop.create_task(self._process_publish())
+
     async def _process_publish(self):
-        due = []
+        worker = getattr(self, "_publish_worker_task", None)
+        if worker is not None and not worker.done():
+            return
+        due: list[tuple[int, int | None]] = []
         now = datetime.utcnow()
         with get_session() as s:
-            tasks = s.exec(select(PublishTask)
-                           .where(PublishTask.status == "pending")).all()
+            tasks = s.exec(
+                select(PublishTask)
+                .where(PublishTask.status == "pending")
+                .order_by(PublishTask.id.asc())
+            ).all()
             for t in tasks:
                 if t.scheduled_at and not t.scheduled_at_is_utc:
                     t.status = "draft"
@@ -147,25 +205,158 @@ class PublishJobMixin:
                     s.add(t)
                     continue
                 if self._task_due(t, now):
-                    due.append(t.id)
+                    due.append((t.id, t.account_id))
             s.commit()
-        for tid in due:
-            await self.publish_task(tid)
+        if not due:
+            return
+        ordered_ids = [tid for tid, _ in _round_robin_by_account(due)]
+        task = asyncio.create_task(self._drain_due_publishes(ordered_ids))
+        self._publish_worker_task = task
 
-    async def publish_task(self, task_id: int) -> dict:
+        def _done(completed: asyncio.Task) -> None:
+            if getattr(self, "_publish_worker_task", None) is completed:
+                self._publish_worker_task = None
+            try:
+                completed.exception()
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        task.add_done_callback(_done)
+
+    async def _drain_due_publishes(self, due_ids: list[int]) -> None:
+        for tid in due_ids:
+            if not getattr(self, "_running", True):
+                break
+            try:
+                await self.publish_task(tid, scheduled=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("后台调度发布任务 #%s 异常", tid)
+
+    async def publish_task(
+        self,
+        task_id: int,
+        *,
+        scheduled: bool = False,
+        close_open_browser: bool = False,
+    ) -> dict:
         if task_id in self._publishing:
             return {"ok": False, "error": "正在发布中"}
         self._publishing.add(task_id)
         try:
             with get_session() as s:
                 t = s.get(PublishTask, task_id)
-                account_id = t.account_id if t else None
-            # 发布串行 + 该账号串行(有头浏览器会接管该账号 profile,不能与抓取并发)
-            async with self._publish_sem:
-                async with self._operation_guard(
-                        account_id, OperationKind.PUBLISH,
-                        fallback_key=f"pub:{task_id}"):
+                if not t:
+                    return {"ok": False, "error": "任务不存在"}
+                if t.status not in ("pending", "failed"):
+                    return {"ok": False, "error": f"任务状态为 {t.status}"}
+                account_id = t.account_id
+                platform = t.platform
+
+            # 1) 优先检测手动打开的浏览器窗口（并自动回收已退出的僵死租约），绝不在持全局锁时死等。
+            if await has_active_open_browser(account_id):
+                if close_open_browser:
+                    await close_open_browser_for_account(account_id, nudge=False)
+                    log.info(
+                        "发布任务 #%s(%s, 账号#%s) 已按确认保存登录态并关闭手动浏览器窗口，继续执行发布",
+                        task_id,
+                        platform,
+                        account_id or "-",
+                    )
+                else:
+                    self._mark_publish_open_browser_blocked(
+                        task_id, account_id, platform, log_once=scheduled
+                    )
+                    return {
+                        "ok": False,
+                        "deferred": True,
+                        "blocked_by": "open_browser",
+                        "account_id": account_id,
+                        "error": "该账号手动浏览器窗口仍开着，请先关闭窗口后再发布",
+                    }
+
+            # 2) 先判全局发布通道是否繁忙，避免先占住账号锁或无上限排队。
+            if self._publish_sem.locked():
+                return {
+                    "ok": False,
+                    "deferred": True,
+                    "blocked_by": "publish_busy",
+                    "account_id": account_id,
+                    "error": "当前已有另一条发布任务正在执行，请等待完成后再试",
+                }
+
+            # 3) 先非阻塞获取账号锁（手动点立即发布时最多短暂等待 3 秒让正在收尾的轻读结束），
+            #    拿到账号锁后再进全局 _publish_sem，彻底杜绝单账号占锁拖死全站发布。
+            acc_key = f"acc:{account_id}" if account_id else f"pub:{task_id}"
+            acc_lock = self.browser.lock_for(acc_key)
+            if acc_lock.locked():
+                if not scheduled:
+                    deadline = asyncio.get_running_loop().time() + 3.0
+                    while acc_lock.locked() and asyncio.get_running_loop().time() < deadline:
+                        if await has_active_open_browser(account_id):
+                            break
+                        await asyncio.sleep(0.25)
+                if await has_active_open_browser(account_id):
+                    self._mark_publish_open_browser_blocked(
+                        task_id, account_id, platform, log_once=scheduled
+                    )
+                    return {
+                        "ok": False,
+                        "deferred": True,
+                        "blocked_by": "open_browser",
+                        "account_id": account_id,
+                        "error": "该账号手动浏览器窗口仍开着，请先关闭窗口后再发布",
+                    }
+                if acc_lock.locked():
+                    if not scheduled:
+                        log.warning(
+                            "发布任务 #%s(%s, 账号#%s) 暂不可执行：账号锁正被其他任务占用",
+                            task_id,
+                            platform,
+                            account_id or "-",
+                        )
+                    return {
+                        "ok": False,
+                        "deferred": True,
+                        "blocked_by": "account_busy",
+                        "account_id": account_id,
+                        "error": "该账号当前正在执行其他浏览器操作（如巡检/采集/登录），请稍后再试",
+                    }
+
+            async with self._operation_guard(
+                    account_id, OperationKind.PUBLISH,
+                    fallback_key=f"pub:{task_id}",
+                    skip_busy=True):
+                if self._publish_sem.locked():
+                    return {
+                        "ok": False,
+                        "deferred": True,
+                        "blocked_by": "publish_busy",
+                        "account_id": account_id,
+                        "error": "当前已有另一条发布任务正在执行，请等待完成后再试",
+                    }
+                async with self._publish_sem:
                     return await self._publish_task_locked(task_id)
+        except _AccountCheckBusy:
+            if await has_active_open_browser(account_id):
+                self._mark_publish_open_browser_blocked(
+                    task_id, account_id, platform, log_once=scheduled
+                )
+                return {
+                    "ok": False,
+                    "deferred": True,
+                    "blocked_by": "open_browser",
+                    "account_id": account_id,
+                    "error": "该账号手动浏览器窗口仍开着，请先关闭窗口后再发布",
+                }
+            return {
+                "ok": False,
+                "deferred": True,
+                "blocked_by": "account_busy",
+                "account_id": account_id,
+                "error": "该账号当前正在执行其他浏览器操作，稍后将自动重试",
+            }
         except AccountUnavailableError:
             return self._fail_missing_account_task(PublishTask, task_id)
         finally:

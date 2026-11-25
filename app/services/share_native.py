@@ -135,8 +135,8 @@ async def _douyin_native_share(
         raw_cookie = account.cookie or ""
         transport = resolve_transport(app_runtime.cfg, "douyin", "share_download", account)
         mode = transport["effective_mode"]
-    lease = app_runtime.open_browsers.get(account_id)
-    if lease is not None and getattr(lease, "active", True):
+    from app.services.login_sessions import has_active_open_browser
+    if await has_active_open_browser(account_id):
         raise ShareDownloadError("请先关闭该账号手动打开的浏览器窗口，再执行链接下载")
     if app_runtime.engine is None:
         raise ShareDownloadError("账号读取引擎未就绪，请稍后重试")

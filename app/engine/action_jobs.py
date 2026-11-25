@@ -10,12 +10,13 @@ from app.account_lifecycle import AccountUnavailableError
 from app.browser import do_facebook_follow, do_follow, do_twitter_follow, do_youtube_subscribe, douyin_secure_post_api, send_dm, send_dm_api, send_facebook_dm, send_twitter_dm
 from app.browser.tiktok_actions import do_tiktok_follow, send_tiktok_dm
 from app.db import get_session
-from app.engine.monitor_helpers import _loads, log
+from app.engine.monitor_helpers import _AccountCheckBusy, _loads, log
 from app.models import AccountActionTask, DmConversation, DouyinAccount, FollowEdge
 from app.platforms.bilibili import BilibiliClient
 from app.platforms.douyin import DouyinClient, cookie_from_state as dy_cookie_from_state
 from app.platforms.instagram import InstagramClient
 from app.risk import OperationKind, RiskCategory, classify_platform_error
+from app.services.login_sessions import has_active_open_browser
 from app.transport_matrix import douyin_client_environment
 
 
@@ -92,11 +93,25 @@ class ActionJobMixin:
                 continue
             seen_acct.add(aid)
             try:
-                await self.execute_action_task(tid)
+                await self.execute_action_task(tid, scheduled=True)
             except Exception as e:
                 log.warning("写操作任务 %s 执行异常: %s", tid, e)
 
-    async def execute_action_task(self, task_id: int) -> dict:
+    def _mark_action_open_browser_blocked(self, task_id: int, kind: OperationKind) -> None:
+        reason = "该账号手动浏览器窗口仍开着，关闭窗口后将自动执行"
+        with get_session() as s:
+            t = s.get(AccountActionTask, task_id)
+            if t and t.status == "pending":
+                t.blocked_reason = reason
+                t.blocked_signal = "open_browser"
+                t.blocked_operation = kind.value
+                t.blocked_at = datetime.utcnow()
+                t.next_allowed_at = None
+                t.error = reason
+                s.add(t)
+                s.commit()
+
+    async def execute_action_task(self, task_id: int, *, scheduled: bool = False) -> dict:
         if task_id in self._actioning:
             return {"ok": False, "error": "正在执行中"}
         self._actioning.add(task_id)
@@ -106,9 +121,25 @@ class ActionJobMixin:
                 account_id = t.account_id if t else None
                 kind = (OperationKind.DM if t and t.action == "send_dm"
                         else OperationKind.SOCIAL)
+            if await has_active_open_browser(account_id):
+                self._mark_action_open_browser_blocked(task_id, kind)
+                return {
+                    "ok": False,
+                    "deferred": True,
+                    "blocked_by": "open_browser",
+                    "error": "该账号手动浏览器窗口仍开着，请先关闭窗口后再执行操作",
+                }
             async with self._operation_guard(
-                    account_id, kind, fallback_key=f"act:{task_id}"):
+                    account_id, kind, fallback_key=f"act:{task_id}",
+                    skip_busy=scheduled):
                 return await self._execute_action_task_locked(task_id)
+        except _AccountCheckBusy:
+            return {
+                "ok": False,
+                "deferred": True,
+                "blocked_by": "account_busy",
+                "error": "该账号当前正在执行其他浏览器操作，稍后将自动重试",
+            }
         except AccountUnavailableError:
             return self._fail_missing_account_task(AccountActionTask, task_id)
         finally:

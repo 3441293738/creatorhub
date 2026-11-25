@@ -302,13 +302,17 @@ class CommentRuleRunnerMixin:
         return ""
 
     async def _process_comment_rules(self):
-        due = []
+        from app.services.login_sessions import has_active_open_browser
+
+        due: list[tuple[int, int | None]] = []
         with get_session() as s:
             rules = s.exec(select(CommentRule).where(CommentRule.enabled == True)).all()  # noqa: E712
             for r in rules:
                 if self._periodic_due(r, "comment_rule"):
-                    due.append(r.id)
-        for rid in due:
+                    due.append((r.id, r.account_id))
+        for rid, aid in due:
+            if aid and (await has_active_open_browser(aid) or self.browser.lock_for(f"acc:{aid}").locked()):
+                continue
             try:
                 await self.run_comment_rule(rid)
             except Exception as e:
@@ -1646,6 +1650,6 @@ class CommentRuleRunnerMixin:
                 continue
             seen_acct.add(aid)
             try:
-                await self.execute_comment_task(tid)
+                await self.execute_comment_task(tid, scheduled=True)
             except Exception as e:
                 log.warning("评论任务 %s 执行异常: %s", tid, e)

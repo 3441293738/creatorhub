@@ -53,7 +53,8 @@ _SENSITIVE_QUERY_KEYS = re.compile(
     r"a_bogus|x-bogus|x_bogus|x-gnarly|x_gnarly|x-dynosaur|x_dynosaur|"
     r"verifyfp|fp|sessionid|sessionid_ss|sid_guard|sid_tt|uid_tt|ttwid|"
     r"sessdata|bili_jct|dedeuserid__ckmd5|web_session|auth_token|ct0|"
-    r"api_key|apikey|key|secret|password|passwd|pwd|signature|sig|ticket)$",
+    r"api_key|apikey|key|secret|password|passwd|pwd|signature|sig|ticket|"
+    r"proxy|proxy_url)$",
     re.IGNORECASE,
 )
 

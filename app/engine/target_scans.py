@@ -40,6 +40,8 @@ class TargetScanMixin:
         return row.enabled and (deadline is None or datetime.utcnow() >= deadline)
 
     async def _scan_once(self):
+        from app.services.login_sessions import has_active_open_browser
+
         due: list[tuple[int, int | None]] = []
         with get_session() as s:
             targets = s.exec(select(MonitorTarget).where(MonitorTarget.enabled == True)).all()  # noqa: E712
@@ -48,7 +50,13 @@ class TargetScanMixin:
                     due.append((t.id, t.account_id))
         if due:
             ordered = _round_robin_by_account(due)
-            await asyncio.gather(*(self.scan_target(tid) for tid, _ in ordered))
+            runnable: list[int] = []
+            for tid, aid in ordered:
+                if aid and (await has_active_open_browser(aid) or self.browser.lock_for(f"acc:{aid}").locked()):
+                    continue
+                runnable.append(tid)
+            if runnable:
+                await asyncio.gather(*(self.scan_target(tid) for tid in runnable))
 
     async def scan_target(self, target_id: int) -> dict:
         if target_id in self._inflight:

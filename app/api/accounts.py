@@ -628,9 +628,7 @@ async def refresh_account_profile(account_id: int):
         profile_transport = (resolve_transport(
             app_runtime.cfg, "douyin", "account_profile", acc)
             if platform == "douyin" else None)
-    manual_browser = app_runtime.open_browsers.get(account_id)
-    if (manual_browser is not None
-            and bool(getattr(manual_browser, "active", True))
+    if (await login_sessions_service.has_active_open_browser(account_id)
             and (profile_transport is None or profile_transport["opens_browser"])):
         return {
             "ok": True,
@@ -731,8 +729,7 @@ async def keepalive_single_account(account_id: int):
         if not (acc.storage_state or acc.creator_storage_state):
             raise HTTPException(400, "该账号缺少持久化登录态，请先扫码登录")
         platform = acc.platform
-    manual_browser = app_runtime.open_browsers.get(account_id)
-    if manual_browser is not None and bool(getattr(manual_browser, "active", True)):
+    if await login_sessions_service.has_active_open_browser(account_id):
         return {
             "ok": True,
             "skipped": True,

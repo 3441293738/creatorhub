@@ -178,13 +178,32 @@ def _runtime_dependencies() -> dict[str, Any]:
     except Exception:
         channels_bridge_info = {"running": False}
 
+    try:
+        from app.services.login_sessions import _active_open_browser_account_ids
+        open_browser_ids = sorted(_active_open_browser_account_ids())
+    except Exception:
+        open_browser_ids = sorted(app_runtime.open_browsers.keys())
+
+    eng = app_runtime.engine
+    last_tick = getattr(eng, "_last_loop_tick_at", None) if eng is not None else None
+    pub_sem = getattr(eng, "_publish_sem", None) if eng is not None else None
+    pub_worker = getattr(eng, "_publish_worker_task", None) if eng is not None else None
+
     return {
         "node_available": bool(find_node()),
         "ffmpeg_available": bool(find_ffmpeg()),
         "patchright_driver_available": patchright_ok,
-        "engine_running": bool(getattr(app_runtime.engine, "_running", False)),
+        "engine_running": bool(getattr(eng, "_running", False)),
+        "engine_last_tick_at": (
+            last_tick.isoformat(timespec="seconds") + "Z" if last_tick is not None else None
+        ),
+        "engine_loop_ticks": int(getattr(eng, "_loop_tick_count", 0) or 0) if eng is not None else 0,
+        "publish_sem_locked": bool(pub_sem.locked()) if pub_sem is not None else False,
+        "publishing_task_ids": sorted(getattr(eng, "_publishing", ()) or ()) if eng is not None else [],
+        "publish_worker_active": bool(pub_worker is not None and not pub_worker.done()),
         "browser_manager_ready": app_runtime.browser is not None,
-        "open_headed_browsers": len(app_runtime.open_browsers),
+        "open_headed_browsers": len(open_browser_ids),
+        "open_headed_browser_account_ids": open_browser_ids,
         "channels_proxy": channels_proxy_info,
         "channels_wmpf_bridge": channels_bridge_info,
     }
@@ -427,6 +446,12 @@ def build_clipboard_report(note: str = "") -> str:
     invalid_accs = [a for a in accs if a.get("status") != "active"]
     paused_accs = [a for a in accs if a.get("write_paused")]
 
+    open_ids = deps.get("open_headed_browser_account_ids") or []
+    open_hint = (
+        f" · 手动浏览器打开中=账号{','.join('#' + str(i) for i in open_ids)}"
+        if open_ids
+        else ""
+    )
     lines: list[str] = [
         "### CreatorHub 问题排查摘要",
         f"- **生成时间**: {summary['generated_at']} (运行 {env['uptime_seconds']}s)",
@@ -435,7 +460,7 @@ def build_clipboard_report(note: str = "") -> str:
         f"- **核心组件**: Patchright={'OK' if deps['patchright_driver_available'] else '缺失'} · "
         f"Node={'OK' if deps['node_available'] else '缺失'} · "
         f"FFmpeg={'OK' if deps['ffmpeg_available'] else '缺失'} · "
-        f"引擎={'运行中' if deps['engine_running'] else '未启动'}",
+        f"引擎={'运行中' if deps['engine_running'] else '未启动'}{open_hint}",
         f"- **账号概览**: 共 {len(accs)} 个账号（登录失效 {len(invalid_accs)} 个，风控暂停写入 {len(paused_accs)} 个）",
     ]
 

@@ -25,13 +25,17 @@ from app.transport_matrix import douyin_client_environment
 class CommentWatchMixin:
     # ── 独立评论监控(CommentWatch)──
     async def _scan_comment_watches(self):
-        due = []
+        from app.services.login_sessions import has_active_open_browser
+
+        due: list[tuple[int, int | None]] = []
         with get_session() as s:
             ws = s.exec(select(CommentWatch).where(CommentWatch.enabled == True)).all()  # noqa: E712
             for w in ws:
                 if self._periodic_due(w, "comment_watch"):
-                    due.append(w.id)
-        for wid in due:
+                    due.append((w.id, w.account_id))
+        for wid, aid in due:
+            if aid and (await has_active_open_browser(aid) or self.browser.lock_for(f"acc:{aid}").locked()):
+                continue
             await self.scan_comment_watch(wid)
 
     async def scan_comment_watch(self, watch_id: int) -> dict:

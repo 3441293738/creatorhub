@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from datetime import datetime
 import json
 
 from fastapi import HTTPException
+from sqlmodel import select
 
 from app import runtime as app_runtime
 from app.db import get_session
-from app.models import DouyinAccount
+from app.models import AccountActionTask, CommentTask, DouyinAccount, PublishTask
 from app.windowing import CHROMIUM_WINDOW_CLASSES, bring_window_to_front, capture_window_snapshot
 
 
@@ -37,11 +39,71 @@ def _active_login_task() -> tuple[str, dict] | None:
     return None
 
 
+def _schedule_dead_lease_reap(account_id: int, lease: "_OpenBrowserLease") -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    if not loop.is_closed():
+        loop.create_task(_release_open_browser(account_id, lease))
+
+
+def _lease_is_alive(lease) -> bool:
+    if lease is None:
+        return False
+    checker = getattr(lease, "is_alive", None)
+    if callable(checker):
+        try:
+            return bool(checker())
+        except Exception:
+            return False
+    return bool(getattr(lease, "active", True))
+
+
 def _active_open_browser_account_ids() -> list[int]:
-    return [
-        account_id for account_id, lease in app_runtime.open_browsers.items()
-        if bool(getattr(lease, "active", True))
-    ]
+    alive: list[int] = []
+    for account_id, lease in list(app_runtime.open_browsers.items()):
+        if _lease_is_alive(lease):
+            alive.append(account_id)
+        else:
+            _schedule_dead_lease_reap(account_id, lease)
+    return alive
+
+
+async def has_active_open_browser(account_id: int | None) -> bool:
+    """Return True if this account owns a live manual browser window; reap stale leases."""
+    if not account_id:
+        return False
+    lease = app_runtime.open_browsers.get(account_id)
+    if lease is None:
+        return False
+    if _lease_is_alive(lease):
+        return True
+    await _release_open_browser(account_id, lease)
+    return False
+
+
+async def close_open_browser_for_account(
+    account_id: int | None,
+    *,
+    nudge: bool = True,
+) -> bool:
+    """Persist cookies, close the manual browser window, and release its account lock."""
+    if not account_id:
+        return False
+    lease = app_runtime.open_browsers.pop(account_id, None)
+    closed = False
+    if lease is not None:
+        try:
+            await lease.close()
+            closed = True
+        except Exception:
+            pass
+    if app_runtime.browser is not None:
+        with suppress(Exception):
+            await app_runtime.browser.close_context(account_id)
+    _wake_open_browser_blocked_tasks(account_id, nudge=nudge)
+    return closed
 
 
 def _login_scope_label(platform: str, creator: bool) -> str:
@@ -129,6 +191,27 @@ class _OpenBrowserLease:
     def active(self) -> bool:
         return not self._released and not self._closed
 
+    def is_alive(self) -> bool:
+        """Verify the underlying Playwright/Patchright context still has a live page."""
+        if not self.active or self.context is None:
+            return False
+        try:
+            browser = getattr(self.context, "browser", None)
+            if browser is not None:
+                is_connected = getattr(browser, "is_connected", None)
+                if callable(is_connected) and not is_connected():
+                    return False
+            pages = getattr(self.context, "pages", None)
+            if pages is not None:
+                page_list = list(pages)
+                if not page_list:
+                    return False
+                if all(bool(getattr(p, "is_closed", lambda: False)()) for p in page_list):
+                    return False
+        except Exception:
+            return False
+        return True
+
     async def _persist_context_state(self) -> None:
         if not self.account_id or self.context is None:
             return
@@ -136,7 +219,7 @@ class _OpenBrowserLease:
         if not callable(storage_fn):
             return
         try:
-            state_obj = await storage_fn()
+            state_obj = await asyncio.wait_for(storage_fn(), timeout=5.0)
             if not isinstance(state_obj, dict) or not state_obj.get("cookies"):
                 return
             state_json = json.dumps(state_obj, ensure_ascii=False)
@@ -165,7 +248,8 @@ class _OpenBrowserLease:
             if self._released:
                 return
             self._released = True
-            await self.guard.__aexit__(None, None, None)
+            with suppress(Exception):
+                await self.guard.__aexit__(None, None, None)
 
     async def close(self) -> None:
         async with self._close_lock:
@@ -174,12 +258,52 @@ class _OpenBrowserLease:
             self._closed = True
             try:
                 await self._persist_context_state()
-                if self.close_callback is not None:
-                    await self.close_callback()
-                else:
-                    await self.context.close()
+                with suppress(Exception):
+                    if self.close_callback is not None:
+                        await asyncio.wait_for(self.close_callback(), timeout=10.0)
+                    elif self.context is not None:
+                        await asyncio.wait_for(self.context.close(), timeout=10.0)
             finally:
                 await self.release()
+
+
+def _wake_open_browser_blocked_tasks(account_id: int, *, nudge: bool = True) -> None:
+    """Clear open_browser deferral markers once the manual window closes and optionally nudge publisher."""
+    if not account_id:
+        return
+    woken_publish = False
+    try:
+        with get_session() as session:
+            changed = False
+            for model in (PublishTask, CommentTask, AccountActionTask):
+                rows = session.exec(
+                    select(model).where(
+                        model.account_id == account_id,
+                        model.status == "pending",
+                        model.blocked_signal == "open_browser",
+                    )
+                ).all()
+                for row in rows:
+                    row.blocked_reason = ""
+                    row.blocked_signal = ""
+                    row.blocked_operation = ""
+                    row.blocked_at = None
+                    row.next_allowed_at = None
+                    if row.error and "手动浏览器" in row.error:
+                        row.error = ""
+                    session.add(row)
+                    changed = True
+                    if model is PublishTask:
+                        woken_publish = True
+            if changed:
+                session.commit()
+    except Exception:
+        pass
+    if nudge and woken_publish and app_runtime.engine is not None:
+        nudge_fn = getattr(app_runtime.engine, "nudge_publish_queue", None)
+        if callable(nudge_fn):
+            with suppress(Exception):
+                nudge_fn()
 
 
 async def _release_open_browser(account_id: int, lease: _OpenBrowserLease) -> None:
@@ -188,6 +312,7 @@ async def _release_open_browser(account_id: int, lease: _OpenBrowserLease) -> No
     finally:
         if app_runtime.open_browsers.get(account_id) is lease:
             app_runtime.open_browsers.pop(account_id, None)
+        _wake_open_browser_blocked_tasks(account_id)
 
 
 def _persist_native_ua(account_id: int, ua: str) -> None:

@@ -19,14 +19,18 @@ from app.transport_matrix import douyin_client_environment, resolve_transport
 class DanmakuWatchMixin:
     # ── 独立弹幕监控(DanmakuWatch)──
     async def _scan_danmaku_watches(self):
-        due = []
+        from app.services.login_sessions import has_active_open_browser
+
+        due: list[tuple[int, int | None]] = []
         with get_session() as s:
             watches = s.exec(select(DanmakuWatch).where(
                 DanmakuWatch.enabled == True)).all()  # noqa: E712
             for watch in watches:
                 if self._periodic_due(watch, "danmaku"):
-                    due.append(watch.id)
-        for watch_id in due:
+                    due.append((watch.id, watch.account_id))
+        for watch_id, aid in due:
+            if aid and (await has_active_open_browser(aid) or self.browser.lock_for(f"acc:{aid}").locked()):
+                continue
             await self.scan_danmaku_watch(watch_id)
 
     async def sync_work_danmaku(self, account_id: int, platform: str,

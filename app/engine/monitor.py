@@ -76,6 +76,7 @@ class MonitorEngine(
         self._publish_sem = asyncio.Semaphore(1)   # 发布串行(有头浏览器,一次一个)
         self._publishing: set[int] = set()
         self._publish_stages: dict[int, str] = {}
+        self._publish_worker_task: Optional[asyncio.Task] = None
         self._commenting: set[int] = set()         # 正在执行的评论任务 id
         self._actioning: set[int] = set()           # 正在执行的写操作任务 id
         self._collection_tasks: dict[int, asyncio.Task] = {}  # 一次性关键词采集
@@ -86,6 +87,8 @@ class MonitorEngine(
         self.risk = RiskController(cfg)
         self._last_risk_prune_day = None
         self._task: Optional[asyncio.Task] = None
+        self._last_loop_tick_at: Optional[datetime] = None
+        self._loop_tick_count: int = 0
         self._running = False
 
     async def _xhs_gap(self, seconds: float | None = None) -> None:
@@ -195,6 +198,12 @@ class MonitorEngine(
             if task is not asyncio.current_task():
                 await asyncio.gather(task, return_exceptions=True)
             self._task = None
+        if self._publish_worker_task:
+            pub_task = self._publish_worker_task
+            pub_task.cancel()
+            if pub_task is not asyncio.current_task():
+                await asyncio.gather(pub_task, return_exceptions=True)
+            self._publish_worker_task = None
         tasks = list(self._collection_tasks.values())
         for task in tasks:
             task.cancel()
@@ -231,6 +240,8 @@ class MonitorEngine(
         account = operation_target or self._load_account(account_id)
         key = f"acc:{account_id}" if account_id else (fallback_key or "anon")
         lock = self.browser.lock_for(key)
+        if skip_busy and lock.locked():
+            raise _AccountCheckBusy()
         async with self._active_sem:
             async with self.risk.network_guard(account):
                 if skip_busy and lock.locked():
@@ -585,6 +596,8 @@ class MonitorEngine(
         next_maintenance_at = 0.0
         while self._running:
             poll_seconds = 15
+            self._last_loop_tick_at = datetime.utcnow()
+            self._loop_tick_count += 1
             try:
                 maintenance_due = time.monotonic() >= next_maintenance_at
                 if maintenance_due:
@@ -651,6 +664,8 @@ class MonitorEngine(
                         reason, account_id, result.get("error"))
 
     async def _process_xhs_dm_automation(self) -> None:
+        from app.services.login_sessions import has_active_open_browser
+
         enabled = bool(self.cfg.engine.xhs_dm_monitor_enabled
                        or self.cfg.engine.xhs_dm_auto_reply_enabled)
         if not enabled:
@@ -663,6 +678,8 @@ class MonitorEngine(
         for account in accounts:
             account_id = int(account.id or 0)
             if not account_id:
+                continue
+            if await has_active_open_browser(account_id) or self.browser.lock_for(f"acc:{account_id}").locked():
                 continue
             # A creator-center-only login has publishing cookies but no
             # consumer-web session.  Opening /chat for such a row can only show
@@ -758,7 +775,14 @@ class MonitorEngine(
                            KeywordCollectionJob.next_allowed_at <= datetime.utcnow()))
                 .order_by(KeywordCollectionJob.created_at)
             ).all()
+        from app.services.login_sessions import has_active_open_browser
+
         for job in jobs:
+            if job.account_id and (
+                await has_active_open_browser(job.account_id)
+                or self.browser.lock_for(f"acc:{job.account_id}").locked()
+            ):
+                continue
             decision = self.risk.preflight(job.account_id, OperationKind.READ_HEAVY)
             if not decision.allowed and decision.signal != "account_missing":
                 continue

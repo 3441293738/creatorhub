@@ -142,6 +142,7 @@ def _publish_dict(t: PublishTask) -> dict:
         "schedule_needs_confirmation": bool(t.scheduled_at and not t.scheduled_at_is_utc),
         "next_allowed_at": utc_iso(t.next_allowed_at),
         "blocked_reason": t.blocked_reason,
+        "blocked_signal": getattr(t, "blocked_signal", "") or "",
         "created_at": utc_iso(t.created_at),
     }
 
@@ -347,10 +348,12 @@ async def update_publish(tid: int, body: PublishUpdate):
 
 
 @router.post("/api/publish/{tid}/run-now")
-async def run_publish(tid: int):
+async def run_publish(tid: int, close_open_browser: bool = False):
     if not app_runtime.engine:
         raise HTTPException(503, "引擎未就绪")
-    return await app_runtime.engine.publish_task(tid)
+    return await app_runtime.engine.publish_task(
+        tid, close_open_browser=close_open_browser
+    )
 
 
 @router.delete("/api/publish/{tid}")

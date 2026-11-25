@@ -1046,18 +1046,8 @@ async def batch_operate_accounts(body: AccountBatchActionIn):
     if act == "close_browsers":
         closed = 0
         for aid in ids:
-            lease = app_runtime.open_browsers.pop(aid, None)
-            if lease is not None:
-                try:
-                    await lease.close()
-                    closed += 1
-                except Exception:
-                    pass
-            if app_runtime.browser is not None:
-                try:
-                    await app_runtime.browser.close_context(aid)
-                except Exception:
-                    pass
+            if await login_sessions_service.close_open_browser_for_account(aid):
+                closed += 1
         return {"ok": True, "closed": closed}
 
     raise HTTPException(400, f"不支持的批量操作类型：{act}")

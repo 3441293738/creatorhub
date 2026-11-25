@@ -271,7 +271,10 @@ async def open_account_browser(
     # Repeated clicks should raise/navigate the already-owned account window,
     # not tear down and cold-start the same Profile again.
     old = app_runtime.open_browsers.get(account_id)
-    if old is not None and old.active:
+    if old is not None and not login_sessions_service._lease_is_alive(old):
+        await login_sessions_service._release_open_browser(account_id, old)
+        old = None
+    if old is not None and login_sessions_service._lease_is_alive(old):
         old_page = getattr(old, "page", None)
         try:
             if old_page is not None and not old_page.is_closed():
@@ -406,8 +409,20 @@ async def open_account_browser(
                 except Exception as check_exc:
                     check_error = f"{type(check_exc).__name__}: {check_exc}"
                     log.warning("环境检测标签自动打开失败(account=%s): %r", account_id, check_exc)
+            initial_blank_pages = [
+                candidate
+                for candidate in list(getattr(ctx, "pages", ()) or ())
+                if getattr(candidate, "url", "") == "about:blank"
+                and not candidate.is_closed()
+            ]
             page = (await app_runtime.browser.new_page(identity, block_media=False)
                     if platform in {"xhs", "rednote"} else await ctx.new_page())
+            if platform not in {"xhs", "rednote"}:
+                # 关闭 Chromium 启动自带的空白标签页，确保用户关掉业务标签页时整个窗口随之关闭并释放账号锁
+                for candidate in initial_blank_pages:
+                    if candidate is not page and not candidate.is_closed():
+                        with suppress(Exception):
+                            await candidate.close()
             xhs_evidence: dict = {}
             if platform == "xhs" and open_scope == "read":
                 page.on("response", _xhs_open_auth_response_handler(xhs_evidence))
