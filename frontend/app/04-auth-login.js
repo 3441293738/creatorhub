@@ -38,7 +38,7 @@ function browserChoiceOptions(catalog, { localOnly = false } = {}) {
 }
 // 新账号尚未落库，扫码前先确定浏览器内核；成功后该选择随账号持久化。
 function isDomesticPlatform(pf) {
-  return !["tiktok", "rednote", "instagram", "twitter", "facebook"].includes(pf || "douyin");
+  return !["tiktok", "rednote", "instagram", "twitter", "facebook", "youtube"].includes(pf || "douyin");
 }
 function isMainlandGeoClient(country, region, city) {
   const c = String(country || "").trim().toUpperCase();
@@ -1118,6 +1118,21 @@ async function startFacebookLogin() {
   } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("Facebook 登录启动失败:" + e.message, "err"); }
 }
 
+// ─── YouTube 独立浏览器登录（含 Google 账户与品牌频道会话） ───
+async function startYouTubeLogin() {
+  const session = await preparePreLoginEnvironment({ platform: "youtube" });
+  if (!session) return;
+  const { browserBackend, proxy, fingerprint } = session;
+  $("cookiebox").style.display = "none";
+  $("qrbox").style.display = "block";
+  $("qrstatus").textContent = "正在打开 YouTube / Google 登录窗口…";
+  try {
+    const res = await api(loginStartUrl("/api/login/youtube/start", proxy, browserBackend), loginStartOptions(fingerprint));
+    $("qrstatus").innerHTML = `${ic("i-eye")} <b>YouTube 窗口已打开</b>，请在该窗口完成 Google 账号登录及两步验证/通行密钥。<br>登录成功后会自动同步 <code>SAPISID</code> / <code>SID</code> 会话，支持频道采集、视频下载、Studio 上传发布、多频道切换与互动养号。`;
+    pollLogin(res.task_id);
+  } catch (e) { $("qrstatus").textContent = "启动失败: " + e.message; toast("YouTube 登录启动失败:" + e.message, "err"); }
+}
+
 // ─── Cookie 登录 ───
 function toggleCookie() {
   $("qrbox").style.display = "none";
@@ -1135,7 +1150,7 @@ async function saveCookie() {
     });
     $("ck-val").value = ""; $("cookiebox").style.display = "none";
     if (res && res.warning) toast(`账号已保存(${res.nickname || ""})，但状态异常：${res.warning}`, "err");
-    else toast((PLATFORM === "twitter" || PLATFORM === "facebook") && res && res.nickname ? `Cookie 已导入：${res.nickname}` : "Cookie 已保存", "ok");
+    else toast((PLATFORM === "twitter" || PLATFORM === "facebook" || PLATFORM === "youtube") && res && res.nickname ? `Cookie 已导入：${res.nickname}` : "Cookie 已保存", "ok");
     if (res && res.proxy_warning) setTimeout(() => toast("⚠️ " + res.proxy_warning, "info", 6500), 300);
     refreshAccounts();
   } catch (e) { toast("保存失败:" + e.message, "err"); }

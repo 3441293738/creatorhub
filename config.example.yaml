@@ -24,6 +24,8 @@ engine:
   twitter_write_mode: browser      # X (Twitter) 写操作与发布统一走隔离浏览器原生签名通道
   facebook_read_mode: hybrid       # hybrid=SSR与动态GraphQL协议直采优先、冷启动或异常回退隔离浏览器;api=纯协议直连;browser=全程浏览器
   facebook_write_mode: browser     # Facebook 写操作与发布（个人/公共主页/群组/快拍）统一走隔离浏览器通道
+  youtube_read_mode: hybrid        # hybrid=SSR(ytInitialData)与Innertube直采优先、兼容失败回退隔离浏览器;api=仅直连;browser=全程浏览器
+  youtube_write_mode: browser      # YouTube 写操作（Studio发布、赞评、订阅与观看养号）统一走隔离浏览器通道
   douyin_profile_mode: hybrid      # 手动刷新资料:hybrid/API/browser
   douyin_followers_mode: hybrid    # 粉丝同步:hybrid/API/browser
   douyin_dm_sync_mode: hybrid      # 私信会话同步:hybrid/API/browser

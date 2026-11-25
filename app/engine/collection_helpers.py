@@ -120,6 +120,8 @@ def _author_id(raw: dict, platform: str) -> str:
         actors = raw.get("actors")
         first_actor = actors[0] if isinstance(actors, list) and actors and isinstance(actors[0], dict) else {}
         return str(first_actor.get("id") or raw.get("author_unique_id") or raw.get("author_name") or "")
+    if platform == "youtube":
+        return str(raw.get("channel_handle") or raw.get("channel_id") or raw.get("author_unique_id") or raw.get("author_name") or "")
     return str((parse_note_brief(raw) or {}).get("author_id") or "")
 
 

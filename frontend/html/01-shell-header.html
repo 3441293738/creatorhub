@@ -97,7 +97,7 @@
     </div>
   </div>
   <div class="pswitch" role="tablist" aria-label="平台切换">
-    <button role="tab" data-pf="all" data-base-label="全平台" onclick="switchPlatform('all')" title="跨 10 大平台全局汇总与矩阵管理"><svg class="ps-ic" aria-hidden="true"><use href="#i-globe"/></svg><span class="ps-lbl">全平台</span></button>
+    <button role="tab" data-pf="all" data-base-label="全平台" onclick="switchPlatform('all')" title="跨 11 大平台全局汇总与矩阵管理"><svg class="ps-ic" aria-hidden="true"><use href="#i-globe"/></svg><span class="ps-lbl">全平台</span></button>
     <button role="tab" data-pf="douyin" onclick="switchPlatform('douyin')">抖音</button>
     <button role="tab" data-pf="xhs" onclick="switchPlatform('xhs')">小红书</button>
     <button role="tab" data-pf="rednote" onclick="switchPlatform('rednote')" title="海外小红书 (Rednote)">海外小红书</button>
@@ -108,6 +108,7 @@
     <button role="tab" data-pf="instagram" onclick="switchPlatform('instagram')">Instagram</button>
     <button role="tab" data-pf="twitter" onclick="switchPlatform('twitter')">Twitter</button>
     <button role="tab" data-pf="facebook" onclick="switchPlatform('facebook')">Facebook</button>
+    <button role="tab" data-pf="youtube" onclick="switchPlatform('youtube')">YouTube</button>
   </div>
   <div class="header-actions">
     <button class="ghost command-trigger" id="command-trigger" type="button" aria-label="搜索功能" aria-haspopup="dialog" aria-controls="command-dialog" aria-keyshortcuts="Control+k Meta+k" title="搜索功能（Ctrl / ⌘ K）"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>搜索功能</span><kbd>Ctrl K</kbd></button>
@@ -137,6 +138,7 @@
     <div class="nav-sep">运营与分发</div>
     <button class="navitem" data-tab="hub" onclick="switchTab('hub', true)"><svg><use href="#i-library"/></svg><span class="nav-label" id="nav-hub-label">矩阵数据与私信</span></button>
     <button class="navitem single-pf-only tk-only" data-tab="tiktok-tools" onclick="switchTab('tiktok-tools', true)"><svg><use href="#i-user"/></svg><span class="nav-label">用户互动</span></button>
+    <button class="navitem single-pf-only yt-only" data-tab="youtube-tools" onclick="switchTab('youtube-tools', true)"><svg><use href="#i-play"/></svg><span class="nav-label">互动与养号</span></button>
     <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish', true)"><svg><use href="#i-send"/></svg><span class="nav-label" id="nav-publish-label">内容发布</span><span class="nav-badge" id="tb-pub">0</span></button>
     <button class="navitem single-pf-only notsh-only tk-hide rn-hide" data-tab="autocomment" onclick="switchTab('autocomment', true)"><svg><use href="#i-automation"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
     <button class="navitem" data-tab="queue" onclick="switchTab('queue', true)"><svg><use href="#i-list"/></svg><span class="nav-label">任务队列</span><span class="nav-badge" id="tb-queue">0</span></button>

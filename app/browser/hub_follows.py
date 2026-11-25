@@ -332,6 +332,13 @@ async def fetch_follows(mgr: BrowserManager, identity, platform: str, uid: str,
         return await fetch_facebook_follows(
             mgr, identity, direction=direction, user_ref=uid, max_scrolls=max(4, min(20, max_scrolls))
         )
+    if platform == "youtube":
+        if direction == "fan":
+            return [], "unavailable:YouTube 网页端不提供完整公开粉丝(订阅者)名单，仅支持同步「关注(已订阅频道)」列表"
+        from app.browser.youtube_fetcher import fetch_youtube_subscriptions
+        return await fetch_youtube_subscriptions(
+            mgr, identity, max_scrolls=max(3, min(12, max_scrolls)), limit=200
+        )
     if platform == "instagram":
         from app.platforms.instagram import InstagramClient
         cookie_s = await _ig_cookie_str(mgr, identity)

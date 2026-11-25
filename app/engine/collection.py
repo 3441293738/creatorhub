@@ -1,7 +1,8 @@
-"""十平台关键词与创作者批量作品采集主调度器。"""
+"""十一平台关键词与创作者批量作品采集主调度器。"""
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 
 from sqlalchemy import func
@@ -15,6 +16,7 @@ from app.platforms.channels import ChannelsProtocolClient, parse_channels_feed
 from app.platforms.douyin import DouyinClient, cookie_from_state as douyin_cookie_from_state, parse_aweme
 from app.platforms.douyin.extract import Aweme
 from app.platforms.facebook import FacebookClient, parse_facebook_aweme
+from app.platforms.youtube import YouTubeClient, parse_youtube_aweme
 from app.platforms.instagram import InstagramClient, parse_ig_aweme
 from app.platforms.kuaishou import parse_ks_feed
 from app.platforms.rednote import RednoteApiClient, cookie_str_from_state as rednote_cookie_str_from_state, has_a1 as rednote_has_a1
@@ -27,6 +29,8 @@ from app.transport_matrix import douyin_client_environment
 from app.engine.collection_comments import CollectionCommentsMixin
 from app.engine.collection_discover import CollectionDiscoverMixin
 from app.engine.collection_social import CollectionSocialMixin
+
+log = logging.getLogger("creatorhub.collection")
 
 
 class KeywordCollector(
@@ -353,6 +357,29 @@ class KeywordCollector(
                 return await self._run_keywords(
                     job_id, job, account, keywords, proxy,
                     identity=identity, fb_client=fb_client)
+        if job.platform == "youtube":
+            yt_state = (
+                (account.storage_state or account.creator_storage_state or account.cookie)
+                if account is not None
+                else ""
+            )
+            yt_client = YouTubeClient(
+                yt_state,
+                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                proxy=proxy,
+                timeout=self.cfg.engine.request_timeout_seconds,
+            )
+            yt_mode = str(getattr(self.cfg.engine, "youtube_read_mode", "hybrid") or "hybrid").lower()
+            step_label = (
+                "启动 YouTube 纯协议采集" if yt_mode == "api"
+                else "启动 YouTube 浏览器采集" if yt_mode == "browser"
+                else "启动 YouTube 协议优先采集"
+            )
+            self._progress(job_id, step=step_label)
+            async with yt_client.session_scope():
+                return await self._run_keywords(
+                    job_id, job, account, keywords, proxy,
+                    identity=identity, yt_client=yt_client)
         if xhs_client is not None:
             async with xhs_client.session_scope():
                 return await self._run_keywords(
@@ -372,6 +399,7 @@ class KeywordCollector(
                              ig_client: InstagramClient | None = None,
                              tw_client: TwitterClient | None = None,
                              fb_client: FacebookClient | None = None,
+                             yt_client: YouTubeClient | None = None,
                              context=None, identity=None) -> dict:
 
         browser_reads = self._xhs_browser_reads_enabled()
@@ -397,7 +425,7 @@ class KeywordCollector(
                 await asyncio.sleep(1.0 * random.uniform(1.0, 1.35))
             elif job.platform == "bilibili" and keyword_index:
                 await asyncio.sleep(0.8 * random.uniform(1.0, 1.35))
-            elif job.platform in {"instagram", "twitter", "facebook"} and keyword_index:
+            elif job.platform in {"instagram", "twitter", "facebook", "youtube"} and keyword_index:
                 await asyncio.sleep(1.2 * random.uniform(1.0, 1.35))
             self._progress(
                 job_id,
@@ -471,6 +499,16 @@ class KeywordCollector(
                 else:
                     raw_items, search_error = await self._discover_facebook_keyword(
                         keyword, job, fb_client=fb_client, identity=identity)
+            elif job.platform == "youtube":
+                if job.source_type == "creator":
+                    raw_items, search_error = await self._discover_youtube_creator(
+                        job, yt_client=yt_client, identity=identity)
+                elif job.source_type == "account_works":
+                    raw_items, search_error = await self._discover_youtube_account(
+                        account, job, yt_client=yt_client, identity=identity)
+                else:
+                    raw_items, search_error = await self._discover_youtube_keyword(
+                        keyword, job, yt_client=yt_client, identity=identity)
             elif job.platform == "shipinhao":
                 if job.source_type == "creator":
                     raw_items, search_error = await self._discover_channels_creator(
@@ -666,6 +704,39 @@ class KeywordCollector(
                                 full_aw.desc = aweme.desc
                             aweme = full_aw
                     token = ""
+                elif job.platform == "youtube":
+                    aweme = parse_youtube_aweme(raw, quality=job.video_quality or "highest")
+                    if aweme is not None:
+                        if yt_client is not None and (aweme.like_count == 0 or aweme.comment_count == 0):
+                            try:
+                                full_aw, yt_det, _yt_err = await yt_client.fetch_video_detail(
+                                    aweme.source_url or aweme.aweme_id,
+                                    quality=job.video_quality or "highest",
+                                )
+                                if full_aw is not None:
+                                    full_aw.like_count = max(full_aw.like_count, aweme.like_count)
+                                    full_aw.comment_count = max(full_aw.comment_count, aweme.comment_count)
+                                    if not full_aw.duration and aweme.duration:
+                                        full_aw.duration = aweme.duration
+                                    if not full_aw.create_time and aweme.create_time:
+                                        full_aw.create_time = aweme.create_time
+                                    if not full_aw.author_name:
+                                        full_aw.author_name = aweme.author_name
+                                    if not full_aw.author_unique_id:
+                                        full_aw.author_unique_id = aweme.author_unique_id
+                                    if not full_aw.avatar:
+                                        full_aw.avatar = aweme.avatar
+                                    if not full_aw.cover:
+                                        full_aw.cover = aweme.cover
+                                    if not full_aw.desc:
+                                        full_aw.desc = aweme.desc
+                                    aweme = full_aw
+                                    if isinstance(yt_det, dict) and yt_det:
+                                        detail_raw = {**raw, **yt_det}
+                            except Exception as exc:
+                                log.debug("youtube detail enrich failed(%s): %s", aweme.aweme_id, exc)
+                        aweme.quality_label = job.video_quality or aweme.quality_label
+                    token = ""
                 elif browser_reads:
                     aweme, parts, detail_error = \
                         await self._materialize_xhs_browser(identity, raw)
@@ -698,7 +769,7 @@ class KeywordCollector(
                 if aweme is None:
                     self._record_error(job_id, f"{keyword}: 无法解析一条搜索结果")
                     continue
-                if job.platform in {"xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"} and not \
+                if job.platform in {"xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"} and not \
                         _collection_content_matches(aweme, job):
                     continue
 
@@ -804,6 +875,11 @@ class KeywordCollector(
                             identity, aweme.aweme_id,
                             job.max_comments_per_content, job.include_replies,
                             fb_client=fb_client, target_url=aweme.source_url)
+                    elif job.platform == "youtube":
+                        comments, comment_error = await self._youtube_comments(
+                            identity, aweme.aweme_id,
+                            job.max_comments_per_content, job.include_replies,
+                            yt_client=yt_client, target_url=aweme.source_url)
                     elif browser_reads:
                         comments, comment_error = await self._xhs_comments_browser(
                             identity, aweme.aweme_id, token, source,
@@ -828,7 +904,7 @@ class KeywordCollector(
                     if comment_error:
                         self._record_error(
                             job_id, f"{keyword}/{aweme.aweme_id}: {comment_error}")
-                        if job.platform in {"xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"} and classify_platform_error(
+                        if job.platform in {"xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"} and classify_platform_error(
                                 comment_error)[0] in {
                                 RiskCategory.RISK, RiskCategory.AUTH,
                                 RiskCategory.NETWORK}:

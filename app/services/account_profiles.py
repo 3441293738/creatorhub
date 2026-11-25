@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from sqlmodel import select
 
 from app import runtime as app_runtime
-from app.browser import fetch_bili_self_profile, fetch_channels_self_profile, fetch_facebook_self_profile, fetch_ig_self_profile, fetch_ks_self_profile, fetch_rednote_self_profile, fetch_self_profile, fetch_twitter_self_profile, fetch_xhs_self_profile
+from app.browser import fetch_bili_self_profile, fetch_channels_self_profile, fetch_facebook_self_profile, fetch_ig_self_profile, fetch_ks_self_profile, fetch_rednote_self_profile, fetch_self_profile, fetch_twitter_self_profile, fetch_xhs_self_profile, fetch_youtube_self_profile
 from app.browser.tiktok_fetcher import fetch_tiktok_self_profile
 from app.db import get_session
 from app.models import AccountWork, DouyinAccount, FollowEdge
@@ -19,6 +19,7 @@ from app.platforms.bilibili import BilibiliClient
 from app.platforms.channels import parse_self_user as parse_channels_self_user
 from app.platforms.douyin import DouyinClient, cookie_from_state as douyin_cookie_from_state, parse_self_user
 from app.platforms.facebook import FacebookClient, build_facebook_storage_state, cookie_str_from_state as facebook_cookie_str_from_state
+from app.platforms.youtube import YouTubeClient
 from app.platforms.instagram import InstagramClient
 from app.platforms.kuaishou import parse_self_user as parse_ks_self_user
 from app.platforms.rednote import RednoteApiClient, parse_rednote_self_user, cookie_str_from_state as rednote_cookie_str_from_state, rednote_creator_profile, has_a1 as rednote_has_a1
@@ -191,11 +192,12 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     or (platform == "instagram" and str(getattr(app_runtime.cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower() == "api")
                     or (platform == "twitter" and str(getattr(app_runtime.cfg.engine, "twitter_read_mode", "hybrid") or "hybrid").lower() == "api")
                     or (platform == "facebook" and str(getattr(app_runtime.cfg.engine, "facebook_read_mode", "hybrid") or "hybrid").lower() == "api")
+                    or (platform == "youtube" and str(getattr(app_runtime.cfg.engine, "youtube_read_mode", "hybrid") or "hybrid").lower() == "api")
                     else (app_runtime.browser.identity_for(a0)
                           if callable(getattr(app_runtime.browser, "identity_for", None))
                           else None))
 
-    if platform not in {"douyin", "bilibili", "instagram", "twitter", "facebook"} and app_runtime.browser is None:
+    if platform not in {"douyin", "bilibili", "instagram", "twitter", "facebook", "youtube"} and app_runtime.browser is None:
         return _done("error", "browser_unavailable")
 
     async def _sync_browser_state(
@@ -647,6 +649,38 @@ async def _enrich_account_profile(account_id: int, state: str, *,
             ):
                 cookie_refreshed = True
                 keepalive_note = "Facebook 浏览器登录态已同步"
+        elif platform == "youtube":
+            ymode = str(getattr(app_runtime.cfg.engine, "youtube_read_mode", "hybrid") or "hybrid").lower()
+            u, err = None, ""
+            used_browser = False
+            if ymode in {"api", "hybrid"} and state:
+                ycli = YouTubeClient(
+                    state,
+                    a0.ua or app_runtime.cfg.engine.user_agent,
+                    proxy=proxy,
+                    timeout=app_runtime.cfg.engine.request_timeout_seconds,
+                    locale=a0.locale or "en-US",
+                )
+                async with ycli.session_scope():
+                    u, err = await ycli.fetch_self_profile()
+            # hybrid 模式下即使 HTTP Cookie 因 Google CookieMismatch/DBSC 报 logged_out，
+            # 仍需回退到隔离浏览器持久化 Profile 校验真实登录态并回写完整 storage_state。
+            hard_block = str(err or "").startswith(("verification_required:", "rate_limit:"))
+            if not u and ymode == "hybrid" and not hard_block and app_runtime.browser is not None:
+                u, err = await fetch_youtube_self_profile(app_runtime.browser, identity)
+                used_browser = True
+            elif not u and ymode == "browser":
+                if app_runtime.browser is None:
+                    return _done("error", "browser_unavailable")
+                u, err = await fetch_youtube_self_profile(app_runtime.browser, identity)
+                used_browser = True
+            if u and used_browser and await _sync_browser_state(
+                "youtube", identity, state, creator_state,
+                scope="read", sync_cookie_str=True,
+                note="YouTube 浏览器登录态已同步"
+            ):
+                cookie_refreshed = True
+                keepalive_note = "YouTube 浏览器登录态已同步"
         else:
             mode = dy_transport["effective_mode"]
             u, err = None, ""
@@ -727,7 +761,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     "following_count": int(u.get("following_count") or 0),
                     "aweme_count": int(u.get("video_count") or 0),
                 }
-            elif platform in {"bilibili", "instagram", "twitter", "facebook"}:
+            elif platform in {"bilibili", "instagram", "twitter", "facebook", "youtube"}:
                 p = dict(u)
                 if platform == "twitter" and locals().get("tw_enriched_state") and not cookie_refreshed:
                     acc.storage_state = tw_enriched_state
@@ -739,6 +773,12 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     acc.cookie = facebook_cookie_str_from_state(fb_enriched_state)
             else:
                 p = parse_self_user(u)
+            if platform == "youtube":
+                # 清理历史误写入的 Google 邮箱（邮箱不是合法频道 handle / UC ID）
+                if acc.sec_uid and "@" in acc.sec_uid and not acc.sec_uid.startswith("@"):
+                    acc.sec_uid = ""
+                if acc.douyin_id and "@" in acc.douyin_id and not acc.douyin_id.startswith("@"):
+                    acc.douyin_id = ""
             if p.get("nickname"):
                 acc.nickname = p["nickname"]
             acc.sec_uid = p.get("sec_uid") or acc.sec_uid
@@ -794,6 +834,22 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 acc.total_favorited = int(p.get("total_favorited") or 0) or acc.total_favorited
                 if p.get("gender"):
                     acc.gender = str(p.get("gender") or "")
+            elif platform == "youtube":
+                works_cnt = len(s.exec(
+                    select(AccountWork.id).where(AccountWork.account_id == account_id)
+                ).all())
+                following_cnt = len(s.exec(
+                    select(FollowEdge.id).where(
+                        FollowEdge.account_id == account_id,
+                        FollowEdge.direction == "following",
+                    )
+                ).all())
+                raw_subs = int(p.get("follower_count") or 0)
+                if raw_subs > 0:
+                    acc.follower_count = raw_subs
+                acc.following_count = max(int(p.get("following_count") or 0), int(acc.following_count or 0), following_cnt)
+                acc.aweme_count = max(int(p.get("aweme_count") or 0), int(acc.aweme_count or 0), works_cnt)
+                acc.total_favorited = int(p.get("total_favorited") or 0) or acc.total_favorited
             else:
                 acc.follower_count = p.get("follower_count") or acc.follower_count
                 acc.aweme_count = p.get("aweme_count") or acc.aweme_count

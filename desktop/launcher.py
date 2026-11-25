@@ -243,6 +243,7 @@ def update_health_check() -> int:
             from app.platforms.instagram import InstagramClient, publish_instagram
             from app.platforms.twitter import TwitterClient, publish_twitter
             from app.platforms.facebook import FacebookClient, publish_facebook
+            from app.platforms.youtube import YouTubeClient, publish_youtube
             from app.platforms.channels import open_or_focus_wechat
             from app.platforms.channels.local_ca import LocalCaManager
             from app.browser.human_interaction import HumanInteractionEngine
@@ -263,6 +264,7 @@ def update_health_check() -> int:
             assert InstagramClient and publish_instagram
             assert TwitterClient and publish_twitter
             assert FacebookClient and publish_facebook
+            assert YouTubeClient and publish_youtube
             assert HumanInteractionEngine and thumb_cache and session_keepalive and ai_copywriting and risk_admin
             assert configure_logging and read_log_tail and build_diagnostic_summary and build_diagnostic_zip and api_diagnostics and api_matrix
             assert websockets.asyncio.client and Controller and ShellServer and webview

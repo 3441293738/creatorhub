@@ -20,6 +20,7 @@ from app.platforms.bilibili import publish_bilibili
 from app.platforms.channels import publish_channels
 from app.platforms.douyin import publish_douyin
 from app.platforms.facebook import MAX_FACEBOOK_IMAGES, publish_facebook
+from app.platforms.youtube import MAX_YOUTUBE_TITLE_LEN, publish_youtube
 from app.platforms.instagram import publish_instagram
 from app.platforms.kuaishou import publish_kuaishou
 from app.platforms.rednote import publish_rednote, weighted_truncate
@@ -100,6 +101,11 @@ class PublishJobMixin:
                     files = files[:1]
                 elif rec.media_type != "video" and len(files) > MAX_FACEBOOK_IMAGES:
                     raise ValueError(f"Facebook 图集发布单次最多支持 {MAX_FACEBOOK_IMAGES} 张图片，请先勾选最多 {MAX_FACEBOOK_IMAGES} 张图片")
+            if target_platform == "youtube":
+                if rec.media_type != "video":
+                    raise ValueError("YouTube 仅支持视频或 Shorts 发布，暂不支持纯图集作品")
+                if len(files) > 1:
+                    files = files[:1]
             if target_platform in {"xhs", "rednote"}:
                 from app.platforms.xhs.media import validate_publish_files
                 files = validate_publish_files(
@@ -110,7 +116,7 @@ class PublishJobMixin:
             elif target_platform == "twitter":
                 t_title = trim_to_twitter_limit(raw_title.strip(), limit=280)
             else:
-                title_cap = {"douyin": 30, "shipinhao": 16, "bilibili": 80, "instagram": 2200, "facebook": 5000}.get(target_platform, 20)
+                title_cap = {"douyin": 30, "shipinhao": 16, "bilibili": 80, "instagram": 2200, "facebook": 5000, "youtube": MAX_YOUTUBE_TITLE_LEN}.get(target_platform, 20)
                 t_title = raw_title[:title_cap]
             t_desc = desc if desc is not None else (rec.desc or "")
             t_topics = topics if topics is not None else ""
@@ -258,6 +264,7 @@ class PublishJobMixin:
             ig_options = _loads(getattr(t, "ig_options_json", "{}") or "{}")
             tw_options = _loads(getattr(t, "tw_options_json", "{}") or "{}")
             fb_options = _loads(getattr(t, "fb_options_json", "{}") or "{}")
+            yt_options = _loads(getattr(t, "yt_options_json", "{}") or "{}")
             location = getattr(t, "location", "") or ""
             platform = t.platform
             files = _loads_list(t.media_json)
@@ -389,6 +396,18 @@ class PublishJobMixin:
                 allow_comment=allow_comment, fb_options=fb_options,
                 headed=True, channel="browser")
 
+        if platform == "youtube":
+            if not state:
+                return await self._finish_publish(
+                    task_id, False, "", "该账号未完成 YouTube 登录，请先在账号页登录或导入 Cookie",
+                    platform="youtube")
+            return await self._run_browser_publish(
+                task_id, "youtube", publish_youtube,
+                self.browser, identity,
+                media_type=media_type, files=files, title=title, desc=desc,
+                topics=topics, visibility=visibility,
+                yt_options=yt_options, headed=True, channel="browser")
+
         if not state:
             return await self._finish_publish(
                 task_id, False, "", "该账号未完成小红书「创作者登录」,请先在账号页点「创作者登录」",
@@ -425,7 +444,7 @@ class PublishJobMixin:
         pname = {"kuaishou": "快手", "douyin": "抖音",
                  "shipinhao": "视频号", "tiktok": "TikTok",
                  "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram",
-                 "twitter": "Twitter", "facebook": "Facebook",
+                 "twitter": "Twitter", "facebook": "Facebook", "youtube": "YouTube",
                  "xhs": "小红书"}.get(platform, platform)
         call_kwargs = dict(kwargs)
         try:
@@ -518,7 +537,7 @@ class PublishJobMixin:
                     pname = {"kuaishou": "快手", "douyin": "抖音",
                              "shipinhao": "视频号", "tiktok": "TikTok",
                              "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram",
-                             "twitter": "Twitter", "facebook": "Facebook"}.get(
+                             "twitter": "Twitter", "facebook": "Facebook", "youtube": "YouTube"}.get(
                                  platform, "小红书")
                     await notify_all(channels, f"{pname}发布成功", url or "已发布一条作品")
             except Exception:

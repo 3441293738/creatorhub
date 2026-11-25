@@ -573,8 +573,9 @@ async function refreshAccounts() {
     const isIg = a.platform === "instagram";
     const isTw = a.platform === "twitter";
     const isFb = a.platform === "facebook";
-    const idName = isXhs ? "小红书号 " : isKs ? "快手号 " : isChannels ? "视频号 " : isTikTok ? "TikTok号 " : isBili ? "UID " : (isIg || isTw) ? "@ " : isFb ? "FB " : "抖音号 ";
-    const secName = isChannels ? "finder_id " : isKs ? "主页ID " : isXhs ? "user_id " : isTikTok ? "unique_id " : isBili ? "mid " : isIg ? "pk " : isTw ? "screen_name " : isFb ? "UID " : "sec_uid ";
+    const isYt = a.platform === "youtube";
+    const idName = isXhs ? "小红书号 " : isKs ? "快手号 " : isChannels ? "视频号 " : isTikTok ? "TikTok号 " : isBili ? "UID " : (isIg || isTw || isYt) ? "@ " : isFb ? "FB " : "抖音号 ";
+    const secName = isChannels ? "finder_id " : isKs ? "主页ID " : isXhs ? "user_id " : isTikTok ? "unique_id " : isBili ? "mid " : isIg ? "pk " : isTw ? "screen_name " : isFb ? "UID " : isYt ? "频道ID " : "sec_uid ";
     const rawSecUid = String(a.sec_uid || "");
     const shortSecUid = rawSecUid.length > 18 ? rawSecUid.slice(0, 18) + "…" : rawSecUid;
     const idline = [
@@ -694,6 +695,7 @@ async function refreshAccounts() {
   populateAcAccount();
   populateHubAccounts();
   populateTikTokAccounts();
+  populateYouTubeToolsAccounts();
   const at = document.querySelector('.navitem.active');
   if (at && at.dataset.tab === "hub") refreshHubPanel();
 }
@@ -845,5 +847,442 @@ async function createTikTokCommentTask() {
       refreshCommentTasks();
       refreshTaskQueueBadge();
     } catch (e) { toast("TikTok 评论任务创建失败：" + e.message, "err"); }
+  });
+}
+
+// ── YouTube 互动、真实观看、养号与多频道工具 ──
+let YT_SEARCH_ITEMS = [];
+let YT_SEARCH_SCOPE = "videos";
+let YT_MANAGED_CHANNELS = [];
+let YT_WARMUP_ITEMS = [];
+
+function populateYouTubeToolsAccounts() {
+  const accounts = ACCOUNTS.filter(a => a.platform === "youtube" && a.status !== "invalid" && a.has_storage);
+  const options = accOptions(accounts, accounts.length ? "请选择 YouTube 账号" : "暂无可用 YouTube 账号");
+  for (const id of ["yt-act-account", "yt-watch-account", "yt-warmup-account", "yt-search-account"]) {
+    const select = $(id);
+    if (!select) continue;
+    const previous = select.value;
+    select.innerHTML = options;
+    if (accounts.some(account => String(account.id) === previous)) select.value = previous;
+    else if (accounts.length) select.value = String(accounts[0].id);
+    select._csSync?.();
+  }
+  syncYouTubeInteractForm();
+  syncYouTubeWatchForm();
+  syncYouTubeSearchForm();
+  if (!YT_SEARCH_ITEMS.length) renderYouTubeSearchResults();
+  if (!YT_MANAGED_CHANNELS.length) renderYouTubeManagedChannels();
+  if (!YT_WARMUP_ITEMS.length) renderYouTubeWarmupResults();
+}
+
+function syncYouTubeInteractForm() {
+  const act = $("yt-act-type")?.value || "like";
+  const isRename = act === "change_profile_name";
+  const isComment = act === "comment" || act === "reply_comment";
+  const isReply = act === "reply_comment";
+  const isBatchLike = act === "like_video_comments";
+  const isSub = act === "subscribe" || act === "unsubscribe";
+  const isCommentLike = act === "like_comment" || act === "unlike_comment";
+
+  $("yt-act-target-row")?.classList.toggle("hidden", isRename);
+  $("yt-act-cid-row")?.classList.toggle("hidden", !isReply);
+  $("yt-act-comment-row")?.classList.toggle("hidden", !isComment);
+  $("yt-act-batch-row")?.classList.toggle("hidden", !isBatchLike);
+  $("yt-act-name-row")?.classList.toggle("hidden", !isRename);
+
+  const lbl = $("yt-act-target-label");
+  const inp = $("yt-act-target");
+  if (lbl && inp) {
+    if (isSub) {
+      lbl.textContent = "目标频道或视频链接";
+      inp.placeholder = "https://www.youtube.com/@handle、/channel/UC... 或该频道任一视频链接";
+    } else if (isCommentLike || isReply) {
+      lbl.textContent = "目标评论链接或视频链接";
+      inp.placeholder = "含 ?lc=... 的评论直链，或粘贴视频链接并在下方填入目标评论 ID";
+    } else {
+      lbl.textContent = "目标视频 / Shorts 链接或 11 位 ID";
+      inp.placeholder = "https://www.youtube.com/watch?v=...、youtu.be/...、/shorts/... 或 11 位视频 ID";
+    }
+  }
+}
+
+function syncYouTubeWatchForm() {
+  const pctMode = ($("yt-watch-mode")?.value || "seconds") === "percentage";
+  $("yt-watch-sec-row")?.classList.toggle("hidden", pctMode);
+  $("yt-watch-pct-row")?.classList.toggle("hidden", !pctMode);
+  $("yt-watch-limit-row")?.classList.toggle("hidden", !pctMode);
+}
+
+function syncYouTubeSearchForm() {
+  const isVideos = ($("yt-search-scope")?.value || "videos") === "videos";
+  for (const id of ["yt-search-date-row", "yt-search-dur-row", "yt-search-sort-row"]) {
+    $(id)?.classList.toggle("hidden", !isVideos);
+  }
+}
+
+async function runYouTubeInteract() {
+  const accountId = Number($("yt-act-account")?.value || 0);
+  const action = $("yt-act-type")?.value || "like";
+  const targetUrl = $("yt-act-target")?.value.trim() || "";
+  const commentText = $("yt-act-comment")?.value.trim() || "";
+  const targetCommentId = $("yt-act-cid")?.value.trim() || "";
+  const likeCount = Math.max(1, Math.min(20, Number($("yt-act-like-count")?.value || 3)));
+  const isRandom = Boolean($("yt-act-random")?.checked);
+  const newName = $("yt-act-new-name")?.value.trim() || "";
+  const channelName = $("yt-act-channel")?.value.trim() || "";
+
+  let valid = true;
+  valid = setFieldError($("yt-act-account"), !accountId ? "请选择可用的 YouTube 账号" : "") && valid;
+  if (action !== "change_profile_name") {
+    valid = setFieldError($("yt-act-target"), !targetUrl ? "请输入目标链接或 ID" : "") && valid;
+  } else {
+    setFieldError($("yt-act-target"), "");
+    valid = setFieldError($("yt-act-new-name"), !newName ? "请输入新的频道展示名称" : "") && valid;
+  }
+  if (action === "comment" || action === "reply_comment") {
+    valid = setFieldError($("yt-act-comment"), !commentText ? "请输入评论或回复内容" : "") && valid;
+  } else {
+    setFieldError($("yt-act-comment"), "");
+  }
+  if (!valid) return;
+
+  const actionLabels = {
+    like: "视频点赞", unlike: "取消点赞", dislike: "视频点踩", undislike: "取消点踩",
+    subscribe: "订阅频道", unsubscribe: "取消订阅",
+    comment: "发表评论", reply_comment: "回复评论",
+    like_comment: "点赞评论", unlike_comment: "取消评论点赞",
+    like_video_comments: "批量点赞评论", change_profile_name: "修改频道名称",
+  };
+  const label = actionLabels[action] || action;
+  const status = $("yt-act-status");
+  if (status) status.textContent = `正在打开隔离浏览器执行「${label}」…`;
+
+  await withBusy(evtBtn(), "执行中", async () => {
+    try {
+      const res = await api("/api/youtube/interact", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account_id: accountId, action, target_url: targetUrl,
+          comment_text: commentText, target_comment_id: targetCommentId,
+          like_count: likeCount, is_random: isRandom,
+          new_name: newName, channel_name: channelName,
+        }),
+      });
+      let extra = "";
+      if (res.result && typeof res.result === "object") {
+        if (typeof res.result.liked_count === "number") extra = `（共点赞 ${res.result.liked_count} 条评论）`;
+        else if (res.result.comment_id) extra = `（评论链接/ID：${res.result.comment_id}）`;
+        else if (res.result.new_name) extra = `（新名称：${res.result.new_name}）`;
+      }
+      if (status) status.textContent = `${label}执行成功${extra}`;
+      toast(`YouTube ${label}成功${extra}`, "ok", 6000);
+      if (action === "comment" || action === "reply_comment") $("yt-act-comment").value = "";
+      refreshTaskQueueBadge();
+    } catch (e) {
+      if (status) status.textContent = `${label}失败：${e.message}`;
+      toast(`YouTube ${label}失败：${e.message}`, "err", 7000);
+    }
+  });
+}
+
+async function runYouTubeWatch() {
+  const accountId = Number($("yt-watch-account")?.value || 0);
+  const videoUrl = $("yt-watch-url")?.value.trim() || "";
+  const usePercentage = ($("yt-watch-mode")?.value || "seconds") === "percentage";
+  const durationSeconds = Math.max(5, Math.min(600, Number($("yt-watch-seconds")?.value || 35)));
+  const percentage = Math.max(5, Math.min(100, Number($("yt-watch-pct")?.value || 50)));
+  const percentageLimit = Math.max(10, Math.min(600, Number($("yt-watch-pct-limit")?.value || 120)));
+  const skipAds = Boolean($("yt-watch-skip-ads")?.checked);
+  const likeVideo = Boolean($("yt-watch-like")?.checked);
+  const subscribeChannel = Boolean($("yt-watch-sub")?.checked);
+  const commentText = $("yt-watch-comment")?.value.trim() || "";
+  const channelName = $("yt-watch-channel")?.value.trim() || "";
+
+  let valid = true;
+  valid = setFieldError($("yt-watch-account"), !accountId ? "请选择可用的 YouTube 账号" : "") && valid;
+  valid = setFieldError($("yt-watch-url"), !videoUrl ? "请输入视频/Shorts 链接或 11 位 ID" : "") && valid;
+  if (!valid) return;
+
+  const status = $("yt-watch-status");
+  const resultBox = $("yt-watch-result");
+  if (status) status.textContent = "正在隔离浏览器中真实播放视频，请勿提前关闭窗口…";
+  if (resultBox) { resultBox.classList.add("hidden"); resultBox.innerHTML = ""; }
+
+  await withBusy(evtBtn(), "观看中", async () => {
+    try {
+      const res = await api("/api/youtube/watch", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account_id: accountId, video_url: videoUrl,
+          duration_seconds: durationSeconds, use_percentage: usePercentage,
+          percentage, percentage_limit: percentageLimit,
+          like_video: likeVideo, subscribe_channel: subscribeChannel,
+          comment_text: commentText, skip_ads: skipAds, channel_name: channelName,
+        }),
+      });
+      const st = res.stats || {};
+      const pctText = st.view_percentage != null ? `${st.view_percentage}%` : "—";
+      const durText = st.video_duration ? `${st.video_duration}s` : "未知";
+      if (status) status.textContent = `观看完成：已看 ${st.view_time || 0} 秒（约 ${pctText}）`;
+      if (resultBox) {
+        resultBox.classList.remove("hidden");
+        resultBox.innerHTML =
+          `<div class="platform-callout" role="status"><svg aria-hidden="true"><use href="#i-check"/></svg>`
+          + `<div><b>真实观看完成 · ${esc(res.video_id || "")}</b>`
+          + `<p>实际观看 <b>${esc(String(st.view_time || 0))} 秒</b>（完播占比 ${esc(pctText)} / 视频总长 ${esc(durText)}）`
+          + ` · 点赞：${st.liked ? "已赞" : "未执行"} · 订阅：${st.subscribed ? "已订阅" : "未执行"} · 评论：${st.commented ? "已发布" : "未执行"}</p></div></div>`;
+      }
+      toast("YouTube 视频观看完成", "ok", 6000);
+      refreshTaskQueueBadge();
+    } catch (e) {
+      if (status) status.textContent = "观看失败：" + e.message;
+      toast("YouTube 视频观看失败：" + e.message, "err", 7000);
+    }
+  });
+}
+
+function renderYouTubeWarmupResults() {
+  const body = $("yt-warmup-results");
+  if (!body) return;
+  body.innerHTML = YT_WARMUP_ITEMS.map(item => {
+    const url = String(item.url || "");
+    const safe = safeUrl(url);
+    const linkHtml = safe
+      ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`
+      : esc(url || "—");
+    return `<tr><td class="wrap">${linkHtml}</td>`
+      + `<td>${esc(String(item.watched_seconds || 0))} 秒</td>`
+      + `<td><span class="pill ${item.liked ? "ok" : ""}">${item.liked ? "已随机点赞" : "仅观看"}</span></td></tr>`;
+  }).join("") || empty(3, "暂无养号记录", "i-sparkles", "输入兴趣关键词后点击「启动养号浏览」执行");
+}
+
+async function runYouTubeWarmup() {
+  const accountId = Number($("yt-warmup-account")?.value || 0);
+  const keyword = $("yt-warmup-keyword")?.value.trim() || "";
+  const maxVideos = Math.max(1, Math.min(8, Number($("yt-warmup-count")?.value || 2)));
+  const watchSeconds = Math.max(5, Math.min(180, Number($("yt-warmup-sec")?.value || 20)));
+  const likeProbability = Math.max(0, Math.min(100, Number($("yt-warmup-prob")?.value || 50))) / 100;
+
+  let valid = true;
+  valid = setFieldError($("yt-warmup-account"), !accountId ? "请选择可用的 YouTube 账号" : "") && valid;
+  valid = setFieldError($("yt-warmup-keyword"), !keyword ? "请输入养号搜索关键词" : "") && valid;
+  if (!valid) return;
+
+  const status = $("yt-warmup-status");
+  if (status) status.textContent = `正在搜索「${keyword}」并模拟浏览观看（共 ${maxVideos} 条）…`;
+
+  await withBusy(evtBtn(), "养号中", async () => {
+    try {
+      const res = await api("/api/youtube/warmup", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account_id: accountId, keyword,
+          max_videos: maxVideos, watch_seconds: watchSeconds, like_probability: likeProbability,
+        }),
+      });
+      const sum = res.summary || {};
+      YT_WARMUP_ITEMS = Array.isArray(sum.videos) ? sum.videos : [];
+      renderYouTubeWarmupResults();
+      const likedN = sum.liked_count != null ? sum.liked_count : YT_WARMUP_ITEMS.filter(v => v.liked).length;
+      if (status) status.textContent = `养号完成：观看 ${sum.watched_count || YT_WARMUP_ITEMS.length} 条视频，随机点赞 ${likedN} 条`;
+      toast(`YouTube 养号完成（观看 ${sum.watched_count || YT_WARMUP_ITEMS.length} 条 / 点赞 ${likedN} 条）`, "ok", 6000);
+      refreshTaskQueueBadge();
+    } catch (e) {
+      if (status) status.textContent = "养号失败：" + e.message;
+      toast("YouTube 养号失败：" + e.message, "err", 7000);
+    }
+  });
+}
+
+function renderYouTubeSearchResults() {
+  const body = $("yt-search-results");
+  if (!body) return;
+  if (YT_SEARCH_SCOPE === "channels") {
+    body.innerHTML = YT_SEARCH_ITEMS.map((ch, idx) => {
+      const handle = String(ch.unique_id || ch.sec_uid || ch.uid || "");
+      const url = String(ch.url || (handle ? `https://www.youtube.com/${handle.startsWith("@") ? handle : "channel/" + handle}` : ""));
+      const safe = safeUrl(url);
+      const av = ch.avatar
+        ? `<img class="avatar" src="${esc(safeMediaUrl(ch.avatar))}" alt="" referrerpolicy="no-referrer">`
+        : `<span class="wb-avatar-fallback" aria-hidden="true">${esc((ch.nickname || "Y").slice(0, 1))}</span>`;
+      return `<tr><td><div class="user-cell">${av}<div><b>${esc(ch.nickname || handle || "未命名频道")}</b><div class="mut">${esc((ch.signature || "").slice(0, 80))}</div></div></div></td>`
+        + `<td><code>${esc(handle || "—")}</code></td>`
+        + `<td>${fmtNum(ch.follower_count || 0)} 订阅<div class="mut">${fmtNum(ch.aweme_count || 0)} 视频</div></td>`
+        + `<td class="acttd"><button class="ghost sm" onclick="quickYouTubeResultAction(${idx},'subscribe')">订阅</button>`
+        + (safe ? `<a class="btn ghost sm" href="${esc(safe)}" target="_blank" rel="noopener noreferrer">主页</a>` : "")
+        + `</td></tr>`;
+    }).join("") || empty(4, "暂无频道搜索结果", "i-search", "输入关键词并选择「频道」范围搜索");
+    return;
+  }
+
+  body.innerHTML = YT_SEARCH_ITEMS.map((v, idx) => {
+    const vid = String(v.video_id || "");
+    const title = String(v.title || v.desc || vid || "未命名视频");
+    const author = String(v.author_name || "");
+    const handle = String(v.channel_handle || v.channel_id || "");
+    const url = String(v.source_url || (vid ? `https://www.youtube.com/watch?v=${vid}` : ""));
+    const safe = safeUrl(url);
+    const dur = v.duration ? `${Math.floor(v.duration / 60)}:${String(v.duration % 60).padStart(2, "0")}` : "";
+    return `<tr><td class="wrap" style="max-width:340px"><b>${esc(title.slice(0, 96))}</b><div class="mut">${esc(vid)}${dur ? " · " + esc(dur) : ""}${v.published_text ? " · " + esc(v.published_text) : ""}</div></td>`
+      + `<td>${esc(author || "—")}<div class="mut"><code>${esc(handle || "—")}</code></div></td>`
+      + `<td>${fmtNum(v.play_count || 0)} 播放</td>`
+      + `<td class="acttd">`
+      + `<button class="ghost sm" onclick="quickYouTubeResultAction(${idx},'like')">点赞</button>`
+      + `<button class="ghost sm" onclick="quickYouTubeResultAction(${idx},'watch')">观看</button>`
+      + `<button class="ghost sm" onclick="quickYouTubeResultAction(${idx},'comment')">评论</button>`
+      + (safe ? `<a class="btn ghost sm" href="${esc(safe)}" target="_blank" rel="noopener noreferrer">打开</a>` : "")
+      + `</td></tr>`;
+  }).join("") || empty(4, "暂无 YouTube 搜索结果", "i-search", "输入关键词可筛选搜索视频或频道，并一键带入点赞 / 观看 / 评论");
+}
+
+async function searchYouTubeTools() {
+  const accountId = Number($("yt-search-account")?.value || 0);
+  const keyword = $("yt-search-query")?.value.trim() || "";
+  const scope = $("yt-search-scope")?.value || "videos";
+  const uploadDate = $("yt-search-date")?.value || "";
+  const duration = $("yt-search-dur")?.value || "";
+  const sortBy = $("yt-search-sort")?.value || "";
+  const limit = Math.max(1, Math.min(120, Number($("yt-search-limit")?.value || 20)));
+
+  let valid = true;
+  valid = setFieldError($("yt-search-account"), !accountId ? "请选择可用的 YouTube 账号" : "") && valid;
+  valid = setFieldError($("yt-search-query"), !keyword ? "请输入搜索关键词" : "") && valid;
+  if (!valid) return;
+
+  const status = $("yt-search-status");
+  if (status) status.textContent = "正在搜索 YouTube…";
+
+  await withBusy(evtBtn(), "搜索中", async () => {
+    try {
+      const res = await api("/api/youtube/search", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account_id: accountId, keyword, scope,
+          upload_date: scope === "videos" ? uploadDate : "",
+          duration: scope === "videos" ? duration : "",
+          sort_by: scope === "videos" ? sortBy : "",
+          limit, max_pages: Math.max(1, Math.min(6, Math.ceil(limit / 15))),
+        }),
+      });
+      YT_SEARCH_SCOPE = scope;
+      YT_SEARCH_ITEMS = Array.isArray(res.items) ? res.items : [];
+      renderYouTubeSearchResults();
+      if (status) {
+        status.textContent = res.error
+          ? `返回 ${YT_SEARCH_ITEMS.length} 条（${res.source || "api"}）；${res.error}`
+          : `共找到 ${YT_SEARCH_ITEMS.length} 条${scope === "channels" ? "频道" : "视频"}（通道：${res.source || "api"}）`;
+      }
+    } catch (e) {
+      YT_SEARCH_ITEMS = [];
+      renderYouTubeSearchResults();
+      if (status) status.textContent = "搜索失败：" + e.message;
+      toast("YouTube 搜索失败：" + e.message, "err");
+    }
+  });
+}
+
+async function quickYouTubeResultAction(index, mode) {
+  const item = YT_SEARCH_ITEMS[index];
+  if (!item) return;
+  const accountId = Number($("yt-search-account")?.value || 0);
+  if (!accountId) { toast("请先选择 YouTube 执行账号", "err"); return; }
+  const isCh = YT_SEARCH_SCOPE === "channels";
+  const targetUrl = isCh
+    ? String(item.url || (item.unique_id ? `https://www.youtube.com/${item.unique_id}` : item.sec_uid || ""))
+    : String(item.source_url || (item.video_id ? `https://www.youtube.com/watch?v=${item.video_id}` : ""));
+  if (!targetUrl) { toast("该条目缺少有效链接", "err"); return; }
+
+  if (mode === "watch") {
+    if ($("yt-watch-account")) { $("yt-watch-account").value = String(accountId); $("yt-watch-account")._csSync?.(); }
+    if ($("yt-watch-url")) $("yt-watch-url").value = targetUrl;
+    globalThis.CreatorHubWorkbench?.showSection?.("youtube-tools", "yt-watch");
+    toast("已带入「真实观看」表单，可调整时长后开始观看", "info");
+    return;
+  }
+  if (mode === "comment") {
+    if ($("yt-act-account")) { $("yt-act-account").value = String(accountId); $("yt-act-account")._csSync?.(); }
+    if ($("yt-act-type")) { $("yt-act-type").value = "comment"; $("yt-act-type")._csSync?.(); }
+    syncYouTubeInteractForm();
+    if ($("yt-act-target")) $("yt-act-target").value = targetUrl;
+    globalThis.CreatorHubWorkbench?.showSection?.("youtube-tools", "yt-interact");
+    $("yt-act-comment")?.focus();
+    toast("已带入「互动操作 → 发表主评论」，填写内容后执行", "info");
+    return;
+  }
+  const label = mode === "subscribe" ? "订阅该频道" : "点赞该视频";
+  const okConfirm = await uiConfirm({
+    title: `确认${label}`,
+    message: `确认使用当前所选 YouTube 账号对「${item.title || item.nickname || targetUrl}」执行${label}？`,
+  });
+  if (!okConfirm) return;
+  try {
+    await api("/api/youtube/interact", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        account_id: accountId,
+        action: mode === "subscribe" ? "subscribe" : "like",
+        target_url: targetUrl,
+        channel_name: $("yt-act-channel")?.value.trim() || "",
+      }),
+    });
+    toast(`YouTube ${label}成功`, "ok", 5000);
+    refreshTaskQueueBadge();
+  } catch (e) {
+    toast(`YouTube ${label}失败：${e.message}`, "err", 7000);
+  }
+}
+
+function renderYouTubeManagedChannels() {
+  const body = $("yt-channel-results");
+  if (!body) return;
+  body.innerHTML = YT_MANAGED_CHANNELS.map((ch, idx) => {
+    const name = String(ch.name || ch.title || "");
+    const handle = String(ch.handle || ch.channel_id || "");
+    const av = ch.avatar
+      ? `<img class="avatar" src="${esc(safeMediaUrl(ch.avatar))}" alt="" referrerpolicy="no-referrer">`
+      : `<span class="wb-avatar-fallback" aria-hidden="true">${esc((name || "C").slice(0, 1))}</span>`;
+    return `<tr><td><div class="user-cell">${av}<div><b>${esc(name || "未命名频道")}</b></div></div></td>`
+      + `<td><code>${esc(handle || "—")}</code></td>`
+      + `<td>${esc(ch.subscribers_text || (ch.subscribers_count ? fmtNum(ch.subscribers_count) : "—"))}</td>`
+      + `<td><span class="pill ${ch.is_selected ? "ok" : ""}">${ch.is_selected ? "当前默认" : "可切换"}</span></td>`
+      + `<td class="acttd"><button class="ghost sm" onclick="applyYouTubeBrandChannel(${idx})">设为操作频道</button></td></tr>`;
+  }).join("") || empty(5, "尚未同步多频道列表", "i-user", "点击「同步账号下多频道」读取该 Google 账号下全部个人与品牌频道");
+}
+
+function applyYouTubeBrandChannel(index) {
+  const ch = YT_MANAGED_CHANNELS[index];
+  if (!ch) return;
+  const name = String(ch.name || ch.title || ch.handle || "").trim();
+  if (!name) return;
+  for (const id of ["yt-act-channel", "yt-watch-channel", "pub-yt-channel"]) {
+    if ($(id)) $(id).value = name;
+  }
+  toast(`已将「${name}」设为当前操作品牌频道（互动 / 观看 / 发布已同步填入）`, "ok", 5000);
+}
+
+async function syncYouTubeManagedChannels() {
+  const accountId = Number($("yt-search-account")?.value || $("yt-act-account")?.value || 0);
+  if (!accountId) { toast("请先选择可用的 YouTube 账号", "err"); return; }
+  const status = $("yt-search-status");
+  if (status) status.textContent = "正在读取当前 Google 账号下的可管理频道列表…";
+  await withBusy(evtBtn(), "同步中", async () => {
+    try {
+      const res = await api("/api/youtube/channels", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account_id: accountId }),
+      });
+      YT_MANAGED_CHANNELS = Array.isArray(res.items) ? res.items : [];
+      renderYouTubeManagedChannels();
+      if (status) {
+        status.textContent = res.error
+          ? `已读取 ${YT_MANAGED_CHANNELS.length} 个频道；${res.error}`
+          : `已同步 ${YT_MANAGED_CHANNELS.length} 个可管理频道（通道：${res.source || "api"}）`;
+      }
+      toast(`已同步 ${YT_MANAGED_CHANNELS.length} 个 YouTube 频道`, "ok");
+    } catch (e) {
+      if (status) status.textContent = "同步多频道失败：" + e.message;
+      toast("同步多频道失败：" + e.message, "err");
+    }
   });
 }

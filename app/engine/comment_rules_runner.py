@@ -16,7 +16,7 @@ from app.ai_copywriting import (
     get_copywriting_config,
     resolve_runtime_ai,
 )
-from app.browser import fetch_comments, fetch_creator_comments, fetch_facebook_comments, fetch_facebook_search, fetch_facebook_self_profile, fetch_facebook_user_posts, fetch_ig_comments, fetch_ig_posts, fetch_ig_search, fetch_ks_comments, fetch_ks_videos, fetch_twitter_self_profile, fetch_videos
+from app.browser import fetch_comments, fetch_creator_comments, fetch_facebook_comments, fetch_facebook_search, fetch_facebook_self_profile, fetch_facebook_user_posts, fetch_ig_comments, fetch_ig_posts, fetch_ig_search, fetch_ks_comments, fetch_ks_videos, fetch_twitter_self_profile, fetch_videos, fetch_youtube_self_profile
 from app.db import get_session
 from app.engine import compose
 from app.engine.cadence import bounded_ratio
@@ -28,6 +28,7 @@ from app.platforms.instagram import InstagramClient, parse_ig_aweme
 from app.platforms.kuaishou import flatten_ks_comments, parse_ks_comment, parse_ks_feed
 from app.platforms.twitter import parse_twitter_aweme
 from app.platforms.facebook import parse_facebook_aweme, post_url as fb_post_url
+from app.platforms.youtube import parse_youtube_aweme, video_url as yt_video_url
 from app.platforms.xhs import XhsApiError, flatten_comments as flatten_xhs_comments, parse_note_brief, parse_comment as parse_xhs_comment
 from app.risk import OperationKind, RiskCategory, classify_platform_error
 
@@ -1417,6 +1418,123 @@ class CommentRuleRunnerMixin:
                         "work_desc": wdesc,
                         "is_reply": bool(c.get("reply_to")),
                         "create_time": ct,
+                    })
+            return cands, ("" if cands else err)
+        # ── YouTube: 协议优先（SSR + Innertube）+ 隔离浏览器回退 ──
+        if platform == "youtube":
+            yt_mode = str(getattr(self.cfg.engine, "youtube_read_mode", "hybrid") or "hybrid").lower()
+            if identity is None and yt_mode == "browser":
+                return [], "缺少 YouTube 账号浏览器隔离身份"
+            if mode == "auto_comment":
+                if kind == "keyword":
+                    rows, err = await self._yt_read_search(
+                        identity,
+                        rf["keyword"],
+                        sort_by="date",
+                        max_pages=3,
+                        max_items=max(20, self.cfg.engine.comment_recent_works * 2),
+                        state=state,
+                        proxy=proxy,
+                    )
+                else:
+                    rows, _a, err = await self._yt_read_channel_videos(
+                        identity,
+                        rf["sec_uid"],
+                        max_pages=3,
+                        max_items=max(20, self.cfg.engine.comment_recent_works * 2),
+                        include_shorts=True,
+                        state=state,
+                        proxy=proxy,
+                    )
+                if err == "empty":
+                    err = ""
+                for r in rows[: self.cfg.engine.comment_recent_works]:
+                    aw = parse_youtube_aweme(r)
+                    if aw:
+                        cands.append({
+                            "aweme_id": aw.source_url or aw.aweme_id,
+                            "xsec_token": "",
+                            "target_comment_id": "",
+                            "target_nick": aw.author_name or aw.author_unique_id,
+                            "ctx": {"kw": rf["keyword"]} if kind == "keyword" else {},
+                            "source_text": aw.desc,
+                        })
+                return cands, err
+
+            # auto_reply: 回复自己 YouTube 频道近期视频下的新评论
+            works_to_check_yt: list[tuple[str, str]] = []
+            err = ""
+            if rf["target_kind"] == "work" and rf["aweme_id"]:
+                wid = rf["aweme_id"]
+                works_to_check_yt = [(wid, wid if str(wid).startswith("http") else yt_video_url(wid))]
+            else:
+                target_self = acc_sec_uid or rf.get("account_uid", "")
+                if not target_self and state and yt_mode in {"api", "hybrid"}:
+                    ycli_self = self._make_youtube_client(identity, state=state, proxy=proxy)
+                    async with ycli_self.session_scope():
+                        prof, p_err = await ycli_self.fetch_self_profile()
+                    if p_err.startswith(("logged_out:", "verification_required:")):
+                        return [], p_err
+                    if prof:
+                        target_self = str(prof.get("unique_id") or prof.get("sec_uid") or prof.get("uid") or "")
+                if not target_self and identity is not None:
+                    prof, p_err = await fetch_youtube_self_profile(self.browser, identity)
+                    if p_err and not prof:
+                        return [], p_err
+                    target_self = str((prof or {}).get("unique_id") or (prof or {}).get("sec_uid") or (prof or {}).get("uid") or "")
+                if target_self:
+                    feed_rows, _a, err = await self._yt_read_channel_videos(
+                        identity,
+                        target_self,
+                        max_pages=3,
+                        max_items=max(20, self.cfg.engine.comment_recent_works * 2),
+                        include_shorts=True,
+                        state=state,
+                        proxy=proxy,
+                    )
+                    if err == "empty":
+                        err = ""
+                    cutoff = int(time.time()) - max(0, self.cfg.engine.comment_recent_days) * 86400
+                    for r in feed_rows:
+                        aw = parse_youtube_aweme(r)
+                        if aw and (not cutoff or not aw.create_time or aw.create_time >= cutoff):
+                            works_to_check_yt.append((aw.aweme_id, aw.source_url or yt_video_url(aw.aweme_id)))
+                        if len(works_to_check_yt) >= self.cfg.engine.comment_recent_works:
+                            break
+            comment_cutoff = int(time.time()) - max(0, self.cfg.engine.comment_recent_days) * 86400
+            for pid, purl in works_to_check_yt:
+                c_rows, c_err, _ = await self._yt_read_comments(
+                    identity,
+                    purl,
+                    max_pages=4,
+                    max_count=40,
+                    include_replies=False,
+                    state=state,
+                    proxy=proxy,
+                )
+                if c_err and c_err != "empty" and not c_rows:
+                    err = err or c_err
+                    continue
+                for c in c_rows:
+                    cid = str(c.get("comment_id") or "")
+                    if not cid:
+                        continue
+                    ct = int(c.get("create_time") or 0)
+                    if comment_cutoff and ct and ct < comment_cutoff:
+                        continue
+                    c_sec = str(c.get("user_sec_uid") or "").lower()
+                    if (
+                        (acc_sec_uid and c_sec == str(acc_sec_uid).lower())
+                        or (acc_nick and c.get("user_nickname") == acc_nick)
+                    ):
+                        continue
+                    cands.append({
+                        "aweme_id": purl,
+                        "xsec_token": "",
+                        "target_comment_id": cid,
+                        "target_nick": c.get("user_nickname", ""),
+                        "ctx": {"nick": c.get("user_nickname", "")},
+                        "source_text": c.get("text", ""),
                     })
             return cands, ("" if cands else err)
         # ── 抖音:浏览器自动化(发现仍用拦截抓取)──

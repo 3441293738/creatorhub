@@ -65,6 +65,7 @@ async def create_keyword_collection(body: collections_service.KeywordCollectionI
     await collections_service._resolve_ig_creator_source(body)
     await collections_service._resolve_twitter_creator_source(body)
     await collections_service._resolve_facebook_creator_source(body)
+    await collections_service._resolve_youtube_creator_source(body)
     with get_session() as session:
         def create():
             platform, keywords, quality, download_dir, options = collections_service._validated_collection_input(body)
@@ -107,6 +108,7 @@ async def update_keyword_collection(job_id: int, body: collections_service.Keywo
     await collections_service._resolve_ig_creator_source(body)
     await collections_service._resolve_twitter_creator_source(body)
     await collections_service._resolve_facebook_creator_source(body)
+    await collections_service._resolve_youtube_creator_source(body)
     platform, keywords, quality, download_dir, options = collections_service._validated_collection_input(body)
     with get_session() as session:
         job = session.get(KeywordCollectionJob, job_id)
@@ -154,7 +156,7 @@ async def list_keyword_collections(platform: str | None = None, limit: int = 100
     limit = max(1, min(limit, 300))
     with get_session() as session:
         stmt = select(KeywordCollectionJob)
-        if platform in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"}:
+        if platform in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"}:
             stmt = stmt.where(KeywordCollectionJob.platform == platform)
         rows = session.exec(
             stmt.order_by(KeywordCollectionJob.created_at.desc()).limit(limit)).all()
@@ -278,6 +280,8 @@ async def keyword_collection_content_media(job_id: int, content_id: int):
                            if row.platform == "twitter"
                            else (row.source_url or f"https://www.facebook.com/{row.aweme_id}")
                            if row.platform == "facebook"
+                           else (row.source_url or f"https://www.youtube.com/watch?v={row.aweme_id}")
+                           if row.platform == "youtube"
                            else f"https://www.douyin.com/video/{row.aweme_id}"),
         }
 

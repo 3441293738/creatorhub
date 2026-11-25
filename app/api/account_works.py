@@ -18,6 +18,7 @@ from app.platforms.douyin import cookie_from_state as douyin_cookie_from_state
 from app.platforms.facebook import FacebookClient
 from app.platforms.instagram import InstagramClient
 from app.platforms.rednote import delete_rednote_work, update_rednote_visibility
+from app.platforms.youtube import YouTubeClient
 from app.risk import OperationKind
 from app.services import thumb_cache
 from app.services import watch_records as watch_records_service
@@ -67,22 +68,22 @@ async def sync_account_works(account_id: int):
         uid = (
             acc.douyin_id if platform == "tiktok"
             else (acc.douyin_id or acc.sec_uid or acc.uid) if platform == "twitter"
-            else (acc.sec_uid or acc.uid or acc.douyin_id) if platform in {"instagram", "facebook"}
+            else (acc.sec_uid or acc.uid or acc.douyin_id) if platform in {"instagram", "facebook", "youtube"}
             else acc.sec_uid
         ) or ""
         transport = (
             resolve_transport(app_runtime.cfg, platform, "account_works", acc)
-            if platform in {"douyin", "bilibili", "rednote", "instagram", "twitter", "facebook"}
+            if platform in {"douyin", "bilibili", "rednote", "instagram", "twitter", "facebook", "youtube"}
             else None
         )
         effective_mode = transport["effective_mode"] if transport else "browser"
         if app_runtime.browser is None and effective_mode in {"browser"}:
             raise HTTPException(503, "浏览器未就绪")
-        if app_runtime.browser is None and effective_mode == "hybrid" and platform not in {"bilibili", "rednote", "instagram", "facebook"}:
+        if app_runtime.browser is None and effective_mode == "hybrid" and platform not in {"bilibili", "rednote", "instagram", "facebook", "youtube"}:
             raise HTTPException(503, "浏览器未就绪")
         identity = (
             None
-            if platform in {"douyin", "bilibili", "rednote", "instagram", "facebook"} and effective_mode == "api"
+            if platform in {"douyin", "bilibili", "rednote", "instagram", "facebook", "youtube"} and effective_mode == "api"
             else (
                 app_runtime.browser.identity_for(acc)
                 if callable(getattr(app_runtime.browser, "identity_for", None))
@@ -102,6 +103,8 @@ async def sync_account_works(account_id: int):
         ig_tz = (acc.timezone_id or "Asia/Shanghai") if platform == "instagram" else "Asia/Shanghai"
         fb_state = (acc.storage_state or acc.creator_storage_state or acc.cookie or "") if platform == "facebook" else ""
         fb_proxy = (acc.proxy or "") if platform == "facebook" else ""
+        yt_state = (acc.storage_state or acc.creator_storage_state or acc.cookie or "") if platform == "youtube" else ""
+        yt_proxy = (acc.proxy or "") if platform == "youtube" else ""
     async def _fetch():
         nonlocal source
         if platform == "douyin" and effective_mode in {"api", "hybrid"}:
@@ -181,6 +184,43 @@ async def sync_account_works(account_id: int):
                 source = "api"
                 return [], fb_err or "empty"
             source = "browser_fallback"
+        elif platform == "youtube" and effective_mode in {"api", "hybrid"} and yt_state:
+            ycli = YouTubeClient(
+                yt_state,
+                direct_ua,
+                proxy=yt_proxy,
+                timeout=app_runtime.cfg.engine.request_timeout_seconds,
+            )
+            async with ycli.session_scope():
+                target_u = uid
+                if "@" in target_u and not target_u.startswith("@") and "." in target_u.split("@", 1)[1]:
+                    target_u = ""
+                if not target_u:
+                    prof, perr = await ycli.fetch_self_profile()
+                    if prof:
+                        target_u = str(prof.get("unique_id") or prof.get("sec_uid") or prof.get("uid") or "")
+                        if not target_u:
+                            # 已登录的 Google 账号尚未创建 YouTube 频道或暂无公开句柄 -> 确认 0 作品而非报错
+                            source = "api"
+                            return [], "empty_confirmed"
+                    elif perr and (effective_mode == "api" or app_runtime.browser is None):
+                        source = "api"
+                        return [], perr
+                yt_works, yt_err = (
+                    await ycli.fetch_all_creator_works(target_u, max_pages=6)
+                    if target_u
+                    else ([], "empty")
+                )
+            if yt_works:
+                source = "api"
+                return yt_works, ""
+            if yt_err == "empty" and target_u:
+                source = "api"
+                return [], "empty_confirmed"
+            if effective_mode == "api" or yt_err.startswith(("verification_required", "rate_limit")) or app_runtime.browser is None:
+                source = "api"
+                return [], yt_err or "empty"
+            source = "browser_fallback"
         else:
             source = "browser"
         return await fetch_account_works(app_runtime.browser, identity, platform, uid)
@@ -251,7 +291,7 @@ async def sync_account_works(account_id: int):
     thumb_cache.schedule_thumb_prewarm(
         [str(w.get("cover_url") or "") for w in items],
         platform=platform,
-        proxy=(bili_proxy or ig_proxy or fb_proxy or (acc.proxy if acc else "") or ""),
+        proxy=(bili_proxy or ig_proxy or fb_proxy or yt_proxy or (acc.proxy if acc else "") or ""),
     )
     return {"ok": True, "fetched": len(items), "added": added,
             "source": source,

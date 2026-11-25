@@ -23,6 +23,13 @@ from app.platforms.facebook import (
     parse_facebook_credential_input,
 )
 from app.platforms.twitter import TwitterClient, build_twitter_storage_state, parse_twitter_credential_input, cookie_str_from_state as twitter_cookie_str_from_state
+from app.platforms.youtube import (
+    YouTubeClient,
+    build_youtube_storage_state,
+    cookie_str_from_state as youtube_cookie_str_from_state,
+    has_youtube_login_cookies,
+    parse_youtube_credential_input,
+)
 from app.profiles import assign_proxy_from_pool, ensure_identity, inspect_account_proxy_risk
 from app.services import login_flows as login_flows_service
 from app.services import login_sessions as login_sessions_service
@@ -395,6 +402,32 @@ async def login_facebook_start(proxy: str = "auto", browser_backend: str = "defa
             "hint": "已打开 Facebook 登录窗口，请完成登录及双重验证/安全检查(如有)"}
 
 
+@router.post("/api/login/youtube/start")
+async def login_youtube_start(proxy: str = "auto", browser_backend: str = "default",
+                              browser_runtime_id: str = "",
+                              fingerprint: dict[str, Any] | None = None):
+    """YouTube 独立浏览器登录；`.youtube.com` / Google 会话同时用于采集、互动与 Studio 发布。"""
+    if app_runtime.browser is None:
+        raise HTTPException(503, "浏览器未就绪")
+    browser_backend, browser_runtime_id = login_flows_service._validate_login_browser_backend(
+        browser_backend, browser_runtime_id)
+    fingerprint_overrides = login_flows_service._validate_prelogin_fingerprint(
+        fingerprint, browser_backend, browser_runtime_id)
+    reused = await login_sessions_service._reuse_or_reject_interactive_login("youtube", False)
+    if reused is not None:
+        return reused
+    task_id = uuid.uuid4().hex
+    app_runtime.login_tasks[task_id] = login_sessions_service._login_task_state(
+        status="opening", platform="youtube", creator=False, account_id=None)
+    asyncio.create_task(login_flows_service._run_login(
+        task_id, platform="youtube", proxy_choice=proxy,
+        browser_backend=browser_backend,
+        browser_runtime_id=browser_runtime_id,
+        fingerprint_overrides=fingerprint_overrides))
+    return {"task_id": task_id, "status": "opening",
+            "hint": "已打开 YouTube / Google 登录窗口，请完成登录及两步验证/通行密钥(如有)"}
+
+
 @router.get("/api/login/browser/poll")
 async def login_browser_poll(task_id: str):
     info = app_runtime.login_tasks.get(task_id)
@@ -414,8 +447,109 @@ class CookieIn(BaseModel):
 
 @router.post("/api/login/cookie")
 async def login_cookie(body: CookieIn):
-    """Cookie / Token 粘贴兜底登录:转成浏览器登录态（Twitter 支持 auth_token，Facebook 支持 c_user/xs Cookie 字符串或 JSON Cookie）。"""
-    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook") else "douyin"
+    """Cookie / Token 粘贴兜底登录:转成浏览器登录态（Twitter 支持 auth_token，Facebook 支持 c_user/xs，YouTube 支持 SAPISID/SID Cookie 字符串或 JSON Cookie）。"""
+    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube") else "douyin"
+    if platform == "youtube":
+        cookie_raw = (body.cookie or "").strip()
+        yt_cookies, yt_hint = parse_youtube_credential_input(cookie_raw)
+        if not has_youtube_login_cookies(yt_cookies):
+            raise HTTPException(
+                400,
+                "未识别到有效的 YouTube 登录 Cookie（需包含 SAPISID/__Secure-3PAPISID 以及 SID/__Secure-3PSID/HSID），可粘贴浏览器 Cookie 字符串、Netscape/JSON Cookie 或 Playwright storage_state",
+            )
+        initial_state = build_youtube_storage_state(yt_cookies)
+        with get_session() as s:
+            probe_proxy = assign_proxy_from_pool(s, app_runtime.cfg, platform="youtube")
+            probe_ua = app_runtime.cfg.engine.user_agent
+        ycli = YouTubeClient(
+            initial_state,
+            probe_ua,
+            proxy=probe_proxy,
+            timeout=15.0,
+        )
+        try:
+            async with ycli.session_scope():
+                prof, err = await ycli.fetch_self_profile()
+        except Exception as exc:
+            prof, err = {}, str(exc)
+        prof = prof if isinstance(prof, dict) else {}
+
+        if err.startswith("logged_out:"):
+            raise HTTPException(400, "该 YouTube Cookie 无效或已过期，请核对后重试")
+
+        final_cookies = ycli.cookies if has_youtube_login_cookies(ycli.cookies) else yt_cookies
+        final_state = build_youtube_storage_state(final_cookies)
+        final_cookie_str = youtube_cookie_str_from_state(final_state)
+        resolved_uid = str(prof.get("uid") or prof.get("sec_uid") or "").strip()
+        resolved_handle = str(prof.get("douyin_id") or prof.get("unique_id") or yt_hint or resolved_uid).strip()
+        resolved_nick = (
+            body.nickname.strip()
+            or str(prof.get("nickname") or "").strip()
+            or (resolved_handle if resolved_handle else "YouTube账号")
+        )
+
+        with get_session() as s:
+            acc = None
+            if resolved_uid:
+                acc = s.exec(
+                    select(DouyinAccount).where(
+                        DouyinAccount.platform == "youtube",
+                        DouyinAccount.uid == resolved_uid,
+                    )
+                ).first()
+            if acc is None and resolved_handle:
+                acc = s.exec(
+                    select(DouyinAccount).where(
+                        DouyinAccount.platform == "youtube",
+                        DouyinAccount.sec_uid == resolved_handle,
+                    )
+                ).first()
+            if acc is None:
+                acc = DouyinAccount(
+                    nickname=resolved_nick,
+                    platform="youtube",
+                    identity_mode="native",
+                )
+            elif body.nickname.strip():
+                acc.nickname = body.nickname.strip()
+            elif prof.get("nickname"):
+                acc.nickname = str(prof["nickname"]).strip()
+
+            acc.cookie = final_cookie_str
+            acc.storage_state = final_state
+            acc.creator_storage_state = final_state
+            if resolved_uid:
+                acc.uid = resolved_uid
+            if resolved_handle:
+                acc.sec_uid = resolved_handle
+                acc.douyin_id = resolved_handle
+            if prof.get("avatar"):
+                acc.avatar = str(prof["avatar"])
+            if prof:
+                acc.follower_count = int(prof.get("follower_count") or 0)
+                acc.following_count = int(prof.get("following_count") or 0)
+                acc.aweme_count = int(prof.get("aweme_count") or 0)
+                acc.status = "active"
+            elif err.startswith("verification_required:"):
+                acc.status = "verify"
+            if not acc.proxy and probe_proxy:
+                acc.proxy = probe_proxy
+            s.add(acc); s.commit(); s.refresh(acc)
+            ensure_identity(acc, app_runtime.cfg, session=s, assign_proxy=True)
+            s.add(acc); s.commit(); s.refresh(acc)
+            proxy_warns = inspect_account_proxy_risk(
+                s,
+                platform="youtube",
+                proxy_url=acc.proxy or "",
+                exclude_account_id=acc.id,
+                candidate_exit_ip=acc.exit_ip or "",
+            )
+            return {
+                "account_id": acc.id,
+                "nickname": acc.nickname,
+                "warning": err if err.startswith("verification_required:") else "",
+                "proxy_warning": "；".join(proxy_warns),
+            }
     if platform == "facebook":
         cookie_raw = (body.cookie or "").strip()
         fb_cookies, fb_hint = parse_facebook_credential_input(cookie_raw)
@@ -665,7 +799,7 @@ async def login_cookie(body: CookieIn):
             identity_mode="native", cookie=body.cookie.strip(), storage_state=state,
             proxy=allocated_proxy,
             require_proxy=False,
-            creator_storage_state=(state if platform in {"bilibili", "rednote", "instagram", "twitter", "facebook"} else ""))
+            creator_storage_state=(state if platform in {"bilibili", "rednote", "instagram", "twitter", "facebook", "youtube"} else ""))
         s.add(acc); s.commit(); s.refresh(acc)
         ensure_identity(acc, app_runtime.cfg, session=s, assign_proxy=True)
         s.add(acc); s.commit(); s.refresh(acc)

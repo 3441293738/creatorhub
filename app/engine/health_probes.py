@@ -8,7 +8,7 @@ import time
 
 from sqlmodel import select
 
-from app.browser import fetch_account_works, fetch_bili_self_profile, fetch_channels_self_profile, fetch_douyin_account_works_api, fetch_facebook_self_profile, fetch_ig_self_profile, fetch_ks_self_profile, fetch_rednote_self_profile, fetch_self_profile, fetch_twitter_self_profile, fetch_xhs_self_profile
+from app.browser import fetch_account_works, fetch_bili_self_profile, fetch_channels_self_profile, fetch_douyin_account_works_api, fetch_facebook_self_profile, fetch_ig_self_profile, fetch_ks_self_profile, fetch_rednote_self_profile, fetch_self_profile, fetch_twitter_self_profile, fetch_xhs_self_profile, fetch_youtube_self_profile
 from app.browser.tiktok_fetcher import fetch_tiktok_self_profile
 from app.db import get_session
 from app.engine.monitor_helpers import _AccountCheckBusy, _TZ_COUNTRY, _loads, log
@@ -19,6 +19,7 @@ from app.platforms.bilibili import BilibiliClient
 from app.platforms.channels import parse_self_user as parse_channels_self_user
 from app.platforms.douyin import DouyinClient, cookie_from_state as dy_cookie_from_state, parse_self_user
 from app.platforms.facebook import FacebookClient, build_facebook_storage_state
+from app.platforms.youtube import YouTubeClient
 from app.platforms.instagram import InstagramClient
 from app.platforms.kuaishou import parse_self_user as parse_ks_self_user
 from app.platforms.rednote import (
@@ -54,6 +55,7 @@ _PLATFORM_LABELS = {
     "instagram": "Instagram",
     "twitter": "X (Twitter)",
     "facebook": "Facebook",
+    "youtube": "YouTube",
 }
 
 
@@ -791,6 +793,38 @@ class HealthProbeMixin:
                             cookie_refreshed = True
                             keepalive_notes.append("Facebook 浏览器登录态已同步")
 
+                elif platform == "youtube":
+                    ymode = str(getattr(
+                        self.cfg.engine, "youtube_read_mode", "hybrid") or "hybrid").lower()
+                    u, err = {}, ""
+                    used_browser = False
+                    if ymode in {"api", "hybrid"} and state:
+                        ycli = YouTubeClient(
+                            state,
+                            identity.ua or self.cfg.engine.user_agent,
+                            proxy=proxy,
+                            timeout=self.cfg.engine.request_timeout_seconds,
+                            locale=identity.locale or "en-US",
+                        )
+                        async with ycli.session_scope():
+                            u, err = await ycli.fetch_self_profile()
+                    elif ymode == "api" and not state:
+                        u, err = {}, "logged_out:缺少 YouTube 登录态"
+                    hard_block = str(err or "").startswith(("verification_required:", "rate_limit:"))
+                    if ymode == "browser" or (not u and ymode == "hybrid" and not hard_block):
+                        u, err = await fetch_youtube_self_profile(self.browser, identity)
+                        used_browser = True
+                    if u and used_browser:
+                        if await self._sync_browser_session_state(
+                            aid, "youtube", identity, state,
+                            expected_creator_state=creator_state,
+                            scope="read",
+                            sync_cookie_str=True,
+                            note="YouTube 浏览器登录态已同步",
+                        ):
+                            cookie_refreshed = True
+                            keepalive_notes.append("YouTube 浏览器登录态已同步")
+
                 else:
                     u, err = await fetch_self_profile(self.browser, identity)
                     if u:
@@ -840,7 +874,7 @@ class HealthProbeMixin:
                         "following_count": int(u.get("following_count") or 0),
                         "aweme_count": int(u.get("video_count") or 0),
                     }
-                elif platform in {"bilibili", "instagram", "twitter", "facebook"}:
+                elif platform in {"bilibili", "instagram", "twitter", "facebook", "youtube"}:
                     parsed = dict(u)
                 else:
                     parsed = parse_self_user(u)
@@ -853,6 +887,11 @@ class HealthProbeMixin:
                     else ("已同步最新登录态" if cookie_refreshed else "登录态有效")
                 )
                 account.keepalive_note = final_note[:200]
+                if platform == "youtube":
+                    if account.sec_uid and "@" in account.sec_uid and not account.sec_uid.startswith("@"):
+                        account.sec_uid = ""
+                    if account.douyin_id and "@" in account.douyin_id and not account.douyin_id.startswith("@"):
+                        account.douyin_id = ""
                 if parsed.get("nickname"):
                     account.nickname = parsed["nickname"]
                 account.sec_uid = parsed.get("sec_uid") or account.sec_uid
@@ -904,6 +943,30 @@ class HealthProbeMixin:
                     account.total_favorited = int(parsed.get("total_favorited") or 0) or account.total_favorited
                     if parsed.get("gender"):
                         account.gender = str(parsed.get("gender") or "")
+                elif platform == "youtube":
+                    works_cnt = len(session.exec(
+                        select(AccountWork.id).where(AccountWork.account_id == aid)
+                    ).all())
+                    following_cnt = len(session.exec(
+                        select(FollowEdge.id).where(
+                            FollowEdge.account_id == aid,
+                            FollowEdge.direction == "following",
+                        )
+                    ).all())
+                    raw_subs = int(parsed.get("follower_count") or 0)
+                    if raw_subs > 0:
+                        account.follower_count = raw_subs
+                    account.following_count = max(
+                        int(parsed.get("following_count") or 0),
+                        int(account.following_count or 0),
+                        following_cnt,
+                    )
+                    account.aweme_count = max(
+                        int(parsed.get("aweme_count") or 0),
+                        int(account.aweme_count or 0),
+                        works_cnt,
+                    )
+                    account.total_favorited = int(parsed.get("total_favorited") or 0) or account.total_favorited
                 else:
                     account.follower_count = parsed.get("follower_count") or account.follower_count
                     account.aweme_count = parsed.get("aweme_count") or account.aweme_count
@@ -1115,7 +1178,7 @@ class HealthProbeMixin:
         )
         with get_session() as s:
             accs = [(a.id, a.platform,
-                     (a.sec_uid or a.uid or a.douyin_id or "") if a.platform in {"instagram", "twitter", "facebook"} else (a.sec_uid or ""),
+                     (a.sec_uid or a.uid or a.douyin_id or "") if a.platform in {"instagram", "twitter", "facebook", "youtube"} else (a.sec_uid or ""),
                      self.browser.identity_for(a))
                     for a in s.exec(select(DouyinAccount)).all()
                     if a.status != "invalid" and (a.storage_state or a.creator_storage_state)]

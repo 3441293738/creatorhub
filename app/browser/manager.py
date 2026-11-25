@@ -2098,6 +2098,7 @@ _COOKIE_DOMAIN = {
     "instagram": ".instagram.com",
     "twitter": ".x.com",
     "facebook": ".facebook.com",
+    "youtube": ".youtube.com",
 }
 
 
@@ -2119,6 +2120,14 @@ def cookie_string_to_state(cookie_str: str, platform: str = "douyin") -> str:
         fb_cookies, _ = parse_facebook_credential_input(cookie_str)
         if fb_cookies:
             return build_facebook_storage_state(fb_cookies)
+    if platform == "youtube":
+        from ..platforms.youtube.protocol import (
+            build_youtube_storage_state,
+            parse_youtube_credential_input,
+        )
+        yt_cookies, _ = parse_youtube_credential_input(cookie_str)
+        if yt_cookies:
+            return build_youtube_storage_state(yt_cookies)
     domains = (
         [".x.com", ".twitter.com"]
         if platform == "twitter"

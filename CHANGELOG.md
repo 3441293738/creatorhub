@@ -4,6 +4,12 @@
 
 ## [未发布]
 
+### YouTube 平台完整接入（第十一大平台）
+
+- **账号登录与多频道管理**：支持 YouTube / Google 独立隔离浏览器登录及 Cookie（`SAPISID` / `__Secure-3PAPISID` + `SID` / `__Secure-3PSID` / `HSID`）字符串、Netscape/JSON Cookie 与 Playwright `storage_state` 粘贴导入；支持 `/channel_switcher` 多频道（个人频道与品牌频道）列表同步与发布/互动前自动切换；严格识别 Google 登录与验证跳转，绝不自动绕过验证码。
+- **混合协议直采、监控与无损下载**：新增 `app/platforms/youtube/` 核心协议包（首屏 SSR `ytInitialData` / `ytInitialPlayerResponse` + 新版频道 `lockupViewModel` 解析 + Innertube Web `/youtubei/v1/{search,browse,next,account/account_menu}` + `SAPISIDHASH` 认证 + `SOCS=CAI` 同意态）与 `app/browser/youtube_fetcher.py` 隔离浏览器回退，支持 `hybrid`（默认协议优先）/ `api` / `browser` 三模式切换；完整覆盖关键词筛选搜索（上传时间/时长/排序）、频道视频与 Shorts 采集（自动补齐详情页点赞数与总评论数、Unicode 中文 Handle 解码）、作品与评论监控、已订阅频道同步（单账号面板按平台能力自动隐藏不公开的粉丝列表与无站内功能的私信入口）、`/api/yt-media-thumb` 本地持久化封面缓存，以及基于 `yt-dlp` + `yt-dlp-ejs` + 内置 Node/FFmpeg 的 1080p/4K 无损合流 MP4 下载与多客户端自动回退。
+- **YouTube Studio 发布与「互动与养号」工作台面板**：支持通过账号隔离浏览器在 YouTube Studio 上传常规视频与 Shorts（自动切换品牌频道、填写标题/简介/Tags/播放列表/自定义缩略图/儿童向受众/公开·不公开列出·私享·即时首映，以及发布成功后自动追加首评）；新增 YouTube 专属侧栏入口「互动与养号」（含「互动操作 / 真实观看 / 关键词养号 / 发现与多频道」四分区标签页）及配套后端接口 `/api/youtube/{channels,search,interact,watch,warmup}`，支持视频点赞/点踩、订阅/取关、评论/回复、单条或批量评论点赞、修改频道名称、按时长或观看百分比真实播放（自动跳过广告并联动赞/订/评）、关键词搜索浏览养号、筛选搜索一键联动互动以及多频道同步切换；同步升级十一平台前端工作台、矩阵群发、AI 文案与助手、桌面端壳层、在线演示预览与使用指南。
+
 ## [0.5.0]
 
 ### Facebook 平台完整接入（第十大平台）

@@ -5,6 +5,7 @@ from app.browser.bili_fetcher import fetch_bili_comments, fetch_bili_search, fet
 from app.browser.facebook_fetcher import fetch_facebook_comments, fetch_facebook_search, fetch_facebook_self_profile, fetch_facebook_user_posts
 from app.browser.ig_fetcher import fetch_ig_comments, fetch_ig_posts, fetch_ig_search
 from app.browser.twitter_fetcher import fetch_twitter_comments, fetch_twitter_search, fetch_twitter_self_profile, fetch_twitter_user_tweets
+from app.browser.youtube_fetcher import fetch_youtube_channel_videos, fetch_youtube_comments, fetch_youtube_search, fetch_youtube_self_profile
 from app.models import KeywordCollectionJob
 from app.platforms.bilibili import BilibiliClient, resolve_bili_mid
 from app.platforms.facebook import (
@@ -16,6 +17,7 @@ from app.platforms.facebook import (
 )
 from app.platforms.instagram import InstagramClient, resolve_ig_user_target
 from app.platforms.twitter import TwitterClient, resolve_twitter_user_target
+from app.platforms.youtube import YouTubeClient, resolve_youtube_channel_target, video_url as yt_video_url
 
 
 class CollectionSocialMixin:
@@ -710,6 +712,183 @@ class CollectionSocialMixin:
             elif mode == "browser":
                 err = b_err
         if err in {"empty", "api_empty_comments"}:
+            err = ""
+        if not include_replies:
+            comments = [c for c in comments if not c.get("reply_to")]
+        return comments[:limit], err
+
+    async def _discover_youtube_keyword(
+        self,
+        keyword: str,
+        job: KeywordCollectionJob,
+        *,
+        yt_client: YouTubeClient | None = None,
+        identity=None,
+    ) -> tuple[list[dict], str]:
+        mode = str(getattr(self.cfg.engine, "youtube_read_mode", "hybrid") or "hybrid").lower()
+        max_pages = max(1, min(12, int(job.max_pages_per_keyword or 4)))
+        target_items = max(10, int(job.max_contents_per_keyword or 20) * 2)
+        upload_date = {"day": "today", "week": "week", "half_year": "year"}.get(str(job.publish_time or ""), "")
+        sort_by = {"latest": "date", "most_liked": "views"}.get(str(job.search_sort or ""), "")
+        items: list[dict] = []
+        err = ""
+        if mode in {"api", "hybrid"} and yt_client is not None:
+            items, err = await yt_client.search_videos(
+                keyword,
+                max_items=target_items,
+                max_pages=max_pages,
+                upload_date=upload_date,
+                sort_by=sort_by,
+            )
+            if err.startswith(("verification_required:", "rate_limit:")) or (mode == "api" and err.startswith("logged_out:")):
+                return items, err
+        if (mode == "browser" or (mode == "hybrid" and not items)) and identity is not None:
+            b_items, b_err = await fetch_youtube_search(
+                self.browser,
+                identity,
+                keyword,
+                max_scrolls=max_pages,
+                limit=target_items,
+                upload_date=upload_date,
+                sort_by=sort_by,
+                block_media=self.cfg.engine.block_media_resources,
+            )
+            if b_items:
+                items = b_items
+                err = ""
+            elif mode == "browser" or not items:
+                err = b_err or err
+        return items, ("" if items or err == "empty" else err)
+
+    async def _discover_youtube_creator(
+        self,
+        job: KeywordCollectionJob,
+        *,
+        yt_client: YouTubeClient | None = None,
+        identity=None,
+    ) -> tuple[list[dict], str]:
+        key, _url = resolve_youtube_channel_target(job.source_ref)
+        ch_ref = key or str(job.source_ref or "").strip()
+        if not ch_ref:
+            return [], "无法解析 YouTube 频道标识"
+        mode = str(getattr(self.cfg.engine, "youtube_read_mode", "hybrid") or "hybrid").lower()
+        max_pages = max(1, min(12, int(job.max_pages_per_keyword or 4)))
+        target_items = max(10, int(job.max_contents_per_keyword or 20) * 2)
+        items: list[dict] = []
+        err = ""
+        if mode in {"api", "hybrid"} and yt_client is not None:
+            items, _prof, err = await yt_client.fetch_channel_videos(
+                ch_ref,
+                tab="videos",
+                max_items=target_items,
+                max_pages=max_pages,
+                include_shorts=True,
+            )
+            if err.startswith(("verification_required:", "rate_limit:")) or (mode == "api" and err.startswith("logged_out:")):
+                return items, err
+        if (mode == "browser" or (mode == "hybrid" and not items)) and identity is not None:
+            b_items, _prof, b_err = await fetch_youtube_channel_videos(
+                self.browser,
+                identity,
+                ch_ref,
+                tab="videos",
+                max_scrolls=max_pages,
+                limit=target_items,
+                include_shorts=True,
+                block_media=self.cfg.engine.block_media_resources,
+            )
+            if b_items:
+                items = b_items
+                err = ""
+            elif mode == "browser" or not items:
+                err = b_err or err
+        return items, ("" if items or err == "empty" else err)
+
+    async def _discover_youtube_account(
+        self,
+        account,
+        job: KeywordCollectionJob,
+        *,
+        yt_client: YouTubeClient | None = None,
+        identity=None,
+    ) -> tuple[list[dict], str]:
+        def _clean_ref(v: Any) -> str:
+            s = str(v or "").strip()
+            if not s or ("@" in s and not s.startswith("@")):
+                return ""
+            return s
+
+        ch_ref = (
+            _clean_ref(getattr(account, "douyin_id", ""))
+            or _clean_ref(getattr(account, "sec_uid", ""))
+            or _clean_ref(getattr(account, "uid", ""))
+        )
+        if not ch_ref and yt_client is not None:
+            prof, p_err = await yt_client.fetch_self_profile()
+            if p_err.startswith("verification_required:") or (p_err.startswith("logged_out:") and identity is None):
+                return [], p_err
+            if prof:
+                ch_ref = _clean_ref(prof.get("unique_id")) or _clean_ref(prof.get("sec_uid")) or _clean_ref(prof.get("uid"))
+        if not ch_ref and identity is not None:
+            prof, p_err = await fetch_youtube_self_profile(self.browser, identity)
+            if p_err.startswith(("logged_out:", "verification_required:")):
+                return [], p_err
+            if prof:
+                ch_ref = _clean_ref(prof.get("unique_id")) or _clean_ref(prof.get("sec_uid")) or _clean_ref(prof.get("uid"))
+        if not ch_ref:
+            return [], "未获取到当前 YouTube 账号频道标识（若尚未创建公开频道，请先在 YouTube 创建频道后再采集）"
+        clone_job = KeywordCollectionJob(
+            platform="youtube",
+            account_id=getattr(account, "id", 0) or 0,
+            source_type="creator",
+            source_ref=ch_ref,
+            max_contents_per_keyword=job.max_contents_per_keyword,
+            max_pages_per_keyword=job.max_pages_per_keyword,
+        )
+        return await self._discover_youtube_creator(clone_job, yt_client=yt_client, identity=identity)
+
+    async def _youtube_comments(
+        self,
+        identity,
+        work_id: str,
+        limit: int,
+        include_replies: bool,
+        *,
+        yt_client: YouTubeClient | None = None,
+        target_url: str = "",
+    ) -> tuple[list[dict], str]:
+        if limit <= 0:
+            return [], ""
+        mode = str(getattr(self.cfg.engine, "youtube_read_mode", "hybrid") or "hybrid").lower()
+        url = target_url or (work_id if str(work_id).startswith("http") else yt_video_url(work_id))
+        max_pages = max(2, min(12, limit // 15 or 4))
+        comments: list[dict] = []
+        err = ""
+        if mode in {"api", "hybrid"} and yt_client is not None:
+            comments, err = await yt_client.fetch_video_comments(
+                url,
+                max_items=limit,
+                max_pages=max_pages,
+            )
+            if err.startswith(("verification_required:", "rate_limit:")) or (mode == "api" and err.startswith("logged_out:")):
+                if not include_replies:
+                    comments = [c for c in comments if not c.get("reply_to")]
+                return comments[:limit], err
+        if (mode == "browser" or (mode == "hybrid" and not comments)) and identity is not None:
+            b_comments, b_err = await fetch_youtube_comments(
+                self.browser,
+                identity,
+                url,
+                max_scrolls=max_pages,
+                limit=limit,
+                block_media=self.cfg.engine.block_media_resources,
+            )
+            if b_comments:
+                comments = b_comments
+                err = ""
+            elif mode == "browser":
+                err = b_err or err
+        if err == "empty":
             err = ""
         if not include_replies:
             comments = [c for c in comments if not c.get("reply_to")]

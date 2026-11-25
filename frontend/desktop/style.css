@@ -1079,6 +1079,8 @@ kbd, .key-button {
 :root[data-theme=dark] .pf-twitter { background: rgba(56, 189, 248, 0.18); color: #38bdf8; }
 .pf-facebook { background: rgba(24, 119, 242, 0.15); color: #1565d8; }
 :root[data-theme=dark] .pf-facebook { background: rgba(96, 165, 250, 0.18); color: #60a5fa; }
+.pf-youtube { background: rgba(255, 0, 0, 0.13); color: #cc0000; }
+:root[data-theme=dark] .pf-youtube { background: rgba(255, 92, 92, 0.18); color: #ff6b6b; }
 
 .guide-detail {
   min-width: 0;

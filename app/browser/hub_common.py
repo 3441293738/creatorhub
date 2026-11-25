@@ -394,3 +394,27 @@ async def _facebook_cookie_str(mgr: BrowserManager, identity) -> str:
         if not fallback:
             fallback = s
     return fallback
+
+
+async def _youtube_cookie_str(mgr: BrowserManager, identity) -> str:
+    """从账号专属 context 或 bridge_states/storage_state 提取 youtube.com / google.com 完整 Cookie 串。"""
+    from app.platforms.youtube import cookie_str_from_state, has_youtube_login_cookies
+    try:
+        ctx = await mgr.context_for(identity)
+        cks = await ctx.cookies(["https://www.youtube.com", "https://accounts.google.com", "https://studio.youtube.com"])
+        if cks:
+            merged = {c["name"]: c["value"] for c in cks if c.get("name")}
+            if has_youtube_login_cookies(merged):
+                return "; ".join(f"{k}={v}" for k, v in merged.items())
+    except Exception:
+        pass
+    fallback = ""
+    for raw in _iter_identity_states(identity):
+        s = cookie_str_from_state(raw)
+        if not s:
+            continue
+        if has_youtube_login_cookies(s):
+            return s
+        if not fallback:
+            fallback = s
+    return fallback

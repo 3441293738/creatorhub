@@ -1,4 +1,4 @@
-// 03-navigation-platform.js — 十平台上下文切换、平台差异化表单显隐与工作台标签页导航。
+// 03-navigation-platform.js — 十一平台上下文切换、平台差异化表单显隐与工作台标签页导航。
 // ─── 平台切换(抖音 / 小红书) ───
 
 async function exportMonitorReport(explicitBtn = null) {
@@ -182,7 +182,7 @@ async function exportModuleReport(module, full = false, explicitBtn = null) {
 
 let PLATFORM = "douyin";
 let GLOBAL_MODE = true;
-const PF_NAME = { douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram", twitter: "Twitter", facebook: "Facebook" };
+const PF_NAME = { douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", shipinhao: "视频号", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram", twitter: "Twitter", facebook: "Facebook", youtube: "YouTube" };
 let CURRENT_TAB = "overview";
 const PAGE_META = {
   overview: {
@@ -215,6 +215,9 @@ const PAGE_META = {
   "tiktok-tools": {
     title: "用户互动", desc: "搜索其他 TikTok 用户并创建关注、取关、私信、评论或回复任务。"
   },
+  "youtube-tools": {
+    title: "互动与养号", desc: "执行 YouTube 视频/评论互动、按真实播放进度观看、关键词搜索养号、筛选发现与多品牌频道管理。"
+  },
   publish: {
     title: "内容发布", desc: "支持单账号精细发布或跨平台多账号错峰矩阵群发。"
   },
@@ -234,7 +237,7 @@ const PAGE_META = {
     title: "设置", desc: "管理外观、下载、AI 文案与采集运行配置。"
   },
 };
-const SINGLE_PF_ONLY_TABS = ["monitors", "collections", "comments", "danmaku", "tiktok-tools", "autocomment"];
+const SINGLE_PF_ONLY_TABS = ["monitors", "collections", "comments", "danmaku", "tiktok-tools", "youtube-tools", "autocomment"];
 function updatePageContext(name = CURRENT_TAB) {
   const meta = PAGE_META[name] || PAGE_META.overview;
   const showGlobalLabel = GLOBAL_MODE && !SINGLE_PF_ONLY_TABS.includes(name);
@@ -245,17 +248,17 @@ function updatePageContext(name = CURRENT_TAB) {
   if ($("page-title")) $("page-title").textContent = effectiveTitle;
   if ($("page-desc")) $("page-desc").textContent = effectiveDesc;
   if ($("page-platform")) $("page-platform").textContent = showGlobalLabel ? "全平台矩阵" : (PF_NAME[PLATFORM] || "当前平台");
-  if ($("page-kicker")) $("page-kicker").textContent = showGlobalLabel ? "跨 10 大平台全局视角" : (pfIsChannels(PLATFORM) ? "本账号工作台" : "单平台精细工作台");
+  if ($("page-kicker")) $("page-kicker").textContent = showGlobalLabel ? "跨 11 大平台全局视角" : (pfIsChannels(PLATFORM) ? "本账号工作台" : "单平台精细工作台");
   document.title = `${effectiveTitle} · ${showGlobalLabel ? "全平台" : (PF_NAME[PLATFORM] || "")} | CreatorHub`;
   globalThis.CreatorHubWorkbench?.navigate?.();
 }
 // 是否支持「发布」面板
-function pfHasPublish(pf) { return ["xhs", "rednote", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(pf); }
+function pfHasPublish(pf) { return ["xhs", "rednote", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(pf); }
 // 视频号只有「本账号」数据(助手接口本账号),不支持监控他人作品/评论
 function pfIsChannels(pf) { return pf === "shipinhao"; }
 function switchPlatform(pf) {
   const wantGlobal = pf === "all";
-  if (!wantGlobal && !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(pf)) pf = "douyin";
+  if (!wantGlobal && !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(pf)) pf = "douyin";
   if (!wantGlobal) globalThis.CreatorHubWorkbench?.platformChanging?.(pf);
   GLOBAL_MODE = wantGlobal;
   if (!wantGlobal) PLATFORM = pf;
@@ -314,6 +317,7 @@ function applyPlatformUI() {
   document.body.classList.toggle("pf-instagram", !GLOBAL_MODE && PLATFORM === "instagram");
   document.body.classList.toggle("pf-twitter", !GLOBAL_MODE && PLATFORM === "twitter");
   document.body.classList.toggle("pf-facebook", !GLOBAL_MODE && PLATFORM === "facebook");
+  document.body.classList.toggle("pf-youtube", !GLOBAL_MODE && PLATFORM === "youtube");
   // 视频号:只有本账号数据,隐藏「监控他人作品/评论」相关入口(.notsh-only)
   document.body.classList.toggle("pf-channels", !GLOBAL_MODE && pfIsChannels(PLATFORM));
   if (!["douyin", "bilibili"].includes(PLATFORM) && CURRENT_TAB === "danmaku") switchTab("overview");
@@ -340,6 +344,8 @@ function applyPlatformUI() {
   document.querySelectorAll(".tw-hide").forEach(e => e.classList.toggle("hidden", PLATFORM === "twitter"));
   document.querySelectorAll(".fb-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "facebook"));
   document.querySelectorAll(".fb-hide").forEach(e => e.classList.toggle("hidden", PLATFORM === "facebook"));
+  document.querySelectorAll(".yt-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "youtube"));
+  document.querySelectorAll(".yt-hide").forEach(e => e.classList.toggle("hidden", PLATFORM === "youtube"));
   document.querySelectorAll(".danmaku-only").forEach(e => e.classList.toggle("hidden", !["douyin", "bilibili"].includes(PLATFORM)));
   document.querySelectorAll(".notsh-only").forEach(e => {
     const allowOnChannels = pfIsChannels(PLATFORM) && (
@@ -347,11 +353,11 @@ function applyPlatformUI() {
       || e.dataset?.tab === "comments"
       || (e.classList.contains("quick-action") && (e.getAttribute("onclick") || "").includes("'monitors'"))
     );
-    const hideByPlatform = (e.classList.contains("tk-hide") && PLATFORM === "tiktok") || (e.classList.contains("bili-hide") && PLATFORM === "bilibili") || (e.classList.contains("rn-hide") && PLATFORM === "rednote");
+    const hideByPlatform = (e.classList.contains("tk-hide") && PLATFORM === "tiktok") || (e.classList.contains("bili-hide") && PLATFORM === "bilibili") || (e.classList.contains("rn-hide") && PLATFORM === "rednote") || (e.classList.contains("yt-hide") && PLATFORM === "youtube");
     e.classList.toggle("hidden", hideByPlatform || (pfIsChannels(PLATFORM) && !allowOnChannels));
   });
   document.querySelectorAll(".collect-only").forEach(e => e.classList.toggle(
-    "hidden", !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(PLATFORM)));
+    "hidden", !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(PLATFORM)));
   // 全平台模式下隐藏所有单平台专属采集/监控/互动入口与分组标题
   if (GLOBAL_MODE) {
     document.querySelectorAll(".single-pf-only").forEach(e => e.classList.add("hidden"));
@@ -366,16 +372,16 @@ function applyPlatformUI() {
   // 发布面板入口
   document.querySelectorAll(".pub-only").forEach(e => e.classList.toggle("hidden", !GLOBAL_MODE && !pfHasPublish(PLATFORM)));
   // 发布面板文案随平台切换
-  const ks = PLATFORM === "kuaishou", dy = PLATFORM === "douyin", sph = PLATFORM === "shipinhao", tk = PLATFORM === "tiktok", bili = PLATFORM === "bilibili", rn = PLATFORM === "rednote", ig = PLATFORM === "instagram", tw = PLATFORM === "twitter", fb = PLATFORM === "facebook";
+  const ks = PLATFORM === "kuaishou", dy = PLATFORM === "douyin", sph = PLATFORM === "shipinhao", tk = PLATFORM === "tiktok", bili = PLATFORM === "bilibili", rn = PLATFORM === "rednote", ig = PLATFORM === "instagram", tw = PLATFORM === "twitter", fb = PLATFORM === "facebook", yt = PLATFORM === "youtube";
   const pubType = $("pub-type");
   if (pubType) {
     const before = pubType.value;
-    if (tk) pubType.innerHTML = '<option value="video">视频</option>';
+    if (tk || yt) pubType.innerHTML = '<option value="video">视频</option>';
     else if (![...pubType.options].some(o => o.value === "images")) {
       pubType.innerHTML = '<option value="images">图文（图集）</option><option value="video">视频</option>';
       pubType.value = before === "video" ? "video" : "images";
     }
-    if (tk) pubType.value = "video";
+    if (tk || yt) pubType.value = "video";
     if (pubType.value !== before) onPubType();
   }
   const pubSub = $("pub-head-sub");
@@ -387,14 +393,15 @@ function applyPlatformUI() {
     : ig ? "上传单图 / 轮播 / Reels / Story 到 Instagram"
     : tw ? "发布纯文本 / 图集（最多 4 图） / 视频推文到 X (Twitter)"
     : fb ? "发布纯文本 / 图集（最多 20 图） / 视频到 Facebook 个人主页、公共主页、群组或 Story"
+    : yt ? "通过 YouTube Studio 上传常规视频或 Shorts（支持品牌频道切换、标签/播单/缩略图与首评）"
     : rn ? "上传图集 / 视频到海外小红书 creator.rednote.com"
     : "上传图集 / 视频到小红书(实验性)";
-  if ($("pub-head-lead")) $("pub-head-lead").textContent = tw ? "发布推文" : fb ? "发布帖子" : (ks || dy || sph || tk || bili || ig) ? "发布作品" : "发布笔记";
-  const titleCap = fb ? 5000 : tw ? ($("pub-tw-long")?.value === "1" ? 4000 : 280) : ig ? 2200 : bili ? 80 : rn ? 40 : dy ? 30 : sph ? 16 : 20;
-  if ($("pub-title-label-text")) $("pub-title-label-text").textContent = fb ? `首行标题（可选，正文与话题合并 ≤${titleCap} 字）` : tw ? `推文首行标题（可选，合并总重 ≤${titleCap}）` : rn ? "标题(≤20 汉字 / 40 英文字符)" : `标题(≤${titleCap} 字)`;
+  if ($("pub-head-lead")) $("pub-head-lead").textContent = tw ? "发布推文" : fb ? "发布帖子" : yt ? "上传视频" : (ks || dy || sph || tk || bili || ig) ? "发布作品" : "发布笔记";
+  const titleCap = fb ? 5000 : tw ? ($("pub-tw-long")?.value === "1" ? 4000 : 280) : ig ? 2200 : yt ? 100 : bili ? 80 : rn ? 40 : dy ? 30 : sph ? 16 : 20;
+  if ($("pub-title-label-text")) $("pub-title-label-text").textContent = fb ? `首行标题（可选，正文与话题合并 ≤${titleCap} 字）` : tw ? `推文首行标题（可选，合并总重 ≤${titleCap}）` : yt ? `视频标题（必填，≤${titleCap} 字符）` : rn ? "标题(≤20 汉字 / 40 英文字符)" : `标题(≤${titleCap} 字)`;
   if ($("pub-title")) {
     $("pub-title").maxLength = titleCap;
-    $("pub-title").placeholder = fb ? "帖子首行标题（可选，正文与话题会自动合并，可纯文本发布）" : tw ? "推文首行（可选，直接填正文也可；URL 固定计 23 权重）" : ig ? "Caption 首行标题（可选，正文与话题自动合并）" : bili ? "填写视频稿件标题（图文动态可选）" : tk ? "视频说明的首行标题" : (ks || dy || sph) ? "给作品起个标题" : "给笔记起个标题";
+    $("pub-title").placeholder = fb ? "帖子首行标题（可选，正文与话题会自动合并，可纯文本发布）" : tw ? "推文首行（可选，直接填正文也可；URL 固定计 23 权重）" : yt ? "填写 YouTube 视频标题（最多 100 字符，Shorts 形态会自动追加 #Shorts）" : ig ? "Caption 首行标题（可选，正文与话题自动合并）" : bili ? "填写视频稿件标题（图文动态可选）" : tk ? "视频说明的首行标题" : (ks || dy || sph) ? "给作品起个标题" : "给笔记起个标题";
   }
   if ($("pub-dy-opts")) $("pub-dy-opts").classList.toggle("hidden", !["douyin", "xhs", "rednote", "kuaishou"].includes(PLATFORM));
   if (bili) { onBiliCopyrightChange(); if ($("pub-acc")?.value) loadBiliPartitions($("pub-acc").value); }
@@ -414,6 +421,8 @@ function applyPlatformUI() {
     ? "支持纯文本推文、最多 4 张图片或单个视频/GIF，可配置回复权限与首评自回复串推。通过独立可见浏览器窗口完成上传并拦截 CreateTweet 响应确认，提交只执行一次；若显示“结果待确认”，请先到 x.com 主页核对。"
     : fb
     ? "支持纯文本、最多 20 张图片或单个视频，可发布到个人动态、公共主页（自动通过 i_user 切换身份并在完成后恢复）、Facebook 群组或 Story，支持可见范围与发布后自动首评。提交只执行一次；若显示“结果待确认”，请先到 facebook.com 主页核对。"
+    : yt
+    ? "通过账号独立的可见浏览器窗口在 YouTube Studio 上传单个视频或 Shorts，支持切换品牌频道、设置标题/简介/Tags/播放列表/缩略图/儿童向声明/公开·不公开·私享·即时首映及发布后自动追加首评。提交只执行一次；若显示“结果待确认”，请先到 studio.youtube.com 核对。"
     : rn
     ? "发布通过海外小红书 creator.rednote.com 独立可见浏览器窗口完成（拦截 webapi.rednote.com/web_api/sns/v2/note 确认），不混用国内小红书会话。提交只点击一次；若显示“结果待确认”，请先到平台核对。"
     : "发布通过账号独立的可见 Chrome 页面完成。提交只点击一次；若显示“结果待确认”，请先到小红书核对，系统不会自动重发。";
@@ -441,6 +450,7 @@ function applyPlatformUI() {
     : PLATFORM === "instagram" ? "帖子 /p/ / Reels /reel/ / 创作者 @username / 主页链接"
     : PLATFORM === "twitter" ? "推文 /status/ / 创作者 @username / x.com 主页链接"
     : PLATFORM === "facebook" ? "帖子 / Reel / Watch 链接或个人/公共主页/群组链接"
+    : PLATFORM === "youtube" ? "视频 watch / Shorts / youtu.be 或频道 /@handle 链接"
     : "视频 / 账号主页 / 完整分享文案 / ID";
   if ($("w-url")) $("w-url").placeholder = PLATFORM === "xhs"
     ? "直接粘贴整段小红书分享文案，将自动提取笔记或主页链接"
@@ -452,6 +462,7 @@ function applyPlatformUI() {
     : PLATFORM === "instagram" ? "粘贴 instagram.com/p/...、/reel/...、创作者主页链接或 @username"
     : PLATFORM === "twitter" ? "粘贴 x.com/.../status/...、创作者主页链接或 @username"
     : PLATFORM === "facebook" ? "粘贴 facebook.com 帖子/Reel/Watch 链接、fb.watch 短链、公共主页或群组链接"
+    : PLATFORM === "youtube" ? "粘贴 youtube.com/watch?v=...、youtu.be/...、/shorts/... 或频道 /@handle 链接"
     : "直接粘贴整段抖音分享文案，将自动提取视频或主页链接";
   resetWatchTargetState();
   const ckl = $("ck-label");
@@ -463,6 +474,7 @@ function applyPlatformUI() {
     : PLATFORM === "instagram" ? "完整 Cookie(含 sessionid、ds_user_id 与 csrftoken)"
     : PLATFORM === "twitter" ? "Token (auth_token) / 多字段凭证 / 完整 Cookie"
     : PLATFORM === "facebook" ? "完整 Facebook Cookie(必须含 c_user 与 xs)"
+    : PLATFORM === "youtube" ? "完整 YouTube Cookie(含 SAPISID / SID 等登录项)"
     : "完整 Cookie(含 sessionid)";
   if ($("ck-val")) $("ck-val").placeholder = PLATFORM === "xhs"
     ? "从 creator.xiaohongshu.com 登录后复制完整 Cookie"
@@ -472,6 +484,7 @@ function applyPlatformUI() {
     : PLATFORM === "instagram" ? "从 www.instagram.com 登录后复制完整 Cookie(含 sessionid)"
     : PLATFORM === "twitter" ? "可直接粘贴 40 位 auth_token、账号----密码----Token 文本、JSON 数组或 x.com 完整 Cookie"
     : PLATFORM === "facebook" ? "从 www.facebook.com 登录后复制完整 Cookie（含 c_user 与 xs）或粘贴 JSON Cookie 数组"
+    : PLATFORM === "youtube" ? "从 www.youtube.com 复制完整 Cookie（含 SAPISID 与 SID）、Netscape Cookie 文本或 JSON 数组"
     : "从浏览器开发者工具复制完整 Cookie";
   applyMonitorForm();
   applyCollectionForm();
@@ -491,11 +504,13 @@ function applyPlatformUI() {
   }
   if (!GLOBAL_MODE && PLATFORM === "tiktok" && CURRENT_TAB === "autocomment") switchTab("hub");
   if (!GLOBAL_MODE && PLATFORM !== "tiktok" && CURRENT_TAB === "tiktok-tools") switchTab("accounts");
+  if (!GLOBAL_MODE && PLATFORM !== "youtube" && CURRENT_TAB === "youtube-tools") switchTab("accounts");
   if (!GLOBAL_MODE && PLATFORM === "tiktok" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
   if (!GLOBAL_MODE && PLATFORM === "rednote" && CURRENT_TAB === "autocomment") switchTab("hub");
   if (!GLOBAL_MODE && PLATFORM === "rednote" && ["following", "fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
-  if (!GLOBAL_MODE && !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(PLATFORM) && CURRENT_TAB === "collections") switchTab("overview");
-  // 不支持发布的平台:若正停在该面板则回到总览(当前十平台均支持,兜底保留)
+  if (!GLOBAL_MODE && PLATFORM === "youtube" && ["fans", "dm"].includes(HUB_TAB)) switchHubTab("myworks");
+  if (!GLOBAL_MODE && !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(PLATFORM) && CURRENT_TAB === "collections") switchTab("overview");
+  // 不支持发布的平台:若正停在该面板则回到总览(当前十一平台均支持,兜底保留)
   if (!GLOBAL_MODE && !pfHasPublish(PLATFORM)) {
     const pub = document.querySelector('[data-panel="publish"]');
     if (pub && pub.style.display !== "none") switchTab("overview");
@@ -785,18 +800,19 @@ function applyMonitorForm() {
   const supportsBackfill = !["xhs", "rednote"].includes(PLATFORM);
   if ($("t-backfill-wrap")) $("t-backfill-wrap").style.display = supportsBackfill ? "" : "none";
   if ($("t-backfill") && _LAST_MONITOR_PLATFORM !== PLATFORM) {
-    $("t-backfill").value = ["shipinhao", "kuaishou", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(PLATFORM) ? "5" : "";
+    $("t-backfill").value = ["shipinhao", "kuaishou", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(PLATFORM) ? "5" : "";
     $("t-backfill")._csSync?.();
   }
   _LAST_MONITOR_PLATFORM = PLATFORM;
-  if (["douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(PLATFORM)) {
+  if (["douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(PLATFORM)) {
     const isKs = PLATFORM === "kuaishou";
     const isTikTok = PLATFORM === "tiktok";
     const isBili = PLATFORM === "bilibili";
     const isIg = PLATFORM === "instagram";
     const isTw = PLATFORM === "twitter";
     const isFb = PLATFORM === "facebook";
-    if (title) title.innerHTML = (isKs || isSph || isBili || isIg || isTw || isFb ? '添加创作者监控' : '添加作品监控')
+    const isYt = PLATFORM === "youtube";
+    if (title) title.innerHTML = (isKs || isSph || isBili || isIg || isTw || isFb || isYt ? '添加创作者监控' : '添加作品监控')
       + ' <span class="sub">监控并下载新作品</span>';
     if (lbl) lbl.textContent = isTikTok
       ? "创作者主页 / 完整分享文案 / @username"
@@ -806,6 +822,8 @@ function applyMonitorForm() {
       ? "Twitter (X) 主页链接 / @username / 数字 UID"
       : isFb
       ? "Facebook 个人主页 / 公共主页 / 群组链接或数字 ID"
+      : isYt
+      ? "YouTube 频道链接 / @handle / UC... 频道 ID"
       : isSph
       ? "创作者主页 / v2_...@finder / 单条视频分享链接"
       : isKs
@@ -821,6 +839,8 @@ function applyMonitorForm() {
       ? "粘贴 https://x.com/<username> 或填写 @username"
       : isFb
       ? "粘贴 https://www.facebook.com/<page>、/groups/<id> 或 profile.php?id=..."
+      : isYt
+      ? "粘贴 https://www.youtube.com/@handle、/channel/UC... 或填写 @handle"
       : isSph
       ? "粘贴视频号主页链接、v2_...@finder、sph 标识或单条视频 weixin.qq.com/sph/... 链接"
       : isKs
@@ -903,6 +923,7 @@ function switchTab(name, pushHistory = false) {
   }
   if (name === "collections") { populateCollectionAccount(); refreshCollections(); }
   if (name === "tiktok-tools") populateTikTokAccounts();
+  if (name === "youtube-tools") populateYouTubeToolsAccounts();
   if (name === "queue") refreshTaskQueue();
   if (name === "risk-control") refreshRiskCenter();
   if (changed && !["hub", "share-download", "collections", "queue", "risk-control"].includes(name)) loop();

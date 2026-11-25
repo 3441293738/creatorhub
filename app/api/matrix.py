@@ -64,6 +64,7 @@ ALL_PLATFORMS: tuple[str, ...] = (
     "instagram",
     "twitter",
     "facebook",
+    "youtube",
 )
 
 GROUP_COLORS = {"blue", "rose", "emerald", "amber", "violet", "cyan", "slate"}
@@ -93,7 +94,7 @@ def _account_login_flags(acc: DouyinAccount) -> tuple[bool, bool]:
     has_creator = (
         bool(acc.creator_storage_state)
         or (
-            acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter", "facebook")
+            acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter", "facebook", "youtube")
             and bool(acc.storage_state)
         )
         or (acc.platform == "xhs" and has_creator_cookies(acc.storage_state))
@@ -214,7 +215,7 @@ def _account_health_state(
     if same_platform_shared_proxy:
         return "shared_proxy"
     if not acc.proxy and (
-        acc.platform in {"tiktok", "rednote", "instagram", "twitter", "facebook"}
+        acc.platform in {"tiktok", "rednote", "instagram", "twitter", "facebook", "youtube"}
         or same_platform_total_count > 1
         or same_platform_direct_count > 1
     ):
@@ -367,7 +368,7 @@ async def matrix_overview(platform: str = ""):
             if not pf_filter or pf == pf_filter:
                 pending_reviews += 1
 
-        # 构建 10 平台态势条 (供顶部导航栏徽章 & 全局总览平台卡片墙共用)
+        # 构建 11 平台态势条 (供顶部导航栏徽章 & 全局总览平台卡片墙共用)
         strip_map: dict[str, dict[str, Any]] = {
             pf: {
                 "platform": pf,
@@ -1823,6 +1824,7 @@ class MatrixPublishOverrideIn(BaseModel):
     ig_options: dict[str, Any] = PydanticField(default_factory=dict)
     tw_options: dict[str, Any] = PydanticField(default_factory=dict)
     fb_options: dict[str, Any] = PydanticField(default_factory=dict)
+    yt_options: dict[str, Any] = PydanticField(default_factory=dict)
 
 
 class MatrixBatchPublishIn(BaseModel):
@@ -1947,6 +1949,7 @@ async def create_matrix_batch_publish(body: MatrixBatchPublishIn):
                 ig_options_json=json.dumps((ov.ig_options if ov else {}) or {}, ensure_ascii=False),
                 tw_options_json=json.dumps((ov.tw_options if ov else {}) or {}, ensure_ascii=False),
                 fb_options_json=json.dumps((ov.fb_options if ov else {}) or {}, ensure_ascii=False),
+                yt_options_json=json.dumps((ov.yt_options if ov else {}) or {}, ensure_ascii=False),
                 scheduled_at=sched_time,
                 scheduled_at_is_utc=True,
                 source_platform=body.source_platform or "",

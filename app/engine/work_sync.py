@@ -385,6 +385,32 @@ class WorkSyncMixin:
                         if cid and cid not in known and cid not in dedup_fb:
                             dedup_fb[cid] = c
                     fresh = list(dedup_fb.values())
+            elif platform == "youtube":
+                from app.platforms.youtube import video_url as yt_video_url
+                configured_mode = str(
+                    getattr(self.cfg.engine, "youtube_read_mode", "hybrid") or "hybrid"
+                ).lower()
+                if identity is None and (configured_mode == "browser" or not state):
+                    error = "缺少 YouTube 账号浏览器身份"
+                else:
+                    target_u = item_id if str(item_id).startswith("http") else yt_video_url(item_id)
+                    yt_rows, yt_err, source = await self._yt_read_comments(
+                        identity,
+                        target_u,
+                        max_pages=6,
+                        max_count=200,
+                        include_replies=True,
+                        state=state,
+                        ua=ua,
+                        proxy=proxy,
+                    )
+                    error = "" if yt_rows or yt_err == "empty" else yt_err
+                    dedup_yt: dict[str, dict] = {}
+                    for c in yt_rows:
+                        cid = c.get("comment_id")
+                        if cid and cid not in known and cid not in dedup_yt:
+                            dedup_yt[cid] = c
+                    fresh = list(dedup_yt.values())
             else:
                 return {"ok": False, "fetched": 0, "added": 0,
                         "error": f"不支持的平台:{platform}",

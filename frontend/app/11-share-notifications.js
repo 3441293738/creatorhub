@@ -30,7 +30,7 @@ function filterShareAccounts() {
   const old = sel.value;
   const platform = shareAccountPlatform();
   const hasDetectedLink = !!SHARE_LINKS.length;
-  const knownAccountPlatform = ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(platform);
+  const knownAccountPlatform = ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(platform);
   const rows = knownAccountPlatform
     ? SHARE_ACCOUNTS.filter(a => a.platform === platform)
     : [];

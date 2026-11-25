@@ -116,6 +116,14 @@ class CollectionCommentsMixin:
             if account is not None:
                 download_ua = download_ua or str(getattr(account, "ua", "") or "")
             download_referer = "https://www.facebook.com/"
+        elif job.platform == "youtube":
+            if account is not None:
+                from app.platforms.youtube import cookie_map_from_state as yt_cookie_map
+                download_ua = download_ua or str(getattr(account, "ua", "") or "")
+                raw_st = account.storage_state or account.creator_storage_state or account.cookie or ""
+                if raw_st:
+                    download_cookies = yt_cookie_map(raw_st)
+            download_referer = "https://www.youtube.com/"
         ok, local_path, error = await self.downloader.download_aweme(
             aweme, str(base_dir), routed_proxy,
             user_agent=download_ua,

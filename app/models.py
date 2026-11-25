@@ -394,6 +394,7 @@ class PublishTask(SQLModel, table=True):
     ig_options_json: str = "{}"                        # Instagram发布扩展参数(post_kind=auto|reel|post|story, share_to_feed等)
     tw_options_json: str = "{}"                        # Twitter发布扩展参数(reply_permission/first_comment/long_text等)
     fb_options_json: str = "{}"                        # Facebook发布扩展参数(target_type=profile|page|group|story, page_id, group_url, privacy, first_comment等)
+    yt_options_json: str = "{}"                        # YouTube发布扩展参数(post_kind=video|shorts, channel_name, visibility, made_for_kids, tags, playlists, thumbnail_path, premiere, first_comment等)
     scheduled_at: Optional[datetime] = None            # UTC；空=尽快发
     scheduled_at_is_utc: bool = True  # 存量无时区预约需要人工确认，不自动猜时区
     status: str = "pending"        # draft | pending | publishing | uncertain | done | failed | canceled

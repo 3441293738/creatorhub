@@ -55,6 +55,7 @@ _PROFILE_URL = {
     "instagram": "https://www.instagram.com/{sec}/",
     "twitter": "https://x.com/{sec}",
     "facebook": "https://www.facebook.com/{sec}",
+    "youtube": "https://www.youtube.com/{sec}",
 }
 
 
@@ -189,6 +190,11 @@ async def do_follow(mgr: BrowserManager, identity, platform: str, target_uid: st
         from app.browser.facebook_actions import do_facebook_follow
         return await do_facebook_follow(
             mgr, identity, target_sec_uid or target_uid, unfollow=unfollow
+        )
+    if platform == "youtube":
+        from app.browser.youtube_actions import do_youtube_subscribe
+        return await do_youtube_subscribe(
+            mgr, identity, target_sec_uid or target_uid, unsubscribe=unfollow
         )
     if platform == "instagram":
         from app.platforms.instagram import InstagramClient
@@ -377,6 +383,8 @@ async def send_dm(mgr: BrowserManager, identity, platform: str, target_uid: str 
         return await send_facebook_dm(
             mgr, identity, target_sec_uid or target_uid, text, on_submit=on_submit
         )
+    if platform == "youtube":
+        return False, "unavailable:YouTube 平台暂不提供站内私信功能"
     url = _DM_ENTRY_URL.get(platform, _DM_ENTRY_URL["douyin"]).format(
         sec=sec, uid=target_uid or sec)
     if platform == "instagram":

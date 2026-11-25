@@ -298,6 +298,8 @@ async def fetch_dm_conversations(mgr: BrowserManager, identity, platform: str,
     """打开私信页,拦截会话列表 XHR,启发式抽会话。无公开接口,首版用于标定。"""
     if platform == "rednote":
         return [], "unavailable:海外小红书暂未开放私信协议通道"
+    if platform == "youtube":
+        return [], "unavailable:YouTube 平台暂不提供站内私信功能"
     if platform == "twitter":
         from app.platforms.twitter import TwitterClient
         from app.browser.twitter_fetcher import fetch_twitter_dm_conversations
@@ -808,6 +810,8 @@ async def fetch_dm_history(mgr: BrowserManager, identity, platform: str,
     返回 (parse_messages 结果, error)。debug=True 时额外打印原始响应 b64(标定用)。"""
     if platform == "rednote":
         return {}, "unavailable:海外小红书暂未开放私信协议通道"
+    if platform == "youtube":
+        return {}, "unavailable:YouTube 平台暂不提供站内私信功能"
     if platform == "twitter":
         from app.platforms.twitter import TwitterClient
         from app.browser.twitter_fetcher import fetch_twitter_dm_history

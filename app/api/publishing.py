@@ -19,6 +19,7 @@ from app.platforms.facebook import validate_facebook_publish_files
 from app.platforms.kuaishou import MANAGE_URL as KS_MANAGE_URL
 from app.platforms.rednote import weighted_truncate
 from app.platforms.twitter import validate_twitter_publish_files
+from app.platforms.youtube import validate_youtube_publish_files
 from app.platforms.xhs import has_creator_cookies
 from app.scheduling import utc_iso
 from app.services import metadata as metadata_service
@@ -64,6 +65,7 @@ class PublishIn(BaseModel):
     ig_options: dict[str, Any] = PydanticField(default_factory=dict)    # Instagram 发布扩展参数(post_kind/share_to_feed 等)
     tw_options: dict[str, Any] = PydanticField(default_factory=dict)    # Twitter 发布扩展参数(reply_permission/first_comment/long_text 等)
     fb_options: dict[str, Any] = PydanticField(default_factory=dict)    # Facebook 发布扩展参数(target_type/page_id/group_url/privacy/first_comment 等)
+    yt_options: dict[str, Any] = PydanticField(default_factory=dict)    # YouTube Studio 发布扩展参数(channel_name/post_kind/visibility/made_for_kids/tags/playlists/thumbnail_path/premiere/first_comment 等)
     scheduled_at: str | None = None       # ISO 带偏移；无偏移按账号时区，空=尽快发
 
 
@@ -82,6 +84,7 @@ class PublishUpdate(BaseModel):
     ig_options: dict[str, Any] | None = None
     tw_options: dict[str, Any] | None = None
     fb_options: dict[str, Any] | None = None
+    yt_options: dict[str, Any] | None = None
     scheduled_at: str | None = None
 
 
@@ -114,6 +117,10 @@ def _publish_dict(t: PublishTask) -> dict:
         fb_opts = json.loads(getattr(t, "fb_options_json", "{}") or "{}")
     except Exception:
         fb_opts = {}
+    try:
+        yt_opts = json.loads(getattr(t, "yt_options_json", "{}") or "{}")
+    except Exception:
+        yt_opts = {}
     return {
         "id": t.id, "platform": t.platform, "account_id": t.account_id,
         "media_type": t.media_type, "title": t.title, "desc": t.desc,
@@ -126,6 +133,7 @@ def _publish_dict(t: PublishTask) -> dict:
         "ig_options": ig_opts if isinstance(ig_opts, dict) else {},
         "tw_options": tw_opts if isinstance(tw_opts, dict) else {},
         "fb_options": fb_opts if isinstance(fb_opts, dict) else {},
+        "yt_options": yt_opts if isinstance(yt_opts, dict) else {},
         "error": t.error, "live_stage": app_runtime.engine.get_publish_stage(t.id) if (app_runtime.engine and hasattr(app_runtime.engine, "get_publish_stage")) else "",
         "media_count": len(json.loads(t.media_json or "[]")),
         "source_platform": t.source_platform, "source_content_id": t.source_content_id,
@@ -149,7 +157,7 @@ async def list_publish(platform: str | None = None):
 
 
 def _publish_title_cap(platform: str) -> int:
-    return {"douyin": 30, "shipinhao": 16, "bilibili": 80, "instagram": 2200, "twitter": 4000, "facebook": 5000}.get(str(platform or "").lower(), 20)
+    return {"douyin": 30, "shipinhao": 16, "bilibili": 80, "instagram": 2200, "twitter": 4000, "facebook": 5000, "youtube": 100}.get(str(platform or "").lower(), 20)
 
 
 def _validate_non_xhs_publish_files(platform: str, media_type: str,
@@ -174,6 +182,14 @@ def _validate_non_xhs_publish_files(platform: str, media_type: str,
         if fb_err:
             raise HTTPException(422, fb_err)
         return [str(p) for p in checked]
+    if platform == "youtube":
+        checked, yt_thumb, yt_err = validate_youtube_publish_files(media_type, paths)
+        if yt_err:
+            raise HTTPException(422, yt_err)
+        out_paths = [str(p) for p in checked]
+        if yt_thumb is not None:
+            out_paths.append(str(yt_thumb))
+        return out_paths
     if not paths:
         raise HTTPException(400, "没有可用的媒体文件,请先上传")
     if platform == "tiktok" and media_type != "video":
@@ -200,9 +216,9 @@ async def add_publish(body: PublishIn, request: Request = None):
                 raise HTTPException(400, "media_type 须为 images 或 video")
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform not in (
-                    "xhs", "rednote", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"):
+                    "xhs", "rednote", "kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"):
                 raise HTTPException(
-                    400, "请选择一个已登录的抖音 / 小红书 / 海外小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩 / Instagram / Twitter / Facebook 账号")
+                    400, "请选择一个已登录的抖音 / 小红书 / 海外小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩 / Instagram / Twitter / Facebook / YouTube 账号")
             if str(acc.account_role or "hybrid").strip().lower() == "crawler":
                 raise HTTPException(
                     400,
@@ -224,17 +240,18 @@ async def add_publish(body: PublishIn, request: Request = None):
             pname = {"kuaishou": "快手", "douyin": "抖音",
                      "shipinhao": "视频号", "tiktok": "TikTok",
                      "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram",
-                     "twitter": "Twitter", "facebook": "Facebook"}.get(
+                     "twitter": "Twitter", "facebook": "Facebook", "youtube": "YouTube"}.get(
                          acc.platform, "小红书")
             if acc.platform == "rednote":
                 if not (acc.creator_storage_state or acc.storage_state):
                     raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成登录")
-            elif acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"):
+            elif acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"):
                 if not (acc.creator_storage_state or acc.storage_state or acc.cookie):
                     raise HTTPException(400, f"该{pname}账号不可发布:请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
                 raise HTTPException(400, "该账号不可发布:请对该号完成「小红书扫码登录」或「创作者登录」")
-            vis = body.visibility if body.visibility in ("public", "friends", "private") else "public"
+            allowed_vis = ("public", "friends", "unlisted", "private") if acc.platform == "youtube" else ("public", "friends", "private")
+            vis = body.visibility if body.visibility in allowed_vis else "public"
             title_cap = _publish_title_cap(acc.platform)
             norm_title = (
                 weighted_truncate(body.title.strip(), 20)
@@ -253,6 +270,7 @@ async def add_publish(body: PublishIn, request: Request = None):
                 ig_options_json=json.dumps(body.ig_options or {}, ensure_ascii=False),
                 tw_options_json=json.dumps(body.tw_options or {}, ensure_ascii=False),
                 fb_options_json=json.dumps(body.fb_options or {}, ensure_ascii=False),
+                yt_options_json=json.dumps(body.yt_options or {}, ensure_ascii=False),
                 media_json=json.dumps(paths),
                 scheduled_at=metadata_service._parse_when(body.scheduled_at, acc.timezone_id),
             )
@@ -295,8 +313,9 @@ async def update_publish(tid: int, body: PublishUpdate):
         if body.location is not None:
             t.location = body.location.strip()[:60]
         if body.visibility is not None:
-            if body.visibility not in ("public", "friends", "private"):
-                raise HTTPException(400, "可见范围须为 public、friends 或 private")
+            allowed_vis = ("public", "friends", "unlisted", "private") if t.platform == "youtube" else ("public", "friends", "private")
+            if body.visibility not in allowed_vis:
+                raise HTTPException(400, "可见范围无效")
             t.visibility = body.visibility
         if body.allow_save is not None:
             t.allow_save = body.allow_save
@@ -314,6 +333,8 @@ async def update_publish(tid: int, body: PublishUpdate):
             t.tw_options_json = json.dumps(body.tw_options, ensure_ascii=False)
         if body.fb_options is not None:
             t.fb_options_json = json.dumps(body.fb_options, ensure_ascii=False)
+        if body.yt_options is not None:
+            t.yt_options_json = json.dumps(body.yt_options, ensure_ascii=False)
         if "scheduled_at" in body.model_fields_set:
             account = s.get(DouyinAccount, t.account_id) if t.account_id else None
             t.scheduled_at = metadata_service._parse_when(body.scheduled_at, account.timezone_id if account else "Asia/Shanghai")

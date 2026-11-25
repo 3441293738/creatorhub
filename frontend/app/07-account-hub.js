@@ -133,6 +133,7 @@ function onHubAcc() {
 // 面板内子标签(我的作品/关注/粉丝/私信)切换
 function switchHubTab(name) {
   if (PLATFORM === "tiktok" && ["following", "fans", "dm"].includes(name)) name = "myworks";
+  if (PLATFORM === "youtube" && ["fans", "dm"].includes(name)) name = "myworks";
   HUB_TAB = name;
   try { localStorage.setItem("dym-hubtab", name); } catch (e) {}
   document.querySelectorAll("[data-hubpanel]").forEach(p => { p.style.display = p.dataset.hubpanel === name ? "" : "none"; });
@@ -255,6 +256,11 @@ function workLink(platform, id) {
     const raw = decodeURIComponent(id);
     if (/^https?:\/\//i.test(raw)) return raw;
     return "https://www.facebook.com/" + id;
+  }
+  if (platform === "youtube") {
+    const raw = decodeURIComponent(id);
+    if (/^https?:\/\//i.test(raw)) return raw;
+    return "https://www.youtube.com/watch?v=" + id;
   }
   if (platform === "instagram") {
     return "https://www.instagram.com/p/" + id + "/";

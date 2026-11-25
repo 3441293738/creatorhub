@@ -13,14 +13,14 @@ def dependency_options(target):
     options = []
     for package in EXCLUDED_MODULES:
         options += ["--exclude-module", package]
-    for package in ("app", "xhshow", "uvicorn", "websockets"):
+    for package in ("app", "xhshow", "uvicorn", "websockets", "yt_dlp_ejs"):
         options += ["--collect-submodules", package]
-    for package in ("app", "patchright", "xhshow", "imageio_ffmpeg", "tzdata", "webview"):
+    for package in ("app", "patchright", "xhshow", "imageio_ffmpeg", "tzdata", "webview", "yt_dlp_ejs"):
         options += ["--collect-data", package]
     # collect-all used to copy distribution metadata implicitly. Preserve
     # version information and upstream license files when collecting precisely.
     for distribution in ("patchright", "xhshow", "imageio-ffmpeg", "tzdata", "pywebview",
-                         "Pillow", "pystray", "PyExecJS", "cryptography", "websockets"):
+                         "Pillow", "pystray", "PyExecJS", "cryptography", "websockets", "yt-dlp-ejs"):
         options += ["--copy-metadata", distribution]
     # CFFI/.NET loaders use native libraries resolved at runtime.
     for package in (("curl_cffi", "clr_loader", "pythonnet") if target == "windows" else ("curl_cffi",)):

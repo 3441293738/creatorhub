@@ -47,6 +47,7 @@ function populatePubAcc() {
       : PLATFORM === "instagram" ? "请先完成「Instagram 登录」"
       : PLATFORM === "twitter" ? "请先完成「Twitter 登录」"
       : PLATFORM === "facebook" ? "请先完成「Facebook 登录」"
+      : PLATFORM === "youtube" ? "请先完成「YouTube 登录」"
       : PLATFORM === "rednote" ? "请先完成「海外小红书创作者登录」"
       : "请先完成「小红书创作者登录」");
   sel.innerHTML = accOptions(list, ph);
@@ -116,9 +117,9 @@ function bindPubFilePicker() {
 }
 let PUB_SUBMITTING = false, PUB_UPLOAD_CACHE = null;
 function publishFormPayload() {
-  const tiktok = PLATFORM === "tiktok", bili = PLATFORM === "bilibili", ig = PLATFORM === "instagram", tw = PLATFORM === "twitter", fb = PLATFORM === "facebook";
+  const tiktok = PLATFORM === "tiktok", bili = PLATFORM === "bilibili", ig = PLATFORM === "instagram", tw = PLATFORM === "twitter", fb = PLATFORM === "facebook", yt = PLATFORM === "youtube";
   const mediaType = $("pub-type").value;
-  let biliOptions, igOptions, twOptions, fbOptions;
+  let biliOptions, igOptions, twOptions, fbOptions, ytOptions;
   if (bili) {
     const copyright = +($("pub-bili-copyright")?.value || 1);
     const source = ($("pub-bili-source")?.value || "").trim();
@@ -161,6 +162,21 @@ function publishFormPayload() {
       first_comment: ($("pub-fb-first-comment")?.value || "").trim(),
     };
   }
+  if (yt) {
+    const rawTags = ($("pub-yt-tags")?.value || "").trim();
+    const rawPlaylists = ($("pub-yt-playlists")?.value || "").trim();
+    ytOptions = {
+      post_kind: $("pub-yt-kind")?.value || "video",
+      visibility: $("pub-yt-visibility")?.value || "public",
+      made_for_kids: $("pub-yt-mfk")?.value === "1",
+      channel_name: ($("pub-yt-channel")?.value || "").trim(),
+      tags: rawTags ? rawTags.split(/[,，\n]/).map(s => s.trim()).filter(Boolean) : [],
+      playlists: rawPlaylists ? rawPlaylists.split(/[,，\n]/).map(s => s.trim()).filter(Boolean) : [],
+      thumbnail_path: ($("pub-yt-thumbnail")?.value || "").trim(),
+      premiere: $("pub-yt-premiere")?.value === "1",
+      first_comment: ($("pub-yt-first-comment")?.value || "").trim(),
+    };
+  }
   if (ig) {
     igOptions = {
       post_kind: $("pub-ig-kind")?.value || "auto",
@@ -171,7 +187,7 @@ function publishFormPayload() {
     title: $("pub-title").value.trim(), desc: $("pub-desc").value,
     topics: $("pub-topics").value.trim(), scheduled_at: scheduleToApi($("pub-when").value || null),
     location: $("pub-location") ? $("pub-location").value.trim() : "",
-    visibility: fb ? (($("pub-fb-privacy")?.value || "public") === "only_me" ? "private" : ($("pub-fb-privacy")?.value || "public")) : bili ? ($("pub-bili-visibility")?.value || "public") : (tiktok ? $("pub-tk-visibility").value : $("pub-visibility") ? $("pub-visibility").value : "public"),
+    visibility: yt ? ($("pub-yt-visibility")?.value || "public") : fb ? (($("pub-fb-privacy")?.value || "public") === "only_me" ? "private" : ($("pub-fb-privacy")?.value || "public")) : bili ? ($("pub-bili-visibility")?.value || "public") : (tiktok ? $("pub-tk-visibility").value : $("pub-visibility") ? $("pub-visibility").value : "public"),
     allow_save: $("pub-allowsave") ? $("pub-allowsave").value !== "0" : true,
     allow_comment: bili ? ($("pub-bili-close-reply")?.value !== "1") : ig ? ($("pub-ig-comment")?.value !== "0") : tw ? (($("pub-tw-reply-perm")?.value || "everyone") !== "mentioned") : (tiktok ? $("pub-tk-comment").value !== "0" : true),
     allow_duet: tiktok ? $("pub-tk-duet").value !== "0" : true,
@@ -179,7 +195,8 @@ function publishFormPayload() {
     ...(bili ? { bili_options: biliOptions } : {}),
     ...(ig ? { ig_options: igOptions } : {}),
     ...(tw ? { tw_options: twOptions } : {}),
-    ...(fb ? { fb_options: fbOptions } : {}) };
+    ...(fb ? { fb_options: fbOptions } : {}),
+    ...(yt ? { yt_options: ytOptions } : {}) };
 }
 async function addPublish() {
   if (PUB_SUBMITTING) return;
@@ -215,7 +232,7 @@ async function addPublish() {
           Array.from($("pub-files").files).length === files.length &&
           Array.from($("pub-files").files).every((file, index) => file === files[index]); } catch (_) {}
       if (unchanged) {
-        pubFilesClear(); $("pub-title").value = ""; $("pub-desc").value = ""; $("pub-topics").value = ""; $("pub-when").value = ""; if ($("pub-location")) $("pub-location").value = ""; if ($("pub-tw-first-comment")) $("pub-tw-first-comment").value = ""; if ($("pub-fb-first-comment")) $("pub-fb-first-comment").value = ""; dtSyncAll();
+        pubFilesClear(); $("pub-title").value = ""; $("pub-desc").value = ""; $("pub-topics").value = ""; $("pub-when").value = ""; if ($("pub-location")) $("pub-location").value = ""; if ($("pub-tw-first-comment")) $("pub-tw-first-comment").value = ""; if ($("pub-fb-first-comment")) $("pub-fb-first-comment").value = ""; if ($("pub-yt-first-comment")) $("pub-yt-first-comment").value = ""; dtSyncAll();
         PUB_UPLOAD_CACHE = null;
       }
       $("pub-msg").textContent = body.scheduled_at ? "已加入定时队列 ✓" : "已加入发布队列 ✓";
@@ -257,7 +274,7 @@ async function editPublish(id) {
         },
       } : {}),
     });
-    const editCap = task.platform === "facebook" ? 5000 : task.platform === "twitter" ? (task.tw_options?.long_text ? 4000 : 280) : task.platform === "instagram" ? 2200 : task.platform === "bilibili" ? 80 : task.platform === "rednote" ? 40 : task.platform === "douyin" ? 30 : task.platform === "shipinhao" ? 16 : 20;
+    const editCap = task.platform === "facebook" ? 5000 : task.platform === "twitter" ? (task.tw_options?.long_text ? 4000 : 280) : task.platform === "instagram" ? 2200 : task.platform === "youtube" ? 100 : task.platform === "bilibili" ? 80 : task.platform === "rednote" ? 40 : task.platform === "douyin" ? 30 : task.platform === "shipinhao" ? 16 : 20;
     const showVisOpts = ["douyin", "xhs", "rednote", "kuaishou"].includes(task.platform);
     $("ui-body").innerHTML = `
       <div><label class="field" for="ep-account">发布账号</label>
@@ -356,6 +373,7 @@ async function refreshPublish() {
       : PLATFORM === "instagram" ? "上传单图 / 轮播 / Reels / Story 加入队列(发布到 Instagram)"
       : PLATFORM === "twitter" ? "编写纯文本推文，或上传最多 4 图 / 单个视频加入队列(发布到 X / Twitter)"
       : PLATFORM === "facebook" ? "编写纯文本帖子，或上传最多 20 图 / 单个视频加入队列(发布到 Facebook 主页/公共主页/群组/Story)"
+      : PLATFORM === "youtube" ? "上传视频或 Shorts 加入队列(通过 YouTube Studio 自动完成填写与发布)"
       : "上传图集/视频加入队列,或在抖音作品上点「发小红书」转发过来");
 }
 // 创作平台管理页必须复用账号自己的登录态，不能交给系统浏览器。
@@ -457,6 +475,7 @@ const repostRednote = (id) => openRepost(id, "rednote");
 const repostInstagram = (id) => openRepost(id, "instagram");
 const repostTwitter = (id) => openRepost(id, "twitter");
 const repostFacebook = (id) => openRepost(id, "facebook");
+const repostYouTube = (id) => openRepost(id, "youtube");
 async function pickRepostTarget(id) {
   const rec = CONTENTS.find(r => r.id === id);
   const options = [
@@ -470,7 +489,10 @@ async function pickRepostTarget(id) {
     { value: "twitter", label: "Twitter" },
     { value: "facebook", label: "Facebook" },
   ];
-  if (!rec || rec.media_type === "video") options.push({ value: "tiktok", label: "TikTok" });
+  if (!rec || rec.media_type === "video") {
+    options.push({ value: "tiktok", label: "TikTok" });
+    options.push({ value: "youtube", label: "YouTube" });
+  }
   const target = await uiSelect({
     title: "转发作品",
     hint: "选择要发布到的平台，下一步可以继续编辑标题、文案和发布时间。",
@@ -507,6 +529,8 @@ async function openRepost(id, target) {
                   ? "请先在 Twitter 账号页完成登录"
                   : target === "facebook"
                     ? "请先在 Facebook 账号页完成登录"
+                  : target === "youtube"
+                    ? "请先在 YouTube 账号页完成登录"
                 : "请先在抖音账号页完成登录(扫码/创作者/Cookie)";
     toast(loginHint, "err");
     return;
@@ -521,8 +545,9 @@ async function openRepost(id, target) {
   const isIg = target === "instagram";
   const isTw = target === "twitter";
   const isFb = target === "facebook";
-  const cap = isFb ? 5000 : isTw ? 280 : isIg ? 2200 : isBili ? 80 : isRn ? 40 : isDy ? 30 : isChannels ? 16 : 20;
-  const pname = isDy ? "抖音" : isChannels ? "视频号" : isKs ? "快手" : isTk ? "TikTok" : isBili ? "哔哩哔哩" : isIg ? "Instagram" : isTw ? "Twitter" : isFb ? "Facebook" : isRn ? "海外小红书" : "小红书";
+  const isYt = target === "youtube";
+  const cap = isFb ? 5000 : isTw ? 280 : isIg ? 2200 : isYt ? 100 : isBili ? 80 : isRn ? 40 : isDy ? 30 : isChannels ? 16 : 20;
+  const pname = isDy ? "抖音" : isChannels ? "视频号" : isKs ? "快手" : isTk ? "TikTok" : isBili ? "哔哩哔哩" : isIg ? "Instagram" : isTw ? "Twitter" : isFb ? "Facebook" : isYt ? "YouTube" : isRn ? "海外小红书" : "小红书";
   $("rp-head").textContent = "发" + pname + " · 编辑后推送";
   $("rp-title-label").textContent = `标题(≤${cap} 字)`;
   $("rp-title").maxLength = cap;
@@ -663,6 +688,7 @@ async function submitRepost() {
     : REPOST_TARGET === "instagram" ? "Instagram"
     : REPOST_TARGET === "twitter" ? "Twitter"
     : REPOST_TARGET === "facebook" ? "Facebook"
+    : REPOST_TARGET === "youtube" ? "YouTube"
     : REPOST_TARGET === "rednote" ? "海外小红书" : "小红书";
   try {
     body.scheduled_at = scheduleToApi(body.scheduled_at);

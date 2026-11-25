@@ -35,8 +35,9 @@ PLATFORM_LABELS: dict[str, str] = {
     "instagram": "Instagram",
     "twitter": "X (Twitter)",
     "facebook": "Facebook",
+    "youtube": "YouTube",
 }
-OVERSEAS_PLATFORMS = {"instagram", "twitter", "facebook", "tiktok", "rednote"}
+OVERSEAS_PLATFORMS = {"instagram", "twitter", "facebook", "youtube", "tiktok", "rednote"}
 
 
 class PromptPreset(BaseModel):
@@ -112,7 +113,7 @@ BUILTIN_PRESETS: tuple[PromptPreset, ...] = (
     PromptPreset(
         id="global_social",
         name="海外社媒自然互动",
-        description="适合 Instagram / X / Facebook，自动跟随原文语种写出地道简短互动。",
+        description="适合 Instagram / X / Facebook / YouTube，自动跟随原文语种写出地道简短互动。",
         style_prompt=(
             "Write a concise, genuine, conversational social-media comment or reply. "
             "Match the language of the original post/comment (default to natural English if unclear). "

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 from pathlib import Path
 from typing import Any, List, Mapping, Tuple
 from weakref import WeakValueDictionary
@@ -69,6 +70,7 @@ class Downloader:
             "https://www.instagram.com/" if _pf == "instagram" else
             "https://x.com/" if _pf == "twitter" else
             "https://www.facebook.com/" if _pf == "facebook" else
+            "https://www.youtube.com/" if _pf == "youtube" else
             "https://www.douyin.com/"
         )
         effective_ua = str(user_agent or self.ua)
@@ -94,6 +96,22 @@ class Downloader:
                     async with lock:
                         if fpath.exists() and fpath.stat().st_size > 0:
                             return str(fpath), ""
+                        if (
+                            _pf == "youtube"
+                            and m.kind == "video"
+                            and any(h in str(m.url or "").lower() for h in ("youtube.com/", "youtu.be/"))
+                        ):
+                            async with self._media_sem:
+                                yt_err = await asyncio.to_thread(
+                                    self._download_youtube_ytdlp,
+                                    m.url,
+                                    fpath,
+                                    proxy=str(proxy or ""),
+                                    user_agent=effective_ua,
+                                    cookies=cookies,
+                                    quality=str(getattr(aweme, "quality_label", "") or "highest"),
+                                )
+                            return (str(fpath), "") if not yt_err else ("", yt_err)
                         decode_key = str(getattr(m, "decode_key", "") or "").strip()
                         if decode_key and decode_key != "0" and m.kind == "video":
                             from ..platforms.channels.decrypt import (
@@ -284,6 +302,126 @@ class Downloader:
             tail = cr.rsplit("/", 1)[-1] if "/" in cr else ""
             return int(tail) if tail.isdigit() else 0
         return int(r.headers.get("content-length") or 0)
+
+    @staticmethod
+    def _download_youtube_ytdlp(
+        url: str,
+        fpath: Path,
+        *,
+        proxy: str = "",
+        user_agent: str = "",
+        cookies: Mapping[str, str] | None = None,
+        quality: str = "highest",
+    ) -> str:
+        """通过 yt-dlp + 内置 FFmpeg 下载并无损封装 YouTube 高清音视频流。"""
+        import shutil
+        import tempfile
+        from ..runtime_tools import find_ffmpeg, find_node
+
+        try:
+            import yt_dlp
+        except Exception as exc:
+            return f"缺少 yt-dlp 组件，无法下载 YouTube 视频: {exc}"
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="ch_yt_dl_"))
+        try:
+            # 严禁将 YouTube 账号登录 Cookie 交给 yt-dlp(Python OpenSSL TLS 栈)：
+            # 一方面避免账号会话 TLS 指纹突变，另一方面 YouTube 对无 PO Token 的带 Cookie web 请求会直接返回 "The page needs to be reloaded"
+            ff = find_ffmpeg()
+            node = find_node()
+            q = str(quality or "highest").strip().lower()
+            if ff:
+                if q == "lowest":
+                    fmt = "worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst"
+                elif q.isdigit():
+                    fmt = f"bestvideo[height<={q}][ext=mp4]+bestaudio[ext=m4a]/best[height<={q}][ext=mp4]/best[height<={q}]/best"
+                else:
+                    fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+            else:
+                # 环境中无 FFmpeg 时必须选择单流音视频封装格式，避免 yt-dlp 合并报错
+                if q == "lowest":
+                    fmt = "worst[ext=mp4][acodec!=none][vcodec!=none]/worst[acodec!=none][vcodec!=none]/worst[ext=mp4]/worst"
+                elif q.isdigit():
+                    fmt = f"best[height<={q}][ext=mp4][acodec!=none][vcodec!=none]/best[height<={q}][acodec!=none][vcodec!=none]/best[ext=mp4]/best"
+                else:
+                    fmt = "best[ext=mp4][acodec!=none][vcodec!=none]/best[acodec!=none][vcodec!=none]/best[ext=mp4]/best"
+
+            out_tpl = str(tmp_dir / "video.%(ext)s")
+            base_opts: dict[str, Any] = {
+                "format": fmt,
+                "outtmpl": out_tpl,
+                "quiet": True,
+                "no_warnings": True,
+                "no_color": True,
+                "noprogress": True,
+                "noplaylist": True,
+                "retries": 2,
+                "socket_timeout": 30,
+            }
+            if ff:
+                # imageio-ffmpeg 可执行文件名通常带版本后缀（如 ffmpeg-win-x86_64-v7.1.exe），
+                # 必须传完整文件路径而非父目录，否则 yt-dlp 只认目录里的 ffmpeg.exe。
+                base_opts["ffmpeg_location"] = str(ff)
+                base_opts["merge_output_format"] = "mp4"
+            if node:
+                base_opts["js_runtimes"] = {"node": {"path": str(node)}}
+            if proxy:
+                base_opts["proxy"] = proxy
+
+            # 依次尝试：
+            # 1) 默认客户端（无 PO Token 限制的视频 / Shorts 可直接拿到高清 DASH 并由 FFmpeg 无损合流）；
+            # 2) android 客户端单流封装（规避 YouTube 对 android_vr/DASH 无 PO Token 返回 403 Forbidden）；
+            # 3) android_vr + tv + ios 兜底。
+            # 注意不覆写 http_headers["User-Agent"]，避免桌面 UA 破坏移动端 Innertube 客户端校验。
+            android_opts = {
+                **base_opts,
+                "format": "best[ext=mp4][acodec!=none][vcodec!=none]/best[ext=mp4]/best",
+                "extractor_args": {"youtube": {"player_client": ["android"]}},
+            }
+            android_opts.pop("merge_output_format", None)
+            attempts = [
+                base_opts,
+                android_opts,
+                {**base_opts, "extractor_args": {"youtube": {"player_client": ["android_vr", "tv", "ios"]}}},
+            ]
+            last_exc: Exception | None = None
+            for attempt_opts in attempts:
+                for leftover in list(tmp_dir.iterdir()):
+                    try:
+                        if leftover.is_dir():
+                            shutil.rmtree(leftover, ignore_errors=True)
+                        else:
+                            leftover.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                try:
+                    with yt_dlp.YoutubeDL(attempt_opts) as ydl:
+                        ydl.download([url])
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+            if last_exc is not None:
+                clean_msg = re.sub(r"\x1b\[[0-9;]*m", "", str(last_exc)).strip()
+                return f"YouTube 视频下载失败: {clean_msg}"
+
+            candidates = [
+                p for p in tmp_dir.iterdir()
+                if p.is_file() and p.name.startswith("video.") and p.suffix.lower() not in {".part", ".ytdl", ".txt"}
+            ]
+            if not candidates:
+                return "yt-dlp 未生成可保存的视频文件"
+            best_file = max(candidates, key=lambda p: p.stat().st_size)
+            if best_file.stat().st_size <= 0:
+                return "yt-dlp 生成的视频文件为空"
+            fpath.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(best_file), str(fpath))
+            return ""
+        except Exception as exc:
+            clean_msg = re.sub(r"\x1b\[[0-9;]*m", "", str(exc)).strip()
+            return f"YouTube 视频下载失败: {clean_msg}"
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     @staticmethod
     def _mux_dash_streams(video_path: Path, audio_path: Path, out_path: Path) -> str:

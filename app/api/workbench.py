@@ -18,7 +18,7 @@ router = APIRouter()
 
 @router.get("/api/overview/summary")
 async def overview_summary(platform: str = "douyin"):
-    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"}:
+    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"}:
         raise HTTPException(422, "平台类型无效")
     with get_session() as session:
         def count(model, *conditions):

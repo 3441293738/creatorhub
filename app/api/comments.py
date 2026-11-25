@@ -19,6 +19,7 @@ from app.platforms.facebook import looks_like_facebook_post, resolve_facebook_ta
 from app.platforms.instagram import looks_like_ig_work, resolve_ig_user_target, resolve_ig_work_ref
 from app.platforms.kuaishou import looks_like_photo as ks_looks_like_photo, resolve_ks_photo_id, resolve_ks_user_id
 from app.platforms.rednote import looks_like_rednote_note, resolve_rednote_note, resolve_rednote_user
+from app.platforms.youtube import looks_like_youtube_video, resolve_youtube_channel_target, resolve_youtube_video_ref
 from app.platforms.twitter import looks_like_twitter_tweet, resolve_twitter_target, resolve_twitter_user_target
 from app.platforms.xhs import looks_like_note as xhs_looks_like_note, resolve_note as xhs_resolve_note, resolve_user as xhs_resolve_user
 from app.scheduling import utc_iso
@@ -91,7 +92,7 @@ async def list_watches(platform: str | None = None):
 
 @router.post("/api/comment-watches")
 async def add_watch(body: WatchIn):
-    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube") else "douyin"
     aweme_id = sec_uid = xsec_token = ""
     title = ""
     target_input = metadata_service._clean_platform_target_input(body.url_or_id, platform)
@@ -345,6 +346,30 @@ async def add_watch(body: WatchIn):
                 raise HTTPException(400, "无法解析 Facebook 主页/公共主页/群组目标，请粘贴完整链接、用户名或数字 ID")
             title = f"FB {sec_uid}" if not sec_uid.startswith("http") else sec_uid
         mode = "public"
+    elif platform == "youtube":
+        yt_ref = resolve_youtube_video_ref(target_input, allow_bare_id=False)
+        yt_chan, _yt_ch_url = resolve_youtube_channel_target(target_input)
+        if yt_ref is None and not yt_chan:
+            yt_ref = resolve_youtube_video_ref(target_input, allow_bare_id=True)
+        kind = body.kind if body.kind in {"auto", "video", "user"} else "auto"
+        if kind == "auto":
+            kind = "video" if yt_ref else "user"
+        if kind == "video":
+            if yt_ref is None:
+                yt_ref = resolve_youtube_video_ref(target_input, allow_bare_id=True)
+            if yt_ref is None or not yt_ref.video_id:
+                raise HTTPException(400, "无法解析 YouTube 视频，请粘贴 youtube.com/watch?v=...、youtu.be/...、/shorts/... 链接或 11 位视频 ID")
+            aweme_id = yt_ref.video_id
+            sec_uid = yt_ref.canonical_url
+            title = f"YT {yt_ref.kind} {yt_ref.video_id}"
+        else:
+            if looks_like_youtube_video(target_input):
+                raise HTTPException(400, "检测到 YouTube 视频链接；频道评论监控请粘贴频道主页链接（/@handle 或 /channel/UC...）")
+            sec_uid = yt_chan
+            if not sec_uid:
+                raise HTTPException(400, "无法解析 YouTube 频道目标，请粘贴 youtube.com/@handle、/channel/UC... 链接或 @handle")
+            title = f"YT {sec_uid}" if not sec_uid.startswith("http") else sec_uid
+        mode = "public"
     else:
         kind = body.kind
         if kind == "auto":
@@ -388,8 +413,8 @@ async def add_watch(body: WatchIn):
                     400,
                     "该账号角色设为「发布主号 (publish)」，禁止绑定公开作品评论轮询采集；请使用「创作中心模式」或改选「仅采集号 (crawler)」/「混合号 (hybrid)」",
                 )
-        if platform in {"tiktok", "instagram", "twitter", "facebook"}:
-            pname = {"instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook"}.get(platform, "TikTok")
+        if platform in {"tiktok", "instagram", "twitter", "facebook", "youtube"}:
+            pname = {"instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook", "youtube": "YouTube"}.get(platform, "TikTok")
             account = s.get(DouyinAccount, body.account_id) if body.account_id else None
             if not account or account.platform != platform or account.status != "active":
                 raise HTTPException(400, f"{pname} 评论监控必须选择一个登录有效的 {pname} 账号")
@@ -449,9 +474,9 @@ async def update_watch(wid: int, body: WatchUpdate):
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != w.platform or acc.status != "active":
                 raise HTTPException(400, "账号不存在、登录态失效或与评论监控平台不匹配")
-            if (w.platform in {"tiktok", "instagram", "twitter", "facebook"}
+            if (w.platform in {"tiktok", "instagram", "twitter", "facebook", "youtube"}
                     and not (acc.storage_state or acc.creator_storage_state or acc.cookie)):
-                pname_w = {"instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook"}.get(w.platform, "TikTok")
+                pname_w = {"instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook", "youtube": "YouTube"}.get(w.platform, "TikTok")
                 raise HTTPException(400, f"所选 {pname_w} 账号缺少登录会话，请重新登录")
             w.account_id = body.account_id
         if new_mode == "creator":

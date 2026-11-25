@@ -147,12 +147,12 @@ def _clean_platform_target_input(value: str, platform: str) -> str:
         platform_name = {
             "douyin": "抖音", "xhs": "小红书", "rednote": "海外小红书", "kuaishou": "快手",
             "shipinhao": "视频号", "tiktok": "TikTok", "bilibili": "哔哩哔哩",
-            "instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook",
+            "instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook", "youtube": "YouTube",
         }.get(platform, platform)
         detected_names = {
             "douyin": "抖音", "xhs": "小红书", "rednote": "海外小红书", "kuaishou": "快手",
             "wechat": "微信/视频号", "tiktok": "TikTok", "bilibili": "哔哩哔哩",
-            "instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook",
+            "instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook", "youtube": "YouTube",
             "generic": "其他站点",
         }
         names = "、".join(dict.fromkeys(

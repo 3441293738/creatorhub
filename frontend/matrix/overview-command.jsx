@@ -176,7 +176,7 @@ export function MatrixOverviewCommand({ ctx }) {
           )}
           <button type="button" className="ghost sm mx-fold-toggle" onClick={toggleIdle}>
             <Icon name={hideIdlePlatforms ? "eye" : "eye-off"} />
-            <span>{hideIdlePlatforms ? "显示全部 10 平台" : "收纳空置平台"}</span>
+            <span>{hideIdlePlatforms ? "显示全部 11 平台" : "收纳空置平台"}</span>
           </button>
         </div>
         <div className="mx-ov-quick-btns">

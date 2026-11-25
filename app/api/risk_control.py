@@ -169,14 +169,14 @@ def _account_risk_view(account: DouyinAccount, now: datetime, *,
             "douyin": "抖音号", "xhs": "小红书号", "rednote": "Rednote ID",
             "kuaishou": "快手号", "shipinhao": "视频号",
             "bilibili": "B站 UID", "tiktok": "TikTok",
-            "instagram": "Instagram", "twitter": "Twitter @", "facebook": "Facebook",
+            "instagram": "Instagram", "twitter": "Twitter @", "facebook": "Facebook", "youtube": "YouTube @",
         }.get(account.platform, "账号 ID")
     else:
         platform_account_id = account.sec_uid
         platform_account_id_label = {
             "douyin": "sec_uid", "xhs": "user_id", "rednote": "user_id",
             "kuaishou": "user_id", "shipinhao": "finder_id",
-            "bilibili": "UID", "instagram": "pk", "twitter": "screen_name", "facebook": "UID/主页",
+            "bilibili": "UID", "instagram": "pk", "twitter": "screen_name", "facebook": "UID/主页", "youtube": "频道ID",
         }.get(account.platform, "账号 ID")
     return {
         "account_id": account.id,

@@ -202,6 +202,7 @@ async def _probe_proxy(url: str, platform: str | None = None, timeout: float = 1
         "instagram": "https://www.instagram.com/",
         "twitter": "https://x.com/",
         "facebook": "https://www.facebook.com/",
+        "youtube": "https://www.youtube.com/",
     }
     if platform is not None and platform not in platform_urls:
         return False, "未配置该平台的检测地址"

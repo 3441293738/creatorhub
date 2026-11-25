@@ -103,8 +103,8 @@ def _content_source(target_id: int, platform: str, target: MonitorTarget | None 
                 "group_name": "", "tags": []}
     nickname = (tiktok_display_text(target.nickname)
                 if platform == "tiktok" else target.nickname)
-    if platform in {"tiktok", "instagram", "twitter", "facebook"} and not nickname and target.sec_uid and not target.sec_uid.isdigit():
-        nickname = f"@{target.sec_uid}" if platform != "facebook" else target.sec_uid
+    if platform in {"tiktok", "instagram", "twitter", "facebook", "youtube"} and not nickname and target.sec_uid and not target.sec_uid.isdigit():
+        nickname = target.sec_uid if (platform in {"facebook", "youtube"} or target.sec_uid.startswith("@")) else f"@{target.sec_uid}"
     base = ("#" + target.keyword if target.target_kind == "keyword"
             else nickname or target.sec_uid[:12] or f"任务 #{target.id}")
     name = f"{target.alias} · {base}" if target.alias and target.alias != base else base

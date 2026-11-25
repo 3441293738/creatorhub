@@ -105,6 +105,7 @@
         instagram_read_mode: "hybrid",
         twitter_read_mode: "hybrid",
         facebook_read_mode: "hybrid",
+        youtube_read_mode: "hybrid",
         douyin_profile_mode: "hybrid",
         douyin_followers_mode: "hybrid",
         douyin_dm_sync_mode: "hybrid",
@@ -146,6 +147,7 @@
         instagram_read_mode: "hybrid",
         twitter_read_mode: "hybrid",
         facebook_read_mode: "hybrid",
+        youtube_read_mode: "hybrid",
         douyin_profile_mode: "hybrid",
         douyin_followers_mode: "hybrid",
         douyin_dm_sync_mode: "hybrid",
@@ -187,6 +189,7 @@
         instagram_read_mode: "hybrid",
         twitter_read_mode: "hybrid",
         facebook_read_mode: "hybrid",
+        youtube_read_mode: "hybrid",
         douyin_profile_mode: "hybrid",
         douyin_followers_mode: "hybrid",
         douyin_dm_sync_mode: "hybrid",
@@ -203,7 +206,7 @@
   const DEFAULT_PRIMARY_PLATFORMS = ["douyin", "xhs", "bilibili", "shipinhao"];
   const PLATFORM_ORDER = [
     "douyin", "xhs", "bilibili", "shipinhao",
-    "rednote", "tiktok", "instagram", "twitter", "facebook",
+    "rednote", "tiktok", "instagram", "twitter", "facebook", "youtube",
   ];
 
   let baseline = null;

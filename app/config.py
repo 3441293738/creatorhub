@@ -81,6 +81,9 @@ class EngineConfig:
     # Facebook 读取与写入通道: hybrid=Cookie SSR轻读优先、动态时间线/搜索/评论走隔离浏览器; browser=全程隔离浏览器
     facebook_read_mode: str = "hybrid"        # hybrid | api | browser
     facebook_write_mode: str = "browser"      # browser
+    # YouTube 读取与写入通道: hybrid=SSR/Innertube直连优先、兼容失败回退隔离浏览器; browser=全程隔离浏览器
+    youtube_read_mode: str = "hybrid"         # hybrid | api | browser
+    youtube_write_mode: str = "browser"       # browser
     # 视频号读取模式: auto=优先桌面微信原生 Finder CDP 协议、回退创作者助手页面;
     # protocol=仅原生 Finder 协议; browser=仅创作者助手页面。
     channels_read_mode: str = "auto"          # auto | protocol | browser
@@ -290,7 +293,8 @@ def load_config(path: str | None = None) -> Config:
                 ("instagram_read_mode", "hybrid"),
                 ("instagram_write_mode", "hybrid"),
                 ("twitter_read_mode", "hybrid"),
-                ("facebook_read_mode", "hybrid")):
+                ("facebook_read_mode", "hybrid"),
+                ("youtube_read_mode", "hybrid")):
             mode = str(getattr(cfg.engine, name, default) or default).strip().lower()
             setattr(cfg.engine, name, mode if mode in {"hybrid", "api", "browser"}
                     else default)

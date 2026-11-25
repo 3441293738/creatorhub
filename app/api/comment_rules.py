@@ -26,6 +26,7 @@ from app.platforms.facebook import looks_like_facebook_post, resolve_facebook_po
 from app.platforms.instagram import looks_like_ig_work, resolve_ig_user_target, resolve_ig_work_ref
 from app.platforms.kuaishou import resolve_ks_photo_id, resolve_ks_user_id
 from app.platforms.twitter import looks_like_twitter_tweet, resolve_twitter_short_url, resolve_twitter_tweet_ref, resolve_twitter_user_target
+from app.platforms.youtube import looks_like_youtube_video, resolve_youtube_channel_target, resolve_youtube_video_ref
 from app.platforms.xhs import resolve_note as xhs_resolve_note, resolve_user as xhs_resolve_user
 from app.scheduling import utc_iso
 from app.services import metadata as metadata_service
@@ -226,6 +227,12 @@ async def _resolve_rule_target(
                 sec_uid = resolve_facebook_user_target(expanded_fb)
                 if not sec_uid:
                     raise HTTPException(400, "无法解析 Facebook 目标(主页/公共主页/群组链接、用户名或数字 ID)")
+            elif platform == "youtube":
+                if looks_like_youtube_video(target):
+                    raise HTTPException(400, "创作者模式请填写 YouTube 频道主页链接（/@handle 或 /channel/UC...），不要填写单条视频链接")
+                sec_uid, _yt_ch_url = resolve_youtube_channel_target(target)
+                if not sec_uid:
+                    raise HTTPException(400, "无法解析 YouTube 频道目标（支持 youtube.com/@handle、/channel/UC... 或 @handle）")
             else:
                 sec_uid = await metadata_service._call_resolver(
                     resolve_sec_uid, target, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
@@ -281,6 +288,11 @@ async def _resolve_rule_target(
                 aweme_id = fref.canonical_url or fref.post_id if fref else ""
                 if not aweme_id:
                     raise HTTPException(400, "无法解析 Facebook 帖子(帖子/Reel/Watch 链接、fb.watch 短链或帖子 ID)")
+            elif platform == "youtube":
+                yref = resolve_youtube_video_ref(target)
+                aweme_id = yref.video_id if yref else ""
+                if not aweme_id:
+                    raise HTTPException(400, "无法解析 YouTube 视频（支持 youtube.com/watch?v=...、youtu.be/...、/shorts/... 或 11 位视频 ID）")
             else:
                 aweme_id = await metadata_service._call_resolver(
                     resolve_aweme_id, target, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
@@ -336,7 +348,7 @@ async def add_comment_rule(body: CommentRuleIn, request: Request = None):
         previous = replay_if_exists(s, request=request, scope="comment-rule", body=body)
         if previous is not None:
             return previous
-    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "bilibili", "instagram", "twitter", "facebook") else "douyin"
+    platform = body.platform if body.platform in ("douyin", "xhs", "kuaishou", "bilibili", "instagram", "twitter", "facebook", "youtube") else "douyin"
     mode = body.mode if body.mode in ("auto_reply", "auto_comment") else "auto_reply"
     compose_mode, use_ai = _normalize_compose_mode(body.compose_mode, body.use_ai)
     templates = [t.strip() for t in body.templates if t.strip()]
@@ -360,7 +372,7 @@ async def add_comment_rule(body: CommentRuleIn, request: Request = None):
     if comment_scope not in VALID_COMMENT_SCOPES:
         comment_scope = "all"
 
-    _pn = {"xhs": "小红书", "kuaishou": "快手", "bilibili": "哔哩哔哩", "instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook"}.get(platform, "抖音")
+    _pn = {"xhs": "小红书", "kuaishou": "快手", "bilibili": "哔哩哔哩", "instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook", "youtube": "YouTube"}.get(platform, "抖音")
     with get_session() as s:
         acc = s.get(DouyinAccount, body.account_id)
         if not acc or acc.platform != platform:
@@ -755,7 +767,7 @@ class CommentBatchApproveIn(BaseModel):
 @router.post("/api/comment-tasks/batch-approve")
 async def batch_approve_comment_tasks(body: CommentBatchApproveIn):
     """Only approve an explicit, scope-checked selection, atomically."""
-    if body.platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"}:
+    if body.platform not in {"douyin", "xhs", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"}:
         raise HTTPException(422, "平台类型无效")
     ids = list(dict.fromkeys(body.ids))
     if not ids or any(value <= 0 for value in ids):

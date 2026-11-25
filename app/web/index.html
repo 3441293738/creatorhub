@@ -95,6 +95,7 @@
   .pswitch button.active[data-pf="instagram"] { background:rgba(225,48,108,.14); color:#e1306c; border-color:rgba(225,48,108,.42); }
   .pswitch button.active[data-pf="twitter"] { background:rgba(29,155,240,.15); color:#1d9bf0; border-color:rgba(29,155,240,.42); }
   .pswitch button.active[data-pf="facebook"] { background:rgba(24,119,242,.15); color:#1877f2; border-color:rgba(24,119,242,.42); }
+  .pswitch button.active[data-pf="youtube"] { background:rgba(255,0,0,.13); color:#e11d1d; border-color:rgba(255,0,0,.38); }
   .hidden { display:none !important; }
 
   /* Platform accents and light/dark themes are independent: appearance.css. */
@@ -3778,7 +3779,7 @@
     </div>
   </div>
   <div class="pswitch" role="tablist" aria-label="平台切换">
-    <button role="tab" data-pf="all" data-base-label="全平台" onclick="switchPlatform('all')" title="跨 10 大平台全局汇总与矩阵管理"><svg class="ps-ic" aria-hidden="true"><use href="#i-globe"/></svg><span class="ps-lbl">全平台</span></button>
+    <button role="tab" data-pf="all" data-base-label="全平台" onclick="switchPlatform('all')" title="跨 11 大平台全局汇总与矩阵管理"><svg class="ps-ic" aria-hidden="true"><use href="#i-globe"/></svg><span class="ps-lbl">全平台</span></button>
     <button role="tab" data-pf="douyin" onclick="switchPlatform('douyin')">抖音</button>
     <button role="tab" data-pf="xhs" onclick="switchPlatform('xhs')">小红书</button>
     <button role="tab" data-pf="rednote" onclick="switchPlatform('rednote')" title="海外小红书 (Rednote)">海外小红书</button>
@@ -3789,6 +3790,7 @@
     <button role="tab" data-pf="instagram" onclick="switchPlatform('instagram')">Instagram</button>
     <button role="tab" data-pf="twitter" onclick="switchPlatform('twitter')">Twitter</button>
     <button role="tab" data-pf="facebook" onclick="switchPlatform('facebook')">Facebook</button>
+    <button role="tab" data-pf="youtube" onclick="switchPlatform('youtube')">YouTube</button>
   </div>
   <div class="header-actions">
     <button class="ghost command-trigger" id="command-trigger" type="button" aria-label="搜索功能" aria-haspopup="dialog" aria-controls="command-dialog" aria-keyshortcuts="Control+k Meta+k" title="搜索功能（Ctrl / ⌘ K）"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>搜索功能</span><kbd>Ctrl K</kbd></button>
@@ -3818,6 +3820,7 @@
     <div class="nav-sep">运营与分发</div>
     <button class="navitem" data-tab="hub" onclick="switchTab('hub', true)"><svg><use href="#i-library"/></svg><span class="nav-label" id="nav-hub-label">矩阵数据与私信</span></button>
     <button class="navitem single-pf-only tk-only" data-tab="tiktok-tools" onclick="switchTab('tiktok-tools', true)"><svg><use href="#i-user"/></svg><span class="nav-label">用户互动</span></button>
+    <button class="navitem single-pf-only yt-only" data-tab="youtube-tools" onclick="switchTab('youtube-tools', true)"><svg><use href="#i-play"/></svg><span class="nav-label">互动与养号</span></button>
     <button class="navitem pub-only" data-tab="publish" onclick="switchTab('publish', true)"><svg><use href="#i-send"/></svg><span class="nav-label" id="nav-publish-label">内容发布</span><span class="nav-badge" id="tb-pub">0</span></button>
     <button class="navitem single-pf-only notsh-only tk-hide rn-hide" data-tab="autocomment" onclick="switchTab('autocomment', true)"><svg><use href="#i-automation"/></svg><span class="nav-label">自动评论</span><span class="nav-badge" id="tb-ac">0</span></button>
     <button class="navitem" data-tab="queue" onclick="switchTab('queue', true)"><svg><use href="#i-list"/></svg><span class="nav-label">任务队列</span><span class="nav-badge" id="tb-queue">0</span></button>
@@ -3924,6 +3927,8 @@
         <button class="ghost tw-only" onclick="toggleCookie()">Token / Cookie 登录</button>
         <button class="fb-only" onclick="startFacebookLogin()"><svg><use href="#i-login"/></svg>Facebook 登录</button>
         <button class="ghost fb-only" onclick="toggleCookie()">Cookie 粘贴登录</button>
+        <button class="yt-only" onclick="startYouTubeLogin()"><svg><use href="#i-login"/></svg>YouTube 登录</button>
+        <button class="ghost yt-only" onclick="toggleCookie()">Cookie 粘贴登录</button>
         <button class="ghost ig-only" onclick="toggleCookie()">Cookie 粘贴</button>
       </div>
       <div id="qrbox" style="display:none;margin-bottom:14px">
@@ -4103,6 +4108,183 @@
         <div class="form-field"><label for="tk-target-text">目标评论原文 <span class="field-scope">回复任务必填，用于在页面定位回复区</span></label><textarea id="tk-target-text" rows="2" placeholder="顶层评论可留空"></textarea></div>
         <div class="form-actions"><label class="check-row"><input id="tk-comment-run-now" type="checkbox"><span>立即执行</span></label><span class="actions-spacer"></span><button type="button" onclick="createTikTokCommentTask()"><svg><use href="#i-send"/></svg>创建评论任务</button></div>
         <div class="form-note"><svg aria-hidden="true"><use href="#i-info"/></svg><span>这是主动写入工具，因此与账号资料分开；任务结果在「任务队列」查看。</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section data-panel="youtube-tools" class="yt-only">
+    <div class="platform-callout" role="note">
+      <svg aria-hidden="true"><use href="#i-info"/></svg>
+      <div><b>YouTube 互动与观看养号工具</b><p>在账号独立隔离浏览器中执行视频/评论互动、按真实播放进度观看、关键词搜索浏览养号、筛选发现与品牌频道切换；所有写操作均受统一风控节流与审计记录保护，绝不自动绕过 Google 验证。</p></div>
+    </div>
+
+    <div class="card" data-section="yt-interact">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-heart-up"/></svg></span>
+        <h2>YouTube 主动互动 <span class="sub">点赞 / 点踩 / 订阅 / 评论回复 / 批量赞评论 / 修改频道名</span></h2>
+      </div>
+      <div class="stack">
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="yt-act-account">执行账号</label><select id="yt-act-account"></select></div>
+          <div class="form-field"><label for="yt-act-type">互动动作</label>
+            <select id="yt-act-type" onchange="syncYouTubeInteractForm()">
+              <option value="like">视频点赞 (Like)</option>
+              <option value="unlike">取消视频点赞 (Unlike)</option>
+              <option value="dislike">视频点踩 (Dislike)</option>
+              <option value="undislike">取消视频点踩 (Undislike)</option>
+              <option value="subscribe">订阅频道 (Subscribe)</option>
+              <option value="unsubscribe">取消订阅频道 (Unsubscribe)</option>
+              <option value="comment">发表视频主评论</option>
+              <option value="reply_comment">回复指定评论 (?lc= 或评论 ID)</option>
+              <option value="like_comment">点赞单条高亮评论 (?lc=)</option>
+              <option value="unlike_comment">取消单条评论点赞</option>
+              <option value="like_video_comments">批量点赞视频评论区</option>
+              <option value="change_profile_name">修改频道展示名称 (Studio)</option>
+            </select>
+          </div>
+          <div class="form-field"><label for="yt-act-channel">品牌频道名称 <span class="field-scope">可选，多频道自动切换</span></label><input id="yt-act-channel" placeholder="留空使用当前默认频道"></div>
+        </div>
+        <div class="form-field" id="yt-act-target-row">
+          <label for="yt-act-target" id="yt-act-target-label">目标链接或 ID</label>
+          <input id="yt-act-target" placeholder="https://www.youtube.com/watch?v=...、youtu.be/...、/shorts/... 或 11 位视频 ID">
+        </div>
+        <div class="form-grid cols-auto hidden" id="yt-act-cid-row">
+          <div class="form-field"><label for="yt-act-cid">目标评论 ID <span class="field-scope">链接已含 ?lc= 时可留空</span></label><input id="yt-act-cid" placeholder="例如 Ugzx..."></div>
+        </div>
+        <div class="form-field hidden" id="yt-act-comment-row">
+          <label for="yt-act-comment">评论 / 回复内容</label>
+          <textarea id="yt-act-comment" rows="3" placeholder="输入最终要发布的评论或回复文案（不支持未展开的 {a|b} 模板）"></textarea>
+        </div>
+        <div class="form-grid cols-auto hidden" id="yt-act-batch-row">
+          <div class="form-field"><label for="yt-act-like-count">点赞条数 (1–20)</label><input id="yt-act-like-count" type="number" min="1" max="20" value="3"></div>
+          <div class="form-field"><label>挑选方式</label><label class="check-row"><input id="yt-act-random" type="checkbox"><span>在已加载评论中随机挑选点赞</span></label></div>
+        </div>
+        <div class="form-field hidden" id="yt-act-name-row">
+          <label for="yt-act-new-name">新的频道展示名称</label>
+          <input id="yt-act-new-name" maxlength="60" placeholder="输入新的 YouTube 频道名称">
+        </div>
+        <div class="form-actions">
+          <span class="status-text" id="yt-act-status" role="status" aria-live="polite"></span>
+          <button type="button" onclick="runYouTubeInteract()"><svg><use href="#i-send"/></svg>打开浏览器执行互动</button>
+        </div>
+        <div class="form-note"><svg aria-hidden="true"><use href="#i-info"/></svg><span>写操作会打开该账号独立的可见浏览器窗口按拟人节奏执行，并在操作完成后记录到风控审计与任务记录。</span></div>
+      </div>
+    </div>
+
+    <div class="card" data-section="yt-watch">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-play"/></svg></span>
+        <h2>真实观看视频 <span class="sub">按真实播放器进度观看、自动跳过广告并联动赞 / 订 / 评</span></h2>
+      </div>
+      <div class="stack">
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="yt-watch-account">执行账号</label><select id="yt-watch-account"></select></div>
+          <div class="form-field"><label for="yt-watch-channel">品牌频道名称 <span class="field-scope">可选</span></label><input id="yt-watch-channel" placeholder="留空使用当前默认频道"></div>
+          <div class="form-field"><label for="yt-watch-mode">观看时长方式</label>
+            <select id="yt-watch-mode" onchange="syncYouTubeWatchForm()">
+              <option value="seconds">按固定时长（秒）</option>
+              <option value="percentage">按视频总时长百分比</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-field">
+          <label for="yt-watch-url">目标视频 / Shorts 链接或 11 位 ID</label>
+          <input id="yt-watch-url" placeholder="https://www.youtube.com/watch?v=... 或 https://www.youtube.com/shorts/...">
+        </div>
+        <div class="form-grid cols-auto">
+          <div class="form-field" id="yt-watch-sec-row"><label for="yt-watch-seconds">观看秒数 (5–600)</label><input id="yt-watch-seconds" type="number" min="5" max="600" value="35"></div>
+          <div class="form-field hidden" id="yt-watch-pct-row"><label for="yt-watch-pct">目标完播比例 % (5–100)</label><input id="yt-watch-pct" type="number" min="5" max="100" value="50"></div>
+          <div class="form-field hidden" id="yt-watch-limit-row"><label for="yt-watch-pct-limit">单次最长上限秒数 (10–600)</label><input id="yt-watch-pct-limit" type="number" min="10" max="600" value="120"></div>
+        </div>
+        <div class="row" style="flex-wrap:wrap;gap:14px">
+          <label class="check-row"><input id="yt-watch-skip-ads" type="checkbox" checked><span>自动跳过前贴/插播广告</span></label>
+          <label class="check-row"><input id="yt-watch-like" type="checkbox"><span>观看中途随机点赞视频</span></label>
+          <label class="check-row"><input id="yt-watch-sub" type="checkbox"><span>观看中途随机订阅频道</span></label>
+        </div>
+        <div class="form-field">
+          <label for="yt-watch-comment">完播后追加评论 <span class="field-scope">可选，留空不评论</span></label>
+          <textarea id="yt-watch-comment" rows="2" placeholder="观看完成后顺手发表一条评论（留空跳过）"></textarea>
+        </div>
+        <div class="form-actions">
+          <span class="status-text" id="yt-watch-status" role="status" aria-live="polite"></span>
+          <button type="button" onclick="runYouTubeWatch()"><svg><use href="#i-play"/></svg>开始真实观看</button>
+        </div>
+        <div id="yt-watch-result" class="hidden"></div>
+      </div>
+    </div>
+
+    <div class="card" data-section="yt-warmup">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-sparkles"/></svg></span>
+        <h2>关键词搜索养号 <span class="sub">模拟正常用户搜索、滚动浏览、随机观看与概率点赞</span></h2>
+      </div>
+      <div class="stack">
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="yt-warmup-account">执行账号</label><select id="yt-warmup-account"></select></div>
+          <div class="form-field"><label for="yt-warmup-keyword">养号兴趣关键词</label><input id="yt-warmup-keyword" placeholder="例如 tech review、lofi music、编程教程" onkeydown="if(event.key==='Enter'){event.preventDefault();runYouTubeWarmup()}"></div>
+          <div class="form-field"><label for="yt-warmup-count">随机观看视频数 (1–8)</label><input id="yt-warmup-count" type="number" min="1" max="8" value="2"></div>
+          <div class="form-field"><label for="yt-warmup-sec">单条基准观看秒数 (5–180)</label><input id="yt-warmup-sec" type="number" min="5" max="180" value="20"></div>
+          <div class="form-field"><label for="yt-warmup-prob">点赞概率 % (0–100)</label><input id="yt-warmup-prob" type="number" min="0" max="100" value="50"></div>
+        </div>
+        <div class="form-actions">
+          <span class="status-text" id="yt-warmup-status" role="status" aria-live="polite"></span>
+          <button type="button" onclick="runYouTubeWarmup()"><svg><use href="#i-sparkles"/></svg>启动养号浏览</button>
+        </div>
+        <div class="table-wrap"><table aria-label="YouTube 养号观看记录"><thead><tr><th>已观看视频链接</th><th>观看时长</th><th>点赞状态</th></tr></thead><tbody id="yt-warmup-results"></tbody></table></div>
+        <div class="form-note"><svg aria-hidden="true"><use href="#i-info"/></svg><span>系统会打开可见浏览器进入首页、搜索关键词、拟人滚动列表并随机挑选视频播放（自动跳过广告），实际单条时长会在基准秒数附近随机浮动。</span></div>
+      </div>
+    </div>
+
+    <div class="card" data-section="yt-discover">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-search"/></svg></span>
+        <h2>筛选发现与多频道管理 <span class="sub">带条件搜索视频/频道并一键联动互动，或同步品牌频道列表</span></h2>
+      </div>
+      <div class="stack">
+        <div class="form-grid cols-auto">
+          <div class="form-field"><label for="yt-search-account">执行账号</label><select id="yt-search-account"></select></div>
+          <div class="form-field"><label for="yt-search-query">搜索关键词</label><input id="yt-search-query" type="search" placeholder="输入主题词、频道名或 #标签" onkeydown="if(event.key==='Enter'){event.preventDefault();searchYouTubeTools()}"></div>
+          <div class="form-field"><label for="yt-search-scope">搜索范围</label>
+            <select id="yt-search-scope" onchange="syncYouTubeSearchForm()">
+              <option value="videos">视频 / Shorts</option>
+              <option value="channels">频道</option>
+            </select>
+          </div>
+          <div class="form-field" id="yt-search-date-row"><label for="yt-search-date">上传时间</label>
+            <select id="yt-search-date">
+              <option value="">不限</option>
+              <option value="hour">1 小时内</option>
+              <option value="today">今天</option>
+              <option value="week">本周</option>
+              <option value="month">本月</option>
+              <option value="year">今年</option>
+            </select>
+          </div>
+          <div class="form-field" id="yt-search-dur-row"><label for="yt-search-dur">视频时长</label>
+            <select id="yt-search-dur">
+              <option value="">不限</option>
+              <option value="short">短（&lt; 4 分钟）</option>
+              <option value="medium">中（4–20 分钟）</option>
+              <option value="long">长（&gt; 20 分钟）</option>
+            </select>
+          </div>
+          <div class="form-field" id="yt-search-sort-row"><label for="yt-search-sort">排序方式</label>
+            <select id="yt-search-sort">
+              <option value="">综合相关</option>
+              <option value="date">最新发布</option>
+              <option value="views">播放最多</option>
+              <option value="rating">评分最高</option>
+            </select>
+          </div>
+          <div class="form-field"><label for="yt-search-limit">结果上限</label><input id="yt-search-limit" type="number" min="1" max="120" value="20"></div>
+        </div>
+        <div class="form-actions">
+          <span class="status-text" id="yt-search-status" role="status" aria-live="polite"></span>
+          <button type="button" class="ghost" onclick="syncYouTubeManagedChannels()"><svg><use href="#i-refresh"/></svg>同步账号下多频道</button>
+          <button type="button" onclick="searchYouTubeTools()"><svg><use href="#i-search"/></svg>搜索</button>
+        </div>
+        <div class="table-wrap"><table aria-label="YouTube 搜索结果"><thead><tr><th>标题 / 频道</th><th>创作者 / 标识</th><th>数据</th><th style="text-align:right">快捷操作</th></tr></thead><tbody id="yt-search-results"></tbody></table></div>
+        <div class="table-wrap"><table aria-label="当前账号可管理频道"><thead><tr><th>频道名称</th><th>Handle / 频道 ID</th><th>订阅数</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody id="yt-channel-results"></tbody></table></div>
       </div>
     </div>
   </section>
@@ -5068,7 +5250,7 @@
               <option value="zh">始终使用自然中文</option>
               <option value="en">始终使用自然英文</option>
             </select>
-            <div class="field-help">海外平台（IG / X / Facebook）选自动即可跟评外语内容。</div>
+            <div class="field-help">海外平台（IG / X / Facebook / YouTube）选自动即可跟评外语内容。</div>
           </div>
           <div class="form-field">
             <label for="ai-max-chars">单条评论字数上限</label>
@@ -5145,6 +5327,7 @@
                 <option value="instagram">Instagram</option>
                 <option value="twitter">X (Twitter)</option>
                 <option value="facebook">Facebook</option>
+                <option value="youtube">YouTube</option>
               </select>
             </div>
             <div class="form-field">
@@ -5708,6 +5891,22 @@
                   </div>
                 </div>
               </div>
+
+              <!-- YouTube -->
+              <div class="eng-pf-card" data-platform="youtube">
+                <div class="eng-pf-head"><b>YouTube</b><span class="eng-pf-tag" data-pf-badge="youtube"></span></div>
+                <div class="stack">
+                  <div class="form-field">
+                    <label for="engine-youtube_read_mode">频道、搜索与评论读取</label>
+                    <select id="engine-youtube_read_mode" name="youtube_read_mode" disabled title="优先走 SSR ytInitialData 与 Innertube Web (/youtubei/v1/*) 协议直采，异常时自动回退隔离浏览器">
+                      <option value="hybrid">协议 API 优先，失败回退浏览器（推荐）</option>
+                      <option value="api">仅协议 API 直连</option>
+                      <option value="browser">仅隔离浏览器</option>
+                    </select>
+                    <p class="field-help">YouTube Studio 视频/Shorts 上传、评论/互动与观看养号固定走隔离浏览器通道。</p>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <details class="eng-pf-more" id="eng-pf-others" hidden>
@@ -6266,6 +6465,58 @@
           <div class="publish-permission">
             <label class="field" for="pub-fb-first-comment">发布后首评（可选）</label>
             <input id="pub-fb-first-comment" maxlength="500" placeholder="发帖成功后自动在主帖下追加一条首评（如外链、引导文案）">
+          </div>
+        </fieldset>
+        <fieldset class="publish-permissions yt-only" id="pub-yt-opts">
+          <legend>YouTube Studio 发布与频道设置</legend>
+          <div class="publish-permission">
+            <label class="field" for="pub-yt-kind">发布形态</label>
+            <select id="pub-yt-kind" aria-label="YouTube 发布形态">
+              <option value="video">常规视频（Video）</option>
+              <option value="shorts">Shorts 短视频（自动附加 #Shorts）</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-yt-visibility">视频可见范围</label>
+            <select id="pub-yt-visibility" aria-label="YouTube 可见范围">
+              <option value="public">公开（Public）</option>
+              <option value="unlisted">不公开列出（Unlisted）</option>
+              <option value="private">私享（Private）</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-yt-mfk">受众（儿童向）</label>
+            <select id="pub-yt-mfk" aria-label="是否面向儿童">
+              <option value="0">否，内容并非面向儿童（推荐）</option>
+              <option value="1">是，内容面向儿童（Made for Kids）</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-yt-channel">切换品牌频道名称（可选）</label>
+            <input id="pub-yt-channel" maxlength="100" placeholder="多频道账号可填写目标频道名（留空使用当前默认频道）">
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-yt-tags">视频标签 Tags（逗号分隔，可选）</label>
+            <input id="pub-yt-tags" maxlength="450" placeholder="例如 tech, tutorial, ai（YouTube 总标签上限 500 字符）">
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-yt-playlists">加入播放列表（逗号分隔，可选）</label>
+            <input id="pub-yt-playlists" maxlength="300" placeholder="填写已创建的播放列表名称，多个用逗号分隔">
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-yt-thumbnail">自定义缩略图本地路径（可选）</label>
+            <input id="pub-yt-thumbnail" maxlength="400" placeholder="可选，填写本地 .jpg/.png 封面绝对路径">
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-yt-premiere">即时首映（Premiere）</label>
+            <select id="pub-yt-premiere" aria-label="即时首映">
+              <option value="0">否，常规发布</option>
+              <option value="1">设为即时首映（仅公开视频有效）</option>
+            </select>
+          </div>
+          <div class="publish-permission">
+            <label class="field" for="pub-yt-first-comment">发布后首评（可选）</label>
+            <input id="pub-yt-first-comment" maxlength="500" placeholder="视频发布成功后自动前往观看页追加一条置顶引导评论">
           </div>
         </fieldset>
         <fieldset class="publish-permissions ig-only" id="pub-ig-opts">
@@ -7101,8 +7352,8 @@
       <div class="tabbar" style="position:static;margin-bottom:14px">
         <button class="tab active" data-hubtab="myworks" onclick="switchHubTab('myworks')"><svg><use href="#i-film"/></svg>我的作品 <span class="tab-badge" id="hb-myworks">0</span></button>
         <button class="tab notsh-only tk-hide rn-hide" data-hubtab="following" onclick="switchHubTab('following')"><svg><use href="#i-user"/></svg>关注 <span class="tab-badge" id="hb-following">0</span></button>
-        <button class="tab notsh-only tk-hide rn-hide" data-hubtab="fans" onclick="switchHubTab('fans')"><svg><use href="#i-heart"/></svg>粉丝 <span class="tab-badge" id="hb-fans">0</span></button>
-        <button class="tab notsh-only tk-hide rn-hide" data-hubtab="dm" onclick="switchHubTab('dm')"><svg><use href="#i-send"/></svg>私信 <span class="tab-badge" id="hb-dm">0</span></button>
+        <button class="tab notsh-only tk-hide rn-hide yt-hide" data-hubtab="fans" onclick="switchHubTab('fans')"><svg><use href="#i-heart"/></svg>粉丝 <span class="tab-badge" id="hb-fans">0</span></button>
+        <button class="tab notsh-only tk-hide rn-hide yt-hide" data-hubtab="dm" onclick="switchHubTab('dm')"><svg><use href="#i-send"/></svg>私信 <span class="tab-badge" id="hb-dm">0</span></button>
         <button class="tab" data-hubtab="stats" onclick="switchHubTab('stats')"><svg><use href="#i-eye"/></svg>数据 <span class="tab-badge" id="hb-stats">0</span></button>
       </div>
 

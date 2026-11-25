@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from app.account_lifecycle import AccountUnavailableError
-from app.browser import douyin_secure_post_api, post_bili_comment, post_channels_comment, post_comment_browser, post_facebook_comment, post_ig_comment, post_ks_comment, post_twitter_comment
+from app.browser import douyin_secure_post_api, post_bili_comment, post_channels_comment, post_comment_browser, post_facebook_comment, post_ig_comment, post_ks_comment, post_twitter_comment, post_youtube_comment
 from app.browser.tiktok_actions import post_tiktok_comment
 from app.db import get_session
 from app.engine.monitor_helpers import log
@@ -214,6 +214,21 @@ class CommentTaskRunnerMixin:
                     on_submit=lambda: self._mark_write_submit(CommentTask, task_id, channel="browser"),
                 )
                 result = ""
+            elif platform == "youtube":
+                from app.platforms.youtube import video_url as yt_video_url
+                method = "browser"
+                yt_url = target_url or (aweme_id if str(aweme_id).startswith("http") else yt_video_url(aweme_id, comment_id=target_cid))
+                ok, posted_url, err = await post_youtube_comment(
+                    self.browser,
+                    identity,
+                    yt_url,
+                    content,
+                    target_comment_id=target_cid,
+                    target_comment_url=(yt_url if "lc=" in yt_url else ""),
+                    headed=(True if native_mode else self.cfg.engine.comment_browser_headed),
+                    on_submit=lambda: self._mark_write_submit(CommentTask, task_id, channel="browser"),
+                )
+                result = posted_url or ""
             elif platform == "rednote":
                 method = "unavailable"
                 err = "unavailable:海外小红书暂未开放评论写入与自动计划"

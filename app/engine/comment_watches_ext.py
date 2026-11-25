@@ -12,6 +12,7 @@ from app.engine.monitor_helpers import log
 from app.models import CommentRecord, CommentWatch
 from app.platforms.bilibili import BilibiliClient
 from app.platforms.facebook import FacebookClient, parse_facebook_aweme, post_url as fb_post_url
+from app.platforms.youtube import YouTubeClient, parse_youtube_aweme, video_url as yt_video_url
 from app.platforms.instagram import InstagramClient, parse_ig_aweme
 from app.platforms.rednote import RednoteApiClient, RednoteApiError, flatten_rednote_comments, parse_rednote_brief, parse_rednote_comment, parse_rednote_detail, parse_rednote_self_user, cookie_str_from_state as rednote_cookie_str_from_state, has_a1 as rednote_has_a1
 from app.platforms.twitter import TwitterClient, parse_twitter_aweme
@@ -823,5 +824,128 @@ class CommentWatchPlatformsMixin:
             fresh = [c for c in rows if c and c.get("comment_id") and c["comment_id"] not in known]
             total += await self._ingest(
                 watch_id, pid, fresh, name, desc, first_scan, platform="facebook"
+            )
+        return total, author_dict
+
+    async def _cw_youtube_video(
+        self, watch_id: int, identity, state: str, ua: str, proxy: str,
+        work_id: str, name: str, first_scan: bool
+    ):
+        with get_session() as s:
+            w = s.get(CommentWatch, watch_id)
+            raw_title = str(w.title or "").strip() if w else ""
+            work_desc = "" if raw_title.startswith("YT ") else raw_title
+            saved_url = str(w.sec_uid or "").strip() if w else ""
+            known = set(
+                s.exec(
+                    select(CommentRecord.comment_id)
+                    .where(CommentRecord.watch_id == watch_id)
+                    .where(CommentRecord.aweme_id == work_id)
+                ).all()
+            )
+        settings = self._comment_watch_settings(watch_id)
+        target_url = (
+            saved_url
+            if saved_url.startswith(("http://", "https://"))
+            else (work_id if str(work_id).startswith(("http://", "https://")) else yt_video_url(work_id))
+        )
+        author_dict = None
+        ycli = YouTubeClient(state, ua, proxy=proxy, timeout=self.cfg.engine.request_timeout_seconds)
+        async with ycli.session_scope():
+            aw_info, _raw, _ = await ycli.fetch_video_detail(target_url)
+            if aw_info is not None and (aw_info.author_name or aw_info.desc):
+                clean_desc = " ".join(str(aw_info.desc or "").split())[:36]
+                display_title = (
+                    f"{aw_info.author_name} · {clean_desc}"
+                    if aw_info.author_name and clean_desc
+                    else (clean_desc or aw_info.author_name)
+                )
+                if not work_desc and aw_info.desc:
+                    work_desc = aw_info.desc[:80]
+                author_dict = {
+                    "nickname": display_title,
+                    "avatar_thumb": {"url_list": [str(aw_info.avatar or aw_info.cover or "")]},
+                }
+        max_c = max(30, int(settings["max_scrolls"] or 5) * 20)
+        rows, err, _ = await self._yt_read_comments(
+            identity,
+            target_url,
+            max_pages=int(settings["max_scrolls"] or 5),
+            max_count=max_c,
+            include_replies=True,
+            state=state,
+            ua=ua,
+            proxy=proxy,
+        )
+        if err and err != "empty" and not rows:
+            raise RuntimeError(err)
+        fresh = [c for c in rows if c and c.get("comment_id") and c["comment_id"] not in known]
+        total = await self._ingest(
+            watch_id, work_id, fresh, name, work_desc or name, first_scan, platform="youtube"
+        )
+        return total, author_dict
+
+    async def _cw_youtube_user(
+        self, watch_id: int, identity, state: str, ua: str, proxy: str,
+        user_ref: str, name: str, first_scan: bool
+    ):
+        settings = self._comment_watch_settings(watch_id)
+        raw_feed, b_author, err = await self._yt_read_channel_videos(
+            identity,
+            user_ref,
+            max_pages=3,
+            max_items=max(20, int(settings["recent_works"] or 10) * 2),
+            include_shorts=True,
+            state=state,
+            ua=ua,
+            proxy=proxy,
+        )
+        if err and err != "empty" and not raw_feed:
+            raise RuntimeError(err)
+        author_dict = None
+        if isinstance(b_author, dict) and b_author.get("nickname"):
+            author_dict = {
+                "nickname": str(b_author["nickname"]),
+                "avatar_thumb": {"url_list": [str(b_author.get("avatar") or "")]},
+            }
+        cutoff = int(time.time()) - settings["recent_days"] * 86400
+        selected: list[tuple[str, str, str]] = []
+        for raw in raw_feed:
+            aw = parse_youtube_aweme(raw)
+            if aw is None:
+                continue
+            if not author_dict and aw.author_name:
+                author_dict = {
+                    "nickname": str(aw.author_name),
+                    "avatar_thumb": {"url_list": [str(aw.avatar or "")]},
+                }
+            if not cutoff or not aw.create_time or aw.create_time >= cutoff:
+                selected.append((aw.aweme_id, aw.source_url or yt_video_url(aw.aweme_id), aw.desc))
+            if len(selected) >= settings["recent_works"]:
+                break
+        max_c = max(20, int(settings["max_scrolls"] or 4) * 20)
+        total = 0
+        for pid, purl, desc in selected:
+            with get_session() as s:
+                known = set(
+                    s.exec(
+                        select(CommentRecord.comment_id)
+                        .where(CommentRecord.watch_id == watch_id)
+                        .where(CommentRecord.aweme_id == pid)
+                    ).all()
+                )
+            rows, _, _ = await self._yt_read_comments(
+                identity,
+                purl,
+                max_pages=int(settings["max_scrolls"] or 4),
+                max_count=max_c,
+                include_replies=True,
+                state=state,
+                ua=ua,
+                proxy=proxy,
+            )
+            fresh = [c for c in rows if c and c.get("comment_id") and c["comment_id"] not in known]
+            total += await self._ingest(
+                watch_id, pid, fresh, name, desc, first_scan, platform="youtube"
             )
         return total, author_dict

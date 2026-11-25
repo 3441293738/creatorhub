@@ -1,4 +1,4 @@
-"""十平台交互式扫码/窗口登录流程编排与指纹前置校验。"""
+"""十一平台交互式扫码/窗口登录流程编排与指纹前置校验。"""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -16,7 +16,7 @@ from app.account_merge import (
     duplicate_platform_account_ids,
     reconcile_platform_accounts,
 )
-from app.browser import interactive_bilibili_login, interactive_channels_login, interactive_creator_login, interactive_facebook_login, interactive_instagram_login, interactive_ks_creator_login, interactive_ks_login, interactive_login, interactive_rednote_creator_login, interactive_rednote_login, interactive_tiktok_login, interactive_twitter_login, interactive_xhs_creator_login, interactive_xhs_login
+from app.browser import interactive_bilibili_login, interactive_channels_login, interactive_creator_login, interactive_facebook_login, interactive_instagram_login, interactive_ks_creator_login, interactive_ks_login, interactive_login, interactive_rednote_creator_login, interactive_rednote_login, interactive_tiktok_login, interactive_twitter_login, interactive_xhs_creator_login, interactive_xhs_login, interactive_youtube_login
 from app.browser.backends import ACCOUNT_BROWSER_BACKENDS, LOCAL_BACKEND
 from app.browser.ip_fingerprint import derive_ip_fingerprint
 from app.db import get_session
@@ -285,6 +285,10 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             elif platform == "facebook":
                 reauth_options = {"force_reauth": True} if account_id else {}
                 ok, state_json, nickname = await interactive_facebook_login(
+                    app_runtime.browser, identity, **reauth_options)
+            elif platform == "youtube":
+                reauth_options = {"force_reauth": True} if account_id else {}
+                ok, state_json, nickname = await interactive_youtube_login(
                     app_runtime.browser, identity, **reauth_options)
             elif creator:
                 reauth_options = {"force_reauth": True} if account_id else {}

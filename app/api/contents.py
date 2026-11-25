@@ -96,6 +96,34 @@ async def facebook_media_thumb_proxy(url: str):
     return await thumb_cache.serve_cached_thumb(raw, platform="facebook")
 
 
+@router.api_route("/api/yt-media-thumb", methods=["GET", "HEAD"])
+async def youtube_media_thumb_proxy(url: str):
+    """本地持久化缓存代理 YouTube 官方图片 CDN (`*.ytimg.com` / `*.ggpht.com` / `*.googleusercontent.com`)。"""
+    raw = str(url or "").strip()
+    if not raw or len(raw) > 4096:
+        raise HTTPException(400, "无效的媒体地址")
+    parsed = urlsplit(raw)
+    host = (parsed.hostname or "").lower().strip(".")
+    if (
+        parsed.scheme != "https"
+        or parsed.username
+        or parsed.password
+        or not host
+        or not (
+            host == "ytimg.com"
+            or host.endswith(".ytimg.com")
+            or host == "ggpht.com"
+            or host.endswith(".ggpht.com")
+            or host == "googleusercontent.com"
+            or host.endswith(".googleusercontent.com")
+            or host == "youtube.com"
+            or host.endswith(".youtube.com")
+        )
+    ):
+        raise HTTPException(400, "仅允许 YouTube 官方图片 CDN 域名(ytimg.com / ggpht.com)")
+    return await thumb_cache.serve_cached_thumb(raw, platform="youtube")
+
+
 @router.get("/api/contents")
 async def all_contents(limit: int = 100, platform: str | None = None,
                        target_id: int | None = None, group_name: str = "",
@@ -390,7 +418,7 @@ async def _repost_content(cid: int, body: RepostIn, target_platform: str, reques
             if target_platform == "rednote":
                 if not (acc.creator_storage_state or acc.storage_state):
                     raise HTTPException(400, "请先在账号页完成登录")
-            elif target_platform in ("douyin", "shipinhao", "kuaishou", "tiktok", "bilibili", "instagram", "twitter", "facebook"):
+            elif target_platform in ("douyin", "shipinhao", "kuaishou", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"):
                 if not (acc.creator_storage_state or acc.storage_state or acc.cookie):
                     raise HTTPException(400, "请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
@@ -470,3 +498,9 @@ async def repost_to_twitter(cid: int, body: RepostIn, request: Request = None):
 async def repost_to_facebook(cid: int, body: RepostIn, request: Request = None):
     """把一条已下载作品转成 Facebook 发布任务。"""
     return await _repost_content(cid, body, "facebook", request)
+
+
+@router.post("/api/contents/{cid}/repost-youtube")
+async def repost_to_youtube(cid: int, body: RepostIn, request: Request = None):
+    """把一条已下载视频作品转成 YouTube 发布任务。"""
+    return await _repost_content(cid, body, "youtube", request)

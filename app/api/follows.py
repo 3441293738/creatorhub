@@ -16,6 +16,7 @@ from app.db import get_session
 from app.models import AccountStatSnapshot, AccountWork, DouyinAccount, FollowEdge
 from app.platforms.bilibili import BilibiliClient
 from app.platforms.instagram import InstagramClient
+from app.platforms.youtube import YouTubeClient
 from app.risk import OperationKind
 from app.transport_matrix import resolve_transport
 
@@ -163,7 +164,7 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
         operation = "following_list" if direction == "following" else "followers_list"
         transport = (
             resolve_transport(app_runtime.cfg, platform, operation, acc)
-            if platform in {"douyin", "bilibili", "instagram"}
+            if platform in {"douyin", "bilibili", "instagram", "youtube"}
             else None
         )
         effective_mode = (transport["effective_mode"] if transport else "browser")
@@ -174,14 +175,14 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
                 f"{transport.get('reason') or transport.get('note') or '该通道不可用'}")
         if app_runtime.browser is None and effective_mode in {"browser"}:
             raise HTTPException(503, "浏览器未就绪")
-        if app_runtime.browser is None and effective_mode == "hybrid" and platform not in {"bilibili", "instagram"}:
+        if app_runtime.browser is None and effective_mode == "hybrid" and platform not in {"bilibili", "instagram", "youtube"}:
             raise HTTPException(503, "浏览器未就绪")
         if platform == "douyin" and effective_mode in {"api", "hybrid"} \
                 and app_runtime.engine is None:
             raise HTTPException(503, "抖音 API 读取引擎未就绪")
         identity = (
             None
-            if platform in {"douyin", "bilibili", "instagram"} and effective_mode == "api"
+            if platform in {"douyin", "bilibili", "instagram", "youtube"} and effective_mode == "api"
             else (
                 app_runtime.browser.identity_for(acc)
                 if callable(getattr(app_runtime.browser, "identity_for", None))
@@ -198,6 +199,9 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
         ig_uid = (acc.uid or acc.sec_uid or acc.douyin_id or "") if platform == "instagram" else ""
         ig_seed = (acc.fp_seed or acc.profile_dir or "") if platform == "instagram" else ""
         ig_tz = (acc.timezone_id or "Asia/Shanghai") if platform == "instagram" else "Asia/Shanghai"
+        yt_state = (acc.storage_state or acc.creator_storage_state or acc.cookie or "") if platform == "youtube" else ""
+        yt_ua = (acc.ua or app_runtime.cfg.engine.user_agent) if platform == "youtube" else ""
+        yt_proxy = (acc.proxy or "") if platform == "youtube" else ""
         known: set[str] = set()
         existing_count = int(s.exec(select(func.count(FollowEdge.id)).where(
             FollowEdge.account_id == account_id,
@@ -314,6 +318,22 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
                 source = "api"
                 return ig_users, ("" if ig_users else "empty")
             if effective_mode == "api" or direct_err.startswith(("logged_out", "verification_required")) or app_runtime.browser is None:
+                source = "api"
+                return [], direct_err
+        elif platform == "youtube" and effective_mode in {"api", "hybrid"} and yt_state:
+            report(phase="fetching", source="api")
+            ycli = YouTubeClient(
+                yt_state,
+                yt_ua,
+                proxy=yt_proxy,
+                timeout=app_runtime.cfg.engine.request_timeout_seconds,
+            )
+            async with ycli.session_scope():
+                yt_users, direct_err = await ycli.fetch_subscriptions(max_items=200, max_pages=5)
+            if yt_users or (not direct_err):
+                source = "api"
+                return yt_users, ("" if yt_users else "empty")
+            if effective_mode == "api" or direct_err.startswith("verification_required") or app_runtime.browser is None:
                 source = "api"
                 return [], direct_err
 

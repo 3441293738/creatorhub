@@ -83,6 +83,7 @@
   .pswitch button.active[data-pf="instagram"] { background:rgba(225,48,108,.14); color:#e1306c; border-color:rgba(225,48,108,.42); }
   .pswitch button.active[data-pf="twitter"] { background:rgba(29,155,240,.15); color:#1d9bf0; border-color:rgba(29,155,240,.42); }
   .pswitch button.active[data-pf="facebook"] { background:rgba(24,119,242,.15); color:#1877f2; border-color:rgba(24,119,242,.42); }
+  .pswitch button.active[data-pf="youtube"] { background:rgba(255,0,0,.13); color:#e11d1d; border-color:rgba(255,0,0,.38); }
   .hidden { display:none !important; }
 
   /* Platform accents and light/dark themes are independent: appearance.css. */

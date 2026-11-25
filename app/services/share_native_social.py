@@ -18,6 +18,7 @@ from app.platforms.facebook import FacebookClient, parse_facebook_aweme
 from app.platforms.instagram import InstagramClient
 from app.platforms.rednote import RednoteApiClient, parse_rednote_detail, cookie_str_from_state as rednote_cookie_str_from_state, has_a1 as rednote_has_a1, resolve_rednote_note
 from app.platforms.twitter import TwitterClient, parse_twitter_aweme
+from app.platforms.youtube import YouTubeClient
 from app.platforms.xhs import resolve_note as xhs_resolve_note
 from app.risk import OperationKind
 from app.services import account_profiles as account_profiles_service
@@ -466,6 +467,61 @@ async def _facebook_native_share(
         "metadata": metadata,
         "files": files,
         "progress": {"status": "finished"},
+        "warnings": [],
+    }
+
+
+async def _youtube_native_share(
+    source_url: str,
+    *,
+    account_id: int | None,
+    output_root: Path,
+    quality: str = "highest",
+    should_download: bool,
+    save_metadata: bool,
+    save_thumbnail: bool,
+    proxy: str,
+    user_agent: str,
+) -> dict | None:
+    """YouTube 分享链接原生元数据识别（仅识别模式直出 SSR 数据，实际下载交由 yt-dlp + FFmpeg 无损合流）。"""
+    if should_download:
+        # 下载阶段统一交由 ShareDownloader (yt-dlp + 内置 FFmpeg) 负责音视频流无损合并、字幕与画质档位选择
+        return None
+    state_text = ""
+    acc_proxy = proxy
+    acc_ua = user_agent
+    if account_id:
+        with get_session() as session:
+            acc = session.get(DouyinAccount, account_id)
+            if acc is not None and acc.platform == "youtube" and acc.status == "active":
+                state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
+                acc_proxy = proxy or (acc.proxy or "")
+                acc_ua = acc.ua or acc_ua
+
+    ycli = YouTubeClient(
+        state_text,
+        acc_ua,
+        proxy=acc_proxy,
+        timeout=app_runtime.cfg.engine.request_timeout_seconds,
+    )
+    async with ycli.session_scope():
+        aweme, _raw, err = await ycli.fetch_video_detail(source_url, quality=quality)
+    if aweme is None:
+        if str(err or "").startswith(("logged_out:", "verification_required:")):
+            raise ShareDownloadError(f"YouTube 账号登录态异常: {err}")
+        raise ShareDownloadFallback(err or "YouTube 原生元数据解析为空，回退通用提取器")
+
+    metadata = share_native_service._native_aweme_metadata(aweme, aweme.source_url or source_url)
+    metadata["uploader"] = aweme.author_name or aweme.author_unique_id
+    metadata["uploader_id"] = aweme.author_unique_id
+    return {
+        "ok": True,
+        "job_id": f"youtube_{aweme.aweme_id}",
+        "url": source_url,
+        "output_dir": str(output_root.resolve()),
+        "metadata": metadata,
+        "files": [],
+        "progress": {"status": "inspected"},
         "warnings": [],
     }
 

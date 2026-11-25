@@ -39,7 +39,7 @@ const composerSpecs = {
 };
 const composerTitle = (key, platform) => key === "collections"
   ? platform === "shipinhao" ? "新建视频号作品采集"
-    : `新建${({ douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram", twitter: "Twitter", facebook: "Facebook" })[platform] || "平台"}关键词采集`
+    : `新建${({ douyin: "抖音", xhs: "小红书", rednote: "海外小红书", kuaishou: "快手", tiktok: "TikTok", bilibili: "哔哩哔哩", instagram: "Instagram", twitter: "Twitter", facebook: "Facebook", youtube: "YouTube" })[platform] || "平台"}关键词采集`
   : composerSpecs[key]?.[1] || "新建任务";
 // Notifications previously mixed configuration and saved objects in one card.
 const notificationCard = $("n-name").closest(".card");
@@ -81,6 +81,7 @@ const groupSpecs = {
   publish: [["matrix", "矩阵多号群发"], ["editor", "单号精细发布", null, true], ["records", "发布记录"], ["published", "已发布作品", ["xhs", "rednote"], true]],
   notifications: [["channels", "通知渠道"], ["webhooks", "Webhook 订阅"]],
   "risk-control": [["status", "账号状态"], ["rules", "风控规则"]],
+  "youtube-tools": [["yt-interact", "互动操作"], ["yt-watch", "真实观看"], ["yt-warmup", "关键词养号"], ["yt-discover", "发现与多频道"]],
 };
 const groups = Object.entries(groupSpecs).map(([key, spec]) => {
   const panel = panels.get(key);
@@ -556,7 +557,7 @@ const badgeObserver = new MutationObserver(records => records.forEach(record => 
 }));
 document.querySelectorAll(".nav-badge").forEach(badge => { badge.classList.toggle("wb-zero", badge.textContent.trim() === "0"); badgeObserver.observe(badge, { childList: true, characterData: true, subtree: true }); });
 // Stacked record rows on narrow screens keep column context and every action.
-for (const id of ["mon-table", "watch-table", "danmaku-watch-table", "queue-table", "pub-table", "ac-rule-table", "ac-task-table", "n-table", "risk-account-table", "runtime-table", "proxy-table", "wh-table", "wh-event-table", "tk-user-results", "following-table", "fans-table"]) {
+for (const id of ["mon-table", "watch-table", "danmaku-watch-table", "queue-table", "pub-table", "ac-rule-table", "ac-task-table", "n-table", "risk-account-table", "runtime-table", "proxy-table", "wh-table", "wh-event-table", "tk-user-results", "yt-search-results", "yt-channel-results", "yt-warmup-results", "following-table", "fans-table"]) {
   const node = $(id), table = node.tagName === "TABLE" ? node : node.closest("table");
   table.dataset.objectTable = "";
   const labelRows = () => {

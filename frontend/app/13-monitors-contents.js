@@ -565,7 +565,7 @@ function noteCard(r) {
     ? `<img class="ncard-cover" src="${esc(safeMediaUrl(r.cover_url))}" alt="${esc((r.desc || "作品").slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy" onclick="openPreview(${r.id})">`
     : `<div class="ncard-cover ph" onclick="openPreview(${r.id})">${ic(r.media_type === "images" ? "i-image" : "i-film")}</div>`;
   const hasLocal = Boolean(String(r.local_path || "").trim());
-  const canPickRepost = ["douyin", "bilibili", "instagram", "twitter", "facebook"].includes(PLATFORM) && r.download_status === "done";
+  const canPickRepost = ["douyin", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(PLATFORM) && r.download_status === "done";
   return `<div class="ncard">
     ${cover}
     <span class="ncard-type">${ic(typeIc)}${esc(typeLabel)}</span>
@@ -761,7 +761,7 @@ async function refreshContents(resetPage = false) {
           <button type="button" class="ghost sm content-icon-btn" onclick="openPreview(${r.id})" data-tip="站内预览" title="站内预览" aria-label="预览作品">${ic("i-eye")}</button>
           ${hasLocal ? `<button type="button" class="ghost sm content-icon-btn local-path-action reveal" onclick="revealContentPath(${r.id},this)" data-tip="在文件夹中显示" title="在文件夹中显示" aria-label="在文件夹中显示">${ic("i-folder")}</button>` : ""}
           ${["failed", "skipped"].includes(r.download_status) ? `<button type="button" class="ghost sm" onclick="retryDl(${r.id})">${r.download_status === "skipped" ? "下载" : "重试"}</button>` : ""}
-          ${(["douyin", "bilibili", "instagram", "twitter", "facebook"].includes(PLATFORM) && r.download_status === "done") ? `<button type="button" class="ghost sm content-action-primary" onclick="pickRepostTarget(${r.id})">${ic("i-send")}转发</button>` : ""}
+          ${(["douyin", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(PLATFORM) && r.download_status === "done") ? `<button type="button" class="ghost sm content-action-primary" onclick="pickRepostTarget(${r.id})">${ic("i-send")}转发</button>` : ""}
           ${(PLATFORM === "xhs" && r.download_status === "done") ? `<button class="ghost sm content-action-primary" onclick="repostDouyin(${r.id})">${ic("i-send")}发抖音</button>` : ""}
           <button type="button" class="ghost sm content-action-delete danger" onclick="delContent(${r.id})" data-tip="删除作品" title="删除作品" aria-label="删除作品">${ic("i-trash")}</button>
         </div>

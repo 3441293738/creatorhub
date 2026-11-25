@@ -23,7 +23,7 @@ const AC_SRC_META = {
 };
 const AC_TASK_ST = { draft: "草稿待审", pending: "排队中", doing: "发送中", uncertain: "结果待确认", done: "已发送", failed: "失败", canceled: "已取消" };
 const AC_TASK_PILL = { draft: "downloading", pending: "pending", doing: "downloading", uncertain: "downloading", done: "done", failed: "failed", canceled: "invalid" };
-const AC_KEYWORD_PLATFORMS = ["xhs", "bilibili", "instagram", "twitter", "facebook"];
+const AC_KEYWORD_PLATFORMS = ["xhs", "bilibili", "instagram", "twitter", "facebook", "youtube"];
 
 function acKindOptionsFor(platform, mode) {
   if (mode === "auto_comment") {
@@ -34,26 +34,26 @@ function acKindOptionsFor(platform, mode) {
   return '<option value="self">自己近期作品</option><option value="work">指定作品</option>';
 }
 function acTargetMeta(platform, mode, kind) {
-  const xhs = platform === "xhs", bili = platform === "bilibili", ig = platform === "instagram", tw = platform === "twitter", fb = platform === "facebook";
+  const xhs = platform === "xhs", bili = platform === "bilibili", ig = platform === "instagram", tw = platform === "twitter", fb = platform === "facebook", yt = platform === "youtube";
   if (mode === "auto_reply") {
     if (kind === "self") return { show: false, label: "目标", ph: "" };
     return {
       show: true,
-      label: xhs ? "笔记链接 / id" : tw ? "推文链接 / status_id" : fb ? "帖子 / Reel / Watch 链接" : "作品链接 / id",
-      ph: xhs ? "explore 链接 / xhslink / note_id" : bili ? "视频链接 / BV或av号 / opus链接" : ig ? "instagram.com/p/... 或 /reel/... 链接" : tw ? "x.com/.../status/... 链接或数字推文 ID" : fb ? "facebook.com 帖子/Reel/Watch 链接或 fb.watch 短链" : "作品链接 / 短链 / 数字 id",
+      label: xhs ? "笔记链接 / id" : tw ? "推文链接 / status_id" : fb ? "帖子 / Reel / Watch 链接" : yt ? "YouTube 视频 / Shorts 链接" : "作品链接 / id",
+      ph: xhs ? "explore 链接 / xhslink / note_id" : bili ? "视频链接 / BV或av号 / opus链接" : ig ? "instagram.com/p/... 或 /reel/... 链接" : tw ? "x.com/.../status/... 链接或数字推文 ID" : fb ? "facebook.com 帖子/Reel/Watch 链接或 fb.watch 短链" : yt ? "youtube.com/watch?v=...、youtu.be/... 或 /shorts/..." : "作品链接 / 短链 / 数字 id",
     };
   }
   if (kind === "keyword") {
     return {
       show: true,
       label: "搜索关键词",
-      ph: tw ? "例如:AI agent / #buildinpublic" : fb ? "例如:跨境电商 / marketing tips" : ig ? "例如:#travel / skincare" : "例如:露营装备 / 口红试色",
+      ph: tw ? "例如:AI agent / #buildinpublic" : fb ? "例如:跨境电商 / marketing tips" : yt ? "例如:AI tutorial / tech review" : ig ? "例如:#travel / skincare" : "例如:露营装备 / 口红试色",
     };
   }
   return {
     show: true,
-    label: xhs ? "博主主页 / id" : bili ? "UP 主空间主页 / mid" : (ig || tw) ? "创作者主页 / @username" : fb ? "主页 / 公共主页 / 群组链接" : "博主主页 / sec_uid",
-    ph: xhs ? "主页链接 / xhslink / user_id" : bili ? "space.bilibili.com 链接 / mid" : ig ? "instagram.com/<username> 或 @username" : tw ? "x.com/<username> 或 @username" : fb ? "facebook.com/<page>、/groups/<id> 或 profile.php?id=..." : "主页链接 / 短链 / sec_uid",
+    label: xhs ? "博主主页 / id" : bili ? "UP 主空间主页 / mid" : (ig || tw) ? "创作者主页 / @username" : fb ? "主页 / 公共主页 / 群组链接" : yt ? "YouTube 频道 / @handle" : "博主主页 / sec_uid",
+    ph: xhs ? "主页链接 / xhslink / user_id" : bili ? "space.bilibili.com 链接 / mid" : ig ? "instagram.com/<username> 或 @username" : tw ? "x.com/<username> 或 @username" : fb ? "facebook.com/<page>、/groups/<id> 或 profile.php?id=..." : yt ? "youtube.com/@handle 或 /channel/UC..." : "主页链接 / 短链 / sec_uid",
   };
 }
 function acParseKwInput(text) {
@@ -1055,12 +1055,12 @@ $("collection-content-list").innerHTML = collectionResultSkeleton(4);
 $("queue-table").innerHTML = skeleton(8);
 
 // restore last-selected platform & global mode BEFORE restoring tab so global-mode tab guards apply cleanly
-PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "rednote", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
+PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "rednote", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
 GLOBAL_MODE = (() => { try { const g = localStorage.getItem("dym-global"); return g === null ? true : g === "1"; } catch (e) { return true; } })();
 if ($("queue-platform") && GLOBAL_MODE) $("queue-platform").value = "all";
 
 // restore last-selected section (default: 总览);旧版四个独立页已并入「账号管理」
-const VALID_TABS = ["overview", "media-hub", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "tiktok-tools", "publish", "autocomment", "share-download", "notifications", "settings"];
+const VALID_TABS = ["overview", "media-hub", "accounts", "risk-control", "queue", "collections", "monitors", "comments", "danmaku", "hub", "tiktok-tools", "youtube-tools", "publish", "autocomment", "share-download", "notifications", "settings"];
 const LEGACY_HUB_TABS = ["myworks", "following", "fans", "dm"];
 switchTab((() => {
   try {
@@ -1160,6 +1160,7 @@ function launchPlatformLogin(pf, mode = "main") {
   if (pf === "instagram") return startInstagramLogin();
   if (pf === "twitter") return startTwitterLogin();
   if (pf === "facebook") return startFacebookLogin();
+  if (pf === "youtube") return startYouTubeLogin();
   return creator ? startCreatorLogin() : startLogin();
 }
 

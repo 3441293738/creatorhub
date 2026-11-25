@@ -20,6 +20,7 @@ from app.platforms.kuaishou import resolve_ks_user_id
 from app.platforms.rednote import build_rednote_note_url, resolve_rednote_user
 from app.platforms.twitter import looks_like_twitter_tweet, resolve_twitter_short_url, resolve_twitter_user_target
 from app.platforms.facebook import looks_like_facebook_post, resolve_facebook_short_url, resolve_facebook_user_target
+from app.platforms.youtube import looks_like_youtube_video, resolve_youtube_channel_target
 from app.risk import RiskController
 from app.services import metadata as metadata_service
 from app.services import thumb_cache
@@ -52,15 +53,15 @@ def _validated_collection_input(body: KeywordCollectionIn) \
         -> tuple[str, list[str], str, str, dict]:
     """校验创建/编辑共用的任务配置并返回规范化值。"""
     platform = body.platform.strip().lower()
-    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook"}:
-        raise HTTPException(400, "批量采集仅支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram、Twitter 或 Facebook")
+    if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"}:
+        raise HTTPException(400, "批量采集仅支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram、Twitter、Facebook 或 YouTube")
     source_type = body.source_type.strip().lower() or "keyword"
     if source_type not in {
             "keyword", "favorite_all", "favorite_board", "creator",
             "account_works"}:
         raise HTTPException(400, "采集来源须为关键词、创作者主页、全部收藏、指定收藏夹或本账号作品")
-    if platform not in {"shipinhao", "bilibili", "instagram", "twitter", "facebook"} and source_type == "account_works":
-        raise HTTPException(400, "本账号作品来源仅支持视频号、哔哩哔哩、Instagram、Twitter 或 Facebook")
+    if platform not in {"shipinhao", "bilibili", "instagram", "twitter", "facebook", "youtube"} and source_type == "account_works":
+        raise HTTPException(400, "本账号作品来源仅支持视频号、哔哩哔哩、Instagram、Twitter、Facebook 或 YouTube")
     if platform == "tiktok" and source_type != "keyword":
         raise HTTPException(400, "TikTok 首版批量采集仅支持关键词视频搜索")
     if source_type in {"favorite_all", "favorite_board"} and platform not in {"xhs", "rednote"}:
@@ -307,6 +308,30 @@ async def _resolve_facebook_creator_source(body: KeywordCollectionIn) -> None:
             body.source_name = f"群组 {target[7:]}" if target.startswith("groups/") else f"主页 {target}"
 
 
+async def _resolve_youtube_creator_source(body: KeywordCollectionIn) -> None:
+    """把 YouTube 频道采集的 source_ref 规范化为 `@handle` 或 `UC...` 频道 ID。"""
+    if (
+        body.platform.strip().lower() == "youtube"
+        and body.source_type.strip().lower() == "creator"
+    ):
+        original_ref = body.source_ref.strip()
+        cleaned = metadata_service._clean_platform_target_input(original_ref, "youtube")
+        if looks_like_youtube_video(cleaned):
+            raise HTTPException(
+                400,
+                "检测到 YouTube 单条视频/Shorts 链接；创作者采集请填写频道链接（如 youtube.com/@handle 或 /channel/UC...）",
+            )
+        key, _url = resolve_youtube_channel_target(cleaned)
+        if not key:
+            raise HTTPException(
+                400,
+                "无法解析 YouTube 频道标识，请填写 youtube.com/@handle、@handle 或 UC 开头的频道 ID",
+            )
+        body.source_ref = key
+        if not body.source_name or body.source_name == f"创作者 {original_ref}":
+            body.source_name = f"频道 {key}"
+
+
 def _collection_keywords(values: list[str]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -524,6 +549,8 @@ def _collection_content_dict(row: KeywordCollectionContent) -> dict:
         url = row.source_url or f"https://x.com/i/web/status/{row.aweme_id}"
     elif row.platform == "facebook":
         url = row.source_url or f"https://www.facebook.com/permalink.php?story_fbid={row.aweme_id}"
+    elif row.platform == "youtube":
+        url = row.source_url or f"https://www.youtube.com/watch?v={row.aweme_id}"
     else:
         url = f"https://www.douyin.com/video/{row.aweme_id}"
     local_files = _collection_local_media_paths(row)

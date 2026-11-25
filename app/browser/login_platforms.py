@@ -918,3 +918,123 @@ async def interactive_facebook_creator_login(
     return await interactive_facebook_login(
         mgr, identity, timeout_seconds=timeout_seconds, force_reauth=force_reauth
     )
+
+
+# ── YouTube / Google 登录 ──
+_YOUTUBE_AUTH_BLOCKED_TOKENS = (
+    "accounts.google.com",
+    "youtube.com/oops",
+    "/disabled/",
+    "/signin/rejected",
+    "/signin/challenge",
+)
+
+
+async def interactive_youtube_login(
+    mgr: BrowserManager,
+    identity: Identity,
+    timeout_seconds: int = 300,
+    force_reauth: bool = False,
+) -> Tuple[bool, str, str]:
+    """YouTube 独立隔离浏览器登录（支持 Google 账号密码、2FA 动态口令、Passkey 与多频道选择）。
+
+    判定成功：存在 Google/YouTube 强登录 Cookie，页面停留在 youtube.com（非 accounts.google.com / oops / disabled），
+    且顶栏渲染已登录头像按钮 (`button#avatar-btn` 或 `ytd-notification-topbar-button-renderer`)。
+    """
+    from app.platforms.youtube.protocol import has_youtube_login_cookies
+
+    ctx = await mgr.open_headed(identity)
+    if force_reauth:
+        await ctx.clear_cookies()
+    await _open_first_environment_check(mgr, identity, ctx)
+    page = await ctx.new_page()
+    await _focus(page)
+    logged, nickname, state_json = False, "", ""
+
+    try:
+        await page.goto(
+            "https://www.youtube.com/",
+            wait_until="domcontentloaded",
+            timeout=45000,
+        )
+        await _focus(page)
+        # 若首页未登录，自动引导点击登录按钮进入 Google ServiceLogin
+        await human_click_first(
+            page,
+            (
+                'a[href*="accounts.google.com/ServiceLogin"]',
+                '#buttons a[href*="ServiceLogin"]',
+            ),
+            timeout=2500,
+        )
+        waited = 0.0
+        stable_hits = 0
+        while waited < timeout_seconds:
+            if page.is_closed():
+                break
+            try:
+                cookies = await ctx.cookies(["https://www.youtube.com", "https://accounts.google.com", "https://studio.youtube.com"])
+            except Exception:
+                break
+            cmap = {c.get("name"): c.get("value") for c in cookies if c.get("name")}
+            cur_url = str(page.url or "").lower()
+            on_yt = "youtube.com" in cur_url
+            on_blocked = any(tok in cur_url for tok in _YOUTUBE_AUTH_BLOCKED_TOKENS)
+            has_avatar = False
+            if on_yt and not on_blocked:
+                try:
+                    has_avatar = bool(await page.evaluate(
+                        """() => !!(document.querySelector('button#avatar-btn') || document.querySelector('ytd-notification-topbar-button-renderer'))"""
+                    ))
+                except Exception:
+                    has_avatar = False
+            if has_youtube_login_cookies(cmap) and on_yt and not on_blocked and has_avatar:
+                stable_hits += 1
+                if stable_hits >= 2:
+                    logged = True
+                    break
+            else:
+                stable_hits = 0
+            await asyncio.sleep(1.5)
+            waited += 1.5
+
+        if logged:
+            await human_wait(page, 1500)
+            try:
+                # 轻点头像按钮读取频道昵称
+                av = page.locator("button#avatar-btn").first
+                if await av.count() and await av.is_visible():
+                    await DEFAULT_HUMAN_ENGINE.click_locator(av, page=page, timeout=3000)
+                    await human_wait(page, 1000)
+                    nav_name = await page.evaluate(
+                        """() => {
+                            const n = document.querySelector('#account-name');
+                            if (n) return (n.getAttribute('title') || n.innerText || '').trim();
+                            const h = document.querySelector('#channel-handle');
+                            if (h) return (h.innerText || '').trim();
+                            return '';
+                        }"""
+                    )
+                    if nav_name and str(nav_name).strip():
+                        nickname = str(nav_name).strip()[:48]
+            except Exception:
+                pass
+            state_json = json.dumps(await ctx.storage_state())
+    finally:
+        try:
+            await ctx.close()
+        except Exception:
+            pass
+    return logged, state_json, nickname
+
+
+async def interactive_youtube_creator_login(
+    mgr: BrowserManager,
+    identity: Identity,
+    timeout_seconds: int = 300,
+    force_reauth: bool = False,
+) -> Tuple[bool, str, str]:
+    """YouTube Studio 与主站共用 `.youtube.com` / `.google.com` 会话。"""
+    return await interactive_youtube_login(
+        mgr, identity, timeout_seconds=timeout_seconds, force_reauth=force_reauth
+    )

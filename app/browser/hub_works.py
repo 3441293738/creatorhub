@@ -8,7 +8,7 @@ _log = logging.getLogger("creatorhub.browser.hub")
 
 from app.browser.channels_fetcher import fetch_channels_works
 from app.browser.fetcher import fetch_videos
-from app.browser.hub_common import _bili_cookie_str, _facebook_cookie_str, _first, _ig_cookie_str, _num, _rednote_cookie_str, _self_profile_link, _twitter_cookie_str
+from app.browser.hub_common import _bili_cookie_str, _facebook_cookie_str, _first, _ig_cookie_str, _num, _rednote_cookie_str, _self_profile_link, _twitter_cookie_str, _youtube_cookie_str
 from app.browser.ks_fetcher import fetch_ks_self_profile, fetch_ks_videos
 from app.browser.manager import BrowserManager
 from app.browser.rednote_fetcher import fetch_rednote_notes
@@ -226,6 +226,11 @@ def _norm_facebook_work(it: dict) -> Optional[dict]:
     return parse_facebook_creator_work(it)
 
 
+def _norm_youtube_work(it: dict) -> Optional[dict]:
+    from app.platforms.youtube import parse_youtube_creator_work
+    return parse_youtube_creator_work(it)
+
+
 async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid: str,
                               max_scrolls: int = 14) -> Tuple[List[dict], str]:
     """抓取登录账号自己发布的作品(复用各平台已有的主页拦截抓取)。
@@ -249,8 +254,8 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                 uid = self3x
         except Exception as e:
             _log.warning("快手本人主页 ID 反查失败: %r", e)
-    # 视频号 / B站 / 海外小红书创作中心 / Instagram / Twitter / Facebook: 可先按本账号 Cookie 读取自身资料与作品
-    if not uid and not open_url and platform not in ("shipinhao", "bilibili", "rednote", "instagram", "twitter", "facebook"):
+    # 视频号 / B站 / 海外小红书创作中心 / Instagram / Twitter / Facebook / YouTube: 可先按本账号 Cookie 读取自身资料与作品
+    if not uid and not open_url and platform not in ("shipinhao", "bilibili", "rednote", "instagram", "twitter", "facebook", "youtube"):
         return [], "missing_uid:账号缺自身 uid,请先点账号「刷新资料」再同步作品"
 
     known: Set[str] = set()
@@ -446,6 +451,53 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                 mgr, identity, target_ref, known, max_scrolls=max_scrolls
             )
             norm = _norm_facebook_work
+        elif platform == "youtube":
+            from app.platforms.youtube import YouTubeClient, parse_youtube_creator_work
+            from app.browser.youtube_fetcher import fetch_youtube_channel_videos, fetch_youtube_self_profile
+            cookie_s = await _youtube_cookie_str(mgr, identity)
+            target_ref = str(uid or "").strip()
+            if "@" in target_ref and not target_ref.startswith("@") and "." in target_ref.split("@", 1)[1]:
+                target_ref = ""
+            if cookie_s:
+                client = YouTubeClient(
+                    cookie_s,
+                    getattr(identity, "ua", "") or getattr(identity, "user_agent", ""),
+                    proxy=getattr(identity, "proxy", ""),
+                )
+                async with client.session_scope():
+                    if not target_ref:
+                        prof, perr = await client.fetch_self_profile()
+                        if prof:
+                            target_ref = str(prof.get("unique_id") or prof.get("sec_uid") or prof.get("uid") or "")
+                    if target_ref:
+                        raw_vids, _uinfo, cerr = await client.fetch_channel_videos(
+                            target_ref,
+                            tab="videos",
+                            max_items=max(30, max_scrolls * 10),
+                            max_pages=max(1, min(8, max_scrolls // 2 or 3)),
+                            include_shorts=True,
+                        )
+                        if raw_vids:
+                            works = [w for w in (parse_youtube_creator_work(x) for x in raw_vids) if w]
+                            if works:
+                                return works, ""
+                        if cerr.startswith(("verification_required:", "rate_limit:")):
+                            return [], cerr
+            if not target_ref:
+                prof, perr = await fetch_youtube_self_profile(mgr, identity)
+                if perr.startswith(("logged_out:", "verification_required:")):
+                    return [], perr
+                target_ref = str((prof or {}).get("unique_id") or (prof or {}).get("sec_uid") or (prof or {}).get("uid") or "")
+                if not target_ref and prof:
+                    return [], "empty_confirmed"
+            if not target_ref:
+                return [], "empty_confirmed"
+            items, _author, err = await fetch_youtube_channel_videos(
+                mgr, identity, target_ref, max_scrolls=max_scrolls, limit=max(30, max_scrolls * 10), include_shorts=True
+            )
+            if not items and (not err or err == "empty"):
+                return [], "empty_confirmed"
+            norm = _norm_youtube_work
         elif platform == "tiktok":
             from app.browser.tiktok_fetcher import fetch_tiktok_profile_works
             items, err = await fetch_tiktok_profile_works(

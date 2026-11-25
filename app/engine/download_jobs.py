@@ -7,7 +7,7 @@ import random
 
 from sqlmodel import select
 
-from app.browser import fetch_facebook_post_detail, fetch_rednote_note_detail, fetch_twitter_tweet_detail, fetch_xhs_note_detail
+from app.browser import fetch_facebook_post_detail, fetch_rednote_note_detail, fetch_twitter_tweet_detail, fetch_xhs_note_detail, fetch_youtube_video_detail
 from app.db import get_session
 from app.engine.monitor_helpers import MAX_AUTO_RETRY, _loads, _loads_list, _tiktok_download_session, log
 from app.models import ContentRecord, DouyinAccount, MonitorTarget, NotificationChannel
@@ -15,6 +15,7 @@ from app.notifier import notify_all
 from app.platforms.bilibili import BilibiliClient, cookie_map_from_state as bili_cookie_map
 from app.platforms.douyin.extract import Aweme, MediaItem
 from app.platforms.facebook import FacebookClient, parse_facebook_aweme, post_url as fb_post_url
+from app.platforms.youtube import YouTubeClient, cookie_map_from_state as yt_cookie_map, parse_youtube_aweme, video_url as yt_video_url
 from app.platforms.instagram import InstagramClient
 from app.platforms.rednote import parse_rednote_detail
 from app.platforms.tiktok.urls import profile_url as tiktok_profile_url, video_url as tiktok_video_url
@@ -168,10 +169,23 @@ class MediaDownloadMixin:
                 not media_json or not aw.medias)
             needs_fb_refetch = platform == "facebook" and (
                 not media_json or not aw.medias)
+            needs_yt_refetch = platform == "youtube" and (
+                not media_json or not aw.medias)
             rec.download_status = "downloading"
-            if not needs_xhs_refetch and not needs_bili_refetch and not needs_ig_refetch and not needs_tw_refetch and not needs_fb_refetch:
+            if not needs_xhs_refetch and not needs_bili_refetch and not needs_ig_refetch and not needs_tw_refetch and not needs_fb_refetch and not needs_yt_refetch:
                 rec.retry_count = (rec.retry_count or 0) + 1
             s.add(rec); s.commit()
+
+        if platform == "youtube" and (not media_json or not aw.medias):
+            aw.source_url = aw.source_url or yt_video_url(note_id)
+            aw.medias = [MediaItem(url=aw.source_url, kind="video", ext="mp4", index=0)]
+            media_json = json.dumps([{"url": aw.source_url, "kind": "video", "ext": "mp4", "index": 0}])
+            with get_session() as s:
+                rec = s.get(ContentRecord, record_id)
+                if rec:
+                    rec.retry_count = (rec.retry_count or 0) + 1
+                    rec.media_json = media_json
+                    s.add(rec); s.commit()
 
         if platform == "facebook" and (not media_json or not aw.medias):
             async def _refetch_fb():
@@ -541,6 +555,11 @@ class MediaDownloadMixin:
         elif platform == "facebook":
             download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
             download_referer = "https://www.facebook.com/"
+        elif platform == "youtube":
+            download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
+            download_referer = "https://www.youtube.com/"
+            if acc_state:
+                download_cookies = yt_cookie_map(acc_state)
         ok, path, err = await self.downloader.download_aweme(
             aw, base_dir, self._dl_proxy(acc_proxy), user_agent=download_ua,
             cookies=download_cookies, referer=download_referer)

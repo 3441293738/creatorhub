@@ -188,7 +188,7 @@ async def list_accounts(platform: str | None = None):
                     environment_check = None
             has_creator = (
                 bool(a.creator_storage_state)
-                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter", "facebook")
+                or (a.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter", "facebook", "youtube")
                     and bool(a.storage_state))
                 or (a.platform == "xhs" and has_creator_cookies(a.storage_state))
             )
@@ -660,6 +660,7 @@ async def refresh_account_profile(account_id: int):
                else "[ig_self_profile]" if platform == "instagram"
                else "[tw_self_profile]" if platform == "twitter"
                else "[fb_self_profile]" if platform == "facebook"
+               else "[yt_self_profile]" if platform == "youtube"
                else "[self_profile]")
         raise HTTPException(400, f"未能获取账号资料:请看服务端控制台 {tag} 那行日志"
                                  "(含它实际看到的请求),把它发我即可定位")
@@ -674,7 +675,7 @@ async def refresh_account_profile(account_id: int):
         )
         has_creator_login = bool(acc and (
             acc.creator_storage_state
-            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter", "facebook")
+            or (acc.platform in ("kuaishou", "douyin", "shipinhao", "tiktok", "bilibili", "rednote", "instagram", "twitter", "facebook", "youtube")
                 and acc.storage_state)
             or (acc.platform == "xhs" and has_creator_cookies(acc.storage_state))
         ))

@@ -61,6 +61,7 @@ def _write_account_cookie_file(account_id: int | None) -> tuple[str, str, str]:
             "instagram": ".instagram.com",
             "twitter": ".x.com",
             "facebook": ".facebook.com",
+            "youtube": ".youtube.com",
         }.get(platform, ".douyin.com")
         for part in raw_cookie.split(";"):
             name, sep, value = part.strip().partition("=")

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 540" width="1200" height="540" role="img" aria-labelledby="hero-title hero-desc">
   <title id="hero-title">CreatorHub 本地多平台内容管理工作台动态架构预览</title>
-  <desc id="hero-desc">支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram、Twitter、Facebook 十大平台的账号管理、作品与评论弹幕监控、批量采集、无水印下载与发布互动，数据100%保存在本地。</desc>
+  <desc id="hero-desc">支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram、Twitter、Facebook、YouTube 十一大平台的账号管理、作品与评论弹幕监控、批量采集、无水印下载与发布互动，数据100%保存在本地。</desc>
 
   <defs>
     <!-- Ambient Canvas & Surface Gradients -->
@@ -87,6 +87,10 @@
       <stop offset="0%" stop-color="#0866ff"/>
       <stop offset="100%" stop-color="#3b8eff"/>
     </linearGradient>
+    <linearGradient id="pf-yt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ff0000"/>
+      <stop offset="100%" stop-color="#c8102e"/>
+    </linearGradient>
 
     <!-- Chart Area Gradients -->
     <linearGradient id="chart-rose-fill" x1="0" y1="0" x2="0" y2="1">
@@ -131,17 +135,18 @@
       <rect x="392" y="28" width="780" height="456" rx="18"/>
     </clipPath>
 
-    <!-- Fiber Optic Paths from 10 Platforms to Workbench Intake -->
-    <path id="stream-1" d="M 276 64 C 332 64, 336 262, 392 262"/>
-    <path id="stream-2" d="M 276 108 C 328 108, 338 262, 392 262"/>
-    <path id="stream-3" d="M 276 152 C 324 152, 342 262, 392 262"/>
-    <path id="stream-4" d="M 276 196 C 320 196, 346 262, 392 262"/>
-    <path id="stream-5" d="M 276 240 C 320 240, 348 262, 392 262"/>
-    <path id="stream-6" d="M 276 284 C 320 284, 348 262, 392 262"/>
-    <path id="stream-7" d="M 276 328 C 320 328, 346 262, 392 262"/>
-    <path id="stream-8" d="M 276 372 C 324 372, 342 262, 392 262"/>
-    <path id="stream-9" d="M 276 416 C 328 416, 338 262, 392 262"/>
-    <path id="stream-10" d="M 276 460 C 332 460, 336 262, 392 262"/>
+    <!-- Fiber Optic Paths from 11 Platforms to Workbench Intake -->
+    <path id="stream-1" d="M 276 60 C 332 60, 336 260, 392 260"/>
+    <path id="stream-2" d="M 276 100 C 328 100, 338 260, 392 260"/>
+    <path id="stream-3" d="M 276 140 C 324 140, 342 260, 392 260"/>
+    <path id="stream-4" d="M 276 180 C 320 180, 346 260, 392 260"/>
+    <path id="stream-5" d="M 276 220 C 320 220, 348 260, 392 260"/>
+    <path id="stream-6" d="M 276 260 C 320 260, 348 260, 392 260"/>
+    <path id="stream-7" d="M 276 300 C 320 300, 348 260, 392 260"/>
+    <path id="stream-8" d="M 276 340 C 320 340, 346 260, 392 260"/>
+    <path id="stream-9" d="M 276 380 C 324 380, 342 260, 392 260"/>
+    <path id="stream-10" d="M 276 420 C 328 420, 338 260, 392 260"/>
+    <path id="stream-11" d="M 276 460 C 332 460, 336 260, 392 260"/>
   </defs>
 
   <style>
@@ -167,6 +172,7 @@
     .stream-dash.d8 { animation-duration: 2.5s; animation-delay: -1.96s; }
     .stream-dash.d9 { animation-duration: 2.3s; animation-delay: -2.24s; }
     .stream-dash.d10 { animation-duration: 2.2s; animation-delay: -2.52s; }
+    .stream-dash.d11 { animation-duration: 2.3s; animation-delay: -2.80s; }
 
     @keyframes dash-flow {
       from { stroke-dashoffset: 36; }
@@ -184,40 +190,42 @@
       50% { opacity: 0.45; transform: scale(1.35); }
     }
 
-    /* 10-Platform Sequential Spotlight (20s cycle = 2s per platform) */
-    .pf-spot-1 { animation: pf-glow 20s infinite 0s; }
-    .pf-spot-2 { animation: pf-glow 20s infinite 2s; }
-    .pf-spot-3 { animation: pf-glow 20s infinite 4s; }
-    .pf-spot-4 { animation: pf-glow 20s infinite 6s; }
-    .pf-spot-5 { animation: pf-glow 20s infinite 8s; }
-    .pf-spot-6 { animation: pf-glow 20s infinite 10s; }
-    .pf-spot-7 { animation: pf-glow 20s infinite 12s; }
-    .pf-spot-8 { animation: pf-glow 20s infinite 14s; }
-    .pf-spot-9 { animation: pf-glow 20s infinite 16s; }
-    .pf-spot-10 { animation: pf-glow 20s infinite 18s; }
+    /* 11-Platform Sequential Spotlight (22s cycle = 2s per platform) */
+    .pf-spot-1 { animation: pf-glow 22s infinite 0s; }
+    .pf-spot-2 { animation: pf-glow 22s infinite 2s; }
+    .pf-spot-3 { animation: pf-glow 22s infinite 4s; }
+    .pf-spot-4 { animation: pf-glow 22s infinite 6s; }
+    .pf-spot-5 { animation: pf-glow 22s infinite 8s; }
+    .pf-spot-6 { animation: pf-glow 22s infinite 10s; }
+    .pf-spot-7 { animation: pf-glow 22s infinite 12s; }
+    .pf-spot-8 { animation: pf-glow 22s infinite 14s; }
+    .pf-spot-9 { animation: pf-glow 22s infinite 16s; }
+    .pf-spot-10 { animation: pf-glow 22s infinite 18s; }
+    .pf-spot-11 { animation: pf-glow 22s infinite 20s; }
 
     @keyframes pf-glow {
-      0%, 8.8% { opacity: 1; }
-      11.2%, 97% { opacity: 0; }
+      0%, 7.8% { opacity: 1; }
+      10.2%, 97.5% { opacity: 0; }
       100% { opacity: 1; }
     }
 
-    /* Platform Switcher Sliding Pill inside Workbench Header (10 tabs, 48px step) */
+    /* Platform Switcher Sliding Pill inside Workbench Header (11 tabs, 43.6px step) */
     .pswitch-pill {
-      animation: slide-pswitch 20s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+      animation: slide-pswitch 22s cubic-bezier(0.22, 1, 0.36, 1) infinite;
     }
     @keyframes slide-pswitch {
-      0%, 8.5%   { transform: translateX(0px); }
-      10%, 18.5% { transform: translateX(48px); }
-      20%, 28.5% { transform: translateX(96px); }
-      30%, 38.5% { transform: translateX(144px); }
-      40%, 48.5% { transform: translateX(192px); }
-      50%, 58.5% { transform: translateX(240px); }
-      60%, 68.5% { transform: translateX(288px); }
-      70%, 78.5% { transform: translateX(336px); }
-      80%, 88.5% { transform: translateX(384px); }
-      90%, 98.5% { transform: translateX(432px); }
-      100%       { transform: translateX(0px); }
+      0%, 7.6%    { transform: translateX(0px); }
+      9.1%, 16.7% { transform: translateX(43.6px); }
+      18.2%, 25.8% { transform: translateX(87.2px); }
+      27.3%, 34.9% { transform: translateX(130.8px); }
+      36.4%, 44.0% { transform: translateX(174.4px); }
+      45.5%, 53.1% { transform: translateX(218.0px); }
+      54.5%, 62.1% { transform: translateX(261.6px); }
+      63.6%, 71.2% { transform: translateX(305.2px); }
+      72.7%, 80.3% { transform: translateX(348.8px); }
+      81.8%, 89.4% { transform: translateX(392.4px); }
+      90.9%, 98.5% { transform: translateX(436.0px); }
+      100%        { transform: translateX(0px); }
     }
 
     /* Chart Scanline and Pulsing Node */
@@ -251,7 +259,7 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .stream-dash, .live-dot, .pf-spot-1, .pf-spot-2, .pf-spot-3, .pf-spot-4, .pf-spot-5, .pf-spot-6, .pf-spot-7, .pf-spot-8, .pf-spot-9, .pf-spot-10,
+      .stream-dash, .live-dot, .pf-spot-1, .pf-spot-2, .pf-spot-3, .pf-spot-4, .pf-spot-5, .pf-spot-6, .pf-spot-7, .pf-spot-8, .pf-spot-9, .pf-spot-10, .pf-spot-11,
       .pswitch-pill, .chart-scan, .task-prog, .hub-ring {
         animation: none !important;
       }
@@ -267,13 +275,13 @@
     <rect width="1200" height="540" fill="url(#bg-grid)"/>
 
     <!-- ======================================================================= -->
-    <!-- 2. LEFT COLUMN: 10 MULTI-PLATFORM SOURCES (x=28..276)                   -->
+    <!-- 2. LEFT COLUMN: 11 MULTI-PLATFORM SOURCES (x=28..276)                   -->
     <!-- ======================================================================= -->
     <g transform="translate(28, 17)">
-      <rect x="0" y="0" width="96" height="20" rx="10" fill="rgba(254,44,85,0.12)" stroke="rgba(254,44,85,0.28)" stroke-width="1"/>
+      <rect x="0" y="0" width="106" height="20" rx="10" fill="rgba(254,44,85,0.12)" stroke="rgba(254,44,85,0.28)" stroke-width="1"/>
       <circle cx="11" cy="10" r="3" fill="#fe2c55"/>
-      <text x="20" y="14" fill="#fe2c55" font-size="10" font-weight="700" letter-spacing="0.4">十平台接入</text>
-      <text x="104" y="14" fill="#5e6472" font-size="11" font-weight="600">统一登录 · 采集 · 互动</text>
+      <text x="20" y="14" fill="#fe2c55" font-size="10" font-weight="700" letter-spacing="0.4">十一平台接入</text>
+      <text x="114" y="14" fill="#5e6472" font-size="11" font-weight="600">统一登录 · 采集 · 互动</text>
     </g>
 
     <!-- Fiber-Optic Conduit Lines (Behind Cards & Workbench) -->
@@ -289,6 +297,7 @@
       <use href="#stream-8" stroke="rgba(20,22,28,0.07)" stroke-width="2"/>
       <use href="#stream-9" stroke="rgba(20,22,28,0.07)" stroke-width="2"/>
       <use href="#stream-10" stroke="rgba(20,22,28,0.07)" stroke-width="2"/>
+      <use href="#stream-11" stroke="rgba(20,22,28,0.07)" stroke-width="2"/>
 
       <!-- Animated Energy Streams -->
       <use href="#stream-1" class="stream-dash" stroke="#fe2c55" stroke-width="2.0" stroke-opacity="0.75"/>
@@ -301,37 +310,41 @@
       <use href="#stream-8" class="stream-dash d8" stroke="#d62976" stroke-width="2.0" stroke-opacity="0.80"/>
       <use href="#stream-9" class="stream-dash d9" stroke="#1d9bf0" stroke-width="2.0" stroke-opacity="0.80"/>
       <use href="#stream-10" class="stream-dash d10" stroke="#1877f2" stroke-width="2.0" stroke-opacity="0.82"/>
+      <use href="#stream-11" class="stream-dash d11" stroke="#ff2d2d" stroke-width="2.0" stroke-opacity="0.82"/>
 
       <!-- SMIL Animated Light Orbs Flowing into Workbench -->
       <circle r="3.3" fill="#fe2c55" filter="url(#orb-glow)">
-        <animateMotion dur="2.4s" repeatCount="indefinite" path="M 276 64 C 332 64, 336 262, 392 262"/>
+        <animateMotion dur="2.4s" repeatCount="indefinite" path="M 276 60 C 332 60, 336 260, 392 260"/>
       </circle>
       <circle r="3.3" fill="#ff2442" filter="url(#orb-glow)">
-        <animateMotion dur="2.7s" begin="-0.28s" repeatCount="indefinite" path="M 276 108 C 328 108, 338 262, 392 262"/>
+        <animateMotion dur="2.7s" begin="-0.28s" repeatCount="indefinite" path="M 276 100 C 328 100, 338 260, 392 260"/>
       </circle>
       <circle r="3.3" fill="#e11d48" filter="url(#orb-glow)">
-        <animateMotion dur="2.3s" begin="-0.56s" repeatCount="indefinite" path="M 276 152 C 324 152, 342 262, 392 262"/>
+        <animateMotion dur="2.3s" begin="-0.56s" repeatCount="indefinite" path="M 276 140 C 324 140, 342 260, 392 260"/>
       </circle>
       <circle r="3.3" fill="#ff7902" filter="url(#orb-glow)">
-        <animateMotion dur="2.2s" begin="-0.84s" repeatCount="indefinite" path="M 276 196 C 320 196, 346 262, 392 262"/>
+        <animateMotion dur="2.2s" begin="-0.84s" repeatCount="indefinite" path="M 276 180 C 320 180, 346 260, 392 260"/>
       </circle>
       <circle r="3.3" fill="#07c160" filter="url(#orb-glow)">
-        <animateMotion dur="2.8s" begin="-1.12s" repeatCount="indefinite" path="M 276 240 C 320 240, 348 262, 392 262"/>
+        <animateMotion dur="2.8s" begin="-1.12s" repeatCount="indefinite" path="M 276 220 C 320 220, 348 260, 392 260"/>
       </circle>
       <circle r="3.3" fill="#25f4ee" filter="url(#orb-glow)">
-        <animateMotion dur="2.5s" begin="-1.40s" repeatCount="indefinite" path="M 276 284 C 320 284, 348 262, 392 262"/>
+        <animateMotion dur="2.5s" begin="-1.40s" repeatCount="indefinite" path="M 276 260 C 320 260, 348 260, 392 260"/>
       </circle>
       <circle r="3.3" fill="#00aeec" filter="url(#orb-glow)">
-        <animateMotion dur="2.6s" begin="-1.68s" repeatCount="indefinite" path="M 276 328 C 320 328, 346 262, 392 262"/>
+        <animateMotion dur="2.6s" begin="-1.68s" repeatCount="indefinite" path="M 276 300 C 320 300, 348 260, 392 260"/>
       </circle>
       <circle r="3.3" fill="#d62976" filter="url(#orb-glow)">
-        <animateMotion dur="2.5s" begin="-1.96s" repeatCount="indefinite" path="M 276 372 C 324 372, 342 262, 392 262"/>
+        <animateMotion dur="2.5s" begin="-1.96s" repeatCount="indefinite" path="M 276 340 C 320 340, 346 260, 392 260"/>
       </circle>
       <circle r="3.3" fill="#1d9bf0" filter="url(#orb-glow)">
-        <animateMotion dur="2.4s" begin="-2.24s" repeatCount="indefinite" path="M 276 416 C 328 416, 338 262, 392 262"/>
+        <animateMotion dur="2.4s" begin="-2.24s" repeatCount="indefinite" path="M 276 380 C 324 380, 342 260, 392 260"/>
       </circle>
       <circle r="3.3" fill="#1877f2" filter="url(#orb-glow)">
-        <animateMotion dur="2.3s" begin="-2.52s" repeatCount="indefinite" path="M 276 460 C 332 460, 336 262, 392 262"/>
+        <animateMotion dur="2.3s" begin="-2.52s" repeatCount="indefinite" path="M 276 420 C 328 420, 338 260, 392 260"/>
+      </circle>
+      <circle r="3.3" fill="#ff2d2d" filter="url(#orb-glow)">
+        <animateMotion dur="2.4s" begin="-2.80s" repeatCount="indefinite" path="M 276 460 C 332 460, 336 260, 392 260"/>
       </circle>
     </g>
 
@@ -343,7 +356,7 @@
     </g>
 
     <!-- Platform 1: 抖音 Douyin (y=44..84) -->
-    <g transform="translate(28, 44)" filter="url(#sh-card)">
+    <g transform="translate(28, 42) scale(1, 0.9)" filter="url(#sh-card)">
       <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(20,22,28,0.08)" stroke-width="1"/>
       <rect width="248" height="40" rx="10" fill="none" stroke="#fe2c55" stroke-width="1.8" class="pf-spot-1"/>
       <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-dy)"/>
@@ -357,7 +370,7 @@
     </g>
 
     <!-- Platform 2: 小红书 Xiaohongshu (y=88..128) -->
-    <g transform="translate(28, 88)" filter="url(#sh-card)">
+    <g transform="translate(28, 82) scale(1, 0.9)" filter="url(#sh-card)">
       <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(20,22,28,0.08)" stroke-width="1"/>
       <rect width="248" height="40" rx="10" fill="none" stroke="#ff2442" stroke-width="1.8" class="pf-spot-2" opacity="0"/>
       <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-xhs)"/>
@@ -369,7 +382,7 @@
     </g>
 
     <!-- Platform 3: 海外小红书 Rednote (y=132..172) -->
-    <g transform="translate(28, 132)" filter="url(#sh-card)">
+    <g transform="translate(28, 122) scale(1, 0.9)" filter="url(#sh-card)">
       <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(20,22,28,0.08)" stroke-width="1"/>
       <rect width="248" height="40" rx="10" fill="none" stroke="#e11d48" stroke-width="1.8" class="pf-spot-3" opacity="0"/>
       <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-rn)"/>
@@ -382,7 +395,7 @@
     </g>
 
     <!-- Platform 4: 快手 Kuaishou (y=176..216) -->
-    <g transform="translate(28, 176)" filter="url(#sh-card)">
+    <g transform="translate(28, 162) scale(1, 0.9)" filter="url(#sh-card)">
       <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(20,22,28,0.08)" stroke-width="1"/>
       <rect width="248" height="40" rx="10" fill="none" stroke="#ff7902" stroke-width="1.8" class="pf-spot-4" opacity="0"/>
       <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-ks)"/>
@@ -396,7 +409,7 @@
     </g>
 
     <!-- Platform 5: 视频号 Channels (y=220..260) -->
-    <g transform="translate(28, 220)" filter="url(#sh-card)">
+    <g transform="translate(28, 202) scale(1, 0.9)" filter="url(#sh-card)">
       <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(20,22,28,0.08)" stroke-width="1"/>
       <rect width="248" height="40" rx="10" fill="none" stroke="#07c160" stroke-width="1.8" class="pf-spot-5" opacity="0"/>
       <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-sph)"/>
@@ -408,7 +421,7 @@
     </g>
 
     <!-- Platform 6: TikTok (y=264..304) -->
-    <g transform="translate(28, 264)" filter="url(#sh-card)">
+    <g transform="translate(28, 242) scale(1, 0.9)" filter="url(#sh-card)">
       <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(20,22,28,0.08)" stroke-width="1"/>
       <rect width="248" height="40" rx="10" fill="none" stroke="#00d2cb" stroke-width="1.8" class="pf-spot-6" opacity="0"/>
       <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-tk)"/>
@@ -420,7 +433,7 @@
     </g>
 
     <!-- Platform 7: 哔哩哔哩 Bilibili (y=308..348) -->
-    <g transform="translate(28, 308)" filter="url(#sh-card)">
+    <g transform="translate(28, 282) scale(1, 0.9)" filter="url(#sh-card)">
       <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(20,22,28,0.08)" stroke-width="1"/>
       <rect width="248" height="40" rx="10" fill="none" stroke="#00aeec" stroke-width="1.8" class="pf-spot-7" opacity="0"/>
       <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-bili)"/>
@@ -434,7 +447,7 @@
     </g>
 
     <!-- Platform 8: Instagram (y=352..392) -->
-    <g transform="translate(28, 352)" filter="url(#sh-card)">
+    <g transform="translate(28, 322) scale(1, 0.9)" filter="url(#sh-card)">
       <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(20,22,28,0.08)" stroke-width="1"/>
       <rect width="248" height="40" rx="10" fill="none" stroke="#d62976" stroke-width="1.8" class="pf-spot-8" opacity="0"/>
       <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-ig)"/>
@@ -448,7 +461,7 @@
     </g>
 
     <!-- Platform 9: Twitter / X (y=396..436) -->
-    <g transform="translate(28, 396)" filter="url(#sh-card)">
+    <g transform="translate(28, 362) scale(1, 0.9)" filter="url(#sh-card)">
       <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(20,22,28,0.08)" stroke-width="1"/>
       <rect width="248" height="40" rx="10" fill="none" stroke="#1d9bf0" stroke-width="1.8" class="pf-spot-9" opacity="0"/>
       <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-tw)"/>
@@ -462,7 +475,7 @@
     </g>
 
     <!-- Platform 10: Facebook (y=440..480) -->
-    <g transform="translate(28, 440)" filter="url(#sh-card)">
+    <g transform="translate(28, 402) scale(1, 0.9)" filter="url(#sh-card)">
       <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(20,22,28,0.08)" stroke-width="1"/>
       <rect width="248" height="40" rx="10" fill="none" stroke="#1877f2" stroke-width="1.8" class="pf-spot-10" opacity="0"/>
       <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-fb)"/>
@@ -471,6 +484,19 @@
       <rect x="174" y="5.5" width="66" height="14.5" rx="7.25" fill="rgba(24,119,242,0.14)"/>
       <text x="207" y="15.4" fill="#1877f2" font-size="8.5" font-weight="700" text-anchor="middle">主页 &amp; 群组</text>
       <text x="46" y="32" fill="#5e6472" font-size="9">SSR协议采集 / 主页群组发布 / 私信</text>
+    </g>
+
+    
+    <!-- Platform 11: YouTube (y=442..478) -->
+    <g transform="translate(28, 442) scale(1, 0.9)" filter="url(#sh-card)">
+      <rect width="248" height="40" rx="10" fill="url(#card-grad)" stroke="rgba(20,22,28,0.08)" stroke-width="1"/>
+      <rect width="248" height="40" rx="10" fill="none" stroke="#ff0000" stroke-width="1.8" class="pf-spot-11" opacity="0"/>
+      <rect x="8" y="5" width="30" height="30" rx="8" fill="url(#pf-yt)"/>
+      <path d="M19.2 14.8l9.2 5.2-9.2 5.2v-10.4z" fill="#ffffff"/>
+      <text x="46" y="17.5" fill="#16181d" font-size="11.4" font-weight="700">YouTube</text>
+      <rect x="174" y="5.5" width="66" height="14.5" rx="7.25" fill="rgba(255,0,0,0.12)"/>
+      <text x="207" y="15.4" fill="#cc0000" font-size="8.5" font-weight="700" text-anchor="middle">频道 &amp; Shorts</text>
+      <text x="46" y="32" fill="#5e6472" font-size="9">Innertube直采 / 无损下载 / Studio发布</text>
     </g>
 
     <!-- ======================================================================= -->
@@ -500,22 +526,23 @@
         <text x="38" y="27" fill="#7e8594" font-size="9.6">本地多平台内容工作台</text>
       </g>
 
-      <!-- Platform Switcher (.pswitch) in Header Center (x=556, y=39, 10 tabs) -->
+      <!-- Platform Switcher (.pswitch) in Header Center (x=556, y=39, 11 tabs) -->
       <g transform="translate(556, 39)">
         <rect width="486" height="28" rx="14" fill="#eef0f6" stroke="rgba(20,22,28,0.08)" stroke-width="1"/>
         <g class="pswitch-pill">
-          <rect x="3" y="3" width="48" height="22" rx="11" fill="#ffffff" stroke="#fe2c55" stroke-width="1" stroke-opacity="0.55"/>
+          <rect x="3" y="3" width="44" height="22" rx="11" fill="#ffffff" stroke="#fe2c55" stroke-width="1" stroke-opacity="0.55"/>
         </g>
-        <text x="27"  y="18" fill="#16181d" font-size="9.2" font-weight="700" text-anchor="middle">抖音</text>
-        <text x="75"  y="18" fill="#5e6472" font-size="9.0" font-weight="600" text-anchor="middle">小红书</text>
-        <text x="123" y="18" fill="#5e6472" font-size="7.8" font-weight="600" text-anchor="middle">海外小红书</text>
-        <text x="171" y="18" fill="#5e6472" font-size="9.2" font-weight="600" text-anchor="middle">快手</text>
-        <text x="219" y="18" fill="#5e6472" font-size="9.0" font-weight="600" text-anchor="middle">视频号</text>
-        <text x="267" y="18" fill="#5e6472" font-size="8.6" font-weight="600" text-anchor="middle">TikTok</text>
-        <text x="315" y="18" fill="#5e6472" font-size="8.4" font-weight="600" text-anchor="middle">哔哩哔哩</text>
-        <text x="363" y="18" fill="#5e6472" font-size="8.0" font-weight="600" text-anchor="middle">Instagram</text>
-        <text x="411" y="18" fill="#5e6472" font-size="8.6" font-weight="600" text-anchor="middle">Twitter</text>
-        <text x="459" y="18" fill="#5e6472" font-size="8.2" font-weight="600" text-anchor="middle">Facebook</text>
+        <text x="25"    y="18" fill="#16181d" font-size="8.8" font-weight="700" text-anchor="middle">抖音</text>
+        <text x="68.6"  y="18" fill="#5e6472" font-size="8.5" font-weight="600" text-anchor="middle">小红书</text>
+        <text x="112.2" y="18" fill="#5e6472" font-size="7.2" font-weight="600" text-anchor="middle">海外红书</text>
+        <text x="155.8" y="18" fill="#5e6472" font-size="8.8" font-weight="600" text-anchor="middle">快手</text>
+        <text x="199.4" y="18" fill="#5e6472" font-size="8.5" font-weight="600" text-anchor="middle">视频号</text>
+        <text x="243.0" y="18" fill="#5e6472" font-size="8.2" font-weight="600" text-anchor="middle">TikTok</text>
+        <text x="286.6" y="18" fill="#5e6472" font-size="7.6" font-weight="600" text-anchor="middle">哔哩哔哩</text>
+        <text x="330.2" y="18" fill="#5e6472" font-size="7.3" font-weight="600" text-anchor="middle">Instagram</text>
+        <text x="373.8" y="18" fill="#5e6472" font-size="8.0" font-weight="600" text-anchor="middle">Twitter</text>
+        <text x="417.4" y="18" fill="#5e6472" font-size="7.5" font-weight="600" text-anchor="middle">Facebook</text>
+        <text x="461.0" y="18" fill="#5e6472" font-size="7.8" font-weight="600" text-anchor="middle">YouTube</text>
       </g>
 
       <!-- Engine Status Pill in Header Right -->
@@ -539,7 +566,7 @@
         <g transform="translate(0, 34)">
           <text x="14" y="19" fill="#2c3038">平台账号</text>
           <rect x="88" y="6" width="26" height="16" rx="8" fill="rgba(20,22,28,0.06)"/>
-          <text x="101" y="17" fill="#5e6472" font-size="10" text-anchor="middle" class="font-mono">10</text>
+          <text x="101" y="17" fill="#5e6472" font-size="10" text-anchor="middle" class="font-mono">11</text>
         </g>
 
         <g transform="translate(0, 66)">
@@ -595,7 +622,7 @@
           <rect x="12" y="14" width="34" height="34" rx="9" fill="rgba(254,44,85,0.12)"/>
           <circle cx="29" cy="27" r="5" fill="none" stroke="#fe2c55" stroke-width="1.8"/>
           <path d="M21 39c1.5-4 14.5-4 16 0" fill="none" stroke="#fe2c55" stroke-width="1.8" stroke-linecap="round"/>
-          <text x="56" y="29" fill="#16181d" font-size="17" font-weight="800" class="font-mono">10 <tspan font-size="10.5" font-weight="600" fill="#10b981">在线</tspan></text>
+          <text x="56" y="29" fill="#16181d" font-size="17" font-weight="800" class="font-mono">11 <tspan font-size="10.5" font-weight="600" fill="#10b981">在线</tspan></text>
           <text x="56" y="45" fill="#5e6472" font-size="10.5">独立指纹账号</text>
         </g>
 

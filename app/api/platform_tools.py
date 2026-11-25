@@ -1,4 +1,4 @@
-"""TikTok/Twitter/Facebook 专有协议探测、实体搜索/互动及小红书/B站创作辅助元数据接口。"""
+"""TikTok/Twitter/Facebook/YouTube 专有协议探测、实体搜索/互动及小红书/B站创作辅助元数据接口。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -15,12 +15,22 @@ from app.browser import (
     do_facebook_share,
     do_twitter_like,
     do_twitter_retweet,
+    do_youtube_change_profile_name,
+    do_youtube_like_comment,
+    do_youtube_like_video,
+    do_youtube_subscribe,
+    do_youtube_warmup,
+    do_youtube_watch_video,
     fetch_facebook_entities_search,
     fetch_facebook_groups,
     fetch_facebook_pages,
     fetch_rednote_favorite_boards,
     fetch_twitter_users,
     fetch_xhs_favorite_boards,
+    fetch_youtube_channels_search,
+    fetch_youtube_managed_channels,
+    fetch_youtube_search,
+    post_youtube_comment,
 )
 from app.browser.tiktok_fetcher import fetch_tiktok_users, probe_tiktok_protocol
 from app.db import get_session
@@ -33,6 +43,7 @@ from app.platforms.tiktok import TikTokNativeClient, native_protocol_summary
 from app.platforms.tiktok.urls import parse_video_reference
 from app.platforms.twitter import resolve_twitter_tweet_ref
 from app.platforms.xhs import XhsApiClient, has_a1, cookie_str_from_state as xhs_cookie_str_from_state
+from app.platforms.youtube import YouTubeClient, normalize_youtube_url, resolve_youtube_video_ref
 from app.risk import OperationKind
 from app.services import metadata as metadata_service
 
@@ -558,6 +569,394 @@ async def facebook_interact(body: FacebookInteractIn):
     if not ok:
         raise HTTPException(400, err or f"Facebook {body.action} 执行失败")
     return {"ok": True, "action": body.action, "target": target_url, "result": res_info}
+
+
+class YouTubeChannelsSyncIn(BaseModel):
+    account_id: int
+    force_browser: bool = False
+
+
+class YouTubeSearchIn(BaseModel):
+    account_id: int
+    keyword: str
+    scope: Literal["videos", "channels"] = "videos"
+    upload_date: str = ""
+    duration: str = ""
+    sort_by: str = ""
+    search_type: str = "video"
+    max_pages: int = PydanticField(default=3, ge=1, le=10)
+    limit: int = PydanticField(default=30, ge=1, le=120)
+    force_browser: bool = False
+
+
+class YouTubeInteractIn(BaseModel):
+    account_id: int
+    action: Literal[
+        "like", "unlike", "dislike", "undislike",
+        "subscribe", "unsubscribe",
+        "like_comment", "unlike_comment", "like_video_comments",
+        "comment", "reply_comment",
+        "change_profile_name",
+    ]
+    target_url: str = ""
+    comment_text: str = ""
+    target_comment_id: str = ""
+    like_count: int = PydanticField(default=1, ge=1, le=20)
+    is_random: bool = False
+    new_name: str = ""
+    channel_name: str = ""
+
+
+class YouTubeWatchIn(BaseModel):
+    account_id: int
+    video_url: str
+    duration_seconds: int = PydanticField(default=30, ge=5, le=600)
+    use_percentage: bool = False
+    percentage: int = PydanticField(default=50, ge=5, le=100)
+    percentage_limit: int = PydanticField(default=120, ge=10, le=600)
+    like_video: bool = False
+    subscribe_channel: bool = False
+    comment_text: str = ""
+    skip_ads: bool = True
+    channel_name: str = ""
+
+
+class YouTubeWarmupIn(BaseModel):
+    account_id: int
+    keyword: str
+    max_videos: int = PydanticField(default=2, ge=1, le=8)
+    watch_seconds: int = PydanticField(default=20, ge=5, le=180)
+    like_probability: float = PydanticField(default=0.5, ge=0.0, le=1.0)
+
+
+def _require_youtube_account(session, account_id: int) -> DouyinAccount:
+    account = session.get(DouyinAccount, account_id)
+    if (
+        not account
+        or account.platform != "youtube"
+        or account.status != "active"
+        or not (account.storage_state or account.creator_storage_state or account.cookie)
+    ):
+        raise HTTPException(400, "请选择有效的 YouTube 登录账号")
+    return account
+
+
+@router.post("/api/youtube/channels")
+async def sync_youtube_channels(body: YouTubeChannelsSyncIn):
+    """同步当前 Google/YouTube 账号下可切换管理的品牌频道与个人频道（Channel Switcher）。"""
+    with get_session() as session:
+        account = _require_youtube_account(session, body.account_id)
+        state = account.storage_state or account.creator_storage_state or account.cookie or ""
+        ua = account.ua or app_runtime.cfg.engine.user_agent
+        proxy = account.proxy or ""
+        identity = app_runtime.browser.identity_for(account) if app_runtime.browser is not None else None
+
+    mode = str(getattr(app_runtime.cfg.engine, "youtube_read_mode", "hybrid") or "hybrid").lower()
+    api_err = ""
+    if not body.force_browser and mode in {"api", "hybrid"} and state:
+        ycli = YouTubeClient(state, ua, proxy=proxy, timeout=app_runtime.cfg.engine.request_timeout_seconds)
+        async with ycli.session_scope():
+            channels, api_err = await ycli.fetch_managed_channels()
+        if channels or mode == "api" or api_err.startswith("verification_required:"):
+            return {"items": channels, "source": "api", "error": "" if api_err == "empty" else api_err}
+
+    if app_runtime.browser is None or identity is None:
+        return {"items": [], "source": "api", "error": api_err or "浏览器未就绪"}
+
+    if app_runtime.engine is not None:
+        async with app_runtime.engine.operation_guard(
+            body.account_id, OperationKind.READ_HEAVY,
+            fallback_key=f"yt-channels:{body.account_id}",
+            operation_target=identity,
+        ):
+            items, error = await fetch_youtube_managed_channels(app_runtime.browser, identity)
+    else:
+        async with app_runtime.browser.lock_for(body.account_id):
+            items, error = await fetch_youtube_managed_channels(app_runtime.browser, identity)
+    return {"items": items, "source": "browser", "error": "" if error == "empty" else (error or api_err)}
+
+
+@router.post("/api/youtube/search")
+async def search_youtube_entities(body: YouTubeSearchIn):
+    """按关键词搜索 YouTube 视频（支持上传时间/时长/排序筛选）或频道列表。"""
+    keyword = body.keyword.strip()
+    if not keyword:
+        raise HTTPException(422, "请输入搜索关键词")
+    with get_session() as session:
+        account = _require_youtube_account(session, body.account_id)
+        state = account.storage_state or account.creator_storage_state or account.cookie or ""
+        ua = account.ua or app_runtime.cfg.engine.user_agent
+        proxy = account.proxy or ""
+        identity = app_runtime.browser.identity_for(account) if app_runtime.browser is not None else None
+
+    mode = str(getattr(app_runtime.cfg.engine, "youtube_read_mode", "hybrid") or "hybrid").lower()
+    api_err = ""
+    if not body.force_browser and mode in {"api", "hybrid"}:
+        ycli = YouTubeClient(state, ua, proxy=proxy, timeout=app_runtime.cfg.engine.request_timeout_seconds)
+        async with ycli.session_scope():
+            if body.scope == "channels":
+                items, api_err = await ycli.search_channels(
+                    keyword, max_items=body.limit, max_pages=body.max_pages
+                )
+            else:
+                items, api_err = await ycli.search_videos(
+                    keyword,
+                    max_items=body.limit,
+                    max_pages=body.max_pages,
+                    upload_date=body.upload_date,
+                    duration=body.duration,
+                    sort_by=body.sort_by,
+                    search_type=body.search_type,
+                )
+        if items or mode == "api" or api_err.startswith("verification_required:"):
+            return {"items": items, "scope": body.scope, "source": "api", "error": "" if api_err == "empty" else api_err}
+
+    if app_runtime.browser is None or identity is None:
+        return {"items": [], "scope": body.scope, "source": "api", "error": api_err or "浏览器未就绪"}
+
+    async def _run_browser():
+        if body.scope == "channels":
+            return await fetch_youtube_channels_search(
+                app_runtime.browser, identity, keyword,
+                max_scrolls=max(2, body.max_pages), limit=body.limit,
+            )
+        return await fetch_youtube_search(
+            app_runtime.browser, identity, keyword,
+            max_scrolls=max(2, body.max_pages), limit=body.limit,
+            upload_date=body.upload_date, duration=body.duration,
+            sort_by=body.sort_by, search_type=body.search_type,
+        )
+
+    if app_runtime.engine is not None:
+        async with app_runtime.engine.operation_guard(
+            body.account_id, OperationKind.READ_HEAVY,
+            fallback_key=f"yt-search:{body.account_id}",
+            operation_target=identity,
+        ):
+            items, error = await _run_browser()
+    else:
+        async with app_runtime.browser.lock_for(body.account_id):
+            items, error = await _run_browser()
+    return {"items": items, "scope": body.scope, "source": "browser", "error": "" if error == "empty" else (error or api_err)}
+
+
+@router.post("/api/youtube/interact")
+async def youtube_interact(body: YouTubeInteractIn):
+    """受风控与节流门禁保护的 YouTube 互动接口（视频点赞/点踩、订阅/取关、评论/回复、评论点赞、批量赞视频评论、修改频道名称，支持多频道切换）。"""
+    if app_runtime.browser is None or app_runtime.engine is None:
+        raise HTTPException(503, "浏览器或调度引擎未就绪")
+    target_raw = body.target_url.strip()
+    if body.action != "change_profile_name" and not target_raw:
+        raise HTTPException(422, "请填写目标 YouTube 视频、频道或评论链接")
+    if body.action in {"comment", "reply_comment"} and not body.comment_text.strip():
+        raise HTTPException(422, "请填写评论/回复内容")
+    if body.action == "change_profile_name" and not body.new_name.strip():
+        raise HTTPException(422, "请填写新的频道名称")
+
+    target_url = normalize_youtube_url(target_raw) if "://" in target_raw else target_raw
+    vref = resolve_youtube_video_ref(target_raw) if target_raw else None
+
+    with get_session() as session:
+        account = _require_youtube_account(session, body.account_id)
+        gate_err = app_runtime.engine._action_gate_error(body.account_id, 30, body.action)
+        if gate_err:
+            raise HTTPException(429, gate_err)
+        identity = app_runtime.browser.identity_for(account)
+
+    res_info: object = body.action
+    ok = False
+    err = ""
+    async with app_runtime.engine.operation_guard(
+        body.account_id, OperationKind.SOCIAL,
+        fallback_key=f"yt-act:{body.account_id}",
+        operation_target=identity,
+    ):
+        if body.action in {"like", "unlike", "dislike", "undislike"}:
+            ok, err = await do_youtube_like_video(
+                app_runtime.browser,
+                identity,
+                vref.watch_url if vref else target_url,
+                action=body.action,
+                channel_name=body.channel_name.strip(),
+                headed=True,
+            )
+            res_info = body.action
+        elif body.action in {"subscribe", "unsubscribe"}:
+            ok, err = await do_youtube_subscribe(
+                app_runtime.browser,
+                identity,
+                target_url,
+                unsubscribe=(body.action == "unsubscribe"),
+                channel_name=body.channel_name.strip(),
+                headed=True,
+            )
+            res_info = body.action
+        elif body.action in {"like_comment", "unlike_comment", "like_video_comments"}:
+            ok, liked_cnt, err = await do_youtube_like_comment(
+                app_runtime.browser,
+                identity,
+                target_url,
+                unlike=(body.action == "unlike_comment"),
+                like_count=(body.like_count if body.action == "like_video_comments" else 1),
+                is_random=body.is_random,
+                channel_name=body.channel_name.strip(),
+                headed=True,
+            )
+            res_info = {"liked_count": liked_cnt}
+        elif body.action in {"comment", "reply_comment"}:
+            ok, cid, err = await post_youtube_comment(
+                app_runtime.browser,
+                identity,
+                vref.watch_url if vref else target_url,
+                body.comment_text.strip(),
+                target_comment_id=body.target_comment_id.strip(),
+                target_comment_url=(target_url if body.action == "reply_comment" and "lc=" in target_url else ""),
+                channel_name=body.channel_name.strip(),
+                headed=True,
+            )
+            res_info = {"comment_id": cid}
+        elif body.action == "change_profile_name":
+            ok, err = await do_youtube_change_profile_name(
+                app_runtime.browser,
+                identity,
+                body.new_name.strip(),
+                headed=True,
+            )
+            res_info = {"new_name": body.new_name.strip()}
+
+    if ok:
+        app_runtime.engine.risk.record_success(body.account_id, OperationKind.SOCIAL)
+    elif not str(err or "").startswith("write_uncertain:"):
+        app_runtime.engine.risk.record_failure(body.account_id, OperationKind.SOCIAL, err)
+
+    record_account_operation(
+        platform="youtube",
+        account_id=body.account_id,
+        task_type="actions",
+        task_id=(vref.video_id if vref and vref.video_id else (target_url[:64] or body.action)),
+        action=body.action,
+        status="done" if ok else ("uncertain" if str(err or "").startswith("write_uncertain:") else "failed"),
+        target=target_url or body.new_name.strip(),
+        channel="browser",
+        detail="" if ok else str(err or "")[:200],
+    )
+    if not ok:
+        raise HTTPException(400, err or f"YouTube {body.action} 执行失败")
+    return {"ok": True, "action": body.action, "target": target_url, "result": res_info}
+
+
+@router.post("/api/youtube/watch")
+async def youtube_watch_video(body: YouTubeWatchIn):
+    """YouTube 视频真实观看（支持按时长或观看百分比控制、自动跳过广告、看完后联动点赞/订阅/评论）。"""
+    if app_runtime.browser is None or app_runtime.engine is None:
+        raise HTTPException(503, "浏览器或调度引擎未就绪")
+    vref = resolve_youtube_video_ref(body.video_url)
+    if vref is None:
+        raise HTTPException(422, "请填写有效的 YouTube 视频/Shorts 链接或 11 位视频 ID")
+    with get_session() as session:
+        account = _require_youtube_account(session, body.account_id)
+        gate_err = app_runtime.engine._action_gate_error(body.account_id, 20, "watch")
+        if gate_err:
+            raise HTTPException(429, gate_err)
+        identity = app_runtime.browser.identity_for(account)
+
+    async with app_runtime.engine.operation_guard(
+        body.account_id, OperationKind.SOCIAL,
+        fallback_key=f"yt-watch:{body.account_id}",
+        operation_target=identity,
+    ):
+        ok, stats, err = await do_youtube_watch_video(
+            app_runtime.browser,
+            identity,
+            vref.watch_url,
+            duration_seconds=body.duration_seconds,
+            use_percentage=body.use_percentage,
+            percentage=body.percentage,
+            percentage_limit=body.percentage_limit,
+            like_video=body.like_video,
+            subscribe_channel=body.subscribe_channel,
+            comment_text=body.comment_text.strip(),
+            skip_ads=body.skip_ads,
+            channel_name=body.channel_name.strip(),
+            headed=True,
+        )
+
+    if ok:
+        app_runtime.engine.risk.record_success(body.account_id, OperationKind.SOCIAL)
+    elif not str(err or "").startswith("write_uncertain:"):
+        app_runtime.engine.risk.record_failure(body.account_id, OperationKind.SOCIAL, err)
+
+    record_account_operation(
+        platform="youtube",
+        account_id=body.account_id,
+        task_type="actions",
+        task_id=vref.video_id,
+        action="watch",
+        status="done" if ok else "failed",
+        target=vref.watch_url,
+        channel="browser",
+        detail=(
+            f"view_time={stats.get('view_time', 0)}s ({stats.get('view_percentage', 0)}%)"
+            if ok else str(err or "")[:200]
+        ),
+    )
+    if not ok:
+        raise HTTPException(400, err or "YouTube 观看执行失败")
+    return {"ok": True, "video_id": vref.video_id, "stats": stats}
+
+
+@router.post("/api/youtube/warmup")
+async def youtube_warmup(body: YouTubeWarmupIn):
+    """YouTube 账号关键词搜索、浏览视频、模拟观看与概率点赞养号流程。"""
+    if app_runtime.browser is None or app_runtime.engine is None:
+        raise HTTPException(503, "浏览器或调度引擎未就绪")
+    kw = body.keyword.strip()
+    if not kw:
+        raise HTTPException(422, "请填写养号搜索关键词")
+    with get_session() as session:
+        account = _require_youtube_account(session, body.account_id)
+        gate_err = app_runtime.engine._action_gate_error(body.account_id, 60, "warmup")
+        if gate_err:
+            raise HTTPException(429, gate_err)
+        identity = app_runtime.browser.identity_for(account)
+
+    async with app_runtime.engine.operation_guard(
+        body.account_id, OperationKind.SOCIAL,
+        fallback_key=f"yt-warmup:{body.account_id}",
+        operation_target=identity,
+    ):
+        ok, summary, err = await do_youtube_warmup(
+            app_runtime.browser,
+            identity,
+            kw,
+            max_videos=body.max_videos,
+            watch_seconds=body.watch_seconds,
+            like_probability=body.like_probability,
+            headed=True,
+        )
+
+    if ok:
+        app_runtime.engine.risk.record_success(body.account_id, OperationKind.SOCIAL)
+    else:
+        app_runtime.engine.risk.record_failure(body.account_id, OperationKind.SOCIAL, err)
+
+    record_account_operation(
+        platform="youtube",
+        account_id=body.account_id,
+        task_type="actions",
+        task_id=kw[:64],
+        action="warmup",
+        status="done" if ok else "failed",
+        target=kw,
+        channel="browser",
+        detail=(
+            f"watched={summary.get('watched_count', 0)}, liked={summary.get('liked_count', 0)}"
+            if ok else str(err or "")[:200]
+        ),
+    )
+    if not ok:
+        raise HTTPException(400, err or "YouTube 养号执行失败")
+    return {"ok": True, "keyword": kw, "summary": summary}
 
 
 @router.get("/api/accounts/{account_id}/xhs/favorite-boards")

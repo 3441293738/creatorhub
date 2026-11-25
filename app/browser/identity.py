@@ -35,7 +35,7 @@ DEFAULT_TZ = "Asia/Shanghai"
 DEFAULT_LOCALE = "zh-CN"
 OVERSEAS_DEFAULT_TZ = "America/New_York"
 OVERSEAS_DEFAULT_LOCALE = "en-US"
-OVERSEAS_PLATFORMS = frozenset({"tiktok", "rednote", "instagram", "twitter", "facebook"})
+OVERSEAS_PLATFORMS = frozenset({"tiktok", "rednote", "instagram", "twitter", "facebook", "youtube"})
 
 # 国内主要城市经纬度池(国内平台未探测到代理坐标时的兜底)
 _CITY_GEO = [

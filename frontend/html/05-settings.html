@@ -198,7 +198,7 @@
               <option value="zh">始终使用自然中文</option>
               <option value="en">始终使用自然英文</option>
             </select>
-            <div class="field-help">海外平台（IG / X / Facebook）选自动即可跟评外语内容。</div>
+            <div class="field-help">海外平台（IG / X / Facebook / YouTube）选自动即可跟评外语内容。</div>
           </div>
           <div class="form-field">
             <label for="ai-max-chars">单条评论字数上限</label>
@@ -275,6 +275,7 @@
                 <option value="instagram">Instagram</option>
                 <option value="twitter">X (Twitter)</option>
                 <option value="facebook">Facebook</option>
+                <option value="youtube">YouTube</option>
               </select>
             </div>
             <div class="form-field">
@@ -835,6 +836,22 @@
                       <option value="browser">仅隔离浏览器</option>
                     </select>
                     <p class="field-help">动态/主页/群组/快拍发布与互动固定走隔离浏览器通道。</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- YouTube -->
+              <div class="eng-pf-card" data-platform="youtube">
+                <div class="eng-pf-head"><b>YouTube</b><span class="eng-pf-tag" data-pf-badge="youtube"></span></div>
+                <div class="stack">
+                  <div class="form-field">
+                    <label for="engine-youtube_read_mode">频道、搜索与评论读取</label>
+                    <select id="engine-youtube_read_mode" name="youtube_read_mode" disabled title="优先走 SSR ytInitialData 与 Innertube Web (/youtubei/v1/*) 协议直采，异常时自动回退隔离浏览器">
+                      <option value="hybrid">协议 API 优先，失败回退浏览器（推荐）</option>
+                      <option value="api">仅协议 API 直连</option>
+                      <option value="browser">仅隔离浏览器</option>
+                    </select>
+                    <p class="field-help">YouTube Studio 视频/Shorts 上传、评论/互动与观看养号固定走隔离浏览器通道。</p>
                   </div>
                 </div>
               </div>
