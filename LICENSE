@@ -1,0 +1,97 @@
+CreatorHub 源码公开许可协议（Source-Available License）
+
+Copyright (c) 2026 CreatorHub Author (3441293738)
+https://github.com/3441293738/creatorhub
+
+================================================================================
+中文条款（具有最终解释效力）
+================================================================================
+
+本软件（指 CreatorHub 的源代码、编译产物、安装包及相关文档，以下统称“本软件”）采用
+源码公开（Source-Available）自定义授权协议，而非 OSI 定义的标准开源协议。除本协议明确
+授予的权利外，作者保留全部著作权及其他合法权利。
+
+1. 个人非商业用途（免费授权）
+   个人用户出于技术学习、研究或个人非商业日常内容管理目的，可免费下载、安装、运行、
+   复制及在本地修改本软件，无需提前联系作者申请授权。
+
+2. 商业用途（不收取授权费，须书面确认）
+   企业、公司、机构、工作室、MCN、代运营团队或任何以盈利、商业运营、对外商业服务为
+   目的的组织或个人，如需在商业场景或内部生产环境中使用本软件：
+   - 作者不收取任何授权费用；
+   - 使用者须在投入商业使用前联系作者并取得书面确认（包括但不限于通过项目 README 中
+     公示的作者微信聊天记录、电子邮件或 GitHub Issue 明确回复）；
+   - 申请确认时请说明使用主体名称及大致使用场景；
+   - 经书面确认获得的商业使用权仅限于确认范围内的内部自用，默认不可转让、不可转授权。
+
+3. 限制条款
+   未经作者另行明确书面许可，任何个人或组织均不得：
+   - 将本软件（含源码、安装包、编译产物或基于本软件修改的衍生版本）直接或变相出售、
+     付费分发、打包倒卖；
+   - 删除、隐藏或篡改本软件中的版权声明、项目标识、来源链接或本许可协议文件，或进行
+     “去版权 / 换皮 / 套壳”后对外分发；
+   - 将本软件封装为商业 SaaS、云托管平台、付费代管或付费接口服务向第三方提供；
+   - 冒用本软件或作者名义进行商业宣传，或暗示其产品、服务获得作者官方认可或背书。
+
+4. 第三方组件
+   本软件包含或依赖的第三方开源库、运行组件及资源文件仍受其各自原有许可协议约束，
+   相关声明见仓库及发行包中的第三方许可说明文件。
+
+5. 合规要求与免责声明
+   本软件仅用于技术学习与合规的内容管理，不提供任何平台账号、Cookie、代理或第三方
+   平台数据。使用者应自行遵守目标平台规则及所在地法律法规，并尊重内容版权与个人隐私。
+
+   本软件按“现状（AS IS）”提供，作者不作任何明示或暗示的担保，包括但不限于适销性、
+   特定用途适用性及不侵权担保。无论是个人免费使用，还是经书面确认的商业使用，均不
+   构成作者提供商业 SLA、售后保障、定制开发或持续维护的法律义务。在任何情况下，作者
+   均不对因使用或无法使用本软件而产生的任何直接、间接、附带或后果性损失，或因违规
+   使用引发的法律责任承担赔偿或连带责任。
+
+6. 联系方式
+   商业使用书面确认或授权相关咨询，请通过以下方式联系作者：
+   - GitHub Issues: https://github.com/3441293738/creatorhub/issues
+   - 作者微信：见项目 README.md「赞赏与交流」章节中的作者个人微信二维码
+
+================================================================================
+English Summary (For Reference Only; Chinese Version Prevails)
+================================================================================
+
+CreatorHub is distributed under a custom Source-Available License (not an
+OSI-approved Open Source license). All rights not expressly granted below are
+reserved by the author.
+
+1. Personal Non-Commercial Use (Free):
+   Individuals may freely download, run, copy, and locally modify the Software
+   for learning, research, or personal non-commercial use without prior approval.
+
+2. Commercial Use (Free of Charge, Written Confirmation Required):
+   Companies, organizations, studios, MCNs, or individuals using the Software
+   for commercial purposes or internal business operations are NOT charged any
+   licensing fee, but MUST contact the author and obtain written confirmation
+   (e.g., via the author's WeChat listed in README.md, email, or GitHub Issue)
+   stating the organization name and intended use case before commercial use.
+   Such confirmation grants a non-transferable, non-sublicensable right for
+   internal use within the confirmed scope only.
+
+3. Restrictions:
+   Without separate explicit written permission from the author, you may NOT:
+   - Sell, resell, redistribute for a fee, or commercially repackage the
+     Software or any modified/derivative version;
+   - Remove, obscure, or alter copyright notices, attribution, repository links,
+     or this LICENSE file, or white-label/rebrand the Software for distribution;
+   - Offer the Software as a commercial SaaS, hosted platform, or paid managed
+     service to third parties;
+   - Imply official endorsement or affiliation with the author or CreatorHub.
+
+4. Third-Party Components:
+   Bundled or dependent third-party components remain subject to their
+   respective licenses.
+
+5. Compliance & Disclaimer:
+   The Software is provided "AS IS", without warranty of any kind, express or
+   implied, and without any commercial SLA, support commitment, or liability
+   for damages or compliance risks arising from its use. Users are solely
+   responsible for complying with applicable laws and target platform rules.
+
+In the event of any discrepancy between the Chinese and English texts, the
+Chinese version shall prevail.

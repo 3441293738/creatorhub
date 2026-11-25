@@ -2,7 +2,7 @@
 
 本地运行的多平台内容管理工作台，支持 **抖音 / 小红书 / 海外小红书 / 快手 / 视频号 / TikTok / 哔哩哔哩 / Instagram / Twitter / Facebook**。
 
-[在线预览](https://3441293738.github.io/creatorhub/) · [平台能力](#平台能力) · [使用指南](https://3441293738.github.io/creatorhub/guide/) · [下载安装](https://github.com/3441293738/creatorhub/releases/latest) · [问题反馈](https://github.com/3441293738/creatorhub/issues) · [赞赏与交流](#赞赏与交流)
+[在线预览](https://3441293738.github.io/creatorhub/) · [平台能力](#平台能力) · [使用指南](https://3441293738.github.io/creatorhub/guide/) · [下载安装](https://github.com/3441293738/creatorhub/releases/latest) · [问题反馈](https://github.com/3441293738/creatorhub/issues) · [赞赏与交流](#赞赏与交流) · [授权说明](#授权说明)
 
 <p align="center">
   <a href="https://3441293738.github.io/creatorhub/">
@@ -161,4 +161,13 @@ chmod +x start.sh
 
 ## 使用须知
 
-本项目用于技术学习和个人内容管理，不提供账号、Cookie、代理或平台数据。使用时请遵守目标平台规则及所在地法律法规，并尊重内容版权和个人隐私。
+本项目用于技术学习与合规的内容管理，不提供账号、Cookie、代理或平台数据。使用时请遵守目标平台规则及所在地法律法规，并尊重内容版权和个人隐私。
+
+## 授权说明
+
+本项目采用**源码公开（Source-Available）**自定义授权（详见 [LICENSE](LICENSE)），而非标准 OSI 开源协议：
+
+- **个人非商业用途**：免费授权，可直接下载、运行、学习及个人日常使用，无需提前申请。
+- **商业用途（不收取授权费，须书面确认）**：企业、团队、工作室、MCN 等商业主体用于内部业务场景时，**不收取任何授权费**，但须在使用前通过上方[作者微信](#赞赏与交流)或 [GitHub Issue](https://github.com/3441293738/creatorhub/issues) 联系作者完成书面确认（说明使用主体与使用场景即可）。
+- **限制条款**：未经作者另行明确书面许可，禁止将本项目（含源码、安装包或修改衍生版本）直接或变相出售、付费分发、去版权换皮套壳，或封装为商业 SaaS / 付费代管服务对外提供。
+- **免责声明**：本软件按“现状（AS IS）”提供，个人免费使用及商业书面确认均不包含商业 SLA、售后保障或连带法律责任。
