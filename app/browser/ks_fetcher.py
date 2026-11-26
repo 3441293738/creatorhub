@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 
 _log = logging.getLogger("creatorhub.browser.kuaishou")
 from typing import Dict, List, Optional, Set, Tuple
@@ -699,6 +700,114 @@ def _harvest_self(node, uid: str, out: list, depth: int = 0):
             _harvest_self(v, uid, out, depth + 1)
 
 
+_KS_WEB_ORIGIN = "https://www.kuaishou.com/"
+_KS_LOGIN_BUTTON_SELECTORS = (
+    'span[role="button"]:has-text("登录")',
+    'button:has-text("登录")',
+    '[class*="login-button"]',
+    '[class*="login-btn"]',
+)
+_KS_LOGIN_PROMPT_TEXTS = frozenset({
+    "登录",
+    "立即登录",
+    "登录/注册",
+    "登录注册",
+    "请登录",
+    "去登录",
+    "扫码登录",
+})
+
+
+def _is_ks_web_auth_cookie(name: str) -> bool:
+    """判断是否为 www.kuaishou.com 实际携带的主站登录会话令牌 Cookie。"""
+    clean = str(name or "").strip()
+    return (
+        clean in {"passToken", "web_st", "kuaishou.server.web_st"}
+        or (clean.startswith("kuaishou.server.") and clean.endswith("_st"))
+        or clean.endswith(".webday7_st")
+        or clean.endswith(".web_st")
+    )
+
+
+def _cookie_applies_to_ks_web(cookie: dict, now: float) -> bool:
+    """判断单条 Cookie 是否未过期且会被浏览器发往 www.kuaishou.com。"""
+    if not isinstance(cookie, dict):
+        return False
+    val = str(cookie.get("value") or "").strip()
+    if not val:
+        return False
+    exp = cookie.get("expires")
+    if exp is not None and not isinstance(exp, bool):
+        try:
+            exp_ts = float(exp)
+            if exp_ts > 0 and exp_ts <= now:
+                return False
+        except (TypeError, ValueError):
+            pass
+    dom = str(cookie.get("domain") or "").strip().lower()
+    if not dom:
+        return True
+    if dom.startswith("."):
+        root = dom.lstrip(".")
+        return "www.kuaishou.com" == root or "www.kuaishou.com".endswith("." + root)
+    return dom == "www.kuaishou.com"
+
+
+async def _read_ks_web_cookies(context) -> Tuple[List[dict], bool]:
+    """读取当前上下文里未过期且作用于 www.kuaishou.com 的 Cookie。
+
+    不能直接用全域名 ``context.cookies()`` 判定主站是否登录：快手主站
+    ``kuaishou.server.webday7_st`` / ``.kuaishou.com userId`` 约 7 天过期，
+    但 ``id.kuaishou.com`` 下的 ``passToken`` / ``userId`` 仍可能未过期且
+    不会被浏览器发往 ``www.kuaishou.com``。
+    """
+    now = time.time()
+    try:
+        try:
+            raw = await context.cookies([_KS_WEB_ORIGIN])
+        except TypeError:
+            raw = await context.cookies()
+    except Exception:
+        return [], False
+    return [c for c in (raw or []) if _cookie_applies_to_ks_web(c, now)], True
+
+
+async def _detect_ks_login_prompt(page) -> Optional[bool]:
+    """检测快手主站页面是否明确处于未登录态（跳登录页或显示可见登录入口）。"""
+    try:
+        url = (page.url or "").lower()
+        if "passport.kuaishou.com" in url or "id.kuaishou.com" in url or "/login" in url:
+            return True
+    except Exception:
+        pass
+    saw_check = False
+    try:
+        loc = page.locator('[role="button"].sidebar-login-button')
+        cnt = await loc.count()
+        saw_check = True
+        for idx in range(min(cnt, 4)):
+            if await loc.nth(idx).is_visible():
+                return True
+    except Exception:
+        pass
+    for selector in _KS_LOGIN_BUTTON_SELECTORS:
+        try:
+            loc = page.locator(selector)
+            cnt = await loc.count()
+            saw_check = True
+            for idx in range(min(cnt, 6)):
+                cand = loc.nth(idx)
+                if not await cand.is_visible():
+                    continue
+                raw_text = await cand.inner_text()
+                norm_text = re.sub(r"\s+", "", raw_text or "")
+                if norm_text in _KS_LOGIN_PROMPT_TEXTS:
+                    return True
+        except Exception:
+            continue
+    return False if saw_check else None
+
+
 async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
                                 timeout_ms: int = 15000, block_media: bool = False
                                 ) -> Tuple[dict, str]:
@@ -715,16 +824,14 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
     attempts: List[str] = []
     profile_seen = asyncio.Event()
 
-    # 先取 cookie(在导航前就绪,这样响应监听里能用 uid 匹配)
-    uid_cookie = ""
-    try:
-        cks0 = await page.context.cookies()
-        names0 = {c["name"] for c in cks0}
-        uid_cookie = next((c.get("value", "") for c in cks0 if c["name"] == "userId"), "")
-    except Exception:
-        names0 = set()
-    if "passToken" not in names0 and not uid_cookie:
-        logged_out = True
+    # 先取 www.kuaishou.com 作用域下未过期的 Cookie（在导航前就绪，供响应监听匹配 uid）
+    web_cks0, cookies_checked = await _read_ks_web_cookies(page.context)
+    has_web_auth = any(_is_ks_web_auth_cookie(c.get("name", "")) for c in web_cks0)
+    uid_cookie = next(
+        (str(c.get("value") or "") for c in web_cks0
+         if c.get("name") == "userId" and c.get("value")),
+        "",
+    )
 
     hits: list = []          # 含本人 uid 的响应里抽出的 profile 候选
     hit_urls: list = []      # 命中响应的 URL(诊断用)
@@ -784,16 +891,7 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
             await asyncio.wait_for(profile_seen.wait(), timeout=4.0)
         except asyncio.TimeoutError:
             await human_wait(page, 500)
-        try:
-            has_login_btn = await page.locator(
-                '[role="button"].sidebar-login-button').first.is_visible(
-                    timeout=1200)
-        except Exception:
-            try:
-                has_login_btn = await page.get_by_text(
-                    "登录", exact=True).first.is_visible(timeout=1200)
-            except Exception:
-                has_login_btn = None
+        has_login_btn = await _detect_ks_login_prompt(page)
 
         # ① 主路径:使用页面首屏已经签名的 /rest/v/profile/get 响应。
         self3x = ""
@@ -837,10 +935,22 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
             if not result and (best["profile"].get("user_name")
                                or best["profile"].get("headurl")):
                 result = best
+
+        web_cks_after, cookies_checked_after = await _read_ks_web_cookies(page.context)
+        if cookies_checked_after:
+            has_web_auth = any(
+                _is_ks_web_auth_cookie(c.get("name", "")) for c in web_cks_after
+            )
+            cookies_checked = True
+
         if has_login_btn is True:
             # uid/passToken 可能仍保存在本地但已被服务端撤销；真实页面显示登录时
             # 不接受 REST、GraphQL 或首页缓存中的旧资料。
             result = {}
+            logged_out = True
+        elif not result and cookies_checked and not has_web_auth:
+            # 页面成功打开但无资料返回，且 www.kuaishou.com 已无有效会话令牌
+            # （例如 7 天 webday7_st 到期，仅剩 id.kuaishou.com 的 passToken）。
             logged_out = True
     except Exception as e:
         error = f"{e!r}"
@@ -851,13 +961,13 @@ async def fetch_ks_self_profile(mgr: BrowserManager, identity: Identity,
             pass
 
     if not result:
-        if logged_out:
+        if logged_out and not error:
             error = "logged_out"
         elif not error:
             error = "no_profile_data"
         _log.warning(
-            "快手本人资料未获取: err=%s login_btn=%s hit_urls=%s",
-            error, has_login_btn, hit_urls[:6],
+            "快手本人资料未获取: err=%s login_btn=%s web_auth=%s hit_urls=%s",
+            error, has_login_btn, has_web_auth if cookies_checked else None, hit_urls[:6],
         )
     return result, error
 

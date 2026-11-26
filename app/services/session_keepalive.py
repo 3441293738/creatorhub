@@ -59,7 +59,14 @@ PLATFORM_CORE_COOKIES: dict[str, tuple[str, ...]] = {
     "douyin": ("sessionid", "sessionid_ss", "sid_tt", "uid_tt", "sid_guard", "passport_csrf_token"),
     "xhs": ("web_session", "a1"),
     "rednote": ("web_session", "a1"),
-    "kuaishou": ("passToken", "userId", "kuaishou.server.web_st", "kuaishou.server.web_ph"),
+    "kuaishou": (
+        "passToken",
+        "userId",
+        "kuaishou.server.web_st",
+        "kuaishou.server.web_ph",
+        "kuaishou.server.webday7_st",
+        "kuaishou.server.webday7_ph",
+    ),
     "shipinhao": ("_finder_auth", "sessionid", "wxuin", "finder_username"),
     "tiktok": ("sessionid", "sessionid_ss", "sid_tt", "sid_guard", "uid_tt"),
     "bilibili": ("SESSDATA", "bili_jct", "DedeUserID"),
@@ -90,6 +97,31 @@ _DUAL_SYNC_CREATOR_PLATFORMS = {"kuaishou", "shipinhao", "bilibili", "instagram"
 
 def _clean_domain(domain: Any) -> str:
     return str(domain or "").strip().lstrip(".").lower()
+
+
+def _cookie_matches_host(domain: Any, host: str) -> bool:
+    """判断 Cookie 的 domain 是否会被浏览器发往指定主机。"""
+    raw = str(domain or "").strip().lower()
+    target = str(host or "").strip().lower().lstrip(".")
+    if not raw or not target:
+        return True
+    clean = raw.lstrip(".")
+    if raw.startswith("."):
+        return target == clean or target.endswith("." + clean)
+    return target == clean
+
+
+def _is_kuaishou_web_auth_cookie(cookie: Mapping[str, Any]) -> bool:
+    """判断是否为 www.kuaishou.com 主站可实际携带的会话令牌 Cookie。"""
+    if not _cookie_matches_host(cookie.get("domain", ""), "www.kuaishou.com"):
+        return False
+    name = str(cookie.get("name") or "").strip()
+    return (
+        name in {"passToken", "web_st", "kuaishou.server.web_st"}
+        or (name.startswith("kuaishou.server.") and name.endswith("_st"))
+        or name.endswith(".webday7_st")
+        or name.endswith(".web_st")
+    )
 
 
 def domain_allowed_for_platform(platform: str, domain: Any) -> bool:
@@ -191,6 +223,7 @@ def has_required_auth_cookies(
     pf = str(platform or "").strip().lower()
     now = time.time()
     active_map: dict[str, str] = {}
+    active_cookies: list[Mapping[str, Any]] = []
     for item in parsed["cookies"]:
         if not domain_allowed_for_platform(pf, item.get("domain", "")):
             continue
@@ -200,6 +233,7 @@ def has_required_auth_cookies(
         val = str(item.get("value") or "").strip()
         if name and val:
             active_map[name] = val
+            active_cookies.append(item)
 
     if not active_map:
         return False
@@ -231,11 +265,14 @@ def has_required_auth_cookies(
             or active_map.get("wxuin")
         )
     if pf == "kuaishou":
-        return bool(
-            active_map.get("passToken")
-            or active_map.get("userId")
-            or active_map.get("kuaishou.server.web_st")
-        )
+        has_web_auth = any(_is_kuaishou_web_auth_cookie(c) for c in active_cookies)
+        if scope == "creator":
+            return bool(
+                active_map.get("kuaishou.web.cp.api_st")
+                or has_web_auth
+                or active_map.get("passToken")
+            )
+        return bool(has_web_auth)
     if pf == "tiktok":
         return bool(
             active_map.get("sessionid")
@@ -796,17 +833,39 @@ def inspect_session_expiry(
     elif pf == "rednote" and not storage_state and creator_storage_state:
         core_names = set(REDNOTE_CREATOR_CORE_COOKIES)
 
+    cookies_to_inspect = state["cookies"]
+    if pf == "kuaishou":
+        # 快手主站（www.kuaishou.com）实际由 webday7_st / web_st / .kuaishou.com userId
+        # 维持会话（约 7 天）；id.kuaishou.com 的 passToken 有效期更长但不会发往主站。
+        # 若快照里存在主站作用域核心 Cookie，优先按主站作用域评估临期/过期，避免被
+        # id.kuaishou.com 的长周期 passToken 掩盖主站已过期。
+        ks_web_core = [
+            item for item in cookies_to_inspect
+            if domain_allowed_for_platform(pf, item.get("domain", ""))
+            and _cookie_matches_host(item.get("domain", ""), "www.kuaishou.com")
+            and str(item.get("value") or "").strip()
+            and (
+                str(item.get("name") or "").strip() in core_names
+                or _is_kuaishou_web_auth_cookie(item)
+            )
+        ]
+        if ks_web_core:
+            cookies_to_inspect = ks_web_core
+
     found_core = 0
     finite_expiries: list[float] = []
     session_only_core = 0
     expired_core = 0
 
-    for item in state["cookies"]:
+    for item in cookies_to_inspect:
         if not domain_allowed_for_platform(pf, item.get("domain", "")):
             continue
         name = str(item.get("name") or "").strip()
         val = str(item.get("value") or "").strip()
-        if not name or not val or (core_names and name not in core_names):
+        is_core = (not core_names) or (name in core_names) or (
+            pf == "kuaishou" and _is_kuaishou_web_auth_cookie(item)
+        )
+        if not name or not val or not is_core:
             continue
         found_core += 1
         exp = item.get("expires")
