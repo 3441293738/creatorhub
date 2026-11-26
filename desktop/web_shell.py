@@ -3,7 +3,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import hmac
 import json
-import mimetypes
 import os
 import secrets
 import threading
@@ -11,6 +10,14 @@ import threading
 from desktop.controller import Controller
 from desktop.launcher import InstanceLock, resources
 from desktop.platform_support import webview_options
+
+SHELL_ASSET_TYPES = {
+    "index.html": "text/html; charset=utf-8",
+    "app.js": "text/javascript; charset=utf-8",
+    "app.css": "text/css; charset=utf-8",
+    "icons.svg": "image/svg+xml; charset=utf-8",
+    "app.js.LEGAL.txt": "text/plain; charset=utf-8",
+}
 
 
 class ShellServer(ThreadingHTTPServer):
@@ -57,7 +64,8 @@ class ShellHandler(BaseHTTPRequestHandler):
             self.json(200, self.server.controller.state())
             return
         filename = "index.html" if self.path == "/" else self.path.lstrip("/")
-        if filename not in {"index.html", "app.js", "app.css", "icons.svg", "app.js.LEGAL.txt"}:
+        content_type = SHELL_ASSET_TYPES.get(filename)
+        if not content_type:
             self.json(404, {"error": "页面不存在。"})
             return
         path = self.server.assets / filename
@@ -67,8 +75,7 @@ class ShellHandler(BaseHTTPRequestHandler):
         body = path.read_bytes()
         if filename == "index.html":
             body = body.replace(b"__DESKTOP_TOKEN__", self.server.token.encode())
-        mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        self.send(200, body, mime + "; charset=utf-8")
+        self.send(200, body, content_type)
 
     def do_POST(self):
         if self.path != "/api/action" or not self.valid(True):
