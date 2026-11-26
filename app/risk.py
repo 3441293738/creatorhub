@@ -161,11 +161,13 @@ def classify_platform_error(
 
     risk_markers = (
         "风控", "频控", "访问频繁", "操作频繁", "环境异常", "验证码", "验证",
-        "限流", "安全验证", "设备异常", "账号异常", "滑块", "人机验证",
+        "限流", "安全验证", "设备异常", "账号异常", "账号已停用", "账号已被停用",
+        "滑块", "人机验证",
         "risk", "captcha", "security verification", "human verification", "verifycenter",
         "website-login/captcha", "rate limit", "rate_limit", "too frequent", "http 429",
         "http 403", "status_code=8", "verification_required", "checkpoint_required",
-        "challenge_required", "feedback_required",
+        "challenge_required", "feedback_required", "accounts/suspended",
+        "account_suspended", "user_is_suspended", "__coig_ufac",
     )
     if any(marker in text for marker in risk_markers):
         return RiskCategory.RISK, ("verification_required"
@@ -267,6 +269,8 @@ class RiskController:
         text = f"{signal} {error}".lower()
         return any(marker in text for marker in (
             "verification_required", "checkpoint_required", "challenge_required",
+            "accounts/suspended", "account_suspended", "user_is_suspended",
+            "__coig_ufac", "账号已被停用", "账号已停用",
             "captcha", "人机验证", "安全验证", "二次验证", "滑块", "验证码", "设备验证",
             "verifycenter", "security verification", "human verification"))
 

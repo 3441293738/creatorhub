@@ -21,7 +21,7 @@ from app.platforms.facebook import FacebookClient
 from app.platforms.instagram import InstagramClient
 from app.platforms.rednote import delete_rednote_work, update_rednote_visibility
 from app.platforms.youtube import YouTubeClient
-from app.risk import OperationKind
+from app.risk import OperationKind, RiskCategory, classify_platform_error
 from app.services import account_profiles as account_profiles_service
 from app.services import thumb_cache
 from app.services import watch_records as watch_records_service
@@ -160,7 +160,11 @@ async def sync_account_works(account_id: int, async_mode: bool = False):
             if ig_works or ig_err == "":
                 source = "api"
                 return ig_works, ("" if ig_works else "empty_confirmed")
-            if effective_mode == "api" or ig_err.startswith(("logged_out", "verification_required")) or app_runtime.browser is None:
+            if (
+                effective_mode == "api"
+                or (ig_err and classify_platform_error(ig_err)[0] in {RiskCategory.AUTH, RiskCategory.RISK})
+                or app_runtime.browser is None
+            ):
                 source = "api"
                 return [], ig_err or "empty"
             source = "browser_fallback"

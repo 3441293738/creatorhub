@@ -1095,9 +1095,11 @@ class CommentRuleRunnerMixin:
                             rows, err = await icli.search_posts(rf["keyword"], max_pages=2)
                         else:
                             rows, _next, _more, err = await icli.fetch_user_feed(rf["sec_uid"])
+                    err_category = classify_platform_error(err)[0] if err else RiskCategory.BUSINESS
+                    hard_block = err_category in {RiskCategory.AUTH, RiskCategory.RISK}
                     if (
                         imode == "browser"
-                        or (imode == "hybrid" and not rows and err)
+                        or (imode == "hybrid" and not rows and err and not hard_block)
                     ) and identity is not None:
                         if kind == "keyword":
                             b_rows, b_err = await fetch_ig_search(
@@ -1140,9 +1142,11 @@ class CommentRuleRunnerMixin:
                     feed_rows: list[dict] = []
                     if imode in {"api", "hybrid"} and target_self:
                         feed_rows, _next, _more, err = await icli.fetch_user_feed(target_self)
+                    err_category = classify_platform_error(err)[0] if err else RiskCategory.BUSINESS
+                    hard_block = err_category in {RiskCategory.AUTH, RiskCategory.RISK}
                     if (
                         imode == "browser"
-                        or (imode == "hybrid" and not feed_rows and err)
+                        or (imode == "hybrid" and not feed_rows and err and not hard_block)
                     ) and identity is not None and target_self:
                         b_rows, _a, b_err = await fetch_ig_posts(
                             self.browser, identity, target_self, set(), max_scrolls=2
@@ -1167,9 +1171,11 @@ class CommentRuleRunnerMixin:
                         c_rows, c_err = await icli.fetch_comments(
                             work_code, max_count=40, include_replies=True
                         )
+                    c_err_cat = classify_platform_error(c_err)[0] if c_err else RiskCategory.BUSINESS
+                    c_hard_block = c_err_cat in {RiskCategory.AUTH, RiskCategory.RISK}
                     if (
                         imode == "browser"
-                        or (imode == "hybrid" and not c_rows and c_err)
+                        or (imode == "hybrid" and not c_rows and c_err and not c_hard_block)
                     ) and identity is not None:
                         b_c_rows, b_c_err = await fetch_ig_comments(
                             self.browser, identity, work_code, max_count=40

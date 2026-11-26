@@ -573,8 +573,9 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     ):
                         cookie_refreshed = True
                         keepalive_note = "Instagram 会话已同步"
-            auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
-            if not u and imode == "hybrid" and not auth_failed and app_runtime.browser is not None:
+            err_category = classify_platform_error(err)[0] if err else RiskCategory.BUSINESS
+            hard_block = err_category in {RiskCategory.AUTH, RiskCategory.RISK}
+            if not u and imode == "hybrid" and not hard_block and app_runtime.browser is not None:
                 u, err = await fetch_ig_self_profile(app_runtime.browser, identity)
                 used_browser = True
             elif not u and imode == "browser":

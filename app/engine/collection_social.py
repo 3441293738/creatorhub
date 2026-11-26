@@ -18,6 +18,7 @@ from app.platforms.facebook import (
 from app.platforms.instagram import InstagramClient, resolve_ig_user_target
 from app.platforms.twitter import TwitterClient, resolve_twitter_user_target
 from app.platforms.youtube import YouTubeClient, resolve_youtube_channel_target, video_url as yt_video_url
+from app.risk import RiskCategory, classify_platform_error
 
 
 class CollectionSocialMixin:
@@ -195,7 +196,9 @@ class CollectionSocialMixin:
             items, err = await ig_client.search_posts(
                 keyword, max_pages=max_pages, sort=job.search_sort or "general"
             )
-        if (mode == "browser" or (mode == "hybrid" and not items and not err.startswith(("logged_out:", "verification_required:")))) and identity is not None:
+        err_cat = classify_platform_error(err)[0] if err else RiskCategory.BUSINESS
+        hard_block = err_cat in {RiskCategory.AUTH, RiskCategory.RISK}
+        if (mode == "browser" or (mode == "hybrid" and not items and not hard_block)) and identity is not None:
             b_items, b_err = await fetch_ig_search(
                 self.browser, identity, keyword, max_scrolls=max_pages
             )
@@ -237,7 +240,9 @@ class CollectionSocialMixin:
                 if len(items) >= max(20, job.max_contents_per_keyword * 2) or not more or not next_cursor or next_cursor == cursor:
                     break
                 cursor = next_cursor
-        if (mode == "browser" or (mode == "hybrid" and not items and not err.startswith(("logged_out:", "verification_required:")))) and identity is not None:
+        err_cat = classify_platform_error(err)[0] if err else RiskCategory.BUSINESS
+        hard_block = err_cat in {RiskCategory.AUTH, RiskCategory.RISK}
+        if (mode == "browser" or (mode == "hybrid" and not items and not hard_block)) and identity is not None:
             b_items, _author, b_err = await fetch_ig_posts(
                 self.browser, identity, user_ref, set(), max_scrolls=max_pages
             )
@@ -263,7 +268,7 @@ class CollectionSocialMixin:
         ).strip()
         if ig_client is not None and not user_ref:
             prof, p_err = await ig_client.fetch_self_profile()
-            if p_err.startswith(("logged_out:", "verification_required:")):
+            if p_err and classify_platform_error(p_err)[0] in {RiskCategory.AUTH, RiskCategory.RISK}:
                 return [], p_err
             user_ref = str(prof.get("uid") or prof.get("unique_id") or ig_client.self_uid)
         if not user_ref:
@@ -298,7 +303,9 @@ class CollectionSocialMixin:
             comments, err = await ig_client.fetch_comments(
                 work_id, max_count=limit, include_replies=include_replies
             )
-        if (mode == "browser" or (mode == "hybrid" and not comments and err and not err.startswith(("logged_out:", "verification_required:")))) and identity is not None:
+        err_cat = classify_platform_error(err)[0] if err else RiskCategory.BUSINESS
+        hard_block = err_cat in {RiskCategory.AUTH, RiskCategory.RISK}
+        if (mode == "browser" or (mode == "hybrid" and not comments and err and not hard_block)) and identity is not None:
             b_comments, b_err = await fetch_ig_comments(
                 self.browser, identity, work_id, max_count=limit, include_replies=include_replies
             )

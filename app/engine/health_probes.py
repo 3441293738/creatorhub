@@ -696,8 +696,9 @@ class HealthProbeMixin:
                                 keepalive_notes.append("Instagram 会话已同步")
                     elif imode == "api" and not state:
                         u, err = {}, "logged_out:缺少 Instagram 登录态"
-                    auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
-                    if imode == "browser" or (not u and imode == "hybrid" and not auth_failed):
+                    err_category = classify_platform_error(err)[0] if err else RiskCategory.BUSINESS
+                    hard_block = err_category in {RiskCategory.AUTH, RiskCategory.RISK}
+                    if imode == "browser" or (not u and imode == "hybrid" and not hard_block):
                         u, err = await fetch_ig_self_profile(self.browser, identity)
                         used_browser = True
                     if u and used_browser:
@@ -1074,6 +1075,8 @@ class HealthProbeMixin:
             states = session.exec(select(AccountRiskState).where(
                 AccountRiskState.risk_level > 0)).all()
             for risk_state in states:
+                if risk_state.manual_review_required:
+                    continue
                 account = session.get(DouyinAccount, risk_state.account_id)
                 if not account or account.status == "invalid" \
                         or not (account.storage_state or account.creator_storage_state):
@@ -1112,10 +1115,21 @@ class HealthProbeMixin:
         if not sweep_due and not sph_due and not self._pending_account_checks:
             return
         with get_session() as session:
+            manual_review_ids: set[int] = set()
+            if self.risk.policy.enabled and self.risk._cooldown_active():
+                manual_review_ids = {
+                    int(aid) for aid in session.exec(
+                        select(AccountRiskState.account_id).where(
+                            AccountRiskState.manual_review_required == True  # noqa: E712
+                        )
+                    ).all()
+                    if aid
+                }
             rows = [
                 account for account in session.exec(select(DouyinAccount)).all()
                 if (account.storage_state or account.creator_storage_state)
                 and account.status != "invalid"
+                and account.id not in manual_review_ids
             ]
             probes = [self._account_probe_tuple(account) for account in rows]
             priority_ids = {

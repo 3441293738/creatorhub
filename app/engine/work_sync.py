@@ -318,9 +318,10 @@ class WorkSyncMixin:
                         )
                     if not api_err or collected_ig:
                         source = "api"
-                auth_failed = classify_platform_error(api_err)[0] == RiskCategory.AUTH
+                err_category = classify_platform_error(api_err)[0] if api_err else RiskCategory.BUSINESS
+                hard_block = err_category in {RiskCategory.AUTH, RiskCategory.RISK}
                 if configured_mode == "browser" or (
-                    configured_mode == "hybrid" and not collected_ig and api_err and not auth_failed and identity is not None
+                    configured_mode == "hybrid" and not collected_ig and api_err and not hard_block and identity is not None
                 ):
                     ig_rows, ig_err = await fetch_ig_comments(
                         self.browser, identity, item_id, max_count=200

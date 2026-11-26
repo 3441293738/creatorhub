@@ -349,10 +349,11 @@ class CommentTaskRunnerMixin:
                             "write_uncertain:",
                             "logged_out:",
                             "verification_required:",
+                            "rate_limit:",
                         ))
                     ):
                         category, _ = classify_platform_error(err)
-                        if category in {RiskCategory.BUSINESS, RiskCategory.RISK}:
+                        if category == RiskCategory.BUSINESS:
                             ok, err = await post_ig_comment(
                                 self.browser,
                                 identity,

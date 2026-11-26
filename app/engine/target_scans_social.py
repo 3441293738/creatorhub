@@ -363,10 +363,11 @@ class SocialTargetScanMixin:
                             break
                         cursor = next_cursor
 
-            auth_failed = classify_platform_error(error)[0] == RiskCategory.AUTH
+            err_category = classify_platform_error(error)[0] if error else RiskCategory.BUSINESS
+            hard_block = err_category in {RiskCategory.AUTH, RiskCategory.RISK}
             if (
                 mode == "browser"
-                or (mode == "hybrid" and not raw_items and error and not auth_failed)
+                or (mode == "hybrid" and not raw_items and error and not hard_block)
             ) and identity is not None:
                 scrolls = max(1, min(4, strategy["max_scrolls"] or 2))
                 if target_kind == "keyword":

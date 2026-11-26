@@ -472,10 +472,11 @@ class CommentWatchPlatformsMixin:
                         "avatar_thumb": {"url_list": [str(aw_info.avatar or aw_info.cover or "")]},
                     }
                 rows, err = await icli.fetch_comments(work_id, max_count=max_c, include_replies=True)
-            auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
+            err_category = classify_platform_error(err)[0] if err else RiskCategory.BUSINESS
+            hard_block = err_category in {RiskCategory.AUTH, RiskCategory.RISK}
             if (
                 mode == "browser"
-                or (mode == "hybrid" and not rows and err and not auth_failed)
+                or (mode == "hybrid" and not rows and err and not hard_block)
             ) and identity is not None:
                 ig_rows, ig_err = await fetch_ig_comments(
                     self.browser, identity, work_id, max_count=max_c
@@ -521,10 +522,11 @@ class CommentWatchPlatformsMixin:
         async with icli.session_scope():
             if mode in {"api", "hybrid"}:
                 raw_feed, _next, _more, err = await icli.fetch_user_feed(user_ref)
-            auth_failed = classify_platform_error(err)[0] == RiskCategory.AUTH
+            err_category = classify_platform_error(err)[0] if err else RiskCategory.BUSINESS
+            hard_block = err_category in {RiskCategory.AUTH, RiskCategory.RISK}
             if (
                 mode == "browser"
-                or (mode == "hybrid" and not raw_feed and err and not auth_failed)
+                or (mode == "hybrid" and not raw_feed and err and not hard_block)
             ) and identity is not None:
                 b_items, b_author, b_err = await fetch_ig_posts(
                     self.browser, identity, user_ref, set(), max_scrolls=3
@@ -572,9 +574,11 @@ class CommentWatchPlatformsMixin:
                 c_err = ""
                 if mode in {"api", "hybrid"}:
                     rows, c_err = await icli.fetch_comments(code, max_count=max_c, include_replies=True)
+                c_err_cat = classify_platform_error(c_err)[0] if c_err else RiskCategory.BUSINESS
+                c_hard_block = c_err_cat in {RiskCategory.AUTH, RiskCategory.RISK}
                 if (
                     mode == "browser"
-                    or (mode == "hybrid" and not rows and c_err)
+                    or (mode == "hybrid" and not rows and c_err and not c_hard_block)
                 ) and identity is not None:
                     b_rows, _ = await fetch_ig_comments(
                         self.browser, identity, code, max_count=max_c

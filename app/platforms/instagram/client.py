@@ -59,6 +59,7 @@ from .protocol import (
     unsigned_content,
 )
 from .resolve import (
+    classify_ig_page_url as _classify_ig_redirect_url,
     clean_ig_username,
     media_id_to_shortcode,
     resolve_ig_user_target,
@@ -81,6 +82,7 @@ class IgHttpResponse:
     headers: Dict[str, str]
     text: str
     set_cookies: List[str] = field(default_factory=list)
+    url: str = ""
 
     def json(self) -> Any:
         return json.loads(self.text)
@@ -105,6 +107,7 @@ def classify_ig_payload_error(status_code: int, payload: Any, fallback_text: str
     err_type = ""
     spam = False
     is_age_gated = False
+    has_challenge_obj = False
     if isinstance(payload, Mapping):
         msg = str(
             payload.get("message")
@@ -115,6 +118,7 @@ def classify_ig_payload_error(status_code: int, payload: Any, fallback_text: str
         ).strip()
         err_type = str(payload.get("error_type") or "").strip().lower()
         spam = bool(payload.get("spam"))
+        has_challenge_obj = bool(payload.get("checkpoint_url") or payload.get("challenge"))
         if "age_gated_info" in payload or "mark_user_overage" in str(payload):
             is_age_gated = True
 
@@ -129,10 +133,18 @@ def classify_ig_payload_error(status_code: int, payload: Any, fallback_text: str
     ):
         return f"logged_out:Instagram 登录态已失效({msg or status_code})"
     if (
-        "checkpoint_required" in low
+        has_challenge_obj
+        or "checkpoint_required" in low
         or "challenge_required" in low
         or "checkpoint_challenge_required" in low
         or "delta_login_review" in low
+        or "account_suspended" in low
+        or "user_is_suspended" in low
+        or "accounts/suspended" in low
+        or "accounts/disabled" in low
+        or "__coig_ufac" in low
+        or "account has been suspended" in low
+        or "your account has been disabled" in low
     ):
         return f"verification_required:Instagram 触发安全挑战({msg or 'challenge_required'})"
     if (
@@ -259,6 +271,7 @@ class InstagramClient:
             headers=hdrs,
             text=resp.text or "",
             set_cookies=set_cookies,
+            url=str(getattr(resp, "url", "") or url),
         )
 
     def _record_response_cookies(self, url: str, resp: IgHttpResponse) -> None:
@@ -351,6 +364,11 @@ class InstagramClient:
         assert resp is not None
         parsed: Any = parse_ig_json_or_ndjson(resp.text)
 
+        redirect_err = _classify_ig_redirect_url(resp.url)
+        if redirect_err:
+            self.last_error = redirect_err
+            return resp, parsed, redirect_err
+
         if resp.status_code in {401, 429}:
             self.session.suspend_operation(operation, web=False)
 
@@ -408,6 +426,11 @@ class InstagramClient:
 
         parsed: Any = parse_ig_json_or_ndjson(resp.text)
 
+        redirect_err = _classify_ig_redirect_url(resp.url)
+        if redirect_err:
+            self.last_error = redirect_err
+            return resp, parsed, redirect_err
+
         if 200 <= resp.status_code < 300:
             if isinstance(parsed, Mapping) and str(parsed.get("status") or "ok").lower() == "fail":
                 err = classify_ig_payload_error(resp.status_code, parsed, resp.text)
@@ -434,7 +457,7 @@ class InstagramClient:
                 prof = parse_ig_self_user(data)
                 if prof.get("uid") or prof.get("unique_id"):
                     return prof, ""
-            if err.startswith(("logged_out:", "verification_required:")):
+            if err.startswith(("logged_out:", "verification_required:", "rate_limit:")):
                 return {}, err
 
         _r, data, err = await self._mobile_request(
@@ -449,7 +472,7 @@ class InstagramClient:
                     return full_prof, ""
             if prof.get("uid") or uname:
                 return prof, ""
-        if err.startswith(("logged_out:", "verification_required:")):
+        if err.startswith(("logged_out:", "verification_required:", "rate_limit:")):
             return {}, err
 
         _r2, data2, err2 = await self._web_request(
@@ -460,6 +483,8 @@ class InstagramClient:
             uname = str(form.get("username") or "").strip()
             if uname:
                 return await self.fetch_user_by_username(uname)
+        if err2 and err2.startswith(("logged_out:", "verification_required:", "rate_limit:")):
+            return {}, err2
         return {}, err or err2 or "无法读取 Instagram 账号资料"
 
     async def fetch_user_by_username(self, username: str) -> Tuple[Dict[str, Any], str]:

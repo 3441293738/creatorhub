@@ -36,6 +36,32 @@ RESERVED_PATHS = frozenset({
     "web",
 })
 
+
+def classify_ig_page_url(url: str) -> str:
+    """识别 Instagram 停用/申诉、安全挑战或登录重定向 URL。"""
+    raw = str(url or "").strip().lower()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    path = parsed.path.lower()
+    query = parsed.query.lower()
+    if (
+        path.startswith("/accounts/suspended")
+        or path.startswith("/accounts/disabled")
+        or path in {"/suspended", "/suspended/"}
+        or "__coig_ufac" in query
+    ):
+        return "verification_required:Instagram 账号已被停用或需要申诉验证(accounts/suspended)"
+    if (
+        any(marker in path for marker in ("/challenge/", "/checkpoint/", "/two_factor"))
+        or path in {"/challenge", "/checkpoint"}
+    ):
+        return "verification_required:Instagram 账号需要完成安全验证"
+    if "/accounts/login" in path:
+        return "logged_out:Instagram 登录态失效，请重新登录"
+    return ""
+
+
 _WORK_PATH_RE = re.compile(
     r"/(?P<kind>p|reel|reels|tv)/(?P<code>[A-Za-z0-9_-]{5,32})(?:[/?#]|$)",
     re.IGNORECASE,

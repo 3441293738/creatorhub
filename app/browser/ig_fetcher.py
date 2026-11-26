@@ -16,7 +16,11 @@ from ..platforms.instagram.extract import (
     parse_ig_self_user,
 )
 from ..platforms.instagram.protocol import WEB_APP_ID
-from ..platforms.instagram.resolve import clean_ig_username, resolve_ig_work_ref
+from ..platforms.instagram.resolve import (
+    classify_ig_page_url,
+    clean_ig_username,
+    resolve_ig_work_ref,
+)
 from .human_interaction import (
     DEFAULT_HUMAN_ENGINE,
     human_click_first,
@@ -40,11 +44,9 @@ async def fetch_ig_self_profile(
             timeout=35000,
         )
         await human_wait(page, 1500)
-        cur = str(page.url or "").lower()
-        if "/accounts/login" in cur:
-            return {}, "logged_out:Instagram 登录态失效，请重新登录"
-        if "/challenge/" in cur or "/checkpoint/" in cur:
-            return {}, "verification_required:Instagram 账号需要完成安全验证"
+        page_err = classify_ig_page_url(page.url)
+        if page_err:
+            return {}, page_err
 
         result = await page.evaluate(
             """async (appId) => {
@@ -61,14 +63,23 @@ async def fetch_ig_self_profile(
                             credentials: 'include',
                             headers
                         });
-                        if (r.status === 401) return { __status: 401 };
-                        return await r.json();
+                        let data = null;
+                        try { data = await r.json(); } catch (_) { data = null; }
+                        if (data && typeof data === 'object') {
+                            return { ...data, __status: r.status, __url: r.url || '' };
+                        }
+                        return { __status: r.status, __url: r.url || '' };
                     } catch (_) { return null; }
                 };
                 const edit = await getJson('https://www.instagram.com/api/v1/accounts/edit/web_form_data/');
-                if (edit && edit.__status === 401) return { error: 'logged_out' };
+                if (edit && edit.__status === 401) return { error: 'logged_out', url: edit.__url || '' };
                 const uname = edit && edit.form_data && edit.form_data.username ? String(edit.form_data.username) : '';
-                if (!uname) return { error: 'missing_username' };
+                if (!uname) {
+                    const msg = edit && (edit.message || edit.error_type || edit.checkpoint_url)
+                        ? String(edit.message || edit.error_type || edit.checkpoint_url)
+                        : '';
+                    return { error: 'missing_username', url: (edit && edit.__url) || '', message: msg };
+                }
                 const prof = await getJson('https://www.instagram.com/api/v1/users/web_profile_info/?username=' + encodeURIComponent(uname));
                 if (prof && prof.data && prof.data.user) {
                     return { user: prof.data.user, error: '' };
@@ -78,10 +89,18 @@ async def fetch_ig_self_profile(
             WEB_APP_ID,
         )
         if not isinstance(result, dict):
-            return {}, "browser_eval_failed"
-        if result.get("error") == "logged_out":
-            return {}, "logged_out:Instagram 登录态失效，请重新登录"
+            page_err = classify_ig_page_url(page.url)
+            return {}, page_err or "browser_eval_failed"
         if result.get("error"):
+            for candidate_url in (page.url, result.get("url")):
+                url_err = classify_ig_page_url(str(candidate_url or ""))
+                if url_err:
+                    return {}, url_err
+            msg = str(result.get("message") or "").strip().lower()
+            if any(k in msg for k in ("checkpoint_required", "challenge_required", "suspended", "ufac")):
+                return {}, f"verification_required:Instagram 触发安全挑战({result.get('message')})"
+            if result.get("error") == "logged_out" or "login_required" in msg:
+                return {}, "logged_out:Instagram 登录态失效，请重新登录"
             return {}, str(result["error"])
         return parse_ig_self_user(result.get("user") or {}), ""
     except Exception as exc:
@@ -186,11 +205,9 @@ async def fetch_ig_posts(
             timeout=35000,
         )
         await human_wait(page, 2500)
-        cur = str(page.url or "").lower()
-        if "/accounts/login" in cur:
-            return [], "", "logged_out:Instagram 登录态已失效"
-        if "/challenge/" in cur or "/checkpoint/" in cur:
-            return [], "", "verification_required:Instagram 触发安全验证"
+        page_err = classify_ig_page_url(page.url)
+        if page_err:
+            return [], "", page_err
 
         for _ in range(max(1, int(max_scrolls))):
             if known and collected and all(k in known for k in collected):
@@ -199,6 +216,9 @@ async def fetch_ig_posts(
             await human_wait(page, 950)
 
         if not collected:
+            page_err = classify_ig_page_url(page.url)
+            if page_err:
+                return [], "", page_err
             dom_cards = await page.evaluate(
                 r"""(username) => {
                     const out = [];
@@ -289,14 +309,17 @@ async def fetch_ig_search(
     try:
         await page.goto(target_url, wait_until="domcontentloaded", timeout=35000)
         await human_wait(page, 2500)
-        cur = str(page.url or "").lower()
-        if "/accounts/login" in cur:
-            return [], "logged_out:Instagram 登录态已失效"
+        page_err = classify_ig_page_url(page.url)
+        if page_err:
+            return [], page_err
         for _ in range(max(1, int(max_scrolls))):
             await human_scroll(page)
             await human_wait(page, 950)
 
         if not collected:
+            page_err = classify_ig_page_url(page.url)
+            if page_err:
+                return [], page_err
             dom_cards = await page.evaluate(
                 r"""() => {
                     const out = [];
@@ -376,13 +399,18 @@ async def fetch_ig_comments(
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=35000)
         await human_wait(page, 2200)
-        if "/accounts/login" in str(page.url or "").lower():
-            return [], "logged_out:Instagram 登录态已失效"
+        page_err = classify_ig_page_url(page.url)
+        if page_err:
+            return [], page_err
         for _ in range(max(2, min(8, (max_count // 15) + 2))):
             if len(collected) >= max_count:
                 break
             await human_scroll(page, distance=720)
             await human_wait(page, 850)
+        if not collected:
+            page_err = classify_ig_page_url(page.url)
+            if page_err:
+                return [], page_err
         return list(collected.values())[:max_count], ("" if collected else "empty")
     except Exception as exc:
         return list(collected.values())[:max_count], f"browser:{type(exc).__name__}:{exc}"
@@ -446,11 +474,9 @@ async def post_ig_comment(
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=35000)
         await human_wait(page, 2500)
-        cur = str(page.url or "").lower()
-        if "/accounts/login" in cur:
-            return False, "logged_out:Instagram 账号未登录"
-        if "/challenge/" in cur or "/checkpoint/" in cur:
-            return False, "verification_required:Instagram 触发安全验证"
+        page_err = classify_ig_page_url(page.url)
+        if page_err:
+            return False, page_err
 
         editor = None
         for sel in (

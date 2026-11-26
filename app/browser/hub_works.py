@@ -357,7 +357,7 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                 async with client.session_scope():
                     if not target_ref:
                         prof, perr = await client.fetch_self_profile()
-                        if perr.startswith(("logged_out:", "verification_required:")):
+                        if perr.startswith(("logged_out:", "verification_required:", "rate_limit:")):
                             return [], perr
                         target_ref = str(prof.get("uid") or prof.get("unique_id") or client.self_uid)
                     if target_ref:
@@ -365,7 +365,7 @@ async def fetch_account_works(mgr: BrowserManager, identity, platform: str, uid:
                             target_ref,
                             max_pages=max(1, min(8, max_scrolls // 2 or 3)),
                         )
-                        if works or cerr.startswith(("logged_out:", "verification_required:")):
+                        if works or cerr.startswith(("logged_out:", "verification_required:", "rate_limit:")):
                             return works, ("" if works else cerr)
             if not target_ref:
                 return [], "missing_uid:账号缺自身用户名或 uid,请先点账号「刷新资料」再同步作品"

@@ -27,7 +27,7 @@ from .._submit import notify_stage as _notify_stage, notify_submit as _notify_su
 from .client import InstagramClient
 from .extract import has_ig_login_cookies
 from .protocol import ig_thumbnail_wait_ms
-from .resolve import media_id_to_shortcode
+from .resolve import classify_ig_page_url, media_id_to_shortcode
 
 INSTAGRAM_HOME_URL = "https://www.instagram.com/"
 VIDEO_EXTS = frozenset({".mp4", ".mov", ".m4v", ".webm"})
@@ -446,11 +446,9 @@ async def publish_instagram_browser(
             clicked_create = False
             nav_deadline = asyncio.get_running_loop().time() + 25.0
             while asyncio.get_running_loop().time() < nav_deadline:
-                cur_url = str(active_page.url or "").lower()
-                if "/accounts/login" in cur_url:
-                    return False, "", "logged_out:Instagram 浏览器会话未登录，请重新登录"
-                if "/challenge/" in cur_url or "/checkpoint/" in cur_url:
-                    return False, "", "verification_required:Instagram 账号需要完成安全验证"
+                page_err = classify_ig_page_url(active_page.url)
+                if page_err:
+                    return False, "", page_err
 
                 for dismiss_txt in ("Not Now", "Not now", "以后再说", "稍后", "暂不", "Decline optional cookies"):
                     btn = active_page.locator(
@@ -741,7 +739,7 @@ async def publish_instagram(
             norm_mode == "api"
             or post_kind == "story"
             or submitted
-            or str(err or "").startswith(("write_uncertain:", "logged_out:", "verification_required:"))
+            or str(err or "").startswith(("write_uncertain:", "logged_out:", "verification_required:", "rate_limit:"))
             or mgr is None
             or identity is None
         ):

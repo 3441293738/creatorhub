@@ -111,8 +111,21 @@ async def _opened_page_login_state(page, platform: str,
         return "authenticated" if isinstance(user, dict) and (
             user.get("uniqueId") or user.get("uid")) else "unconfirmed"
     if platform == "instagram":
-        if "/accounts/login" in current_url or "/challenge/" in current_url or "/checkpoint/" in current_url:
-            return "verification" if ("/challenge/" in current_url or "/checkpoint/" in current_url) else "logged_out"
+        if any(
+            k in current_url
+            for k in (
+                "/accounts/suspended",
+                "/accounts/disabled",
+                "/suspended",
+                "__coig_ufac",
+                "/challenge/",
+                "/checkpoint/",
+                "/two_factor",
+            )
+        ):
+            return "verification"
+        if "/accounts/login" in current_url:
+            return "logged_out"
         try:
             cookies = await page.context.cookies("https://www.instagram.com")
             if any(c.get("name") == "sessionid" and c.get("value") for c in cookies):

@@ -594,7 +594,15 @@ async def interactive_bilibili_creator_login(
     )
 
 
-_IG_AUTH_BLOCKED_PATHS = ("/accounts/login", "/challenge/", "/checkpoint/", "/two_factor", "/suspended")
+_IG_AUTH_BLOCKED_PATHS = (
+    "/accounts/login",
+    "/challenge/",
+    "/checkpoint/",
+    "/two_factor",
+    "/suspended",
+    "/accounts/disabled",
+    "__coig_ufac",
+)
 
 
 async def interactive_instagram_login(
