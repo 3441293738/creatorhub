@@ -987,7 +987,7 @@ class CommentRuleRunnerMixin:
         if platform == "bilibili":
             bcli = BilibiliClient(
                 state,
-                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                self._direct_request_ua(identity),
                 proxy=proxy,
                 timeout=self.cfg.engine.request_timeout_seconds,
             )
@@ -1072,7 +1072,7 @@ class CommentRuleRunnerMixin:
             imode = str(getattr(self.cfg.engine, "instagram_read_mode", "hybrid") or "hybrid").lower()
             icli = InstagramClient(
                 state,
-                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                self._direct_request_ua(identity),
                 proxy=proxy,
                 timeout=self.cfg.engine.request_timeout_seconds,
                 account_seed=(

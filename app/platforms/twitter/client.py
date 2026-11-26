@@ -564,8 +564,11 @@ class TwitterClient:
         collected: Dict[str, Dict[str, Any]] = {}
         cursor = ""
         last_err = ""
+        from app.pacing import PagePacer
         max_pages = max(1, min(8, (max(1, int(max_count)) // 20) + 2))
+        pacer = PagePacer(0.75)
         for _ in range(max_pages):
+            await pacer.step()
             vars_d: Dict[str, Any] = {
                 "focalTweetId": tid,
                 "with_rux_injections": False,
@@ -675,10 +678,14 @@ class TwitterClient:
                     collected.setdefault(tid, t)
 
         # 后续分页（第 2..pages 页）
+        from app.pacing import PagePacer
         stagnant = 0
+        pacer = PagePacer(0.85)
+        await pacer.step()  # 首页已完成，后续从第 2 页起开始节拍
         for _ in range(1, pages):
             if not cursor:
                 break
+            await pacer.step()
             if active_op == "SearchTimeline":
                 vars_page: Dict[str, Any] = {
                     "rawQuery": kw,
@@ -740,7 +747,10 @@ class TwitterClient:
         cursor = ""
         last_err = ""
 
+        from app.pacing import PagePacer
+        pacer = PagePacer(0.75)
         for page_idx in range(pages):
+            await pacer.step()
             vars_d: Dict[str, Any] = {
                 "userId": uid,
                 "count": 20,

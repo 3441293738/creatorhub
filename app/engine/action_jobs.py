@@ -205,7 +205,7 @@ class ActionJobMixin:
             action = t.action
             target_uid, target_sec_uid, content = t.target_uid, t.target_sec_uid, t.content
             state = acc.storage_state or acc.creator_storage_state or ""
-            ua = acc.ua or self.cfg.engine.user_agent
+            ua = self._direct_request_ua(acc)
             proxy = acc.proxy or ""
             direct_environment = douyin_client_environment(acc)
             # 先复用本地会话；没有会话时，API 分支会解析双方数字 uid 后建会。

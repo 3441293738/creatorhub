@@ -109,11 +109,24 @@ class MonitorEngine(
             and callable(getattr(self.browser, "visible_page", None))
         )
 
-    def _direct_request_ua(self, identity) -> str:
+    def _direct_request_ua(self, identity_or_account) -> str:
+        if identity_or_account is None:
+            return self.cfg.engine.user_agent
+        target = identity_or_account
+        if not hasattr(target, "key"):
+            builder = getattr(self.browser, "identity_for", None)
+            if callable(builder):
+                try:
+                    target = builder(target)
+                except Exception:
+                    pass
         resolver = getattr(self.browser, "direct_request_user_agent", None)
         if callable(resolver):
-            return resolver(identity)
-        return str(getattr(identity, "ua", "") or self.cfg.engine.user_agent)
+            try:
+                return resolver(target)
+            except Exception:
+                pass
+        return str(getattr(target, "ua", "") or self.cfg.engine.user_agent)
 
     @staticmethod
     def _raise_severe_xhs_read_error(error) -> None:

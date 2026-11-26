@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .identity import Identity
+from .identity import Identity, resolve_effective_fingerprint_traits
 
 
 DEFAULT_BACKEND = "default"
@@ -193,10 +193,14 @@ class FingerprintChromiumBackend:
             str(identity.timezone_id or "Asia/Shanghai").strip()
             or "Asia/Shanghai"
         )
-        platform = str(identity.fp_platform or self.platform).strip().lower()
-        if platform not in {"windows", "linux", "macos"}:
-            platform = self.platform
-        brand = str(identity.fp_brand or "Chrome").strip() or "Chrome"
+        traits = resolve_effective_fingerprint_traits(
+            identity, default_platform=self.platform
+        )
+        platform = traits["platform"]
+        brand = traits["brand"]
+        platform_version = traits["platform_version"]
+        brand_version = traits["brand_version"]
+        hw_concurrency = int(traits["hardware_concurrency"] or 0)
         accepted = (str(identity.fp_accept_languages or "").strip()
                     or _accept_language(locale))
         args = [
@@ -209,16 +213,15 @@ class FingerprintChromiumBackend:
         ]
         if str(identity.fp_webrtc_mode or "conceal") != "allow":
             args.append("--disable-non-proxied-udp")
-        if identity.fp_platform_version:
+        if platform_version:
             args.append(
-                f"--fingerprint-platform-version={identity.fp_platform_version}")
-        if identity.fp_brand_version:
+                f"--fingerprint-platform-version={platform_version}")
+        if brand_version:
             args.append(
-                f"--fingerprint-brand-version={identity.fp_brand_version}")
-        if int(identity.fp_hardware_concurrency or 0) > 0:
+                f"--fingerprint-brand-version={brand_version}")
+        if hw_concurrency > 0:
             args.append(
-                "--fingerprint-hardware-concurrency="
-                + str(int(identity.fp_hardware_concurrency)))
+                "--fingerprint-hardware-concurrency=" + str(hw_concurrency))
         try:
             runtime_major = int(self.version.split(".", 1)[0])
         except (TypeError, ValueError):

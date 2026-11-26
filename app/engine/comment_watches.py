@@ -96,7 +96,6 @@ class CommentWatchMixin:
                         return {"ok": False, "new_comments": 0, "error": msg, "skipped": True}
                     state = acc.storage_state or acc.creator_storage_state or ""
                     creator_state = acc.creator_storage_state or ""
-                    ua = acc.ua or self.cfg.engine.user_agent
                     proxy = acc.proxy or ""
                     has_creator = bool(creator_state)
                     identity = (
@@ -104,6 +103,7 @@ class CommentWatchMixin:
                         if callable(getattr(self.browser, "identity_for", None))
                         else None
                     )
+                    ua = self._direct_request_ua(identity if identity is not None else acc)
             if identity is None and not w.account_id:
                 identity, anon_px = self._anon_identity_proxy(platform, session=s)
                 proxy = proxy or anon_px
@@ -398,9 +398,12 @@ class CommentWatchMixin:
             ct = int(it.get("create_time") or 0)
             if aid and (not cutoff or not ct or ct >= cutoff):
                 works.append((aid, (it.get("desc") or "")))
+        from app.pacing import PagePacer
         works = works[:settings["recent_works"]]
         total = 0
+        pacer = PagePacer(0.85)
         for aid, desc in works:
+            await pacer.step()
             with get_session() as s:
                 known = set(s.exec(select(CommentRecord.comment_id)
                                    .where(CommentRecord.watch_id == watch_id)
@@ -445,8 +448,11 @@ class CommentWatchMixin:
                 works.append((aw.aweme_id, aw.desc))
                 if len(works) >= settings["recent_works"]:
                     break
+        from app.pacing import PagePacer
         total = 0
+        pacer = PagePacer(0.95)
         for pid, desc in works:
+            await pacer.step()
             with get_session() as s:
                 known = set(s.exec(select(CommentRecord.comment_id)
                                    .where(CommentRecord.watch_id == watch_id)
@@ -593,8 +599,11 @@ class CommentWatchMixin:
                     if len(works) >= settings["recent_works"]:
                         break
 
+            from app.pacing import PagePacer
             total = 0
+            pacer = PagePacer(0.75)
             for oid, nid, desc in works:
+                await pacer.step()
                 n, _ = await self._cw_channels_video(
                     watch_id, identity, state, oid, nid, name, first_scan,
                     work_desc=desc, proto_client=proto_client)
@@ -673,9 +682,12 @@ class CommentWatchMixin:
             if aw and (not aw.create_time or aw.create_time >= cutoff):
                 works.append(aw)
         works.sort(key=lambda aw: (aw.create_time, aw.aweme_id), reverse=True)
+        from app.pacing import PagePacer
         works = works[:settings["recent_works"]]
         total = 0
+        pacer = PagePacer(1.0)
         for aw in works:
+            await pacer.step()
             count, _ = await self._cw_tiktok_video(
                 watch_id, identity, state, aw.aweme_id,
                 aw.author_unique_id or unique_id, name, first_scan, proxy, aw.desc)

@@ -44,11 +44,24 @@ def _xhs_browser_reads_enabled() -> bool:
     )
 
 
-def _direct_request_ua(identity) -> str:
+def _direct_request_ua(identity_or_account) -> str:
+    if identity_or_account is None:
+        return app_runtime.cfg.engine.user_agent
+    target = identity_or_account
+    if not hasattr(target, "key"):
+        builder = getattr(app_runtime.browser, "identity_for", None)
+        if callable(builder):
+            try:
+                target = builder(target)
+            except Exception:
+                pass
     resolver = getattr(app_runtime.browser, "direct_request_user_agent", None)
     if callable(resolver):
-        return resolver(identity)
-    return str(getattr(identity, "ua", "") or app_runtime.cfg.engine.user_agent)
+        try:
+            return resolver(target)
+        except Exception:
+            pass
+    return str(getattr(target, "ua", "") or app_runtime.cfg.engine.user_agent)
 
 
 # ─────────── 扫码登录(真实浏览器) ───────────
@@ -403,13 +416,14 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                     "timeout": app_runtime.cfg.engine.request_timeout_seconds,
                     "account_seed": a0.fp_seed or str(a0.id or ""),
                 }
+                bili_ua = _direct_request_ua(identity if identity is not None else a0)
                 try:
                     bcli = BilibiliClient(
-                        state, a0.ua or app_runtime.cfg.engine.user_agent, **bcli_kwargs)
+                        state, bili_ua, **bcli_kwargs)
                 except TypeError:
                     bcli_kwargs.pop("account_seed", None)
                     bcli = BilibiliClient(
-                        state, a0.ua or app_runtime.cfg.engine.user_agent, **bcli_kwargs)
+                        state, bili_ua, **bcli_kwargs)
                 async with bcli.session_scope():
                     u, err = await bcli.fetch_self_profile()
                     if u:
@@ -542,7 +556,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
             if imode in {"api", "hybrid"} and state:
                 icli = InstagramClient(
                     state,
-                    a0.ua or app_runtime.cfg.engine.user_agent,
+                    _direct_request_ua(identity if identity is not None else a0),
                     proxy=proxy,
                     timeout=app_runtime.cfg.engine.request_timeout_seconds,
                     account_seed=a0.fp_seed or a0.profile_dir or "",
@@ -582,7 +596,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
             if tmode in {"api", "hybrid"} and state:
                 tcli = TwitterClient(
                     state,
-                    a0.ua or app_runtime.cfg.engine.user_agent,
+                    _direct_request_ua(identity if identity is not None else a0),
                     proxy=proxy,
                     timeout=app_runtime.cfg.engine.request_timeout_seconds,
                 )
@@ -625,7 +639,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
             if fmode in {"api", "hybrid"} and state:
                 fcli = FacebookClient(
                     state,
-                    a0.ua or app_runtime.cfg.engine.user_agent,
+                    _direct_request_ua(identity if identity is not None else a0),
                     proxy=proxy,
                     timeout=app_runtime.cfg.engine.request_timeout_seconds,
                 )
@@ -656,7 +670,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
             if ymode in {"api", "hybrid"} and state:
                 ycli = YouTubeClient(
                     state,
-                    a0.ua or app_runtime.cfg.engine.user_agent,
+                    _direct_request_ua(identity if identity is not None else a0),
                     proxy=proxy,
                     timeout=app_runtime.cfg.engine.request_timeout_seconds,
                     locale=a0.locale or "en-US",
@@ -692,7 +706,7 @@ async def _enrich_account_profile(account_id: int, state: str, *,
                 else:
                     try:
                         client = DouyinClient(
-                            cookie, a0.ua or app_runtime.cfg.engine.user_agent,
+                            cookie, _direct_request_ua(identity if identity is not None else a0),
                             timeout=app_runtime.cfg.engine.request_timeout_seconds,
                             proxy=proxy,
                             storage_state=state,

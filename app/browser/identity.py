@@ -11,6 +11,7 @@ import json
 import os
 import random
 import re
+import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,16 +20,124 @@ from typing import List, Optional
 # 真实机型 User-Agent 池(Windows/Mac Chrome,版本接近主流)。
 # 一号选定一条后固定;切勿频繁变更。
 UA_POOL: List[str] = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
 ]
 
 # 常见桌面分辨率(视口)
-VIEWPORTS = [(1280, 800), (1366, 768), (1440, 900), (1536, 864), (1600, 900), (1920, 1080)]
+VIEWPORTS = [
+    (1280, 720),
+    (1280, 800),
+    (1366, 768),
+    (1440, 900),
+    (1536, 864),
+    (1600, 900),
+    (1680, 1050),
+    (1920, 1080),
+]
+
+_FP_PLATFORM_VERSIONS = {
+    "windows": ("10.0.0", "14.0.0", "15.0.0", "17.0.0", "19.0.0"),
+    "macos": ("14.5.0", "14.7.0", "15.1.0", "15.2.0", "15.3.0"),
+    "linux": ("6.5.0", "6.6.0", "6.8.0", "6.11.0"),
+}
+_FP_HARDWARE_CONCURRENCY = (4, 6, 8, 12, 16)
+_FP_WINDOWS_BRANDS = ("Chrome", "Chrome", "Edge")
+
+
+def host_fingerprint_platform() -> str:
+    if sys.platform == "darwin":
+        return "macos"
+    if os.name == "nt":
+        return "windows"
+    return "linux"
+
+
+def derive_fingerprint_traits(seed: str, *, platform: str = "") -> dict:
+    """基于账号 fp_seed 确定性派生安全且自洽的桌面硬件/品牌/系统版本特征。
+
+    仅调整同内核内安全维度（品牌 Chrome/Edge、系统小版本、CPU 核心数），
+    不篡改 Chromium 主版本号，避免 JS API / TLS 指纹与 UA 大版本失配。
+    """
+    plat = str(platform or "").strip().lower()
+    if plat not in {"windows", "macos", "linux"}:
+        plat = host_fingerprint_platform()
+    rnd = random.Random(f"creatorhub-fp-traits-v1|{seed or '0'}|{plat}")
+    versions = _FP_PLATFORM_VERSIONS.get(plat, _FP_PLATFORM_VERSIONS["windows"])
+    brand = rnd.choice(_FP_WINDOWS_BRANDS) if plat == "windows" else "Chrome"
+    return {
+        "platform": plat,
+        "platform_version": rnd.choice(versions),
+        "brand": brand,
+        "hardware_concurrency": rnd.choice(_FP_HARDWARE_CONCURRENCY),
+    }
+
+
+def resolve_effective_fingerprint_traits(
+    identity: "Identity", *, default_platform: str = ""
+) -> dict:
+    """合并用户显式覆写与按 fp_seed 自动派生的最终指纹维度。"""
+    plat = str(getattr(identity, "fp_platform", "") or default_platform or "").strip().lower()
+    if plat not in {"windows", "macos", "linux"}:
+        plat = host_fingerprint_platform()
+    seed = str(getattr(identity, "fp_seed", "") or getattr(identity, "account_id", "") or "0")
+    derived = derive_fingerprint_traits(seed, platform=plat)
+    platform_version = str(getattr(identity, "fp_platform_version", "") or "").strip() or derived["platform_version"]
+    brand = str(getattr(identity, "fp_brand", "") or "").strip() or derived["brand"]
+    brand_version = str(getattr(identity, "fp_brand_version", "") or "").strip()
+    hw = int(getattr(identity, "fp_hardware_concurrency", 0) or 0)
+    if hw <= 0:
+        hw = int(derived["hardware_concurrency"])
+    return {
+        "platform": plat,
+        "platform_version": platform_version,
+        "brand": brand,
+        "brand_version": brand_version,
+        "hardware_concurrency": hw,
+    }
+
+
+def build_user_agent_for_traits(
+    *,
+    platform: str,
+    brand: str,
+    chrome_major: int = 146,
+    brand_version: str = "",
+) -> str:
+    """构造与 Fingerprint Chromium 启动参数严格一致的桌面 User-Agent。"""
+    plat = str(platform or "").strip().lower()
+    if plat == "macos":
+        os_token = "Macintosh; Intel Mac OS X 10_15_7"
+    elif plat == "linux":
+        os_token = "X11; Linux x86_64"
+    else:
+        os_token = "Windows NT 10.0; Win64; x64"
+    ver = ""
+    raw_bv = str(brand_version or "").strip()
+    if raw_bv and re.fullmatch(r"\d+(?:\.\d+){0,3}", raw_bv):
+        parts = raw_bv.split(".")
+        while len(parts) < 4:
+            parts.append("0")
+        ver = ".".join(parts[:4])
+    else:
+        major = int(chrome_major or 146)
+        if major < 100 or major > 250:
+            major = 146
+        ver = f"{major}.0.0.0"
+    brand_low = str(brand or "Chrome").strip().lower()
+    if brand_low in {"edge", "microsoft edge", "msedge", "edg"}:
+        return (
+            f"Mozilla/5.0 ({os_token}) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{ver} Safari/537.36 Edg/{ver}"
+        )
+    return (
+        f"Mozilla/5.0 ({os_token}) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{ver} Safari/537.36"
+    )
 
 # 国内账号默认东八区；海外平台默认美东英语环境(实际登录/绑定代理后会按代理出口 IP 精确覆盖)
 DEFAULT_TZ = "Asia/Shanghai"

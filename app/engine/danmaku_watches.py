@@ -61,7 +61,7 @@ class DanmakuWatchMixin:
                         return {"ok": False, "error": "账号不存在"}
                     if platform == "bilibili":
                         bstate = acc.storage_state or acc.cookie or ""
-                        bua = acc.ua or self.cfg.engine.user_agent
+                        bua = self._direct_request_ua(acc)
                         bproxy = acc.proxy or ""
                         known = set(s.exec(select(DanmakuRecord.danmaku_id).where(
                             DanmakuRecord.watch_id == 0,
@@ -80,7 +80,7 @@ class DanmakuWatchMixin:
                         state = acc.storage_state or acc.creator_storage_state or ""
                         identity = (None if mode == "api"
                                     else self.browser.identity_for(acc))
-                        ua = acc.ua or self.cfg.engine.user_agent
+                        ua = self._direct_request_ua(identity if identity is not None else acc)
                         proxy = acc.proxy or ""
                         direct_environment = douyin_client_environment(acc)
                         known = set(s.exec(select(DanmakuRecord.danmaku_id).where(
@@ -234,7 +234,7 @@ class DanmakuWatchMixin:
                         return {"ok": False, "new_danmaku": 0, "error": msg, "skipped": True}
                     has_creator = bool(acc.creator_storage_state)
                     state = acc.storage_state or acc.creator_storage_state or ""
-                    ua = acc.ua or self.cfg.engine.user_agent
+                    ua = self._direct_request_ua(acc)
                     proxy = acc.proxy or ""
                     direct_environment_source = acc
                     account_mode = (resolve_transport(
@@ -486,9 +486,12 @@ class DanmakuWatchMixin:
                     create_time = int(item.get("create_time") or 0)
                     if aid and (not cutoff or not create_time or create_time >= cutoff):
                         works.append((aid, item.get("desc") or ""))
+                from app.pacing import PagePacer
+                dy_dm_pacer = PagePacer(0.85)
                 for aid, desc in works[:settings["recent_works"]]:
                     if remaining[0] is not None and remaining[0] <= 0:
                         break
+                    await dy_dm_pacer.step()
                     with get_session() as s:
                         known = set(s.exec(select(DanmakuRecord.danmaku_id).where(
                             DanmakuRecord.watch_id == watch_id,
@@ -566,7 +569,7 @@ class DanmakuWatchMixin:
                         s.commit()
                         return {"ok": False, "new_danmaku": 0, "error": msg, "skipped": True}
                     state = acc.storage_state or acc.cookie or ""
-                    ua = acc.ua or self.cfg.engine.user_agent
+                    ua = self._direct_request_ua(acc)
                     proxy = acc.proxy or ""
             settings = {
                 "recent_works": watch.recent_works or self.cfg.engine.danmaku_recent_works,
@@ -607,9 +610,12 @@ class DanmakuWatchMixin:
                         if len(target_videos) >= settings["recent_works"]:
                             break
 
+                from app.pacing import PagePacer
+                bili_dm_pacer = PagePacer(0.65)
                 for bv, vtitle in target_videos:
                     if remaining is not None and remaining <= 0:
                         break
+                    await bili_dm_pacer.step()
                     with get_session() as s:
                         known = set(
                             s.exec(

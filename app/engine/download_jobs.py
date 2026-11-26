@@ -12,6 +12,7 @@ from app.db import get_session
 from app.engine.monitor_helpers import MAX_AUTO_RETRY, _loads, _loads_list, _tiktok_download_session, log
 from app.models import ContentRecord, DouyinAccount, MonitorTarget, NotificationChannel
 from app.notifier import notify_all
+from app.pacing import download_stagger
 from app.platforms.bilibili import BilibiliClient, cookie_map_from_state as bili_cookie_map
 from app.platforms.douyin.extract import Aweme, MediaItem
 from app.platforms.facebook import FacebookClient, parse_facebook_aweme, post_url as fb_post_url
@@ -114,6 +115,7 @@ class MediaDownloadMixin:
 
     async def _download(self, record_id: int, aweme, base_dir: str = "", proxy: str = "",
                         *, user_agent: str = "", cookies=None, referer: str = ""):
+        await download_stagger(0.15, 0.6)
         async with self._sem:
             with get_session() as s:
                 rec = s.get(ContentRecord, record_id)
@@ -251,7 +253,7 @@ class MediaDownloadMixin:
                 target_u = aw.source_url or (note_id if str(note_id).startswith("http") else fb_post_url(note_id))
                 fcli = FacebookClient(
                     acc_state,
-                    (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
+                    self._direct_request_ua(identity if identity is not None else acc),
                     proxy=acc_proxy,
                     timeout=self.cfg.engine.request_timeout_seconds,
                 )
@@ -294,7 +296,7 @@ class MediaDownloadMixin:
             async def _refetch_tw():
                 tcli = TwitterClient(
                     acc_state,
-                    (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
+                    self._direct_request_ua(identity if identity is not None else acc),
                     proxy=acc_proxy,
                     timeout=self.cfg.engine.request_timeout_seconds,
                 )
@@ -348,7 +350,7 @@ class MediaDownloadMixin:
             async def _refetch_ig():
                 icli = InstagramClient(
                     acc_state,
-                    (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
+                    self._direct_request_ua(identity if identity is not None else acc),
                     proxy=acc_proxy,
                     timeout=self.cfg.engine.request_timeout_seconds,
                     account_seed=(
@@ -405,7 +407,7 @@ class MediaDownloadMixin:
             async def _refetch_bili():
                 bcli = BilibiliClient(
                     acc_state,
-                    (acc.ua if acc and acc.ua else self.cfg.engine.user_agent),
+                    self._direct_request_ua(identity if identity is not None else acc),
                     proxy=acc_proxy,
                     timeout=self.cfg.engine.request_timeout_seconds,
                 )
@@ -601,21 +603,21 @@ class MediaDownloadMixin:
             download_referer = aw.source_url or tiktok_profile_url(
                 t.sec_uid if t else "")
         elif platform == "bilibili":
-            download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
+            download_ua = self._direct_request_ua(identity if identity is not None else acc)
             if acc_state:
                 download_cookies = bili_cookie_map(acc_state)
             download_referer = aw.source_url or f"https://www.bilibili.com/video/{note_id}"
         elif platform == "instagram":
-            download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
+            download_ua = self._direct_request_ua(identity if identity is not None else acc)
             download_referer = "https://www.instagram.com/"
         elif platform == "twitter":
-            download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
+            download_ua = self._direct_request_ua(identity if identity is not None else acc)
             download_referer = "https://x.com/"
         elif platform == "facebook":
-            download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
+            download_ua = self._direct_request_ua(identity if identity is not None else acc)
             download_referer = "https://www.facebook.com/"
         elif platform == "youtube":
-            download_ua = acc.ua if (acc and acc.ua) else self.cfg.engine.user_agent
+            download_ua = self._direct_request_ua(identity if identity is not None else acc)
             download_referer = "https://www.youtube.com/"
             if acc_state:
                 download_cookies = yt_cookie_map(acc_state)

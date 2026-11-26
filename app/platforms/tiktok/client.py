@@ -500,8 +500,11 @@ class TikTokNativeClient:
         collected: dict[str, dict] = {}
         cursor = "0"
         total_bytes = 0
+        from app.pacing import PagePacer, jittered_sleep
         final = TikTokNativeResult(endpoint=COMMENT_LIST_PATH)
+        pacer = PagePacer(0.65)
         for _ in range(max(1, min(20, (limit + 19) // 20 + 1))):
+            await pacer.step()
             pairs = comment_pairs(
                 aweme_id, cursor=cursor, count=min(20, limit),
                 user_agent=self.user_agent, locale=self.locale,
@@ -532,6 +535,7 @@ class TikTokNativeClient:
                         continue
                     reply_cursor = "0"
                     for _reply_page in range(max(1, min(20, (reply_total + 19) // 20))):
+                        await jittered_sleep(0.45, ratio=0.4, min_delay=0.15)
                         reply_pairs = comment_reply_pairs(
                             aweme_id, parent_id, cursor=reply_cursor,
                             count=min(20, limit - len(collected)),

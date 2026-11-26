@@ -31,10 +31,34 @@ from app.platforms.youtube import (
     parse_youtube_credential_input,
 )
 from app.profiles import assign_proxy_from_pool, ensure_identity, inspect_account_proxy_risk
+from app.services import account_profiles as account_profiles_service
 from app.services import login_flows as login_flows_service
 from app.services import login_sessions as login_sessions_service
 
 router = APIRouter()
+
+
+def _finalize_imported_account_identity(acc: DouyinAccount) -> None:
+    """为 Cookie 导入的账号绑定稳定的指纹内核运行时，并同步一致的初始 UA。"""
+    browser = app_runtime.browser
+    if browser is None:
+        return
+    try:
+        ident = browser.identity_for(acc)
+        if (
+            not acc.browser_runtime_id
+            and browser.effective_browser_backend(ident) == "fingerprint_chromium"
+        ):
+            picker = getattr(browser, "pick_runtime_for_seed", None)
+            if callable(picker):
+                picked = picker(acc.fp_seed)
+                if picked:
+                    acc.browser_runtime_id = picked
+                    ident = browser.identity_for(acc)
+        if not acc.ua:
+            acc.ua = browser.direct_request_user_agent(ident)
+    except Exception:
+        pass
 
 
 @router.post("/api/login/browser/start")
@@ -536,6 +560,7 @@ async def login_cookie(body: CookieIn):
                 acc.proxy = probe_proxy
             s.add(acc); s.commit(); s.refresh(acc)
             ensure_identity(acc, app_runtime.cfg, session=s, assign_proxy=True)
+            _finalize_imported_account_identity(acc)
             s.add(acc); s.commit(); s.refresh(acc)
             proxy_warns = inspect_account_proxy_risk(
                 s,
@@ -575,8 +600,8 @@ async def login_cookie(body: CookieIn):
                 else assign_proxy_from_pool(s, app_runtime.cfg, platform="facebook")
             )
             probe_ua = (
-                existing_acc.ua
-                if existing_acc and existing_acc.ua
+                account_profiles_service._direct_request_ua(existing_acc)
+                if existing_acc is not None
                 else app_runtime.cfg.engine.user_agent
             )
         fcli = FacebookClient(
@@ -654,6 +679,7 @@ async def login_cookie(body: CookieIn):
                 acc.proxy = probe_proxy
             s.add(acc); s.commit(); s.refresh(acc)
             ensure_identity(acc, app_runtime.cfg, session=s, assign_proxy=True)
+            _finalize_imported_account_identity(acc)
             s.add(acc); s.commit(); s.refresh(acc)
             proxy_warns = inspect_account_proxy_risk(
                 s,
@@ -697,8 +723,8 @@ async def login_cookie(body: CookieIn):
                 else assign_proxy_from_pool(s, app_runtime.cfg, platform="twitter")
             )
             probe_ua = (
-                existing_acc.ua
-                if existing_acc and existing_acc.ua
+                account_profiles_service._direct_request_ua(existing_acc)
+                if existing_acc is not None
                 else app_runtime.cfg.engine.user_agent
             )
         tcli = TwitterClient(
@@ -776,6 +802,7 @@ async def login_cookie(body: CookieIn):
                 acc.proxy = probe_proxy
             s.add(acc); s.commit(); s.refresh(acc)
             ensure_identity(acc, app_runtime.cfg, session=s, assign_proxy=True)
+            _finalize_imported_account_identity(acc)
             s.add(acc); s.commit(); s.refresh(acc)
             proxy_warns = inspect_account_proxy_risk(
                 s,
@@ -802,6 +829,7 @@ async def login_cookie(body: CookieIn):
             creator_storage_state=(state if platform in {"bilibili", "rednote", "instagram", "twitter", "facebook", "youtube"} else ""))
         s.add(acc); s.commit(); s.refresh(acc)
         ensure_identity(acc, app_runtime.cfg, session=s, assign_proxy=True)
+        _finalize_imported_account_identity(acc)
         s.add(acc); s.commit(); s.refresh(acc)
         proxy_warns = inspect_account_proxy_risk(
             s,

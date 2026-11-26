@@ -402,8 +402,11 @@ class CommentWatchPlatformsMixin:
                     selected.append((bv, str(v.get("title") or "")))
                 if len(selected) >= settings["recent_works"]:
                     break
+            from app.pacing import PagePacer
             max_c = max(20, int(settings["max_scrolls"] or 4) * 20)
+            pacer = PagePacer(0.75)
             for bv, vtitle in selected:
+                await pacer.step()
                 with get_session() as s:
                     known = set(
                         s.exec(
@@ -552,8 +555,11 @@ class CommentWatchPlatformsMixin:
                     selected.append((aw.aweme_id, aw.desc))
                 if len(selected) >= settings["recent_works"]:
                     break
+            from app.pacing import PagePacer
             max_c = max(20, int(settings["max_scrolls"] or 4) * 20)
+            pacer = PagePacer(1.0)
             for code, desc in selected:
+                await pacer.step()
                 with get_session() as s:
                     known = set(
                         s.exec(
@@ -673,9 +679,12 @@ class CommentWatchPlatformsMixin:
                 selected.append((aw.aweme_id, aw.desc))
             if len(selected) >= settings["recent_works"]:
                 break
+        from app.pacing import PagePacer
         max_c = max(20, int(settings["max_scrolls"] or 4) * 20)
         total = 0
+        pacer = PagePacer(1.0)
         for tid, desc in selected:
+            await pacer.step()
             with get_session() as s:
                 known = set(
                     s.exec(
@@ -800,9 +809,12 @@ class CommentWatchPlatformsMixin:
                 selected.append((aw.aweme_id, aw.source_url or fb_post_url(aw.aweme_id), aw.desc))
             if len(selected) >= settings["recent_works"]:
                 break
+        from app.pacing import PagePacer
         max_c = max(20, int(settings["max_scrolls"] or 4) * 20)
         total = 0
+        pacer = PagePacer(1.0)
         for pid, purl, desc in selected:
+            await pacer.step()
             with get_session() as s:
                 known = set(
                     s.exec(
@@ -923,9 +935,12 @@ class CommentWatchPlatformsMixin:
                 selected.append((aw.aweme_id, aw.source_url or yt_video_url(aw.aweme_id), aw.desc))
             if len(selected) >= settings["recent_works"]:
                 break
+        from app.pacing import PagePacer
         max_c = max(20, int(settings["max_scrolls"] or 4) * 20)
         total = 0
+        pacer = PagePacer(0.85)
         for pid, purl, desc in selected:
+            await pacer.step()
             with get_session() as s:
                 known = set(
                     s.exec(

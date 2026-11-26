@@ -341,7 +341,7 @@ class HealthProbeMixin:
                     used_browser = False
                     if mode in {"api", "hybrid"} and cookie:
                         client = DouyinClient(
-                            cookie, identity.ua or self.cfg.engine.user_agent,
+                            cookie, self._direct_request_ua(identity),
                             timeout=self.cfg.engine.request_timeout_seconds,
                             proxy=proxy,
                             storage_state=dy_base_state,
@@ -516,7 +516,7 @@ class HealthProbeMixin:
                     if bmode in {"api", "hybrid"} and state:
                         bcli = BilibiliClient(
                             state,
-                            identity.ua or self.cfg.engine.user_agent,
+                            self._direct_request_ua(identity),
                             proxy=proxy,
                             timeout=self.cfg.engine.request_timeout_seconds,
                             account_seed=getattr(identity, "fp_seed", "") or str(aid),
@@ -676,7 +676,7 @@ class HealthProbeMixin:
                     if imode in {"api", "hybrid"} and state:
                         icli = InstagramClient(
                             state,
-                            identity.ua or self.cfg.engine.user_agent,
+                            self._direct_request_ua(identity),
                             proxy=proxy,
                             timeout=self.cfg.engine.request_timeout_seconds,
                             account_seed=getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""),
@@ -718,7 +718,7 @@ class HealthProbeMixin:
                     if tmode in {"api", "hybrid"} and state:
                         tcli = TwitterClient(
                             state,
-                            identity.ua or self.cfg.engine.user_agent,
+                            self._direct_request_ua(identity),
                             proxy=proxy,
                             timeout=self.cfg.engine.request_timeout_seconds,
                         )
@@ -760,7 +760,7 @@ class HealthProbeMixin:
                     if fmode in {"api", "hybrid"} and state:
                         fcli = FacebookClient(
                             state,
-                            identity.ua or self.cfg.engine.user_agent,
+                            self._direct_request_ua(identity),
                             proxy=proxy,
                             timeout=self.cfg.engine.request_timeout_seconds,
                         )
@@ -802,7 +802,7 @@ class HealthProbeMixin:
                     if ymode in {"api", "hybrid"} and state:
                         ycli = YouTubeClient(
                             state,
-                            identity.ua or self.cfg.engine.user_agent,
+                            self._direct_request_ua(identity),
                             proxy=proxy,
                             timeout=self.cfg.engine.request_timeout_seconds,
                             locale=identity.locale or "en-US",
@@ -1198,7 +1198,7 @@ class HealthProbeMixin:
                         with get_session() as s:
                             acc_row = s.get(DouyinAccount, aid)
                             state = (acc_row.storage_state or acc_row.creator_storage_state or "") if acc_row else ""
-                            ua = (acc_row.ua or self.cfg.engine.user_agent) if acc_row else self.cfg.engine.user_agent
+                            ua = self._direct_request_ua(identity if identity is not None else acc_row)
                             proxy = (acc_row.proxy or "") if acc_row else ""
                         items, err = await fetch_douyin_account_works_api(
                             dy_cookie_from_state(state), ua, uid,

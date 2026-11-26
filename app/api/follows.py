@@ -19,6 +19,7 @@ from app.platforms.bilibili import BilibiliClient
 from app.platforms.instagram import InstagramClient
 from app.platforms.youtube import YouTubeClient
 from app.risk import OperationKind
+from app.services import account_profiles as account_profiles_service
 from app.transport_matrix import resolve_transport
 
 router = APIRouter()
@@ -190,18 +191,21 @@ async def _sync_follows_impl(account_id: int, direction: str = "following",
                 else None
             )
         )
+        aligned_ua = account_profiles_service._direct_request_ua(
+            identity if identity is not None else acc
+        )
         bili_state = (acc.storage_state or acc.cookie or "") if platform == "bilibili" else ""
-        bili_ua = (acc.ua or app_runtime.cfg.engine.user_agent) if platform == "bilibili" else ""
+        bili_ua = aligned_ua if platform == "bilibili" else ""
         bili_proxy = (acc.proxy or "") if platform == "bilibili" else ""
         bili_mid = (acc.uid or acc.sec_uid or "") if platform == "bilibili" else ""
         ig_state = (acc.storage_state or acc.creator_storage_state or acc.cookie or "") if platform == "instagram" else ""
-        ig_ua = (acc.ua or app_runtime.cfg.engine.user_agent) if platform == "instagram" else ""
+        ig_ua = aligned_ua if platform == "instagram" else ""
         ig_proxy = (acc.proxy or "") if platform == "instagram" else ""
         ig_uid = (acc.uid or acc.sec_uid or acc.douyin_id or "") if platform == "instagram" else ""
         ig_seed = (acc.fp_seed or acc.profile_dir or "") if platform == "instagram" else ""
         ig_tz = (acc.timezone_id or "Asia/Shanghai") if platform == "instagram" else "Asia/Shanghai"
         yt_state = (acc.storage_state or acc.creator_storage_state or acc.cookie or "") if platform == "youtube" else ""
-        yt_ua = (acc.ua or app_runtime.cfg.engine.user_agent) if platform == "youtube" else ""
+        yt_ua = aligned_ua if platform == "youtube" else ""
         yt_proxy = (acc.proxy or "") if platform == "youtube" else ""
         known: set[str] = set()
         existing_count = int(s.exec(select(func.count(FollowEdge.id)).where(

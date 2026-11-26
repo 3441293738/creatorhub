@@ -516,7 +516,12 @@ async def _run_share_download_job(
         job["phase_label"] = "正在处理链接"
         _sync_share_job_to_hub(job, immediate=True)
 
-        link_sem = asyncio.Semaphore(min(3, max(1, len(selected))))
+        # 绑定同一账号时强制按账号串行，避免批量多链接在同一账号下并发撞风控；
+        # 匿名多链接保持最多 3 路并发，但每条启动前加轻度随机错峰。
+        from app.pacing import jittered_sleep
+        link_sem = asyncio.Semaphore(
+            1 if body.account_id is not None else min(3, max(1, len(selected)))
+        )
 
         async def run_one(idx: int, link):
             entry = job["items"][idx]
@@ -529,6 +534,12 @@ async def _run_share_download_job(
                     "input_platform": link.platform, "error": "下载已取消",
                 }
             async with link_sem:
+                if idx > 0 and len(selected) > 1:
+                    await jittered_sleep(
+                        1.1 if body.account_id is not None else 0.45,
+                        ratio=0.45,
+                        min_delay=0.2,
+                    )
                 async with app_runtime._share_download_sem:
                     if cancel_event.is_set():
                         entry["status"] = "canceled"

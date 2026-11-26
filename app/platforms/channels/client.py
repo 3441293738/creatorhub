@@ -599,9 +599,10 @@ class ChannelsProtocolClient:
         limit = max(1, int(max_results or 20))
 
         try:
+            from app.pacing import jittered_sleep
             for page_idx in range(pages):
                 if page_idx > 0:
-                    await asyncio.sleep(0.45)
+                    await jittered_sleep(0.45, ratio=0.35, min_delay=0.2)
                 resp = await self._eval_call(
                     "fetchUserPage",
                     {"username": clean_user, "lastBuffer": cursor, "objectId": "0"},
@@ -744,9 +745,10 @@ class ChannelsProtocolClient:
         stagnant_direct_pages = 0
 
         try:
+            from app.pacing import jittered_sleep
             for page_idx in range(pages):
                 if page_idx > 0:
-                    await asyncio.sleep(0.5)
+                    await jittered_sleep(0.5, ratio=0.35, min_delay=0.2)
                 resp = await self._eval_call(
                     "search",
                     {"query": clean_kw, "scene": 13, "lastBuff": cursor},
@@ -817,7 +819,7 @@ class ChannelsProtocolClient:
                 extra_target = limit if prefer_engaged and len(found) >= limit else (limit - len(found))
                 for idx, uname in enumerate(matched_contacts[:max_creators]):
                     if idx > 0:
-                        await asyncio.sleep(0.25)
+                        await jittered_sleep(0.3, ratio=0.4, min_delay=0.12)
                     sub_items, author_contact, _ = await self.fetch_user_feeds(
                         uname, max_results=per_creator_fetch, max_pages=1
                     )

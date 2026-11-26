@@ -47,7 +47,7 @@ class SocialTargetScanMixin:
             else:
                 identity, proxy = self._anon_identity_proxy("bilibili", session=s)
             state = (acc.storage_state or acc.cookie or "") if acc is not None else ""
-            ua = (acc.ua if acc and acc.ua else self.cfg.engine.user_agent)
+            ua = self._direct_request_ua(identity if identity is not None else acc)
             known = set(
                 s.exec(select(ContentRecord.aweme_id).where(ContentRecord.target_id == target_id)).all()
             )
@@ -78,8 +78,11 @@ class SocialTargetScanMixin:
 
         async with bcli.session_scope():
             if mode in {"api", "hybrid"}:
+                from app.pacing import PagePacer
                 max_pages = max(1, min(6, strategy["max_scrolls"] or 2))
+                bili_pacer = PagePacer(0.65)
                 for pn in range(1, max_pages + 1):
+                    await bili_pacer.step()
                     if target_kind == "keyword":
                         batch, has_more, err = await bcli.search_videos(
                             keyword, page=pn, page_size=20, order="pubdate"
@@ -138,6 +141,8 @@ class SocialTargetScanMixin:
 
             new_records = []
             filtered_count = 0
+            from app.pacing import PagePacer as _BiliPlayPacer
+            play_pacer = _BiliPlayPacer(0.45, long_pause_every=(5, 8), long_pause_range=(1.2, 2.5))
             for aw in candidates:
                 if not _monitor_content_matches(aw, strategy):
                     filtered_count += 1
@@ -149,6 +154,7 @@ class SocialTargetScanMixin:
                 )
                 play_err = ""
                 if should_download and not aw.medias:
+                    await play_pacer.step()
                     full_aw, play_err = await bcli.fetch_aweme_by_work(
                         aw.aweme_id, with_play_url=True, quality=quality
                     )
@@ -279,7 +285,7 @@ class SocialTargetScanMixin:
             )
             proxy = acc.proxy or ""
             state = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
-            ua = acc.ua or self.cfg.engine.user_agent
+            ua = self._direct_request_ua(identity if identity is not None else acc)
             account_seed = (
                 (getattr(identity, "fp_seed", "") or getattr(identity, "profile_dir", ""))
                 if identity is not None
@@ -328,8 +334,11 @@ class SocialTargetScanMixin:
                 if target_kind == "keyword":
                     raw_items, error = await icli.search_posts(keyword, max_pages=max_pages)
                 else:
+                    from app.pacing import PagePacer
                     cursor = ""
+                    ig_pacer = PagePacer(0.85)
                     for _ in range(max_pages):
+                        await ig_pacer.step()
                         batch, next_cursor, more, err = await icli.fetch_user_feed(
                             sec_uid, max_id=cursor
                         )
@@ -516,7 +525,7 @@ class SocialTargetScanMixin:
             b_states = getattr(identity, "bridge_states", None) or ()
             if b_states:
                 raw_state = b_states[0]
-        eff_ua = ua or (getattr(identity, "ua", "") if identity is not None else "") or self.cfg.engine.user_agent
+        eff_ua = ua or self._direct_request_ua(identity)
         eff_proxy = proxy or (getattr(identity, "proxy", "") if identity is not None else "") or ""
         return TwitterClient(
             raw_state,
@@ -640,7 +649,7 @@ class SocialTargetScanMixin:
             )
             proxy = acc.proxy or ""
             state = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
-            ua = acc.ua or self.cfg.engine.user_agent
+            ua = self._direct_request_ua(identity if identity is not None else acc)
             known = set(
                 s.exec(select(ContentRecord.aweme_id).where(ContentRecord.target_id == target_id)).all()
             )
@@ -839,7 +848,7 @@ class SocialTargetScanMixin:
             b_states = getattr(identity, "bridge_states", None) or ()
             if b_states:
                 raw_state = b_states[0]
-        eff_ua = ua or (getattr(identity, "ua", "") if identity is not None else "") or self.cfg.engine.user_agent
+        eff_ua = ua or self._direct_request_ua(identity)
         eff_proxy = proxy or (getattr(identity, "proxy", "") if identity is not None else "") or ""
         return FacebookClient(
             raw_state,
@@ -1087,7 +1096,7 @@ class SocialTargetScanMixin:
             )
             proxy = acc.proxy or ""
             state = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
-            ua = acc.ua or self.cfg.engine.user_agent
+            ua = self._direct_request_ua(identity if identity is not None else acc)
             known = set(
                 s.exec(select(ContentRecord.aweme_id).where(ContentRecord.target_id == target_id)).all()
             )
@@ -1287,7 +1296,7 @@ class SocialTargetScanMixin:
             b_states = getattr(identity, "bridge_states", None) or ()
             if b_states:
                 raw_state = b_states[0]
-        eff_ua = ua or (getattr(identity, "ua", "") if identity is not None else "") or self.cfg.engine.user_agent
+        eff_ua = ua or self._direct_request_ua(identity)
         eff_proxy = proxy or (getattr(identity, "proxy", "") if identity is not None else "") or ""
         return YouTubeClient(
             raw_state,
@@ -1455,7 +1464,7 @@ class SocialTargetScanMixin:
                 )
             identity = self.browser.identity_for(acc) if (acc and self.browser is not None) else None
             state = (acc.storage_state or acc.creator_storage_state or acc.cookie or "") if acc else ""
-            ua = (acc.ua if acc and acc.ua else self.cfg.engine.user_agent)
+            ua = self._direct_request_ua(identity if identity is not None else acc)
             proxy = (acc.proxy or "") if acc else ""
             target_kind = target.target_kind or "creator"
             sec_uid = target.sec_uid or ""

@@ -32,7 +32,12 @@ from .backends import (
     BrowserBackendUnavailableError,
     FingerprintChromiumBackend,
 )
-from .identity import Identity, fingerprint_script
+from .identity import (
+    Identity,
+    build_user_agent_for_traits,
+    fingerprint_script,
+    resolve_effective_fingerprint_traits,
+)
 from .cdp import (CdpLaunchError, CdpProfileConflictError, CdpProxyError,
                   CdpProxyAuthController, XhsCdpBackend, profile_is_locked)
 from .proxy import (HttpProxyAuthRelay, ProxyConfigError, ProxyPlan,
@@ -407,6 +412,30 @@ class BrowserManager:
                 return candidate
         return FingerprintChromiumBackend("")
 
+    def _available_fingerprint_runtime_ids(self) -> List[str]:
+        return [
+            runtime_id
+            for runtime_id, backend in self._fingerprint_backends.items()
+            if self._fingerprint_runtime_enabled.get(runtime_id, False)
+            and backend.available
+        ]
+
+    def _has_available_fingerprint_runtime(self) -> bool:
+        return bool(self._available_fingerprint_runtime_ids())
+
+    def pick_runtime_for_seed(self, fp_seed: str = "") -> str:
+        """为新建账号确定性挑选一个已启用且可用的指纹内核（多内核时自动分散）。"""
+        available = self._available_fingerprint_runtime_ids()
+        if not available:
+            return self.default_fingerprint_runtime_id
+        if len(available) == 1:
+            return available[0]
+        digest = hashlib.sha256(
+            f"creatorhub-rt-v1|{fp_seed or '0'}".encode("utf-8")
+        ).digest()
+        idx = int.from_bytes(digest[:4], "big") % len(available)
+        return available[idx]
+
     def effective_fingerprint_runtime_id(self, identity: Identity) -> str:
         requested = str(
             getattr(identity, "browser_runtime_id", "") or "").strip()
@@ -700,16 +729,17 @@ class BrowserManager:
         return Identity.from_account(acc, self.profiles_root, self.default_ua)
 
     def direct_request_user_agent(self, identity: Identity) -> str:
-        """Return a UA whose Chromium major matches the account runtime.
+        """Return a UA aligned with the account's active browser backend & traits.
 
-        Browser-created cookies are also reused by a few explicit HTTP
-        compatibility paths.  Normalising their UA avoids presenting an old
-        configured Chrome version beside a newer account browser.
+        For Fingerprint Chromium accounts, ensures OS platform, brand (Chrome/Edge),
+        and Chromium major version match the exact engine launch flags — even for
+        cookie-imported accounts that have never launched a browser window yet.
         """
-        ua = str(identity.ua or self.default_ua or "").strip()
+        ua = str(getattr(identity, "ua", "") or "").strip()
         effective = self.effective_browser_backend(identity)
-        major = 0
         if effective == FINGERPRINT_CHROMIUM_BACKEND:
+            backend = None
+            major = 0
             try:
                 backend = self._fingerprint_backend_for(
                     identity, require_available=False)
@@ -717,8 +747,22 @@ class BrowserManager:
                 major = int(head) if head.isdigit() else 0
             except (BrowserBackendUnavailableError, ValueError):
                 major = 0
-        else:
-            major = int(self._chrome_major or 0)
+            if not major:
+                m = re.search(r"Chrome/(\d+)", ua or self.default_ua or "")
+                major = int(m.group(1)) if m else int(self._chrome_major or 146)
+            default_platform = backend.platform if backend is not None else ""
+            traits = resolve_effective_fingerprint_traits(
+                identity, default_platform=default_platform
+            )
+            return build_user_agent_for_traits(
+                platform=traits["platform"],
+                brand=traits["brand"],
+                chrome_major=major,
+                brand_version=traits["brand_version"],
+            )
+
+        ua = ua or str(self.default_ua or "").strip()
+        major = int(self._chrome_major or 0)
         if major and ua:
             ua = re.sub(
                 r"Chrome/\d+(?:\.\d+){0,3}",
@@ -762,10 +806,11 @@ class BrowserManager:
     def effective_browser_backend(self, identity: Identity) -> str:
         """Resolve an account browser backend.
 
-        Xiaohongshu defaults to the local/system-Chrome CDP path when set to
-        ``default``, while still allowing explicit ``fingerprint_chromium``
-        selection so multi-account XHS matrices on one host can isolate
-        engine-level Canvas/WebGL/Audio/Font hardware fingerprints.
+        Accounts using ``default`` follow the global ``default_browser_backend``
+        (including XHS multi-account setups when Fingerprint Chromium is enabled
+        and available, gracefully falling back to ``local`` if no fingerprint
+        runtime is installed on this host). Explicit per-account ``local`` or
+        ``fingerprint_chromium`` choices are always honored.
         """
         requested = str(
             getattr(identity, "browser_backend", DEFAULT_BACKEND)
@@ -773,16 +818,14 @@ class BrowserManager:
         ).strip().lower()
         if requested not in ACCOUNT_BROWSER_BACKENDS:
             requested = DEFAULT_BACKEND
-        if str(getattr(identity, "platform", "") or "").lower() == "xhs":
-            return (
-                FINGERPRINT_CHROMIUM_BACKEND
-                if requested == FINGERPRINT_CHROMIUM_BACKEND
-                else LOCAL_BACKEND
-            )
-        return (
-            self.default_browser_backend
-            if requested == DEFAULT_BACKEND else requested
-        )
+        if requested == DEFAULT_BACKEND:
+            if (
+                self.default_browser_backend == FINGERPRINT_CHROMIUM_BACKEND
+                and self._has_available_fingerprint_runtime()
+            ):
+                return FINGERPRINT_CHROMIUM_BACKEND
+            return LOCAL_BACKEND
+        return requested
 
     def backend_status(
             self, requested: str = DEFAULT_BACKEND,
@@ -794,7 +837,17 @@ class BrowserManager:
                 "available": False,
                 "detail": "不支持的浏览器后端",
             }
-        name = self.default_browser_backend if value == DEFAULT_BACKEND else value
+        if value == DEFAULT_BACKEND:
+            name = (
+                FINGERPRINT_CHROMIUM_BACKEND
+                if (
+                    self.default_browser_backend == FINGERPRINT_CHROMIUM_BACKEND
+                    and self._has_available_fingerprint_runtime()
+                )
+                else LOCAL_BACKEND
+            )
+        else:
+            name = value
         if name == FINGERPRINT_CHROMIUM_BACKEND:
             selected_id = str(runtime_id or self.default_fingerprint_runtime_id).strip()
             backend = self._fingerprint_backends.get(selected_id)

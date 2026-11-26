@@ -1254,10 +1254,13 @@ class DouyinClient:
     async def fetch_all_video_list(self, sec_uid: str, max_pages: int = 10,
                                    count: int = 20) -> List[dict]:
         """读取账号公开作品，供本账号作品同步和健康监控复用。"""
+        from app.pacing import PagePacer
         out: List[dict] = []
         cursor = 0
         seen: Set[str] = set()
+        pacer = PagePacer(0.55)
         for _ in range(max(1, min(30, int(max_pages or 1)))):
+            await pacer.step()
             page = await self.fetch_video_list(sec_uid, cursor, count)
             items = page.get("items") or []
             if not items:
@@ -1408,9 +1411,12 @@ class DouyinClient:
     async def fetch_all_new_videos(self, sec_uid: str, known_ids: set,
                                    max_pages: int = 5) -> List[dict]:
         """按游标翻页抓取新增作品，遇到已知作品即停止。"""
+        from app.pacing import PagePacer
         new_items: List[dict] = []
         cursor = 0
+        pacer = PagePacer(0.55)
         for _ in range(max_pages):
+            await pacer.step()
             page = await self.fetch_video_list(sec_uid, cursor)
             if not page["items"]:
                 break
@@ -1464,9 +1470,12 @@ class DouyinClient:
                                  ) -> List[dict]:
         """分页拉一条作品的全部一级评论;with_replies 时顺带把有回复的评论的子评论拉全。
         返回原始评论项(含子评论)一维列表,交由上层 parse_comment 归一 + 去重。"""
+        from app.pacing import PagePacer, jittered_sleep
         out: List[dict] = []
         cursor = 0
+        pacer = PagePacer(0.55)
         for _ in range(max_pages):
+            await pacer.step()
             page = await self.fetch_comments_page(aweme_id, cursor)
             comments = page.get("comments") or []
             out.extend(comments)
@@ -1479,6 +1488,7 @@ class DouyinClient:
                         continue
                     rcur = 0
                     for _ in range(max_reply_pages):
+                        await jittered_sleep(0.35, ratio=0.4, min_delay=0.12)
                         rp = await self.fetch_replies_page(aweme_id, cid, rcur)
                         out.extend(rp.get("comments") or [])
                         if not rp.get("has_more"):
@@ -1771,7 +1781,8 @@ class DouyinClient:
             offset = next_offset
             max_time = next_max_time
             if page_delay > 0:
-                await asyncio.sleep(page_delay)
+                from app.pacing import jittered_sleep
+                await jittered_sleep(page_delay, ratio=0.35, min_delay=0.1)
         else:
             self.last_error = f"page_limit:{page_limit}"
             self.last_follow_meta.update(

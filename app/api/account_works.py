@@ -22,6 +22,7 @@ from app.platforms.instagram import InstagramClient
 from app.platforms.rednote import delete_rednote_work, update_rednote_visibility
 from app.platforms.youtube import YouTubeClient
 from app.risk import OperationKind
+from app.services import account_profiles as account_profiles_service
 from app.services import thumb_cache
 from app.services import watch_records as watch_records_service
 from app.transport_matrix import douyin_client_environment, resolve_transport
@@ -93,8 +94,8 @@ async def sync_account_works(account_id: int, async_mode: bool = False):
                 else None
             )
         )
-        direct_ua = (identity.ua if identity is not None
-                     else (acc.ua or app_runtime.cfg.engine.user_agent))
+        direct_ua = account_profiles_service._direct_request_ua(
+            identity if identity is not None else acc)
         direct_environment = douyin_client_environment(
             identity if identity is not None else acc)
         source = "api" if effective_mode == "api" else "browser"
@@ -533,7 +534,7 @@ async def set_rednote_work_visibility(work_id: int, body: RednoteVisibilityIn):
             raise HTTPException(400, "绑定账号不存在或非海外小红书账号")
         state = acc.creator_storage_state or acc.storage_state or ""
         proxy = acc.proxy or ""
-        ua = acc.ua or app_runtime.cfg.engine.user_agent
+        ua = account_profiles_service._direct_request_ua(acc)
         item_id = work.item_id
     if not state:
         raise HTTPException(400, "该海外小红书账号尚未登录")
@@ -569,7 +570,7 @@ async def remove_rednote_work(work_id: int):
             raise HTTPException(400, "绑定账号不存在或非海外小红书账号")
         state = acc.creator_storage_state or acc.storage_state or ""
         proxy = acc.proxy or ""
-        ua = acc.ua or app_runtime.cfg.engine.user_agent
+        ua = account_profiles_service._direct_request_ua(acc)
         item_id = work.item_id
     if not state:
         raise HTTPException(400, "该海外小红书账号尚未登录")

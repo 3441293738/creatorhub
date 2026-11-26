@@ -633,11 +633,14 @@ class InstagramClient:
         max_pages: int = 3,
     ) -> Tuple[List[Dict[str, Any]], str]:
         """分页拉取账号近期全部公开帖子/Reels，用于本账号作品同步与创作者采集。"""
+        from app.pacing import PagePacer
         works: List[Dict[str, Any]] = []
         seen: set[str] = set()
         cursor = ""
         last_err = ""
+        pacer = PagePacer(0.85)
         for _ in range(max(1, min(15, int(max_pages)))):
+            await pacer.step()
             batch, next_cursor, more, err = await self.fetch_user_feed(user_ref, max_id=cursor)
             if err:
                 last_err = err
@@ -794,10 +797,13 @@ class InstagramClient:
         tab = "top" if sort in {"general", "most_liked"} else "recent"
         clean_tag = _HASHTAG_CLEAN_RE.sub("", kw)
         if clean_tag:
+            from app.pacing import PagePacer
             cursor = ""
             page_no: Optional[int] = None
             next_ids: Optional[List[str]] = None
+            pacer = PagePacer(0.9)
             for _ in range(max(1, min(8, int(max_pages)))):
+                await pacer.step()
                 batch, paging, err = await self.search_hashtag_sections(
                     clean_tag,
                     max_id=cursor,
@@ -888,6 +894,8 @@ class InstagramClient:
                 if not cpk or ch_cnt <= len(prev_ch) or cpk in expanded_parents:
                     continue
                 expanded_parents.add(cpk)
+                from app.pacing import jittered_sleep
+                await jittered_sleep(0.45, ratio=0.4, min_delay=0.15)
                 _rc, dc, ec = await self._mobile_request(
                     "GET",
                     f"media/{media_id}/comments/{cpk}/inline_child_comments/",
@@ -913,7 +921,10 @@ class InstagramClient:
                     seen.add(c["comment_id"])
                     collected.append(c)
 
+        from app.pacing import PagePacer
+        pacer_m = PagePacer(0.75)
         for _ in range(max_pages):
+            await pacer_m.step()
             q = (
                 "analytics_module=comments_v2_feed_contextual_profile"
                 "&can_support_threading=true"
@@ -950,7 +961,9 @@ class InstagramClient:
             eb_min_id = ""
             code_hint = ref.shortcode if ref else ""
             referer = f"https://www.instagram.com/p/{code_hint}/" if code_hint else "https://www.instagram.com/"
+            pacer_w = PagePacer(0.75)
             for _ in range(max_pages):
+                await pacer_w.step()
                 eb_q = "can_support_threading=true&permalink_enabled=false"
                 if eb_min_id:
                     eb_q += f"&min_id={quote(eb_min_id)}"
@@ -1133,11 +1146,14 @@ class InstagramClient:
             if not uid:
                 return [], err
 
+        from app.pacing import PagePacer
         users: List[Dict[str, Any]] = []
         seen: set[str] = set()
         cursor: Optional[str] = None
         last_err = ""
+        pacer = PagePacer(0.85)
         for _ in range(max(1, min(10, math.ceil(max_count / 25)))):
+            await pacer.step()
             rank_token = self.session.rank_tokens.get(self.self_uid, uid, cursor)
             q = f"search_surface=follow_list_page&enable_groups=true&query=&rank_token={rank_token}"
             if cursor:
@@ -1172,11 +1188,14 @@ class InstagramClient:
             if not uid:
                 return [], err
 
+        from app.pacing import PagePacer
         users: List[Dict[str, Any]] = []
         seen: set[str] = set()
         cursor: Optional[str] = None
         last_err = ""
+        pacer = PagePacer(0.85)
         for _ in range(max(1, min(10, math.ceil(max_count / 25)))):
+            await pacer.step()
             rank_token = self.session.rank_tokens.get(self.self_uid, uid, cursor)
             q = (
                 f"includes_hashtags=true&search_surface=follow_list_page"
@@ -1344,11 +1363,14 @@ class InstagramClient:
         if not tid:
             return [], "缺少 thread_id"
 
+        from app.pacing import PagePacer
         all_msgs: List[Dict[str, Any]] = []
         seen: set[str] = set()
         cursor = ""
         last_err = ""
+        pacer = PagePacer(0.65)
         for _ in range(max(1, min(10, int(max_pages)))):
+            await pacer.step()
             q = f"seq_id={self.session.seq_id}&limit=20&visual_message_return_type=unseen"
             if cursor:
                 q += f"&cursor={cursor}&direction=older"

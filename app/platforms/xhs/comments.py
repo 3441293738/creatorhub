@@ -98,7 +98,8 @@ async def collect_note_comments(client, note_id: str, xsec_token: str = "", *,
     async def read(method, *args, **kwargs):
         nonlocal requests
         if requests and interval:
-            await asyncio.sleep(interval)
+            from app.pacing import jittered_sleep
+            await jittered_sleep(interval, ratio=0.35, min_delay=0.15)
         requests += 1
         return await method(*args, **kwargs)
 

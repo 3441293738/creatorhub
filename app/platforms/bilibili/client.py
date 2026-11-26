@@ -715,9 +715,12 @@ class BilibiliClient:
     async def fetch_all_creator_archives(
         self, *, max_pages: int = 5, ps: int = 20
     ) -> Tuple[List[dict], str]:
+        from app.pacing import PagePacer
         all_works: List[dict] = []
         seen: set[str] = set()
+        pacer = PagePacer(0.55)
         for pn in range(1, max(1, int(max_pages)) + 1):
+            await pacer.step()
             batch, page_meta, err = await self.fetch_creator_archives(pn=pn, ps=ps)
             if err:
                 return all_works, ("" if all_works else err)
@@ -1190,7 +1193,10 @@ class BilibiliClient:
             else f"https://www.bilibili.com/opus/{canonical_id}"
         )
 
+        from app.pacing import PagePacer, jittered_sleep
+        pacer = PagePacer(0.55)
         for page_idx in range(max(1, math.ceil(max_count / 20))):
+            await pacer.step()
             pagination = json.dumps({"offset": next_offset}, separators=(",", ":"))
             payload, err = await self._get_wbi_json(
                 f"{API_BASE}/x/v2/reply/wbi/main",
@@ -1231,6 +1237,7 @@ class BilibiliClient:
                     embedded = root_item.get("replies") or []
                     root_rpid = str(root_item.get("rpid_str") or root_item.get("rpid") or "")
                     if root_rpid and rcount > len(embedded) and len(collected) < max_count:
+                        await jittered_sleep(0.35, ratio=0.4, min_delay=0.12)
                         sub_p, _ = await self._get_json(
                             f"{API_BASE}/x/v2/reply/reply",
                             params={"oid": oid, "type": ctype, "root": root_rpid, "ps": 20, "pn": 1},
@@ -1554,8 +1561,11 @@ class BilibiliClient:
         clean = [str(u).strip() for u in uids if str(u).strip() and str(u).strip().isdigit()]
         if not clean:
             return {}
+        from app.pacing import PagePacer
         out: Dict[str, dict] = {}
+        pacer = PagePacer(0.35, long_pause_every=None)
         for idx in range(0, len(clean), 50):
+            await pacer.step()
             chunk = clean[idx : idx + 50]
             payload, err = await self._get_json(
                 f"{API_BASE}/x/polymer/pc-electron/v1/user/cards",

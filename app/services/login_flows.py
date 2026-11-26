@@ -122,10 +122,6 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             requested_backend = str(browser_backend or "default").strip().lower()
             if requested_backend not in ACCOUNT_BROWSER_BACKENDS:
                 requested_backend = "default"
-            if platform == "xhs" and requested_backend != "fingerprint_chromium":
-                requested_backend = LOCAL_BACKEND
-                browser_runtime_id = ""
-                fingerprint_overrides = None
             backend_status = getattr(app_runtime.browser, "backend_status", None)
             effective_backend = ""
             if callable(backend_status):
@@ -133,6 +129,13 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                     requested_backend, browser_runtime_id).get("name", "")
             is_fingerprint_environment = (
                 effective_backend == "fingerprint_chromium")
+            if is_fingerprint_environment and not str(browser_runtime_id or "").strip():
+                picker = getattr(app_runtime.browser, "pick_runtime_for_seed", None)
+                if callable(picker):
+                    browser_runtime_id = picker(new_fields["fp_seed"])
+            if not is_fingerprint_environment:
+                browser_runtime_id = ""
+                fingerprint_overrides = None
             # 配置了代理或使用指纹内核时，探测真实出口归属地并对齐时区/语言/经纬度
             if proxy or is_fingerprint_environment:
                 geo = await proxies_service._proxy_geo(proxy, timeout=6)

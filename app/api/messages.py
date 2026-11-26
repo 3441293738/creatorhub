@@ -18,6 +18,7 @@ from app.platforms.douyin import DouyinClient, cookie_from_state as douyin_cooki
 from app.platforms.instagram import InstagramClient
 from app.platforms.twitter import TwitterClient
 from app.risk import OperationKind
+from app.services import account_profiles as account_profiles_service
 from app.submissions import submit_once
 from app.transport_matrix import douyin_client_environment, resolve_transport
 
@@ -83,7 +84,9 @@ async def sync_dm(account_id: int):
         identity = (app_runtime.browser.identity_for(acc)
                     if app_runtime.browser is not None and effective_mode != "api" else None)
         state = acc.storage_state or acc.creator_storage_state or ""
-        ua = acc.ua or app_runtime.cfg.engine.user_agent
+        ua = account_profiles_service._direct_request_ua(
+            identity if identity is not None else acc
+        )
         proxy = acc.proxy or ""
         ig_seed = acc.fp_seed or acc.profile_dir or ""
         ig_tz = acc.timezone_id or "Asia/Shanghai"
@@ -299,7 +302,9 @@ async def fetch_dm_conversation_history(account_id: int, conv_id: str,
             raise HTTPException(503, "浏览器未就绪")
         identity = app_runtime.browser.identity_for(acc) if app_runtime.browser is not None else None
         acc_state = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
-        acc_ua = acc.ua or app_runtime.cfg.engine.user_agent
+        acc_ua = account_profiles_service._direct_request_ua(
+            identity if identity is not None else acc
+        )
         acc_proxy = acc.proxy or ""
         acc_seed = acc.fp_seed or acc.profile_dir or ""
         acc_tz = acc.timezone_id or "Asia/Shanghai"

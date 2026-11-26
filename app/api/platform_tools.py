@@ -43,6 +43,7 @@ from app.platforms.tiktok import TikTokNativeClient, native_protocol_summary
 from app.platforms.tiktok.urls import parse_video_reference
 from app.platforms.twitter import resolve_twitter_tweet_ref
 from app.platforms.xhs import XhsApiClient, has_a1, cookie_str_from_state as xhs_cookie_str_from_state
+from app.services import account_profiles as account_profiles_service
 from app.platforms.youtube import YouTubeClient, normalize_youtube_url, resolve_youtube_video_ref
 from app.risk import OperationKind
 from app.services import metadata as metadata_service
@@ -381,7 +382,7 @@ async def sync_facebook_pages(body: FacebookSyncIn):
     with get_session() as session:
         account = _require_facebook_account(session, body.account_id)
         state = account.storage_state or account.creator_storage_state or account.cookie or ""
-        ua = account.ua or app_runtime.cfg.engine.user_agent
+        ua = account_profiles_service._direct_request_ua(account)
         proxy = account.proxy or ""
         identity = app_runtime.browser.identity_for(account) if app_runtime.browser is not None else None
 
@@ -647,7 +648,7 @@ async def sync_youtube_channels(body: YouTubeChannelsSyncIn):
     with get_session() as session:
         account = _require_youtube_account(session, body.account_id)
         state = account.storage_state or account.creator_storage_state or account.cookie or ""
-        ua = account.ua or app_runtime.cfg.engine.user_agent
+        ua = account_profiles_service._direct_request_ua(account)
         proxy = account.proxy or ""
         identity = app_runtime.browser.identity_for(account) if app_runtime.browser is not None else None
 
@@ -685,7 +686,7 @@ async def search_youtube_entities(body: YouTubeSearchIn):
     with get_session() as session:
         account = _require_youtube_account(session, body.account_id)
         state = account.storage_state or account.creator_storage_state or account.cookie or ""
-        ua = account.ua or app_runtime.cfg.engine.user_agent
+        ua = account_profiles_service._direct_request_ua(account)
         proxy = account.proxy or ""
         identity = app_runtime.browser.identity_for(account) if app_runtime.browser is not None else None
 
@@ -1066,7 +1067,7 @@ async def list_bili_partitions(account_id: int):
         if not account or account.platform != "bilibili":
             raise HTTPException(404, "哔哩哔哩账号不存在")
         state = account.storage_state or account.creator_storage_state or ""
-        ua = account.ua or app_runtime.cfg.engine.user_agent
+        ua = account_profiles_service._direct_request_ua(account)
         proxy = account.proxy or ""
         active = account.status == "active" and bool(state)
 
@@ -1121,7 +1122,7 @@ async def list_bili_topics(
         state = account.storage_state or account.creator_storage_state or ""
         if not state:
             raise HTTPException(400, "缺少哔哩哔哩登录态")
-        ua = account.ua or app_runtime.cfg.engine.user_agent
+        ua = account_profiles_service._direct_request_ua(account)
         proxy = account.proxy or ""
 
     async def read_topics():
@@ -1164,7 +1165,7 @@ async def get_bili_archive_stats(account_id: int, bvid: str):
         state = account.storage_state or account.creator_storage_state or ""
         if not state:
             raise HTTPException(400, "缺少哔哩哔哩登录态")
-        ua = account.ua or app_runtime.cfg.engine.user_agent
+        ua = account_profiles_service._direct_request_ua(account)
         proxy = account.proxy or ""
 
     async def read_stats():

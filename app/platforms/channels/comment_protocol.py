@@ -785,9 +785,10 @@ async def collect_comments_async(
         reason = "page_limit"
         exhausted = False
 
+        from app.pacing import jittered_sleep
         for page_idx in range(max(1, max_pages)):
             if page_idx > 0 and delay > 0:
-                await asyncio.sleep(delay)
+                await jittered_sleep(delay, ratio=0.35, min_delay=0.15)
             req = build_request(bound_target, schema, cursor=cursor, parent_id=parent_id)
             try:
                 ex = await transport(req)
@@ -875,7 +876,8 @@ async def collect_comments_async(
             unresolved_roots.append({"root_comment_id": cid, "reason": unresolved})
         if should_query:
             if delay > 0:
-                await asyncio.sleep(delay)
+                from app.pacing import jittered_sleep
+                await jittered_sleep(delay, ratio=0.35, min_delay=0.15)
             remaining = max(0, max_records - len(collected_unique)) if max_records > 0 else 0
             sub_res = await _collect_chain(parent_id=cid, chain_limit=remaining)
             for r in sub_res["records"]:
@@ -1019,7 +1021,8 @@ class JsonlBridgeTransport:
         if self.last_sent is not None:
             remaining = self.delay - (time.monotonic() - self.last_sent)
             if remaining > 0:
-                time.sleep(remaining)
+                from app.pacing import jittered_sleep_sync
+                jittered_sleep_sync(remaining, ratio=0.3, min_delay=0.05)
         self.last_sent = time.monotonic()
         assert self.proc.stdin is not None
         message = {"id": request.request_id, "payload": request.payload}

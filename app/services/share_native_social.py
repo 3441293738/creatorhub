@@ -26,6 +26,32 @@ from app.services import share_downloads as share_downloads_service
 from app.services import share_native as share_native_service
 
 
+async def _run_social_share_read(
+    account_id: int | None,
+    platform: str,
+    operation,
+    *,
+    empty_result: dict,
+):
+    """绑定账号时统一走引擎账号锁/风控门禁；匿名或引擎未就绪时直接执行。"""
+    if account_id is not None and app_runtime.engine is not None:
+        payload, outcome = await account_profiles_service._run_account_read(
+            account_id,
+            OperationKind.READ_LIGHT,
+            f"share-{platform}:{account_id}",
+            operation,
+            empty_result=empty_result,
+            interactive_read=True,
+        )
+        if isinstance(outcome, dict):
+            raise ShareDownloadError(
+                f"{platform.title()} 账号正在风控冷却: {outcome.get('reason') or '稍后重试'}"
+            )
+        return payload or empty_result, str(outcome or "")
+    payload, err = await operation()
+    return payload or empty_result, str(err or "")
+
+
 async def _instagram_native_share(
     source_url: str,
     *,
@@ -44,29 +70,51 @@ async def _instagram_native_share(
     acc_ua = user_agent
     acc_seed = ""
     acc_tz = "America/New_York"
+    matched_account_id: int | None = None
     if account_id:
         with get_session() as session:
             acc = session.get(DouyinAccount, account_id)
             if acc is not None and acc.platform == "instagram" and acc.status == "active":
+                matched_account_id = acc.id
                 state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
                 acc_proxy = proxy or (acc.proxy or "")
-                acc_ua = acc.ua or acc_ua
+                ident = (
+                    app_runtime.browser.identity_for(acc)
+                    if app_runtime.browser is not None
+                    else None
+                )
+                acc_ua = (
+                    account_profiles_service._direct_request_ua(ident)
+                    if ident is not None
+                    else (acc.ua or acc_ua)
+                )
                 acc_seed = acc.fp_seed or acc.profile_dir or ""
                 acc_tz = acc.timezone_id or "America/New_York"
 
     if not state_text:
         raise ShareDownloadFallback("未找到已登录的 Instagram 账号，回退通用下载器")
 
-    icli = InstagramClient(
-        state_text,
-        acc_ua,
-        proxy=acc_proxy,
-        timeout=app_runtime.cfg.engine.request_timeout_seconds,
-        account_seed=acc_seed,
-        timezone_id=acc_tz,
+    async def _fetch():
+        icli = InstagramClient(
+            state_text,
+            acc_ua,
+            proxy=acc_proxy,
+            timeout=app_runtime.cfg.engine.request_timeout_seconds,
+            account_seed=acc_seed,
+            timezone_id=acc_tz,
+        )
+        async with icli.session_scope():
+            aw, raw, error = await icli.fetch_media_info(source_url)
+        return {"aweme": aw, "raw": raw}, error
+
+    data, err = await _run_social_share_read(
+        matched_account_id,
+        "instagram",
+        _fetch,
+        empty_result={"aweme": None, "raw": None},
     )
-    async with icli.session_scope():
-        aweme, raw_item, err = await icli.fetch_media_info(source_url)
+    aweme = data.get("aweme")
+    raw_item = data.get("raw")
     if aweme is None or not aweme.medias:
         if str(err or "").startswith(("logged_out:", "verification_required:")):
             raise ShareDownloadError(f"Instagram 账号登录态异常: {err}")
@@ -191,35 +239,50 @@ async def _twitter_native_share(
     acc_proxy = proxy
     acc_ua = user_agent
     identity = None
+    matched_account_id: int | None = None
     if account_id:
         with get_session() as session:
             acc = session.get(DouyinAccount, account_id)
             if acc is not None and acc.platform == "twitter" and acc.status == "active":
+                matched_account_id = acc.id
                 state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
                 acc_proxy = proxy or (acc.proxy or "")
-                acc_ua = acc.ua or acc_ua
                 if app_runtime.browser is not None:
                     identity = app_runtime.browser.identity_for(acc)
+                    acc_ua = account_profiles_service._direct_request_ua(identity)
+                else:
+                    acc_ua = acc.ua or acc_ua
 
-    tcli = TwitterClient(
-        state_text,
-        acc_ua,
-        proxy=acc_proxy,
-        timeout=app_runtime.cfg.engine.request_timeout_seconds,
-    )
-    async with tcli.session_scope():
-        aweme, raw_item, err = await tcli.fetch_tweet_syndication(source_url)
-
-    if (aweme is None or not aweme.medias) and app_runtime.browser is not None and identity is not None and state_text:
-        node, b_err = await fetch_twitter_tweet_detail(
-            app_runtime.browser, identity, source_url, block_media=app_runtime.cfg.engine.block_media_resources
+    async def _fetch():
+        tcli = TwitterClient(
+            state_text,
+            acc_ua,
+            proxy=acc_proxy,
+            timeout=app_runtime.cfg.engine.request_timeout_seconds,
         )
-        if node:
-            aweme = parse_twitter_aweme(node)
-            raw_item = node
-            err = ""
-        elif b_err:
-            err = err or b_err
+        async with tcli.session_scope():
+            aw, raw, error = await tcli.fetch_tweet_syndication(source_url)
+
+        if (aw is None or not aw.medias) and app_runtime.browser is not None and identity is not None and state_text:
+            node, b_err = await fetch_twitter_tweet_detail(
+                app_runtime.browser, identity, source_url, block_media=app_runtime.cfg.engine.block_media_resources
+            )
+            if node:
+                aw = parse_twitter_aweme(node)
+                raw = node
+                error = ""
+            elif b_err:
+                error = error or b_err
+        return {"aweme": aw, "raw": raw}, error
+
+    data, err = await _run_social_share_read(
+        matched_account_id,
+        "twitter",
+        _fetch,
+        empty_result={"aweme": None, "raw": None},
+    )
+    aweme = data.get("aweme")
+    raw_item = data.get("raw")
 
     if aweme is None or not aweme.medias:
         if str(err or "").startswith(("logged_out:", "verification_required:")):
@@ -340,34 +403,49 @@ async def _facebook_native_share(
     acc_proxy = proxy
     acc_ua = user_agent
     identity = None
+    matched_account_id: int | None = None
     if account_id:
         with get_session() as session:
             acc = session.get(DouyinAccount, account_id)
             if acc is not None and acc.platform == "facebook" and acc.status == "active":
+                matched_account_id = acc.id
                 state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
                 acc_proxy = proxy or (acc.proxy or "")
-                acc_ua = acc.ua or acc_ua
                 if app_runtime.browser is not None:
                     identity = app_runtime.browser.identity_for(acc)
+                    acc_ua = account_profiles_service._direct_request_ua(identity)
+                else:
+                    acc_ua = acc.ua or acc_ua
 
-    fcli = FacebookClient(
-        state_text,
-        acc_ua,
-        proxy=acc_proxy,
-        timeout=app_runtime.cfg.engine.request_timeout_seconds,
+    async def _fetch():
+        fcli = FacebookClient(
+            state_text,
+            acc_ua,
+            proxy=acc_proxy,
+            timeout=app_runtime.cfg.engine.request_timeout_seconds,
+        )
+        async with fcli.session_scope():
+            aw, error = await fcli.fetch_post_detail(source_url)
+        raw: dict | None = None
+
+        if (aw is None or not aw.medias) and app_runtime.browser is not None and identity is not None and state_text:
+            node, b_err = await fetch_facebook_post_detail(app_runtime.browser, identity, source_url)
+            if node:
+                aw = parse_facebook_aweme(node)
+                raw = node
+                error = ""
+            elif b_err:
+                error = error or b_err
+        return {"aweme": aw, "raw": raw}, error
+
+    data, err = await _run_social_share_read(
+        matched_account_id,
+        "facebook",
+        _fetch,
+        empty_result={"aweme": None, "raw": None},
     )
-    async with fcli.session_scope():
-        aweme, err = await fcli.fetch_post_detail(source_url)
-    raw_item: dict | None = None
-
-    if (aweme is None or not aweme.medias) and app_runtime.browser is not None and identity is not None and state_text:
-        node, b_err = await fetch_facebook_post_detail(app_runtime.browser, identity, source_url)
-        if node:
-            aweme = parse_facebook_aweme(node)
-            raw_item = node
-            err = ""
-        elif b_err:
-            err = err or b_err
+    aweme = data.get("aweme")
+    raw_item = data.get("raw")
 
     if aweme is None or not aweme.medias:
         if str(err or "").startswith(("logged_out:", "verification_required:")):
@@ -490,22 +568,43 @@ async def _youtube_native_share(
     state_text = ""
     acc_proxy = proxy
     acc_ua = user_agent
+    matched_account_id: int | None = None
     if account_id:
         with get_session() as session:
             acc = session.get(DouyinAccount, account_id)
             if acc is not None and acc.platform == "youtube" and acc.status == "active":
+                matched_account_id = acc.id
                 state_text = acc.storage_state or acc.creator_storage_state or acc.cookie or ""
                 acc_proxy = proxy or (acc.proxy or "")
-                acc_ua = acc.ua or acc_ua
+                ident = (
+                    app_runtime.browser.identity_for(acc)
+                    if app_runtime.browser is not None
+                    else None
+                )
+                acc_ua = (
+                    account_profiles_service._direct_request_ua(ident)
+                    if ident is not None
+                    else (acc.ua or acc_ua)
+                )
 
-    ycli = YouTubeClient(
-        state_text,
-        acc_ua,
-        proxy=acc_proxy,
-        timeout=app_runtime.cfg.engine.request_timeout_seconds,
+    async def _fetch():
+        ycli = YouTubeClient(
+            state_text,
+            acc_ua,
+            proxy=acc_proxy,
+            timeout=app_runtime.cfg.engine.request_timeout_seconds,
+        )
+        async with ycli.session_scope():
+            aw, _raw, error = await ycli.fetch_video_detail(source_url, quality=quality)
+        return {"aweme": aw}, error
+
+    data, err = await _run_social_share_read(
+        matched_account_id,
+        "youtube",
+        _fetch,
+        empty_result={"aweme": None},
     )
-    async with ycli.session_scope():
-        aweme, _raw, err = await ycli.fetch_video_detail(source_url, quality=quality)
+    aweme = data.get("aweme")
     if aweme is None:
         if str(err or "").startswith(("logged_out:", "verification_required:")):
             raise ShareDownloadError(f"YouTube 账号登录态异常: {err}")

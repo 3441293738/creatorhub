@@ -66,7 +66,7 @@ class WorkSyncMixin:
             if self._proxy_bad(acc):
                 return {"ok": False, "error": "账号代理不可用"}
             state = acc.storage_state or acc.creator_storage_state or ""
-            ua = acc.ua or self.cfg.engine.user_agent
+            ua = self._direct_request_ua(acc)
             proxy = acc.proxy or ""
             tiktok_author_unique_id = (acc.douyin_id or "") if platform == "tiktok" else ""
             dy_transport = (resolve_transport(
@@ -468,7 +468,7 @@ class WorkSyncMixin:
             if self._proxy_bad(acc):
                 return [], "账号代理不可用"
             state = acc.storage_state or acc.creator_storage_state or ""
-            ua = acc.ua or self.cfg.engine.user_agent
+            ua = self._direct_request_ua(acc)
             proxy = acc.proxy or ""
             sec_uid = acc.sec_uid or ""
             direct_environment = douyin_client_environment(acc)

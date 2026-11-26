@@ -149,7 +149,7 @@ class CommentTaskRunnerMixin:
                 return {"ok": False, "error": gate_error}
             state = acc.storage_state or acc.creator_storage_state or ""
             proxy = acc.proxy or ""
-            ua = acc.ua or self.cfg.engine.user_agent
+            ua = self._direct_request_ua(acc)
             direct_environment = douyin_client_environment(acc)
             native_mode = acc.identity_mode == "native"
             # API-only 评论不启动账号浏览器；hybrid/browser 保留页面回退所需身份。

@@ -74,11 +74,24 @@ class KeywordCollector(
             return None
         return ChannelsProtocolClient.from_config(self.cfg)
 
-    def _direct_request_ua(self, identity) -> str:
+    def _direct_request_ua(self, identity_or_account) -> str:
+        if identity_or_account is None:
+            return self.cfg.engine.user_agent
+        target = identity_or_account
+        if not hasattr(target, "key"):
+            builder = getattr(self.browser, "identity_for", None)
+            if callable(builder):
+                try:
+                    target = builder(target)
+                except Exception:
+                    pass
         resolver = getattr(self.browser, "direct_request_user_agent", None)
         if callable(resolver):
-            return resolver(identity)
-        return str(getattr(identity, "ua", "") or self.cfg.engine.user_agent)
+            try:
+                return resolver(target)
+            except Exception:
+                pass
+        return str(getattr(target, "ua", "") or self.cfg.engine.user_agent)
 
     def _result(self, job_id: int, *, stopped: bool = False) -> dict:
         contents, comments = self._refresh_counts(job_id)
@@ -363,7 +376,7 @@ class KeywordCollector(
             bili_state = (account.storage_state or account.cookie) if account is not None else ""
             bili_client = BilibiliClient(
                 bili_state,
-                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                self._direct_request_ua(identity if identity is not None else account),
                 proxy=proxy,
                 timeout=self.cfg.engine.request_timeout_seconds,
             )
@@ -405,7 +418,7 @@ class KeywordCollector(
             ig_state = (account.storage_state or account.cookie) if account is not None else ""
             ig_client = InstagramClient(
                 ig_state,
-                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                self._direct_request_ua(identity if identity is not None else account),
                 proxy=proxy,
                 timeout=self.cfg.engine.request_timeout_seconds,
                 account_seed=(getattr(account, "fp_seed", "") or str(getattr(account, "id", "") or "")),
@@ -420,7 +433,7 @@ class KeywordCollector(
             tw_state = (account.storage_state or account.cookie) if account is not None else ""
             tw_client = TwitterClient(
                 tw_state,
-                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                self._direct_request_ua(identity if identity is not None else account),
                 proxy=proxy,
                 timeout=self.cfg.engine.request_timeout_seconds,
             )
@@ -437,7 +450,7 @@ class KeywordCollector(
             )
             fb_client = FacebookClient(
                 fb_state,
-                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                self._direct_request_ua(identity if identity is not None else account),
                 proxy=proxy,
                 timeout=self.cfg.engine.request_timeout_seconds,
             )
@@ -460,7 +473,7 @@ class KeywordCollector(
             )
             yt_client = YouTubeClient(
                 yt_state,
-                getattr(identity, "ua", "") or self.cfg.engine.user_agent,
+                self._direct_request_ua(identity if identity is not None else account),
                 proxy=proxy,
                 timeout=self.cfg.engine.request_timeout_seconds,
             )
@@ -517,8 +530,10 @@ class KeywordCollector(
         pending_downloads: list[asyncio.Task] = []
 
         async def _bg_download(cur_job, cur_content, cur_aweme, cur_proxy, cur_acc, cur_ident):
+            from app.pacing import download_stagger
             rt["dl_active"] = int(rt.get("dl_active", 0)) + 1
             try:
+                await download_stagger(0.18, 0.7)
                 async with dl_sem:
                     if self._cancel_requested(job_id):
                         return
@@ -1066,7 +1081,8 @@ class KeywordCollector(
                             return self._result(job_id, stopped=True)
                 self._refresh_counts(job_id)
                 if job.platform not in {"xhs", "rednote"}:
-                    await asyncio.sleep(0.4)
+                    from app.pacing import jittered_sleep
+                    await jittered_sleep(0.55, ratio=0.4, min_delay=0.2)
                 if accepted >= job.max_contents_per_keyword:
                     break
 

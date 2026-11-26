@@ -488,9 +488,12 @@ class RednoteApiClient:
 
     # ── Creator Helper & Work Management Contracts (Recovered from Rednote Worker) ──
     async def published_notes(self, max_pages: int = 10) -> List[dict]:
+        from app.pacing import PagePacer
         notes: List[dict] = []
         page: Any = None
+        pacer = PagePacer(0.65)
         for _ in range(max(1, int(max_pages))):
+            await pacer.step()
             params: Dict[str, Any] = {"tab": "0"}
             if page is not None:
                 params["page"] = str(page)
