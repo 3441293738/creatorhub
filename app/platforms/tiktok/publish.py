@@ -55,6 +55,47 @@ _SUCCESS_TEXT = (
     "发布成功",
     "管理作品",
 )
+_DRAFT_SUCCESS_TEXT = (
+    "Saved to drafts",
+    "Draft saved",
+    "Saved as draft",
+    "已保存到草稿箱",
+    "草稿保存成功",
+    "已存草稿",
+    "保存成功",
+)
+_COVER_TRIGGER_SELECTORS = (
+    'button:has-text("Edit cover")',
+    '[role="button"]:has-text("Edit cover")',
+    'button:has-text("编辑封面")',
+    '[role="button"]:has-text("编辑封面")',
+    'div[class*="cover"] :text-is("Edit cover")',
+    'div[class*="cover"] :text-is("编辑封面")',
+    'text=Edit cover',
+    'text=编辑封面',
+)
+_COVER_UPLOAD_TAB_SELECTORS = (
+    '[role="dialog"] :text-is("Upload cover")',
+    '[role="dialog"] :text-is("上传封面")',
+    '[role="dialog"] [role="tab"]:has-text("Upload")',
+    '[role="dialog"] [role="tab"]:has-text("上传")',
+    'text=Upload cover',
+    'text=上传封面',
+)
+_COVER_INPUT_SELECTORS = (
+    '[role="dialog"] input[type="file"][accept*="image"]',
+    '[class*="cover"] input[type="file"][accept*="image"]',
+    '[role="dialog"] input[type="file"]',
+    'input[type="file"][accept*="image"]',
+)
+_COVER_CONFIRM_SELECTORS = (
+    '[role="dialog"] button:has-text("Confirm")',
+    '[role="dialog"] button:has-text("Save")',
+    '[role="dialog"] button:has-text("确认")',
+    '[role="dialog"] button:has-text("确定")',
+    '[role="dialog"] button:has-text("保存")',
+    '[role="dialog"] button:has-text("完成")',
+)
 _UPLOADED_MODAL_TEXT = ("Your video has been uploaded",)
 _VERIFY_TEXT = (
     "Verify to continue",
@@ -402,12 +443,91 @@ async def _apply_interactions(page, allow_comment: bool, allow_duet: bool,
     return "、".join(missing)
 
 
-async def _publish_button(page):
+async def _apply_tiktok_cover(page, cover_path: str, on_stage=None) -> str:
+    """在 TikTok Studio 中打开 Edit cover 弹窗上传自定义封面并确认，成功返回空串。"""
+    resolved = str(Path(cover_path).resolve())
+    if not Path(resolved).is_file():
+        return f"自定义封面文件不存在: {cover_path}"
+    await _notify_stage(on_stage, "正在上传 TikTok 自定义视频封面…")
+    fc_state = {"handled": 0}
+
+    def _on_fc(fc):
+        fc_state["handled"] += 1
+        asyncio.ensure_future(fc.set_files(resolved))
+
+    page.on("filechooser", _on_fc)
+    try:
+        trigger = await _first_visible(page, _COVER_TRIGGER_SELECTORS, timeout=3000)
+        if trigger is None:
+            return "未找到 TikTok Studio「Edit cover / 编辑封面」入口，已停止提交以防使用默认封面"
+        await DEFAULT_HUMAN_ENGINE.click_locator(trigger, page=page, timeout=3500)
+        await human_wait(page, 1200)
+
+        uploaded = fc_state["handled"] > 0
+        if not uploaded:
+            up_tab = await _first_visible(page, _COVER_UPLOAD_TAB_SELECTORS, timeout=2500)
+            if up_tab is not None:
+                await DEFAULT_HUMAN_ENGINE.click_locator(up_tab, page=page, timeout=3000)
+                await human_wait(page, 900)
+                uploaded = fc_state["handled"] > 0
+
+        if not uploaded:
+            for sel in _COVER_INPUT_SELECTORS:
+                try:
+                    loc = page.locator(sel)
+                    for idx in range(await loc.count()):
+                        cand = loc.nth(idx)
+                        acc = str(await cand.get_attribute("accept") or "").lower()
+                        if "video" in acc or "mp4" in acc:
+                            continue
+                        await cand.set_input_files(resolved, timeout=10000)
+                        uploaded = True
+                        break
+                    if uploaded:
+                        break
+                except Exception:
+                    continue
+
+        if not uploaded:
+            return "已打开 TikTok Edit cover 弹窗，但未找到封面图片上传控件"
+
+        await human_wait(page, 1400)
+        confirm = await _first_visible(page, _COVER_CONFIRM_SELECTORS, timeout=4000)
+        if confirm is None:
+            return "已选择 TikTok 自定义封面图，但未找到弹窗「Confirm / 保存」按钮"
+        await DEFAULT_HUMAN_ENGINE.click_locator(confirm, page=page, timeout=3500)
+        await human_wait(page, 1000)
+        _log("已完成 TikTok 自定义视频封面设置")
+        return ""
+    except Exception as exc:
+        return f"设置 TikTok 自定义封面异常: {exc!r}"
+    finally:
+        try:
+            page.remove_listener("filechooser", _on_fc)
+        except Exception:
+            pass
+
+
+async def _publish_button(page, *, save_as_draft: bool = False):
     selectors = (
-        'button[data-e2e="post_video_button"]',
-        'button[data-e2e="publish-button"]',
-        'button[type="submit"]',
-        'button',
+        (
+            'button[data-e2e="save_draft_button"]',
+            'button[data-e2e="draft-button"]',
+            'button[data-e2e*="draft" i]',
+            'button',
+        )
+        if save_as_draft
+        else (
+            'button[data-e2e="post_video_button"]',
+            'button[data-e2e="publish-button"]',
+            'button[type="submit"]',
+            'button',
+        )
+    )
+    want_texts = (
+        {"save draft", "save as draft", "存草稿", "保存草稿", "暂存草稿"}
+        if save_as_draft
+        else {"post", "publish", "post now", "发布", "立即发布"}
     )
     for selector in selectors:
         try:
@@ -418,10 +538,16 @@ async def _publish_button(page):
                     continue
                 text = ((await candidate.inner_text()) or "").strip().lower()
                 data_e2e = (await candidate.get_attribute("data-e2e") or "").lower()
-                if ("post_video_button" not in data_e2e
-                        and "publish-button" not in data_e2e
-                        and text not in {"post", "publish", "post now", "发布", "立即发布"}):
-                    continue
+                if save_as_draft:
+                    if "draft" not in data_e2e and text not in want_texts:
+                        continue
+                    if text in {"post", "publish", "发布", "立即发布"}:
+                        continue
+                else:
+                    if ("post_video_button" not in data_e2e
+                            and "publish-button" not in data_e2e
+                            and text not in want_texts):
+                        continue
                 if await candidate.get_attribute("aria-disabled") == "true":
                     continue
                 try:
@@ -440,12 +566,13 @@ async def publish_tiktok(
         media_type: str, title: str, desc: str, media_paths: List[str],
         topics: str = "", visibility: str = "public",
         allow_comment: bool = True, allow_duet: bool = True,
-        allow_stitch: bool = True, headed: bool = True,
+        allow_stitch: bool = True, cover_path: str = "",
+        save_as_draft: bool = False, headed: bool = True,
         timeout_seconds: int = 180,
         on_submit: Callable[[], object | Awaitable[object]] | None = None,
         on_stage: Callable[[str], object | Awaitable[object]] | None = None,
         ) -> Tuple[bool, str, str]:
-    """Publish one video and return ``(ok, result_url, error)``."""
+    """Publish one video (or save to TikTok Studio drafts) and return ``(ok, result_url, error)``."""
     _ = storage_state_json, headed
     video, validation_error = _video_file(media_type, media_paths)
     if validation_error:
@@ -509,11 +636,18 @@ async def publish_tiktok(
         if missing:
             return False, "", f"未能设置 TikTok 互动权限:{missing}，已停止提交"
 
-        await _notify_stage(on_stage, "正在等待视频处理与发布按钮就绪…")
+        if cover_path:
+            cover_err = await _apply_tiktok_cover(page, cover_path, on_stage=on_stage)
+            if cover_err:
+                await _dump(page, "cover-failed")
+                return False, "", cover_err
+
+        action_label = "Save draft / 存草稿" if save_as_draft else "发布"
+        await _notify_stage(on_stage, f"正在等待视频处理与「{action_label}」按钮就绪…")
         button = None
         deadline = asyncio.get_running_loop().time() + 150
         while asyncio.get_running_loop().time() < deadline:
-            button = await _publish_button(page)
+            button = await _publish_button(page, save_as_draft=save_as_draft)
             if button is not None:
                 break
             rejected = await _visible_text(page, _REJECT_TEXT)
@@ -521,28 +655,48 @@ async def publish_tiktok(
                 return False, "", f"TikTok 拒绝上传:{rejected}"
             await human_wait(page, 1000)
         if button is None:
-            png = await _dump(page, "not-ready")
-            return False, "", ("视频转码后仍未出现可用的发布按钮。"
+            png = await _dump(page, "draft-not-ready" if save_as_draft else "not-ready")
+            return False, "", (f"视频转码后仍未出现可用的「{action_label}」按钮。"
                                 f"诊断截图:{png or 'data/debug'}")
 
         await _notify_submit(on_submit)
         clicked = True
         await DEFAULT_HUMAN_ENGINE.click_locator(button, page=page, timeout=5000)
-        _log("已点击发布，等待平台确认")
-        await _notify_stage(on_stage, "已点击「发布」，等待 TikTok 确认…")
+        _log(f"已点击{action_label}，等待平台确认")
+        await _notify_stage(on_stage, f"已点击「{action_label}」，等待 TikTok 确认…")
+
+        if save_as_draft:
+            await human_wait(page, 1200)
+            # 若弹出「Save to drafts?」二次确认对话框，自动确认保存草稿
+            confirm_draft = await _first_visible(
+                page,
+                (
+                    '[role="dialog"] button:has-text("Save draft")',
+                    '[role="dialog"] button:has-text("Save")',
+                    '[role="dialog"] button:has-text("存草稿")',
+                    '[role="dialog"] button:has-text("保存")',
+                ),
+                timeout=2000,
+            )
+            if confirm_draft is not None:
+                try:
+                    await DEFAULT_HUMAN_ENGINE.click_locator(confirm_draft, page=page, timeout=3000)
+                except Exception:
+                    pass
 
         deadline = asyncio.get_running_loop().time() + max(90, int(timeout_seconds))
         verify_notified = False
+        success_texts = _DRAFT_SUCCESS_TEXT if save_as_draft else _SUCCESS_TEXT
         while asyncio.get_running_loop().time() < deadline:
             current = str(page.url or "").lower()
             if any(part in current for part in (
                     "/tiktokstudio/content", "/creator-center/content",
-                    "/creator-center/manage")):
+                    "/creator-center/manage", "/draft")):
                 return True, str(page.url or MANAGE_URL), ""
-            success = await _visible_text(page, _SUCCESS_TEXT)
+            success = await _visible_text(page, success_texts)
             if success:
                 return True, MANAGE_URL, ""
-            if await _visible_text(page, _UPLOADED_MODAL_TEXT):
+            if not save_as_draft and await _visible_text(page, _UPLOADED_MODAL_TEXT):
                 # Distinguish post-submit confirmation modal from pre-submit upload state.
                 still_editing = (
                     await _publish_button(page) is not None
@@ -552,7 +706,7 @@ async def publish_tiktok(
                     return True, MANAGE_URL, ""
             rejected = await _visible_text(page, _REJECT_TEXT)
             if rejected:
-                return False, "", f"write_uncertain:TikTok 已接收发布操作，但页面显示:{rejected}"
+                return False, "", f"write_uncertain:TikTok 已接收{action_label}操作，但页面显示:{rejected}"
             verification = await _visible_text(page, _VERIFY_TEXT)
             if verification and not verify_notified:
                 verify_notified = True
@@ -564,7 +718,7 @@ async def publish_tiktok(
             await human_wait(page, 1000)
 
         png = await _dump(page, "unconfirmed")
-        return False, "", ("write_uncertain:已点击 TikTok 发布，但未收到最终确认；"
+        return False, "", (f"write_uncertain:已点击 TikTok {action_label}，但未收到最终确认；"
                             "请先在 TikTok Studio 核对，系统不会自动重发。"
                             f"诊断截图:{png or 'data/debug'}")
     except asyncio.CancelledError:

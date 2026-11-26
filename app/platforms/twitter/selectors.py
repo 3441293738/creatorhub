@@ -70,6 +70,26 @@ COMPOSE_SUBMIT_ANY_SELECTORS = (
     'button[data-testid="tweetButtonInline"]',
 )
 
+COMPOSE_CLOSE_BUTTON_SELECTORS = (
+    'div[role="dialog"] button[data-testid="app-bar-close"]',
+    'button[data-testid="app-bar-close"]',
+    'div[role="dialog"] button[aria-label="Close" i]',
+    'div[role="dialog"] button[aria-label="关闭"]',
+)
+
+COMPOSE_SAVE_DRAFT_SELECTORS = (
+    '[data-testid="confirmationSheetConfirm"]',
+    'div[role="dialog"] button:has-text("Save")',
+    'div[role="dialog"] button:has-text("保存")',
+    'div[role="dialog"] button:has-text("儲存")',
+)
+
+COMPOSE_MEDIA_EDIT_SELECTORS = (
+    '[data-testid="attachments"] button:has-text("Edit")',
+    '[data-testid="attachments"] button:has-text("编辑")',
+    '[data-testid="attachments"] [aria-label*="Edit" i]',
+)
+
 REPLY_AUDIENCE_TRIGGER_SELECTORS = (
     'button[aria-label*="Everyone can reply" i]',
     'button[aria-label*="can reply" i]',

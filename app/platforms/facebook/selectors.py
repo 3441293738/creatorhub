@@ -120,6 +120,44 @@ COMPOSER_DONE_BUTTON_SELECTORS = (
     'div[role="dialog"] div[role="button"][aria-label*="儲存"]:not([aria-disabled="true"])',
 )
 
+COMPOSER_CLOSE_BUTTON_SELECTORS = (
+    'div[role="dialog"] div[role="button"][aria-label="Close" i]',
+    'div[role="dialog"] div[role="button"][aria-label="关闭"]',
+    'div[role="dialog"] div[role="button"][aria-label="關閉"]',
+)
+
+COMPOSER_SAVE_DRAFT_SELECTORS = (
+    'div[role="dialog"] div[role="button"]:has-text("Save draft")',
+    'div[role="dialog"] button:has-text("Save draft")',
+    'div[role="dialog"] div[role="button"]:has-text("保存草稿")',
+    'div[role="dialog"] button:has-text("保存草稿")',
+    'div[role="dialog"] div[role="button"]:has-text("儲存草稿")',
+    'div[role="dialog"] button:has-text("儲存草稿")',
+)
+
+COMPOSER_VIDEO_EDIT_SELECTORS = (
+    'div[role="dialog"] div[role="button"][aria-label*="Edit" i]',
+    'div[role="dialog"] div[role="button"]:has-text("Edit")',
+    'div[role="dialog"] div[role="button"]:has-text("编辑")',
+    'div[role="dialog"] div[role="button"]:has-text("編輯")',
+)
+
+COMPOSER_CHANGE_THUMB_SELECTORS = (
+    'div[role="dialog"] :text-is("Change thumbnail")',
+    'div[role="dialog"] :text-is("更改缩略图")',
+    'div[role="dialog"] :text-is("變更縮圖")',
+    'div[role="dialog"] div[role="button"]:has-text("thumbnail")',
+    'div[role="dialog"] div[role="button"]:has-text("缩略图")',
+)
+
+COMPOSER_UPLOAD_THUMB_SELECTORS = (
+    'div[role="dialog"] :text-is("Upload image")',
+    'div[role="dialog"] :text-is("上传图片")',
+    'div[role="dialog"] :text-is("上傳圖片")',
+    'div[role="dialog"] div[role="button"]:has-text("Upload image")',
+    'div[role="dialog"] div[role="button"]:has-text("上传图片")',
+)
+
 PRIVACY_LABELS = {
     "public": ("Public", "公开", "公開", "Público"),
     "friends": ("Friends", "好友", "朋友", "Amigos"),

@@ -67,6 +67,50 @@ _DEBUG_DIR = Path("./data/debug")
 
 # 仅匹配明确提交完成文案(剔除"已发布/审核中/发布完成"等易与静态提示「等待上传发布完成」冲突的词)
 _SUCCESS_KW = ("发布成功", "作品发布成功", "投稿成功")
+_DRAFT_SUCCESS_KW = ("草稿保存成功", "已保存至草稿箱", "已暂存至草稿箱", "暂存成功", "保存草稿成功", "已存入草稿箱")
+_COVER_TRIGGER_SEL = (
+    'div[class*="cover"] :text-is("选择封面")',
+    'div[class*="cover"] :text-is("设置封面")',
+    'div[class*="cover"] :text-is("修改封面")',
+    'div[class*="cover"] :text-is("更换封面")',
+    'div[class*="cover"] :text-is("编辑封面")',
+    'button:has-text("选择封面")',
+    'button:has-text("设置封面")',
+    'button:has-text("修改封面")',
+    'button:has-text("更换封面")',
+    'div[class*="coverControl"] :text-is("选择封面")',
+    'div[class*="cover-container"] :text-is("选择封面")',
+    'text=选择封面',
+    'text=设置封面',
+    'text=修改封面',
+    'text=更换封面',
+)
+_COVER_UPLOAD_TAB_SEL = (
+    '.semi-modal :text-is("上传封面")',
+    '[role="dialog"] :text-is("上传封面")',
+    '.semi-modal :text-is("本地上传")',
+    '[role="dialog"] :text-is("本地上传")',
+    '.semi-modal [class*="upload"]:has-text("上传")',
+    '[role="dialog"] [class*="upload"]:has-text("上传")',
+    'text=上传封面',
+)
+_COVER_INPUT_SEL = (
+    '.semi-modal input[type="file"][accept*="image"]',
+    '[role="dialog"] input[type="file"][accept*="image"]',
+    '.semi-modal input[type="file"]',
+    '[role="dialog"] input[type="file"]',
+    'input[type="file"][accept*="image"]',
+)
+_COVER_CONFIRM_SEL = (
+    '.semi-modal button:has-text("完成")',
+    '[role="dialog"] button:has-text("完成")',
+    '.semi-modal button:has-text("确定")',
+    '[role="dialog"] button:has-text("确定")',
+    '.semi-modal button:has-text("确认")',
+    '[role="dialog"] button:has-text("确认")',
+    '.semi-modal button:has-text("保存")',
+    '[role="dialog"] button:has-text("保存")',
+)
 # 仅阻塞真正未完成上传/转码的状态，不等待封面推荐生成与发布助手检测
 _UPLOAD_BUSY_KW = ("正在上传", "转码中", "视频处理中")
 _UPLOAD_ERR_KW = ("上传失败", "转码失败", "视频过大", "文件过大", "超过限制", "格式不支持", "不支持该格式")
@@ -213,8 +257,13 @@ async def _dismiss_guides(page) -> None:
                 continue
 
 
-async def _primary_publish_button(page):
-    """挑最终「发布」按钮(优先表单底栏容器按钮):仅取可见且非禁用态。"""
+async def _primary_publish_button(page, *, save_as_draft: bool = False):
+    """挑最终「发布」或「暂存离开/存草稿」按钮(优先表单底栏容器按钮):仅取可见且非禁用态。"""
+    want_labels = (
+        ("暂存离开", "存草稿", "保存草稿", "存为草稿")
+        if save_as_draft
+        else ("发布", "发布作品", "发布视频", "发布图文")
+    )
     for sel in (_PUBLISH_CONTAINER_BTN, 'button'):
         try:
             btns = page.locator(sel)
@@ -228,7 +277,7 @@ async def _primary_publish_button(page):
                 if not await b.is_visible():
                     continue
                 t = ((await b.inner_text()) or "").strip()
-                if t not in ("发布", "发布作品", "发布视频", "发布图文"):
+                if t not in want_labels:
                     continue
                 disabled_attr = await b.get_attribute("disabled")
                 aria_disabled = await b.get_attribute("aria-disabled")
@@ -244,6 +293,102 @@ async def _primary_publish_button(page):
         if cand is not None:
             return cand
     return None
+
+
+async def _apply_douyin_cover(page, cover_path: str, fc_state: dict, on_stage=None) -> str:
+    """上传抖音视频自定义封面并确认保存，成功返回空串，失败返回原因。"""
+    resolved = str(Path(cover_path).resolve())
+    if not Path(resolved).is_file():
+        return f"自定义封面文件不存在: {cover_path}"
+    await _notify_stage(on_stage, "正在上传抖音自定义视频封面…")
+    fc_state["cover_file"] = resolved
+    fc_state["handled"] = 0
+    try:
+        opened = await _click_first(page, _COVER_TRIGGER_SEL, timeout=3500)
+        if not opened:
+            return "未找到抖音「选择封面 / 设置封面」入口，已停止提交以防使用默认封面"
+        await human_wait(page, 1200)
+
+        uploaded = fc_state["handled"] > 0
+        if not uploaded:
+            # 优先点开「上传封面」tab/按钮（可能直接触发 filechooser 或挂载图片 file input）
+            await _click_first(page, _COVER_UPLOAD_TAB_SEL, timeout=2500)
+            await human_wait(page, 900)
+            uploaded = fc_state["handled"] > 0
+
+        if not uploaded:
+            for sel in _COVER_INPUT_SEL:
+                try:
+                    loc = page.locator(sel)
+                    for idx in range(await loc.count()):
+                        cand = loc.nth(idx)
+                        acc = str(await cand.get_attribute("accept") or "").lower()
+                        if "video" in acc or "mp4" in acc:
+                            continue
+                        await cand.set_input_files(resolved, timeout=10000)
+                        uploaded = True
+                        break
+                    if uploaded:
+                        break
+                except Exception:
+                    continue
+
+        if not uploaded:
+            # 再试一次触发弹窗内上传区域以激活 filechooser
+            prev = fc_state["handled"]
+            await _click_first(
+                page,
+                (
+                    '.semi-modal [class*="upload-drag"]',
+                    '[role="dialog"] [class*="upload-drag"]',
+                    '.semi-modal :text-is("点击上传")',
+                    '[role="dialog"] :text-is("点击上传")',
+                ),
+                timeout=2000,
+            )
+            for _ in range(8):
+                if fc_state["handled"] > prev:
+                    uploaded = True
+                    break
+                await human_wait(page, 200)
+
+        if not uploaded:
+            return "已打开抖音封面编辑弹窗，但未找到封面图片上传控件"
+
+        await human_wait(page, 1500)
+        confirmed = False
+        for _ in range(6):
+            modal_vis = False
+            try:
+                modal_vis = bool(await page.evaluate(
+                    "() => !!document.querySelector('.semi-modal, [role=\"dialog\"]')"
+                ))
+            except Exception:
+                modal_vis = False
+            if not modal_vis and confirmed:
+                break
+            clicked = await _click_first(page, _COVER_CONFIRM_SEL, timeout=2500)
+            if clicked:
+                confirmed = True
+                await human_wait(page, 1000)
+            else:
+                if confirmed:
+                    break
+                await human_wait(page, 600)
+        if not confirmed:
+            return "已选择抖音自定义封面图，但未找到弹窗「完成/确定」按钮"
+        _log("已完成抖音自定义视频封面设置")
+        return ""
+    except Exception as exc:
+        return f"设置抖音自定义封面异常: {exc!r}"
+    finally:
+        fc_state["cover_file"] = ""
+        try:
+            if await page.locator('.semi-modal, [role="dialog"]').count():
+                await page.keyboard.press("Escape")
+                await human_wait(page, 300)
+        except Exception:
+            pass
 
 
 async def _confirm_published_on_manage(page, title: str, *, attempts: int = 4) -> bool:
@@ -431,11 +576,12 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
                          storage_state_json: str, media_type: str, title: str,
                          desc: str, media_paths: List[str], topics: str = "",
                          visibility: str = "public", allow_save: bool = True,
+                         cover_path: str = "", save_as_draft: bool = False,
                          headed: bool = True, timeout_seconds: int = 300,
                          on_submit: Callable[[], object | Awaitable[object]] | None = None,
                          on_stage: Callable[[str], object | Awaitable[object]] | None = None,
                          ) -> Tuple[bool, str, str]:
-    """发布一条抖音作品。返回 (ok, result_url, error)。
+    """发布一条抖音作品（支持自定义视频封面与暂存草稿箱）。返回 (ok, result_url, error)。
     storage_state_json 仅用于校验(实际登录态在该账号持久 profile 里)。
     visibility: public 公开 | friends 好友可见 | private 仅自己可见;allow_save: 是否允许他人保存。"""
     files = [str(Path(p)) for p in media_paths if p and Path(p).exists()]
@@ -448,16 +594,22 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
     ctx = await mgr.open_headed(identity)
     page = await ctx.new_page()
 
-    # 保险:媒体上传我们全用 set_input_files(不触发 filechooser),故任何 filechooser
-    # 事件都是意外(比如误点了「继续添加/封面」的 <input type=file>),自动取消避免卡死。
-    # 注:抖音部分选图用系统级 showOpenFilePicker,此 hook 拦不到 —— 根本对策是别乱点。
+    # 保险:平时用 set_input_files(不触发 filechooser),意外 filechooser 自动取消避免卡死；
+    # 主动上传自定义封面期间由 fc_state["cover_file"] 接管并注入封面图。
+    fc_state = {"cover_file": "", "handled": 0}
+
     def _fc_guard(fc):
-        async def _cancel():
+        async def _handle():
             try:
-                await fc.set_files([])
+                target_cover = fc_state.get("cover_file") or ""
+                if target_cover:
+                    fc_state["handled"] += 1
+                    await fc.set_files(target_cover)
+                else:
+                    await fc.set_files([])
             except Exception:
                 pass
-        asyncio.ensure_future(_cancel())
+        asyncio.ensure_future(_handle())
     try:
         page.on("filechooser", _fc_guard)
     except Exception:
@@ -479,7 +631,15 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
             if str(getattr(response.request, "method", "") or "").upper() != "POST":
                 return
             path = urlparse(str(response.url or "")).path.lower()
-            if not any(seg in path for seg in (
+            if save_as_draft:
+                if not any(seg in path for seg in (
+                    "/web/api/media/draft/",
+                    "/aweme/v1/creator/item/draft",
+                    "/web/api/media/aweme/draft",
+                    "/draft/save",
+                )):
+                    return
+            elif not any(seg in path for seg in (
                 "/web/api/media/aweme/create",
                 "/aweme/v1/creator/item/create",
                 "/web/api/media/item/create",
@@ -501,6 +661,14 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
                 create_state["seen"] = True
                 create_state["rejected"] = f"HTTP {response.status}"
             return
+        if save_as_draft and isinstance(payload, dict):
+            code = payload.get("status_code")
+            if code is None:
+                code = payload.get("err_no")
+            if code in (0, "0", None):
+                create_state["seen"] = True
+                create_state["accepted"] = True
+                return
         accepted, post_id, reject_msg = _parse_create_payload(payload)
         create_state["seen"] = True
         if accepted:
@@ -568,19 +736,27 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
             await _dump(page, "uploaderr")
             return False, "", upload_err
 
+        if cover_path and media_type == "video":
+            cover_err = await _apply_douyin_cover(page, cover_path, fc_state, on_stage=on_stage)
+            if cover_err:
+                await _dump(page, "coverfail")
+                return False, "", cover_err
+            await human_wait(page, 600)
+
         await _dismiss_guides(page)
-        await _notify_stage(on_stage, "正在准备自动点击「发布」…")
-        # 轮询等「发布」按钮真正可用(排除 Semi 禁用态),最多 ~90s
+        action_label = "暂存离开" if save_as_draft else "发布"
+        await _notify_stage(on_stage, f"正在准备自动点击「{action_label}」…")
+        # 轮询等目标按钮真正可用(排除 Semi 禁用态),最多 ~90s
         btn = None
         btn_polls = max(2, min(45, int(timeout_seconds)))
         for _ in range(btn_polls):
-            btn = await _primary_publish_button(page)
+            btn = await _primary_publish_button(page, save_as_draft=save_as_draft)
             if btn is not None:
                 break
             await human_wait(page, 2000)
         if btn is None:
-            await _dump(page, "nobtn")
-            return False, "", "未找到可用的发布按钮(可能仍在上传或发布页改版)。已存诊断截图到 data/debug/。"
+            await _dump(page, "nodraftbtn" if save_as_draft else "nobtn")
+            return False, "", f"未找到可用的「{action_label}」按钮(可能仍在上传或发布页改版)。已存诊断截图到 data/debug/。"
         try:
             await btn.scroll_into_view_if_needed(timeout=3000)
         except Exception:
@@ -589,24 +765,25 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
         submitted["clicked"] = True
         try:
             await DEFAULT_HUMAN_ENGINE.click_locator(btn, page=page, timeout=5000)
-            _log("已点击发布按钮")
-            await _notify_stage(on_stage, "已点击「发布」，等待抖音确认…")
+            _log(f"已点击{action_label}按钮")
+            await _notify_stage(on_stage, f"已点击「{action_label}」，等待抖音确认…")
         except Exception:
             await _dump(page, "clickfail")
-            return False, "", ("write_uncertain:发布按钮点击状态未知(可能已被触发或被弹层遮挡)，"
+            return False, "", (f"write_uncertain:{action_label}按钮点击状态未知(可能已被触发或被弹层遮挡)，"
                                "请先到抖音创作平台核对，系统不会自动重发。")
 
-        # 成功判定 + 风控验证等待:必须依赖服务端 create_v2/item_id、页面真实跳转 /content/manage，
+        # 成功判定 + 风控验证等待:必须依赖服务端响应、页面真实跳转 /content/manage，
         # 或严格成功文案+管理页实查，绝不单靠页面宽泛文本("已发布/审核中")假阳性结束。
         ok = False
         deadline = float(max(1, int(timeout_seconds)))
         waited, verify_notified, toast_seen_at = 0.0, False, None
+        success_kw = _DRAFT_SUCCESS_KW if save_as_draft else _SUCCESS_KW
         while waited < deadline:
-            if create_state["accepted"] and create_state["post_id"]:
+            if create_state["accepted"] and (save_as_draft or create_state["post_id"]):
                 ok = True
-                _log(f"命中抖音发布响应 postId={create_state['post_id']}")
+                _log(f"命中抖音{action_label}响应 postId={create_state['post_id']}")
                 break
-            if "/content/manage" in str(page.url or ""):
+            if "/content/manage" in str(page.url or "") or (save_as_draft and "/content/draft" in str(page.url or "")):
                 # 留短窗口让同批 response.json() 完成读取，避免误判或丢失 postId
                 await human_wait(page, 500)
                 if not create_state["rejected"]:
@@ -632,21 +809,21 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
                      f"(输入短信验证码 / 扫码 / 滑块),完成后本流程会自动继续,最多等 {int(deadline)}s")
             if create_state["rejected"] and not verify_notified and not create_state["verify_hint"]:
                 await _dump(page, "rejected")
-                error = (f"write_uncertain:抖音返回发布异常({create_state['rejected']})，"
+                error = (f"write_uncertain:抖音返回{action_label}异常({create_state['rejected']})，"
                          "请到创作中心确认后再操作，系统不会自动重发")
                 break
             blocked = await _visible_any(page, _BLOCKED_KW)
             if blocked and not verify_notified and not create_state["verify_hint"] and not create_state["accepted"]:
                 png = await _dump(page, "blocked")
-                error = (f"write_uncertain:抖音发布受阻（页面提示：{blocked}），"
+                error = (f"write_uncertain:抖音{action_label}受阻（页面提示：{blocked}），"
                          f"请到抖音创作中心确认（系统不会自动重发）。"
                          f"{'诊断截图: ' + png if png else ''}")
                 break
-            hit = await _visible_any(page, _SUCCESS_KW)
+            hit = await _visible_any(page, success_kw)
             if hit and not create_state["rejected"]:
-                if create_state["accepted"]:
+                if save_as_draft or create_state["accepted"]:
                     ok = True
-                    _log(f"命中成功文案「{hit}」且接口已确认")
+                    _log(f"命中成功文案「{hit}」")
                     break
                 if toast_seen_at is None:
                     toast_seen_at = waited
@@ -664,13 +841,13 @@ async def publish_douyin(mgr: BrowserManager, identity: Identity,
                     break
             waited += await human_wait(page, 2000)
         if ok:
-            if create_state["post_id"].isdigit() and visibility != "private":
+            if not save_as_draft and create_state["post_id"].isdigit() and visibility != "private":
                 result_url = f"https://www.douyin.com/video/{create_state['post_id']}"
-            elif "/content/manage" in str(page.url or ""):
+            elif "/content/manage" in str(page.url or "") or "/content/draft" in str(page.url or ""):
                 result_url = str(page.url)
             else:
                 result_url = MANAGE_URL
-            _log(f"发布成功 url={result_url}")
+            _log(f"{action_label}成功 url={result_url}")
         elif not error and (verify_notified or create_state["verify_hint"]):
             hint = create_state["verify_hint"] or "短信验证码/扫码"
             error = (f"write_uncertain:发布被抖音风控拦下,需人工验证({hint}),"

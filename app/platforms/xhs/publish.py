@@ -58,7 +58,8 @@ def _api_privacy_type(visibility: str) -> int:
 def _publish_api_sync(cookie_str: str, media_type: str, title: str, desc: str,
                       files: List[str], topics: List[str], proxy: str = "", *,
                       user_agent: str = "", storage_state_json: str = "",
-                      visibility: str = "public", on_submit=None,
+                      visibility: str = "public", cover_path: str = "",
+                      on_submit=None,
                       cancel_event: threading.Event | None = None,
                       preserve_error: bool = False, deadline: float | None = None,
                       verify_signing: bool = False
@@ -118,8 +119,16 @@ def _publish_api_sync(cookie_str: str, media_type: str, title: str, desc: str,
             )
             stack.callback(api.close)
             if media_type == "video":
+                cover_bytes = None
+                if cover_path:
+                    from pathlib import Path as _Path
+                    cp = _Path(cover_path).expanduser()
+                    if not cp.is_file():
+                        return failure(f"自定义封面文件不存在: {cover_path}")
+                    cover_bytes = cp.read_bytes()
                 ok, msg, j = api.post_note(media_type="video", title=title, desc=desc,
-                                           video_file=blobs[0], topics=topics,
+                                           video_file=blobs[0], cover_file=cover_bytes,
+                                           topics=topics,
                                            privacy_type=privacy_type, on_submit=mark_submitted)
             else:
                 ok, msg, j = api.post_note(media_type="image", title=title, desc=desc,
@@ -142,13 +151,15 @@ async def publish_xhs(mgr: BrowserManager, identity: Identity, storage_state_jso
                       timeout_seconds: int = 180,
                       mode: str = "browser",
                       visibility: str = "public",
+                      cover_path: str = "",
+                      save_as_draft: bool = False,
                       user_agent: str = "",
                       on_submit=None, preserve_error: bool = False,
                       on_stage=None
                       ) -> Tuple[bool, str, str | XhsApiError]:
-    """发布一条小红书笔记。返回 (ok, result_url, error)。
+    """发布一条小红书笔记（支持自定义视频封面与暂存平台草稿箱）。返回 (ok, result_url, error)。
     页面模式使用账号持久 Profile；API 仅为显式兼容模式。"""
-    mode = str(mode or "browser").strip().lower()
+    mode = "browser" if save_as_draft else str(mode or "browser").strip().lower()
     if mode not in {"browser", "api"}:
         mode = "browser"
     try:
@@ -167,6 +178,7 @@ async def publish_xhs(mgr: BrowserManager, identity: Identity, storage_state_jso
         outcome = await publish_xhs_browser(
             mgr, identity, media_type, title, desc, tags, files,
             timeout_seconds=timeout_seconds, visibility=visibility,
+            cover_path=cover_path, save_as_draft=save_as_draft,
             on_submit=on_submit, on_stage=on_stage)
         return outcome.legacy()
 
@@ -218,7 +230,8 @@ async def publish_xhs(mgr: BrowserManager, identity: Identity, storage_state_jso
     work = partial(
         _publish_api_sync, cookie_str, media_type, title, desc, files, tags, proxy,
         user_agent=effective_ua, storage_state_json=storage_state_json,
-        visibility=visibility, on_submit=notify_from_worker, cancel_event=cancel_event,
+        visibility=visibility, cover_path=cover_path,
+        on_submit=notify_from_worker, cancel_event=cancel_event,
         preserve_error=preserve_error, deadline=deadline, verify_signing=True)
     # Keep the executor future outside all_tasks(): loop-wide task cancellation
     # must not cancel only the wrapper while its publishing thread keeps going.

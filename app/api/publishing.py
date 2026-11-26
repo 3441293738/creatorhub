@@ -9,6 +9,7 @@ import json
 import uuid as _uuid
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import select
 
@@ -63,6 +64,9 @@ class PublishIn(BaseModel):
     topics: str = ""
     location: str = ""                    # 视频号:位置 POI(可选)
     media_paths: list[str] = []
+    cover_path: str = ""                  # 可选自定义封面本地图片路径
+    publish_action: str = "publish"       # publish(直接发布) | draft(暂存到平台草稿箱)
+    save_as_draft: bool = False           # True=先存为 CreatorHub 本地草稿(不自动入队执行)
     visibility: str = "public"            # 抖音:public | friends | private
     allow_save: bool = True               # 抖音:是否允许他人保存
     allow_comment: bool = True             # TikTok / B站:允许评论
@@ -78,6 +82,11 @@ class PublishIn(BaseModel):
 
 class PublishUpdate(BaseModel):
     account_id: int | None = None
+    media_type: str | None = None
+    media_paths: list[str] | None = None
+    cover_path: str | None = None
+    publish_action: str | None = None
+    keep_draft: bool | None = None        # True=保存为/保持 CreatorHub 本地草稿；False/None=入队(pending)
     title: str | None = None
     desc: str | None = None
     topics: str | None = None
@@ -93,6 +102,73 @@ class PublishUpdate(BaseModel):
     fb_options: dict[str, Any] | None = None
     yt_options: dict[str, Any] | None = None
     scheduled_at: str | None = None
+
+
+_COVER_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp"})
+
+
+def _norm_publish_action(raw: str | None) -> str:
+    val = str(raw or "publish").strip().lower()
+    if val not in ("publish", "draft"):
+        raise HTTPException(422, "publish_action 须为 publish（正式发布）或 draft（暂存到平台草稿箱）")
+    return val
+
+
+def _validate_cover_path(raw: str | None) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    path = Path(text).expanduser()
+    if not path.is_file():
+        raise HTTPException(422, f"自定义封面文件不存在: {text}")
+    try:
+        if path.stat().st_size <= 0:
+            raise HTTPException(422, f"自定义封面文件为空: {path.name}")
+    except OSError as exc:
+        raise HTTPException(400, f"无法读取自定义封面文件: {path.name}") from exc
+    if path.suffix.lower() not in _COVER_EXTS:
+        raise HTTPException(422, f"自定义封面仅支持 JPG / PNG / WEBP 图片格式: {path.suffix or path.name}")
+    return str(path)
+
+
+def _resolve_task_cover_path(
+    platform: str,
+    cover_path: str | None,
+    bili_options: dict[str, Any] | None = None,
+    yt_options: dict[str, Any] | None = None,
+) -> str:
+    candidate = str(cover_path or "").strip()
+    if not candidate and platform == "youtube" and isinstance(yt_options, dict):
+        candidate = str(yt_options.get("thumbnail_path") or "").strip()
+    if not candidate and platform == "bilibili" and isinstance(bili_options, dict):
+        candidate = str(bili_options.get("cover") or "").strip()
+    return _validate_cover_path(candidate)
+
+
+def _validate_publish_media_for_platform(
+    platform: str,
+    media_type: str,
+    media_paths: list[str],
+    *,
+    title: str = "",
+    desc: str = "",
+    allow_empty_for_draft: bool = False,
+) -> list[str]:
+    clean_raw = [p for p in (media_paths or []) if str(p or "").strip()]
+    if allow_empty_for_draft and not clean_raw:
+        return []
+    if platform in ("xhs", "rednote"):
+        from app.platforms.xhs.media import validate_publish_files
+        try:
+            return validate_publish_files(media_type, clean_raw)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    paths = _validate_non_xhs_publish_files(platform, media_type, clean_raw)
+    if platform == "twitter" and not paths and not (title.strip() or desc.strip()):
+        raise HTTPException(400, "Twitter 纯文本发布请至少填写推文内容，或上传 1~4 张图片 / 1 个视频")
+    if platform == "facebook" and not paths and not (title.strip() or desc.strip()):
+        raise HTTPException(400, "Facebook 纯文本发布请至少填写正文内容，或上传 1~20 张图片 / 1 个视频")
+    return paths
 
 
 def _publish_dict(t: PublishTask) -> dict:
@@ -128,10 +204,24 @@ def _publish_dict(t: PublishTask) -> dict:
         yt_opts = json.loads(getattr(t, "yt_options_json", "{}") or "{}")
     except Exception:
         yt_opts = {}
+    cover_path = str(getattr(t, "cover_path", "") or "").strip()
+    if not cover_path and t.platform == "youtube" and isinstance(yt_opts, dict):
+        cover_path = str(yt_opts.get("thumbnail_path") or "").strip()
+    elif not cover_path and t.platform == "bilibili" and isinstance(bili_opts, dict):
+        cover_path = str(bili_opts.get("cover") or "").strip()
+    publish_action = str(getattr(t, "publish_action", "publish") or "publish").strip().lower()
+    if publish_action not in ("publish", "draft"):
+        publish_action = "publish"
+    has_cover = bool(cover_path and Path(cover_path).is_file())
     return {
         "id": t.id, "platform": t.platform, "account_id": t.account_id,
         "media_type": t.media_type, "title": t.title, "desc": t.desc,
         "topics": t.topics, "location": t.location,
+        "cover_path": cover_path,
+        "has_cover": has_cover,
+        "cover_name": Path(cover_path).name if cover_path else "",
+        "cover_url": f"/api/publish/{t.id}/cover" if (has_cover and t.id is not None) else "",
+        "publish_action": publish_action,
         "status": t.status, "result_url": result_url,
         "visibility": t.visibility, "allow_save": t.allow_save,
         "allow_comment": t.allow_comment, "allow_duet": t.allow_duet,
@@ -152,6 +242,32 @@ def _publish_dict(t: PublishTask) -> dict:
         "blocked_signal": getattr(t, "blocked_signal", "") or "",
         "created_at": utc_iso(t.created_at),
     }
+
+
+@router.get("/api/publish/{tid}/cover")
+async def get_publish_cover(tid: int):
+    """返回指定发布任务的自定义封面本地图片（仅限数据库记录路径）。"""
+    with get_session() as s:
+        t = s.get(PublishTask, tid)
+        if not t:
+            raise HTTPException(404, "发布任务不存在")
+        raw = str(getattr(t, "cover_path", "") or "").strip()
+        if not raw and t.platform == "youtube":
+            try:
+                raw = str((json.loads(t.yt_options_json or "{}") or {}).get("thumbnail_path") or "").strip()
+            except Exception:
+                raw = ""
+        elif not raw and t.platform == "bilibili":
+            try:
+                raw = str((json.loads(t.bili_options_json or "{}") or {}).get("cover") or "").strip()
+            except Exception:
+                raw = ""
+    if not raw:
+        raise HTTPException(404, "该任务未设置自定义封面")
+    p = Path(raw).expanduser()
+    if not p.is_file() or p.suffix.lower() not in _COVER_EXTS:
+        raise HTTPException(404, "自定义封面文件不存在")
+    return FileResponse(p, filename=p.name, content_disposition_type="inline")
 
 
 @router.get("/api/publish")
@@ -232,19 +348,29 @@ async def add_publish(body: PublishIn, request: Request = None):
                     400,
                     "该账号角色设为「仅采集号 (crawler)」，已物理禁止执行作品发布以隔离主号风控；请改选「发布主号 (publish)」或「混合号 (hybrid)」",
                 )
-            if acc.platform in ("xhs", "rednote"):
-                from app.platforms.xhs.media import validate_publish_files
-                try:
-                    paths = validate_publish_files(body.media_type, body.media_paths)
-                except ValueError as exc:
-                    raise HTTPException(422, str(exc)) from exc
-            else:
-                paths = _validate_non_xhs_publish_files(
-                    acc.platform, body.media_type, body.media_paths)
-                if acc.platform == "twitter" and not paths and not (body.title.strip() or body.desc.strip()):
-                    raise HTTPException(400, "Twitter 纯文本发布请至少填写推文内容，或上传 1~4 张图片 / 1 个视频")
-                if acc.platform == "facebook" and not paths and not (body.title.strip() or body.desc.strip()):
-                    raise HTTPException(400, "Facebook 纯文本发布请至少填写正文内容，或上传 1~20 张图片 / 1 个视频")
+            publish_action = _norm_publish_action(body.publish_action)
+            save_as_draft = bool(body.save_as_draft)
+            bili_opts = dict(body.bili_options or {})
+            yt_opts = dict(body.yt_options or {})
+            cover_path = _resolve_task_cover_path(
+                acc.platform, body.cover_path, bili_opts, yt_opts
+            )
+            if cover_path:
+                if acc.platform == "youtube":
+                    yt_opts["thumbnail_path"] = cover_path
+                elif acc.platform == "bilibili":
+                    bili_opts["cover"] = cover_path
+
+            paths = _validate_publish_media_for_platform(
+                acc.platform,
+                body.media_type,
+                body.media_paths,
+                title=body.title,
+                desc=body.desc,
+                allow_empty_for_draft=save_as_draft,
+            )
+            if save_as_draft and not paths and not (body.title.strip() or body.desc.strip() or cover_path):
+                raise HTTPException(400, "暂存本地草稿请至少填写标题/正文，或上传媒体/封面文件")
             pname = {"kuaishou": "快手", "douyin": "抖音",
                      "shipinhao": "视频号", "tiktok": "TikTok",
                      "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram",
@@ -270,15 +396,18 @@ async def add_publish(body: PublishIn, request: Request = None):
                 platform=acc.platform, account_id=body.account_id, media_type=body.media_type,
                 title=norm_title, desc=body.desc, topics=body.topics,
                 location=(body.location or "").strip()[:60],
+                cover_path=cover_path,
+                publish_action=publish_action,
+                status="draft" if save_as_draft else "pending",
                 visibility=vis, allow_save=bool(body.allow_save),
                 allow_comment=bool(body.allow_comment),
                 allow_duet=bool(body.allow_duet),
                 allow_stitch=bool(body.allow_stitch),
-                bili_options_json=json.dumps(body.bili_options or {}, ensure_ascii=False),
+                bili_options_json=json.dumps(bili_opts, ensure_ascii=False),
                 ig_options_json=json.dumps(body.ig_options or {}, ensure_ascii=False),
                 tw_options_json=json.dumps(body.tw_options or {}, ensure_ascii=False),
                 fb_options_json=json.dumps(body.fb_options or {}, ensure_ascii=False),
-                yt_options_json=json.dumps(body.yt_options or {}, ensure_ascii=False),
+                yt_options_json=json.dumps(yt_opts, ensure_ascii=False),
                 media_json=json.dumps(paths),
                 scheduled_at=metadata_service._parse_when(body.scheduled_at, acc.timezone_id),
             )
@@ -308,6 +437,10 @@ async def update_publish(tid: int, body: PublishUpdate):
                     "该账号角色设为「仅采集号 (crawler)」，禁止绑定发布任务",
                 )
             t.account_id = body.account_id
+        if body.media_type is not None:
+            if body.media_type not in ("images", "video"):
+                raise HTTPException(400, "media_type 须为 images 或 video")
+            t.media_type = body.media_type
         if body.title is not None:
             t.title = (
                 weighted_truncate(body.title.strip(), 20)
@@ -320,6 +453,8 @@ async def update_publish(tid: int, body: PublishUpdate):
             t.topics = body.topics.strip()
         if body.location is not None:
             t.location = body.location.strip()[:60]
+        if body.publish_action is not None:
+            t.publish_action = _norm_publish_action(body.publish_action)
         if body.visibility is not None:
             allowed_vis = ("public", "friends", "unlisted", "private") if t.platform == "youtube" else ("public", "friends", "private")
             if body.visibility not in allowed_vis:
@@ -343,21 +478,136 @@ async def update_publish(tid: int, body: PublishUpdate):
             t.fb_options_json = json.dumps(body.fb_options, ensure_ascii=False)
         if body.yt_options is not None:
             t.yt_options_json = json.dumps(body.yt_options, ensure_ascii=False)
+        if "cover_path" in body.model_fields_set:
+            new_cover = _validate_cover_path(body.cover_path)
+            t.cover_path = new_cover
+            if t.platform == "youtube":
+                try:
+                    cur_yt = json.loads(t.yt_options_json or "{}")
+                except Exception:
+                    cur_yt = {}
+                if not isinstance(cur_yt, dict):
+                    cur_yt = {}
+                cur_yt["thumbnail_path"] = new_cover
+                t.yt_options_json = json.dumps(cur_yt, ensure_ascii=False)
+            elif t.platform == "bilibili":
+                try:
+                    cur_bili = json.loads(t.bili_options_json or "{}")
+                except Exception:
+                    cur_bili = {}
+                if not isinstance(cur_bili, dict):
+                    cur_bili = {}
+                cur_bili["cover"] = new_cover
+                t.bili_options_json = json.dumps(cur_bili, ensure_ascii=False)
+        elif body.yt_options is not None and t.platform == "youtube" and "thumbnail_path" in body.yt_options:
+            t.cover_path = _validate_cover_path(str(body.yt_options.get("thumbnail_path") or ""))
+        elif body.bili_options is not None and t.platform == "bilibili" and "cover" in body.bili_options:
+            t.cover_path = _validate_cover_path(str(body.bili_options.get("cover") or ""))
+
+        want_draft = bool(body.keep_draft) if body.keep_draft is not None else False
+        if "media_paths" in body.model_fields_set and body.media_paths is not None:
+            checked_paths = _validate_publish_media_for_platform(
+                t.platform,
+                t.media_type,
+                body.media_paths,
+                title=t.title,
+                desc=t.desc,
+                allow_empty_for_draft=want_draft,
+            )
+            t.media_json = json.dumps(checked_paths)
+        elif not want_draft:
+            try:
+                cur_paths = json.loads(t.media_json or "[]")
+            except Exception:
+                cur_paths = []
+            _validate_publish_media_for_platform(
+                t.platform,
+                t.media_type,
+                cur_paths if isinstance(cur_paths, list) else [],
+                title=t.title,
+                desc=t.desc,
+                allow_empty_for_draft=False,
+            )
+
         if "scheduled_at" in body.model_fields_set:
             account = s.get(DouyinAccount, t.account_id) if t.account_id else None
             t.scheduled_at = metadata_service._parse_when(body.scheduled_at, account.timezone_id if account else "Asia/Shanghai")
             t.scheduled_at_is_utc = True
-        if t.status in ("draft", "failed", "canceled"):
+
+        if want_draft:
+            t.status = "draft"
+            t.error = ""
+            t.blocked_reason = ""
+            t.blocked_signal = ""
+            t.next_allowed_at = None
+        elif t.status in ("draft", "failed", "canceled"):
             t.status = "pending"
             t.error = ""
         s.add(t); s.commit(); s.refresh(t)
         return _publish_dict(t)
 
 
+@router.post("/api/publish/{tid}/enqueue")
+async def enqueue_publish_draft(tid: int):
+    """将本地草稿（或失败/取消任务）一键转为 pending 加入自动发布/推送队列。"""
+    with get_session() as s:
+        t = s.get(PublishTask, tid)
+        if not t:
+            raise HTTPException(404, "发布任务不存在")
+        if t.status not in ("draft", "failed", "canceled"):
+            raise HTTPException(400, f"任务状态为 {t.status}，无法重新入队")
+        if t.scheduled_at and not t.scheduled_at_is_utc:
+            raise HTTPException(422, "请先编辑并确认预约时区，再加入队列")
+        try:
+            cur_paths = json.loads(t.media_json or "[]")
+        except Exception:
+            cur_paths = []
+        _validate_publish_media_for_platform(
+            t.platform,
+            t.media_type,
+            cur_paths if isinstance(cur_paths, list) else [],
+            title=t.title,
+            desc=t.desc,
+            allow_empty_for_draft=False,
+        )
+        t.status = "pending"
+        t.error = ""
+        t.blocked_reason = ""
+        t.blocked_signal = ""
+        t.next_allowed_at = None
+        s.add(t); s.commit(); s.refresh(t)
+        out = _publish_dict(t)
+    if app_runtime.engine and hasattr(app_runtime.engine, "nudge_publish_queue"):
+        app_runtime.engine.nudge_publish_queue()
+    return out
+
+
 @router.post("/api/publish/{tid}/run-now")
 async def run_publish(tid: int, close_open_browser: bool = False, async_mode: bool = False):
     if not app_runtime.engine:
         raise HTTPException(503, "引擎未就绪")
+    with get_session() as s:
+        t = s.get(PublishTask, tid)
+        if not t:
+            return {"ok": False, "error": "任务不存在"}
+        if t.status == "draft":
+            if t.scheduled_at and not t.scheduled_at_is_utc:
+                return {"ok": False, "error": "请先编辑并确认预约时区，再执行发布"}
+            try:
+                cur_paths = json.loads(t.media_json or "[]")
+                _validate_publish_media_for_platform(
+                    t.platform,
+                    t.media_type,
+                    cur_paths if isinstance(cur_paths, list) else [],
+                    title=t.title,
+                    desc=t.desc,
+                    allow_empty_for_draft=False,
+                )
+            except HTTPException as exc:
+                return {"ok": False, "error": f"草稿内容未完善：{exc.detail}"}
+            t.status = "pending"
+            t.error = ""
+            s.add(t); s.commit()
     if not async_mode:
         return await app_runtime.engine.publish_task(
             tid, close_open_browser=close_open_browser
@@ -374,7 +624,9 @@ async def run_publish(tid: int, close_open_browser: bool = False, async_mode: bo
         platform = t.platform
         title = t.title or (t.desc or "")[:40] or f"发布任务 #{tid}"
         acc = s.get(DouyinAccount, account_id) if account_id else None
-        api_only = app_runtime.engine._publish_is_api_only(platform, acc)
+        api_only = app_runtime.engine._publish_is_api_only(
+            platform, acc, publish_action=getattr(t, "publish_action", "publish")
+        )
     if not api_only and await login_sessions_service.has_active_open_browser(account_id):
         if not close_open_browser:
             app_runtime.engine._mark_publish_open_browser_blocked(tid, account_id, platform, log_once=False)

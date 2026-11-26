@@ -20,13 +20,18 @@ from .._submit import notify_stage as _notify_stage
 from .extract import extract_graphql_posts, parse_facebook_aweme, parse_ndjson_payloads
 from .protocol import has_facebook_login_cookies
 from .selectors import (
+    COMPOSER_CHANGE_THUMB_SELECTORS,
+    COMPOSER_CLOSE_BUTTON_SELECTORS,
     COMPOSER_DIALOG_FORM_SELECTORS,
     COMPOSER_DONE_BUTTON_SELECTORS,
     COMPOSER_FILE_INPUT_SELECTORS,
     COMPOSER_PHOTO_BUTTON_SELECTORS,
+    COMPOSER_SAVE_DRAFT_SELECTORS,
     COMPOSER_SUBMIT_BUTTON_SELECTORS,
     COMPOSER_TEXTBOX_SELECTORS,
     COMPOSER_TRIGGER_SELECTORS,
+    COMPOSER_UPLOAD_THUMB_SELECTORS,
+    COMPOSER_VIDEO_EDIT_SELECTORS,
     PRIVACY_LABELS,
 )
 from .urls import (
@@ -244,6 +249,71 @@ async def _extract_latest_profile_post_link(page, target_url: str) -> str:
         return ""
 
 
+async def _apply_facebook_video_cover(page, cover_path: str, on_stage=None) -> str:
+    """尝试通过 Facebook 视频发帖弹窗的 Edit -> Change thumbnail -> Upload image 上传自定义封面。"""
+    resolved = str(Path(cover_path).resolve())
+    if not Path(resolved).is_file():
+        return f"自定义封面文件不存在: {cover_path}"
+    await _notify_stage(on_stage, "正在上传 Facebook 自定义视频缩略图…")
+    fc_state = {"handled": 0}
+
+    def _on_fc(fc):
+        fc_state["handled"] += 1
+        asyncio.ensure_future(fc.set_files(resolved))
+
+    page.on("filechooser", _on_fc)
+    try:
+        edit_btn = await _find_first_visible(page, COMPOSER_VIDEO_EDIT_SELECTORS, timeout_ms=4000)
+        if edit_btn is None:
+            return ""
+        await DEFAULT_HUMAN_ENGINE.click_locator(edit_btn, page=page, timeout=3500)
+        await human_wait(page, 1200)
+
+        change_btn = await _find_first_visible(page, COMPOSER_CHANGE_THUMB_SELECTORS, timeout_ms=4000)
+        if change_btn is not None:
+            await DEFAULT_HUMAN_ENGINE.click_locator(change_btn, page=page, timeout=3000)
+            await human_wait(page, 900)
+
+        uploaded = fc_state["handled"] > 0
+        if not uploaded:
+            up_btn = await _find_first_visible(page, COMPOSER_UPLOAD_THUMB_SELECTORS, timeout_ms=3000)
+            if up_btn is not None:
+                await DEFAULT_HUMAN_ENGINE.click_locator(up_btn, page=page, timeout=3000)
+                await human_wait(page, 900)
+                uploaded = fc_state["handled"] > 0
+
+        if not uploaded:
+            for sel in (
+                'div[role="dialog"] input[type="file"][accept*="image"]',
+                'input[type="file"][accept*="image"]',
+            ):
+                loc = page.locator(sel)
+                for idx in range(await loc.count()):
+                    cand = loc.nth(idx)
+                    acc = str(await cand.get_attribute("accept") or "").lower()
+                    if "video" in acc:
+                        continue
+                    await cand.set_input_files(resolved, timeout=10000)
+                    uploaded = True
+                    break
+                if uploaded:
+                    break
+
+        await human_wait(page, 1200)
+        done_btn = await _find_first_visible(page, COMPOSER_DONE_BUTTON_SELECTORS, timeout_ms=4000)
+        if done_btn is not None:
+            await DEFAULT_HUMAN_ENGINE.click_locator(done_btn, page=page, timeout=3500)
+            await human_wait(page, 1000)
+        return ""
+    except Exception:
+        return ""
+    finally:
+        try:
+            page.remove_listener("filechooser", _on_fc)
+        except Exception:
+            pass
+
+
 async def publish_facebook(
     mgr: Optional[BrowserManager],
     identity: Optional[Identity],
@@ -256,13 +326,15 @@ async def publish_facebook(
     topics: str = "",
     visibility: str = "public",
     allow_comment: bool = True,
+    cover_path: str = "",
+    save_as_draft: bool = False,
     fb_options: Optional[Mapping[str, Any]] = None,
     headed: bool = True,
     timeout_seconds: int = 180,
     on_submit: Optional[Callable[[], Any]] = None,
     on_stage: Optional[Callable[[str], Any]] = None,
 ) -> Tuple[bool, str, str]:
-    """执行 Facebook 帖子发布，返回 `(ok, published_url_or_id, error)`。"""
+    """执行 Facebook 帖子发布（支持视频自定义封面及支持页面的草稿保存），返回 `(ok, published_url_or_id, error)`。"""
     if mgr is None or identity is None:
         return False, "", "浏览器管理器未就绪，无法执行 Facebook 发布"
 
@@ -380,6 +452,8 @@ async def publish_facebook(
 
         # ── 快拍 Story 独立分支 ──
         if target_type == "story":
+            if save_as_draft:
+                return False, "", "Facebook 快拍（Story）原生不支持平台草稿箱，请改用 CreatorHub 本地草稿"
             await _notify_stage(on_stage, "uploading")
             if paths:
                 f_in = page.locator('input[type="file"]').first
@@ -450,10 +524,33 @@ async def publish_facebook(
         if paths:
             await _notify_stage(on_stage, "uploading")
             await _upload_media_files(page, paths, has_video=has_video)
+            if cover_path and has_video:
+                await _apply_facebook_video_cover(page, cover_path, on_stage=on_stage)
 
         # 5) 个人主页可见性设置
         if target_type == "profile" and not target_group and not page_id:
             await _apply_privacy_range(page, privacy)
+
+        # 5.5) 平台草稿箱模式：绝不点击 Post/发布，尝试关闭弹窗触发「Save draft / 保存草稿」
+        if save_as_draft:
+            await _notify_stage(on_stage, "正在尝试保存到 Facebook 平台草稿箱…")
+            close_btn = await _find_first_visible(page, COMPOSER_CLOSE_BUTTON_SELECTORS, timeout_ms=5000)
+            if close_btn is not None:
+                await DEFAULT_HUMAN_ENGINE.click_locator(close_btn, page=page, timeout=4000)
+            else:
+                await page.keyboard.press("Escape")
+            await human_wait(page, 1200)
+            save_draft_btn = await _find_first_visible(page, COMPOSER_SAVE_DRAFT_SELECTORS, timeout_ms=4000)
+            if save_draft_btn is not None:
+                await _mark_submitted()
+                await DEFAULT_HUMAN_ENGINE.click_locator(save_draft_btn, page=page, timeout=4000)
+                await human_wait(page, 2200)
+                return True, nav_url, ""
+            return (
+                False,
+                "",
+                "当前 Facebook 发帖弹窗未提供「Save draft / 保存草稿」入口，已安全中止（未公开发布）；请使用 CreatorHub「存为本地草稿」",
+            )
 
         # 6) 点击发布提交（可能存在 Next -> Post 两步）
         await _notify_stage(on_stage, "submitting")

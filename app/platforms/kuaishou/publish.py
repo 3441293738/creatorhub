@@ -68,7 +68,47 @@ _UPLOAD_ERR_SEL = (
 )
 _UPLOAD_ERR_KW = ("上传失败", "转码失败", "超过限制", "格式不支持")
 _SUCCESS_KW = ("发布成功", "作品发布成功", "投稿成功", "提交成功", "审核中")
+_DRAFT_SUCCESS_KW = ("草稿保存成功", "已存入草稿箱", "已保存至草稿箱", "暂存成功", "保存草稿成功", "保存成功")
 _VERIFY_KW = ("安全验证", "扫码验证", "短信验证", "验证码", "拖动滑块", "身份验证")
+_COVER_TRIGGER_SEL = (
+    'button:has-text("封面设置")',
+    'button:has-text("更换封面")',
+    'button:has-text("编辑封面")',
+    'button:has-text("设置封面")',
+    'div[class*="cover"] :text-is("封面设置")',
+    'div[class*="cover"] :text-is("编辑封面")',
+    'div[class*="cover"] :text-is("更换封面")',
+    'div[class*="cover"] :text-is("上传封面")',
+    'text=封面设置',
+    'text=编辑封面',
+    'text=更换封面',
+)
+_COVER_UPLOAD_SEL = (
+    '.ant-modal :text-is("上传封面")',
+    '[role="dialog"] :text-is("上传封面")',
+    '.ant-modal :text-is("本地上传")',
+    '[role="dialog"] :text-is("本地上传")',
+    '.ant-modal button:has-text("上传")',
+    '[role="dialog"] button:has-text("上传")',
+    'text=上传封面',
+)
+_COVER_INPUT_SEL = (
+    '.ant-modal input[type="file"][accept*="image"]',
+    '[role="dialog"] input[type="file"][accept*="image"]',
+    '.ant-modal input[type="file"]',
+    '[role="dialog"] input[type="file"]',
+    'input[type="file"][accept*="image"]',
+)
+_COVER_CONFIRM_SEL = (
+    '.ant-modal button:has-text("确认")',
+    '[role="dialog"] button:has-text("确认")',
+    '.ant-modal button:has-text("确定")',
+    '[role="dialog"] button:has-text("确定")',
+    '.ant-modal button:has-text("完成")',
+    '[role="dialog"] button:has-text("完成")',
+    '.ant-modal button:has-text("保存")',
+    '[role="dialog"] button:has-text("保存")',
+)
 _DEBUG_DIR = Path("./data/debug")
 
 
@@ -243,15 +283,32 @@ async def _wait_editor(page, timeout_ms: int) -> bool:
     return False
 
 
-async def _primary_publish_button(page):
-    """优先查找表单底部提交容器中的可用「发布」控件。"""
+async def _primary_publish_button(page, *, save_as_draft: bool = False):
+    """优先查找表单底部提交容器中的可用「发布」或「存草稿」控件。"""
+    want_labels = (
+        {"存草稿", "保存草稿", "暂存草稿", "暂存离开"}
+        if save_as_draft
+        else {"发布"}
+    )
     selectors = (
-        '#onvideo_creator_platform div[class*="section-btns"] div[class*="button-primary"]',
-        'div[class*="section-form-btns"] div[class*="button-primary"]',
-        'div[class*="button-primary"]',
-        '[role="button"]',
-        'button',
-        'div[class*="publish"]',
+        (
+            '#onvideo_creator_platform div[class*="section-btns"] button',
+            'div[class*="section-form-btns"] button',
+            'div[class*="section-btns"] [role="button"]',
+            'div[class*="button-default"]',
+            '[role="button"]',
+            'button',
+            'div[class*="draft"]',
+        )
+        if save_as_draft
+        else (
+            '#onvideo_creator_platform div[class*="section-btns"] div[class*="button-primary"]',
+            'div[class*="section-form-btns"] div[class*="button-primary"]',
+            'div[class*="button-primary"]',
+            '[role="button"]',
+            'button',
+            'div[class*="publish"]',
+        )
     )
     for selector in selectors:
         try:
@@ -260,7 +317,7 @@ async def _primary_publish_button(page):
                 candidate = loc.nth(index)
                 if not await candidate.is_visible():
                     continue
-                if ((await candidate.inner_text()) or "").strip() != "发布":
+                if ((await candidate.inner_text()) or "").strip() not in want_labels:
                     continue
                 aria_disabled = await candidate.get_attribute("aria-disabled")
                 classes = str(await candidate.get_attribute("class") or "").lower()
@@ -275,6 +332,83 @@ async def _primary_publish_button(page):
         except Exception:
             continue
     return None
+
+
+async def _apply_kuaishou_cover(page, cover_path: str, on_stage=None) -> str:
+    """上传快手视频自定义封面并确认，成功返回空串，失败返回明确原因。"""
+    resolved = str(Path(cover_path).resolve())
+    if not Path(resolved).is_file():
+        return f"自定义封面文件不存在: {cover_path}"
+    await _notify_stage(on_stage, "正在上传快手自定义视频封面…")
+    fc_state = {"handled": 0}
+
+    def _on_fc(fc):
+        fc_state["handled"] += 1
+        asyncio.ensure_future(fc.set_files(resolved))
+
+    page.on("filechooser", _on_fc)
+    try:
+        opened = await _click_first_visible(page, _COVER_TRIGGER_SEL, timeout=3500)
+        if not opened:
+            return "未找到快手「封面设置 / 编辑封面」入口，已停止提交以防使用默认封面"
+        await human_wait(page, 1200)
+
+        uploaded = fc_state["handled"] > 0
+        if not uploaded:
+            await _click_first_visible(page, _COVER_UPLOAD_SEL, timeout=2500)
+            await human_wait(page, 900)
+            uploaded = fc_state["handled"] > 0
+
+        if not uploaded:
+            for sel in _COVER_INPUT_SEL:
+                try:
+                    loc = page.locator(sel)
+                    for idx in range(await loc.count()):
+                        cand = loc.nth(idx)
+                        acc = str(await cand.get_attribute("accept") or "").lower()
+                        if "video" in acc or "mp4" in acc:
+                            continue
+                        await cand.set_input_files(resolved, timeout=10000)
+                        uploaded = True
+                        break
+                    if uploaded:
+                        break
+                except Exception:
+                    continue
+
+        if not uploaded:
+            return "已打开快手封面弹窗，但未找到封面图片上传控件"
+
+        await human_wait(page, 1400)
+        confirmed = False
+        for _ in range(5):
+            if await _click_first_visible(page, _COVER_CONFIRM_SEL, timeout=2500):
+                confirmed = True
+                await human_wait(page, 900)
+                if not await page.locator('.ant-modal, [role="dialog"]').count():
+                    break
+            elif confirmed:
+                break
+            else:
+                await human_wait(page, 500)
+        if not confirmed:
+            return "已选择快手自定义封面图，但未找到弹窗「确认/完成」按钮"
+        _log("已完成快手自定义视频封面设置")
+        return ""
+    except Exception as exc:
+        return f"设置快手自定义封面异常: {exc!r}"
+    finally:
+        try:
+            page.remove_listener("filechooser", _on_fc)
+        except Exception:
+            pass
+
+
+def _is_kuaishou_draft_path(path: str) -> bool:
+    path_l = str(path or "").lower()
+    if not path_l.startswith("/rest/cp/works/"):
+        return False
+    return "draft" in path_l and any(k in path_l for k in ("save", "submit", "create", "add", "update", "draft"))
 
 
 async def _choose_visibility(page, visibility: str) -> bool:
@@ -314,10 +448,11 @@ async def publish_kuaishou(mgr: BrowserManager, identity: Identity,
                            desc: str, media_paths: List[str], topics: str = "",
                            headed: bool = True, timeout_seconds: int = 180,
                            visibility: str = "public", allow_save: bool = True,
+                           cover_path: str = "", save_as_draft: bool = False,
                            on_submit: Callable[[], object | Awaitable[object]] | None = None,
                            on_stage: Callable[[str], object | Awaitable[object]] | None = None,
                            ) -> Tuple[bool, str, str]:
-    """发布一条快手作品，返回 ``(ok, result_url, error)``。"""
+    """发布一条快手作品（支持自定义视频封面与存草稿），返回 ``(ok, result_url, error)``。"""
     files = [str(Path(path).resolve()) for path in media_paths
              if path and Path(path).exists()]
     if not files:
@@ -341,7 +476,10 @@ async def publish_kuaishou(mgr: BrowserManager, identity: Identity,
         if str(getattr(response.request, "method", "") or "").upper() != "POST":
             return
         path = urlparse(str(response.url or "")).path.lower()
-        if not _is_kuaishou_submit_path(path):
+        if save_as_draft:
+            if not _is_kuaishou_draft_path(path):
+                return
+        elif not _is_kuaishou_submit_path(path):
             return
         status = int(getattr(response, "status", 200) or 200)
         if status >= 400:
@@ -414,41 +552,50 @@ async def publish_kuaishou(mgr: BrowserManager, identity: Identity,
             await _dump(page, "upload-err")
             return False, "", upload_err
 
+        if cover_path and media_type == "video":
+            cover_err = await _apply_kuaishou_cover(page, cover_path, on_stage=on_stage)
+            if cover_err:
+                await _dump(page, "cover-failed")
+                return False, "", cover_err
+            await human_wait(page, 600)
+
         await _dismiss_guides(page)
-        await _notify_stage(on_stage, "正在准备点击「发布」…")
+        action_label = "存草稿" if save_as_draft else "发布"
+        await _notify_stage(on_stage, f"正在准备点击「{action_label}」…")
         button = None
         for _index in range(90):
-            button = await _primary_publish_button(page)
+            button = await _primary_publish_button(page, save_as_draft=save_as_draft)
             if button is not None:
                 break
             await human_wait(page, 1000)
         if button is None:
-            await _dump(page, "no-publish-button")
-            return False, "", "未找到可用的“发布”按钮(已保存 data/debug 诊断快照)"
+            await _dump(page, "no-draft-button" if save_as_draft else "no-publish-button")
+            return False, "", f"未找到可用的“{action_label}”按钮(已保存 data/debug 诊断快照)"
         await button.scroll_into_view_if_needed(timeout=3000)
         await _notify_submit(on_submit)
         submitted["clicked"] = True
         await DEFAULT_HUMAN_ENGINE.click_locator(button, page=page, timeout=5000)
-        _log("已点击发布，等待平台确认")
-        await _notify_stage(on_stage, "已点击「发布」，等待快手确认…")
+        _log(f"已点击{action_label}，等待平台确认")
+        await _notify_stage(on_stage, f"已点击「{action_label}」，等待快手确认…")
 
         waited, verify_notified = 0.0, False
         deadline = float(max(1, int(timeout_seconds)))
+        success_kw = _DRAFT_SUCCESS_KW if save_as_draft else _SUCCESS_KW
         while waited < deadline:
             url_lower = str(page.url or "").lower()
             if publish_response["seen"]:
                 if publish_response["ok"]:
                     ok = True
                     break
-                error = ("write_uncertain:快手返回发布拒绝("
+                error = (f"write_uncertain:快手返回{action_label}拒绝("
                          + (publish_response["message"] or "未知原因")
                          + ")，结果需到快手创作平台核对，系统不会自动重发")
                 break
             if any(part in url_lower for part in (
-                    "/article/manage", "/content/manage", "/article/list")):
+                    "/article/manage", "/content/manage", "/article/list", "/article/draft")):
                 ok = True
                 break
-            success = await _visible_text(page, _SUCCESS_KW)
+            success = await _visible_text(page, success_kw)
             if success:
                 ok = True
                 break
@@ -468,13 +615,13 @@ async def publish_kuaishou(mgr: BrowserManager, identity: Identity,
             current_url = str(page.url or "")
             current_path = urlparse(current_url).path.lower()
             if "/short-video/" in current_path or any(part in current_path for part in (
-                    "/article/manage", "/content/manage", "/article/list")):
+                    "/article/manage", "/content/manage", "/article/list", "/article/draft")):
                 result_url = current_url
             else:
-                result_url = publish_response["url"] or MANAGE_URL
+                result_url = ("" if save_as_draft else publish_response["url"]) or MANAGE_URL
         if not ok and not error:
             png = await _dump(page, "unconfirmed")
-            error = ("write_uncertain:已点击发布但未收到成功回包；请先到快手创作平台核对是否已发出"
+            error = (f"write_uncertain:已点击{action_label}但未收到成功回包；请先到快手创作平台核对是否已生效"
                      "(系统不会自动重发)。"
                      f"诊断截图: {png or 'data/debug'}")
     except asyncio.CancelledError:

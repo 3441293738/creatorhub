@@ -352,6 +352,7 @@ class XhsCreatorApi:
     def post_note(self, *, media_type: str, title: str, desc: str,
                   image_files: Optional[List[bytes | MediaFile]] = None,
                   video_file: Optional[bytes | MediaFile] = None,
+                  cover_file: Optional[bytes | MediaFile] = None,
                   topics: Optional[List[str]] = None,
                   post_time_ms: Optional[int] = None,
                   privacy_type: int = 0, on_submit=None) -> Tuple[bool, str, dict]:
@@ -382,9 +383,11 @@ class XhsCreatorApi:
         if media_type == "video":
             if not video_file:
                 raise XhsPublishError("缺少视频文件")
-            cover, metadata = _video_cover_and_meta(video_file)
+            auto_cover, metadata = _video_cover_and_meta(video_file)
+            use_custom_cover = bool(cover_file)
+            cover_blob = cover_file if use_custom_cover else auto_cover
             file_info = self.upload_media(video_file, "video")
-            cover_info = self.upload_media(cover, "image")
+            cover_info = self.upload_media(cover_blob, "image")
             ready = False
             for attempt in range(TRANSCODE_MAX_RETRIES):
                 res = self.query_transcode(file_info["video_id"])
@@ -406,7 +409,8 @@ class XhsCreatorApi:
             if not ready:
                 raise XhsPublishError("视频转码超时")
             data = _video_note_data(title, desc, post_time_ms, post_loc,
-                                    privacy_type, file_info, cover_info, metadata)
+                                    privacy_type, file_info, cover_info, metadata,
+                                    custom_cover=use_custom_cover)
         else:
             if not image_files:
                 raise XhsPublishError("缺少图片文件")
@@ -604,7 +608,7 @@ def _image_note_data(title, desc, post_time_ms, post_loc, privacy_type, file_inf
 
 
 def _video_note_data(title, desc, post_time_ms, post_loc, privacy_type,
-                     fi, cover, metadata):
+                     fi, cover, metadata, *, custom_cover: bool = False):
     vm = metadata["video"]
     am = metadata["audio"]
     dur_s = round((vm.get("duration") or 0) / 1000, 3)
@@ -627,7 +631,7 @@ def _video_note_data(title, desc, post_time_ms, post_loc, privacy_type,
             "cover": {"fileid": cov_fid, "file_id": cov_fid,
                       "height": cover.get("height") or vm.get("height") or 0,
                       "width": cover.get("width") or vm.get("width") or 0,
-                      "frame": {"ts": 0, "is_user_select": False, "is_upload": False},
+                      "frame": {"ts": 0, "is_user_select": bool(custom_cover), "is_upload": bool(custom_cover)},
                       "stickers": {"version": 2, "neptune": []}, "fonts": [],
                       "extra_info_json": "{}"},
             "chapters": [], "chapter_sync_text": False,

@@ -69,6 +69,9 @@ class PublishJobMixin:
                              target_platform: str = "xhs",
                              title: Optional[str] = None, desc: Optional[str] = None,
                              topics: Optional[str] = None,
+                             cover_path: str = "",
+                             publish_action: str = "publish",
+                             save_as_draft: bool = False,
                              visibility: str = "public", allow_save: bool = True,
                              media_order: Optional[list] = None,
                              scheduled_at: Optional[datetime] = None,
@@ -132,11 +135,20 @@ class PublishJobMixin:
                 t_title = raw_title[:title_cap]
             t_desc = desc if desc is not None else (rec.desc or "")
             t_topics = topics if topics is not None else ""
+            eff_cover = str(cover_path or "").strip()
+            eff_action = "draft" if str(publish_action or "publish").strip().lower() == "draft" else "publish"
+            yt_opts = {"thumbnail_path": eff_cover} if (target_platform == "youtube" and eff_cover) else {}
+            bili_opts = {"cover": eff_cover} if (target_platform == "bilibili" and eff_cover) else {}
             task = PublishTask(
                 platform=target_platform, account_id=account_id,
                 media_type="video" if rec.media_type == "video" else "images",
                 title=t_title, desc=t_desc, topics=t_topics,
+                cover_path=eff_cover,
+                publish_action=eff_action,
+                status="draft" if save_as_draft else "pending",
                 visibility=visibility, allow_save=allow_save,
+                bili_options_json=json.dumps(bili_opts, ensure_ascii=False),
+                yt_options_json=json.dumps(yt_opts, ensure_ascii=False),
                 media_json=json.dumps(files),
                 scheduled_at=scheduled_at,
                 source_platform=rec.platform, source_content_id=rec.id,
@@ -146,9 +158,12 @@ class PublishJobMixin:
                 s.commit(); s.refresh(task)
             return task.id
 
-    def _publish_is_api_only(self, platform: str, acc) -> bool:
+    def _publish_is_api_only(self, platform: str, acc, *, publish_action: str = "publish") -> bool:
         """判断当前发布任务是否走纯 API 无窗通道，避免阻塞有头浏览器发布串行锁。"""
         if acc is None:
+            return False
+        if str(publish_action or "publish").strip().lower() == "draft":
+            # 推送到平台草稿箱需要浏览器交互点击平台「存草稿 / 暂存离开」控件，绝不走无草稿接口的纯 API 通道。
             return False
         pf = str(platform or "").lower()
         if pf == "douyin":
@@ -358,7 +373,9 @@ class PublishJobMixin:
                 account_id = t.account_id
                 platform = t.platform
                 acc_probe = s.get(DouyinAccount, account_id) if account_id else None
-                api_only_publish = self._publish_is_api_only(platform, acc_probe)
+                api_only_publish = self._publish_is_api_only(
+                    platform, acc_probe, publish_action=getattr(t, "publish_action", "publish")
+                )
                 pub_sem = getattr(self, "_api_publish_sem", self._publish_sem) if api_only_publish else self._publish_sem
 
             # 1) 优先检测手动打开的浏览器窗口（纯 API 发布不占用浏览器 Profile，无需等待窗口关闭）。
@@ -501,6 +518,8 @@ class PublishJobMixin:
                 s.add(t); s.commit()
                 return {"ok": False, "error": "proxy unavailable"}
             platform = t.platform
+            publish_action = str(getattr(t, "publish_action", "publish") or "publish").strip().lower()
+            save_to_platform_draft = (publish_action == "draft")
             dy_publish_transport = (resolve_transport(
                 self.cfg, "douyin", "publish", acc)
                 if platform == "douyin" else None)
@@ -508,16 +527,18 @@ class PublishJobMixin:
                 self.cfg, "instagram", "publish", acc)
                 if platform == "instagram" else None)
             rn_api_publish = (
-                platform == "rednote" and self._rednote_publish_mode() == "api"
+                platform == "rednote"
+                and not save_to_platform_draft
+                and self._rednote_publish_mode() == "api"
             )
-            api_only = bool(
+            api_only = (not save_to_platform_draft) and bool(
                 (dy_publish_transport and dy_publish_transport["configured_mode"] == "api")
                 or (ig_publish_transport and ig_publish_transport["effective_mode"] == "api")
                 or rn_api_publish
             )
             skip_env_check = (
                 (api_only and not rn_api_publish)
-                or bool(ig_publish_transport and ig_publish_transport["configured_mode"] == "hybrid")
+                or (not save_to_platform_draft and bool(ig_publish_transport and ig_publish_transport["configured_mode"] == "hybrid"))
             )
             environment_error = (
                 "" if skip_env_check else self._native_write_environment_error(
@@ -564,6 +585,11 @@ class PublishJobMixin:
             fb_options = _loads(getattr(t, "fb_options_json", "{}") or "{}")
             yt_options = _loads(getattr(t, "yt_options_json", "{}") or "{}")
             location = getattr(t, "location", "") or ""
+            cover_path = str(getattr(t, "cover_path", "") or "").strip()
+            if not cover_path and platform == "youtube" and isinstance(yt_options, dict):
+                cover_path = str(yt_options.get("thumbnail_path") or "").strip()
+            elif not cover_path and platform == "bilibili" and isinstance(bili_options, dict):
+                cover_path = str(bili_options.get("cover") or "").strip()
             platform = t.platform
             files = _loads_list(t.media_json)
             t.status = "publishing"; t.error = ""
@@ -574,7 +600,7 @@ class PublishJobMixin:
         self._emit_publish_progress(
             task_id,
             status="running",
-            stage="正在准备发布环境",
+            stage="正在准备草稿箱推送环境" if save_to_platform_draft else "正在准备发布环境",
             title=pub_title,
             platform=platform,
             account_id=pub_acc_id,
@@ -598,7 +624,8 @@ class PublishJobMixin:
                 task_id, "kuaishou", publish_kuaishou,
                 self.browser, identity, state, media_type, title, desc, files,
                 topics=topics, headed=True, visibility=visibility,
-                allow_save=allow_save)
+                allow_save=allow_save, cover_path=cover_path,
+                save_as_draft=save_to_platform_draft)
 
         if platform == "shipinhao":
             # 视频号发布:登录态在该账号持久 profile 里,走浏览器自动化(wujie shadowRoot)
@@ -610,7 +637,8 @@ class PublishJobMixin:
             return await self._run_browser_publish(
                 task_id, "shipinhao", publish_channels,
                 self.browser, identity, state, media_type, title, desc, files,
-                topics=topics, headed=True, location=location)
+                topics=topics, headed=True, location=location,
+                cover_path=cover_path, save_as_draft=save_to_platform_draft)
 
         if platform == "douyin":
             # 抖音发布:同快手走浏览器自动化,登录态在该账号持久 profile 里
@@ -623,7 +651,8 @@ class PublishJobMixin:
                 task_id, "douyin", publish_douyin,
                 self.browser, identity, state, media_type, title, desc, files,
                 topics=topics, visibility=visibility,
-                allow_save=allow_save, headed=True)
+                allow_save=allow_save, cover_path=cover_path,
+                save_as_draft=save_to_platform_draft, headed=True)
 
         if platform == "tiktok":
             if not state:
@@ -635,7 +664,8 @@ class PublishJobMixin:
                 self.browser, identity, state, media_type, title, desc, files,
                 topics=topics, visibility=visibility,
                 allow_comment=allow_comment, allow_duet=allow_duet,
-                allow_stitch=allow_stitch, headed=True)
+                allow_stitch=allow_stitch, cover_path=cover_path,
+                save_as_draft=save_to_platform_draft, headed=True)
 
         if platform == "bilibili":
             if not state:
@@ -646,7 +676,8 @@ class PublishJobMixin:
                 task_id, "bilibili", publish_bilibili,
                 self.browser, identity, state, media_type, title, desc, files,
                 topics=topics, visibility=visibility,
-                allow_comment=allow_comment, bili_options=bili_options,
+                allow_comment=allow_comment, cover_path=cover_path,
+                save_as_draft=save_to_platform_draft, bili_options=bili_options,
                 headed=True)
 
         if platform == "rednote":
@@ -654,12 +685,13 @@ class PublishJobMixin:
                 return await self._finish_publish(
                     task_id, False, "", "该账号未完成海外小红书登录，请先在账号页扫码或创作者登录",
                     platform="rednote")
-            rn_mode = self._rednote_publish_mode()
+            rn_mode = "browser" if save_to_platform_draft else self._rednote_publish_mode()
             return await self._run_browser_publish(
                 task_id, "rednote", publish_rednote,
                 self.browser, identity, state, media_type, title, desc, files,
                 topics=topics, headed=(rn_mode != "api"), mode=rn_mode,
-                visibility=visibility,
+                visibility=visibility, cover_path=cover_path,
+                save_as_draft=save_to_platform_draft,
                 preserve_error=True, channel=rn_mode,
                 cancel_message="write_uncertain:海外小红书发布已中断，结果需到平台核对")
 
@@ -668,9 +700,11 @@ class PublishJobMixin:
                 return await self._finish_publish(
                     task_id, False, "", "该账号未完成 Instagram 登录，请先在账号页登录或导入 Cookie",
                     platform="instagram")
-            ig_write_mode = str(
-                getattr(self.cfg.engine, "instagram_write_mode", "hybrid") or "hybrid"
-            ).strip().lower()
+            ig_write_mode = (
+                "browser"
+                if save_to_platform_draft
+                else str(getattr(self.cfg.engine, "instagram_write_mode", "hybrid") or "hybrid").strip().lower()
+            )
             if ig_write_mode not in {"hybrid", "api", "browser"}:
                 ig_write_mode = "hybrid"
             ig_channel = "api" if ig_write_mode in {"api", "hybrid"} else "browser"
@@ -679,6 +713,7 @@ class PublishJobMixin:
                 self.browser, identity, state, media_type, title, desc, files,
                 topics=topics, visibility=visibility,
                 allow_comment=allow_comment, ig_options=ig_options,
+                cover_path=cover_path, save_as_draft=save_to_platform_draft,
                 mode=ig_write_mode, headed=True, channel=ig_channel)
 
         if platform == "twitter":
@@ -691,6 +726,7 @@ class PublishJobMixin:
                 self.browser, identity, state, media_type, title, desc, files,
                 topics=topics, visibility=visibility,
                 allow_comment=allow_comment, tw_options=tw_options,
+                cover_path=cover_path, save_as_draft=save_to_platform_draft,
                 headed=True, channel="browser")
 
         if platform == "facebook":
@@ -703,6 +739,7 @@ class PublishJobMixin:
                 self.browser, identity, state, media_type, title, desc, files,
                 topics=topics, visibility=visibility,
                 allow_comment=allow_comment, fb_options=fb_options,
+                cover_path=cover_path, save_as_draft=save_to_platform_draft,
                 headed=True, channel="browser")
 
         if platform == "youtube":
@@ -715,6 +752,7 @@ class PublishJobMixin:
                 self.browser, identity,
                 media_type=media_type, files=files, title=title, desc=desc,
                 topics=topics, visibility=visibility,
+                cover_path=cover_path, save_as_draft=save_to_platform_draft,
                 yt_options=yt_options, headed=True, channel="browser")
 
         if not state:
@@ -722,13 +760,15 @@ class PublishJobMixin:
                 task_id, False, "", "该账号未完成小红书「创作者登录」,请先在账号页点「创作者登录」",
                 platform="xhs")
 
-        xhs_mode = ("browser" if native_mode
+        xhs_mode = ("browser" if (native_mode or save_to_platform_draft)
                     else self._xhs_publish_mode())
         return await self._run_browser_publish(
             task_id, "xhs", publish_xhs,
             self.browser, identity, state, media_type, title, desc, files,
             topics=topics, headed=True, mode=xhs_mode,
-            visibility=visibility, preserve_error=True, channel=xhs_mode,
+            visibility=visibility, cover_path=cover_path,
+            save_as_draft=save_to_platform_draft,
+            preserve_error=True, channel=xhs_mode,
             cancel_message="write_uncertain:发布已中断，结果需到平台核对")
 
     def get_publish_stage(self, task_id: int) -> str:
@@ -809,10 +849,12 @@ class PublishJobMixin:
             if account_id and not uncertain:
                 failure = self.risk.record_failure(
                     account_id, OperationKind.PUBLISH, platform_error)
+        is_platform_draft = False
         with get_session() as s:
             t = s.get(PublishTask, task_id)
             if t:
                 account_id = t.account_id
+                is_platform_draft = (str(getattr(t, "publish_action", "publish") or "publish").strip().lower() == "draft")
                 if ok:
                     t.status = "done"
                     t.done_at = datetime.utcnow()
@@ -839,19 +881,21 @@ class PublishJobMixin:
             else "blocked" if (failure and failure.controlled and failure.category in {RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH})
             else "failed"
         )
+        ok_stage = "已保存至平台草稿箱" if is_platform_draft else "发布成功"
+        fail_stage = "暂存草稿失败" if is_platform_draft else "发布失败"
         self._emit_publish_progress(
             task_id,
             status=final_hub_status,
-            stage=("发布成功" if ok else "结果待人工核对" if uncertain else "风控延后，等待重试" if final_hub_status == "blocked" else "发布失败"),
+            stage=(ok_stage if ok else "结果待人工核对" if uncertain else "风控延后，等待重试" if final_hub_status == "blocked" else fail_stage),
             platform=platform,
             account_id=account_id,
             error="" if ok else err[:400],
             immediate=True,
         )
         if ok:
-            log.info("发布任务 #%s(%s, 账号#%s) 已完成%s", task_id, platform, account_id or "-", f": {url}" if url else "")
+            log.info("%s任务 #%s(%s, 账号#%s) 已完成%s", "平台草稿" if is_platform_draft else "发布", task_id, platform, account_id or "-", f": {url}" if url else "")
         else:
-            log.warning("发布任务 #%s(%s, 账号#%s) 未完成: %s", task_id, platform, account_id or "-", err[:300])
+            log.warning("%s任务 #%s(%s, 账号#%s) 未完成: %s", "平台草稿" if is_platform_draft else "发布", task_id, platform, account_id or "-", err[:300])
         if ok:
             try:
                 with get_session() as s:
@@ -864,7 +908,10 @@ class PublishJobMixin:
                              "bilibili": "哔哩哔哩", "rednote": "海外小红书", "instagram": "Instagram",
                              "twitter": "Twitter", "facebook": "Facebook", "youtube": "YouTube"}.get(
                                  platform, "小红书")
-                    await notify_all(channels, f"{pname}发布成功", url or "已发布一条作品")
+                    if is_platform_draft:
+                        await notify_all(channels, f"{pname}已存平台草稿", url or "已保存一条作品到平台草稿箱")
+                    else:
+                        await notify_all(channels, f"{pname}发布成功", url or "已发布一条作品")
             except Exception:
                 pass
         return {"ok": ok, "url": url, "error": err}

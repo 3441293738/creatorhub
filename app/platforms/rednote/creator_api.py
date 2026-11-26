@@ -611,6 +611,7 @@ class RednoteCreatorApi:
         desc: str,
         image_files: Optional[List[bytes | MediaFile]] = None,
         video_file: Optional[bytes | MediaFile] = None,
+        cover_file: Optional[bytes | MediaFile] = None,
         topics: Optional[List[str]] = None,
         post_time_ms: Optional[int] = None,
         privacy_type: int = 0,
@@ -647,9 +648,11 @@ class RednoteCreatorApi:
         if media_type == "video":
             if not video_file:
                 raise RednotePublishError("缺少视频文件")
-            cover, metadata = _video_cover_and_meta(video_file)
+            auto_cover, metadata = _video_cover_and_meta(video_file)
+            use_custom_cover = bool(cover_file)
+            cover_blob = cover_file if use_custom_cover else auto_cover
             file_info = self.upload_media(video_file, "video")
-            cover_info = self.upload_media(cover, "image")
+            cover_info = self.upload_media(cover_blob, "image")
             if file_info.get("video_id"):
                 ready = False
                 for attempt in range(TRANSCODE_MAX_RETRIES):
@@ -678,7 +681,8 @@ class RednoteCreatorApi:
                 if not ready:
                     raise RednotePublishError("海外小红书视频转码等待超时，本次未提交发布")
             data = _video_note_data(
-                norm_title, norm_desc, post_time_ms, post_loc, privacy_type, file_info, cover_info, metadata
+                norm_title, norm_desc, post_time_ms, post_loc, privacy_type, file_info, cover_info, metadata,
+                custom_cover=use_custom_cover,
             )
         else:
             infos = [self.upload_media(b, "image") for b in blobs]

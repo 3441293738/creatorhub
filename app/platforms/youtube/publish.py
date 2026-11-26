@@ -30,6 +30,7 @@ from .selectors import (
     STUDIO_ALLOW_EMBED_CHECKBOX,
     STUDIO_DESC_INPUT_SELECTORS,
     STUDIO_DETAILS_EDITOR_SELECTORS,
+    STUDIO_DIALOG_CLOSE_SELECTORS,
     STUDIO_DONE_BUTTON,
     STUDIO_FILE_INPUT_SELECTORS,
     STUDIO_MADE_FOR_KIDS_NO,
@@ -352,13 +353,15 @@ async def publish_youtube(
     desc: str = "",
     topics: str = "",
     visibility: str = "public",
+    cover_path: str = "",
+    save_as_draft: bool = False,
     yt_options: Optional[Mapping[str, Any]] = None,
     headed: bool = True,
     on_submit: Optional[Callable[[], Any]] = None,
     on_stage: Optional[Callable[[str], Any]] = None,
     upload_timeout_seconds: int = 180,
 ) -> Tuple[bool, str, str]:
-    """在账号隔离浏览器中通过 YouTube Studio 上传并发布视频 / Shorts。
+    """在账号隔离浏览器中通过 YouTube Studio 上传并发布视频 / Shorts（支持自定义缩略图与自动存 Studio 草稿）。
 
     返回 `(ok, published_url, error)`。
     """
@@ -367,10 +370,11 @@ async def publish_youtube(
     if visibility in {"public", "unlisted", "private"} and not (yt_options or {}).get("visibility") and not (yt_options or {}).get("publish_as_private"):
         effective_vis = visibility
 
+    eff_thumb = str(cover_path or opts["thumbnail_path"] or "").strip()
     video_paths, thumb_path, val_err = validate_youtube_publish_files(
         media_type,
         files,
-        thumbnail_path=opts["thumbnail_path"],
+        thumbnail_path=eff_thumb,
     )
     if val_err:
         return False, "", val_err
@@ -474,13 +478,18 @@ async def publish_youtube(
 
         # 自定义缩略图（如提供）
         if thumb_path is not None:
+            await _notify_stage(on_stage, "正在上传 YouTube 自定义封面缩略图...")
+            thumb_uploaded = False
             try:
                 thumb_input = page.locator(STUDIO_THUMBNAIL_FILE_INPUT).first
                 if await thumb_input.count():
                     await thumb_input.set_input_files(str(thumb_path))
-                    await human_wait(page, 2000)
-            except Exception:
-                pass
+                    await human_wait(page, 2200)
+                    thumb_uploaded = True
+            except Exception as exc:
+                return False, "", f"YouTube 自定义封面上传失败({exc!r})，已停止提交（注：频道需完成手机验证才可使用自定义缩略图）"
+            if not thumb_uploaded:
+                return False, "", "未找到 YouTube Studio 自定义缩略图上传控件（请确认该频道已开通自定义缩略图权限）"
 
         # 播放列表
         if opts["playlists"]:
@@ -577,6 +586,17 @@ async def publish_youtube(
             if video_link and "uploading" not in pl and "正在上传" not in pl and "%" not in pl:
                 break
             await human_wait(page, 1800)
+
+        # 4.5) 草稿模式：YouTube Studio 上传完毕后点击关闭弹窗即可自动保存为 Studio 草稿(Draft)，不点最终发布
+        if save_as_draft:
+            await _notify_stage(on_stage, "上传与属性填写已完成，正在关闭弹窗保存为 YouTube Studio 草稿...")
+            close_btn = await _find_first_visible(page, STUDIO_DIALOG_CLOSE_SELECTORS, timeout_ms=8000)
+            if close_btn is None:
+                return False, "", "未找到 YouTube Studio 上传窗口关闭按钮，无法确认草稿保存"
+            await _fire_on_submit()
+            await DEFAULT_HUMAN_ENGINE.click_locator(close_btn, page=page, timeout=5000)
+            await human_wait(page, 2500)
+            return True, STUDIO_CHANNEL_URL, ""
 
         # 5) 切到“公开范围 (REVIEW)”步骤并设置可见性
         await _notify_stage(on_stage, f"正在设置视频可见性 ({effective_vis})...")

@@ -17,7 +17,13 @@ from sqlmodel import select
 
 from app import runtime as app_runtime
 from app.api.accounts import _clean_account_tags, _parse_account_tags
-from app.api.publishing import _publish_dict, _publish_title_cap, _validate_non_xhs_publish_files
+from app.api.publishing import (
+    _norm_publish_action,
+    _publish_dict,
+    _publish_title_cap,
+    _resolve_task_cover_path,
+    _validate_non_xhs_publish_files,
+)
 from app.browser.backends import ACCOUNT_BROWSER_BACKENDS, LOCAL_BACKEND
 from app.browser.manager import normalize_proxy
 from app.profiles import assign_proxy_from_pool, inspect_account_proxy_risk, resolve_pool_proxy_row
@@ -2070,6 +2076,7 @@ class MatrixPublishOverrideIn(BaseModel):
     title: str | None = None
     desc: str | None = None
     topics: str | None = None
+    cover_path: str | None = None
     visibility: str = "public"
     bili_options: dict[str, Any] = PydanticField(default_factory=dict)
     ig_options: dict[str, Any] = PydanticField(default_factory=dict)
@@ -2082,6 +2089,9 @@ class MatrixBatchPublishIn(BaseModel):
     account_ids: list[int]
     media_type: str = "video"               # video | images
     media_paths: list[str] = PydanticField(default_factory=list)
+    cover_path: str = ""                    # 可选统一自定义封面本地图片路径
+    publish_action: str = "publish"         # publish(直接发布) | draft(暂存到目标平台草稿箱)
+    save_as_draft: bool = False             # True=在 CreatorHub 本地存为草稿(status=draft)
     title: str = ""
     desc: str = ""
     topics: str = ""
@@ -2108,6 +2118,8 @@ async def create_matrix_batch_publish(body: MatrixBatchPublishIn):
         raise HTTPException(400, "media_type 须为 video 或 images")
 
     stagger = max(0, min(1440, int(body.stagger_minutes or 0)))
+    publish_action = _norm_publish_action(body.publish_action)
+    save_as_draft = bool(body.save_as_draft)
     created_tasks: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
 
@@ -2142,8 +2154,12 @@ async def create_matrix_batch_publish(body: MatrixBatchPublishIn):
             eff_desc = ov.desc if (ov and ov.desc is not None) else body.desc
             eff_topics = (ov.topics if (ov and ov.topics is not None) else body.topics).strip()
             eff_vis = (ov.visibility if ov else "public")
-            if eff_vis not in {"public", "friends", "private"}:
+            allowed_vis = {"public", "friends", "unlisted", "private"} if acc.platform == "youtube" else {"public", "friends", "private"}
+            if eff_vis not in allowed_vis:
                 eff_vis = "public"
+            bili_opts = dict((ov.bili_options if ov else {}) or {})
+            yt_opts = dict((ov.yt_options if ov else {}) or {})
+            raw_cover = (ov.cover_path if (ov and ov.cover_path is not None) else body.cover_path) or ""
 
             # 校验该平台媒体合法性（Twitter 图集若超过 4 张自动截取前 4 张，Facebook 最多 20 张）
             candidate_paths = list(body.media_paths or [])
@@ -2155,7 +2171,17 @@ async def create_matrix_batch_publish(body: MatrixBatchPublishIn):
                 candidate_paths = candidate_paths[:20]
 
             try:
-                if acc.platform in {"xhs", "rednote"}:
+                eff_cover = _resolve_task_cover_path(acc.platform, raw_cover, bili_opts, yt_opts)
+                if eff_cover:
+                    if acc.platform == "youtube":
+                        yt_opts["thumbnail_path"] = eff_cover
+                    elif acc.platform == "bilibili":
+                        bili_opts["cover"] = eff_cover
+                if save_as_draft and not candidate_paths:
+                    if not (eff_title or eff_desc.strip() or eff_cover):
+                        raise ValueError("暂存本地草稿请至少填写标题/正文或上传媒体/封面")
+                    paths = []
+                elif acc.platform in {"xhs", "rednote"}:
                     from app.platforms.xhs.media import validate_publish_files
                     paths = validate_publish_files(body.media_type, candidate_paths)
                 else:
@@ -2194,13 +2220,16 @@ async def create_matrix_batch_publish(body: MatrixBatchPublishIn):
                 desc=eff_desc,
                 topics=eff_topics,
                 location=(body.location or "").strip()[:60],
+                cover_path=eff_cover,
+                publish_action=publish_action,
+                status="draft" if save_as_draft else "pending",
                 visibility=eff_vis,
                 media_json=json.dumps(paths),
-                bili_options_json=json.dumps((ov.bili_options if ov else {}) or {}, ensure_ascii=False),
+                bili_options_json=json.dumps(bili_opts, ensure_ascii=False),
                 ig_options_json=json.dumps((ov.ig_options if ov else {}) or {}, ensure_ascii=False),
                 tw_options_json=json.dumps((ov.tw_options if ov else {}) or {}, ensure_ascii=False),
                 fb_options_json=json.dumps((ov.fb_options if ov else {}) or {}, ensure_ascii=False),
-                yt_options_json=json.dumps((ov.yt_options if ov else {}) or {}, ensure_ascii=False),
+                yt_options_json=json.dumps(yt_opts, ensure_ascii=False),
                 scheduled_at=sched_time,
                 scheduled_at_is_utc=True,
                 source_platform=body.source_platform or "",

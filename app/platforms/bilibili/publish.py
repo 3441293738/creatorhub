@@ -41,6 +41,7 @@ VIDEO_UPLOAD_URL = (
     "https://member.bilibili.com/platform/upload/video/frame?page_from=creative_home_top_upload"
 )
 VIDEO_MANAGE_URL = "https://member.bilibili.com/platform/upload-manager/article"
+VIDEO_DRAFT_URL = "https://member.bilibili.com/platform/upload-manager/draft"
 DYNAMIC_PUBLISH_URL = "https://t.bilibili.com/"
 
 _VIDEO_INPUT_SELECTORS = (
@@ -80,6 +81,15 @@ _SUBMIT_BUTTON_SELECTORS = (
     "div[role='button']:has-text('立即投稿')",
     "button:has-text('定时发布')",
 )
+_DRAFT_BUTTON_SELECTORS = (
+    ".submit-container .submit-draft",
+    "span.submit-draft",
+    ".submit-container :text-is('存草稿')",
+    "button:has-text('存草稿')",
+    "div[role='button']:has-text('存草稿')",
+    "span:has-text('存草稿')",
+    "button:has-text('保存草稿')",
+)
 _DISMISS_GUIDE_SELECTORS = (
     "button:has-text('我知道了')",
     "button:has-text('知道了')",
@@ -87,6 +97,7 @@ _DISMISS_GUIDE_SELECTORS = (
     ".guide-close",
 )
 _SUCCESS_KEYWORDS = ("稿件投递成功", "投稿成功", "已提交审核", "修改稿件")
+_DRAFT_SUCCESS_KEYWORDS = ("草稿保存成功", "已存入草稿箱", "已保存至草稿箱", "保存草稿成功", "保存成功")
 _VERIFY_KEYWORDS = ("安全验证", "请完成验证", "拖动滑块", "极验", "验证码", "身份验证")
 _UPLOAD_ERROR_KEYWORDS = ("上传失败", "转码失败", "文件损坏", "格式不支持", "超出大小限制")
 _FORM_ERROR_KEYWORDS = (
@@ -490,16 +501,19 @@ async def _ensure_bili_cover(
     cover_candidate: str,
     cover_state: Dict[str, str],
     on_stage=None,
-) -> None:
+) -> bool:
     """确保视频稿件具备有效封面（支持自定义封面、内置 FFmpeg 自动抽帧封面及页面推荐封面兜底）。"""
     if cover_candidate and Path(cover_candidate).exists():
         await _notify_stage(on_stage, "正在上传自定义视频封面…")
-        await _apply_custom_cover(page, cover_candidate, cover_state)
-        return
+        applied = await _apply_custom_cover(page, cover_candidate, cover_state)
+        if applied:
+            cover_state["custom"] = "1"
+            return True
+        return False
 
     for _ in range(4):
         if await _page_has_cover(page, cover_state):
-            return
+            return True
         await human_wait(page, 500)
 
     await _notify_stage(on_stage, "正在从视频自动提取封面并上传…")
@@ -514,7 +528,7 @@ async def _ensure_bili_cover(
             auto_cover = Path(tmp_dir) / "cover.jpg"
             auto_cover.write_bytes(jpeg_bytes)
             if await _apply_custom_cover(page, str(auto_cover), cover_state):
-                return
+                return True
 
     # 兜底：若页面已生成系统推荐封面缩略图，直接点选第一张非 AI 推荐帧
     try:
@@ -525,9 +539,10 @@ async def _ensure_bili_cover(
                 await DEFAULT_HUMAN_ENGINE.click_locator(card, page=page, timeout=2000)
                 await human_wait(page, 800)
                 if await _page_has_cover(page, cover_state):
-                    return
+                    return True
     except Exception:
         pass
+    return False
 
 
 def _resolve_creation_statement_id(opts: Mapping[str, Any], copyright_type: int) -> int:
@@ -594,8 +609,9 @@ def _merge_add_v3_payload(
     *,
     explicit_tid: bool,
     cover_url: str = "",
+    force_cover: bool = False,
 ) -> Optional[str]:
-    """将标准化 `formData` 合并进页面发往 `/x/vu/web/add/v3` 的 JSON 请求体。"""
+    """将标准化 `formData` 合并进页面发往 `/x/vu/web/add/v3` 或草稿接口的 JSON 请求体。"""
     if not raw_post_data:
         return None
     try:
@@ -611,7 +627,7 @@ def _merge_add_v3_payload(
         merged["videos"] = [{**merged["videos"][0], "title": form_data["title"]}]
     merged["desc"] = form_data["desc"]
     merged["desc_format_id"] = 9999
-    if cover_url and not str(merged.get("cover") or "").strip():
+    if cover_url and (force_cover or not str(merged.get("cover") or "").strip()):
         merged["cover"] = cover_url
     if form_data.get("tag"):
         merged["tag"] = form_data["tag"]
@@ -721,13 +737,19 @@ async def _wait_bili_video_uploaded(
     return "B 站视频上传超时，请检查网络或视频大小后重试"
 
 
-async def _find_submit_button(page):
-    for sel in _SUBMIT_BUTTON_SELECTORS:
+async def _find_submit_button(page, *, save_as_draft: bool = False):
+    selectors = _DRAFT_BUTTON_SELECTORS if save_as_draft else _SUBMIT_BUTTON_SELECTORS
+    for sel in selectors:
         try:
             loc = page.locator(sel)
             for idx in range(await loc.count()):
                 cand = loc.nth(idx)
                 if not await cand.is_visible():
+                    continue
+                txt = ((await cand.inner_text()) or "").strip()
+                if save_as_draft and ("投稿" in txt or "发布" in txt):
+                    continue
+                if not save_as_draft and "草稿" in txt:
                     continue
                 cls = str(await cand.get_attribute("class") or "").lower()
                 aria_dis = await cand.get_attribute("aria-disabled")
@@ -920,6 +942,7 @@ async def publish_bilibili(
     visibility: str = "public",
     allow_comment: bool = True,
     cover_path: str = "",
+    save_as_draft: bool = False,
     bili_options: Optional[Mapping[str, Any]] = None,
     headed: bool = True,
     timeout_seconds: int = 240,
@@ -927,13 +950,19 @@ async def publish_bilibili(
     on_stage: Callable[[str], object | Awaitable[object]] | None = None,
     **_unused_kwargs: Any,
 ) -> Tuple[bool, str, str]:
-    """发布一条哔哩哔哩视频稿件或图文动态，返回 ``(ok, result_url, error)``。"""
+    """发布一条哔哩哔哩视频稿件（支持自定义封面与存草稿）或图文动态，返回 ``(ok, result_url, error)``。"""
     _ = storage_state_json, headed
     files = [str(Path(p).resolve()) for p in (media_paths or []) if p and Path(p).exists()]
     if not files:
         return False, "", "没有可用的本地媒体文件(路径不存在)"
 
     if media_type == "images":
+        if save_as_draft:
+            return (
+                False,
+                "",
+                "哔哩哔哩图文动态页（t.bilibili.com）原生不支持草稿箱；请改用视频投稿，或先存为 CreatorHub 本地草稿",
+            )
         return await _publish_bilibili_dynamic_images(
             mgr,
             identity,
@@ -1002,6 +1031,7 @@ async def publish_bilibili(
                 form_data,
                 explicit_tid=explicit_tid,
                 cover_url=cover_state.get("url", ""),
+                force_cover=bool(cover_state.get("custom")),
             )
             if merged_body is not None:
                 await route.continue_(post_data=merged_body)
@@ -1041,8 +1071,13 @@ async def publish_bilibili(
             return
         if str(getattr(response.request, "method", "") or "").upper() != "POST":
             return
-        if "/x/vu/web/add" not in path_l:
-            return
+        is_draft_endpoint = "/x/vu/web/draft" in path_l or "/draft/add" in path_l or "/add/draft" in path_l
+        if save_as_draft:
+            if not is_draft_endpoint:
+                return
+        else:
+            if "/x/vu/web/add" not in path_l or is_draft_endpoint:
+                return
         status = int(getattr(response, "status", 200) or 200)
         if status >= 500:
             publish_response["seen"] = True
@@ -1060,13 +1095,19 @@ async def publish_bilibili(
         publish_response["ok"] = code in (0, "0")
         publish_response["message"] = str(payload.get("message") or f"code={code}")
         data = payload.get("data") if isinstance(payload.get("data"), Mapping) else {}
-        bvid = str(data.get("bvid") or "").strip()
-        if publish_response["ok"]:
-            publish_response["url"] = (
-                f"https://www.bilibili.com/video/{bvid}" if bvid else VIDEO_MANAGE_URL
-            )
+        if save_as_draft:
+            if publish_response["ok"]:
+                publish_response["url"] = VIDEO_DRAFT_URL
+        else:
+            bvid = str(data.get("bvid") or "").strip()
+            if publish_response["ok"]:
+                publish_response["url"] = (
+                    f"https://www.bilibili.com/video/{bvid}" if bvid else VIDEO_MANAGE_URL
+                )
 
     await page.route("**/x/vu/web/add**", handle_add_v3)
+    if save_as_draft:
+        await page.route("**/x/vu/web/draft**", handle_add_v3)
     page.on("response", on_response)
 
     try:
@@ -1116,13 +1157,16 @@ async def publish_bilibili(
             return False, "", up_err
 
         await _dismiss_guides(page)
-        await _ensure_bili_cover(
+        cover_ok = await _ensure_bili_cover(
             page,
             video_file=files[0],
             cover_candidate=cover_candidate,
             cover_state=cover_state,
             on_stage=on_stage,
         )
+        if cover_candidate and not cover_ok:
+            await _dump(page, "custom-cover-failed")
+            return False, "", "B 站自定义封面上传失败，已停止提交以防误用默认封面"
         await _notify_stage(on_stage, "正在填写 B 站稿件标题、标签与声明…")
 
         await _fill_first_visible(page, _TITLE_SELECTORS, form_data["title"])
@@ -1157,42 +1201,45 @@ async def publish_bilibili(
         await _ensure_dom_tags(page, form_data.get("tag", ""))
 
         await _dismiss_guides(page)
-        await _notify_stage(on_stage, "正在准备点击「立即投稿」…")
+        action_label = "存草稿" if save_as_draft else "立即投稿"
+        await _notify_stage(on_stage, f"正在准备点击「{action_label}」…")
         submit_btn = None
         for _ in range(45):
-            submit_btn = await _find_submit_button(page)
+            submit_btn = await _find_submit_button(page, save_as_draft=save_as_draft)
             if submit_btn is not None:
                 break
             await human_wait(page, 1000)
         if submit_btn is None:
-            await _dump(page, "no-submit-btn")
-            return False, "", "未找到可用的「立即投稿」按钮（已保存 data/debug 诊断快照）"
+            await _dump(page, "no-draft-btn" if save_as_draft else "no-submit-btn")
+            return False, "", f"未找到可用的「{action_label}」按钮（已保存 data/debug 诊断快照）"
 
         submitted["clicked"] = True
         await DEFAULT_HUMAN_ENGINE.click_locator(submit_btn, page=page, timeout=5000)
-        _log("已点击立即投稿，等待 add/v3 请求与响应")
-        await _notify_stage(on_stage, "已点击「立即投稿」，等待 B 站确认…")
+        _log(f"已点击{action_label}，等待平台请求与响应")
+        await _notify_stage(on_stage, f"已点击「{action_label}」，等待 B 站确认…")
 
         waited = 0
         verify_notified = False
         retried_cover = False
         deadline = max(20, int(timeout_seconds))
+        success_keywords = _DRAFT_SUCCESS_KEYWORDS if save_as_draft else _SUCCESS_KEYWORDS
+        default_result_url = VIDEO_DRAFT_URL if save_as_draft else VIDEO_MANAGE_URL
         while waited < deadline:
             if publish_response["seen"]:
                 if publish_response["ok"]:
                     ok = True
-                    result_url = publish_response["url"] or VIDEO_MANAGE_URL
+                    result_url = publish_response["url"] or default_result_url
                     break
                 error = (
-                    f"write_uncertain:B 站返回投稿拒绝({publish_response['message']})，"
-                    "请先到创作中心核对是否已生成稿件（系统不会自动重发）"
+                    f"write_uncertain:B 站返回{action_label}拒绝({publish_response['message']})，"
+                    "请先到创作中心核对是否已生成稿件/草稿（系统不会自动重发）"
                 )
                 break
 
-            succ_kw = await _visible_text(page, _SUCCESS_KEYWORDS)
+            succ_kw = await _visible_text(page, success_keywords)
             if succ_kw:
                 ok = True
-                result_url = publish_response["url"] or VIDEO_MANAGE_URL
+                result_url = publish_response["url"] or default_result_url
                 break
 
             if not submitted["sent"]:
@@ -1200,7 +1247,7 @@ async def publish_bilibili(
                 if form_err_kw:
                     if "封面" in form_err_kw and not retried_cover:
                         retried_cover = True
-                        _log("检测到「请先上传封面」提示，立即自动补传视频首帧封面并重试点击")
+                        _log("检测到「请先上传封面」提示，立即自动补传视频封面并重试点击")
                         await _ensure_bili_cover(
                             page,
                             video_file=files[0],
@@ -1210,7 +1257,7 @@ async def publish_bilibili(
                         )
                         await human_wait(page, 800)
                         await _dismiss_guides(page)
-                        btn_retry = await _find_submit_button(page)
+                        btn_retry = await _find_submit_button(page, save_as_draft=save_as_draft)
                         if btn_retry is not None:
                             await DEFAULT_HUMAN_ENGINE.click_locator(
                                 btn_retry, page=page, timeout=5000
@@ -1241,12 +1288,12 @@ async def publish_bilibili(
             png = await _dump(page, "unconfirmed")
             if submitted["sent"]:
                 error = (
-                    "write_uncertain:已发出投稿请求但未收到成功回包；请先到 B 站创作中心核对稿件状态"
+                    f"write_uncertain:已发出{action_label}请求但未收到成功回包；请先到 B 站创作中心核对状态"
                     f"（系统不会自动重发）。诊断截图: {png or 'data/debug'}"
                 )
             else:
                 error = (
-                    "点击立即投稿后页面未发出提交请求（可能仍有必填项提示未通过），可检查后重试"
+                    f"点击{action_label}后页面未发出提交请求（可能仍有必填项提示未通过），可检查后重试"
                     f"（诊断截图: {png or 'data/debug'}）"
                 )
     except asyncio.CancelledError:
@@ -1263,6 +1310,11 @@ async def publish_bilibili(
             await page.unroute("**/x/vu/web/add**", handle_add_v3)
         except Exception:
             pass
+        if save_as_draft:
+            try:
+                await page.unroute("**/x/vu/web/draft**", handle_add_v3)
+            except Exception:
+                pass
         try:
             page.remove_listener("response", on_response)
         except Exception:

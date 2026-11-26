@@ -14,6 +14,9 @@ export function MatrixBatchPublisher({ ctx }) {
   const [selectedAccIds, setSelectedAccIds] = useState(() => new Set(window.__chPublishPresetAccounts || []));
   const [mediaType, setMediaType] = useState("video");
   const [uploadedFiles, setUploadedFiles] = useState([]); // [{ path, name }]
+  const [coverFile, setCoverFile] = useState(null); // { path, name, previewUrl }
+  const [uploadingCover, setUploadingCover] = useState(false);
+  const [publishAction, setPublishAction] = useState("publish"); // publish | draft
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null); // { percent, loaded, total, speedBps, etaSeconds }
   const uploadAbortRef = useRef(null);
@@ -170,6 +173,40 @@ export function MatrixBatchPublisher({ ctx }) {
     }
   };
 
+  const handleCoverChange = async e => {
+    const file = (e.target.files || [])[0];
+    if (!file) return;
+    setUploadingCover(true);
+    try {
+      const fd = new FormData();
+      fd.append("files", file);
+      const res = await matrixApi("/api/publish/upload", { method: "POST", body: fd });
+      const saved = Array.isArray(res.files) ? res.files[0] : null;
+      if (!saved?.path) throw new Error("封面上传返回为空");
+      setCoverFile(prev => {
+        if (prev?.previewUrl) {
+          try { URL.revokeObjectURL(prev.previewUrl); } catch (_) {}
+        }
+        return { path: saved.path, name: saved.name || file.name, previewUrl: URL.createObjectURL(file) };
+      });
+      matrixToast(`已上传自定义封面：${file.name}`, "ok");
+    } catch (err) {
+      matrixToast("自定义封面上传失败：" + err.message, "err");
+    } finally {
+      setUploadingCover(false);
+      e.target.value = "";
+    }
+  };
+
+  const clearCover = () => {
+    setCoverFile(prev => {
+      if (prev?.previewUrl) {
+        try { URL.revokeObjectURL(prev.previewUrl); } catch (_) {}
+      }
+      return null;
+    });
+  };
+
   const selectedAccounts = useMemo(
     () => scopedAccounts.filter(a => selectedAccIds.has(a.id)),
     [scopedAccounts, selectedAccIds]
@@ -182,19 +219,19 @@ export function MatrixBatchPublisher({ ctx }) {
 
   const crawlerSelectedCount = selectedAccounts.filter(a => a.account_role === "crawler").length;
 
-  const submitBatch = async e => {
-    e.preventDefault();
+  const submitBatch = async (e, { saveAsDraft = false } = {}) => {
+    if (e?.preventDefault) e.preventDefault();
     if (!selectedAccounts.length) {
       matrixToast("请至少勾选 1 个目标发布账号", "err");
       return;
     }
     const requiresMedia = selectedAccounts.some(a => a.platform !== "twitter" && a.platform !== "facebook");
-    if (requiresMedia && uploadedFiles.length === 0) {
+    if (!saveAsDraft && requiresMedia && uploadedFiles.length === 0) {
       matrixToast("所选平台需要上传至少 1 个视频或图片素材", "err");
       return;
     }
-    if (!requiresMedia && uploadedFiles.length === 0 && !(title.trim() || desc.trim())) {
-      matrixToast("纯文本发布请填写标题或正文内容，或上传图片/视频素材", "err");
+    if (uploadedFiles.length === 0 && !(title.trim() || desc.trim() || coverFile?.path)) {
+      matrixToast(saveAsDraft ? "暂存本地草稿请填写标题/正文，或上传媒体/封面" : "纯文本发布请填写标题或正文内容，或上传图片/视频素材", "err");
       return;
     }
     setSubmitting(true);
@@ -212,6 +249,9 @@ export function MatrixBatchPublisher({ ctx }) {
           account_ids: selectedAccounts.map(a => a.id),
           media_type: mediaType,
           media_paths: uploadedFiles.map(f => f.path),
+          cover_path: coverFile?.path || "",
+          publish_action: publishAction,
+          save_as_draft: Boolean(saveAsDraft),
           title,
           desc,
           topics,
@@ -222,8 +262,11 @@ export function MatrixBatchPublisher({ ctx }) {
           platform_overrides: overrides,
         }),
       });
+      const kindLabel = saveAsDraft
+        ? "本地草稿"
+        : (publishAction === "draft" ? "平台草稿推送任务" : "跨账号发布任务");
       matrixToast(
-        `已成功创建 ${res.created_count} 条跨账号发布任务${res.skipped_count ? `（跳过 ${res.skipped_count} 个不满足条件的账号）` : ""}`,
+        `已成功创建 ${res.created_count} 条${kindLabel}${res.skipped_count ? `（跳过 ${res.skipped_count} 个不满足条件的账号）` : ""}`,
         "ok",
         6000
       );
@@ -231,6 +274,7 @@ export function MatrixBatchPublisher({ ctx }) {
       setDesc("");
       setTopics("");
       setUploadedFiles([]);
+      clearCover();
       setSourceMeta({ source_platform: "", source_content_id: null });
       if (typeof window.refreshPublish === "function") window.refreshPublish();
       window.CreatorHubWorkbench?.showSection?.("publish", "records");
@@ -388,6 +432,43 @@ export function MatrixBatchPublisher({ ctx }) {
             </div>
           )}
 
+          <div className="form-grid">
+            <div className="form-field">
+              <label>自定义封面（可选，JPG / PNG / WEBP）{uploadingCover ? "（上传中…）" : ""}</label>
+              <label className="mx-file-drop">
+                <input
+                  type="file"
+                  accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+                  onChange={handleCoverChange}
+                />
+                <Icon name="image" />
+                <span>{uploadingCover ? "正在上传封面图…" : (coverFile ? `更换封面（已选：${coverFile.name}）` : "点击选择自定义封面图（留空用默认/首帧）")}</span>
+              </label>
+              {coverFile && (
+                <div className="mx-uploaded-pills" style={{ marginTop: "6px" }}>
+                  <span className="mx-file-pill mx-cover-pill">
+                    {coverFile.previewUrl && <img src={coverFile.previewUrl} alt="" />}
+                    <span>{coverFile.name}</span>
+                    <button type="button" onClick={clearCover} aria-label="移除封面"><Icon name="x" /></button>
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className="form-field">
+              <label>各平台执行动作</label>
+              <SelectBox
+                full
+                value={publishAction}
+                onChange={setPublishAction}
+                ariaLabel="各平台执行动作"
+                options={[
+                  { value: "publish", label: "直接发布作品", icon: "send" },
+                  { value: "draft", label: "暂存到各平台草稿箱（不直接公开）", icon: "edit" },
+                ]}
+              />
+            </div>
+          </div>
+
           <div>
             <label className="field">通用主标题（各平台超出上限将自动安全截断，也可在右侧单独定制）</label>
             <input
@@ -481,9 +562,24 @@ export function MatrixBatchPublisher({ ctx }) {
           )}
 
           <div className="mx-pub-submit-box">
-            <button type="submit" disabled={submitting || uploading || selectedAccounts.length === 0}>
+            <button type="submit" disabled={submitting || uploading || uploadingCover || selectedAccounts.length === 0}>
               <Icon name="send" />
-              <span>{submitting ? "正在拆分入队…" : `一键入队分发 (${selectedAccounts.length} 个账号)`}</span>
+              <span>
+                {submitting
+                  ? "正在拆分入队…"
+                  : (publishAction === "draft"
+                    ? `一键推送平台草稿 (${selectedAccounts.length} 个账号)`
+                    : `一键入队分发 (${selectedAccounts.length} 个账号)`)}
+              </span>
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              disabled={submitting || uploading || uploadingCover || selectedAccounts.length === 0}
+              onClick={ev => submitBatch(ev, { saveAsDraft: true })}
+            >
+              <Icon name="edit" />
+              <span>存为本地草稿 ({selectedAccounts.length} 个账号)</span>
             </button>
           </div>
         </aside>

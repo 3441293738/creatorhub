@@ -75,6 +75,45 @@ _PUBLISH_BTN = [
     'button:has-text("发表")',
     'button:has-text("发布")',
 ]
+_DRAFT_BTN = [
+    '.post-view .form-btns button:has-text("保存草稿")',
+    '.form-btns button:has-text("保存草稿")',
+    'button:has-text("保存草稿")',
+    'button:has-text("存草稿")',
+    'button:has-text("暂存草稿")',
+]
+_COVER_TRIGGER_SEL = [
+    '.post-view [class*="cover"] :text-is("更换封面")',
+    '.post-view [class*="cover"] :text-is("编辑封面")',
+    '.post-view [class*="cover"] :text-is("设置封面")',
+    'text=更换封面',
+    'text=编辑封面',
+    'text=设置封面',
+    '.cover-edit',
+    '.edit-cover',
+]
+_COVER_UPLOAD_SEL = [
+    '.weui-desktop-dialog :text-is("上传封面")',
+    '.weui-desktop-dialog :text-is("本地上传")',
+    '.weui-desktop-dialog :text-is("从本地上传")',
+    '[class*="cover-dialog"] :text-is("上传封面")',
+    'text=上传封面',
+    'text=从本地上传',
+]
+_COVER_INPUT_SEL = [
+    '.weui-desktop-dialog input[type="file"][accept*="image"]',
+    '[class*="cover"] input[type="file"][accept*="image"]',
+    '.weui-desktop-dialog input[type="file"]',
+    'input[type="file"][accept*="image"]',
+]
+_COVER_CONFIRM_SEL = [
+    '.weui-desktop-dialog button:has-text("确认")',
+    '.weui-desktop-dialog button:has-text("确定")',
+    '.weui-desktop-dialog button:has-text("完成")',
+    'button.weui-desktop-btn_primary:has-text("确认")',
+    'button.weui-desktop-btn_primary:has-text("确定")',
+    'button:has-text("确认")',
+]
 # 原创声明提示拦截窗、校验/扫码弹窗及预览区进度/报错控件
 _NO_TIP_SEL = ['.original-intercept-wrapper .intercept-original-dialog .no-tip-btn']
 _PROGRESS_TEXT_SEL = ['.post-view .preview .ant-progress-text', '.preview .ant-progress-text']
@@ -84,10 +123,12 @@ _CHECK_DIALOG_SEL = ['.post-view .post-check-dialog .check-content', '.post-chec
 _QR_GUIDE_SEL = ['.post-view .mobile-guide-qr-code .weui-desktop-dialog__title', '.mobile-guide-qr-code .weui-desktop-dialog__title']
 # 发布成功判据(页面跳转/出现提示)
 _OK_TEXTS = ["发表成功", "发布成功", "提交成功"]
+_DRAFT_OK_TEXTS = ["保存成功", "草稿保存成功", "已保存到草稿箱", "保存草稿成功", "已存入草稿箱"]
 _UPLOAD_BUSY_KW = ("正在上传", "上传中", "转码中", "处理中")
 _UPLOAD_ERR_KW = ("上传失败", "转码失败", "格式不支持", "超出时长", "超过大小")
 _VERIFY_KW = ("扫码验证", "人脸验证", "安全验证", "滑块验证", "身份验证", "请用官方发布页面完成验证")
 MANAGE_URL = "https://channels.weixin.qq.com/platform/post/list"
+DRAFT_URL = "https://channels.weixin.qq.com/platform/post/draft"
 
 # ── 位置 POI(可选;选择器需真号校准,任何一步失败都跳过、不阻塞发布)──
 _POI_TRIGGER = [
@@ -219,16 +260,24 @@ async def _any_text_in_frames(page, keywords) -> str:
     return ""
 
 
-async def _find_enabled_publish_button(page):
-    """Find a visible and enabled publish button across main/child frames."""
+async def _find_enabled_publish_button(page, *, save_as_draft: bool = False):
+    """Find a visible and enabled publish or save-draft button across main/child frames."""
+    selectors = _DRAFT_BTN if save_as_draft else _PUBLISH_BTN
     for frame in page.frames:
-        for sel in _PUBLISH_BTN:
+        for sel in selectors:
             try:
                 loc = frame.locator(sel)
                 for index in range(await loc.count() - 1, -1, -1):
                     cand = loc.nth(index)
                     if not await cand.is_visible():
                         continue
+                    txt = ((await cand.inner_text()) or "").strip()
+                    if save_as_draft:
+                        if "草稿" not in txt or "发表" in txt or "发布" in txt:
+                            continue
+                    else:
+                        if "草稿" in txt:
+                            continue
                     disabled_attr = await cand.get_attribute("disabled")
                     aria_disabled = await cand.get_attribute("aria-disabled")
                     classes = str(await cand.get_attribute("class") or "").lower()
@@ -244,6 +293,76 @@ async def _find_enabled_publish_button(page):
             except Exception:
                 continue
     return None, None
+
+
+async def _apply_channels_cover(page, cover_path: str, on_stage=None) -> str:
+    """跨 frame 为视频号视频上传自定义封面并确认，成功返回空串。"""
+    resolved = str(Path(cover_path).resolve())
+    if not Path(resolved).is_file():
+        return f"自定义封面文件不存在: {cover_path}"
+    await _notify_stage(on_stage, "正在上传视频号自定义视频封面…")
+    fc_state = {"handled": 0}
+
+    def _on_fc(fc):
+        fc_state["handled"] += 1
+        asyncio.ensure_future(fc.set_files(resolved))
+
+    page.on("filechooser", _on_fc)
+    try:
+        if not await _click_in_frames(page, _COVER_TRIGGER_SEL, timeout=3500):
+            return "未找到视频号「更换封面 / 编辑封面」入口，已停止提交以防使用默认封面"
+        await human_wait(page, 1200)
+
+        uploaded = fc_state["handled"] > 0
+        if not uploaded:
+            await _click_in_frames(page, _COVER_UPLOAD_SEL, timeout=2500)
+            await human_wait(page, 900)
+            uploaded = fc_state["handled"] > 0
+
+        if not uploaded:
+            for frame in page.frames:
+                for sel in _COVER_INPUT_SEL:
+                    try:
+                        loc = frame.locator(sel)
+                        for idx in range(await loc.count()):
+                            cand = loc.nth(idx)
+                            acc = str(await cand.get_attribute("accept") or "").lower()
+                            if "video" in acc or "mp4" in acc:
+                                continue
+                            await cand.set_input_files(resolved, timeout=10000)
+                            uploaded = True
+                            break
+                        if uploaded:
+                            break
+                    except Exception:
+                        continue
+                if uploaded:
+                    break
+
+        if not uploaded:
+            return "已打开视频号封面弹窗，但未找到封面图片上传控件"
+
+        await human_wait(page, 1500)
+        confirmed = False
+        for _ in range(5):
+            if await _click_in_frames(page, _COVER_CONFIRM_SEL, timeout=2500):
+                confirmed = True
+                await human_wait(page, 900)
+            elif confirmed:
+                break
+            else:
+                await human_wait(page, 500)
+        if not confirmed:
+            return "已选择视频号自定义封面图，但未找到弹窗「确认/完成」按钮"
+        log.info("[channels_publish] 已完成视频号自定义封面设置")
+        return ""
+    except Exception as exc:
+        return f"设置视频号自定义封面异常: {exc!r}"
+    finally:
+        try:
+            page.remove_listener("filechooser", _on_fc)
+        except Exception:
+            pass
 
 
 async def _first_text_in_frames(page, selectors) -> str:
@@ -352,10 +471,11 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
                            desc: str, media_paths: List[str], topics: str = "",
                            headed: bool = True, timeout_seconds: int = 180,
                            location: str = "",
+                           cover_path: str = "", save_as_draft: bool = False,
                            on_submit: Callable[[], object | Awaitable[object]] | None = None,
                            on_stage: Callable[[str], object | Awaitable[object]] | None = None,
                            ) -> Tuple[bool, str, str]:
-    """发布一条视频号作品。返回 (ok, result_url, error)。
+    """发布一条视频号作品（支持自定义视频封面与保存草稿）。返回 (ok, result_url, error)。
     location:可选,视频号位置 POI(best-effort,设不上不影响发布)。
     storage_state_json 仅校验用,实际登录态在该账号持久 profile 里。"""
     files = [str(Path(p)) for p in media_paths if p and Path(p).exists()]
@@ -412,7 +532,10 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
             return
         if not submitted["clicked"] or method != "POST":
             return
-        if "/cgi-bin/mmfinderassistant-bin/post/post_create" not in path:
+        if save_as_draft:
+            if not any(seg in path for seg in ("/post/post_draft", "/post/save_draft", "/post/draft")):
+                return
+        elif "/cgi-bin/mmfinderassistant-bin/post/post_create" not in path:
             return
         try:
             payload = await response.json()
@@ -511,10 +634,16 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
 
         # 位置 POI(可选,best-effort)
         await _set_location(page, location)
+        if cover_path and media_type == "video":
+            cover_err = await _apply_channels_cover(page, cover_path, on_stage=on_stage)
+            if cover_err:
+                diag = await _collect_diag(page, "cover-failed")
+                return False, "", f"{cover_err}。DOM诊断: {diag}"
         await _dismiss_original_intercept(page)
         await human_wait(page, 800)
 
-        await _notify_stage(on_stage, "正在准备点击「发表」…")
+        action_label = "保存草稿" if save_as_draft else "发表"
+        await _notify_stage(on_stage, f"正在准备点击「{action_label}」…")
         pub = None
         btn_deadline = asyncio.get_running_loop().time() + max(5, min(120, int(timeout_seconds)))
         while asyncio.get_running_loop().time() < btn_deadline:
@@ -523,34 +652,35 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
             if err_kw:
                 diag = await _collect_diag(page, "upload-err")
                 return False, "", f"视频号媒体校验/上传失败({err_kw})。DOM诊断: {diag}"
-            pub, _pf = await _find_enabled_publish_button(page)
+            pub, _pf = await _find_enabled_publish_button(page, save_as_draft=save_as_draft)
             if pub is not None:
                 break
             await human_wait(page, 1000)
         if pub is None:
-            diag = await _collect_diag(page, "no-publish-btn")
-            return False, "", (f"上传/填写已完成但未找到可用的发表按钮(可能仍在转码或缺少必填项)。DOM诊断: {diag}")
+            diag = await _collect_diag(page, "no-draft-btn" if save_as_draft else "no-publish-btn")
+            return False, "", (f"上传/填写已完成但未找到可用的「{action_label}」按钮(可能仍在转码或缺少必填项)。DOM诊断: {diag}")
 
         await _notify_submit(on_submit)
         submitted["clicked"] = True
         try:
             await DEFAULT_HUMAN_ENGINE.click_locator(pub, page=page, timeout=5000)
-            await _notify_stage(on_stage, "已点击「发表」，等待视频号确认…")
+            await _notify_stage(on_stage, f"已点击「{action_label}」，等待视频号确认…")
         except Exception as e:
-            return False, "", f"write_uncertain:点发表后连接或点击状态异常({e!r})，请先到视频号助手核对，系统不会自动重发"
+            return False, "", f"write_uncertain:点{action_label}后连接或点击状态异常({e!r})，请先到视频号助手核对，系统不会自动重发"
 
-        # 等成功:监听 post_create 接口回执、跳到 PostList 管理页或出现 toast；同时识别扫码/过脸/滑块验证
+        # 等成功:监听接口回执、跳到管理/草稿页或出现 toast；同时识别扫码/过脸/滑块验证
         poll_deadline = asyncio.get_running_loop().time() + max(1, int(timeout_seconds))
         verify_notified = False
+        ok_texts = _DRAFT_OK_TEXTS if save_as_draft else _OK_TEXTS
         while asyncio.get_running_loop().time() < poll_deadline:
             if channels_state["accepted"]:
                 ok = True
                 break
             url_l = str(page.url or "").lower()
-            if "postlist" in url_l or "/post/list" in url_l:
+            if "postlist" in url_l or "/post/list" in url_l or (save_as_draft and "/post/draft" in url_l):
                 ok = True
                 break
-            if await _any_text_in_frames(page, _OK_TEXTS):
+            if await _any_text_in_frames(page, ok_texts):
                 ok = True
                 break
             qr_title = await _first_text_in_frames(page, _QR_GUIDE_SEL)
@@ -571,18 +701,21 @@ async def publish_channels(mgr: BrowserManager, identity: Identity,
                 log.warning("[channels_publish] check-dialog: %s", check_msg)
             if channels_state["rejected"] and not verify_notified and not channels_state["verify_hint"]:
                 diag = await _collect_diag(page, "rejected")
-                error = (f"write_uncertain:视频号返回发表异常({channels_state['rejected']})，"
-                         f"请到视频号助手确认是否已发布。DOM诊断: {diag}")
+                error = (f"write_uncertain:视频号返回{action_label}异常({channels_state['rejected']})，"
+                         f"请到视频号助手确认状态。DOM诊断: {diag}")
                 break
             await human_wait(page, 2000)
 
         if ok:
             current = str(page.url or "")
-            result_url = current if ("postlist" in current.lower() or "/post/list" in current.lower()) else MANAGE_URL
+            if save_as_draft:
+                result_url = current if "/post/draft" in current.lower() else DRAFT_URL
+            else:
+                result_url = current if ("postlist" in current.lower() or "/post/list" in current.lower()) else MANAGE_URL
         elif not error:
             diag = await _collect_diag(page, "no-success")
             hint = channels_state["verify_hint"] or "可能要求封面/实名/扫码或过脸验证"
-            error = (f"write_uncertain:已点发表但未确认成功({hint})，请先到视频号助手核对(系统不会自动重发)。"
+            error = (f"write_uncertain:已点{action_label}但未确认成功({hint})，请先到视频号助手核对(系统不会自动重发)。"
                      f"当前页: {page.url}; DOM诊断: {diag}")
     except asyncio.CancelledError:
         raise

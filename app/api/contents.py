@@ -396,6 +396,9 @@ class RepostIn(BaseModel):
     title: str | None = None
     desc: str | None = None
     topics: str | None = None
+    cover_path: str = ""                 # 可选自定义封面本地图片路径
+    publish_action: str = "publish"      # publish(正式发布) | draft(暂存到目标平台草稿箱)
+    save_as_draft: bool = False          # True=存为 CreatorHub 本地草稿
     visibility: str = "public"           # 抖音:public | friends | private
     allow_save: bool = True              # 抖音:是否允许他人保存
     media_order: list[StrictInt] | None = None  # 剔除/调序后保留的图片原始序号(按新顺序);None=全部原序
@@ -405,6 +408,7 @@ async def _repost_content(cid: int, body: RepostIn, target_platform: str, reques
     """把已下载作品转成目标平台(xhs / douyin / shipinhao / kuaishou / tiktok)的发布任务。"""
     if not app_runtime.engine:
         raise HTTPException(503, "引擎未就绪")
+    from app.api.publishing import _norm_publish_action, _validate_cover_path
     with get_session() as s:
         def create():
             rec = s.get(ContentRecord, cid)
@@ -423,10 +427,15 @@ async def _repost_content(cid: int, body: RepostIn, target_platform: str, reques
                     raise HTTPException(400, "请先在账号页完成登录")
             elif not (acc.creator_storage_state or has_creator_cookies(acc.storage_state)):
                 raise HTTPException(400, "请先完成小红书扫码登录或创作者登录")
+            cover_path = _validate_cover_path(body.cover_path)
+            publish_action = _norm_publish_action(body.publish_action)
             try:
                 tid = app_runtime.engine.create_relay_publish(
                     cid, body.account_id, target_platform=target_platform,
                     title=body.title, desc=body.desc, topics=body.topics,
+                    cover_path=cover_path,
+                    publish_action=publish_action,
+                    save_as_draft=bool(body.save_as_draft),
                     visibility=body.visibility if body.visibility in ("public", "friends", "private") else "public",
                     allow_save=bool(body.allow_save), media_order=body.media_order,
                     scheduled_at=metadata_service._parse_when(body.scheduled_at, acc.timezone_id), session=s)

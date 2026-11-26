@@ -286,11 +286,17 @@ async def list_task_queue(platform: str | None = None, queue_type: str = "",
                     "phase_label": live_stage or "发布中",
                     "steps": [],
                 }
+            pub_action = str(getattr(row, "publish_action", "publish") or "publish").strip().lower()
+            action_tag = "平台草稿" if pub_action == "draft" else ""
+            cover_tag = "含自定义封面" if str(getattr(row, "cover_path", "") or "").strip() else ""
+            meta_prefix = " · ".join(x for x in (action_tag, cover_tag) if x)
+            base_detail = live_stage or (row.desc if row.title else (row.topics or row.media_type))
+            full_detail = f"{meta_prefix} · {base_detail}" if (meta_prefix and base_detail) else (meta_prefix or base_detail)
             add(
-                queue="publishes", queue_label="内容发布", row_id=row.id,
+                queue="publishes", queue_label="内容草稿" if pub_action == "draft" else "内容发布", row_id=row.id,
                 row_platform=row.platform, account_id=row.account_id,
                 title=row.title or row.desc or f"{row.media_type} 发布任务",
-                detail=live_stage or (row.desc if row.title else (row.topics or row.media_type)),
+                detail=full_detail,
                 status=row.status, created_at=row.created_at,
                 scheduled_at=row.scheduled_at, source_tab="publish",
                 schedule_is_utc=row.scheduled_at_is_utc,

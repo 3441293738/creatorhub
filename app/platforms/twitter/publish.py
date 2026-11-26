@@ -31,7 +31,10 @@ from .protocol import has_twitter_login_cookies
 from .selectors import (
     ACCOUNT_LOCKED_URL_PARTS,
     ACCOUNT_SUSPENDED_URL_PARTS,
+    COMPOSE_CLOSE_BUTTON_SELECTORS,
     COMPOSE_FILE_INPUT_SELECTORS,
+    COMPOSE_MEDIA_EDIT_SELECTORS,
+    COMPOSE_SAVE_DRAFT_SELECTORS,
     COMPOSE_SUBMIT_BUTTON_SELECTORS,
     COMPOSE_TEXTBOX_SELECTORS,
     REPLY_AUDIENCE_TRIGGER_SELECTORS,
@@ -294,13 +297,15 @@ async def publish_twitter(
     topics: str = "",
     visibility: str = "public",
     allow_comment: bool = True,
+    cover_path: str = "",
+    save_as_draft: bool = False,
     tw_options: Optional[Mapping[str, Any]] = None,
     headed: bool = True,
     timeout_seconds: int = 180,
     on_submit: Optional[Callable[[], Any]] = None,
     on_stage: Optional[Callable[[str], Any]] = None,
 ) -> Tuple[bool, str, str]:
-    """在账号专属隔离浏览器中执行 X (Twitter) 推文发布。"""
+    """在账号专属隔离浏览器中执行 X (Twitter) 推文发布或保存至 X 草稿箱。"""
     _ = visibility
     if mgr is None or identity is None:
         return False, "", "缺少 X (Twitter) 账号浏览器隔离环境"
@@ -512,7 +517,52 @@ async def publish_twitter(
                 if upload_err:
                     return False, "", upload_err
 
+            if cover_path and has_video and Path(cover_path).is_file():
+                # X 普通发推弹窗通常不支持视频自定义封面（Media Studio 账号才会出现编辑入口）；
+                # 仅在找到封面上传控件时上传，否则安全跳过并提示，避免阻断跨平台矩阵群发。
+                try:
+                    edit_btn = await _find_first_visible(page, COMPOSE_MEDIA_EDIT_SELECTORS, timeout_ms=2000)
+                    if edit_btn is not None:
+                        await DEFAULT_HUMAN_ENGINE.click_locator(edit_btn, page=page, timeout=3000)
+                        await human_wait(page, 900)
+                        thumb_inp = page.locator('div[role="dialog"] input[type="file"][accept*="image"]').first
+                        if await thumb_inp.count():
+                            await _notify_stage(on_stage, "正在上传 X 自定义视频缩略图…")
+                            await thumb_inp.set_input_files(str(Path(cover_path).resolve()))
+                            await human_wait(page, 1200)
+                            save_btn = page.locator('div[role="dialog"] button:has-text("Save"), div[role="dialog"] button:has-text("保存")').first
+                            if await save_btn.count() and await save_btn.is_visible():
+                                await DEFAULT_HUMAN_ENGINE.click_locator(save_btn, page=page, timeout=3000)
+                                await human_wait(page, 700)
+                        else:
+                            await page.keyboard.press("Escape")
+                            await human_wait(page, 400)
+                            await _notify_stage(on_stage, "X 普通发推框不支持自定义视频封面，已沿用视频默认封面")
+                    else:
+                        await _notify_stage(on_stage, "X 普通发推框不支持自定义视频封面，已沿用视频默认封面")
+                except Exception:
+                    pass
+
             await _dismiss_compose_overlays(page)
+            if save_as_draft:
+                await _notify_stage(on_stage, "正在将推文保存至 X (Twitter) 草稿箱…")
+                close_btn = await _find_first_visible(page, COMPOSE_CLOSE_BUTTON_SELECTORS, timeout_ms=5000)
+                if close_btn is not None:
+                    await DEFAULT_HUMAN_ENGINE.click_locator(close_btn, page=page, timeout=4000)
+                else:
+                    await page.keyboard.press("Escape")
+                await human_wait(page, 900)
+                save_btn = await _find_first_visible(page, COMPOSE_SAVE_DRAFT_SELECTORS, timeout_ms=6000)
+                if save_btn is None:
+                    return False, "", "未弹出 X「Save post / 保存草稿」确认框，已中止操作（未公开发推）"
+                btn_txt = str((await save_btn.inner_text()) or "").strip().lower()
+                if any(bad in btn_txt for bad in ("discard", "delete", "放弃", "删除")):
+                    return False, "", f"X 草稿确认按钮文案异常({btn_txt})，已中止操作防止丢失内容"
+                await _invoke_submit()
+                await DEFAULT_HUMAN_ENGINE.click_locator(save_btn, page=page, timeout=4000)
+                await human_wait(page, 1800)
+                return True, "https://x.com/compose/post/unsent/drafts", ""
+
             submit_btn = await _find_first_visible(
                 page, COMPOSE_SUBMIT_BUTTON_SELECTORS, timeout_ms=ready_timeout_ms
             )

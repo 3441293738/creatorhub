@@ -155,17 +155,28 @@ async def publish_instagram_api(
     *,
     topics: str = "",
     allow_comment: bool = True,
+    cover_path: str = "",
     ig_options: Optional[Mapping[str, Any]] = None,
     on_submit: Optional[Callable[[], Any]] = None,
     on_stage: Optional[Callable[[str], Any]] = None,
     thumbnail_wait_cap_seconds: float = 7.5,
 ) -> Tuple[bool, str, str]:
-    """通过 Instagram 移动端接口执行两阶段/三阶段媒体上传与 configure 提交。"""
+    """通过 Instagram 移动端接口执行两阶段/三阶段媒体上传与 configure 提交（视频支持自定义封面）。"""
     paths, v_err = _validate_files(media_type, files)
     if v_err:
         return False, "", v_err
     if not client.session.is_logged_in:
         return False, "", "logged_out:账号缺少有效的 Instagram sessionid，请重新登录"
+
+    custom_cover_tuple: Optional[Tuple[bytes, int, int]] = None
+    if cover_path:
+        cp = Path(cover_path).expanduser()
+        if not cp.is_file():
+            return False, "", f"自定义封面文件不存在: {cover_path}"
+        try:
+            custom_cover_tuple = _prepare_image_jpeg(cp)
+        except Exception as exc:
+            return False, "", f"读取 Instagram 自定义封面失败: {exc!r}"
 
     opts = dict(ig_options or {})
     post_kind = str(opts.get("post_kind") or "auto").strip().lower()
@@ -178,17 +189,22 @@ async def publish_instagram_api(
         if len(paths) > 1:
             await _notify_stage(on_stage, f"正在上传 Instagram 轮播素材 (共 {len(paths)} 项)…")
             children: List[Dict[str, Any]] = []
+            used_custom_cover = False
             for idx, p in enumerate(paths, 1):
                 await _notify_stage(on_stage, f"正在上传第 {idx}/{len(paths)} 项媒体…")
                 if p.suffix.lower() in VIDEO_EXTS:
                     v_bytes, c_bytes, dur, w, h = _prepare_video_and_cover(p)
+                    cov_w, cov_h = w, h
+                    if custom_cover_tuple is not None and not used_custom_cover:
+                        c_bytes, cov_w, cov_h = custom_cover_tuple
+                        used_custom_cover = True
                     up_id, err = await client.rupload_video_bytes(
                         v_bytes, duration_sec=dur, width=w, height=h, is_sidecar=True
                     )
                     if not up_id:
                         return False, "", f"第 {idx} 项视频上传失败: {err}"
                     _, c_err = await client.rupload_photo_bytes(
-                        c_bytes, upload_id=up_id, width=w, height=h, is_sidecar=True, media_type="2"
+                        c_bytes, upload_id=up_id, width=cov_w, height=cov_h, is_sidecar=True, media_type="2"
                     )
                     if c_err:
                         return False, "", f"第 {idx} 项视频封面上传失败: {c_err}"
@@ -226,9 +242,12 @@ async def publish_instagram_api(
         single = paths[0]
         is_story = post_kind == "story"
         if single.suffix.lower() in VIDEO_EXTS:
-            is_reel = (post_kind in {"auto", "reel"}) and not is_story
-            await _notify_stage(on_stage, "正在准备视频与提取封面…")
+            is_reel = (post_kind in {"auto", "reel", "reels"}) and not is_story
+            await _notify_stage(on_stage, "正在准备视频与封面…")
             v_bytes, c_bytes, dur, w, h = _prepare_video_and_cover(single)
+            cov_w, cov_h = w, h
+            if custom_cover_tuple is not None:
+                c_bytes, cov_w, cov_h = custom_cover_tuple
             shared_uid = str(int(time.time() * 1000))
             shared_wf = f"{shared_uid}_{uuid.uuid4()}_{'Mixed' if is_reel else 'Video'}_0"
             await _notify_stage(on_stage, "正在上传 Instagram 视频流 (rupload_igvideo)…")
@@ -248,8 +267,8 @@ async def publish_instagram_api(
             _, c_err = await client.rupload_photo_bytes(
                 c_bytes,
                 upload_id=up_id,
-                width=w,
-                height=h,
+                width=cov_w,
+                height=cov_h,
                 is_reel=is_reel,
                 media_type="2",
                 waterfall_id=shared_wf,
@@ -315,6 +334,8 @@ async def publish_instagram_browser(
     *,
     topics: str = "",
     allow_comment: bool = True,
+    cover_path: str = "",
+    save_as_draft: bool = False,
     headed: bool = True,
     timeout_seconds: int = 180,
     on_submit: Optional[Callable[[], Any]] = None,
@@ -517,6 +538,9 @@ async def publish_instagram_browser(
             )
 
             # 状态驱动推进裁切 / 滤镜 / 封面步骤，直至顶栏出现精确的 Share/分享 按钮
+            custom_cover_applied = False
+            resolved_cover = str(Path(cover_path).resolve()) if (cover_path and Path(cover_path).is_file()) else ""
+            has_video_media = any(p.suffix.lower() in VIDEO_EXTS for p in paths)
             for _step in range(4):
                 for ok_txt in ("OK", "好", "确定", "知道了", "Got it"):
                     ok_btn = active_page.locator(f'div[role="dialog"] button:text-is("{ok_txt}")').first
@@ -526,6 +550,35 @@ async def publish_instagram_browser(
                                 ok_btn, page=active_page, timeout=1500
                             )
                             await human_wait(active_page, 600)
+                    except Exception:
+                        pass
+                if resolved_cover and has_video_media and not custom_cover_applied:
+                    try:
+                        cov_btn = active_page.locator(
+                            'div[role="dialog"] button:has-text("Select from computer"), '
+                            'div[role="dialog"] div[role="button"]:has-text("Select from computer"), '
+                            'div[role="dialog"] button:has-text("从电脑中选择"), '
+                            'div[role="dialog"] div[role="button"]:has-text("从电脑中选择"), '
+                            'div[role="dialog"] button:has-text("從電腦選擇")'
+                        ).first
+                        cov_input = active_page.locator(
+                            'div[role="dialog"] input[type="file"][accept*="image"]'
+                        ).first
+                        if await cov_input.count():
+                            await _notify_stage(on_stage, "正在上传 Instagram 自定义视频封面…")
+                            await cov_input.set_input_files(resolved_cover)
+                            await human_wait(active_page, 1400)
+                            custom_cover_applied = True
+                        elif await cov_btn.count() and await cov_btn.is_visible():
+                            await _notify_stage(on_stage, "正在上传 Instagram 自定义视频封面…")
+                            async with active_page.expect_file_chooser(timeout=8000) as fc_info:
+                                await DEFAULT_HUMAN_ENGINE.click_locator(
+                                    cov_btn, page=active_page, timeout=3000
+                                )
+                            chooser = await fc_info.value
+                            await chooser.set_files(resolved_cover)
+                            await human_wait(active_page, 1400)
+                            custom_cover_applied = True
                     except Exception:
                         pass
                 share_check = active_page.locator(share_sel).first
@@ -572,6 +625,43 @@ async def publish_instagram_browser(
                             )
                 except Exception:
                     pass
+
+            if save_as_draft:
+                await _notify_stage(on_stage, "正在尝试保存到 Instagram 网页草稿箱…")
+                close_btn = active_page.locator(
+                    'svg[aria-label="Close" i], svg[aria-label="关闭"], svg[aria-label="關閉"], '
+                    'button[aria-label="Close" i], div[role="button"][aria-label="Close" i]'
+                ).first
+                if await close_btn.count() and await close_btn.is_visible():
+                    await DEFAULT_HUMAN_ENGINE.click_locator(close_btn, page=active_page, timeout=3000)
+                else:
+                    await active_page.keyboard.press("Escape")
+                await human_wait(active_page, 1200)
+                save_draft_btn = active_page.locator(
+                    'div[role="dialog"] button:has-text("Save draft"), '
+                    'div[role="dialog"] button:has-text("保存草稿"), '
+                    'div[role="dialog"] button:has-text("儲存草稿")'
+                ).first
+                if await save_draft_btn.count() and await save_draft_btn.is_visible():
+                    await _notify_submit(on_submit)
+                    submitted = True
+                    await DEFAULT_HUMAN_ENGINE.click_locator(save_draft_btn, page=active_page, timeout=4000)
+                    await human_wait(active_page, 2500)
+                    return True, INSTAGRAM_HOME_URL, ""
+                # 若当前 Instagram 网页版本未提供 Save draft 按钮，严禁误点 Share/Discard
+                cancel_btn = active_page.locator(
+                    'div[role="dialog"] button:has-text("Cancel"), div[role="dialog"] button:has-text("取消")'
+                ).first
+                if await cancel_btn.count() and await cancel_btn.is_visible():
+                    try:
+                        await DEFAULT_HUMAN_ENGINE.click_locator(cancel_btn, page=active_page, timeout=2000)
+                    except Exception:
+                        pass
+                return (
+                    False,
+                    "",
+                    "当前 Instagram 网页端未开放「Save draft / 保存草稿」按钮，已安全中止（未公开发布）；请使用 CreatorHub「存为本地草稿」",
+                )
 
             share_btn = active_page.locator(share_sel).first
             await share_btn.wait_for(state="visible", timeout=12000)
@@ -649,6 +739,8 @@ async def publish_instagram(
     topics: str = "",
     visibility: str = "public",
     allow_comment: bool = True,
+    cover_path: str = "",
+    save_as_draft: bool = False,
     ig_options: Optional[Mapping[str, Any]] = None,
     mode: str = "hybrid",
     headed: bool = True,
@@ -657,9 +749,9 @@ async def publish_instagram(
     on_stage: Optional[Callable[[str], Any]] = None,
     api_client: Optional[InstagramClient] = None,
 ) -> Tuple[bool, str, str]:
-    """Instagram 统一发布入口（`hybrid` / `api` / `browser`）。"""
+    """Instagram 统一发布入口（`hybrid` / `api` / `browser`，支持自定义封面与浏览器草稿尝试）。"""
     _ = visibility  # Instagram 帖子公开/私密由账号自身隐私属性决定
-    norm_mode = str(mode or "hybrid").strip().lower()
+    norm_mode = "browser" if save_as_draft else str(mode or "hybrid").strip().lower()
     if norm_mode not in {"hybrid", "api", "browser"}:
         norm_mode = "hybrid"
 
@@ -690,8 +782,8 @@ async def publish_instagram(
 
     opts = dict(ig_options or {})
     post_kind = str(opts.get("post_kind") or "auto").strip().lower()
-    # Story 快拍桌面网页端无原生发布入口，固定走移动端 Story 接口
-    if norm_mode in {"api", "hybrid"} or post_kind == "story":
+    # Story 快拍桌面网页端无原生发布入口，固定走移动端 Story 接口（草稿模式走浏览器检测）
+    if (not save_as_draft) and (norm_mode in {"api", "hybrid"} or post_kind == "story"):
         cli = api_client or InstagramClient(
             storage_state,
             getattr(identity, "ua", "") if identity else "",
@@ -709,6 +801,7 @@ async def publish_instagram(
                     files,
                     topics=topics,
                     allow_comment=allow_comment,
+                    cover_path=cover_path,
                     ig_options=opts,
                     on_submit=_tracked_api_submit,
                     on_stage=on_stage,
@@ -722,6 +815,7 @@ async def publish_instagram(
                 files,
                 topics=topics,
                 allow_comment=allow_comment,
+                cover_path=cover_path,
                 ig_options=opts,
                 on_submit=_tracked_api_submit,
                 on_stage=on_stage,
@@ -755,6 +849,8 @@ async def publish_instagram(
         files,
         topics=topics,
         allow_comment=allow_comment,
+        cover_path=cover_path,
+        save_as_draft=save_as_draft,
         headed=headed,
         timeout_seconds=timeout_seconds,
         on_submit=_tracked_browser_submit,

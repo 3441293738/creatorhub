@@ -114,6 +114,13 @@ STUDIO_STEP_CHECKS = '[test-id="CHECKS"]'
 STUDIO_STEP_REVIEW = '[test-id="REVIEW"]'
 STUDIO_NEXT_BUTTON = "#next-button"
 STUDIO_DONE_BUTTON = "#done-button"
+STUDIO_DIALOG_CLOSE_SELECTORS = (
+    "ytcp-uploads-dialog #close-button",
+    "ytcp-uploads-dialog #close-button button",
+    "#close-button button",
+    'ytcp-uploads-dialog button[aria-label="Close" i]',
+    'ytcp-uploads-dialog button[aria-label="关闭"]',
+)
 STUDIO_VIDEO_LINK_SELECTORS = (
     "a#video-link",
     "a.ytcp-video-info[href*='youtu.be']",

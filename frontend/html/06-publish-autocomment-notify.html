@@ -26,6 +26,15 @@
           </div>
           <div id="pub-upload-progress" class="pub-upload-progress" hidden></div>
         </div>
+        <div id="pub-cover-wrap">
+          <label class="field" id="pub-cover-label" for="pub-cover">自定义封面（可选，JPG / PNG / WEBP）</label>
+          <div class="filepick pub-cover-drop" id="pub-cover-drop">
+            <input type="file" id="pub-cover" class="filepick-input" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" aria-label="选择自定义封面图片">
+            <div class="filepick-cta"><svg><use href="#i-image"/></svg><span><b>点击选择</b> 或拖拽自定义封面图到此（留空则使用平台默认/视频首帧）</span></div>
+            <div class="filepick-list" id="pub-cover-list"></div>
+          </div>
+          <div class="field-help" id="pub-cover-help">视频发布时自动上传为自定义封面（全平台适用；图文发布一般以首图为封面）。</div>
+        </div>
         <div>
           <label class="field" for="pub-title"><span id="pub-title-label-text">标题(≤20 字)</span></label>
           <input id="pub-title" maxlength="20" placeholder="给作品起个标题">
@@ -37,6 +46,14 @@
         <div class="form-grid">
           <div class="form-field"><label for="pub-topics">话题</label><input id="pub-topics" placeholder="逗号分隔，不用带 #；例如：露营,户外"></div>
           <div class="form-field"><label for="pub-when">发布时间</label><input type="datetime-local" id="pub-when" aria-label="定时发布（留空则尽快发布）"><div class="field-help">留空表示尽快发布</div></div>
+          <div class="form-field">
+            <label for="pub-action">提交模式</label>
+            <select id="pub-action" aria-label="提交模式" onchange="onPubActionChange()">
+              <option value="publish">直接发布作品</option>
+              <option value="draft">暂存到平台草稿箱（上传并填表后存草稿，不公开）</option>
+            </select>
+            <div class="field-help" id="pub-action-help">选择「暂存到平台草稿箱」时，自动上传素材与封面并点击平台存草稿按钮。</div>
+          </div>
         </div>
         <div class="form-field sh-only">
           <label for="pub-location">位置（可选）</label><input id="pub-location" placeholder="城市或地点名，例如：东莞市 / 杭州西湖">
@@ -256,8 +273,8 @@
             <input id="pub-yt-playlists" maxlength="300" placeholder="填写已创建的播放列表名称，多个用逗号分隔">
           </div>
           <div class="publish-permission">
-            <label class="field" for="pub-yt-thumbnail">自定义缩略图本地路径（可选）</label>
-            <input id="pub-yt-thumbnail" maxlength="400" placeholder="可选，填写本地 .jpg/.png 封面绝对路径">
+            <label class="field" for="pub-yt-thumbnail">自定义缩略图本地路径（可选，优先使用上方上传的封面）</label>
+            <input id="pub-yt-thumbnail" maxlength="400" placeholder="可选，也可直接在上方「自定义封面」选择图片">
           </div>
           <div class="publish-permission">
             <label class="field" for="pub-yt-premiere">即时首映（Premiere）</label>
@@ -299,7 +316,8 @@
         </fieldset>
         <div class="form-actions">
           <span class="status-text" id="pub-msg" role="status" aria-live="polite"></span>
-          <button onclick="addPublish()"><svg><use href="#i-send"/></svg>加入发布队列</button>
+          <button type="button" class="ghost" id="pub-draft-btn" onclick="addPublish({ saveAsDraft: true })"><svg><use href="#i-edit"/></svg>存为本地草稿</button>
+          <button type="button" id="pub-submit-btn" onclick="addPublish()"><svg><use href="#i-send"/></svg><span id="pub-submit-label">加入发布队列</span></button>
         </div>
         <div class="form-note" id="pub-hint"><svg aria-hidden="true"><use href="#i-info"/></svg><span>发布通过自动化创作平台完成，遇到验证码或需补充封面时，可在弹出的浏览器窗口中手动处理。定时任务由后台引擎按计划执行。</span></div>
       </div>
@@ -309,7 +327,18 @@
     <div class="card" data-section="records">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-list"/></svg></span>
-        <h2>发布记录 <span class="sub">排队中与历史发布任务</span></h2>
+        <h2>发布记录 <span class="sub">本地草稿、排队中与历史发布任务</span></h2>
+        <div class="right" style="margin-left:auto">
+          <select id="pub-status-filter" aria-label="按状态筛选发布记录" onchange="renderPublishRows()" style="min-width:130px">
+            <option value="">全部状态</option>
+            <option value="draft">本地草稿</option>
+            <option value="pending">排队中</option>
+            <option value="publishing">执行中</option>
+            <option value="done">已完成</option>
+            <option value="failed">失败</option>
+            <option value="uncertain">结果待确认</option>
+          </select>
+        </div>
       </div>
       <div class="table-wrap"><table aria-label="发布任务列表"><thead><tr>
         <th>标题</th><th>发布账号</th><th>类型 / 素材</th><th>来源</th><th>计划时间</th><th>状态</th><th style="text-align:right">操作</th>

@@ -91,6 +91,37 @@ SELECTOR_GROUPS: Mapping[str, tuple[SelectorCandidate, ...]] = MappingProxyType(
         _css("publish_page_button", ".publish-page-publish-btn button"),
         _text("publish_note_text", "发布笔记"),
     ),
+    "publish.draft": (
+        _css("publish_draft_leave_btn", 'button:has-text("暂存离开")'),
+        _css("publish_draft_save_btn", 'button:has-text("存草稿")'),
+        _css("publish_draft_save2_btn", 'button:has-text("保存草稿")'),
+        _css("publish_draft_submit_btn", '.submit button.cancel, .publish-page-publish-btn button.cancel'),
+        _text("publish_draft_leave_text", "暂存离开", exact=True),
+        _text("publish_draft_save_text", "存草稿", exact=True),
+    ),
+    "publish.cover_trigger": (
+        _css("cover_edit_btn", '.cover-container :text-is("修改封面")'),
+        _css("cover_set_btn", '.cover-container :text-is("设置封面")'),
+        _css("cover_change_btn", '.cover-container :text-is("更换封面")'),
+        _css("cover_upload_btn", '.cover-container :text-is("上传封面")'),
+        _css("cover_any_edit_btn", 'button:has-text("修改封面")'),
+        _css("cover_any_set_btn", 'button:has-text("设置封面")'),
+        _text("cover_edit_text", "修改封面", exact=True),
+        _text("cover_set_text", "设置封面", exact=True),
+        _text("cover_change_text", "更换封面", exact=True),
+    ),
+    "publish.cover_upload": (
+        _css("cover_modal_upload_tab", '[role="dialog"] :text-is("上传封面"), .d-modal :text-is("上传封面")'),
+        _css("cover_modal_local_btn", '[role="dialog"] :text-is("本地上传"), .d-modal :text-is("本地上传")'),
+        _text("cover_upload_text", "上传封面", exact=True),
+    ),
+    "publish.cover_confirm": (
+        _css("cover_modal_confirm_btn", '[role="dialog"] button:has-text("确定"), .d-modal button:has-text("确定")'),
+        _css("cover_modal_done_btn", '[role="dialog"] button:has-text("完成"), .d-modal button:has-text("完成")'),
+        _css("cover_modal_ok_btn", '[role="dialog"] button:has-text("确认"), .d-modal button:has-text("确认")'),
+        _text("cover_confirm_text", "确定", exact=True),
+        _text("cover_done_text", "完成", exact=True),
+    ),
     "publish.progress": (
         _css(
             "upload_progress_class",

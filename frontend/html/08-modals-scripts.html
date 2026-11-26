@@ -53,11 +53,29 @@
         <div><label class="field" for="rp-topics">话题</label><input id="rp-topics" placeholder="逗号分隔，不用带 #"></div>
         <div><label class="field" for="rp-when">定时发布</label><input type="datetime-local" id="rp-when" aria-label="定时发布（留空尽快发布）"></div>
       </div>
+      <div class="form-grid">
+        <div>
+          <label class="field" for="rp-action">提交模式</label>
+          <select id="rp-action" aria-label="提交模式">
+            <option value="publish">直接发布</option>
+            <option value="draft">暂存到目标平台草稿箱</option>
+          </select>
+        </div>
+        <div id="rp-cover-wrap">
+          <label class="field" for="rp-cover">自定义封面（可选）</label>
+          <div class="filepick pub-cover-drop compact" id="rp-cover-drop">
+            <input type="file" id="rp-cover" class="filepick-input" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" aria-label="选择自定义封面">
+            <div class="filepick-cta"><svg><use href="#i-image"/></svg><span><b>选择封面图</b>（留空用默认）</span></div>
+            <div class="filepick-list" id="rp-cover-list"></div>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="ui-modal-footer">
       <span class="mut" id="rp-msg" role="status" tabindex="-1"></span>
       <div class="row" id="rp-actions">
         <button class="ghost" onclick="hideRepost()">取消</button>
+        <button class="ghost" id="rp-save-draft" onclick="submitRepost({ saveAsDraft: true })"><svg aria-hidden="true"><use href="#i-edit"/></svg>存为本地草稿</button>
         <button id="rp-submit" onclick="submitRepost()"><svg aria-hidden="true"><use href="#i-send"/></svg>确认推送</button>
       </div>
     </div>

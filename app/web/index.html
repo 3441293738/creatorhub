@@ -2957,7 +2957,9 @@
   .mx-file-pill button:hover { background:var(--danger-soft); color:var(--danger); }
   .mx-file-pill button svg { width:12px !important; height:12px !important; }
   .mx-inline-warn { display:flex; align-items:center; gap:7px; padding:8px 11px; border-radius:9px; background:var(--warn-soft); color:var(--warn); font-size:12px; }
+  .mx-pub-submit-box { display:flex; flex-direction:column; gap:8px; }
   .mx-pub-submit-box button { width:100%; justify-content:center; }
+  .mx-cover-pill img { width:28px; height:20px; border-radius:4px; object-fit:cover; }
 
   .mx-empty-box {
     padding:36px 20px; text-align:center; display:grid; justify-items:center; gap:8px;
@@ -3840,6 +3842,21 @@
 
   .queue-progress-head span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
   .queue-progress-meta, .dl-inline-prog-meta { font-size:11px; color:var(--mut); line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  /* ── 自定义封面与草稿徽章 ── */
+  .pub-cover-drop .filepick-cta { padding:12px 14px; font-size:12.5px; }
+  .pub-cover-drop.compact .filepick-cta { padding:9px 10px; font-size:12px; }
+  .pub-meta-badges { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin-top:4px; }
+  .pub-badge-mini { display:inline-flex; align-items:center; gap:4px; padding:1px 6px; border-radius:999px; font-size:11px; line-height:1.45; border:1px solid var(--line); background:var(--surface-2); color:var(--mut); white-space:nowrap; }
+  .pub-badge-mini.draft { border-color:color-mix(in srgb,var(--warn) 42%,transparent); background:color-mix(in srgb,var(--warn) 14%,transparent); color:var(--warn); }
+  .pub-badge-mini.cover { border-color:var(--acc-ring); background:var(--acc-soft); color:var(--acc); }
+  .pub-cover-thumb { width:26px; height:26px; border-radius:5px; object-fit:cover; border:1px solid var(--line); cursor:pointer; vertical-align:middle; transition:transform .14s var(--ease), border-color .14s var(--ease); }
+  .pub-cover-thumb:hover { transform:scale(1.1); border-color:var(--acc); }
+  .ep-cover-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:8px 10px; border:1px solid var(--line); border-radius:var(--r-sm); background:var(--bg); }
+  .ep-cover-preview { width:56px; height:56px; border-radius:6px; object-fit:cover; border:1px solid var(--line); background:var(--surface-2); flex:0 0 auto; cursor:pointer; }
+  .ep-cover-meta { flex:1 1 160px; min-width:0; display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--mut); }
+  .ep-cover-meta b { color:var(--fg-strong); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pill.draft { background:color-mix(in srgb,var(--mut) 16%,transparent); color:var(--fg-strong); border:1px solid color-mix(in srgb,var(--mut) 35%,transparent); }
 </style>
 <link rel="stylesheet" href="/static/appearance.css">
 <link rel="stylesheet" href="/static/workbench.css">
@@ -6455,6 +6472,15 @@
           </div>
           <div id="pub-upload-progress" class="pub-upload-progress" hidden></div>
         </div>
+        <div id="pub-cover-wrap">
+          <label class="field" id="pub-cover-label" for="pub-cover">自定义封面（可选，JPG / PNG / WEBP）</label>
+          <div class="filepick pub-cover-drop" id="pub-cover-drop">
+            <input type="file" id="pub-cover" class="filepick-input" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" aria-label="选择自定义封面图片">
+            <div class="filepick-cta"><svg><use href="#i-image"/></svg><span><b>点击选择</b> 或拖拽自定义封面图到此（留空则使用平台默认/视频首帧）</span></div>
+            <div class="filepick-list" id="pub-cover-list"></div>
+          </div>
+          <div class="field-help" id="pub-cover-help">视频发布时自动上传为自定义封面（全平台适用；图文发布一般以首图为封面）。</div>
+        </div>
         <div>
           <label class="field" for="pub-title"><span id="pub-title-label-text">标题(≤20 字)</span></label>
           <input id="pub-title" maxlength="20" placeholder="给作品起个标题">
@@ -6466,6 +6492,14 @@
         <div class="form-grid">
           <div class="form-field"><label for="pub-topics">话题</label><input id="pub-topics" placeholder="逗号分隔，不用带 #；例如：露营,户外"></div>
           <div class="form-field"><label for="pub-when">发布时间</label><input type="datetime-local" id="pub-when" aria-label="定时发布（留空则尽快发布）"><div class="field-help">留空表示尽快发布</div></div>
+          <div class="form-field">
+            <label for="pub-action">提交模式</label>
+            <select id="pub-action" aria-label="提交模式" onchange="onPubActionChange()">
+              <option value="publish">直接发布作品</option>
+              <option value="draft">暂存到平台草稿箱（上传并填表后存草稿，不公开）</option>
+            </select>
+            <div class="field-help" id="pub-action-help">选择「暂存到平台草稿箱」时，自动上传素材与封面并点击平台存草稿按钮。</div>
+          </div>
         </div>
         <div class="form-field sh-only">
           <label for="pub-location">位置（可选）</label><input id="pub-location" placeholder="城市或地点名，例如：东莞市 / 杭州西湖">
@@ -6685,8 +6719,8 @@
             <input id="pub-yt-playlists" maxlength="300" placeholder="填写已创建的播放列表名称，多个用逗号分隔">
           </div>
           <div class="publish-permission">
-            <label class="field" for="pub-yt-thumbnail">自定义缩略图本地路径（可选）</label>
-            <input id="pub-yt-thumbnail" maxlength="400" placeholder="可选，填写本地 .jpg/.png 封面绝对路径">
+            <label class="field" for="pub-yt-thumbnail">自定义缩略图本地路径（可选，优先使用上方上传的封面）</label>
+            <input id="pub-yt-thumbnail" maxlength="400" placeholder="可选，也可直接在上方「自定义封面」选择图片">
           </div>
           <div class="publish-permission">
             <label class="field" for="pub-yt-premiere">即时首映（Premiere）</label>
@@ -6728,7 +6762,8 @@
         </fieldset>
         <div class="form-actions">
           <span class="status-text" id="pub-msg" role="status" aria-live="polite"></span>
-          <button onclick="addPublish()"><svg><use href="#i-send"/></svg>加入发布队列</button>
+          <button type="button" class="ghost" id="pub-draft-btn" onclick="addPublish({ saveAsDraft: true })"><svg><use href="#i-edit"/></svg>存为本地草稿</button>
+          <button type="button" id="pub-submit-btn" onclick="addPublish()"><svg><use href="#i-send"/></svg><span id="pub-submit-label">加入发布队列</span></button>
         </div>
         <div class="form-note" id="pub-hint"><svg aria-hidden="true"><use href="#i-info"/></svg><span>发布通过自动化创作平台完成，遇到验证码或需补充封面时，可在弹出的浏览器窗口中手动处理。定时任务由后台引擎按计划执行。</span></div>
       </div>
@@ -6738,7 +6773,18 @@
     <div class="card" data-section="records">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-list"/></svg></span>
-        <h2>发布记录 <span class="sub">排队中与历史发布任务</span></h2>
+        <h2>发布记录 <span class="sub">本地草稿、排队中与历史发布任务</span></h2>
+        <div class="right" style="margin-left:auto">
+          <select id="pub-status-filter" aria-label="按状态筛选发布记录" onchange="renderPublishRows()" style="min-width:130px">
+            <option value="">全部状态</option>
+            <option value="draft">本地草稿</option>
+            <option value="pending">排队中</option>
+            <option value="publishing">执行中</option>
+            <option value="done">已完成</option>
+            <option value="failed">失败</option>
+            <option value="uncertain">结果待确认</option>
+          </select>
+        </div>
       </div>
       <div class="table-wrap"><table aria-label="发布任务列表"><thead><tr>
         <th>标题</th><th>发布账号</th><th>类型 / 素材</th><th>来源</th><th>计划时间</th><th>状态</th><th style="text-align:right">操作</th>
@@ -7689,11 +7735,29 @@
         <div><label class="field" for="rp-topics">话题</label><input id="rp-topics" placeholder="逗号分隔，不用带 #"></div>
         <div><label class="field" for="rp-when">定时发布</label><input type="datetime-local" id="rp-when" aria-label="定时发布（留空尽快发布）"></div>
       </div>
+      <div class="form-grid">
+        <div>
+          <label class="field" for="rp-action">提交模式</label>
+          <select id="rp-action" aria-label="提交模式">
+            <option value="publish">直接发布</option>
+            <option value="draft">暂存到目标平台草稿箱</option>
+          </select>
+        </div>
+        <div id="rp-cover-wrap">
+          <label class="field" for="rp-cover">自定义封面（可选）</label>
+          <div class="filepick pub-cover-drop compact" id="rp-cover-drop">
+            <input type="file" id="rp-cover" class="filepick-input" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" aria-label="选择自定义封面">
+            <div class="filepick-cta"><svg><use href="#i-image"/></svg><span><b>选择封面图</b>（留空用默认）</span></div>
+            <div class="filepick-list" id="rp-cover-list"></div>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="ui-modal-footer">
       <span class="mut" id="rp-msg" role="status" tabindex="-1"></span>
       <div class="row" id="rp-actions">
         <button class="ghost" onclick="hideRepost()">取消</button>
+        <button class="ghost" id="rp-save-draft" onclick="submitRepost({ saveAsDraft: true })"><svg aria-hidden="true"><use href="#i-edit"/></svg>存为本地草稿</button>
         <button id="rp-submit" onclick="submitRepost()"><svg aria-hidden="true"><use href="#i-send"/></svg>确认推送</button>
       </div>
     </div>

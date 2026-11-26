@@ -32,6 +32,7 @@ from ...browser.xhs_selectors import (
 PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish?source=official"
 PUBLISH_MANAGER_URL = "https://creator.xiaohongshu.com/new/note-manager"
 _SUCCESS_TEXTS = ("发布成功", "发布完成")
+_DRAFT_SUCCESS_TEXTS = ("暂存成功", "已暂存", "草稿保存成功", "已保存到草稿箱", "已存入草稿箱", "保存草稿成功")
 
 
 def _publish_url(media_type: str) -> str:
@@ -438,16 +439,20 @@ class _SubmitLocator:
         return await self._locator.click(*args, **kwargs)
 
 
-def _publish_response_handler(evidence: dict, submitted: dict):
+def _publish_response_handler(evidence: dict, submitted: dict, *, save_as_draft: bool = False):
     def on_response(response):
         try:
             url = str(response.url or "")
             request = response.request
             method = str(getattr(request, "method", "") or "").upper()
             status = int(response.status)
+            markers = (
+                ("/draft", "/save_draft", "/note/draft", "/web_api/sns/v2/note")
+                if save_as_draft
+                else ("/publish", "/note/create", "/web_api/sns/v2/note")
+            )
             if submitted["clicked"] and method == "POST" and any(
-                    marker in url.lower() for marker in (
-                        "/publish", "/note/create", "/web_api/sns/v2/note")):
+                    marker in url.lower() for marker in markers):
                 if 200 <= status < 300:
                     evidence["responses"].append(response)
                 else:
@@ -458,6 +463,76 @@ def _publish_response_handler(evidence: dict, submitted: dict):
         except Exception:
             return
     return on_response
+
+
+async def _apply_xhs_cover(page: Any, cover_path: str, interaction: Any, *, on_stage: Any = None) -> str:
+    """在小红书视频发布页上传自定义封面并确认，成功返回空串。"""
+    import asyncio
+    resolved = str(Path(cover_path).resolve())
+    if not Path(resolved).is_file():
+        return f"自定义封面文件不存在: {cover_path}"
+    await _notify_stage(on_stage, "正在上传小红书自定义视频封面…")
+    fc_state = {"handled": 0}
+
+    def _on_fc(fc):
+        fc_state["handled"] += 1
+        asyncio.ensure_future(fc.set_files(resolved))
+
+    with suppress(Exception):
+        page.on("filechooser", _on_fc)
+    try:
+        trigger, _ = await _wait_for_visible(page, "publish.cover_trigger", interaction, attempts=16)
+        if trigger is None:
+            return "未找到小红书「修改封面 / 设置封面」入口，已停止提交以防使用默认封面"
+        await interaction.click_visible(trigger)
+        await interaction.pause(0.6, 1.0)
+
+        uploaded = fc_state["handled"] > 0
+        if not uploaded:
+            up_tab, _ = await _wait_for_visible(page, "publish.cover_upload", interaction, attempts=8)
+            if up_tab is not None:
+                await interaction.click_visible(up_tab)
+                await interaction.pause(0.5, 0.9)
+                uploaded = fc_state["handled"] > 0
+
+        if not uploaded:
+            for sel in (
+                '[role="dialog"] input[type="file"][accept*="image"]',
+                '.d-modal input[type="file"][accept*="image"]',
+                '[class*="cover"] input[type="file"][accept*="image"]',
+                '[role="dialog"] input[type="file"]',
+                '.d-modal input[type="file"]',
+            ):
+                try:
+                    loc = page.locator(sel)
+                    for idx in range(await loc.count()):
+                        cand = loc.nth(idx)
+                        acc = str(await cand.get_attribute("accept") or "").lower()
+                        if "video" in acc or "mp4" in acc:
+                            continue
+                        await cand.set_input_files(resolved, timeout=10_000)
+                        uploaded = True
+                        break
+                    if uploaded:
+                        break
+                except Exception:
+                    continue
+
+        if not uploaded:
+            return "已打开小红书封面弹窗，但未找到封面图片上传控件"
+
+        await interaction.pause(1.0, 1.5)
+        confirm_btn, _ = await _wait_for_visible(page, "publish.cover_confirm", interaction, attempts=16)
+        if confirm_btn is None:
+            return "已上传小红书自定义封面图，但未找到弹窗「确定/完成」按钮"
+        await interaction.click_visible(confirm_btn)
+        await interaction.pause(0.8, 1.2)
+        return ""
+    except Exception as exc:
+        return f"设置小红书自定义封面异常: {exc!r}"
+    finally:
+        with suppress(Exception):
+            page.remove_listener("filechooser", _on_fc)
 
 
 def _publish_payload_accepted(payload: Any) -> bool:
@@ -527,7 +602,7 @@ async def _visible_verify_text(page: Any) -> str:
     return ""
 
 
-async def _visible_success(page: Any) -> bool:
+async def _visible_success(page: Any, *, save_as_draft: bool = False) -> bool:
     raw_url = str(getattr(page, "url", "") or "")
     lower_url = raw_url.lower()
     if any(marker in lower_url
@@ -546,7 +621,8 @@ async def _visible_success(page: Any) -> bool:
             return True
     except Exception:
         pass
-    for text in _SUCCESS_TEXTS:
+    texts = _DRAFT_SUCCESS_TEXTS if save_as_draft else _SUCCESS_TEXTS
+    for text in texts:
         try:
             locator = page.get_by_text(text, exact=False).first
             if await locator.count() and await locator.is_visible():
@@ -597,9 +673,11 @@ async def publish_xhs_browser(
         title: str, desc: str, topics: Sequence[str], files: Sequence[str],
         *, timeout_seconds: int = 180,
         visibility: str = "public",
+        cover_path: str = "",
+        save_as_draft: bool = False,
         on_submit: Any = None,
         on_stage: Any = None) -> XhsWriteOutcome:
-    """Submit one note once; never retry or switch transport after submission."""
+    """Submit one note (or save to creator draft box) once; never retry after submission."""
     try:
         paths = validate_publish_files(media_type, files)
     except ValueError as exc:
@@ -620,7 +698,7 @@ async def publish_xhs_browser(
         "reject_msg": "",
         "verify_hint": "",
     }
-    on_response = _publish_response_handler(evidence, submitted)
+    on_response = _publish_response_handler(evidence, submitted, save_as_draft=save_as_draft)
 
     try:
         await _notify_stage(on_stage, "正在打开小红书发布页并上传媒体…")
@@ -628,11 +706,6 @@ async def publish_xhs_browser(
                 identity, url=_publish_url(media_type)) as page:
             if "login" in page.url or "passport" in page.url:
                 return XhsWriteOutcome("failed", error="logged_out:创作平台未登录")
-
-            # The URL already selects image/video mode.  New builds render the
-            # active tab's text inside an overlaying child, so clicking that
-            # text can be intercepted by its own active tab.  Do not click an
-            # already-selected mode; wait for its file input instead.
 
             file_input, _ = await _wait_for_present(
                 page, "publish.file", interaction)
@@ -649,6 +722,11 @@ async def publish_xhs_browser(
                     "failed",
                     error=upload_err.get("error") or "媒体上传在限定时间内未完成",
                 )
+
+            if cover_path and media_type == "video":
+                cover_err = await _apply_xhs_cover(page, cover_path, interaction, on_stage=on_stage)
+                if cover_err:
+                    return XhsWriteOutcome("failed", error=cover_err)
 
             await _notify_stage(on_stage, "正在填写小红书标题、正文与可见范围…")
             if title:
@@ -676,42 +754,44 @@ async def publish_xhs_browser(
                 return XhsWriteOutcome(
                     "failed", error=f"设置可见范围失败: {exc}")
 
-            await _notify_stage(on_stage, "正在准备点击「发布」…")
+            action_label = "暂存离开" if save_as_draft else "发布"
+            submit_group = "publish.draft" if save_as_draft else "publish.submit"
+            await _notify_stage(on_stage, f"正在准备点击「{action_label}」…")
             publish_button, publish_selector = await _wait_for_visible(
-                page, "publish.submit", interaction)
+                page, submit_group, interaction)
             if publish_button is None:
-                diagnostic = await selector_diagnostic(page, "publish.submit")
+                diagnostic = await selector_diagnostic(page, submit_group)
                 return XhsWriteOutcome(
-                    "failed", error=f"未找到发布按钮(发布页可能改版)；{diagnostic}")
-            if publish_selector == "publish_web_component":
+                    "failed", error=f"未找到「{action_label}」按钮(发布页可能改版)；{diagnostic}")
+            if not save_as_draft and publish_selector == "publish_web_component":
                 publish_button = _PublishWebComponentLocator(
                     page, publish_button)
             if not await _wait_until_enabled(
                     publish_button, interaction,
                     attempts=max(4, min(120, timeout_seconds * 2))):
-                return XhsWriteOutcome("failed", error="发布按钮一直不可用，请检查页面提示")
+                return XhsWriteOutcome("failed", error=f"「{action_label}」按钮一直不可用，请检查页面提示")
 
             try:
                 page.on("response", on_response)
             except Exception:
                 pass
             try:
-                # This wrapper records the precise click-dispatch boundary.  There
-                # is intentionally no second click and no API fallback below it.
                 await interaction.click_visible(
                     _SubmitLocator(publish_button, submitted, on_submit))
-                await _notify_stage(on_stage, "已点击「发布」，等待小红书确认…")
+                await _notify_stage(on_stage, f"已点击「{action_label}」，等待小红书确认…")
             except Exception as exc:
                 if submitted["clicked"]:
                     return XhsWriteOutcome(
-                        "uncertain", error=f"发布已提交但连接中断: {exc!r}")
-                return XhsWriteOutcome("failed", error=f"发布按钮点击失败: {exc!r}")
+                        "uncertain", error=f"{action_label}已提交但连接中断: {exc!r}")
+                return XhsWriteOutcome("failed", error=f"{action_label}按钮点击失败: {exc!r}")
 
             attempts = max(4, min(80, int(timeout_seconds * 2)))
             verify_notified = False
             for _ in range(attempts):
                 await _consume_publish_responses(evidence)
                 accepted_note_id = str(evidence.get("note_id") or "").strip()
+                if save_as_draft and evidence["accepted"] and not evidence["business_rejected"]:
+                    return XhsWriteOutcome("success", result=PUBLISH_MANAGER_URL)
                 if (evidence["accepted"] and accepted_note_id
                         and not evidence["business_rejected"]):
                     return XhsWriteOutcome(
@@ -726,8 +806,10 @@ async def publish_xhs_browser(
                             on_stage,
                             f"需要人工安全验证（{verify_detail}），请在弹出的小红书窗口里完成验证",
                         )
-                if await _visible_success(page):
+                if await _visible_success(page, save_as_draft=save_as_draft):
                     await _consume_publish_responses(evidence)
+                    if save_as_draft:
+                        return XhsWriteOutcome("success", result=PUBLISH_MANAGER_URL)
                     note_id = str(evidence.get("note_id") or "").strip()
                     result = (
                         f"https://www.xiaohongshu.com/explore/{note_id}"
@@ -776,7 +858,7 @@ async def publish_xhs_browser(
             detail = (
                 f"平台返回了业务拒绝结果{reject_note}，但提交状态仍需核对"
                 if evidence["business_rejected"]
-                else "发布按钮已点击一次，但未取得明确成功证据"
+                else f"{action_label}按钮已点击一次，但未取得明确成功证据"
             )
             return XhsWriteOutcome(
                 "uncertain", error=f"{detail}，请到平台核对")

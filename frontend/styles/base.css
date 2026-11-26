@@ -2945,7 +2945,9 @@
   .mx-file-pill button:hover { background:var(--danger-soft); color:var(--danger); }
   .mx-file-pill button svg { width:12px !important; height:12px !important; }
   .mx-inline-warn { display:flex; align-items:center; gap:7px; padding:8px 11px; border-radius:9px; background:var(--warn-soft); color:var(--warn); font-size:12px; }
+  .mx-pub-submit-box { display:flex; flex-direction:column; gap:8px; }
   .mx-pub-submit-box button { width:100%; justify-content:center; }
+  .mx-cover-pill img { width:28px; height:20px; border-radius:4px; object-fit:cover; }
 
   .mx-empty-box {
     padding:36px 20px; text-align:center; display:grid; justify-items:center; gap:8px;
@@ -3828,3 +3830,18 @@
 
   .queue-progress-head span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
   .queue-progress-meta, .dl-inline-prog-meta { font-size:11px; color:var(--mut); line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  /* ── 自定义封面与草稿徽章 ── */
+  .pub-cover-drop .filepick-cta { padding:12px 14px; font-size:12.5px; }
+  .pub-cover-drop.compact .filepick-cta { padding:9px 10px; font-size:12px; }
+  .pub-meta-badges { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin-top:4px; }
+  .pub-badge-mini { display:inline-flex; align-items:center; gap:4px; padding:1px 6px; border-radius:999px; font-size:11px; line-height:1.45; border:1px solid var(--line); background:var(--surface-2); color:var(--mut); white-space:nowrap; }
+  .pub-badge-mini.draft { border-color:color-mix(in srgb,var(--warn) 42%,transparent); background:color-mix(in srgb,var(--warn) 14%,transparent); color:var(--warn); }
+  .pub-badge-mini.cover { border-color:var(--acc-ring); background:var(--acc-soft); color:var(--acc); }
+  .pub-cover-thumb { width:26px; height:26px; border-radius:5px; object-fit:cover; border:1px solid var(--line); cursor:pointer; vertical-align:middle; transition:transform .14s var(--ease), border-color .14s var(--ease); }
+  .pub-cover-thumb:hover { transform:scale(1.1); border-color:var(--acc); }
+  .ep-cover-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:8px 10px; border:1px solid var(--line); border-radius:var(--r-sm); background:var(--bg); }
+  .ep-cover-preview { width:56px; height:56px; border-radius:6px; object-fit:cover; border:1px solid var(--line); background:var(--surface-2); flex:0 0 auto; cursor:pointer; }
+  .ep-cover-meta { flex:1 1 160px; min-width:0; display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--mut); }
+  .ep-cover-meta b { color:var(--fg-strong); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pill.draft { background:color-mix(in srgb,var(--mut) 16%,transparent); color:var(--fg-strong); border:1px solid color-mix(in srgb,var(--mut) 35%,transparent); }

@@ -461,6 +461,8 @@ function applyPlatformUI() {
     if (copy) copy.textContent = pubHintText;
     else pubHint.textContent = pubHintText;
   }
+  if (typeof updatePubCoverHelp === "function") updatePubCoverHelp();
+  if (typeof onPubActionChange === "function") onPubActionChange();
   // 评论监控「类型」下拉随平台改写文案
   const wk = $("w-kind");
   if (wk) {

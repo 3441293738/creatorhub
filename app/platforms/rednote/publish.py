@@ -79,6 +79,15 @@ _SUCCESS_TEXTS = (
     "Post published",
     "Published",
 )
+_DRAFT_SUCCESS_TEXTS = (
+    "暂存成功",
+    "已暂存",
+    "草稿保存成功",
+    "已保存到草稿箱",
+    "Saved to drafts",
+    "Draft saved",
+    "Saved as draft",
+)
 _VERIFY_KEYWORDS = (
     "安全验证",
     "扫码验证",
@@ -112,6 +121,26 @@ _EXTRA_SUBMIT_CANDIDATES: tuple[SelectorCandidate, ...] = (
     SelectorCandidate("publish_en_button", "css", 'button:has-text("Publish")'),
     SelectorCandidate("post_en_button", "css", 'button:has-text("Post")'),
     SelectorCandidate("publish_en_text", "text", "Publish", exact=True),
+)
+_EXTRA_DRAFT_CANDIDATES: tuple[SelectorCandidate, ...] = (
+    SelectorCandidate("draft_en_save_btn", "css", 'button:has-text("Save draft")'),
+    SelectorCandidate("draft_en_save_as_btn", "css", 'button:has-text("Save as draft")'),
+    SelectorCandidate("draft_en_save_leave_btn", "css", 'button:has-text("Save and leave")'),
+    SelectorCandidate("draft_en_text", "text", "Save draft", exact=True),
+)
+_EXTRA_COVER_TRIGGER_CANDIDATES: tuple[SelectorCandidate, ...] = (
+    SelectorCandidate("cover_en_edit", "css", 'button:has-text("Edit cover"), button:has-text("Change cover")'),
+    SelectorCandidate("cover_en_text", "text", "Edit cover", exact=True),
+    SelectorCandidate("cover_en_change_text", "text", "Change cover", exact=True),
+)
+_EXTRA_COVER_UPLOAD_CANDIDATES: tuple[SelectorCandidate, ...] = (
+    SelectorCandidate("cover_en_upload", "css", '[role="dialog"] :text-is("Upload cover"), .d-modal :text-is("Upload cover")'),
+    SelectorCandidate("cover_en_upload_text", "text", "Upload cover", exact=True),
+)
+_EXTRA_COVER_CONFIRM_CANDIDATES: tuple[SelectorCandidate, ...] = (
+    SelectorCandidate("cover_en_confirm", "css", '[role="dialog"] button:has-text("Confirm"), .d-modal button:has-text("Confirm")'),
+    SelectorCandidate("cover_en_done", "css", '[role="dialog"] button:has-text("Done"), .d-modal button:has-text("Done")'),
+    SelectorCandidate("cover_en_save", "css", '[role="dialog"] button:has-text("Save"), .d-modal button:has-text("Save")'),
 )
 _EXTRA_PROGRESS_CANDIDATES: tuple[SelectorCandidate, ...] = (
     SelectorCandidate("uploading_en_text", "text", "Uploading"),
@@ -173,6 +202,14 @@ def _candidates_for(group: str) -> tuple[SelectorCandidate, ...]:
         return base[:5] + _EXTRA_BODY_CANDIDATES + base[5:]
     if group == "publish.submit":
         return base[:2] + _EXTRA_SUBMIT_CANDIDATES + base[2:]
+    if group == "publish.draft":
+        return base + _EXTRA_DRAFT_CANDIDATES
+    if group == "publish.cover_trigger":
+        return base + _EXTRA_COVER_TRIGGER_CANDIDATES
+    if group == "publish.cover_upload":
+        return base + _EXTRA_COVER_UPLOAD_CANDIDATES
+    if group == "publish.cover_confirm":
+        return base + _EXTRA_COVER_CONFIRM_CANDIDATES
     if group == "publish.progress":
         return base + _EXTRA_PROGRESS_CANDIDATES
     return base
@@ -543,7 +580,7 @@ async def _set_publish_visibility(page: Any, interaction: Any, visibility: str) 
     raise RuntimeError(f"未找到可见范围选项：{desired_labels[0]}{hint}")
 
 
-def _publish_response_handler(evidence: dict, submitted: dict):
+def _publish_response_handler(evidence: dict, submitted: dict, *, save_as_draft: bool = False):
     def on_response(response):
         try:
             url = str(response.url or "")
@@ -554,9 +591,14 @@ def _publish_response_handler(evidence: dict, submitted: dict):
             request = response.request
             method = str(getattr(request, "method", "") or "").upper()
             status = int(response.status)
+            markers = (
+                ("/draft", "/save_draft", "/note/draft", "/web_api/sns/v2/note")
+                if save_as_draft
+                else ("/publish", "/note/create", "/web_api/sns/v2/note")
+            )
             if submitted["clicked"] and method == "POST" and any(
                 marker in url.lower()
-                for marker in ("/publish", "/note/create", "/web_api/sns/v2/note")
+                for marker in markers
             ):
                 if 200 <= status < 300:
                     evidence["responses"].append(response)
@@ -569,6 +611,76 @@ def _publish_response_handler(evidence: dict, submitted: dict):
             return
 
     return on_response
+
+
+async def _apply_rednote_cover(page: Any, cover_path: str, interaction: Any, *, on_stage: Any = None) -> str:
+    """在海外小红书视频发布页上传自定义封面并确认（兼容中英双语 UI）。"""
+    from pathlib import Path as _Path
+    resolved = str(_Path(cover_path).resolve())
+    if not _Path(resolved).is_file():
+        return f"自定义封面文件不存在: {cover_path}"
+    await _notify_stage(on_stage, "正在上传海外小红书自定义视频封面…")
+    fc_state = {"handled": 0}
+
+    def _on_fc(fc):
+        fc_state["handled"] += 1
+        asyncio.ensure_future(fc.set_files(resolved))
+
+    with suppress(Exception):
+        page.on("filechooser", _on_fc)
+    try:
+        trigger, _ = await _wait_visible(page, "publish.cover_trigger", interaction, attempts=16)
+        if trigger is None:
+            return "未找到海外小红书「修改封面 / Edit cover」入口，已停止提交以防使用默认封面"
+        await interaction.click_visible(trigger)
+        await interaction.pause(0.6, 1.0)
+
+        uploaded = fc_state["handled"] > 0
+        if not uploaded:
+            up_tab, _ = await _wait_visible(page, "publish.cover_upload", interaction, attempts=8)
+            if up_tab is not None:
+                await interaction.click_visible(up_tab)
+                await interaction.pause(0.5, 0.9)
+                uploaded = fc_state["handled"] > 0
+
+        if not uploaded:
+            for sel in (
+                '[role="dialog"] input[type="file"][accept*="image"]',
+                '.d-modal input[type="file"][accept*="image"]',
+                '[class*="cover"] input[type="file"][accept*="image"]',
+                '[role="dialog"] input[type="file"]',
+                '.d-modal input[type="file"]',
+            ):
+                try:
+                    loc = page.locator(sel)
+                    for idx in range(await loc.count()):
+                        cand = loc.nth(idx)
+                        acc = str(await cand.get_attribute("accept") or "").lower()
+                        if "video" in acc or "mp4" in acc:
+                            continue
+                        await cand.set_input_files(resolved, timeout=10_000)
+                        uploaded = True
+                        break
+                    if uploaded:
+                        break
+                except Exception:
+                    continue
+
+        if not uploaded:
+            return "已打开海外小红书封面弹窗，但未找到封面图片上传控件"
+
+        await interaction.pause(1.0, 1.5)
+        confirm_btn, _ = await _wait_visible(page, "publish.cover_confirm", interaction, attempts=16)
+        if confirm_btn is None:
+            return "已上传海外小红书自定义封面图，但未找到弹窗「确定 / Confirm」按钮"
+        await interaction.click_visible(confirm_btn)
+        await interaction.pause(0.8, 1.2)
+        return ""
+    except Exception as exc:
+        return f"设置海外小红书自定义封面异常: {exc!r}"
+    finally:
+        with suppress(Exception):
+            page.remove_listener("filechooser", _on_fc)
 
 
 async def _consume_publish_responses(evidence: dict) -> bool:
@@ -605,7 +717,7 @@ async def _visible_verify_text(page: Any) -> str:
     return ""
 
 
-async def _visible_success(page: Any) -> bool:
+async def _visible_success(page: Any, *, save_as_draft: bool = False) -> bool:
     raw_url = str(getattr(page, "url", "") or "")
     lower_url = raw_url.lower()
     if any(marker in lower_url for marker in ("/publish/success", "publish_success")):
@@ -624,7 +736,8 @@ async def _visible_success(page: Any) -> bool:
             return True
     except Exception:
         pass
-    for text in _SUCCESS_TEXTS:
+    texts = _DRAFT_SUCCESS_TEXTS if save_as_draft else _SUCCESS_TEXTS
+    for text in texts:
         try:
             locator = page.get_by_text(text, exact=False).first
             if await locator.count() and await locator.is_visible():
@@ -682,10 +795,12 @@ async def publish_rednote_browser(
     *,
     timeout_seconds: int = 180,
     visibility: str = "public",
+    cover_path: str = "",
+    save_as_draft: bool = False,
     on_submit: Any = None,
     on_stage: Any = None,
 ) -> RednoteWriteOutcome:
-    """Submit one Rednote note via ``creator.rednote.com`` with single-click safety."""
+    """Submit one Rednote note (or save to creator draft box) via ``creator.rednote.com``."""
     try:
         paths = validate_publish_files(media_type, files)
     except ValueError as exc:
@@ -720,7 +835,7 @@ async def publish_rednote_browser(
         "reject_msg": "",
         "verify_hint": "",
     }
-    on_response = _publish_response_handler(evidence, submitted)
+    on_response = _publish_response_handler(evidence, submitted, save_as_draft=save_as_draft)
     page = None
 
     try:
@@ -751,6 +866,11 @@ async def publish_rednote_browser(
                     error=upload_err.get("error") or "媒体上传在限定时间内未完成",
                 )
 
+            if cover_path and str(media_type or "").lower() == "video":
+                cover_err = await _apply_rednote_cover(page, cover_path, interaction, on_stage=on_stage)
+                if cover_err:
+                    return RednoteWriteOutcome("failed", error=cover_err)
+
             await _notify_stage(on_stage, "正在填写海外小红书标题、正文与可见范围…")
             if normalized_title:
                 title_input, _ = await _wait_visible(page, "publish.title", interaction)
@@ -774,16 +894,18 @@ async def publish_rednote_browser(
             except Exception as exc:
                 return RednoteWriteOutcome("failed", error=f"设置可见范围失败: {exc}")
 
-            await _notify_stage(on_stage, "正在准备点击「发布」…")
+            action_label = "暂存草稿" if save_as_draft else "发布"
+            submit_group = "publish.draft" if save_as_draft else "publish.submit"
+            await _notify_stage(on_stage, f"正在准备点击「{action_label}」…")
             publish_button, publish_selector = await _wait_visible(
-                page, "publish.submit", interaction
+                page, submit_group, interaction
             )
             if publish_button is None:
-                diagnostic = await selector_diagnostic(page, "publish.submit")
+                diagnostic = await selector_diagnostic(page, submit_group)
                 return RednoteWriteOutcome(
-                    "failed", error=f"未找到发布按钮(发布页可能改版)；{diagnostic}"
+                    "failed", error=f"未找到「{action_label}」按钮(发布页可能改版)；{diagnostic}"
                 )
-            if publish_selector == "publish_web_component":
+            if not save_as_draft and publish_selector == "publish_web_component":
                 publish_button = _PublishWebComponentLocator(page, publish_button)
             if not await _wait_until_enabled(
                 publish_button,
@@ -791,7 +913,7 @@ async def publish_rednote_browser(
                 attempts=max(4, min(120, timeout_seconds * 2)),
             ):
                 return RednoteWriteOutcome(
-                    "failed", error="发布按钮一直不可用，请检查页面提示"
+                    "failed", error=f"「{action_label}」按钮一直不可用，请检查页面提示"
                 )
 
             with suppress(Exception):
@@ -800,19 +922,21 @@ async def publish_rednote_browser(
                 await interaction.click_visible(
                     _SubmitLocator(publish_button, submitted, on_submit)
                 )
-                await _notify_stage(on_stage, f"已点击「发布」，等待 {EDIT_DOMAIN} 确认…")
+                await _notify_stage(on_stage, f"已点击「{action_label}」，等待 {EDIT_DOMAIN} 确认…")
             except Exception as exc:
                 if submitted["clicked"]:
                     return RednoteWriteOutcome(
-                        "uncertain", error=f"发布已提交但连接中断: {exc!r}"
+                        "uncertain", error=f"{action_label}已提交但连接中断: {exc!r}"
                     )
-                return RednoteWriteOutcome("failed", error=f"发布按钮点击失败: {exc!r}")
+                return RednoteWriteOutcome("failed", error=f"{action_label}按钮点击失败: {exc!r}")
 
             attempts = max(4, min(80, int(timeout_seconds * 2)))
             verify_notified = False
             for _ in range(attempts):
                 await _consume_publish_responses(evidence)
                 accepted_note_id = str(evidence.get("note_id") or "").strip()
+                if save_as_draft and evidence["accepted"] and not evidence["business_rejected"]:
+                    return RednoteWriteOutcome("success", result=HOME_PAGE_URL)
                 if (
                     evidence["accepted"]
                     and accepted_note_id
@@ -830,8 +954,10 @@ async def publish_rednote_browser(
                             on_stage,
                             f"需要人工安全验证（{verify_detail}），请在弹出的海外小红书窗口里完成验证",
                         )
-                if await _visible_success(page):
+                if await _visible_success(page, save_as_draft=save_as_draft):
                     await _consume_publish_responses(evidence)
+                    if save_as_draft:
+                        return RednoteWriteOutcome("success", result=HOME_PAGE_URL)
                     note_id = str(evidence.get("note_id") or "").strip()
                     result = (
                         build_rednote_note_url(note_id)
@@ -882,7 +1008,7 @@ async def publish_rednote_browser(
             detail = (
                 f"平台返回了业务拒绝结果{reject_note}，但提交状态仍需核对"
                 if evidence["business_rejected"]
-                else "发布按钮已点击一次，但未取得明确成功证据"
+                else f"{action_label}按钮已点击一次，但未取得明确成功证据"
             )
             return RednoteWriteOutcome("uncertain", error=f"{detail}，请到平台核对")
     except Exception as exc:
@@ -917,6 +1043,7 @@ def _publish_rednote_api_sync(
     locale: str = "en-US",
     timezone: str = "UTC",
     visibility: str = "public",
+    cover_path: str = "",
     on_submit=None,
     cancel_event: threading.Event | None = None,
     preserve_error: bool = False,
@@ -969,11 +1096,19 @@ def _publish_rednote_api_sync(
             )
             stack.callback(api.close)
             if norm_kind == "video":
+                cover_bytes = None
+                if cover_path:
+                    from pathlib import Path as _Path
+                    cp = _Path(cover_path).expanduser()
+                    if not cp.is_file():
+                        return failure(f"自定义封面文件不存在: {cover_path}")
+                    cover_bytes = cp.read_bytes()
                 ok, msg, resp_json = api.post_note(
                     media_type="video",
                     title=title,
                     desc=desc,
                     video_file=blobs[0],
+                    cover_file=cover_bytes,
                     topics=topics,
                     privacy_type=privacy_type,
                     on_submit=mark_submitted,
@@ -1015,13 +1150,15 @@ async def publish_rednote(
     mode: str = "browser",
     timeout_seconds: int = 180,
     visibility: str = "public",
+    cover_path: str = "",
+    save_as_draft: bool = False,
     preserve_error: bool = False,
     on_submit=None,
     on_stage=None,
 ) -> Tuple[bool, str, str | RednoteApiError]:
-    """Publish a Rednote note via browser RPA (`browser`) or experimental XYS+b1 API (`api`)."""
+    """Publish a Rednote note (or save to creator draft box) via browser RPA or experimental API."""
     _ = headed
-    selected_mode = str(mode or "browser").strip().lower()
+    selected_mode = "browser" if save_as_draft else str(mode or "browser").strip().lower()
     if selected_mode not in {"browser", "api"}:
         selected_mode = "browser"
     tags = [t.strip().lstrip("#") for t in (topics or "").split(",") if t.strip()]
@@ -1039,6 +1176,8 @@ async def publish_rednote(
             media_paths,
             timeout_seconds=timeout_seconds,
             visibility=visibility,
+            cover_path=cover_path,
+            save_as_draft=save_as_draft,
             on_submit=on_submit,
             on_stage=on_stage,
         )
@@ -1122,6 +1261,7 @@ async def publish_rednote(
         locale=locale,
         timezone=tz,
         visibility=visibility,
+        cover_path=cover_path,
         on_submit=notify_from_worker,
         cancel_event=cancel_event,
         preserve_error=preserve_error,
