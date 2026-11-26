@@ -481,7 +481,15 @@ async def open_account_browser(
         ctx, guard, close_callback=close_callback, page=page,
         account_id=account_id, open_scope=open_scope)
     app_runtime.open_browsers[account_id] = lease
+    lease.start_state_sync()
+
+    def _attach_page_sync(target_page) -> None:
+        with suppress(Exception):
+            target_page.on("load", lambda *_: lease.schedule_persist())
+
     try:                       # 用户手动关窗后,从登记表移除
+        _attach_page_sync(page)
+        ctx.on("page", _attach_page_sync)
         ctx.on("close", lambda *_: asyncio.create_task(
             login_sessions_service._release_open_browser(account_id, lease)))
         if platform in {"xhs", "rednote"}:

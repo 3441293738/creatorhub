@@ -54,7 +54,11 @@ SEARCH_STREAM_PATH = "/aweme/v1/web/general/search/stream/"
 SEARCH_SINGLE_PATH = "/aweme/v1/web/general/search/single/"
 SEARCH_PATHS = frozenset({SEARCH_SINGLE_PATH, SEARCH_STREAM_PATH})
 SEARCH_MAX_PAGE_SIZE = 20
-SEARCH_PAGE_DELAY_RANGE = (0.65, 1.25)
+SEARCH_PAGE_DELAY_RANGE = (0.9, 1.6)
+SEARCH_MID_PAGE_DELAY_RANGE = (1.5, 2.6)
+SEARCH_DEEP_PAGE_DELAY_RANGE = (2.4, 4.0)
+SEARCH_BATCH_PAUSE_EVERY = 6
+SEARCH_BATCH_PAUSE_RANGE = (2.5, 4.5)
 SEARCH_EMPTY_RETRY_DELAYS = (1.6, 3.0)
 
 
@@ -1156,9 +1160,17 @@ class DouyinClient:
         )
         for page_index in range(max_pages_limit):
             if page_index > 0:
-                delay = (random.uniform(*SEARCH_PAGE_DELAY_RANGE)
-                         if page_delay_seconds is None
-                         else max(0.0, float(page_delay_seconds)))
+                if page_delay_seconds is None:
+                    delay_range = (
+                        SEARCH_PAGE_DELAY_RANGE if page_index < 3 else
+                        SEARCH_MID_PAGE_DELAY_RANGE if page_index < 8 else
+                        SEARCH_DEEP_PAGE_DELAY_RANGE
+                    )
+                    delay = random.uniform(*delay_range)
+                    if page_index % SEARCH_BATCH_PAUSE_EVERY == 0:
+                        delay += random.uniform(*SEARCH_BATCH_PAUSE_RANGE)
+                else:
+                    delay = max(0.0, float(page_delay_seconds))
                 if delay > 0:
                     await asyncio.sleep(delay)
             page = await self.search_awemes_page(

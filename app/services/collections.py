@@ -359,6 +359,17 @@ def _collection_error_for_display(value: str) -> str:
             keyword = line.split(":", 1)[0].strip()
             prefix = f"{keyword}：" if keyword else ""
             line = f"{prefix}采集窗口已关闭，请点击“续跑”并保持窗口开启"
+        elif "verification_required" in lowered:
+            first_part = line.split(":", 1)[0].strip() if ":" in line else ""
+            keyword = (
+                ""
+                if not first_part
+                or "接口" in first_part
+                or "verification_required" in first_part.lower()
+                else first_part
+            )
+            prefix = f"{keyword}：" if keyword else ""
+            line = f"{prefix}触发平台安全验证/搜索风控，请点「打开验证页」完成后点「解除风控继续」（建议适当降低深度页）"
         elif len(line) > 220:
             line = line[:219].rstrip() + "…"
         output.append(line)

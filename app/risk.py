@@ -266,8 +266,9 @@ class RiskController:
     def _needs_manual_review(error: object, signal: str) -> bool:
         text = f"{signal} {error}".lower()
         return any(marker in text for marker in (
-            "captcha", "人机验证", "安全验证", "滑块", "验证码", "设备验证", "verifycenter",
-            "security verification", "human verification"))
+            "verification_required", "checkpoint_required", "challenge_required",
+            "captcha", "人机验证", "安全验证", "二次验证", "滑块", "验证码", "设备验证",
+            "verifycenter", "security verification", "human verification"))
 
     def update_policy(self, policy) -> None:
         """Apply a saved policy to subsequent decisions without restarting."""

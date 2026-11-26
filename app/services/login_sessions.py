@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from datetime import datetime
+import hashlib
 import json
 
 from fastapi import HTTPException
@@ -186,6 +187,10 @@ class _OpenBrowserLease:
         self._closed = False
         self._release_lock = asyncio.Lock()
         self._close_lock = asyncio.Lock()
+        self._persist_lock = asyncio.Lock()
+        self._last_cookie_digest = ""
+        self._sync_task: asyncio.Task | None = None
+        self._debounce_task: asyncio.Task | None = None
 
     @property
     def active(self) -> bool:
@@ -212,36 +217,116 @@ class _OpenBrowserLease:
             return False
         return True
 
-    async def _persist_context_state(self) -> None:
-        if not self.account_id or self.context is None:
-            return
-        storage_fn = getattr(self.context, "storage_state", None)
-        if not callable(storage_fn):
+    def start_state_sync(self, interval_seconds: float = 8.0) -> None:
+        """Periodically persist changed cookies while the manual window is open.
+
+        If the user solves an in-page captcha and then closes Chromium with the
+        window X button, ``ctx.on('close')`` runs after the context is already
+        torn down and ``storage_state()`` raises TargetClosedError. Syncing on
+        cookie changes while open ensures verified cookies still land in DB.
+        """
+        if self._sync_task is not None and not self._sync_task.done():
             return
         try:
-            state_obj = await asyncio.wait_for(storage_fn(), timeout=5.0)
-            if not isinstance(state_obj, dict) or not state_obj.get("cookies"):
-                return
-            state_json = json.dumps(state_obj, ensure_ascii=False)
-            with get_session() as session:
-                account = session.get(DouyinAccount, self.account_id)
-                if account is None:
-                    return
-                now_utc = datetime.utcnow()
-                if self.open_scope == "creator" and account.platform in {"xhs", "rednote"}:
-                    account.creator_storage_state = state_json
-                else:
-                    account.storage_state = state_json
-                    if account.platform in {"kuaishou", "shipinhao", "bilibili", "instagram", "twitter", "facebook", "youtube"}:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if loop.is_closed():
+            return
+        step = max(3.0, float(interval_seconds))
+
+        async def _loop() -> None:
+            try:
+                while self.active and self.is_alive():
+                    await asyncio.sleep(step)
+                    if not self.active or not self.is_alive():
+                        break
+                    await self._persist_context_state(force=False)
+            except asyncio.CancelledError:
+                pass
+
+        self._sync_task = loop.create_task(_loop())
+
+    def schedule_persist(self, delay: float = 1.5) -> None:
+        """Debounced cookie persistence triggered by manual window navigation."""
+        if not self.active:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if loop.is_closed():
+            return
+        if self._debounce_task is not None and not self._debounce_task.done():
+            self._debounce_task.cancel()
+
+        async def _run() -> None:
+            try:
+                await asyncio.sleep(max(0.2, float(delay)))
+                if self.active and self.is_alive():
+                    await self._persist_context_state(force=False)
+            except asyncio.CancelledError:
+                pass
+
+        self._debounce_task = loop.create_task(_run())
+
+    @staticmethod
+    def _has_douyin_auth_cookies(state_obj: dict) -> bool:
+        auth_names = {"sessionid", "sessionid_ss", "sid_tt"}
+        return any(
+            isinstance(c, dict) and str(c.get("name") or "") in auth_names
+            for c in (state_obj.get("cookies") or [])
+        )
+
+    async def _persist_context_state(self, *, force: bool = True) -> bool:
+        if not self.account_id or self.context is None:
+            return False
+        storage_fn = getattr(self.context, "storage_state", None)
+        if not callable(storage_fn):
+            return False
+        async with self._persist_lock:
+            if not force and not self.active:
+                return False
+            try:
+                state_obj = await asyncio.wait_for(storage_fn(), timeout=5.0)
+                if not isinstance(state_obj, dict) or not state_obj.get("cookies"):
+                    return False
+                state_json = json.dumps(state_obj, ensure_ascii=False)
+                digest = hashlib.sha256(state_json.encode("utf-8")).hexdigest()
+                if not force and digest == self._last_cookie_digest:
+                    return False
+                with get_session() as session:
+                    account = session.get(DouyinAccount, self.account_id)
+                    if account is None:
+                        return False
+                    if account.platform == "douyin" and account.storage_state:
+                        try:
+                            prev_state = json.loads(account.storage_state)
+                        except Exception:
+                            prev_state = {}
+                        if (
+                            isinstance(prev_state, dict)
+                            and self._has_douyin_auth_cookies(prev_state)
+                            and not self._has_douyin_auth_cookies(state_obj)
+                        ):
+                            return False
+                    now_utc = datetime.utcnow()
+                    if self.open_scope == "creator" and account.platform in {"xhs", "rednote"}:
                         account.creator_storage_state = state_json
-                account.last_keepalive_at = now_utc
-                account.last_cookie_refresh_at = now_utc
-                account.keepalive_note = "已从账号浏览器窗口同步最新登录态"
-                session.add(account)
-                session.commit()
-        except Exception:
-            # 窗口若已被用户直接点 X 关闭，storage_state() 可能抛 TargetClosedError；静默跳过即可
-            pass
+                    else:
+                        account.storage_state = state_json
+                        if account.platform in {"kuaishou", "shipinhao", "bilibili", "instagram", "twitter", "facebook", "youtube"}:
+                            account.creator_storage_state = state_json
+                    account.last_keepalive_at = now_utc
+                    account.last_cookie_refresh_at = now_utc
+                    account.keepalive_note = "已从账号浏览器窗口同步最新登录态"
+                    session.add(account)
+                    session.commit()
+                self._last_cookie_digest = digest
+                return True
+            except Exception:
+                # 窗口若已被用户直接点 X 关闭，storage_state() 可能抛 TargetClosedError；静默跳过即可
+                return False
 
     async def release(self) -> None:
         async with self._release_lock:
@@ -256,8 +341,11 @@ class _OpenBrowserLease:
             if self._closed:
                 return
             self._closed = True
+            for bg_task in (self._debounce_task, self._sync_task):
+                if bg_task is not None and not bg_task.done():
+                    bg_task.cancel()
             try:
-                await self._persist_context_state()
+                await self._persist_context_state(force=True)
                 with suppress(Exception):
                     if self.close_callback is not None:
                         await asyncio.wait_for(self.close_callback(), timeout=10.0)

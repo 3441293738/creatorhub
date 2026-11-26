@@ -565,30 +565,36 @@ class KeywordCollector(
             )
             await asyncio.gather(*alive, return_exceptions=True)
 
+        resume_index = 0
+        if job.source_type == "keyword":
+            saved_done = max(0, int(getattr(job, "processed_keyword_count", 0) or 0))
+            if 0 < saved_done < len(keywords):
+                resume_index = saved_done
         self._progress(
             job_id,
-            processed_keyword_count=0,
+            processed_keyword_count=resume_index,
             current_item_index=0,
             current_item_total=0,
         )
         try:
-          for keyword_index, keyword in enumerate(keywords):
+          for keyword_index in range(resume_index, len(keywords)):
+            keyword = keywords[keyword_index]
             if self._cancel_requested(job_id):
                 return {"canceled": True, "errors": self._job(job_id).error_count}
-            if job.platform == "douyin" and keyword_index:
+            if job.platform == "douyin" and keyword_index > resume_index:
                 gap = max(0.0, float(self.cfg.engine.douyin_keyword_gap_seconds))
                 if gap:
                     await asyncio.sleep(gap * random.uniform(1.0, 1.35))
-            elif job.platform in {"xhs", "rednote"} and keyword_index:
+            elif job.platform in {"xhs", "rednote"} and keyword_index > resume_index:
                 await self._xhs_gap(
                     self.cfg.engine.xhs_keyword_gap_seconds)
-            elif job.platform in {"kuaishou", "shipinhao"} and keyword_index:
+            elif job.platform in {"kuaishou", "shipinhao"} and keyword_index > resume_index:
                 await asyncio.sleep(0.8 * random.uniform(1.0, 1.35))
-            elif job.platform == "tiktok" and keyword_index:
+            elif job.platform == "tiktok" and keyword_index > resume_index:
                 await asyncio.sleep(1.0 * random.uniform(1.0, 1.35))
-            elif job.platform == "bilibili" and keyword_index:
+            elif job.platform == "bilibili" and keyword_index > resume_index:
                 await asyncio.sleep(0.8 * random.uniform(1.0, 1.35))
-            elif job.platform in {"instagram", "twitter", "facebook", "youtube"} and keyword_index:
+            elif job.platform in {"instagram", "twitter", "facebook", "youtube"} and keyword_index > resume_index:
                 await asyncio.sleep(1.2 * random.uniform(1.0, 1.35))
             self._progress(
                 job_id,

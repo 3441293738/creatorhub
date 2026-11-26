@@ -741,7 +741,15 @@ class MonitorEngine(
         immediate: bool = False,
     ) -> None:
         raw_status = str(status or job.status or "pending").lower()
-        manual_review = str(job.blocked_signal or "") == "manual_review_required"
+        manual_review = (
+            str(job.blocked_signal or "") == "manual_review_required"
+            or bool(
+                job.blocked_reason
+                and self.risk._needs_manual_review(
+                    job.blocked_reason, job.blocked_signal or ""
+                )
+            )
+        )
         if raw_status == "running":
             hub_status = "running"
         elif raw_status in {"done", "partial"}:
@@ -1075,6 +1083,8 @@ class MonitorEngine(
                     job.status = "running"
                     job.current_step = "准备搜索"
                     self._clear_row_block(job)
+                    job.error = ""
+                    job.error_count = 0
                     job.started_at = job.started_at or datetime.utcnow()
                     job.finished_at = None
                     s.add(job); s.commit()
@@ -1121,11 +1131,13 @@ class MonitorEngine(
                         if deferred_job and deferred_job.status not in {"canceled", "done"}:
                             deferred_job.status = "pending"
                             deferred_job.current_step = (
-                                "等待人工验证（请前往风控中心解除）"
+                                "等待人工验证（请点「打开验证页」处理，或在风控中心解除）"
                                 if manual_hold else "API 风控冷却，等待重试"
                             )
                             deferred_job.blocked_reason = job_error
-                            deferred_job.blocked_signal = signal
+                            deferred_job.blocked_signal = (
+                                "manual_review_required" if manual_hold else signal
+                            )
                             deferred_job.blocked_operation = OperationKind.READ_HEAVY.value
                             deferred_job.blocked_at = datetime.utcnow()
                             deferred_job.next_allowed_at = failure.next_allowed_at
