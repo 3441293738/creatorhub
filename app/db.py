@@ -153,8 +153,22 @@ def init_db(db_path: str):
     global _engine
     _engine = create_engine(
         f"sqlite:///{db_path}",
-        connect_args={"check_same_thread": False},
+        connect_args={"check_same_thread": False, "timeout": 15.0},
     )
+
+    @event.listens_for(_engine, "connect")
+    def _configure_sqlite(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout=10000")
+            if str(db_path or "") != ":memory:":
+                cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA temp_store=MEMORY")
+        except Exception:
+            pass
+        finally:
+            cursor.close()
     inspector = inspect(_engine)
     legacy_schedules = inspector.has_table("publishtask") and (
         "scheduled_at_is_utc" not in {

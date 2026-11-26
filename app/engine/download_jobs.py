@@ -21,6 +21,7 @@ from app.platforms.rednote import parse_rednote_detail
 from app.platforms.tiktok.urls import profile_url as tiktok_profile_url, video_url as tiktok_video_url
 from app.platforms.twitter import TwitterClient, parse_twitter_aweme
 from app.platforms.xhs import parse_note_detail
+from app.progress_hub import progress_hub
 from app.risk import OperationKind
 from app.settings import get_setting
 
@@ -87,6 +88,30 @@ class MediaDownloadMixin:
         except Exception as e:
             log.warning("通知发送失败: %s", e)
 
+    @staticmethod
+    def _publish_download_progress(record_id: int, aweme, data: dict) -> None:
+        dl = int(data.get("downloaded_bytes") or 0)
+        tot = int(data.get("total_bytes") or 0)
+        pct = round(min(99.5, (dl * 100.0) / tot), 1) if tot > 0 else None
+        progress_hub.upsert(
+            f"download:content:{record_id}",
+            category="monitor_download",
+            title=str(getattr(aweme, "desc", "") or getattr(aweme, "aweme_id", "") or f"作品 #{record_id}")[:120],
+            platform=str(getattr(aweme, "platform", "") or ""),
+            source_tab="monitors",
+            status="running",
+            phase=str(data.get("phase") or "downloading"),
+            phase_label=str(data.get("phase_label") or "正在下载媒体"),
+            determinate=tot > 0,
+            percent=pct,
+            current=dl,
+            total=tot,
+            unit="bytes",
+            speed_bps=data.get("speed_bps"),
+            eta_seconds=data.get("eta_seconds"),
+            extra={"record_id": record_id},
+        )
+
     async def _download(self, record_id: int, aweme, base_dir: str = "", proxy: str = "",
                         *, user_agent: str = "", cookies=None, referer: str = ""):
         async with self._sem:
@@ -95,9 +120,43 @@ class MediaDownloadMixin:
                 if rec:
                     rec.download_status = "downloading"
                     s.add(rec); s.commit()
+            title = str(getattr(aweme, "desc", "") or getattr(aweme, "aweme_id", "") or f"作品 #{record_id}")[:120]
+            pf = str(getattr(aweme, "platform", "") or "")
+            progress_hub.upsert(
+                f"download:content:{record_id}",
+                immediate=True,
+                category="monitor_download",
+                title=title,
+                platform=pf,
+                source_tab="monitors",
+                status="running",
+                phase="downloading",
+                phase_label="开始下载媒体",
+                determinate=False,
+                percent=None,
+                unit="bytes",
+                extra={"record_id": record_id},
+            )
             ok, path, err = await self.downloader.download_aweme(
                 aweme, base_dir, self._dl_proxy(proxy), user_agent=user_agent,
-                cookies=cookies, referer=referer)
+                cookies=cookies, referer=referer,
+                on_progress=lambda d: self._publish_download_progress(record_id, aweme, d),
+            )
+            progress_hub.upsert(
+                f"download:content:{record_id}",
+                immediate=True,
+                category="monitor_download",
+                title=title,
+                platform=pf,
+                source_tab="monitors",
+                status="completed" if ok else "failed",
+                phase="completed" if ok else "failed",
+                phase_label="下载完成" if ok else "下载失败",
+                error="" if ok else str(err or ""),
+                determinate=True if ok else False,
+                percent=100.0 if ok else None,
+                extra={"record_id": record_id},
+            )
             with get_session() as s:
                 rec = s.get(ContentRecord, record_id)
                 if rec:
@@ -562,7 +621,9 @@ class MediaDownloadMixin:
                 download_cookies = yt_cookie_map(acc_state)
         ok, path, err = await self.downloader.download_aweme(
             aw, base_dir, self._dl_proxy(acc_proxy), user_agent=download_ua,
-            cookies=download_cookies, referer=download_referer)
+            cookies=download_cookies, referer=download_referer,
+            on_progress=lambda d: self._publish_download_progress(record_id, aw, d),
+        )
         if not ok and platform == "bilibili" and not needs_bili_refetch and "403" in str(err):
             # B 站 CDN 防盗链签名过期时自动重拉一次最新直链重试下载
             bcli_refresh = BilibiliClient(
@@ -620,6 +681,21 @@ class MediaDownloadMixin:
                         seconds=backoff_sec * random.uniform(0.85, 1.35)
                     )
                 s.add(rec); s.commit()
+        progress_hub.upsert(
+            f"download:content:{record_id}",
+            immediate=True,
+            category="monitor_download",
+            title=str(getattr(aw, "desc", "") or getattr(aw, "aweme_id", "") or f"作品 #{record_id}")[:120],
+            platform=str(platform or ""),
+            source_tab="monitors",
+            status="completed" if ok else "failed",
+            phase="completed" if ok else "failed",
+            phase_label="下载完成" if ok else "下载失败",
+            error="" if ok else str(err or ""),
+            determinate=True if ok else False,
+            percent=100.0 if ok else None,
+            extra={"record_id": record_id},
+        )
         return {"ok": ok, "error": err}
 
     async def _retry_failed(self):

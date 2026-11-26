@@ -22,6 +22,7 @@ from app.engine import MonitorEngine
 from app.engine_settings import load_persisted_engine_settings
 from app.event_center import dispatch_pending
 from app.logging_setup import configure_logging, shutdown_logging
+from app.progress_hub import progress_hub
 from app.platforms.channels import recover_stale_system_proxy
 from app.profiles import migrate_identities, seed_proxy_pool
 from app.risk_admin import load_persisted_risk_settings
@@ -41,6 +42,7 @@ async def lifespan(app: FastAPI):
     loaded_overrides: list[str] = []
 
     try:
+        progress_hub.bind_loop(asyncio.get_running_loop())
         init_db(app_runtime.cfg.db_path)
         from app.agent.runtime import recover_interrupted, shutdown as shutdown_agent
         recover_interrupted()
@@ -207,10 +209,21 @@ async def lifespan(app: FastAPI):
             app_runtime._webhook_delivery_task = None
         follow_tasks = [task for task in app_runtime._follow_sync_tasks.values()
                         if not task.done()]
-        for task in follow_tasks:
+        extra_tasks = [
+            task
+            for pool in (
+                app_runtime._share_download_tasks.values(),
+                app_runtime._matrix_batch_tasks.values(),
+                list(app_runtime._background_tasks),
+            )
+            for task in pool
+            if not task.done()
+        ]
+        all_bg_tasks = [*follow_tasks, *extra_tasks]
+        for task in all_bg_tasks:
             task.cancel()
-        if follow_tasks:
-            await asyncio.gather(*follow_tasks, return_exceptions=True)
+        if all_bg_tasks:
+            await asyncio.gather(*all_bg_tasks, return_exceptions=True)
         if app_runtime.im_receiver:
             await app_runtime.im_receiver.stop_all()
         if app_runtime.engine:
@@ -219,5 +232,6 @@ async def lifespan(app: FastAPI):
             await app_runtime.browser.stop()
         await app_runtime.channels_bridge.stop()
         await app_runtime.channels_proxy.stop()
+        progress_hub.shutdown()
         log.info("服务已安全退出")
         shutdown_logging()

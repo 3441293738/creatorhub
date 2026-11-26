@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 import asyncio
 import json
+import time
+import uuid
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -41,6 +43,7 @@ from app.models import (
 )
 from app.platforms.rednote import has_web_session as rednote_has_web_session, weighted_truncate
 from app.platforms.xhs import has_creator_cookies
+from app.progress_hub import progress_hub
 from app.scheduling import utc_iso
 from app.services import account_profiles as account_profiles_service
 from app.services import browser_runtimes as browser_runtimes_service
@@ -1051,6 +1054,259 @@ async def batch_operate_accounts(body: AccountBatchActionIn):
         return {"ok": True, "closed": closed}
 
     raise HTTPException(400, f"不支持的批量操作类型：{act}")
+
+
+class MatrixBatchJobIn(BaseModel):
+    action: str  # test_proxy | refresh_profile | delete_accounts
+    account_ids: list[int] = PydanticField(default_factory=list)
+    concurrency: int = 0
+
+
+def _sync_matrix_batch_to_hub(job: dict[str, Any], *, immediate: bool = False) -> None:
+    total = max(1, int(job.get("total") or 1))
+    done = int(job.get("done") or 0)
+    ok_count = int(job.get("ok_count") or 0)
+    fail_count = int(job.get("fail_count") or 0)
+    status = str(job.get("status") or "running")
+    pct = 100.0 if status == "completed" else round(min(99.5, (done * 100.0) / total), 1)
+    eta = None
+    if status == "running" and done > 0 and done < total:
+        elapsed = max(0.2, time.monotonic() - float(job.get("_started_mono") or time.monotonic()))
+        eta = max(1, int((elapsed / done) * (total - done)))
+    detail = f"成功 {ok_count} · 失败/跳过 {fail_count} · 并发 {job.get('concurrency', 1)}"
+    current_label = str(job.get("current_label") or "")
+    phase_label = (
+        f"正在处理：{current_label}" if (status == "running" and current_label)
+        else str(job.get("phase_label") or ("处理中" if status == "running" else "已完成"))
+    )
+    progress_hub.upsert(
+        f"matrix_batch:{job['id']}",
+        immediate=immediate,
+        category="matrix_batch",
+        title=str(job.get("label") or "账号批量任务"),
+        platform="",
+        source_tab="accounts",
+        status=status,
+        phase=status,
+        phase_label=phase_label,
+        detail=detail,
+        error=str(job.get("error") or ""),
+        determinate=True,
+        percent=pct,
+        current=done,
+        total=total,
+        unit="items",
+        eta_seconds=eta,
+        metrics={
+            "done": done,
+            "total": total,
+            "ok": ok_count,
+            "failed": fail_count,
+            "concurrency": int(job.get("concurrency") or 1),
+        },
+        cancelable=status in {"queued", "running"},
+        extra={
+            "job_id": job["id"],
+            "action": job.get("action"),
+            "deleted_ids": list(job.get("deleted_ids") or []),
+            "failed_ids": list(job.get("failed_ids") or []),
+            "failed_samples": list(job.get("failed_samples") or [])[:8],
+        },
+    )
+
+
+async def _run_matrix_batch_job(job_id: str, action: str, ids: list[int], concurrency: int) -> None:
+    from app.api import accounts as accounts_api
+    from app.api import proxies as proxies_api
+
+    job = app_runtime._matrix_batch_jobs[job_id]
+    job["status"] = "running"
+    job["phase_label"] = "开始并发执行"
+    job["_started_mono"] = time.monotonic()
+    _sync_matrix_batch_to_hub(job, immediate=True)
+
+    names: dict[int, str] = {}
+    with get_session() as session:
+        for acc in session.exec(select(DouyinAccount).where(DouyinAccount.id.in_(ids))).all():
+            if acc.id is not None:
+                names[acc.id] = _account_display_name(acc, acc.id)
+
+    sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def process_one(aid: int) -> None:
+        if job.get("_cancel_requested"):
+            return
+        async with sem:
+            if job.get("_cancel_requested"):
+                return
+            label = names.get(aid, f"账号 #{aid}")
+            job["current_label"] = label
+            _sync_matrix_batch_to_hub(job)
+            ok = False
+            err_msg = ""
+            try:
+                if action == "test_proxy":
+                    res = await proxies_api.test_account_proxy(aid)
+                    ok = bool(res.get("ok"))
+                    if not ok:
+                        err_msg = str(res.get("detail") or "检测未通过")
+                elif action == "refresh_profile":
+                    res = await accounts_api.refresh_account_profile(aid)
+                    ok = bool(res.get("ok")) and not bool(res.get("skipped"))
+                    if not ok:
+                        err_msg = str(res.get("reason") or res.get("error") or "已跳过")
+                elif action == "delete_accounts":
+                    await accounts_api.del_account(aid)
+                    ok = True
+                    job["deleted_ids"].append(aid)
+            except HTTPException as exc:
+                ok = False
+                err_msg = str(exc.detail or exc)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                ok = False
+                err_msg = str(exc) or repr(exc)
+
+            job["done"] += 1
+            if ok:
+                job["ok_count"] += 1
+            else:
+                job["fail_count"] += 1
+                job["failed_ids"].append(aid)
+                if len(job["failed_samples"]) < 12:
+                    job["failed_samples"].append(f"{label}：{err_msg[:120]}")
+            _sync_matrix_batch_to_hub(job)
+            progress_hub.emit_event(
+                "matrix.account_updated",
+                {"job_id": job_id, "account_id": aid, "action": action, "ok": ok},
+            )
+
+    try:
+        await asyncio.gather(*(process_one(aid) for aid in ids))
+        job["completed_at"] = datetime.utcnow().isoformat() + "Z"
+        if job.get("_cancel_requested"):
+            job["status"] = "canceled"
+            job["phase_label"] = f"已停止（完成 {job['done']}/{job['total']}）"
+        else:
+            job["status"] = "completed"
+            job["phase_label"] = (
+                f"已完成：成功 {job['ok_count']} 个"
+                + (f"，未通过/跳过 {job['fail_count']} 个" if job["fail_count"] else "")
+            )
+        job["current_label"] = ""
+        _sync_matrix_batch_to_hub(job, immediate=True)
+    except asyncio.CancelledError:
+        job["status"] = "canceled"
+        job["phase_label"] = f"已停止（完成 {job['done']}/{job['total']}）"
+        job["current_label"] = ""
+        job["completed_at"] = datetime.utcnow().isoformat() + "Z"
+        _sync_matrix_batch_to_hub(job, immediate=True)
+        raise
+    except Exception as exc:
+        job["status"] = "failed"
+        job["phase_label"] = "批量任务异常中断"
+        job["error"] = str(exc) or repr(exc)
+        job["completed_at"] = datetime.utcnow().isoformat() + "Z"
+        _sync_matrix_batch_to_hub(job, immediate=True)
+
+
+@router.post("/api/matrix/batch-jobs", status_code=202)
+async def start_matrix_batch_job(body: MatrixBatchJobIn):
+    """在后台异步并发执行账号矩阵批量操作，并通过 /api/progress/stream 实时推送逐号进展。"""
+    action = str(body.action or "").strip().lower()
+    labels = {
+        "test_proxy": "批量检测代理与出口",
+        "refresh_profile": "批量刷新资料与登录态",
+        "delete_accounts": "批量删除账号",
+    }
+    if action not in labels:
+        raise HTTPException(400, f"不支持的异步批量操作：{action}")
+    ids = list(dict.fromkeys(int(i) for i in body.account_ids if int(i) > 0))
+    if not ids:
+        raise HTTPException(400, "请先选择至少一个账号")
+
+    if body.concurrency > 0:
+        concurrency = max(1, min(12, int(body.concurrency)))
+    elif action == "test_proxy":
+        # native 账号测代理会走浏览器出口探测，限制为 4；非 native 纯 HTTP 探测可并发 8
+        with get_session() as session:
+            has_native = any(
+                acc.identity_mode == "native"
+                for acc in session.exec(select(DouyinAccount).where(DouyinAccount.id.in_(ids))).all()
+            )
+        concurrency = 4 if has_native else 8
+    elif action == "refresh_profile":
+        concurrency = max(1, min(4, int(getattr(app_runtime.cfg.engine, "active_accounts", 3) or 3)))
+    else:
+        concurrency = 4
+    concurrency = min(concurrency, len(ids))
+
+    finished = [
+        k for k, v in app_runtime._matrix_batch_jobs.items()
+        if v.get("status") in {"completed", "failed", "canceled"}
+    ]
+    for old in finished[:-30]:
+        app_runtime._matrix_batch_jobs.pop(old, None)
+        app_runtime._matrix_batch_tasks.pop(old, None)
+
+    job_id = uuid.uuid4().hex[:12]
+    job: dict[str, Any] = {
+        "id": job_id,
+        "action": action,
+        "label": labels[action],
+        "status": "queued",
+        "phase_label": "排队中",
+        "current_label": "",
+        "total": len(ids),
+        "done": 0,
+        "ok_count": 0,
+        "fail_count": 0,
+        "concurrency": concurrency,
+        "deleted_ids": [],
+        "failed_ids": [],
+        "failed_samples": [],
+        "error": "",
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "completed_at": None,
+        "_cancel_requested": False,
+        "_started_mono": time.monotonic(),
+    }
+    app_runtime._matrix_batch_jobs[job_id] = job
+    _sync_matrix_batch_to_hub(job, immediate=True)
+
+    def _cancel():
+        job["_cancel_requested"] = True
+        t = app_runtime._matrix_batch_tasks.get(job_id)
+        if t is not None and not t.done():
+            t.cancel()
+        return {"ok": True, "job_id": job_id}
+
+    progress_hub.register_cancel(f"matrix_batch:{job_id}", _cancel)
+    task = asyncio.create_task(_run_matrix_batch_job(job_id, action, ids, concurrency))
+    app_runtime._matrix_batch_tasks[job_id] = task
+    task.add_done_callback(lambda _t, k=job_id: app_runtime._matrix_batch_tasks.pop(k, None))
+    return {k: v for k, v in job.items() if not k.startswith("_")}
+
+
+@router.get("/api/matrix/batch-jobs/{job_id}")
+async def get_matrix_batch_job(job_id: str):
+    job = app_runtime._matrix_batch_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "批量任务不存在")
+    return {k: v for k, v in job.items() if not k.startswith("_")}
+
+
+@router.post("/api/matrix/batch-jobs/{job_id}/cancel")
+async def cancel_matrix_batch_job(job_id: str):
+    job = app_runtime._matrix_batch_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "批量任务不存在")
+    job["_cancel_requested"] = True
+    task = app_runtime._matrix_batch_tasks.get(job_id)
+    if task is not None and not task.done():
+        task.cancel()
+    return {"ok": True, "job_id": job_id}
 
 
 # ─────────────────── 自有矩阵跨号数据对比与作品大盘 ───────────────────

@@ -7,13 +7,14 @@ import json
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field as PydanticField
-from sqlalchemy import update
+from sqlalchemy import case, func, or_, update
 from sqlmodel import select
 
 from app import runtime as app_runtime
 from app.db import get_session
 from app.models import AccountActionTask, CommentTask, ContentRecord, DouyinAccount, KeywordCollectionContent, KeywordCollectionJob, MonitorTarget, PublishTask, RiskAdminAudit
 from app.operations import record_account_operation
+from app.progress_hub import progress_hub
 from app.services import metadata as metadata_service
 
 router = APIRouter()
@@ -61,6 +62,66 @@ def _queue_keywords(value: str) -> str:
     return str(value or "").strip() or "未命名关键词任务"
 
 
+@router.get("/api/task-queue/summary")
+async def task_queue_summary(platform: str | None = None):
+    """轻量 SQL 聚合接口：供侧边栏角标与概览卡片读取，避免全表加载到内存。"""
+    platform = str(platform or "").strip().lower()
+    if platform == "all":
+        platform = ""
+    now_utc = datetime.utcnow()
+    summary = {name: 0 for name in (
+        "total", "active", "pending", "running", "blocked", "failed", "completed")}
+    failed_set = tuple(metadata_service._QUEUE_FAILED)
+    completed_set = tuple(_QUEUE_COMPLETED)
+    running_set = tuple(_QUEUE_RUNNING)
+
+    model_specs = (
+        (KeywordCollectionJob, KeywordCollectionJob.status, True),
+        (PublishTask, PublishTask.status, True),
+        (CommentTask, CommentTask.status, True),
+        (AccountActionTask, AccountActionTask.status, True),
+        (ContentRecord, ContentRecord.download_status, False),
+        (KeywordCollectionContent, KeywordCollectionContent.download_status, False),
+    )
+    with get_session() as session:
+        for model, status_col, has_block in model_specs:
+            if has_block:
+                blocked_cond = or_(
+                    model.blocked_reason != "",
+                    model.next_allowed_at > now_utc,
+                )
+                state_expr = case(
+                    (status_col.in_(failed_set), "failed"),
+                    (status_col.in_(completed_set), "completed"),
+                    (blocked_cond, "blocked"),
+                    (status_col.in_(running_set), "running"),
+                    else_="pending",
+                )
+            else:
+                state_expr = case(
+                    (status_col.in_(failed_set), "failed"),
+                    (status_col.in_(completed_set), "completed"),
+                    (status_col.in_(running_set), "running"),
+                    else_="pending",
+                )
+            stmt = select(state_expr, func.count()).where(
+                status_col.notin_(completed_set)
+            ).group_by(state_expr)
+            if platform:
+                stmt = stmt.where(model.platform == platform)
+            for st_name, cnt in session.exec(stmt).all():
+                c = int(cnt or 0)
+                if st_name in summary:
+                    summary[st_name] += c
+                    summary["total"] += c
+                    if st_name in {"pending", "running", "blocked"}:
+                        summary["active"] += c
+    return {
+        "summary": summary,
+        "generated_at": metadata_service._queue_iso(now_utc),
+    }
+
+
 @router.get("/api/task-queue")
 async def list_task_queue(platform: str | None = None, queue_type: str = "",
                           state: str = "active", q: str = "", page: int = 1,
@@ -97,7 +158,8 @@ async def list_task_queue(platform: str | None = None, queue_type: str = "",
                 source_tab: str, scheduled_at: datetime | None = None,
                 schedule_is_utc: bool = True,
                 blocked_reason: str = "", blocked_signal: str = "",
-                next_allowed_at: datetime | None = None, error: str = "") -> None:
+                next_allowed_at: datetime | None = None, error: str = "",
+                progress: dict[str, Any] | None = None) -> None:
             queue_state = _queue_state(
                 status, blocked_reason=blocked_reason,
                 next_allowed_at=next_allowed_at)
@@ -122,6 +184,7 @@ async def list_task_queue(platform: str | None = None, queue_type: str = "",
                 "blocked_signal": str(blocked_signal or "")[:120],
                 "error": str(error or "")[:1000],
                 "source_tab": source_tab,
+                "progress": progress,
             })
 
         task_specs = (
@@ -166,28 +229,74 @@ async def list_task_queue(platform: str | None = None, queue_type: str = "",
             collection_title = (_queue_keywords(row.keywords)
                                 if row.source_type == "keyword"
                                 else row.source_name or row.source_type or "采集任务")
+            live_col = progress_hub.get(f"collection:{row.id}")
+            if live_col is not None:
+                col_progress = {
+                    "percent": live_col.get("percent"),
+                    "determinate": bool(live_col.get("determinate")),
+                    "phase_label": live_col.get("phase_label") or row.current_step or "",
+                    "speed_bps": live_col.get("speed_bps"),
+                    "eta_seconds": live_col.get("eta_seconds"),
+                }
+            else:
+                kw_total = max(1, len(json.loads(row.keywords or "[]")) if row.source_type == "keyword" else 1)
+                kw_done = min(kw_total, max(0, int(row.processed_keyword_count or 0)))
+                it_total = max(0, int(row.current_item_total or 0))
+                it_idx = min(it_total, max(0, int(row.current_item_index or 0)))
+                frac = (it_idx / it_total) if (it_total and kw_done < kw_total) else 0.0
+                pct = 100.0 if row.status == "done" else round(min(100.0, (kw_done + frac) * 100.0 / kw_total), 1)
+                col_progress = {
+                    "percent": pct if (row.status == "done" or it_total > 0 or kw_done > 0) else None,
+                    "determinate": bool(row.status == "done" or it_total > 0 or kw_done > 0),
+                    "phase_label": row.current_step or "等待执行",
+                    "speed_bps": None,
+                    "eta_seconds": None,
+                }
             add(
                 queue="collections", queue_label="内容采集", row_id=row.id,
                 row_platform=row.platform, account_id=row.account_id,
                 title=collection_title,
-                detail=(f"{row.current_step or '等待执行'} · 已采集 {row.content_count} 个作品 / "
+                detail=(f"{col_progress['phase_label'] or '等待执行'} · 已采集 {row.content_count} 个作品 / "
                         f"{row.comment_count} 条评论"),
                 status=row.status, created_at=row.created_at,
                 scheduled_at=row.started_at, source_tab="collections",
                 blocked_reason=row.blocked_reason, blocked_signal=row.blocked_signal,
-                next_allowed_at=row.next_allowed_at, error=row.error)
+                next_allowed_at=row.next_allowed_at, error=row.error,
+                progress=col_progress)
 
         for row in loaded[PublishTask]:
+            live_pub = progress_hub.get(f"publish:{row.id}")
+            live_stage = (
+                (live_pub.get("phase_label") if live_pub else "")
+                or (app_runtime.engine.get_publish_stage(row.id)
+                    if (app_runtime.engine and hasattr(app_runtime.engine, "get_publish_stage")) else "")
+            )
+            pub_progress = None
+            if live_pub is not None:
+                pub_progress = {
+                    "percent": live_pub.get("percent"),
+                    "determinate": bool(live_pub.get("determinate")),
+                    "phase_label": live_stage or "发布中",
+                    "steps": live_pub.get("steps") or [],
+                }
+            elif row.status == "publishing" or live_stage:
+                pub_progress = {
+                    "percent": None,
+                    "determinate": False,
+                    "phase_label": live_stage or "发布中",
+                    "steps": [],
+                }
             add(
                 queue="publishes", queue_label="内容发布", row_id=row.id,
                 row_platform=row.platform, account_id=row.account_id,
                 title=row.title or row.desc or f"{row.media_type} 发布任务",
-                detail=row.desc if row.title else (row.topics or row.media_type),
+                detail=live_stage or (row.desc if row.title else (row.topics or row.media_type)),
                 status=row.status, created_at=row.created_at,
                 scheduled_at=row.scheduled_at, source_tab="publish",
                 schedule_is_utc=row.scheduled_at_is_utc,
                 blocked_reason=row.blocked_reason, blocked_signal=row.blocked_signal,
-                next_allowed_at=row.next_allowed_at, error=row.error)
+                next_allowed_at=row.next_allowed_at, error=row.error,
+                progress=pub_progress)
 
         for row in loaded[CommentTask]:
             target = f"回复 {row.target_nick}" if row.target_nick else f"作品 {row.aweme_id}"
@@ -218,15 +327,42 @@ async def list_task_queue(platform: str | None = None, queue_type: str = "",
             account_id = target.account_id if target else None
             target_name = ((target.alias or target.nickname or target.keyword)
                            if target else "作品监控")
+            live_dl = progress_hub.get(f"download:content:{row.id}")
+            dl_progress = None
+            if live_dl is not None:
+                dl_progress = {
+                    "percent": live_dl.get("percent"),
+                    "determinate": bool(live_dl.get("determinate")),
+                    "phase_label": live_dl.get("phase_label") or "下载中",
+                    "speed_bps": live_dl.get("speed_bps"),
+                    "eta_seconds": live_dl.get("eta_seconds"),
+                    "current": live_dl.get("current"),
+                    "total": live_dl.get("total"),
+                    "unit": live_dl.get("unit"),
+                }
             add(
                 queue="monitor_downloads", queue_label="监控下载", row_id=row.id,
                 row_platform=row.platform, account_id=account_id,
                 title=row.desc or f"作品 {row.aweme_id}", detail=target_name,
                 status=row.download_status, created_at=row.created_at,
-                source_tab="monitors", error=row.error)
+                source_tab="monitors", error=row.error,
+                progress=dl_progress)
 
         for row in loaded[KeywordCollectionContent]:
             job = jobs.get(row.job_id)
+            live_cdl = progress_hub.get(f"download:collection:{row.id}")
+            cdl_progress = None
+            if live_cdl is not None:
+                cdl_progress = {
+                    "percent": live_cdl.get("percent"),
+                    "determinate": bool(live_cdl.get("determinate")),
+                    "phase_label": live_cdl.get("phase_label") or "下载中",
+                    "speed_bps": live_cdl.get("speed_bps"),
+                    "eta_seconds": live_cdl.get("eta_seconds"),
+                    "current": live_cdl.get("current"),
+                    "total": live_cdl.get("total"),
+                    "unit": live_cdl.get("unit"),
+                }
             add(
                 queue="collection_downloads", queue_label="采集下载", row_id=row.id,
                 row_platform=row.platform,
@@ -234,7 +370,8 @@ async def list_task_queue(platform: str | None = None, queue_type: str = "",
                 title=row.desc or f"作品 {row.aweme_id}",
                 detail=f"关键词：{row.keyword}" if row.keyword else "关键词采集媒体",
                 status=row.download_status, created_at=row.created_at,
-                source_tab="collections", error=row.error)
+                source_tab="collections", error=row.error,
+                progress=cdl_progress)
 
     if platform:
         items = [item for item in items if item["platform"] == platform]

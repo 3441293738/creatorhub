@@ -88,39 +88,60 @@
 
 <header>
   <div class="header-inner">
-  <button class="ghost mobile-nav-toggle" id="nav-toggle" type="button" aria-label="打开导航" aria-controls="main-sidebar" aria-expanded="false"><svg aria-hidden="true"><use href="#i-menu"/></svg></button>
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true"><svg><use href="#i-brand"/></svg></span>
-    <div class="brand-copy">
-      <h1>CreatorHub<span class="badge-lite">LITE</span></h1>
-      <span class="brand-sub">多平台内容工作台</span>
+    <button class="ghost mobile-nav-toggle" id="nav-toggle" type="button" aria-label="打开导航" aria-controls="main-sidebar" aria-expanded="false"><svg aria-hidden="true"><use href="#i-menu"/></svg></button>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><svg><use href="#i-brand"/></svg></span>
+      <div class="brand-copy">
+        <h1>CreatorHub<span class="badge-lite">LITE</span></h1>
+        <span class="brand-sub">多平台内容工作台</span>
+      </div>
     </div>
-  </div>
-  <div class="pswitch" role="tablist" aria-label="平台切换">
-    <button role="tab" data-pf="all" data-base-label="全平台" onclick="switchPlatform('all')" title="跨 11 大平台全局汇总与矩阵管理"><svg class="ps-ic" aria-hidden="true"><use href="#i-globe"/></svg><span class="ps-lbl">全平台</span></button>
-    <button role="tab" data-pf="douyin" onclick="switchPlatform('douyin')">抖音</button>
-    <button role="tab" data-pf="xhs" onclick="switchPlatform('xhs')">小红书</button>
-    <button role="tab" data-pf="rednote" onclick="switchPlatform('rednote')" title="海外小红书 (Rednote)">海外小红书</button>
-    <button role="tab" data-pf="kuaishou" onclick="switchPlatform('kuaishou')">快手</button>
-    <button role="tab" data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
-    <button role="tab" data-pf="tiktok" onclick="switchPlatform('tiktok')">TikTok</button>
-    <button role="tab" data-pf="bilibili" onclick="switchPlatform('bilibili')">哔哩哔哩</button>
-    <button role="tab" data-pf="instagram" onclick="switchPlatform('instagram')">Instagram</button>
-    <button role="tab" data-pf="twitter" onclick="switchPlatform('twitter')">Twitter</button>
-    <button role="tab" data-pf="facebook" onclick="switchPlatform('facebook')">Facebook</button>
-    <button role="tab" data-pf="youtube" onclick="switchPlatform('youtube')">YouTube</button>
-  </div>
-  <div class="header-actions">
-    <button class="ghost command-trigger" id="command-trigger" type="button" aria-label="搜索功能" aria-haspopup="dialog" aria-controls="command-dialog" aria-keyshortcuts="Control+k Meta+k" title="搜索功能（Ctrl / ⌘ K）"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>搜索功能</span><kbd>Ctrl K</kbd></button>
-    <div class="theme-switch" role="group" aria-label="画面主题">
-      <button type="button" data-theme-choice="light" aria-label="日间主题" aria-pressed="false" title="日间主题"><svg aria-hidden="true"><use href="#i-sun"/></svg></button>
-      <button type="button" data-theme-choice="dark" aria-label="夜间主题" aria-pressed="false" title="夜间主题"><svg aria-hidden="true"><use href="#i-moon"/></svg></button>
-      <button type="button" data-theme-choice="system" aria-label="跟随系统主题" aria-pressed="true" title="跟随系统"><svg aria-hidden="true"><use href="#i-monitor"/></svg></button>
+    <div class="pswitch-host" id="pswitch-host">
+      <div class="pswitch" role="tablist" aria-label="平台切换">
+        <button role="tab" data-pf="all" data-base-label="全平台" onclick="switchPlatform('all')" title="跨 11 大平台全局汇总与矩阵管理"><svg class="ps-ic" aria-hidden="true"><use href="#i-globe"/></svg><span class="ps-lbl">全平台</span></button>
+        <button role="tab" data-pf="douyin" onclick="switchPlatform('douyin')">抖音</button>
+        <button role="tab" data-pf="xhs" onclick="switchPlatform('xhs')">小红书</button>
+        <button role="tab" data-pf="rednote" onclick="switchPlatform('rednote')" title="海外小红书 (Rednote)">海外小红书</button>
+        <button role="tab" data-pf="kuaishou" onclick="switchPlatform('kuaishou')">快手</button>
+        <button role="tab" data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
+        <button role="tab" data-pf="tiktok" onclick="switchPlatform('tiktok')">TikTok</button>
+        <button role="tab" data-pf="bilibili" onclick="switchPlatform('bilibili')">哔哩哔哩</button>
+        <button role="tab" data-pf="instagram" onclick="switchPlatform('instagram')">Instagram</button>
+        <button role="tab" data-pf="twitter" onclick="switchPlatform('twitter')">Twitter</button>
+        <button role="tab" data-pf="facebook" onclick="switchPlatform('facebook')">Facebook</button>
+        <button role="tab" data-pf="youtube" onclick="switchPlatform('youtube')">YouTube</button>
+        <button type="button" class="pswitch-more-btn" id="pswitch-more-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="pswitch-popover" title="展开更多平台" hidden><span id="pswitch-more-label">+0</span><span class="ps-more-dot" id="pswitch-more-dot" hidden></span><svg aria-hidden="true"><use href="#i-chevron"/></svg></button>
+      </div>
     </div>
-  </div>
-  <span class="engine" id="engine-status" role="status" aria-live="polite" title="后台任务引擎正在运行"><span class="dot live"></span><span class="engine-label">服务已连接</span></span>
+    <div class="header-actions">
+      <button class="ghost command-trigger" id="command-trigger" type="button" aria-label="搜索功能" aria-haspopup="dialog" aria-controls="command-dialog" aria-keyshortcuts="Control+k Meta+k" title="搜索功能（Ctrl / ⌘ K）"><svg aria-hidden="true"><use href="#i-logo"/></svg><kbd>Ctrl K</kbd></button>
+      <button class="ghost activity-trigger is-idle" id="activity-trigger" type="button" aria-label="活动任务中心" aria-expanded="false" aria-controls="activity-drawer" title="活动任务中心 · 查看后台实时进度" onclick="window.CreatorHubProgress?.toggleDrawer()">
+        <svg class="act-ic" aria-hidden="true"><use href="#i-bolt"/></svg>
+        <span class="act-dot" aria-hidden="true"></span>
+        <span class="act-text" id="activity-trigger-label">活动中心</span>
+        <span class="act-count" id="activity-trigger-count" hidden>0</span>
+        <span class="act-mini-bar" id="activity-trigger-bar" aria-hidden="true"><i></i></span>
+      </button>
+      <button class="ghost theme-cycle-btn" id="theme-cycle-btn" type="button" aria-label="切换画面主题" title="画面主题：跟随系统（点击切换）"><svg aria-hidden="true"><use href="#i-monitor"/></svg></button>
+      <span class="engine" id="engine-status" role="status" aria-live="polite" title="服务已连接 · 后台任务引擎运行中"><span class="dot live"></span><span class="engine-label">服务已连接</span></span>
+    </div>
   </div>
 </header>
+<div id="pswitch-popover" class="pswitch-popover" role="dialog" aria-label="切换平台" hidden></div>
+<aside id="activity-drawer" class="activity-drawer" role="region" aria-label="活动任务中心" hidden>
+  <div class="activity-drawer-head">
+    <div class="activity-drawer-title">
+      <b>活动任务中心</b>
+      <span class="mut" id="activity-drawer-sub">实时同步后台任务进度</span>
+    </div>
+    <div class="activity-drawer-head-actions">
+      <button type="button" class="ghost sm" id="activity-clear-btn" onclick="window.CreatorHubProgress?.clearFinished()" hidden>清空已结束</button>
+      <button type="button" class="ghost sm" onclick="window.CreatorHubProgress?.toggleDrawer(false);switchTab('queue',true)">全部队列</button>
+      <button type="button" class="ghost sm icon-only" onclick="window.CreatorHubProgress?.toggleDrawer(false)" aria-label="关闭活动任务中心"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+    </div>
+  </div>
+  <div class="activity-drawer-body" id="activity-drawer-body"></div>
+</aside>
 
 <div class="shell">
 <button class="nav-backdrop" id="nav-backdrop" type="button" tabindex="-1" aria-label="关闭导航"></button>

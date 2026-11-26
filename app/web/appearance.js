@@ -28,6 +28,15 @@
     document.querySelectorAll("[data-theme-choice]").forEach(button => {
       button.setAttribute("aria-pressed", String(button.dataset.themeChoice === state.theme));
     });
+    const cycleBtn = document.getElementById("theme-cycle-btn");
+    if (cycleBtn) {
+      const iconId = state.theme === "light" ? "#i-sun" : state.theme === "dark" ? "#i-moon" : "#i-monitor";
+      const label = state.theme === "light" ? "日间主题" : state.theme === "dark" ? "夜间主题" : `跟随系统（当前${state.resolvedTheme === "dark" ? "夜间" : "日间"}）`;
+      const useEl = cycleBtn.querySelector("use");
+      if (useEl) useEl.setAttribute("href", iconId);
+      cycleBtn.title = `画面主题：${label}（点击切换）`;
+      cycleBtn.setAttribute("aria-label", `切换画面主题，当前${label}`);
+    }
     document.querySelectorAll('input[name="appearance-theme"]').forEach(input => { input.checked = input.value === state.theme; });
     document.querySelectorAll('input[name="appearance-density"]').forEach(input => { input.checked = input.value === state.density; });
     const motion = document.getElementById("appearance-motion");
@@ -73,6 +82,15 @@
     document.querySelectorAll("[data-theme-choice]").forEach(button => {
       button.addEventListener("click", () => set({ theme: button.dataset.themeChoice }));
     });
+    const cycleBtn = document.getElementById("theme-cycle-btn");
+    if (cycleBtn) {
+      const order = ["light", "dark", "system"];
+      cycleBtn.addEventListener("click", () => {
+        const cur = snapshot().theme;
+        const next = order[(order.indexOf(cur) + 1) % order.length];
+        set({ theme: next });
+      });
+    }
     document.querySelectorAll('input[name="appearance-theme"]').forEach(input => {
       input.addEventListener("change", () => { if (input.checked) set({ theme: input.value }); });
     });

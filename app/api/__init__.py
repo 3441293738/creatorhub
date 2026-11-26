@@ -10,6 +10,7 @@ from . import workbench
 from . import matrix
 from . import channels
 from . import accounts
+from . import progress
 from . import task_queue
 from . import risk_control
 from . import browser_runtimes
@@ -56,6 +57,7 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(matrix.router)
     app.include_router(channels.router)
     app.include_router(accounts.router)
+    app.include_router(progress.router)
     app.include_router(task_queue.router)
     app.include_router(risk_control.router)
     app.include_router(browser_runtimes.router)

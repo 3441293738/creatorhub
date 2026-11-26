@@ -1,6 +1,7 @@
 """作品监控目标增删改查、启停切换与立即扫描接口。"""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -12,6 +13,7 @@ from app import runtime as app_runtime
 from app.db import get_session
 from app.engine.cadence import row_deadline
 from app.models import ContentRecord, DouyinAccount, MonitorTarget
+from app.progress_hub import progress_hub
 from app.platforms.bilibili import resolve_bili_mid
 from app.platforms.douyin import resolve_sec_uid
 from app.platforms.facebook import looks_like_facebook_post, resolve_facebook_short_url, resolve_facebook_user_target
@@ -450,10 +452,122 @@ async def toggle_monitor(tid: int):
 
 
 @router.post("/api/monitors/{tid}/run-now")
-async def run_now(tid: int):
+async def run_now(tid: int, async_mode: bool = False):
     if not app_runtime.engine:
         raise HTTPException(503, "引擎未就绪")
-    return await app_runtime.engine.scan_target(tid)
+    if not async_mode:
+        return await app_runtime.engine.scan_target(tid)
+    with get_session() as s:
+        target = s.get(MonitorTarget, tid)
+        if not target:
+            raise HTTPException(404, "监控目标不存在")
+        label = (
+            target.alias
+            or target.nickname
+            or (f"#{target.keyword}" if target.keyword else "")
+            or target.sec_uid
+            or f"监控 #{tid}"
+        )
+        platform = str(target.platform or "")
+        account_id = target.account_id
+        backfill_count = int(target.initial_backfill_count or 0)
+
+    task_key = f"monitor_scan:{tid}"
+    if tid in getattr(app_runtime.engine, "_inflight", set()):
+        return {"ok": True, "queued": True, "async": True, "already_running": True, "task_key": task_key}
+
+    progress_hub.upsert(
+        task_key,
+        immediate=True,
+        category="monitor_scan",
+        title=f"抓取监控 · {label}"[:120],
+        platform=platform,
+        account_id=account_id,
+        source_tab="monitors",
+        status="running",
+        phase="scanning",
+        phase_label="正在读取监控作品…",
+        determinate=False,
+        percent=None,
+        cancelable=False,
+        extra={"target_id": tid, "backfill_count": backfill_count},
+    )
+
+    async def _runner():
+        try:
+            res = await app_runtime.engine.scan_target(tid)
+            if not isinstance(res, dict):
+                res = {"ok": True}
+            err = str(res.get("error") or "")
+            if res.get("skipped"):
+                phase_label = str(res.get("reason") or "本轮已跳过")
+                st = "completed"
+            elif res.get("partial"):
+                phase_label = f"部分完成：获取 {res.get('captured', res.get('new', 0))} 条，{res.get('failed', 0)} 条详情失败"
+                st = "completed"
+            elif err:
+                phase_label = "抓取未成功"
+                st = "failed"
+            else:
+                phase_label = f"完成 · 检查 {res.get('scanned', res.get('new', 0))} 条，新增 {res.get('new', 0)} 条"
+                st = "completed"
+            progress_hub.upsert(
+                task_key,
+                immediate=True,
+                category="monitor_scan",
+                title=f"抓取监控 · {label}"[:120],
+                platform=platform,
+                account_id=account_id,
+                source_tab="monitors",
+                status=st,
+                phase=st,
+                phase_label=phase_label,
+                error=err[:400],
+                determinate=(st == "completed"),
+                percent=100.0 if st == "completed" else None,
+                cancelable=False,
+                extra={"target_id": tid, "backfill_count": backfill_count, "result": res},
+            )
+        except asyncio.CancelledError:
+            progress_hub.upsert(
+                task_key,
+                immediate=True,
+                category="monitor_scan",
+                title=f"抓取监控 · {label}"[:120],
+                platform=platform,
+                account_id=account_id,
+                source_tab="monitors",
+                status="canceled",
+                phase="canceled",
+                phase_label="已取消",
+                determinate=False,
+                percent=None,
+                cancelable=False,
+            )
+            raise
+        except Exception as exc:
+            progress_hub.upsert(
+                task_key,
+                immediate=True,
+                category="monitor_scan",
+                title=f"抓取监控 · {label}"[:120],
+                platform=platform,
+                account_id=account_id,
+                source_tab="monitors",
+                status="failed",
+                phase="failed",
+                phase_label="抓取失败",
+                error=str(exc)[:400],
+                determinate=False,
+                percent=None,
+                cancelable=False,
+                extra={"target_id": tid},
+            )
+
+    bg_task = asyncio.create_task(_runner())
+    app_runtime._background_tasks.add(bg_task)
+    bg_task.add_done_callback(lambda t: app_runtime._background_tasks.discard(t))
+    return {"ok": True, "queued": True, "async": True, "task_key": task_key}
 
 
 class TargetBatchDeleteIn(BaseModel):

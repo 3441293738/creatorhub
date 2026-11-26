@@ -21,13 +21,16 @@ import json
 import os
 import re
 import shutil
+import threading
 import unicodedata
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
+
+from app.progress_hub import run_in_media_pool
 
 
 class ShareLinkError(ValueError):
@@ -690,7 +693,7 @@ class ShareDownloader:
         proxy: str = "",
         cookie_file: str = "",
     ) -> dict[str, Any]:
-        return await asyncio.to_thread(
+        return await run_in_media_pool(
             self._inspect_sync, url, proxy=proxy, cookie_file=cookie_file
         )
 
@@ -705,8 +708,12 @@ class ShareDownloader:
         proxy: str = "",
         cookie_file: str = "",
         max_filesize_mb: int = 0,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         self._check_url(url)
+        if cancel_event is not None and cancel_event.is_set():
+            raise ShareDownloadError("下载已取消")
         yt_dlp = self._load_yt_dlp()
         logger = _YDLLogger()
         root = self.output_dir.resolve()
@@ -722,7 +729,16 @@ class ShareDownloader:
         ffmpeg_location = _find_ffmpeg()
         has_ffmpeg = bool(ffmpeg_location)
 
+        def emit_progress() -> None:
+            if on_progress is not None:
+                try:
+                    on_progress(dict(progress))
+                except Exception:
+                    pass
+
         def hook(data: dict[str, Any]) -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise ShareDownloadError("下载已取消")
             status = str(data.get("status") or "")
             progress["status"] = status
             for key in (
@@ -731,6 +747,19 @@ class ShareDownloader:
             ):
                 if data.get(key) is not None:
                     progress[key] = _json_value(data.get(key))
+            info_dict = data.get("info_dict")
+            if isinstance(info_dict, dict) and info_dict.get("title") and not progress.get("title"):
+                progress["title"] = str(info_dict.get("title") or "")[:200]
+            emit_progress()
+
+        def post_hook(data: dict[str, Any]) -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise ShareDownloadError("下载已取消")
+            pp_status = str(data.get("status") or "")
+            if pp_status == "started":
+                progress["status"] = "postprocessing"
+                progress["postprocessor"] = str(data.get("postprocessor") or "")
+                emit_progress()
 
         options = self._base_options(logger=logger, proxy=proxy, cookie_file=cookie_file)
         options.update({
@@ -760,6 +789,7 @@ class ShareDownloader:
             "writeautomaticsub": bool(save_subtitles),
             "subtitleslangs": ["zh-Hans", "zh-Hant", "zh", "en"],
             "progress_hooks": [hook],
+            "postprocessor_hooks": [post_hook],
         })
         options.update(_download_format_options(quality, ffmpeg_location))
         if max_filesize_mb:
@@ -838,8 +868,10 @@ class ShareDownloader:
         proxy: str = "",
         cookie_file: str = "",
         max_filesize_mb: int = 0,
+        on_progress: Callable[[dict[str, Any]], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
-        return await asyncio.to_thread(
+        return await run_in_media_pool(
             self._download_sync,
             url,
             quality=quality,
@@ -849,6 +881,8 @@ class ShareDownloader:
             proxy=proxy,
             cookie_file=cookie_file,
             max_filesize_mb=max_filesize_mb,
+            on_progress=on_progress,
+            cancel_event=cancel_event,
         )
 
 

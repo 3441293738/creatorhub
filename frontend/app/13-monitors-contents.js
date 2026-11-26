@@ -407,12 +407,72 @@ async function refreshMonitors() {
   if ($("tb-mon")) $("tb-mon").textContent = ts.length;
   renderMonitorRows();
 }
+const _WATCHED_MONITOR_SCANS = new Set();
+function renderInlineDownloadProgHtml(recordId, downloadStatus = "", liveTask = null) {
+  const prog = window.CreatorHubProgress;
+  const task = liveTask || prog?.getTask?.("download:content:" + recordId);
+  const active = task && ["queued", "running"].includes(task.status);
+  if (!active && downloadStatus !== "downloading") return "";
+  const det = !!(task && task.determinate && task.percent !== null && task.percent !== undefined && Number.isFinite(Number(task.percent)));
+  const pct = det ? Math.max(0, Math.min(100, Math.round(Number(task.percent)))) : null;
+  const bar = prog?.renderProgressBar
+    ? prog.renderProgressBar({ determinate: det, percent: pct, tone: "info", label: "媒体下载进度", compact: true })
+    : `<div class="progress-track is-compact${det ? "" : " is-indeterminate"}"><div class="progress-fill" style="${det ? `width:${pct}%` : ""}"></div></div>`;
+  const parts = [];
+  if (task?.phase_label) parts.push(task.phase_label);
+  if (det) parts.push(`${pct}%`);
+  if (task && task.unit === "bytes" && Number(task.total) > 0) {
+    parts.push(`${prog?.fmtBytes?.(task.current) || ""} / ${prog?.fmtBytes?.(task.total) || ""}`);
+  } else if (task && task.unit === "bytes" && Number(task.current) > 0) {
+    parts.push(prog?.fmtBytes?.(task.current) || "");
+  }
+  const spd = task?.speed_bps ? (prog?.fmtSpeed?.(task.speed_bps) || "") : "";
+  if (spd) parts.push(spd);
+  const eta = task?.eta_seconds ? (prog?.fmtEta?.(task.eta_seconds) || "") : "";
+  if (eta) parts.push(eta);
+  return `<div class="dl-inline-prog">${bar}<div class="dl-inline-prog-meta progress-num">${esc(parts.join(" · ") || "正在下载…")}</div></div>`;
+}
+window.addEventListener("creatorhub:progress:update", e => {
+  const task = e?.detail?.task;
+  if (!task) return;
+  if (task.category === "monitor_scan" && _WATCHED_MONITOR_SCANS.has(task.task_key)) {
+    if (["completed", "failed", "canceled"].includes(task.status)) {
+      _WATCHED_MONITOR_SCANS.delete(task.task_key);
+      const r = task.extra?.result;
+      const tid = Number(task.extra?.target_id || 0);
+      if (task.status === "failed") {
+        toast("抓取未成功:" + (task.error || task.phase_label || "未知错误"), "err", 10000);
+      } else if (r) {
+        if (r.skipped) toast(r.reason || "本轮已跳过，请查看监控状态", "info", 6000);
+        else if (r.partial) toast(`部分完成：已获取 ${r.captured ?? r.new} 条作品，${r.failed || 0} 条详情失败。${r.error || ""}`, "info", 10000);
+        else if (r.error) toast("抓取未成功:" + r.error, "err", 10000);
+        else if (r.refreshed) toast(`抓取完成，新增 ${r.new} 条记录；已刷新 ${r.refreshed} 条失败记录的访问参数，可在作品记录中手动重试。`, "info", 10000);
+        else if ((r.scanned ?? 0) === 0 && (r.new ?? 0) === 0 && !r.filtered && (r.backfill_count === 0 || monitorById(tid)?.initial_backfill_count === 0)) {
+          toast("未抓取到作品：当前「首次历史回填」为“不回填历史(0 条)”，仅监控新建之后的新发布；可在「编辑」中改为“最近 5 条”后重抓。", "info", 8000);
+        }
+        else toast(`抓取完成,检查 ${r.scanned ?? r.new} 条，筛除 ${r.filtered || 0} 条，新增 ${r.new} 条`, "ok");
+      }
+    }
+    return;
+  }
+  if (task.category === "monitor_download" && typeof CURRENT_TAB !== "undefined" && CURRENT_TAB === "monitors") {
+    const recId = Number(task.extra?.record_id || String(task.task_key || "").split(":")[2] || 0);
+    if (!recId) return;
+    document.querySelectorAll(`[data-dl-prog="${recId}"]`).forEach(slot => {
+      slot.innerHTML = renderInlineDownloadProgHtml(recId, task.status === "running" ? "downloading" : "", task);
+    });
+  }
+});
 async function runNow(id) {
   const btn = evtBtn();
-  toast("抓取中…正在按配置的获取方式读取作品", "info", 7000);
-  await withBusy(btn, "抓取中", async () => {
+  await withBusy(btn, "发起中", async () => {
     try {
-      const r = await api("/api/monitors/" + id + "/run-now", { method: "POST" });
+      const r = await api("/api/monitors/" + id + "/run-now?async_mode=true", { method: "POST" });
+      if (r.async && r.queued) {
+        if (r.task_key) _WATCHED_MONITOR_SCANS.add(r.task_key);
+        toast(r.already_running ? "该监控正在后台抓取中，可在右上角「活动中心」查看进度" : "已开始后台抓取，可在右上角「活动中心」查看实时进度", "info", 4500);
+        return;
+      }
       if (r.skipped) toast(r.reason || "本轮已跳过，请查看监控状态", "info", 6000);
       else if (r.partial) toast(`部分完成：已获取 ${r.captured ?? r.new} 条作品，${r.failed || 0} 条详情失败。${r.error || ""}`, "info", 10000);
       else if (r.error) toast("抓取未成功:" + r.error, "err", 10000);
@@ -421,9 +481,9 @@ async function runNow(id) {
         toast("未抓取到作品：当前「首次历史回填」为“不回填历史(0 条)”，仅监控新建之后的新发布；可在「编辑」中改为“最近 5 条”后重抓。", "info", 8000);
       }
       else toast(`抓取完成,检查 ${r.scanned ?? r.new} 条，筛除 ${r.filtered || 0} 条，新增 ${r.new} 条`, "ok");
+      refreshMonitors(); refreshContents();
     } catch (e) { toast("抓取失败:" + e.message, "err"); }
   });
-  refreshMonitors(); refreshContents();
 }
 async function toggleMon(id) { try { await api("/api/monitors/" + id + "/toggle", { method: "POST" }); refreshMonitors(); } catch (e) { toast("操作失败:" + e.message, "err"); } }
 async function delMon(id) { if (await uiConfirm({ title: "删除监控", message: "删除该监控?", okText: "删除", danger: true })) { try { await api("/api/monitors/" + id, { method: "DELETE" }); selMon.delete(id); toast("监控已删除", "ok"); refreshMonitors(); } catch (e) { toast("删除失败:" + e.message, "err"); } } }
@@ -578,6 +638,7 @@ function noteCard(r) {
         <span>${fmtTime(r.create_time)}</span>
         <span class="like">${ic("i-heart")}${fmtNum(r.like_count)} · 💬${fmtNum(r.comment_count)}</span>
       </div>
+      <div data-dl-prog="${r.id}">${renderInlineDownloadProgHtml(r.id, r.download_status)}</div>
       <div class="ncard-actions">
         <span class="pill ${r.download_status}" style="flex:1;justify-content:center" title="${esc(r.error || "")}">${contentStatusLabel(r.download_status)}${r.error ? " ⓘ" : ""}</span>
         ${hasLocal ? `<button class="ghost sm" style="flex:0 0 auto" onclick="revealContentPath(${r.id},this)" title="打开文件夹">${ic("i-folder")}</button>` : ""}
@@ -754,6 +815,7 @@ async function refreshContents(resetPage = false) {
       <td class="content-metrics num"><span class="metric like">${ic("i-heart")}${fmtNum(r.like_count)}</span><span class="metric">${ic("i-msg")}${fmtNum(r.comment_count)}</span></td>
       <td class="content-status-cell">
         <div class="content-status-row"><span class="pill ${r.download_status}">${contentStatusLabel(r.download_status)}</span>${r.error ? `<span class="warn-ic" data-tip="${esc(r.error)}" title="${esc(r.error)}">${ic("i-info")}</span>` : ""}</div>
+        <div data-dl-prog="${r.id}">${renderInlineDownloadProgHtml(r.id, r.download_status)}</div>
         ${contentPathCell(r)}
       </td>
       <td class="content-action-cell acttd">

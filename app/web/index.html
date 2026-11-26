@@ -2854,7 +2854,7 @@
   .mx-cmt-like svg { width:12px !important; height:12px !important; }
 
   .mx-split-detail {
-    position:sticky; top:84px; max-height:calc(100vh - 104px); overflow-y:auto;
+    position:sticky; top:calc(var(--header-h) + 16px); max-height:calc(100vh - var(--header-h) - 32px); overflow-y:auto;
     border-radius:var(--r); background:var(--surface-card, var(--surface));
     border:1px solid var(--border-card, var(--line)); box-shadow:var(--sh-sm); padding:14px;
   }
@@ -3689,6 +3689,137 @@
   @media(max-width:680px) {
     .ai-source-seg { grid-template-columns:1fr; }
   }
+
+
+  /* ── 统一进度条增强（确定/流光不确定/语义配色）与活动任务中心 ── */
+  .progress-track { position:relative; }
+  .progress-track.is-compact { height:5px; }
+  .progress-fill.tone-ok { background:linear-gradient(90deg,var(--success),#34d399); }
+  .progress-fill.tone-warn { background:linear-gradient(90deg,var(--warn),#fbbf24); }
+  .progress-fill.tone-danger { background:linear-gradient(90deg,var(--danger),#fb7185); }
+  .progress-track.is-indeterminate .progress-fill {
+    position:absolute; inset:0 auto 0 0; width:38%;
+    animation:progressSlide 1.35s cubic-bezier(.4,0,.2,1) infinite;
+  }
+  @keyframes progressSlide { 0% { transform:translateX(-110%); } 100% { transform:translateX(310%); } }
+  .progress-num { font-variant-numeric:tabular-nums; }
+  @media (prefers-reduced-motion: reduce) {
+    .progress-track.is-indeterminate .progress-fill { animation:none; width:100%; opacity:.45; }
+  }
+
+  .activity-trigger {
+    position:relative; display:inline-flex; align-items:center; gap:7px; padding:0 11px; min-height:34px;
+    border-radius:999px; font-size:12.5px; font-weight:580; overflow:hidden;
+  }
+  .activity-trigger .act-dot {
+    width:7px; height:7px; border-radius:50%; background:var(--mut); opacity:.55; flex:0 0 auto;
+    transition:background .2s var(--ease), transform .2s var(--ease);
+  }
+  .activity-trigger.is-active { border-color:var(--acc-ring); color:var(--fg-strong); background:var(--acc-soft); }
+  .activity-trigger.is-active .act-dot { background:var(--acc); opacity:1; box-shadow:0 0 0 3px var(--acc-soft); animation:actPulse 1.6s ease-in-out infinite; }
+  .activity-trigger.is-warn { border-color:color-mix(in srgb,var(--warn) 55%,transparent); background:color-mix(in srgb,var(--warn) 12%,transparent); color:var(--fg-strong); }
+  .activity-trigger.is-warn .act-dot { background:var(--warn); opacity:1; animation:actPulse 1.2s ease-in-out infinite; }
+  .activity-trigger.is-error .act-dot { background:var(--danger); opacity:1; }
+  .activity-trigger .act-count {
+    min-width:18px; height:18px; padding:0 5px; border-radius:999px; font:650 11px/18px var(--mono);
+    background:var(--surface-3); color:var(--fg); text-align:center;
+  }
+  .activity-trigger.is-active .act-count { background:var(--acc); color:#fff; }
+  .activity-trigger.is-warn .act-count { background:var(--warn); color:#111; }
+  .activity-trigger .act-mini-bar {
+    position:absolute; left:0; right:0; bottom:0; height:2px; background:transparent; opacity:0; transition:opacity .2s;
+  }
+  .activity-trigger .act-mini-bar.on { opacity:1; }
+  .activity-trigger .act-mini-bar i { display:block; height:100%; width:0; background:var(--acc); transition:width .25s var(--ease); }
+  .activity-trigger .act-mini-bar.indeterminate i { width:40%!important; animation:progressSlide 1.35s cubic-bezier(.4,0,.2,1) infinite; }
+  @keyframes actPulse { 0%,100% { transform:scale(1); opacity:1; } 50% { transform:scale(1.32); opacity:.55; } }
+
+  .activity-drawer {
+    position:fixed; top:calc(var(--header-h) + 6px); right:18px; width:min(440px,calc(100vw - 24px)); max-height:min(76vh,680px);
+    z-index:220; display:flex; flex-direction:column; border-radius:14px;
+    background:var(--surface); border:1px solid var(--line); box-shadow:0 22px 48px -16px rgba(0,0,0,.45);
+    overflow:hidden; animation:actDrop .18s var(--ease);
+  }
+  .activity-drawer[hidden] { display:none!important; }
+  @keyframes actDrop { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
+  .activity-drawer-head {
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:12px 14px; border-bottom:1px solid var(--line-soft); background:var(--surface-2);
+  }
+  .activity-drawer-title { min-width:0; display:grid; gap:2px; }
+  .activity-drawer-title b { font-size:14px; color:var(--fg-strong); }
+  .activity-drawer-title span { font-size:11.5px; }
+  .activity-drawer-head-actions { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+  .activity-drawer-body { overflow:auto; padding:12px 14px; display:grid; gap:14px; }
+  .act-empty { display:grid; justify-items:center; text-align:center; gap:6px; padding:26px 14px; color:var(--mut); }
+  .act-empty b { color:var(--fg-strong); font-size:13.5px; }
+  .act-empty span { font-size:12px; line-height:1.5; max-width:290px; }
+  .act-group { display:grid; gap:8px; }
+  .act-group-title {
+    margin:0; font-size:11.5px; font-weight:650; color:var(--mut); letter-spacing:.3px;
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  .act-group-title span { font-family:var(--mono); opacity:.8; }
+  .act-list { display:grid; gap:8px; }
+  .act-item {
+    display:grid; gap:6px; padding:10px 12px; border-radius:10px;
+    background:var(--surface-2); border:1px solid var(--line-soft);
+  }
+  .act-item.tone-warn { border-color:color-mix(in srgb,var(--warn) 48%,transparent); background:color-mix(in srgb,var(--warn) 6%,var(--surface-2)); }
+  .act-item.tone-danger { border-color:color-mix(in srgb,var(--danger) 45%,transparent); }
+  .act-item-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .act-item-badges { display:flex; align-items:center; gap:5px; flex-wrap:wrap; }
+  .act-item-pct { font:650 11.5px/1 var(--mono); color:var(--fg-strong); white-space:nowrap; }
+  .act-item-title { font-size:13px; font-weight:600; color:var(--fg-strong); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .act-item-phase { font-size:12px; color:var(--fg); line-height:1.4; overflow-wrap:anywhere; }
+  .act-item-meta { font-size:11.5px; color:var(--mut); }
+  .act-item-err { font-size:11.5px; color:var(--danger); line-height:1.4; overflow-wrap:anywhere; }
+  .act-item-actions { display:flex; justify-content:flex-end; gap:6px; margin-top:2px; }
+
+  .share-live-list { display:grid; gap:10px; }
+  .share-live-card {
+    display:grid; gap:8px; padding:12px 14px; border-radius:12px;
+    background:var(--surface-2); border:1px solid var(--line);
+  }
+  .share-live-card.is-warn { border-color:color-mix(in srgb,var(--warn) 50%,transparent); }
+  .share-live-card.is-failed { border-color:color-mix(in srgb,var(--danger) 50%,transparent); }
+  .share-live-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  .share-live-title { font-size:13.5px; font-weight:620; color:var(--fg-strong); min-width:0; overflow-wrap:anywhere; }
+  .share-live-sub { font-size:12px; color:var(--mut); display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+  .share-live-items { display:grid; gap:6px; margin-top:2px; }
+  .share-live-subitem {
+    display:grid; gap:4px; padding:8px 10px; border-radius:8px;
+    background:var(--surface); border:1px solid var(--line-soft);
+  }
+  .share-live-subitem-row { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; }
+
+  .pub-stepper { display:flex; align-items:center; gap:4px; flex-wrap:wrap; margin-top:5px; }
+  .pub-step {
+    display:inline-flex; align-items:center; gap:4px; padding:2px 7px; border-radius:999px;
+    font-size:10.5px; background:var(--surface-3); color:var(--mut); border:1px solid var(--line-soft);
+  }
+  .pub-step.done { background:color-mix(in srgb,var(--success) 14%,transparent); color:var(--success); border-color:color-mix(in srgb,var(--success) 35%,transparent); }
+  .pub-step.active { background:var(--acc-soft); color:var(--acc); border-color:var(--acc-ring); font-weight:600; }
+  .pub-step.warn { background:color-mix(in srgb,var(--warn) 16%,transparent); color:var(--warn); border-color:color-mix(in srgb,var(--warn) 45%,transparent); font-weight:600; }
+  .pub-upload-progress { display:grid; gap:5px; margin-top:8px; padding:9px 11px; border-radius:9px; background:var(--surface-2); border:1px solid var(--line-soft); }
+  .pub-upload-progress-head { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; color:var(--fg); }
+
+  .queue-table .queue-col-progress { width:158px; }
+  .queue-progress-cell { display:grid; gap:4px; min-width:128px; }
+  .queue-progress-head { display:flex; align-items:center; justify-content:space-between; gap:6px; font-size:11px; color:var(--mut); }
+  .queue-progress-head b { color:var(--fg-strong); font-family:var(--mono); }
+  .dl-inline-prog { display:grid; gap:4px; margin-top:5px; min-width:120px; }
+  .dl-inline-prog-head { display:flex; justify-content:space-between; gap:6px; font-size:11px; color:var(--mut); }
+  .mx-batch-progress-card {
+    display:grid; gap:8px; padding:12px 14px; border-radius:12px; margin-bottom:12px;
+    background:var(--surface); border:1px solid var(--acc-ring); box-shadow:var(--sh-sm);
+  }
+  .mx-batch-progress-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  .mx-batch-progress-stats { display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:12px; color:var(--mut); }
+  .mx-batch-progress-stats b { color:var(--fg-strong); }
+
+  .queue-progress-head span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .queue-progress-meta, .dl-inline-prog-meta { font-size:11px; color:var(--mut); line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 </style>
 <link rel="stylesheet" href="/static/appearance.css">
 <link rel="stylesheet" href="/static/workbench.css">
@@ -3770,39 +3901,60 @@
 
 <header>
   <div class="header-inner">
-  <button class="ghost mobile-nav-toggle" id="nav-toggle" type="button" aria-label="打开导航" aria-controls="main-sidebar" aria-expanded="false"><svg aria-hidden="true"><use href="#i-menu"/></svg></button>
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true"><svg><use href="#i-brand"/></svg></span>
-    <div class="brand-copy">
-      <h1>CreatorHub<span class="badge-lite">LITE</span></h1>
-      <span class="brand-sub">多平台内容工作台</span>
+    <button class="ghost mobile-nav-toggle" id="nav-toggle" type="button" aria-label="打开导航" aria-controls="main-sidebar" aria-expanded="false"><svg aria-hidden="true"><use href="#i-menu"/></svg></button>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><svg><use href="#i-brand"/></svg></span>
+      <div class="brand-copy">
+        <h1>CreatorHub<span class="badge-lite">LITE</span></h1>
+        <span class="brand-sub">多平台内容工作台</span>
+      </div>
     </div>
-  </div>
-  <div class="pswitch" role="tablist" aria-label="平台切换">
-    <button role="tab" data-pf="all" data-base-label="全平台" onclick="switchPlatform('all')" title="跨 11 大平台全局汇总与矩阵管理"><svg class="ps-ic" aria-hidden="true"><use href="#i-globe"/></svg><span class="ps-lbl">全平台</span></button>
-    <button role="tab" data-pf="douyin" onclick="switchPlatform('douyin')">抖音</button>
-    <button role="tab" data-pf="xhs" onclick="switchPlatform('xhs')">小红书</button>
-    <button role="tab" data-pf="rednote" onclick="switchPlatform('rednote')" title="海外小红书 (Rednote)">海外小红书</button>
-    <button role="tab" data-pf="kuaishou" onclick="switchPlatform('kuaishou')">快手</button>
-    <button role="tab" data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
-    <button role="tab" data-pf="tiktok" onclick="switchPlatform('tiktok')">TikTok</button>
-    <button role="tab" data-pf="bilibili" onclick="switchPlatform('bilibili')">哔哩哔哩</button>
-    <button role="tab" data-pf="instagram" onclick="switchPlatform('instagram')">Instagram</button>
-    <button role="tab" data-pf="twitter" onclick="switchPlatform('twitter')">Twitter</button>
-    <button role="tab" data-pf="facebook" onclick="switchPlatform('facebook')">Facebook</button>
-    <button role="tab" data-pf="youtube" onclick="switchPlatform('youtube')">YouTube</button>
-  </div>
-  <div class="header-actions">
-    <button class="ghost command-trigger" id="command-trigger" type="button" aria-label="搜索功能" aria-haspopup="dialog" aria-controls="command-dialog" aria-keyshortcuts="Control+k Meta+k" title="搜索功能（Ctrl / ⌘ K）"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>搜索功能</span><kbd>Ctrl K</kbd></button>
-    <div class="theme-switch" role="group" aria-label="画面主题">
-      <button type="button" data-theme-choice="light" aria-label="日间主题" aria-pressed="false" title="日间主题"><svg aria-hidden="true"><use href="#i-sun"/></svg></button>
-      <button type="button" data-theme-choice="dark" aria-label="夜间主题" aria-pressed="false" title="夜间主题"><svg aria-hidden="true"><use href="#i-moon"/></svg></button>
-      <button type="button" data-theme-choice="system" aria-label="跟随系统主题" aria-pressed="true" title="跟随系统"><svg aria-hidden="true"><use href="#i-monitor"/></svg></button>
+    <div class="pswitch-host" id="pswitch-host">
+      <div class="pswitch" role="tablist" aria-label="平台切换">
+        <button role="tab" data-pf="all" data-base-label="全平台" onclick="switchPlatform('all')" title="跨 11 大平台全局汇总与矩阵管理"><svg class="ps-ic" aria-hidden="true"><use href="#i-globe"/></svg><span class="ps-lbl">全平台</span></button>
+        <button role="tab" data-pf="douyin" onclick="switchPlatform('douyin')">抖音</button>
+        <button role="tab" data-pf="xhs" onclick="switchPlatform('xhs')">小红书</button>
+        <button role="tab" data-pf="rednote" onclick="switchPlatform('rednote')" title="海外小红书 (Rednote)">海外小红书</button>
+        <button role="tab" data-pf="kuaishou" onclick="switchPlatform('kuaishou')">快手</button>
+        <button role="tab" data-pf="shipinhao" onclick="switchPlatform('shipinhao')">视频号</button>
+        <button role="tab" data-pf="tiktok" onclick="switchPlatform('tiktok')">TikTok</button>
+        <button role="tab" data-pf="bilibili" onclick="switchPlatform('bilibili')">哔哩哔哩</button>
+        <button role="tab" data-pf="instagram" onclick="switchPlatform('instagram')">Instagram</button>
+        <button role="tab" data-pf="twitter" onclick="switchPlatform('twitter')">Twitter</button>
+        <button role="tab" data-pf="facebook" onclick="switchPlatform('facebook')">Facebook</button>
+        <button role="tab" data-pf="youtube" onclick="switchPlatform('youtube')">YouTube</button>
+        <button type="button" class="pswitch-more-btn" id="pswitch-more-btn" aria-haspopup="dialog" aria-expanded="false" aria-controls="pswitch-popover" title="展开更多平台" hidden><span id="pswitch-more-label">+0</span><span class="ps-more-dot" id="pswitch-more-dot" hidden></span><svg aria-hidden="true"><use href="#i-chevron"/></svg></button>
+      </div>
     </div>
-  </div>
-  <span class="engine" id="engine-status" role="status" aria-live="polite" title="后台任务引擎正在运行"><span class="dot live"></span><span class="engine-label">服务已连接</span></span>
+    <div class="header-actions">
+      <button class="ghost command-trigger" id="command-trigger" type="button" aria-label="搜索功能" aria-haspopup="dialog" aria-controls="command-dialog" aria-keyshortcuts="Control+k Meta+k" title="搜索功能（Ctrl / ⌘ K）"><svg aria-hidden="true"><use href="#i-logo"/></svg><kbd>Ctrl K</kbd></button>
+      <button class="ghost activity-trigger is-idle" id="activity-trigger" type="button" aria-label="活动任务中心" aria-expanded="false" aria-controls="activity-drawer" title="活动任务中心 · 查看后台实时进度" onclick="window.CreatorHubProgress?.toggleDrawer()">
+        <svg class="act-ic" aria-hidden="true"><use href="#i-bolt"/></svg>
+        <span class="act-dot" aria-hidden="true"></span>
+        <span class="act-text" id="activity-trigger-label">活动中心</span>
+        <span class="act-count" id="activity-trigger-count" hidden>0</span>
+        <span class="act-mini-bar" id="activity-trigger-bar" aria-hidden="true"><i></i></span>
+      </button>
+      <button class="ghost theme-cycle-btn" id="theme-cycle-btn" type="button" aria-label="切换画面主题" title="画面主题：跟随系统（点击切换）"><svg aria-hidden="true"><use href="#i-monitor"/></svg></button>
+      <span class="engine" id="engine-status" role="status" aria-live="polite" title="服务已连接 · 后台任务引擎运行中"><span class="dot live"></span><span class="engine-label">服务已连接</span></span>
+    </div>
   </div>
 </header>
+<div id="pswitch-popover" class="pswitch-popover" role="dialog" aria-label="切换平台" hidden></div>
+<aside id="activity-drawer" class="activity-drawer" role="region" aria-label="活动任务中心" hidden>
+  <div class="activity-drawer-head">
+    <div class="activity-drawer-title">
+      <b>活动任务中心</b>
+      <span class="mut" id="activity-drawer-sub">实时同步后台任务进度</span>
+    </div>
+    <div class="activity-drawer-head-actions">
+      <button type="button" class="ghost sm" id="activity-clear-btn" onclick="window.CreatorHubProgress?.clearFinished()" hidden>清空已结束</button>
+      <button type="button" class="ghost sm" onclick="window.CreatorHubProgress?.toggleDrawer(false);switchTab('queue',true)">全部队列</button>
+      <button type="button" class="ghost sm icon-only" onclick="window.CreatorHubProgress?.toggleDrawer(false)" aria-label="关闭活动任务中心"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+    </div>
+  </div>
+  <div class="activity-drawer-body" id="activity-drawer-body"></div>
+</aside>
 
 <div class="shell">
 <button class="nav-backdrop" id="nav-backdrop" type="button" tabindex="-1" aria-label="关闭导航"></button>
@@ -4682,7 +4834,7 @@
       </div>
       <div class="table-wrap" id="queue-table-wrap">
         <table class="queue-table" aria-label="任务队列明细">
-          <thead><tr><th style="width:44px"><input type="checkbox" aria-label="选择本页全部任务" onchange="toggleTaskQueuePage(this.checked)"></th><th class="queue-col-type">队列</th><th class="queue-col-content">任务内容</th><th class="queue-col-account">账号</th><th class="queue-col-time">时间</th><th class="queue-col-status">状态</th><th class="queue-col-reason">阻塞 / 错误</th><th class="queue-col-action">操作</th></tr></thead>
+          <thead><tr><th style="width:44px"><input type="checkbox" aria-label="选择本页全部任务" onchange="toggleTaskQueuePage(this.checked)"></th><th class="queue-col-type">队列</th><th class="queue-col-content">任务内容</th><th class="queue-col-account">账号</th><th class="queue-col-time">时间</th><th class="queue-col-status">状态</th><th class="queue-col-progress">进度 / 阶段</th><th class="queue-col-reason">阻塞 / 错误</th><th class="queue-col-action">操作</th></tr></thead>
           <tbody id="queue-table"></tbody>
         </table>
       </div>
@@ -4979,6 +5131,14 @@
         </div>
         <div id="sd-links" class="hint" style="display:none"></div>
       </div>
+    </div>
+    <div class="card" id="sd-live-card" style="display:none">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-download"/></svg></span>
+        <h2>实时下载队列 <span class="sub" id="sd-live-summary"></span></h2>
+        <button type="button" class="ghost sm" onclick="window.CreatorHubProgress?.clearFinished()">清理已完成</button>
+      </div>
+      <div id="sd-live-list" class="share-live-list"></div>
     </div>
     <div class="card" id="sd-result-card" style="display:none">
       <div class="card-head">
@@ -6273,6 +6433,7 @@
             <div class="filepick-cta"><svg><use href="#i-download"/></svg><span><b>点击选择</b> 或拖拽文件到此</span></div>
             <div class="filepick-list" id="pub-filelist"></div>
           </div>
+          <div id="pub-upload-progress" class="pub-upload-progress" hidden></div>
         </div>
         <div>
           <label class="field" for="pub-title"><span id="pub-title-label-text">标题(≤20 字)</span></label>

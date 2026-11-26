@@ -405,11 +405,28 @@ function renderCollectionJobs() {
     const timeLabel = { all: "不限时间", day: "一天内", week: "一周内", half_year: "半年内" }[job.publish_time] || "不限时间";
     const typeLabel = { all: "全部类型", video: "视频", images: "图文" }[job.content_type] || "全部类型";
     const threshold = [Number(job.min_likes) > 0 ? `≥${fmtNum(job.min_likes)} 赞` : "", Number(job.min_comments) > 0 ? `≥${fmtNum(job.min_comments)} 评` : ""].filter(Boolean).join(" · ");
+    const live = window.CreatorHubProgress?.getTask?.("collection:" + job.id);
+    const useLive = live && ["queued", "running", "blocked", "waiting_user"].includes(live.status) && ["pending", "running"].includes(job.status);
+    const livePct = useLive && live.determinate && live.percent !== null && live.percent !== undefined && Number.isFinite(Number(live.percent))
+      ? Math.max(0, Math.min(100, Math.round(Number(live.percent))))
+      : null;
+    const isIndeterminate = isRunning && (useLive ? !live.determinate : (percent === 0 && !Number(job.current_item_total || 0)));
+    const displayPercent = livePct !== null ? livePct : percent;
+    const stepText = (useLive && live.phase_label) ? live.phase_label : (job.current_step || "等待执行");
+    const liveEta = useLive && live.eta_seconds ? (window.CreatorHubProgress?.fmtEta?.(live.eta_seconds) || "") : "";
+    const dlInfo = (useLive && live.metrics && Number(live.metrics.dl_total || 0) > 0)
+      ? ` · 媒体 ${Number(live.metrics.dl_done || 0)}/${Number(live.metrics.dl_total || 0)}` : "";
+    const liveMetaParts = [
+      keywordProgress + itemProgress,
+      `已采 ${fmtNum(useLive && live.metrics ? live.metrics.content_count : job.content_count)} 作品 / ${fmtNum(useLive && live.metrics ? live.metrics.comment_count : job.comment_count)} 评论`,
+      dlInfo ? dlInfo.slice(3) : "",
+      liveEta,
+    ].filter(Boolean).join(" · ");
     return `<article class="collection-task${isSelected ? " is-selected" : ""}" role="listitem" data-job-id="${job.id}" aria-label="任务 ${job.id}，${status.label}">
       <div class="collection-task-meta"><div class="collection-task-meta-head"><label class="collection-task-check${isRunning ? " is-disabled" : ""}" title="${isRunning ? "正在执行中的任务需先取消后再删除" : `选择采集任务 #${job.id}`}"><input type="checkbox" data-id="${job.id}" aria-label="选择采集任务 #${job.id}" onchange="collectionToggleOne(${job.id}, this.checked)"${isSelected ? " checked" : ""}${isRunning ? " disabled" : ""}></label><div><span class="collection-task-label">任务状态</span><span class="pill ${status.cls}">${status.label}</span></div></div><time class="collection-task-created" datetime="${esc(job.created_at || "")}">${collectionDate(job.created_at)}</time></div>
-      <div class="collection-task-keywords"><span class="collection-task-label">${sourceLabel}</span><div class="keyword-stack">${keywords}</div>${job.current_keyword ? `<div class="collection-step">当前：${esc(job.current_keyword)}</div>` : ""}</div>
+      <div class="collection-task-keywords"><span class="collection-task-label">${sourceLabel}</span><div class="keyword-stack">${keywords}</div>${job.current_keyword ? `<div class="collection-step" data-col-kw>当前：${esc(job.current_keyword)}</div>` : ""}</div>
       <div class="collection-task-config"><span class="collection-task-label">采集配置</span><div class="collection-task-config-main">${job.max_contents_per_keyword} 作品/${job.source_type === "keyword" ? "词" : "来源"} · ${job.max_pages_per_keyword || 12} 深度页${job.source_type === "keyword" ? ` · ${sortLabel}` : ""}</div><div class="collection-task-config-sub">${timeLabel} · ${typeLabel}${threshold ? ` · ${threshold}` : ""} · ${job.max_comments_per_content} 评论/作品<br>${job.include_replies ? "含二级评论 · " : ""}${job.download_media ? "下载媒体" : "仅采数据"} · 连续 ${job.stagnant_pages || 3} 页无新增停止</div></div>
-      <div class="collection-task-progress"><span class="collection-task-label">执行进度</span><div class="job-progress"><div class="job-progress-head"><span>${esc(job.current_step || "等待执行")}</span><b>${percent}%</b></div><div class="progress-track" role="progressbar" aria-label="任务 ${job.id} 进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="progress-fill" style="width:${percent}%"></div></div><div class="collection-step">${keywordProgress}${itemProgress} · 已采 ${fmtNum(job.content_count)} 作品 / ${fmtNum(job.comment_count)} 评论</div></div></div>
+      <div class="collection-task-progress"><span class="collection-task-label">执行进度</span><div class="job-progress"><div class="job-progress-head"><span data-col-step>${esc(stepText)}</span><b class="progress-num" data-col-pct>${isIndeterminate ? "进行中" : `${displayPercent}%`}</b></div><div class="progress-track${isIndeterminate ? " is-indeterminate" : ""}" data-col-track role="progressbar" aria-label="任务 ${job.id} 进度" aria-valuemin="0" aria-valuemax="100"${isIndeterminate ? "" : ` aria-valuenow="${displayPercent}"`}><div class="progress-fill" data-col-fill style="${isIndeterminate ? "" : `width:${displayPercent}%`}"></div></div><div class="collection-step progress-num" data-col-meta>${esc(liveMetaParts)}</div></div></div>
       ${job.error_count ? `<button type="button" class="collection-task-error" onclick="openCollectionResults(${job.id})" title="${esc(errorText)}">${ic("i-info")}<span class="collection-task-error-text">${job.error_count} 条异常 · ${esc(errorText)}</span><span class="collection-task-error-link">查看详情</span></button>` : ""}
       <div class="collection-task-actions" aria-label="任务 ${job.id} 操作">
         <button type="button" class="sm collection-task-primary" onclick="openCollectionResults(${job.id})">${ic("i-eye")}查看结果</button>
@@ -425,6 +442,50 @@ function renderCollectionJobs() {
   setHtmlIfChanged(body, html);
   updateCollectionSelBar();
 }
+window.addEventListener("creatorhub:progress:update", e => {
+  const task = e?.detail?.task;
+  if (!task || task.category !== "collection") return;
+  if (typeof CURRENT_TAB !== "undefined" && CURRENT_TAB !== "collections") return;
+  const jobId = Number(task.extra?.job_id || String(task.task_key || "").split(":")[1] || 0);
+  if (!jobId) return;
+  const card = document.querySelector(`#collection-job-table .collection-task[data-job-id="${jobId}"]`);
+  if (!card) return;
+  const job = COLLECTION_JOBS.find(j => j.id === jobId);
+  const isRunning = task.status === "running" || task.status === "queued";
+  const hasPct = task.determinate && task.percent !== null && task.percent !== undefined && Number.isFinite(Number(task.percent));
+  const pct = hasPct ? Math.max(0, Math.min(100, Math.round(Number(task.percent)))) : 0;
+  const indet = isRunning && !hasPct;
+  const stepEl = card.querySelector("[data-col-step]");
+  if (stepEl && task.phase_label) stepEl.textContent = task.phase_label;
+  const pctEl = card.querySelector("[data-col-pct]");
+  if (pctEl) pctEl.textContent = indet ? "进行中" : `${pct}%`;
+  const trackEl = card.querySelector("[data-col-track]");
+  const fillEl = card.querySelector("[data-col-fill]");
+  if (trackEl) {
+    trackEl.classList.toggle("is-indeterminate", indet);
+    if (indet) trackEl.removeAttribute("aria-valuenow");
+    else trackEl.setAttribute("aria-valuenow", String(pct));
+  }
+  if (fillEl) fillEl.style.width = indet ? "" : `${pct}%`;
+  const metaEl = card.querySelector("[data-col-meta]");
+  if (metaEl && task.metrics) {
+    const m = task.metrics;
+    const sourceLabel = job?.source_type === "keyword" ? "关键词" : "来源";
+    const kwStr = `${Number(m.processed_keyword_count || 0)}/${Number(m.total_keyword_count || 1)} ${sourceLabel}`;
+    const itemStr = Number(m.current_item_total || 0) > 0
+      ? ` · 当前作品 ${Number(m.current_item_index || 0)}/${Number(m.current_item_total || 0)}` : "";
+    const dlStr = Number(m.dl_total || 0) > 0 ? `媒体 ${Number(m.dl_done || 0)}/${Number(m.dl_total || 0)}` : "";
+    const etaStr = task.eta_seconds ? (window.CreatorHubProgress?.fmtEta?.(task.eta_seconds) || "") : "";
+    metaEl.textContent = [
+      kwStr + itemStr,
+      `已采 ${fmtNum(m.content_count || 0)} 作品 / ${fmtNum(m.comment_count || 0)} 评论`,
+      dlStr,
+      etaStr,
+    ].filter(Boolean).join(" · ");
+  }
+  const kwEl = card.querySelector("[data-col-kw]");
+  if (kwEl && task.extra?.current_keyword) kwEl.textContent = "当前：" + task.extra.current_keyword;
+});
 async function refreshCollections() {
   const isCurrent = beginViewRequest("collections");
   if (!$("collection-job-table") || !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(PLATFORM)) return;

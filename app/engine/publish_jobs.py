@@ -38,6 +38,7 @@ from app.platforms.rednote import publish_rednote, weighted_truncate
 from app.platforms.tiktok import publish_tiktok
 from app.platforms.twitter import publish_twitter, trim_to_twitter_limit
 from app.platforms.xhs import publish_xhs
+from app.progress_hub import progress_hub
 from app.risk import OperationKind, RiskCategory
 from app.transport_matrix import resolve_transport
 
@@ -145,6 +146,100 @@ class PublishJobMixin:
                 s.commit(); s.refresh(task)
             return task.id
 
+    def _publish_is_api_only(self, platform: str, acc) -> bool:
+        """判断当前发布任务是否走纯 API 无窗通道，避免阻塞有头浏览器发布串行锁。"""
+        if acc is None:
+            return False
+        pf = str(platform or "").lower()
+        if pf == "douyin":
+            t = resolve_transport(self.cfg, "douyin", "publish", acc)
+            return bool(t and t.get("configured_mode") == "api")
+        if pf == "instagram":
+            t = resolve_transport(self.cfg, "instagram", "publish", acc)
+            return bool(t and t.get("effective_mode") == "api")
+        if pf == "rednote":
+            return self._rednote_publish_mode() == "api"
+        if pf == "xhs":
+            return acc.identity_mode != "native" and self._xhs_publish_mode() == "api"
+        return False
+
+    @staticmethod
+    def _build_publish_steps(stage: str, *, status: str = "running") -> tuple[list[dict], int]:
+        labels = ["准备环境", "上传媒体", "填写文案", "校验/验证", "提交确认"]
+        text = str(stage or "")
+        if status == "completed":
+            return [{"label": lb, "state": "done"} for lb in labels], 100
+        idx = 0
+        if any(k in text for k in ("提交", "点击发布", "确认发布", "完成发布", "发布成功", "等待结果")):
+            idx = 4
+        elif any(k in text for k in ("验证", "滑块", "扫码", "验证码", "校验", "风控", "检查")):
+            idx = 3
+        elif any(k in text for k in ("标题", "正文", "文案", "话题", "分区", "标签", "填写", "选项")):
+            idx = 2
+        elif any(k in text for k in ("上传", "素材", "视频", "图片", "封面", "转码")):
+            idx = 1
+        waiting = any(k in text for k in ("安全验证", "验证码", "滑块", "扫码"))
+        steps = []
+        for i, lb in enumerate(labels):
+            if i < idx:
+                st = "done"
+            elif i == idx:
+                st = "warn" if waiting else ("failed" if status == "failed" else "active")
+            else:
+                st = "pending"
+            steps.append({"label": lb, "state": st})
+        pct = min(95, 12 + idx * 20)
+        return steps, pct
+
+    def _emit_publish_progress(
+        self,
+        task_id: int,
+        *,
+        status: str = "running",
+        stage: str = "",
+        title: str = "",
+        platform: str = "",
+        account_id: int | None = None,
+        error: str = "",
+        action_required: dict | None = None,
+        immediate: bool = False,
+    ) -> None:
+        if not title or not platform:
+            try:
+                with get_session() as s:
+                    row = s.get(PublishTask, task_id)
+                    if row:
+                        title = title or row.title or (row.desc or "")[:40] or f"发布任务 #{task_id}"
+                        platform = platform or row.platform or ""
+                        account_id = account_id if account_id is not None else row.account_id
+            except Exception:
+                pass
+        steps, pct = self._build_publish_steps(stage, status=status)
+        waiting = any(k in str(stage or "") for k in ("安全验证", "验证码", "滑块", "扫码"))
+        eff_status = "waiting_user" if (status == "running" and waiting) else status
+        eff_action = action_required
+        if eff_action is None and waiting:
+            eff_action = {"kind": "focus_tab", "label": "查看发布状态", "task_id": task_id}
+        progress_hub.upsert(
+            f"publish:{task_id}",
+            immediate=immediate or waiting,
+            category="publish",
+            title=str(title or f"发布任务 #{task_id}")[:120],
+            platform=str(platform or ""),
+            account_id=account_id,
+            source_tab="publish",
+            status=eff_status,
+            phase=eff_status,
+            phase_label=str(stage or ("发布完成" if status == "completed" else "发布中")),
+            error=str(error or ""),
+            determinate=status in {"running", "waiting_user", "completed"},
+            percent=100.0 if status == "completed" else (float(pct) if status in {"running", "waiting_user"} else None),
+            steps=steps,
+            action_required=eff_action,
+            cancelable=False,
+            extra={"task_id": task_id, "live_stage": str(stage or "")},
+        )
+
     def _mark_publish_open_browser_blocked(
         self,
         task_id: int,
@@ -167,6 +262,15 @@ class PublishJobMixin:
                 t.error = reason
                 s.add(t)
                 s.commit()
+        self._emit_publish_progress(
+            task_id,
+            status="waiting_user",
+            stage=reason,
+            platform=platform,
+            account_id=account_id,
+            action_required={"kind": "close_and_publish", "label": "关闭窗口并发布", "task_id": task_id},
+            immediate=True,
+        )
         if not log_once or prev_signal != "open_browser":
             log.warning(
                 "发布任务 #%s(%s, 账号#%s) 暂缓：该账号手动浏览器窗口仍开着，请关闭窗口后再发布",
@@ -253,9 +357,12 @@ class PublishJobMixin:
                     return {"ok": False, "error": f"任务状态为 {t.status}"}
                 account_id = t.account_id
                 platform = t.platform
+                acc_probe = s.get(DouyinAccount, account_id) if account_id else None
+                api_only_publish = self._publish_is_api_only(platform, acc_probe)
+                pub_sem = getattr(self, "_api_publish_sem", self._publish_sem) if api_only_publish else self._publish_sem
 
-            # 1) 优先检测手动打开的浏览器窗口（并自动回收已退出的僵死租约），绝不在持全局锁时死等。
-            if await has_active_open_browser(account_id):
+            # 1) 优先检测手动打开的浏览器窗口（纯 API 发布不占用浏览器 Profile，无需等待窗口关闭）。
+            if not api_only_publish and await has_active_open_browser(account_id):
                 if close_open_browser:
                     await close_open_browser_for_account(account_id, nudge=False)
                     log.info(
@@ -276,8 +383,8 @@ class PublishJobMixin:
                         "error": "该账号手动浏览器窗口仍开着，请先关闭窗口后再发布",
                     }
 
-            # 2) 先判全局发布通道是否繁忙，避免先占住账号锁或无上限排队。
-            if self._publish_sem.locked():
+            # 2) 先判目标发布通道是否繁忙（纯 API 与有头浏览器通道相互独立）。
+            if pub_sem.locked():
                 return {
                     "ok": False,
                     "deferred": True,
@@ -287,17 +394,17 @@ class PublishJobMixin:
                 }
 
             # 3) 先非阻塞获取账号锁（手动点立即发布时最多短暂等待 3 秒让正在收尾的轻读结束），
-            #    拿到账号锁后再进全局 _publish_sem，彻底杜绝单账号占锁拖死全站发布。
+            #    拿到账号锁后再进发布通道，彻底杜绝单账号占锁拖死全站发布。
             acc_key = f"acc:{account_id}" if account_id else f"pub:{task_id}"
             acc_lock = self.browser.lock_for(acc_key)
             if acc_lock.locked():
                 if not scheduled:
                     deadline = asyncio.get_running_loop().time() + 3.0
                     while acc_lock.locked() and asyncio.get_running_loop().time() < deadline:
-                        if await has_active_open_browser(account_id):
+                        if not api_only_publish and await has_active_open_browser(account_id):
                             break
                         await asyncio.sleep(0.25)
-                if await has_active_open_browser(account_id):
+                if not api_only_publish and await has_active_open_browser(account_id):
                     self._mark_publish_open_browser_blocked(
                         task_id, account_id, platform, log_once=scheduled
                     )
@@ -328,7 +435,7 @@ class PublishJobMixin:
                     account_id, OperationKind.PUBLISH,
                     fallback_key=f"pub:{task_id}",
                     skip_busy=True):
-                if self._publish_sem.locked():
+                if pub_sem.locked():
                     return {
                         "ok": False,
                         "deferred": True,
@@ -336,7 +443,7 @@ class PublishJobMixin:
                         "account_id": account_id,
                         "error": "当前已有另一条发布任务正在执行，请等待完成后再试",
                     }
-                async with self._publish_sem:
+                async with pub_sem:
                     return await self._publish_task_locked(task_id)
         except _AccountCheckBusy:
             if await has_active_open_browser(account_id):
@@ -462,6 +569,17 @@ class PublishJobMixin:
             t.status = "publishing"; t.error = ""
             self._clear_row_block(t)
             s.add(t); s.commit()
+            pub_title = t.title or (t.desc or "")[:40] or f"发布任务 #{task_id}"
+            pub_acc_id = t.account_id
+        self._emit_publish_progress(
+            task_id,
+            status="running",
+            stage="正在准备发布环境",
+            title=pub_title,
+            platform=platform,
+            account_id=pub_acc_id,
+            immediate=True,
+        )
 
         if (dy_publish_transport is not None
                 and dy_publish_transport["effective_mode"] == "unavailable"):
@@ -625,6 +743,7 @@ class PublishJobMixin:
         text = str(stage or "").strip()
         if text:
             stages[task_id] = text
+            self._emit_publish_progress(task_id, status="running", stage=text)
         else:
             stages.pop(task_id, None)
 
@@ -714,6 +833,21 @@ class PublishJobMixin:
                 s.add(t); s.commit()
         if ok and account_id:
             self.risk.record_success(account_id, OperationKind.PUBLISH)
+        final_hub_status = (
+            "completed" if ok
+            else "waiting_user" if uncertain
+            else "blocked" if (failure and failure.controlled and failure.category in {RiskCategory.RISK, RiskCategory.NETWORK, RiskCategory.AUTH})
+            else "failed"
+        )
+        self._emit_publish_progress(
+            task_id,
+            status=final_hub_status,
+            stage=("发布成功" if ok else "结果待人工核对" if uncertain else "风控延后，等待重试" if final_hub_status == "blocked" else "发布失败"),
+            platform=platform,
+            account_id=account_id,
+            error="" if ok else err[:400],
+            immediate=True,
+        )
         if ok:
             log.info("发布任务 #%s(%s, 账号#%s) 已完成%s", task_id, platform, account_id or "-", f": {url}" if url else "")
         else:

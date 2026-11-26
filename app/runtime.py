@@ -23,8 +23,13 @@ login_tasks: Dict[str, dict] = {}
 # 用户手动打开的账号浏览器窗口(account_id -> BrowserContext),留引用防 GC、便于复用/清理
 open_browsers: Dict[int, Any] = {}
 _file_manager_lock = threading.Lock()
-_share_download_sem = asyncio.Semaphore(2)
+_share_download_sem = asyncio.Semaphore(3)
 _follow_sync_jobs: Dict[str, dict] = {}
 _follow_sync_tasks: Dict[str, asyncio.Task] = {}
+_share_download_jobs: Dict[str, dict] = {}
+_share_download_tasks: Dict[str, asyncio.Task] = {}
+_matrix_batch_jobs: Dict[str, dict] = {}
+_matrix_batch_tasks: Dict[str, asyncio.Task] = {}
+_background_tasks: set[asyncio.Task] = set()
 _webhook_delivery_task: asyncio.Task | None = None
 WEB_DIR = Path(__file__).parent / "web"

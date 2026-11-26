@@ -115,7 +115,31 @@ function bindPubFilePicker() {
   ["dragleave", "drop"].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); if (ev === "dragleave" && zone.contains(e.relatedTarget)) return; zone.classList.remove("drag"); }));
   zone.addEventListener("drop", e => { if (e.dataTransfer && e.dataTransfer.files.length) pubAddFiles(e.dataTransfer.files); });
 }
-let PUB_SUBMITTING = false, PUB_UPLOAD_CACHE = null;
+let PUB_SUBMITTING = false, PUB_UPLOAD_CACHE = null, PUB_UPLOAD_ABORT = null;
+function renderPubUploadProgress(info) {
+  const box = $("pub-upload-progress");
+  if (!box) return;
+  if (!info) { box.hidden = true; box.innerHTML = ""; return; }
+  const P = window.CreatorHubProgress;
+  const pct = info.percent != null ? `${Math.round(info.percent)}%` : "上传中";
+  const bytes = info.total > 0 && P ? `${P.fmtBytes(info.loaded)} / ${P.fmtBytes(info.total)}` : "";
+  const spd = info.speedBps > 0 && P ? P.fmtSpeed(info.speedBps) : "";
+  const eta = info.etaSeconds > 0 && P ? P.fmtEta(info.etaSeconds) : "";
+  const meta = [bytes, spd, eta].filter(Boolean).join(" · ");
+  box.innerHTML = `
+    <div class="pub-upload-progress-head">
+      <span>正在上传素材${meta ? ` · <span class="mut progress-num">${esc(meta)}</span>` : ""}</span>
+      <span style="display:inline-flex;align-items:center;gap:8px">
+        <b class="progress-num">${esc(pct)}</b>
+        ${info.percent < 100 ? `<button type="button" class="ghost sm danger" style="min-height:22px;padding:1px 7px" onclick="cancelPubUpload()">取消</button>` : ""}
+      </span>
+    </div>
+    ${P ? P.renderProgressBar({ determinate: info.percent != null, percent: info.percent, tone: info.percent === 100 ? "ok" : "info", label: "素材上传进度", compact: true }) : ""}`;
+  box.hidden = false;
+}
+function cancelPubUpload() {
+  if (PUB_UPLOAD_ABORT) { try { PUB_UPLOAD_ABORT.abort(); } catch (_) {} }
+}
 function publishFormPayload() {
   const tiktok = PLATFORM === "tiktok", bili = PLATFORM === "bilibili", ig = PLATFORM === "instagram", tw = PLATFORM === "twitter", fb = PLATFORM === "facebook", yt = PLATFORM === "youtube";
   const mediaType = $("pub-type").value;
@@ -218,8 +242,21 @@ async function addPublish() {
       } else if (!PUB_UPLOAD_CACHE || PUB_UPLOAD_CACHE.files.length !== files.length ||
           !PUB_UPLOAD_CACHE.files.every((file, index) => file === files[index])) {
         const fd = new FormData(); for (const f of files) fd.append("files", f);
-        const up = await api("/api/publish/upload", { method: "POST", body: fd });
-        PUB_UPLOAD_CACHE = { files, paths: (up.files || []).map(f => f.path) };
+        PUB_UPLOAD_ABORT = new AbortController();
+        renderPubUploadProgress({ loaded: 0, total: files.reduce((s, f) => s + (f.size || 0), 0), percent: 0, speedBps: 0 });
+        try {
+          const up = await apiUploadWithProgress("/api/publish/upload", fd, {
+            signal: PUB_UPLOAD_ABORT.signal,
+            onProgress: prog => {
+              renderPubUploadProgress(prog);
+              if (prog.percent != null) $("pub-msg").textContent = `上传素材中 ${prog.percent}%…`;
+            },
+          });
+          PUB_UPLOAD_CACHE = { files, paths: (up.files || []).map(f => f.path) };
+        } finally {
+          PUB_UPLOAD_ABORT = null;
+          renderPubUploadProgress(null);
+        }
       }
       const paths = PUB_UPLOAD_CACHE.paths;
       await api("/api/publish", {
@@ -342,6 +379,53 @@ async function editPublish(id) {
   if (value === null) return;
   toast("发布任务已更新", "ok"); refreshPublish();
 }
+function renderPublishStepsHtml(steps = []) {
+  if (!Array.isArray(steps) || !steps.length) return "";
+  return `<div class="pub-stepper">${steps.map(st => {
+    const cls = st.state === "done" ? "done" : st.state === "warn" ? "warn" : st.state === "active" ? "active" : "";
+    return `<span class="pub-step ${cls}">${esc(st.label)}</span>`;
+  }).join("")}</div>`;
+}
+function inferPublishStepsClient(stage) {
+  const labels = ["准备环境", "上传媒体", "填写文案", "校验/验证", "提交确认"];
+  const text = String(stage || "");
+  let idx = 0;
+  if (/提交|点击发布|确认发布|完成发布|等待结果/.test(text)) idx = 4;
+  else if (/验证|滑块|扫码|验证码|校验|风控/.test(text)) idx = 3;
+  else if (/标题|正文|文案|话题|分区|标签|填写/.test(text)) idx = 2;
+  else if (/上传|素材|视频|图片|封面|转码/.test(text)) idx = 1;
+  const warn = /安全验证|验证码|滑块|扫码/.test(text);
+  return labels.map((label, i) => ({
+    label,
+    state: i < idx ? "done" : i === idx ? (warn ? "warn" : "active") : "pending",
+  }));
+}
+const PUB_VERIFY_TOASTED = new Set();
+if (typeof window !== "undefined") {
+  window.addEventListener("creatorhub:progress:update", e => {
+    const task = e.detail?.task;
+    if (!task || task.category !== "publish") return;
+    const tid = Number(task.extra?.task_id || 0);
+    if (!tid) return;
+    const stageText = String(task.phase_label || "").trim();
+    const rowStage = $(`pub-stage-${tid}`);
+    if (rowStage && stageText) rowStage.textContent = stageText;
+    const rowStepper = $(`pub-stepper-${tid}`);
+    if (rowStepper) {
+      rowStepper.innerHTML = renderPublishStepsHtml(task.steps?.length ? task.steps : inferPublishStepsClient(stageText));
+    }
+    if (task.status === "waiting_user" && stageText && !PUB_VERIFY_TOASTED.has(`${tid}:${stageText}`)) {
+      PUB_VERIFY_TOASTED.add(`${tid}:${stageText}`);
+      toast(stageText, "info", 10000);
+    }
+    if (["completed", "failed", "canceled"].includes(task.status)) {
+      if (task.status === "completed") toast(`「${task.title}」发布成功 ✓`, "ok", 5500);
+      else if (task.status === "failed" && task.error) toast(`发布未成功：${task.error}`, "err", 7000);
+      if (typeof CURRENT_TAB !== "undefined" && CURRENT_TAB === "publish") refreshPublish();
+    }
+  });
+}
+
 async function refreshPublish() {
   const isCurrent = beginViewRequest("publish");
   if (!$("pub-table")) return;
@@ -353,13 +437,18 @@ async function refreshPublish() {
     const accObj = (typeof findAnyAccount === "function" && findAnyAccount(t.account_id)) || ACCOUNTS.find(a => a.id === t.account_id);
     const pubAcc = accObj ? (accObj.alias || accObj.nickname || `账号 #${t.account_id}`) : (t.account_id ? `账号 #${t.account_id}` : "—");
     const pfBadge = GLOBAL_MODE ? `<span class="mx-mini-pf inline" style="margin-right:6px">${esc(PF_NAME[t.platform] || t.platform)}</span>` : "";
+    const liveTask = window.CreatorHubProgress?.getTask?.(`publish:${t.id}`);
+    const stageText = String(liveTask?.phase_label || t.live_stage || "执行中，请等待结果");
+    const stepsHtml = t.status === "publishing"
+      ? `<div id="pub-stepper-${t.id}">${renderPublishStepsHtml(liveTask?.steps?.length ? liveTask.steps : inferPublishStepsClient(stageText))}</div>`
+      : "";
     return `<tr>
     <td class="wrap" style="max-width:240px"><b>${esc(t.title || "(无标题)")}</b></td>
     <td>${pfBadge}${esc(pubAcc)}</td>
     <td>${(t.platform === "twitter" || t.platform === "facebook") && !(t.media_count || 0) ? "纯文本" : `${t.media_type === "video" ? "视频" : "图文"} · <span class="mut num">${t.media_count || 0}</span>`}</td>
     <td>${t.source_platform ? esc(PF_NAME[t.source_platform] || t.source_platform) + " 转发" : "手动"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>
-    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ((["kuaishou", "shipinhao", "tiktok"].includes(t.platform) || (t.platform === "bilibili" && String(t.result_url).includes("member.bilibili.com"))) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeHttpUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}${t.status === "publishing" ? `<div class="mut" id="pub-stage-${t.id}" style="margin-top:4px;white-space:normal;max-width:200px">${esc(t.live_stage || "执行中，请等待结果")}</div>` : (t.status === "pending" && t.blocked_reason ? `<div class="mut" style="margin-top:4px;white-space:normal;max-width:220px;color:var(--warn)">${esc(t.blocked_reason)}</div>` : "")}</td>
+    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ((["kuaishou", "shipinhao", "tiktok"].includes(t.platform) || (t.platform === "bilibili" && String(t.result_url).includes("member.bilibili.com"))) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeHttpUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}${t.status === "publishing" ? `<div class="mut" id="pub-stage-${t.id}" style="margin-top:4px;white-space:normal;max-width:240px">${esc(stageText)}</div>${stepsHtml}` : (t.status === "pending" && t.blocked_reason ? `<div class="mut" style="margin-top:4px;white-space:normal;max-width:220px;color:var(--warn)">${esc(t.blocked_reason)}</div>` : "")}</td>
     <td class="acttd">
       ${["pending", "failed"].includes(t.status) ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
       ${["draft", "pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">${t.schedule_needs_confirmation ? "确认预约时间" : "编辑"}</button>` : ""}
@@ -389,39 +478,20 @@ async function openPubInBrowser(accountId, url, platform = "shipinhao") {
 }
 async function runPublish(id, closeOpenBrowser = false) {
   const btn = closeOpenBrowser ? null : evtBtn();
-  toast(closeOpenBrowser ? "正在关闭该账号浏览器窗口并开始发布…" : "正在启动发布…会弹出浏览器窗口完成发布", "info", 6000);
-  let lastStage = "";
-  const stageTimer = setInterval(async () => {
-    try {
-      const resp = await fetch("/api/publish?platform=" + encodeURIComponent(pfHasPublish(PLATFORM) ? PLATFORM : "xhs"));
-      if (!resp.ok) return;
-      const rows = await resp.json();
-      const row = Array.isArray(rows) ? rows.find(item => item.id === id) : null;
-      const stage = String(row?.live_stage || "").trim();
-      if (!stage) return;
-      _busyHint = stage.includes("安全验证") ? "请在弹出窗口完成验证" : stage.slice(0, 24);
-      const rowEl = $(`pub-stage-${id}`);
-      if (rowEl) rowEl.textContent = stage;
-      if (stage !== lastStage) {
-        lastStage = stage;
-        if (stage.includes("安全验证") || stage.includes("验证码") || stage.includes("扫码")) {
-          toast(stage, "info", 12000);
-        }
-      }
-    } catch (_) {}
-  }, 2000);
   let res = null;
-  await withBusy(btn, "发布中", async () => {
+  await withBusy(btn, "启动中", async () => {
     try {
-      const qs = closeOpenBrowser ? "?close_open_browser=true" : "";
+      const qs = `?async_mode=true${closeOpenBrowser ? "&close_open_browser=true" : ""}`;
       res = await api("/api/publish/" + id + "/run-now" + qs, { method: "POST" });
       if (!res?.ok && res?.blocked_by === "open_browser" && !closeOpenBrowser) {
         return;
       }
-      toast(res.ok ? "发布成功 ✓" : "发布未成功:" + (res.error || ""), res.ok ? "ok" : "err", 6000);
-    }
-    catch (e) { toast("发布失败:" + e.message, "err"); }
-    finally { clearInterval(stageTimer); _busyHint = ""; }
+      if (res?.ok && res?.queued) {
+        toast(closeOpenBrowser ? "已关闭手动窗口并启动后台发布，步骤进度将实时推送" : "已启动后台发布，步骤进度可在列表与右上角活动中心实时查看", "info", 5500);
+      } else {
+        toast(res.ok ? "发布成功 ✓" : "发布未成功:" + (res.error || ""), res.ok ? "ok" : "err", 6000);
+      }
+    } catch (e) { toast("发布启动失败:" + e.message, "err"); }
   });
   if (res && !res.ok && res.blocked_by === "open_browser" && !closeOpenBrowser) {
     const task = PUBLISH_TASKS.find(item => item.id === id);

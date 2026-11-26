@@ -794,6 +794,81 @@ function taskQueueSourceLabel(tab) {
   })[tab] || "查看";
 }
 
+function queueProgressTaskKey(item) {
+  const id = Number(item?.id || 0);
+  if (!id) return "";
+  if (item.queue_type === "collections") return `collection:${id}`;
+  if (item.queue_type === "publishes") return `publish:${id}`;
+  if (item.queue_type === "monitor_downloads") return `download:content:${id}`;
+  if (item.queue_type === "collection_downloads") return `download:collection:${id}`;
+  return "";
+}
+
+function renderTaskQueueProgressHtml(item, liveTask = null) {
+  const prog = window.CreatorHubProgress;
+  const p = liveTask
+    ? {
+        percent: liveTask.percent,
+        determinate: !!liveTask.determinate,
+        phase_label: liveTask.phase_label || "",
+        speed_bps: liveTask.speed_bps,
+        eta_seconds: liveTask.eta_seconds,
+        current: liveTask.current,
+        total: liveTask.total,
+        unit: liveTask.unit,
+        status: liveTask.status,
+        next_allowed_at: liveTask.next_allowed_at || item.next_allowed_at,
+      }
+    : (item.progress || null);
+  const st = liveTask?.status === "running"
+    ? "running"
+    : liveTask?.status === "waiting_user" || liveTask?.status === "blocked"
+      ? "blocked"
+      : liveTask?.status === "completed"
+        ? "completed"
+        : liveTask?.status === "failed"
+          ? "failed"
+          : (item.state || "pending");
+  const nextAt = p?.next_allowed_at || item.next_allowed_at;
+  if (st === "blocked" && nextAt) {
+    const cd = prog?.fmtCountdown?.(nextAt) || "等待恢复";
+    const phase = p?.phase_label || "冷却中";
+    return `<div class="queue-progress-cell"><div class="queue-progress-head"><span>${esc(phase)}</span></div><div class="queue-progress-meta progress-num" data-countdown-iso="${esc(nextAt)}">${esc(cd)}</div></div>`;
+  }
+  if (st === "running") {
+    const det = !!(p && p.determinate && p.percent !== null && p.percent !== undefined && Number.isFinite(Number(p.percent)));
+    const pct = det ? Math.max(0, Math.min(100, Math.round(Number(p.percent)))) : null;
+    const bar = prog?.renderProgressBar
+      ? prog.renderProgressBar({ determinate: det, percent: pct, tone: "info", label: item.title || "执行进度", compact: true })
+      : `<div class="progress-track is-compact${det ? "" : " is-indeterminate"}"><div class="progress-fill" style="${det ? `width:${pct}%` : ""}"></div></div>`;
+    const meta = [];
+    if (p?.unit === "bytes" && Number(p.total) > 0) {
+      meta.push(`${prog?.fmtBytes?.(p.current) || ""} / ${prog?.fmtBytes?.(p.total) || ""}`);
+    } else if (p?.unit === "bytes" && Number(p.current) > 0) {
+      meta.push(prog?.fmtBytes?.(p.current) || "");
+    }
+    const spd = p?.speed_bps ? (prog?.fmtSpeed?.(p.speed_bps) || "") : "";
+    if (spd) meta.push(spd);
+    const eta = p?.eta_seconds ? (prog?.fmtEta?.(p.eta_seconds) || "") : "";
+    if (eta) meta.push(eta);
+    return `<div class="queue-progress-cell"><div class="queue-progress-head"><span title="${esc(p?.phase_label || "执行中")}">${esc(p?.phase_label || "执行中")}</span><b class="progress-num">${det ? `${pct}%` : "进行中"}</b></div>${bar}${meta.length ? `<div class="queue-progress-meta progress-num">${esc(meta.join(" · "))}</div>` : ""}</div>`;
+  }
+  if (st === "completed") {
+    return `<div class="queue-progress-cell"><div class="queue-progress-meta">${esc(p?.phase_label || (item.status === "canceled" ? "已取消" : item.status === "skipped" ? "已跳过" : "100% · 已完成"))}</div></div>`;
+  }
+  if (st === "failed") {
+    return `<div class="queue-progress-cell"><div class="queue-progress-meta" style="color:var(--danger)">${esc(p?.phase_label || "执行中断")}</div></div>`;
+  }
+  if (p && p.determinate && Number.isFinite(Number(p.percent)) && Number(p.percent) > 0) {
+    const pct = Math.max(0, Math.min(100, Math.round(Number(p.percent))));
+    const bar = prog?.renderProgressBar
+      ? prog.renderProgressBar({ determinate: true, percent: pct, tone: "warn", label: item.title || "任务进度", compact: true })
+      : `<div class="progress-track is-compact"><div class="progress-fill tone-warn" style="width:${pct}%"></div></div>`;
+    return `<div class="queue-progress-cell"><div class="queue-progress-head"><span>${esc(p.phase_label || "等待继续")}</span><b class="progress-num">${pct}%</b></div>${bar}</div>`;
+  }
+  return `<div class="queue-progress-cell"><div class="queue-progress-meta">${esc(p?.phase_label || "等待调度")}</div></div>`;
+}
+
 function taskQueueRow(item) {
   const stateMeta = TASK_QUEUE_STATE_META[item.state] || [item.state || "未知", "skipped"];
   const rawStatus = TASK_QUEUE_RAW_STATUS[item.status] || item.status || "未知";
@@ -805,19 +880,44 @@ function taskQueueRow(item) {
   const reasonClass = item.error && !item.blocked_reason ? " has-error" : "";
   const signal = item.blocked_signal ? `<small>信号：${esc(item.blocked_signal)}</small>` : "";
   const stopKey = `${item.queue_type}:${Number(item.id)}`;
+  const progKey = queueProgressTaskKey(item);
+  const liveTask = progKey ? window.CreatorHubProgress?.getTask?.(progKey) : null;
   const selectable = ["collections", "publishes", "comments", "actions"].includes(item.queue_type)
     && !["done", "canceled", "skipped", "uncertain"].includes(item.status);
-  return `<tr>
+  return `<tr data-queue-key="${esc(stopKey)}"${progKey ? ` data-progress-key="${esc(progKey)}"` : ""}>
     <td><input type="checkbox" class="queue-select" data-queue-type="${esc(item.queue_type)}" data-task-id="${Number(item.id)}" aria-label="选择任务 ${Number(item.id)}" onchange="toggleTaskQueueItem(this)"${selectable ? "" : " disabled"}${TASK_QUEUE_SELECTED.has(stopKey) ? " checked" : ""}></td>
     <td><span class="pill q bare">${esc(item.queue_label)}</span><small class="mut" style="display:block;margin-top:5px">${esc(PF_NAME[item.platform] || item.platform || "—")}</small></td>
     <td><div class="queue-copy"><b title="${esc(item.title)}">${esc(item.title)}</b>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}</div></td>
     <td><div class="queue-account"><b>${esc(account)}</b>${item.account_id ? `<small>ID ${Number(item.account_id)}</small>` : ""}</div></td>
     <td><div class="queue-time">${scheduled || "尽快执行"}${created}</div></td>
     <td><span class="pill ${stateMeta[1]}">${esc(stateMeta[0])}</span><small class="mut" style="display:block;margin-top:5px">${esc(rawStatus)}</small></td>
+    <td class="queue-col-progress" data-queue-prog-cell="${esc(progKey || stopKey)}">${renderTaskQueueProgressHtml(item, liveTask)}</td>
     <td><div class="queue-reason${reasonClass}">${esc(reason)}${signal}${nextAllowed}</div></td>
     <td class="acttd">${item.status === "uncertain" ? `<button type="button" class="ghost sm" onclick="resolveTaskResult(${jsArg(item.queue_type)},${Number(item.id)})">核对结果</button>` : ""}<button type="button" class="ghost sm" onclick="openTaskQueueSource(${jsArg(item.source_tab)})">${esc(taskQueueSourceLabel(item.source_tab))}</button></td>
   </tr>`;
 }
+
+window.addEventListener("creatorhub:progress:update", e => {
+  const task = e?.detail?.task;
+  if (!task || !task.task_key) return;
+  if (typeof CURRENT_TAB !== "undefined" && CURRENT_TAB !== "queue") return;
+  const cells = document.querySelectorAll(`#queue-table td[data-queue-prog-cell]`);
+  for (const cell of cells) {
+    if (cell.dataset.queueProgCell === task.task_key) {
+      cell.innerHTML = renderTaskQueueProgressHtml({ title: task.title, state: task.status, status: task.status, next_allowed_at: task.next_allowed_at }, task);
+    }
+  }
+});
+
+setInterval(() => {
+  if (document.hidden || typeof CURRENT_TAB === "undefined" || CURRENT_TAB !== "queue") return;
+  const prog = window.CreatorHubProgress;
+  if (!prog?.fmtCountdown) return;
+  document.querySelectorAll("#queue-table [data-countdown-iso]").forEach(el => {
+    const iso = el.dataset.countdownIso;
+    if (iso) el.textContent = prog.fmtCountdown(iso) || "即将恢复";
+  });
+}, 1000);
 
 function updateTaskQueueSelection() {
   const button = $("queue-batch-stop");
@@ -927,15 +1027,16 @@ async function refreshTaskQueue(resetPage = false) {
   try {
     const data = await api("/api/task-queue?" + params.toString());
     if (!isCurrent()) return;
-    body.innerHTML = data.items?.length
+    const html = data.items?.length
       ? data.items.map(taskQueueRow).join("")
-      : empty(8, "当前筛选范围内没有任务", "i-inbox", "切换状态或平台范围后再查看");
+      : empty(9, "当前筛选范围内没有任务", "i-inbox", "切换状态或平台范围后再查看");
+    setHtmlIfChanged(body, html);
     updateTaskQueueSelection();
     renderTaskQueueSummary(data.summary || {});
     renderTaskQueuePager(data);
   } catch (e) {
     if (!isCurrent()) return;
-    body.innerHTML = empty(8, "任务队列加载失败", "i-info", e.message || "请稍后重试");
+    setHtmlIfChanged(body, empty(9, "任务队列加载失败", "i-info", e.message || "请稍后重试"));
     if (CURRENT_TAB === "queue") toast("任务队列加载失败：" + e.message, "err");
   } finally {
     TASK_QUEUE_LOADING = false;
@@ -952,8 +1053,8 @@ async function refreshTaskQueueBadge() {
   const isCurrent = beginViewRequest("task-queue-badge");
   TASK_QUEUE_BADGE_LOADING = true;
   try {
-    const params = new URLSearchParams({ platform: GLOBAL_MODE ? "all" : PLATFORM, state: "active", page_size: "1" });
-    const data = await api("/api/task-queue?" + params.toString());
+    const params = new URLSearchParams({ platform: GLOBAL_MODE ? "all" : PLATFORM });
+    const data = await api("/api/task-queue/summary?" + params.toString());
     if (!isCurrent() || CURRENT_TAB === "queue") return;
     globalThis.CreatorHubWorkbench?.queueSummary?.(data.summary || {});
     const badge = $("tb-queue");
@@ -1052,7 +1153,7 @@ $("danmaku-watch-table").innerHTML = skeleton(8);
 $("danmaku-table").innerHTML = skeleton(6);
 $("collection-job-table").innerHTML = collectionTaskSkeleton(3);
 $("collection-content-list").innerHTML = collectionResultSkeleton(4);
-$("queue-table").innerHTML = skeleton(8);
+$("queue-table").innerHTML = skeleton(9);
 
 // restore last-selected platform & global mode BEFORE restoring tab so global-mode tab guards apply cleanly
 PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "rednote", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
@@ -1087,7 +1188,7 @@ updateTaskQueuePlatformLabel();
 setupMonitorInterval("t-interval", 300);
 setupMonitorInterval("w-interval", 600);
 setupMonitorInterval("d-w-interval", 0, true);
-onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshBrowserRuntimes(); refreshProxies(); refreshChannels(); loop();
+onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshBrowserRuntimes(); refreshProxies(); refreshChannels(); window.CreatorHubProgress?.start?.(); loop();
 enhanceAllSelects();   // 把所有原生 <select> 升级为美化下拉
 enhanceAllMetaControls(); // 分组/标签：当前平台词库下拉，可搜索并新增
 enhanceAllDateTime();  // 把 datetime-local 升级为自定义日期选择器
@@ -1116,9 +1217,11 @@ window.addEventListener("hashchange", () => {
 });
 document.querySelector(".pswitch").addEventListener("keydown", e => {
   if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
-  e.preventDefault();
-  const buttons = [...document.querySelectorAll(".pswitch button")];
+  const buttons = [...document.querySelectorAll('.pswitch button[role="tab"]:not(.ps-overflow-hidden):not(.ps-idle-hidden)')];
+  if (!buttons.length) return;
   let index = buttons.indexOf(document.activeElement);
+  if (index < 0) return;
+  e.preventDefault();
   if (e.key === "Home") index = 0;
   else if (e.key === "End") index = buttons.length - 1;
   else index = (index + (e.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;

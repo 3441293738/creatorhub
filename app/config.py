@@ -15,6 +15,7 @@ class EngineConfig:
     scan_interval_seconds: int = 300
     worker_pool_size: int = 2          # 下载并发(跨作品)
     scan_concurrency: int = 2          # 同时抓取的目标数(并发浏览器上下文)
+    collection_concurrency: int = 2    # 同时执行的关键词/创作者采集任务数(同账号与同出口仍串行)
     block_media_resources: bool = False  # 屏蔽图片/视频/字体加载(省带宽但可能打断抖音 SPA 致拿不到数据,默认关)
     monitor_initial_backfill_count: int = 0  # 新增博主时回填最近 N 条;0=仅建立时间基线,-1=尽可能全量
     comment_recent_works: int = 5      # 监控评论时,只看每个目标最近 N 条作品
@@ -317,6 +318,8 @@ def load_config(path: str | None = None) -> Config:
         for name in ("scan_jitter", "comment_jitter"):
             value = float(getattr(cfg.engine, name))
             setattr(cfg.engine, name, min(1.0, max(0.0, value)) if math.isfinite(value) else 0.0)
+        cfg.engine.collection_concurrency = max(
+            1, min(8, int(cfg.engine.collection_concurrency or 2)))
         cfg.engine.initial_scan_spread_seconds = max(
             0, min(600, int(cfg.engine.initial_scan_spread_seconds)))
         cfg.engine.quiet_hours_wake_jitter_minutes = max(

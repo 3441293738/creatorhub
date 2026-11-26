@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 
 from sqlalchemy import func
 from sqlmodel import select
@@ -11,6 +12,7 @@ from sqlmodel import select
 from app.db import get_session
 from app.engine.collection_helpers import _author_id, _collection_content_matches, _loads_keywords, _sort_ks_search_items, _xhs_count
 from app.models import KeywordCollectionComment, KeywordCollectionContent, KeywordCollectionJob
+from app.progress_hub import progress_hub
 from app.platforms.bilibili import BilibiliClient, parse_bili_aweme
 from app.platforms.channels import ChannelsProtocolClient, parse_channels_feed
 from app.platforms.douyin import DouyinClient, cookie_from_state as douyin_cookie_from_state, parse_aweme
@@ -99,12 +101,101 @@ class KeywordCollector(
         job = KeywordCollector._job(job_id)
         return not job or job.cancel_requested or job.status == "canceled"
 
+    _JOB_RUNTIME: dict[int, dict] = {}
+
+    @classmethod
+    def _emit_hub_progress(cls, job: KeywordCollectionJob) -> None:
+        if not job or job.cancel_requested or job.status == "canceled":
+            return
+        rt = cls._JOB_RUNTIME.get(int(job.id or 0)) or {}
+        kw_total = max(1, int(rt.get("total_keywords") or 0) or len(_loads_keywords(job.keywords)) or 1)
+        kw_done = min(kw_total, max(0, int(job.processed_keyword_count or 0)))
+        it_total = max(0, int(job.current_item_total or 0))
+        it_idx = min(it_total, max(0, int(job.current_item_index or 0)))
+        dl_total = int(rt.get("dl_total") or 0)
+        dl_done = int(rt.get("dl_done") or 0)
+        dl_active = int(rt.get("dl_active") or 0)
+        has_dl = bool(job.download_media)
+
+        determinate = False
+        pct: float | None = None
+        if kw_done >= kw_total:
+            determinate = True
+            pct = 99.5 if dl_active > 0 else 100.0
+        elif it_total > 0:
+            determinate = True
+            if has_dl and dl_total > 0:
+                item_part = 0.15 + 0.65 * (it_idx / it_total)
+                dl_part = 0.20 * min(1.0, dl_done / max(1, dl_total))
+                frac = min(0.99, item_part + dl_part)
+            elif has_dl:
+                frac = 0.15 + 0.65 * (it_idx / it_total)
+            else:
+                frac = 0.15 + 0.85 * (it_idx / it_total)
+            pct = round(min(99.5, (kw_done + frac) * 100.0 / kw_total), 1)
+        elif kw_done > 0:
+            determinate = True
+            pct = round(min(99.0, (kw_done + 0.05) * 100.0 / kw_total), 1)
+
+        eta_seconds: float | None = None
+        started_mono = float(rt.get("started_at") or 0.0)
+        if determinate and pct is not None and pct >= 5.0 and started_mono > 0:
+            elapsed = max(0.0, time.monotonic() - started_mono)
+            if elapsed >= 2.0 and pct < 99.5:
+                eta_seconds = round(elapsed * (100.0 - pct) / pct, 1)
+
+        title = str(rt.get("title") or "")
+        if not title:
+            kws = _loads_keywords(job.keywords) if job.source_type == "keyword" else []
+            title = ("、".join(kws[:3]) + (f" 等 {len(kws)} 词" if len(kws) > 3 else "")) if kws else (job.source_name or job.source_type or f"采集任务 #{job.id}")
+
+        detail_parts = []
+        if job.current_keyword:
+            detail_parts.append(f"当前：{job.current_keyword}")
+        detail_parts.append(f"已采 {int(job.content_count or 0)} 作品 / {int(job.comment_count or 0)} 评论")
+        if has_dl and dl_total > 0:
+            detail_parts.append(f"媒体 {dl_done}/{dl_total}")
+
+        progress_hub.upsert(
+            f"collection:{job.id}",
+            category="collection",
+            title=title[:120],
+            platform=str(job.platform or ""),
+            account_id=job.account_id,
+            source_tab="collections",
+            status="running",
+            phase="downloading" if (it_total > 0 and it_idx >= it_total and dl_active > 0) else ("processing" if it_total > 0 else "discovering"),
+            phase_label=str(job.current_step or "采集中"),
+            detail=" · ".join(detail_parts),
+            determinate=determinate,
+            percent=pct,
+            current=it_idx if it_total else kw_done,
+            total=it_total if it_total else kw_total,
+            unit="items",
+            eta_seconds=eta_seconds,
+            cancelable=True,
+            metrics={
+                "content_count": int(job.content_count or 0),
+                "comment_count": int(job.comment_count or 0),
+                "error_count": int(job.error_count or 0),
+                "processed_keyword_count": kw_done,
+                "total_keyword_count": kw_total,
+                "current_item_index": it_idx,
+                "current_item_total": it_total,
+                "dl_done": dl_done,
+                "dl_total": dl_total,
+                "dl_active": dl_active,
+            },
+            extra={"job_id": job.id, "current_keyword": job.current_keyword or ""},
+        )
+
     @staticmethod
     def _progress(job_id: int, *, keyword: str | None = None,
                   step: str | None = None,
                   processed_keyword_count: int | None = None,
                   current_item_index: int | None = None,
                   current_item_total: int | None = None) -> None:
+        job_snap = None
         with get_session() as session:
             job = session.get(KeywordCollectionJob, job_id)
             if not job or job.cancel_requested or job.status == "canceled":
@@ -121,6 +212,10 @@ class KeywordCollector(
                 job.current_item_total = max(0, current_item_total)
             session.add(job)
             session.commit()
+            session.refresh(job)
+            job_snap = job
+        if job_snap is not None:
+            KeywordCollector._emit_hub_progress(job_snap)
 
     @staticmethod
     def _record_error(job_id: int, message: str) -> None:
@@ -403,13 +498,66 @@ class KeywordCollector(
                              context=None, identity=None) -> dict:
 
         browser_reads = self._xhs_browser_reads_enabled()
+        title_label = (
+            ("、".join(keywords[:3]) + (f" 等 {len(keywords)} 词" if len(keywords) > 3 else ""))
+            if job.source_type == "keyword"
+            else (job.source_name or keywords[0] or f"采集任务 #{job_id}")
+        )
+        rt = {
+            "started_at": time.monotonic(),
+            "total_keywords": max(1, len(keywords)),
+            "title": title_label,
+            "dl_total": 0,
+            "dl_done": 0,
+            "dl_active": 0,
+        }
+        self._JOB_RUNTIME[int(job_id)] = rt
+        dl_concurrency = max(1, min(3, int(getattr(self.cfg.engine, "worker_pool_size", 2) or 2)))
+        dl_sem = asyncio.Semaphore(dl_concurrency)
+        pending_downloads: list[asyncio.Task] = []
+
+        async def _bg_download(cur_job, cur_content, cur_aweme, cur_proxy, cur_acc, cur_ident):
+            rt["dl_active"] = int(rt.get("dl_active", 0)) + 1
+            try:
+                async with dl_sem:
+                    if self._cancel_requested(job_id):
+                        return
+                    await self._download(
+                        cur_job, cur_content, cur_aweme, cur_proxy,
+                        account=cur_acc, identity=cur_ident,
+                    )
+            finally:
+                rt["dl_active"] = max(0, int(rt.get("dl_active", 0)) - 1)
+                rt["dl_done"] = int(rt.get("dl_done", 0)) + 1
+                snap = self._job(job_id)
+                if snap is not None and snap.status == "running":
+                    self._emit_hub_progress(snap)
+
+        async def _drain_downloads(*, cancel: bool = False, keyword_label: str = "") -> None:
+            alive = [t for t in pending_downloads if not t.done()]
+            pending_downloads.clear()
+            if not alive:
+                return
+            if cancel:
+                for t in alive:
+                    t.cancel()
+                await asyncio.gather(*alive, return_exceptions=True)
+                return
+            self._progress(
+                job_id,
+                keyword=keyword_label or None,
+                step=f"等待后台媒体下载完成 ({rt['dl_done']}/{rt['dl_total']})",
+            )
+            await asyncio.gather(*alive, return_exceptions=True)
+
         self._progress(
             job_id,
             processed_keyword_count=0,
             current_item_index=0,
             current_item_total=0,
         )
-        for keyword_index, keyword in enumerate(keywords):
+        try:
+          for keyword_index, keyword in enumerate(keywords):
             if self._cancel_requested(job_id):
                 return {"canceled": True, "errors": self._job(job_id).error_count}
             if job.platform == "douyin" and keyword_index:
@@ -765,6 +913,7 @@ class KeywordCollector(
                             (parts.get("brief") or {}).get("note_id") or "")
                         self._record_error(
                             job_id, f"{keyword}/{note_id}: {detail_error}")
+                        await _drain_downloads(cancel=False, keyword_label=keyword)
                         return self._result(job_id, stopped=True)
                 if aweme is None:
                     self._record_error(job_id, f"{keyword}: 无法解析一条搜索结果")
@@ -791,11 +940,16 @@ class KeywordCollector(
 
                 if self._cancel_requested(job_id):
                     return {"canceled": True, "errors": self._job(job_id).error_count}
-                if job.download_media:
-                    self._progress(job_id, keyword=keyword, step=f"下载作品 {index}")
-                    await self._download(
-                        current, content, aweme, proxy,
-                        account=account, identity=identity)
+                if job.download_media and aweme.medias and content.download_status != "done":
+                    rt["dl_total"] = int(rt.get("dl_total", 0)) + 1
+                    pending_downloads.append(asyncio.create_task(
+                        _bg_download(current, content, aweme, proxy, account, identity)
+                    ))
+                    self._progress(
+                        job_id,
+                        keyword=keyword,
+                        step=f"后台下载媒体 {index}/{len(candidates)}（并行 {rt['dl_done']}/{rt['dl_total']}）",
+                    )
 
                 if self._cancel_requested(job_id):
                     return {"canceled": True, "errors": self._job(job_id).error_count}
@@ -908,6 +1062,7 @@ class KeywordCollector(
                                 comment_error)[0] in {
                                 RiskCategory.RISK, RiskCategory.AUTH,
                                 RiskCategory.NETWORK}:
+                            await _drain_downloads(cancel=False, keyword_label=keyword)
                             return self._result(job_id, stopped=True)
                 self._refresh_counts(job_id)
                 if job.platform not in {"xhs", "rednote"}:
@@ -915,6 +1070,7 @@ class KeywordCollector(
                 if accepted >= job.max_contents_per_keyword:
                     break
 
+            await _drain_downloads(cancel=self._cancel_requested(job_id), keyword_label=keyword)
             self._progress(
                 job_id,
                 processed_keyword_count=keyword_index + 1,
@@ -922,4 +1078,11 @@ class KeywordCollector(
                 current_item_total=0,
             )
 
-        return self._result(job_id)
+          await _drain_downloads(cancel=self._cancel_requested(job_id))
+          return self._result(job_id)
+        except asyncio.CancelledError:
+            await _drain_downloads(cancel=True)
+            raise
+        finally:
+            await _drain_downloads(cancel=self._cancel_requested(job_id))
+            self._JOB_RUNTIME.pop(int(job_id), None)

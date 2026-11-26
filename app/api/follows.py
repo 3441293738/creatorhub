@@ -11,6 +11,7 @@ from sqlalchemy import delete, func, or_
 from sqlmodel import select
 
 from app import runtime as app_runtime
+from app.progress_hub import progress_hub
 from app.browser import fetch_follows
 from app.db import get_session
 from app.models import AccountStatSnapshot, AccountWork, DouyinAccount, FollowEdge
@@ -414,12 +415,77 @@ def _follow_sync_job_view(job: dict) -> dict:
     return view
 
 
+def _sync_follow_to_hub(job: dict, *, immediate: bool = False) -> None:
+    view = _follow_sync_job_view(job)
+    key = f"follow:{job['id']}"
+    direction_label = "粉丝列表" if job.get("direction") == "fan" else "关注列表"
+    phase_labels = {
+        "queued": "等待同步",
+        "fetching": "正在获取列表",
+        "saving": "正在写入本地库",
+        "completed": "同步完成",
+        "failed": "同步失败",
+        "canceled": "已取消",
+        "canceling": "正在取消",
+        "deferred": "风控暂缓",
+    }
+    status_map = {
+        "queued": "queued",
+        "running": "running",
+        "canceling": "running",
+        "completed": "completed",
+        "failed": "failed",
+        "canceled": "canceled",
+        "deferred": "blocked",
+    }
+    fetched = int(view.get("fetched") or 0)
+    expected = int(view.get("expected_total") or 0)
+    saved = int(view.get("saved") or 0)
+    pages = int(view.get("pages") or 0)
+    phase = str(view.get("phase") or view.get("status") or "running")
+    if phase == "saving":
+        detail = f"已写入 {saved} / {fetched} 条"
+    elif expected:
+        detail = f"已获取 {fetched} / 约 {expected} 条 · 第 {pages} 页"
+    else:
+        detail = f"已获取 {fetched} 条 · 第 {pages} 页"
+    progress_hub.upsert(
+        key,
+        immediate=immediate,
+        category="follow_sync",
+        title=f"{direction_label}同步 · {job.get('account_name') or ('账号 #' + str(job.get('account_id')))}",
+        platform=str(job.get("platform") or ""),
+        account_id=job.get("account_id"),
+        account_name=str(job.get("account_name") or ""),
+        source_tab="hub",
+        status=status_map.get(str(view.get("status") or "running"), "running"),
+        phase=phase,
+        phase_label=phase_labels.get(phase, "同步中"),
+        detail=detail,
+        error=str(view.get("error") or ""),
+        determinate=view.get("percent") is not None,
+        percent=float(view["percent"]) if view.get("percent") is not None else None,
+        current=saved if phase == "saving" else fetched,
+        total=fetched if phase == "saving" else expected,
+        unit="items",
+        metrics={"pages": pages, "fetched": fetched, "saved": saved, "added": int(view.get("added") or 0)},
+        cancelable=bool(view.get("cancelable")),
+        extra={
+            "job_id": job["id"],
+            "direction": job.get("direction"),
+            "capped": bool(view.get("capped")),
+            "source": view.get("source") or "",
+        },
+    )
+
+
 async def _run_follow_sync_job(job_id: str):
     job = app_runtime._follow_sync_jobs[job_id]
 
     def update(changes: dict):
         job.update(changes)
         job["updated_at"] = datetime.utcnow().isoformat()
+        _sync_follow_to_hub(job)
 
     update({"status": "running", "phase": "fetching"})
     try:
@@ -462,6 +528,8 @@ async def start_follow_sync_job(account_id: int,
             raise HTTPException(404, "账号不存在")
         expected_total = (account.following_count if direction == "following"
                           else account.follower_count)
+        account_platform = str(account.platform or "")
+        account_name = str(account.nickname or account.douyin_id or f"账号 #{account_id}")
     for existing in reversed(list(app_runtime._follow_sync_jobs.values())):
         if (existing.get("account_id") == account_id
                 and existing.get("direction") == direction
@@ -476,6 +544,7 @@ async def start_follow_sync_job(account_id: int,
     job_id = uuid.uuid4().hex
     job = {
         "id": job_id, "account_id": account_id, "direction": direction,
+        "platform": account_platform, "account_name": account_name,
         "status": "queued", "phase": "queued", "pages": 0,
         "fetched": 0, "saved": 0, "added": 0,
         "expected_total": max(0, int(expected_total or 0)),
@@ -483,6 +552,8 @@ async def start_follow_sync_job(account_id: int,
         "updated_at": now, "completed_at": None,
     }
     app_runtime._follow_sync_jobs[job_id] = job
+    _sync_follow_to_hub(job, immediate=True)
+    progress_hub.register_cancel(f"follow:{job_id}", lambda jid=job_id: cancel_follow_sync_job(jid))
     task = asyncio.create_task(_run_follow_sync_job(job_id))
     app_runtime._follow_sync_tasks[job_id] = task
     task.add_done_callback(lambda _task, key=job_id:
@@ -520,6 +591,7 @@ async def cancel_follow_sync_job(job_id: str):
         raise HTTPException(409, "数据正在提交，不能中途取消")
     job["status"] = "canceling"
     job["updated_at"] = datetime.utcnow().isoformat()
+    _sync_follow_to_hub(job, immediate=True)
     task = app_runtime._follow_sync_tasks.get(job_id)
     if task:
         task.cancel()

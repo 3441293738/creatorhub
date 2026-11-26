@@ -27,6 +27,7 @@ class EngineSettingsPatch(BaseModel):
 
     worker_pool_size: int | None = Field(None, ge=1, le=16)
     scan_concurrency: int | None = Field(None, ge=1, le=16)
+    collection_concurrency: int | None = Field(None, ge=1, le=8)
     active_accounts: int | None = Field(None, ge=1, le=32)
     max_live_contexts: int | None = Field(None, ge=1, le=32)
     resident_browser_sessions: bool | None = None

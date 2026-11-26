@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+import asyncio
 import json
 import uuid as _uuid
 
@@ -21,7 +22,9 @@ from app.platforms.rednote import weighted_truncate
 from app.platforms.twitter import validate_twitter_publish_files
 from app.platforms.youtube import validate_youtube_publish_files
 from app.platforms.xhs import has_creator_cookies
+from app.progress_hub import progress_hub, run_in_io_pool
 from app.scheduling import utc_iso
+from app.services import login_sessions as login_sessions_service
 from app.services import metadata as metadata_service
 from app.submissions import submit_once
 
@@ -32,9 +35,13 @@ router = APIRouter()
 UPLOAD_DIR = Path("./data/uploads")
 
 
+def _write_chunk(handle, data: bytes) -> None:
+    handle.write(data)
+
+
 @router.post("/api/publish/upload")
 async def publish_upload(files: list[UploadFile] = File(...)):
-    """上传图集/视频文件,返回本地路径列表(供创建发布任务用)。"""
+    """上传图集/视频文件(异步流式写盘，不阻塞事件循环),返回本地路径列表。"""
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     saved = []
     for f in files:
@@ -43,7 +50,7 @@ async def publish_upload(files: list[UploadFile] = File(...)):
         dest = UPLOAD_DIR / name
         with open(dest, "wb") as out:
             while chunk := await f.read(1 << 20):
-                out.write(chunk)
+                await run_in_io_pool(_write_chunk, out, chunk)
         saved.append({"path": str(dest), "name": f.filename})
     return {"files": saved}
 
@@ -348,12 +355,69 @@ async def update_publish(tid: int, body: PublishUpdate):
 
 
 @router.post("/api/publish/{tid}/run-now")
-async def run_publish(tid: int, close_open_browser: bool = False):
+async def run_publish(tid: int, close_open_browser: bool = False, async_mode: bool = False):
     if not app_runtime.engine:
         raise HTTPException(503, "引擎未就绪")
-    return await app_runtime.engine.publish_task(
-        tid, close_open_browser=close_open_browser
+    if not async_mode:
+        return await app_runtime.engine.publish_task(
+            tid, close_open_browser=close_open_browser
+        )
+    if tid in getattr(app_runtime.engine, "_publishing", set()):
+        return {"ok": True, "queued": True, "already_running": True, "task_id": tid}
+    with get_session() as s:
+        t = s.get(PublishTask, tid)
+        if not t:
+            return {"ok": False, "error": "任务不存在"}
+        if t.status not in ("pending", "failed"):
+            return {"ok": False, "error": f"任务状态为 {t.status}"}
+        account_id = t.account_id
+        platform = t.platform
+        title = t.title or (t.desc or "")[:40] or f"发布任务 #{tid}"
+        acc = s.get(DouyinAccount, account_id) if account_id else None
+        api_only = app_runtime.engine._publish_is_api_only(platform, acc)
+    if not api_only and await login_sessions_service.has_active_open_browser(account_id):
+        if not close_open_browser:
+            app_runtime.engine._mark_publish_open_browser_blocked(tid, account_id, platform, log_once=False)
+            return {
+                "ok": False,
+                "deferred": True,
+                "blocked_by": "open_browser",
+                "account_id": account_id,
+                "error": "该账号手动浏览器窗口仍开着，请先关闭窗口后再发布",
+            }
+    pub_sem = (
+        getattr(app_runtime.engine, "_api_publish_sem", app_runtime.engine._publish_sem)
+        if api_only
+        else app_runtime.engine._publish_sem
     )
+    if pub_sem.locked():
+        return {
+            "ok": False,
+            "deferred": True,
+            "blocked_by": "publish_busy",
+            "account_id": account_id,
+            "error": "当前已有另一条发布任务正在执行，请等待完成后再试",
+        }
+    progress_hub.upsert(
+        f"publish:{tid}",
+        immediate=True,
+        category="publish",
+        title=title[:120],
+        platform=platform,
+        account_id=account_id,
+        source_tab="publish",
+        status="queued",
+        phase="queued",
+        phase_label="正在启动发布任务",
+        determinate=False,
+        extra={"task_id": tid},
+    )
+    bg = asyncio.create_task(
+        app_runtime.engine.publish_task(tid, close_open_browser=close_open_browser)
+    )
+    app_runtime._background_tasks.add(bg)
+    bg.add_done_callback(lambda completed: app_runtime._background_tasks.discard(completed))
+    return {"ok": True, "queued": True, "async": True, "task_id": tid}
 
 
 @router.delete("/api/publish/{tid}")

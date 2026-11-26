@@ -168,6 +168,14 @@
         <div id="sd-links" class="hint" style="display:none"></div>
       </div>
     </div>
+    <div class="card" id="sd-live-card" style="display:none">
+      <div class="card-head">
+        <span class="card-ic"><svg><use href="#i-download"/></svg></span>
+        <h2>实时下载队列 <span class="sub" id="sd-live-summary"></span></h2>
+        <button type="button" class="ghost sm" onclick="window.CreatorHubProgress?.clearFinished()">清理已完成</button>
+      </div>
+      <div id="sd-live-list" class="share-live-list"></div>
+    </div>
     <div class="card" id="sd-result-card" style="display:none">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-film"/></svg></span>

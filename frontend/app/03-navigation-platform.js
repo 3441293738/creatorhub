@@ -326,7 +326,15 @@ function applyPlatformUI() {
     b.classList.toggle("active", active);
     b.setAttribute("aria-selected", active ? "true" : "false");
     b.tabIndex = active ? 0 : -1;
+    if (active) {
+      try {
+        b.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      } catch (_) {}
+    }
   });
+  if (typeof window._syncPlatformStripOverflow === "function") {
+    requestAnimationFrame(window._syncPlatformStripOverflow);
+  }
   document.querySelectorAll(".dy-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "douyin"));
   document.querySelectorAll(".xhs-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "xhs"));
   document.querySelectorAll(".ks-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "kuaishou"));
@@ -928,3 +936,191 @@ function switchTab(name, pushHistory = false) {
   if (name === "risk-control") refreshRiskCenter();
   if (changed && !["hub", "share-download", "collections", "queue", "risk-control"].includes(name)) loop();
 }
+
+
+// ── 单行自适应 Priority+ 平台栏：空间充足全展开，窄屏自动折叠尾部到「+N ▾」并始终保留当前平台可见 ──
+(() => {
+  const host = document.getElementById("pswitch-host");
+  const list = host ? host.querySelector(".pswitch") : document.querySelector(".pswitch");
+  const moreBtn = document.getElementById("pswitch-more-btn");
+  const moreLabel = document.getElementById("pswitch-more-label");
+  const moreDot = document.getElementById("pswitch-more-dot");
+  const popover = document.getElementById("pswitch-popover");
+  if (!host || !list || !moreBtn) return;
+
+  let popOpen = false;
+  let rafId = 0;
+  let lastLayoutSig = "";
+  const moOpts = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["class"] };
+  const mo = new MutationObserver(() => { lastLayoutSig = ""; scheduleLayout(); });
+
+  function tabButtons() {
+    return [...list.querySelectorAll('button[role="tab"][data-pf]')];
+  }
+
+  function layoutPriority() {
+    rafId = 0;
+    const available = Math.floor(host.clientWidth);
+    if (available <= 0) return;
+    const allBtns = tabButtons();
+    const activePf = allBtns.find(b => b.classList.contains("active"))?.dataset.pf || "";
+    const sig = `${available}:${activePf}:${allBtns.map(b => b.classList.contains("ps-idle-hidden") ? "0" : b.textContent.trim()).join("|")}`;
+    if (sig === lastLayoutSig) return;
+    lastLayoutSig = sig;
+
+    mo.disconnect();
+    try {
+      const candidates = allBtns.filter(b => !b.classList.contains("ps-idle-hidden"));
+      // 1. 先恢复全部可见以便准确测量自然宽度
+      allBtns.forEach(b => b.classList.remove("ps-overflow-hidden"));
+      moreBtn.hidden = true;
+
+      const widths = candidates.map(b => Math.ceil(b.getBoundingClientRect().width));
+      const gap = 2;
+      const pad = 8;
+      const totalW = pad + widths.reduce((sum, w) => sum + w, 0) + Math.max(0, candidates.length - 1) * gap;
+
+      if (totalW <= available) {
+        if (popOpen) togglePopover(false);
+        window.dispatchEvent(new Event("creatorhub:layout"));
+        return;
+      }
+
+      // 2. 空间不足：按 Priority+ 折叠，保留「全平台」+ 尽可能多的平台 + 当前选中平台 + 「+N ▾」
+      moreBtn.hidden = false;
+      if (moreLabel) moreLabel.textContent = `+${candidates.length}`;
+      const moreW = Math.max(54, Math.ceil(moreBtn.getBoundingClientRect().width) + gap);
+      const budget = Math.max(120, available - pad - moreW);
+
+      const activeIdx = candidates.findIndex(b => b.classList.contains("active"));
+      const keep = new Set();
+      let used = 0;
+
+      if (candidates.length > 0) {
+        keep.add(0);
+        used += widths[0];
+      }
+      if (activeIdx > 0 && used + gap + widths[activeIdx] <= budget) {
+        keep.add(activeIdx);
+        used += gap + widths[activeIdx];
+      }
+      for (let i = 1; i < candidates.length; i++) {
+        if (keep.has(i)) continue;
+        if (used + gap + widths[i] <= budget) {
+          keep.add(i);
+          used += gap + widths[i];
+        } else {
+          break;
+        }
+      }
+
+      let hiddenCount = 0;
+      let hiddenDanger = false;
+      let hiddenWarn = false;
+      candidates.forEach((b, idx) => {
+        const hide = !keep.has(idx);
+        b.classList.toggle("ps-overflow-hidden", hide);
+        if (hide) {
+          hiddenCount++;
+          const cnt = b.querySelector(".ps-cnt");
+          if (cnt?.classList.contains("danger")) hiddenDanger = true;
+          else if (cnt?.classList.contains("warn")) hiddenWarn = true;
+        }
+      });
+
+      if (hiddenCount <= 0) {
+        moreBtn.hidden = true;
+        if (popOpen) togglePopover(false);
+      } else {
+        moreBtn.hidden = false;
+        if (moreLabel) moreLabel.textContent = `+${hiddenCount}`;
+        moreBtn.title = `展开其余 ${hiddenCount} 个平台`;
+        if (moreDot) {
+          moreDot.hidden = !(hiddenDanger || hiddenWarn);
+          moreDot.className = "ps-more-dot" + (hiddenDanger ? " danger" : hiddenWarn ? " warn" : "");
+        }
+      }
+      if (popOpen) renderPopover();
+      window.dispatchEvent(new Event("creatorhub:layout"));
+    } finally {
+      mo.observe(list, moOpts);
+    }
+  }
+
+  function scheduleLayout() {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(layoutPriority);
+  }
+
+  function renderPopover() {
+    if (!popover) return;
+    const btns = tabButtons().filter(b => !b.classList.contains("ps-idle-hidden"));
+    const items = btns.map(b => {
+      const pf = b.dataset.pf || "";
+      const active = b.classList.contains("active");
+      const folded = b.classList.contains("ps-overflow-hidden");
+      const label = b.querySelector(".ps-lbl")?.textContent?.trim() || b.dataset.baseLabel || b.textContent.trim();
+      const cntEl = b.querySelector(".ps-cnt");
+      const cntHtml = cntEl ? cntEl.outerHTML : "";
+      return `<button type="button" class="pswitch-pop-item${active ? " active" : ""}${folded ? " is-folded" : ""}" data-pf="${esc(pf)}"><span class="pswitch-pop-name">${esc(label)}</span>${cntHtml}</button>`;
+    }).join("");
+    popover.innerHTML = `<div class="pswitch-pop-head"><b>全部平台</b><span class="mut">共 ${btns.length} 项</span></div><div class="pswitch-pop-grid">${items}</div>`;
+    popover.querySelectorAll(".pswitch-pop-item").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const pf = btn.dataset.pf;
+        togglePopover(false);
+        if (pf && typeof switchPlatform === "function") switchPlatform(pf);
+      });
+    });
+  }
+
+  function positionPopover() {
+    if (!popover || !moreBtn) return;
+    const rect = moreBtn.getBoundingClientRect();
+    const popW = Math.min(420, window.innerWidth - 24);
+    const left = Math.max(12, Math.min(window.innerWidth - popW - 12, rect.right - popW));
+    popover.style.left = `${left}px`;
+    popover.style.right = "auto";
+    popover.style.top = `${Math.round(rect.bottom + 8)}px`;
+  }
+
+  function togglePopover(force) {
+    if (!popover) return;
+    popOpen = typeof force === "boolean" ? force : !popOpen;
+    popover.hidden = !popOpen;
+    moreBtn.setAttribute("aria-expanded", String(popOpen));
+    if (popOpen) {
+      renderPopover();
+      positionPopover();
+    }
+  }
+
+  moreBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    togglePopover();
+  });
+
+  document.addEventListener("click", e => {
+    if (!popOpen) return;
+    if (popover && !popover.contains(e.target) && !moreBtn.contains(e.target)) {
+      togglePopover(false);
+    }
+  });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && popOpen) togglePopover(false);
+  });
+
+  if (typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(scheduleLayout);
+    ro.observe(host);
+  }
+  window.addEventListener("resize", () => {
+    scheduleLayout();
+    if (popOpen) positionPopover();
+  }, { passive: true });
+  // 当 syncHeaderPlatformBadges 更新计数徽标后重新计算一次折叠
+  mo.observe(list, moOpts);
+
+  window._syncPlatformStripOverflow = () => { lastLayoutSig = ""; scheduleLayout(); };
+  scheduleLayout();
+})();

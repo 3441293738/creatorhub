@@ -1,6 +1,7 @@
 """本账号作品同步、作品级评论/弹幕同步、统计快照及海外小红书作品管理接口。"""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from typing import Literal
 import logging
@@ -13,6 +14,7 @@ from app import runtime as app_runtime
 from app.browser import fetch_account_works, fetch_douyin_account_works_api
 from app.db import get_session
 from app.models import AccountStatSnapshot, AccountWork, CommentRecord, DanmakuRecord, DouyinAccount, FollowEdge
+from app.progress_hub import progress_hub
 from app.platforms.bilibili import BilibiliClient
 from app.platforms.douyin import cookie_from_state as douyin_cookie_from_state
 from app.platforms.facebook import FacebookClient
@@ -52,7 +54,7 @@ async def list_account_works(account_id: int, limit: int = 1000):
 
 
 @router.post("/api/accounts/{account_id}/works/sync")
-async def sync_account_works(account_id: int):
+async def sync_account_works(account_id: int, async_mode: bool = False):
     """打开账号自己的主页,拦截抓取本账号已发布作品,落库(upsert)。"""
     if app_runtime.engine is None:
         raise HTTPException(503, "引擎未就绪")
@@ -64,6 +66,7 @@ async def sync_account_works(account_id: int):
             raise HTTPException(400, "账号登录态已失效")
         if app_runtime.engine._proxy_bad(acc):
             raise HTTPException(400, "账号代理不可用")
+        acc_label = str(acc.nickname or acc.douyin_id or f"账号 #{account_id}")
         platform = acc.platform
         uid = (
             acc.douyin_id if platform == "tiktok"
@@ -225,78 +228,182 @@ async def sync_account_works(account_id: int):
             source = "browser"
         return await fetch_account_works(app_runtime.browser, identity, platform, uid)
 
-    items, err = await app_runtime.engine.guarded_read_pair(
-        account_id, OperationKind.READ_LIGHT, f"account-works:{account_id}",
-        _fetch, empty_result=[])
-    if err.startswith("risk_deferred:"):
-        return {"ok": True, "fetched": 0, "added": 0, "skipped": True,
-                "reason": err.split(":", 1)[-1], "source": "deferred",
-                "configured_mode": (transport["configured_mode"]
-                                    if transport else "browser")}
-    if not items and err == "empty_confirmed":
-        return {"ok": True, "fetched": 0, "added": 0, "empty": True,
+    async def _execute_sync() -> dict:
+        items, err = await app_runtime.engine.guarded_read_pair(
+            account_id, OperationKind.READ_LIGHT, f"account-works:{account_id}",
+            _fetch, empty_result=[])
+        if err.startswith("risk_deferred:"):
+            return {"ok": True, "fetched": 0, "added": 0, "skipped": True,
+                    "reason": err.split(":", 1)[-1], "source": "deferred",
+                    "configured_mode": (transport["configured_mode"]
+                                        if transport else "browser")}
+        if not items and err == "empty_confirmed":
+            return {"ok": True, "fetched": 0, "added": 0, "empty": True,
+                    "source": source,
+                    "configured_mode": (transport["configured_mode"]
+                                        if transport else "browser")}
+        if not items:
+            if err and err.startswith("missing_uid"):
+                raise HTTPException(400, err.split(":", 1)[-1])
+            raise HTTPException(400, f"未抓到作品:{err or '可能登录态失效/无公开作品'}"
+                                     "(详情见服务端控制台日志)")
+        now = datetime.utcnow()
+        added = 0
+        with get_session() as s:
+            for w in items:
+                existing = s.exec(select(AccountWork).where(
+                    AccountWork.account_id == account_id,
+                    AccountWork.item_id == w["item_id"])).first()
+                if existing:
+                    for k, v in w.items():
+                        setattr(existing, k, v)
+                    existing.fetched_at = now
+                    s.add(existing)
+                else:
+                    s.add(AccountWork(platform=platform, account_id=account_id,
+                                      fetched_at=now, **w))
+                    added += 1
+            acc_row = s.get(DouyinAccount, account_id)
+            if acc_row is not None:
+                all_works = s.exec(
+                    select(AccountWork).where(AccountWork.account_id == account_id)
+                ).all()
+                total_works = len(all_works)
+                if not acc_row.aweme_count or acc_row.aweme_count < total_works:
+                    acc_row.aweme_count = total_works
+                    s.add(acc_row)
+                fan_cnt = len(s.exec(
+                    select(FollowEdge.id).where(
+                        FollowEdge.account_id == account_id,
+                        FollowEdge.direction == "fan",
+                    )
+                ).all())
+                day = (now + timedelta(hours=8)).strftime("%Y-%m-%d")
+                snap = s.exec(select(AccountStatSnapshot).where(
+                    AccountStatSnapshot.account_id == account_id,
+                    AccountStatSnapshot.date == day,
+                )).first()
+                if not snap:
+                    snap = AccountStatSnapshot(platform=platform, account_id=account_id, date=day)
+                snap.follower_count = int(acc_row.follower_count or 0) or fan_cnt or snap.follower_count
+                snap.aweme_count = max(int(acc_row.aweme_count or 0), total_works, int(snap.aweme_count or 0))
+                snap.total_like = sum(int(x.like_count or 0) for x in all_works)
+                snap.total_comment = sum(int(x.comment_count or 0) for x in all_works)
+                snap.total_play = sum(int(x.play_count or 0) for x in all_works)
+                s.add(snap)
+            s.commit()
+        thumb_cache.schedule_thumb_prewarm(
+            [str(w.get("cover_url") or "") for w in items],
+            platform=platform,
+            proxy=(bili_proxy or ig_proxy or fb_proxy or yt_proxy or (acc.proxy if acc else "") or ""),
+        )
+        return {"ok": True, "fetched": len(items), "added": added,
                 "source": source,
                 "configured_mode": (transport["configured_mode"]
                                     if transport else "browser")}
-    if not items:
-        if err and err.startswith("missing_uid"):
-            raise HTTPException(400, err.split(":", 1)[-1])
-        raise HTTPException(400, f"未抓到作品:{err or '可能登录态失效/无公开作品'}"
-                                 "(详情见服务端控制台日志)")
-    now = datetime.utcnow()
-    added = 0
-    with get_session() as s:
-        for w in items:
-            existing = s.exec(select(AccountWork).where(
-                AccountWork.account_id == account_id,
-                AccountWork.item_id == w["item_id"])).first()
-            if existing:
-                for k, v in w.items():
-                    setattr(existing, k, v)
-                existing.fetched_at = now
-                s.add(existing)
-            else:
-                s.add(AccountWork(platform=platform, account_id=account_id,
-                                  fetched_at=now, **w))
-                added += 1
-        acc_row = s.get(DouyinAccount, account_id)
-        if acc_row is not None:
-            all_works = s.exec(
-                select(AccountWork).where(AccountWork.account_id == account_id)
-            ).all()
-            total_works = len(all_works)
-            if not acc_row.aweme_count or acc_row.aweme_count < total_works:
-                acc_row.aweme_count = total_works
-                s.add(acc_row)
-            fan_cnt = len(s.exec(
-                select(FollowEdge.id).where(
-                    FollowEdge.account_id == account_id,
-                    FollowEdge.direction == "fan",
-                )
-            ).all())
-            day = (now + timedelta(hours=8)).strftime("%Y-%m-%d")
-            snap = s.exec(select(AccountStatSnapshot).where(
-                AccountStatSnapshot.account_id == account_id,
-                AccountStatSnapshot.date == day,
-            )).first()
-            if not snap:
-                snap = AccountStatSnapshot(platform=platform, account_id=account_id, date=day)
-            snap.follower_count = int(acc_row.follower_count or 0) or fan_cnt or snap.follower_count
-            snap.aweme_count = max(int(acc_row.aweme_count or 0), total_works, int(snap.aweme_count or 0))
-            snap.total_like = sum(int(x.like_count or 0) for x in all_works)
-            snap.total_comment = sum(int(x.comment_count or 0) for x in all_works)
-            snap.total_play = sum(int(x.play_count or 0) for x in all_works)
-            s.add(snap)
-        s.commit()
-    thumb_cache.schedule_thumb_prewarm(
-        [str(w.get("cover_url") or "") for w in items],
-        platform=platform,
-        proxy=(bili_proxy or ig_proxy or fb_proxy or yt_proxy or (acc.proxy if acc else "") or ""),
+
+    if not async_mode:
+        return await _execute_sync()
+
+    task_key = f"works_sync:{account_id}"
+    progress_hub.upsert(
+        task_key,
+        immediate=True,
+        category="works_sync",
+        title=f"同步本账号作品 · {acc_label}"[:120],
+        platform=str(platform or ""),
+        account_id=account_id,
+        source_tab="hub",
+        status="running",
+        phase="syncing",
+        phase_label="正在读取已发布作品…",
+        determinate=False,
+        percent=None,
+        cancelable=False,
+        extra={"account_id": account_id},
     )
-    return {"ok": True, "fetched": len(items), "added": added,
-            "source": source,
-            "configured_mode": (transport["configured_mode"]
-                                if transport else "browser")}
+
+    async def _bg_works_sync():
+        try:
+            res = await _execute_sync()
+            if res.get("skipped"):
+                label = f"同步暂缓：{res.get('reason') or '操作间隔尚未结束'}"
+            else:
+                label = f"同步完成 · 抓到 {res.get('fetched', 0)} 条，新增 {res.get('added', 0)} 条"
+            progress_hub.upsert(
+                task_key,
+                immediate=True,
+                category="works_sync",
+                title=f"同步本账号作品 · {acc_label}"[:120],
+                platform=str(platform or ""),
+                account_id=account_id,
+                source_tab="hub",
+                status="completed",
+                phase="done",
+                phase_label=label,
+                determinate=True,
+                percent=100.0,
+                cancelable=False,
+                extra={"account_id": account_id, "result": res},
+            )
+        except asyncio.CancelledError:
+            progress_hub.upsert(
+                task_key,
+                immediate=True,
+                category="works_sync",
+                title=f"同步本账号作品 · {acc_label}"[:120],
+                platform=str(platform or ""),
+                account_id=account_id,
+                source_tab="hub",
+                status="canceled",
+                phase="canceled",
+                phase_label="已取消",
+                determinate=False,
+                percent=None,
+                cancelable=False,
+            )
+            raise
+        except HTTPException as exc:
+            progress_hub.upsert(
+                task_key,
+                immediate=True,
+                category="works_sync",
+                title=f"同步本账号作品 · {acc_label}"[:120],
+                platform=str(platform or ""),
+                account_id=account_id,
+                source_tab="hub",
+                status="failed",
+                phase="failed",
+                phase_label="同步失败",
+                error=str(exc.detail or "同步失败")[:400],
+                determinate=False,
+                percent=None,
+                cancelable=False,
+                extra={"account_id": account_id},
+            )
+        except Exception as exc:
+            progress_hub.upsert(
+                task_key,
+                immediate=True,
+                category="works_sync",
+                title=f"同步本账号作品 · {acc_label}"[:120],
+                platform=str(platform or ""),
+                account_id=account_id,
+                source_tab="hub",
+                status="failed",
+                phase="failed",
+                phase_label="同步失败",
+                error=str(exc)[:400],
+                determinate=False,
+                percent=None,
+                cancelable=False,
+                extra={"account_id": account_id},
+            )
+
+    bg_task = asyncio.create_task(_bg_works_sync())
+    app_runtime._background_tasks.add(bg_task)
+    bg_task.add_done_callback(lambda t: app_runtime._background_tasks.discard(t))
+    return {"ok": True, "queued": True, "async": True, "task_key": task_key}
 
 
 # ─────────── 本账号数据分析(粉丝/作品/互动趋势 + 单篇作品表)───────────

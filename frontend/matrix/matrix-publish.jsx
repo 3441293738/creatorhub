@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Icon, SelectBox } from "../ui/primitives";
 import {
   PLATFORMS,
@@ -15,6 +15,8 @@ export function MatrixBatchPublisher({ ctx }) {
   const [mediaType, setMediaType] = useState("video");
   const [uploadedFiles, setUploadedFiles] = useState([]); // [{ path, name }]
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(null); // { percent, loaded, total, speedBps, etaSeconds }
+  const uploadAbortRef = useRef(null);
   const [submitting, setSubmitting] = useState(false);
 
   const [title, setTitle] = useState("");
@@ -105,17 +107,28 @@ export function MatrixBatchPublisher({ ctx }) {
     const rawFiles = Array.from(e.target.files || []);
     if (!rawFiles.length) return;
     setUploading(true);
+    const totalBytes = rawFiles.reduce((s, f) => s + (f.size || 0), 0);
+    setUploadProgress({ loaded: 0, total: totalBytes, percent: 0, speedBps: 0, etaSeconds: null });
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
     try {
       const fd = new FormData();
       rawFiles.forEach(f => fd.append("files", f));
-      const res = await matrixApi("/api/publish/upload", { method: "POST", body: fd });
+      const res = typeof window.apiUploadWithProgress === "function"
+        ? await window.apiUploadWithProgress("/api/publish/upload", fd, {
+            signal: controller.signal,
+            onProgress: prog => setUploadProgress(prog),
+          })
+        : await matrixApi("/api/publish/upload", { method: "POST", body: fd });
       const saved = Array.isArray(res.files) ? res.files : [];
       setUploadedFiles(prev => (mediaType === "video" ? saved.slice(0, 1) : [...prev, ...saved].slice(0, 18)));
       matrixToast(`已上传准备 ${saved.length} 个素材文件`, "ok");
     } catch (err) {
       matrixToast("素材上传失败：" + err.message, "err");
     } finally {
+      uploadAbortRef.current = null;
       setUploading(false);
+      setUploadProgress(null);
       e.target.value = "";
     }
   };
@@ -284,8 +297,31 @@ export function MatrixBatchPublisher({ ctx }) {
                   onChange={handleFileChange}
                 />
                 <Icon name="download" />
-                <span>{uploading ? "正在上传素材…" : (mediaType === "video" ? "点击选择本地视频文件" : "点击选择图片（支持多选）")}</span>
+                <span>{uploading ? `正在上传素材${uploadProgress?.percent != null ? ` ${uploadProgress.percent}%` : ""}…` : (mediaType === "video" ? "点击选择本地视频文件" : "点击选择图片（支持多选）")}</span>
               </label>
+              {uploading && uploadProgress && (() => {
+                const P = window.CreatorHubProgress;
+                const pct = uploadProgress.percent != null ? Math.round(uploadProgress.percent) : null;
+                const meta = [
+                  uploadProgress.total > 0 && P ? `${P.fmtBytes(uploadProgress.loaded)} / ${P.fmtBytes(uploadProgress.total)}` : "",
+                  uploadProgress.speedBps > 0 && P ? P.fmtSpeed(uploadProgress.speedBps) : "",
+                  uploadProgress.etaSeconds > 0 && P ? P.fmtEta(uploadProgress.etaSeconds) : "",
+                ].filter(Boolean).join(" · ");
+                return (
+                  <div className="pub-upload-progress">
+                    <div className="pub-upload-progress-head">
+                      <span className="mut progress-num">{meta || "正在写入本地素材…"}</span>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                        <b className="progress-num">{pct != null ? `${pct}%` : "上传中"}</b>
+                        <button type="button" className="ghost sm danger" style={{ minHeight: "22px", padding: "1px 7px" }} onClick={() => uploadAbortRef.current?.abort()}>取消</button>
+                      </span>
+                    </div>
+                    <div className={`progress-track is-compact ${pct == null ? "is-indeterminate" : ""}`}>
+                      <div className="progress-fill" style={pct != null ? { width: `${pct}%` } : undefined} />
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
 

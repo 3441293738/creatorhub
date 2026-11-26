@@ -224,8 +224,11 @@ export function AccountMatrixCenter({ ctx }) {
   const [contextMenu, setContextMenu] = useState(null); // { acc, x, y, anchorRect, fromButton }
   const contextMenuRef = useRef(null);
   contextMenuRef.current = contextMenu;
-  const [batchProgress, setBatchProgress] = useState(null); // { label, done, total }
-  const batchCancelRef = useRef(false);
+  const [batchTask, setBatchTask] = useState(null); // 同步自全局 SSE 的后端并发批处理任务
+  const [dismissedBatchKey, setDismissedBatchKey] = useState("");
+  const sseRefreshTimerRef = useRef(null);
+  const completedBatchToastRef = useRef(new Set());
+  const batchRunning = !!(batchTask && (batchTask.status === "queued" || batchTask.status === "running"));
 
   // Sequential Relogin Queue
   const [reloginQueue, setReloginQueue] = useState(null); // { list: [...], index: 0, statusText: '', running: false }
@@ -285,13 +288,62 @@ export function AccountMatrixCenter({ ctx }) {
     };
     window.addEventListener("creatorhub:matrix:refresh", onRefresh);
     window.addEventListener("creatorhub:account-filter", onPreset);
+
+    const syncBatchFromHub = () => {
+      const list = (window.CreatorHubProgress?.getTasks?.() || []).filter(t => t.category === "matrix_batch");
+      const active = list.find(t => t.status === "queued" || t.status === "running");
+      const picked = active || list[0] || null;
+      setBatchTask(picked);
+      if (picked && ["completed", "failed", "canceled"].includes(picked.status) && !completedBatchToastRef.current.has(picked.task_key)) {
+        completedBatchToastRef.current.add(picked.task_key);
+        const m = picked.metrics || {};
+        if (picked.status === "completed") {
+          matrixToast(`${picked.title}完成：成功 ${m.ok || 0} 个${m.failed ? `，未通过/跳过 ${m.failed} 个` : ""}`, m.failed ? "info" : "ok", 5500);
+        } else if (picked.status === "canceled") {
+          matrixToast(`${picked.title}已停止（已完成 ${m.done || 0}/${m.total || 0}）`, "info", 4500);
+        }
+        const deletedIds = picked.extra?.deleted_ids || [];
+        if (deletedIds.length) {
+          const removedSet = new Set(deletedIds);
+          setSelectedIds(prev => {
+            const next = new Set();
+            prev.forEach(id => { if (!removedSet.has(id)) next.add(id); });
+            return next;
+          });
+          window.refreshMonitors?.();
+          window.refreshCommentRules?.();
+          window.refreshCommentTasks?.();
+          window.refreshPublish?.();
+        }
+        load();
+        window.refreshAccounts?.();
+      }
+    };
+    const onProgressUpdate = e => {
+      const t = e.detail?.task;
+      if (!t || t.category === "matrix_batch") syncBatchFromHub();
+    };
+    const onAccountRowUpdated = () => {
+      if (sseRefreshTimerRef.current) return;
+      sseRefreshTimerRef.current = setTimeout(() => {
+        sseRefreshTimerRef.current = null;
+        load();
+      }, 650);
+    };
+    syncBatchFromHub();
+    window.addEventListener("creatorhub:progress:update", onProgressUpdate);
+    window.addEventListener("creatorhub:sse:matrix.account_updated", onAccountRowUpdated);
+
     const timer = setInterval(() => {
       if (!document.hidden && ctx.tab === "accounts" && !editingMeta && !groupModal && !contextMenuRef.current) load();
     }, 9000);
     return () => {
       clearInterval(timer);
+      clearTimeout(sseRefreshTimerRef.current);
       window.removeEventListener("creatorhub:matrix:refresh", onRefresh);
       window.removeEventListener("creatorhub:account-filter", onPreset);
+      window.removeEventListener("creatorhub:progress:update", onProgressUpdate);
+      window.removeEventListener("creatorhub:sse:matrix.account_updated", onAccountRowUpdated);
       clearTimeout(reloginPollRef.current);
     };
   }, [load, ctx.tab, editingMeta, groupModal]);
@@ -544,37 +596,29 @@ export function AccountMatrixCenter({ ctx }) {
     );
   };
 
-  const handleBatchSequentialCheck = async kind => {
-    const ids = [...selectedIds];
-    if (!ids.length || batchProgress) return;
-    batchCancelRef.current = false;
-    const title = kind === "proxy" ? "批量检测代理与出口" : "批量刷新资料与登录态";
-    setBatchProgress({ label: title, done: 0, total: ids.length });
-    let okCount = 0;
-    let failCount = 0;
-    for (let i = 0; i < ids.length; i++) {
-      if (batchCancelRef.current) break;
-      setBatchProgress({ label: title, done: i, total: ids.length });
-      try {
-        if (kind === "proxy") {
-          const r = await matrixApi(`/api/accounts/${ids[i]}/test-proxy`, { method: "POST" });
-          if (r.ok) okCount++; else failCount++;
-        } else {
-          const r = await matrixApi(`/api/accounts/${ids[i]}/refresh-profile`, { method: "POST" });
-          if (r.ok && !r.skipped) okCount++; else failCount++;
-        }
-      } catch (_) {
-        failCount++;
-      }
+  const startBackendBatchJob = async (action, targetIds = null) => {
+    const ids = Array.isArray(targetIds) ? targetIds : [...selectedIds];
+    if (!ids.length || batchRunning) return;
+    setDismissedBatchKey("");
+    try {
+      const job = await matrixApi("/api/matrix/batch-jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, account_ids: ids }),
+      });
+      matrixToast(`已启动「${job.label}」（${job.total} 个账号 · 并发 ${job.concurrency}），切换页面也会在后台继续`, "info", 4200);
+    } catch (e) {
+      matrixToast("启动批量任务失败：" + e.message, "err");
     }
-    setBatchProgress(null);
-    matrixToast(`${title}完成：成功 ${okCount} 个${failCount ? `，未通过/跳过 ${failCount} 个` : ""}`, failCount ? "info" : "ok", 5500);
-    await refreshEverything();
+  };
+
+  const handleBatchSequentialCheck = async kind => {
+    await startBackendBatchJob(kind === "proxy" ? "test_proxy" : "refresh_profile");
   };
 
   const handleBatchDelete = async () => {
     const ids = [...selectedIds];
-    if (!ids.length || batchProgress) return;
+    if (!ids.length || batchRunning) return;
     const targets = ids.map(id => payload.items.find(a => a.id === id)).filter(Boolean);
     const preview = targets.slice(0, 5).map(a => a.display_name).join("、");
     const suffix = targets.length > 5 ? ` 等共 ${targets.length} 个账号` : `（共 ${ids.length} 个账号）`;
@@ -585,40 +629,7 @@ export function AccountMatrixCenter({ ctx }) {
       danger: true,
     });
     if (!ok) return;
-    batchCancelRef.current = false;
-    setBatchProgress({ label: "批量删除账号", done: 0, total: ids.length });
-    const deletedIds = [];
-    const failed = [];
-    for (let i = 0; i < ids.length; i++) {
-      if (batchCancelRef.current) break;
-      setBatchProgress({ label: "批量删除账号", done: i, total: ids.length });
-      try {
-        await matrixApi(`/api/accounts/${ids[i]}`, { method: "DELETE" });
-        deletedIds.push(ids[i]);
-      } catch (e) {
-        const acc = payload.items.find(a => a.id === ids[i]);
-        failed.push(`${acc?.display_name || `#${ids[i]}`}：${e.message}`);
-      }
-    }
-    setBatchProgress(null);
-    if (deletedIds.length) {
-      const removedSet = new Set(deletedIds);
-      setSelectedIds(prev => {
-        const next = new Set();
-        prev.forEach(id => { if (!removedSet.has(id)) next.add(id); });
-        return next;
-      });
-    }
-    if (failed.length) {
-      matrixToast(`已删除 ${deletedIds.length} 个，跳过/失败 ${failed.length} 个（${failed[0]}）`, deletedIds.length ? "info" : "err", 7000);
-    } else {
-      matrixToast(`已成功删除 ${deletedIds.length} 个账号`, "ok", 5000);
-    }
-    await refreshEverything();
-    window.refreshMonitors?.();
-    window.refreshCommentRules?.();
-    window.refreshCommentTasks?.();
-    window.refreshPublish?.();
+    await startBackendBatchJob("delete_accounts", ids);
   };
 
   const openEditMeta = useCallback(acc => {
@@ -903,18 +914,82 @@ export function AccountMatrixCenter({ ctx }) {
         </div>
       )}
 
-      {/* Batch Sequential Check Progress Banner */}
-      {batchProgress && (
-        <div className="mx-wizard-bar info" role="status">
-          <div className="mx-wizard-info">
-            <b>{batchProgress.label}</b>
-            <span>正在处理 {batchProgress.done + 1} / {batchProgress.total}…</span>
+      {/* Backend Concurrent Batch Job Progress Card */}
+      {batchTask && batchTask.task_key !== dismissedBatchKey && (() => {
+        const m = batchTask.metrics || {};
+        const pct = Math.max(0, Math.min(100, Math.round(Number(batchTask.percent || 0))));
+        const failedIds = Array.isArray(batchTask.extra?.failed_ids) ? batchTask.extra.failed_ids : [];
+        const failedSamples = Array.isArray(batchTask.extra?.failed_samples) ? batchTask.extra.failed_samples : [];
+        const isActive = batchTask.status === "queued" || batchTask.status === "running";
+        const canRetryFailed = !isActive && failedIds.length > 0 && batchTask.extra?.action !== "delete_accounts";
+        const tone = batchTask.status === "completed" ? (failedIds.length ? "warn" : "ok") : batchTask.status === "failed" ? "danger" : "info";
+        const etaTxt = isActive && batchTask.eta_seconds ? window.CreatorHubProgress?.fmtEta?.(batchTask.eta_seconds) : "";
+        return (
+          <div className="mx-batch-progress-card" role="status">
+            <div className="mx-batch-progress-head">
+              <div className="mx-wizard-info">
+                <b>{batchTask.title}</b>
+                <span className="pill bare">并发 {m.concurrency || 1}</span>
+                <span>{batchTask.phase_label}</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                <b className="progress-num" style={{ fontSize: "13px" }}>{pct}%</b>
+                {isActive ? (
+                  <button
+                    type="button"
+                    className="ghost sm danger"
+                    onClick={() => window.CreatorHubProgress?.cancelTask?.(batchTask.task_key)}
+                  >
+                    停止批量任务
+                  </button>
+                ) : (
+                  <>
+                    {canRetryFailed && (
+                      <button
+                        type="button"
+                        className="ghost sm"
+                        onClick={() => startBackendBatchJob(batchTask.extra.action, failedIds)}
+                      >
+                        重试失败项 ({failedIds.length})
+                      </button>
+                    )}
+                    {failedIds.length > 0 && (
+                      <button
+                        type="button"
+                        className="ghost sm"
+                        onClick={() => setSelectedIds(new Set(failedIds))}
+                      >
+                        仅勾选失败项
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="ghost sm"
+                      onClick={() => setDismissedBatchKey(batchTask.task_key)}
+                    >
+                      关闭
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="progress-track" role="progressbar" aria-label={batchTask.title} aria-valuemin="0" aria-valuemax="100" aria-valuenow={pct}>
+              <div className={`progress-fill ${tone !== "info" ? `tone-${tone}` : ""}`} style={{ width: `${pct}%` }} />
+            </div>
+            <div className="mx-batch-progress-stats progress-num">
+              <span>进度 <b>{m.done || 0} / {m.total || 0}</b></span>
+              <span>成功 <b style={{ color: "var(--success)" }}>{m.ok || 0}</b></span>
+              <span>失败/跳过 <b style={{ color: (m.failed || 0) ? "var(--danger)" : "inherit" }}>{m.failed || 0}</b></span>
+              {etaTxt && <span>{etaTxt}</span>}
+              {failedSamples.length > 0 && !isActive && (
+                <span style={{ color: "var(--danger)" }} title={failedSamples.join("\n")}>
+                  示例：{failedSamples[0]}
+                </span>
+              )}
+            </div>
           </div>
-          <button type="button" className="ghost sm danger" onClick={() => { batchCancelRef.current = true; }}>
-            停止批量任务
-          </button>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Health Status Quick-Filter Pills */}
       <div className="mx-health-pills" role="tablist" aria-label="按账号健康状态快速筛选">
@@ -1058,10 +1133,10 @@ export function AccountMatrixCenter({ ctx }) {
               <Icon name="x" />清除代理(直连)
             </button>
             <button type="button" className="ghost sm" onClick={handleBatchRuntime}><Icon name="settings" />切内核</button>
-            <button type="button" className="ghost sm" disabled={!!batchProgress} onClick={() => handleBatchSequentialCheck("proxy")}>
+            <button type="button" className="ghost sm" disabled={batchRunning} onClick={() => handleBatchSequentialCheck("proxy")}>
               <Icon name="network" />批量测代理
             </button>
-            <button type="button" className="ghost sm" disabled={!!batchProgress} onClick={() => handleBatchSequentialCheck("profile")}>
+            <button type="button" className="ghost sm" disabled={batchRunning} onClick={() => handleBatchSequentialCheck("profile")}>
               <Icon name="refresh" />批量刷资料
             </button>
             <button
@@ -1074,7 +1149,7 @@ export function AccountMatrixCenter({ ctx }) {
             <button
               type="button"
               className="ghost sm danger"
-              disabled={!!batchProgress}
+              disabled={batchRunning}
               onClick={handleBatchDelete}
             >
               <Icon name="trash" />批量删除

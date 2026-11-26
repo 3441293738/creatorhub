@@ -24,6 +24,7 @@ from app.models import AccountActionTask, CommentTask, CommentWatch, DanmakuWatc
 from app.operations import record_account_operation
 from app.platforms.xhs import XhsApiError
 from app.profiles import account_requires_dedicated_proxy, pick_ephemeral_proxy, resolve_pool_proxy_row
+from app.progress_hub import progress_hub
 from app.risk import OperationKind, RiskCategory, RiskController, classify_platform_error
 from app.engine.action_jobs import ActionJobMixin
 from app.engine.comment_rules_runner import CommentRuleRunnerMixin
@@ -73,7 +74,8 @@ class MonitorEngine(
         # 同一时刻最多并发活跃的账号数(错峰,降低"多号同时活跃"特征)
         self._active_sem = asyncio.Semaphore(max(1, cfg.engine.active_accounts))
         self._inflight: set = set()           # 正在抓取的目标,避免同目标并发
-        self._publish_sem = asyncio.Semaphore(1)   # 发布串行(有头浏览器,一次一个)
+        self._publish_sem = asyncio.Semaphore(1)      # 有头浏览器发布串行(防止多窗抢焦点)
+        self._api_publish_sem = asyncio.Semaphore(3)  # 纯 API 发布独立并发通道
         self._publishing: set[int] = set()
         self._publish_stages: dict[int, str] = {}
         self._publish_worker_task: Optional[asyncio.Task] = None
@@ -697,12 +699,122 @@ class MonitorEngine(
             # Stagger accounts across engine ticks instead of synchronized polling.
             break
 
+    def _collection_concurrency(self) -> int:
+        return max(1, min(8, int(getattr(self.cfg.engine, "collection_concurrency", 2) or 2)))
+
+    @staticmethod
+    def _collection_title(job: KeywordCollectionJob) -> str:
+        if job.source_type == "keyword":
+            try:
+                kws = json.loads(job.keywords or "[]")
+                if isinstance(kws, list) and kws:
+                    text = "、".join(str(x).strip() for x in kws[:3] if str(x).strip())
+                    if len(kws) > 3:
+                        text += f" 等 {len(kws)} 词"
+                    if text:
+                        return text
+            except (TypeError, ValueError):
+                pass
+        return str(job.source_name or job.source_type or f"采集任务 #{job.id}")[:120]
+
+    def _sync_collection_hub(
+        self,
+        job: KeywordCollectionJob,
+        *,
+        status: str | None = None,
+        step: str | None = None,
+        error: str = "",
+        next_allowed_at: datetime | None = None,
+        immediate: bool = False,
+    ) -> None:
+        raw_status = str(status or job.status or "pending").lower()
+        manual_review = str(job.blocked_signal or "") == "manual_review_required"
+        if raw_status == "running":
+            hub_status = "running"
+        elif raw_status in {"done", "partial"}:
+            hub_status = "completed"
+        elif raw_status == "failed":
+            hub_status = "failed"
+        elif raw_status == "canceled":
+            hub_status = "canceled"
+        elif raw_status == "blocked" or (raw_status == "pending" and (job.blocked_reason or next_allowed_at or job.next_allowed_at)):
+            hub_status = "waiting_user" if manual_review else "blocked"
+        else:
+            hub_status = "queued"
+
+        kw_total = max(
+            1,
+            len(json.loads(job.keywords or "[]")) if job.source_type == "keyword" and job.keywords else 1,
+        )
+        kw_done = min(kw_total, max(0, int(job.processed_keyword_count or 0)))
+        it_total = max(0, int(job.current_item_total or 0))
+        it_idx = min(it_total, max(0, int(job.current_item_index or 0)))
+        if hub_status == "completed":
+            determinate = True
+            pct: float | None = 100.0
+        elif it_total > 0 or kw_done > 0:
+            determinate = True
+            frac = (0.15 + 0.85 * (it_idx / it_total)) if (it_total and kw_done < kw_total) else 0.0
+            pct = round(min(99.5, (kw_done + frac) * 100.0 / kw_total), 1)
+        else:
+            determinate = False
+            pct = None
+
+        action_req = None
+        if manual_review and job.account_id:
+            action_req = {
+                "kind": "open_browser",
+                "label": "打开验证页",
+                "account_id": int(job.account_id),
+            }
+        eff_next = next_allowed_at or job.next_allowed_at
+        detail = f"已采 {int(job.content_count or 0)} 作品 / {int(job.comment_count or 0)} 评论"
+        if job.current_keyword:
+            detail = f"当前：{job.current_keyword} · {detail}"
+        progress_hub.upsert(
+            f"collection:{job.id}",
+            immediate=immediate or hub_status in {"completed", "failed", "canceled", "waiting_user", "blocked"},
+            category="collection",
+            title=self._collection_title(job),
+            platform=str(job.platform or ""),
+            account_id=job.account_id,
+            source_tab="collections",
+            status=hub_status,
+            phase=hub_status,
+            phase_label=str(step or job.current_step or "等待执行"),
+            detail=detail,
+            error=str(error or (job.error.splitlines()[-1] if job.error else "") or "")[:400],
+            determinate=determinate,
+            percent=pct,
+            current=it_idx if it_total else kw_done,
+            total=it_total if it_total else kw_total,
+            unit="items",
+            next_allowed_at=(eff_next.isoformat() + "Z") if eff_next else None,
+            cancelable=hub_status in {"queued", "running", "blocked", "waiting_user"},
+            action_required=action_req,
+            metrics={
+                "content_count": int(job.content_count or 0),
+                "comment_count": int(job.comment_count or 0),
+                "error_count": int(job.error_count or 0),
+                "processed_keyword_count": kw_done,
+                "total_keyword_count": kw_total,
+                "current_item_index": it_idx,
+                "current_item_total": it_total,
+            },
+            extra={"job_id": job.id, "current_keyword": job.current_keyword or ""},
+        )
+
     def enqueue_collection_job(self, job_id: int) -> bool:
-        """立即把关键词任务交给后台执行；同一时刻仅跑一个批量任务。"""
+        """立即把关键词任务交给后台执行；允许按 collection_concurrency 并发执行不同账号任务。"""
         if job_id in self._collection_tasks:
             return False
-        if len(self._collection_tasks) >= 1:
+        limit = self._collection_concurrency()
+        if len(self._collection_tasks) >= limit:
             return False
+        progress_hub.register_cancel(
+            f"collection:{job_id}",
+            lambda jid=job_id: self.cancel_collection_job(jid),
+        )
         task = asyncio.create_task(self.run_collection_job(job_id))
         self._collection_tasks[job_id] = task
 
@@ -712,6 +824,11 @@ class MonitorEngine(
                 completed.exception()
             except (asyncio.CancelledError, Exception):
                 pass
+            if self._running and len(self._collection_tasks) < self._collection_concurrency():
+                try:
+                    asyncio.create_task(self._process_collection_jobs())
+                except RuntimeError:
+                    pass
 
         task.add_done_callback(done)
         return True
@@ -726,7 +843,9 @@ class MonitorEngine(
             except Exception:
                 pass
         self._collection_tasks.pop(job_id, None)
+        progress_hub.unregister_cancel(f"collection:{job_id}")
         canceled_now = False
+        canceled_job = None
         with get_session() as s:
             job = s.get(KeywordCollectionJob, job_id)
             if job and job.status in {"pending", "running"}:
@@ -738,9 +857,13 @@ class MonitorEngine(
                 s.commit()
                 self._log_collection_operation(job, "canceled", "canceled", "用户取消任务")
                 canceled_now = True
+                canceled_job = job
             elif job and job.status == "canceled":
                 canceled_now = True
-        if self._running and not self._collection_tasks:
+                canceled_job = job
+        if canceled_job is not None:
+            self._sync_collection_hub(canceled_job, status="canceled", step="已取消", immediate=True)
+        if self._running and len(self._collection_tasks) < self._collection_concurrency():
             try:
                 asyncio.create_task(self._process_collection_jobs())
             except RuntimeError:
@@ -748,12 +871,14 @@ class MonitorEngine(
         return canceled_now
 
     async def _process_collection_jobs(self) -> None:
-        if self._collection_tasks:
-            return
+        limit = self._collection_concurrency()
+        active_job_ids = set(self._collection_tasks.keys())
         with get_session() as s:
-            orphans = s.exec(
+            running_rows = s.exec(
                 select(KeywordCollectionJob).where(KeywordCollectionJob.status == "running")
             ).all()
+            # 仅把不在内存运行集合里的 running 记录视为异常退出的孤儿任务，避免并发采集时误重置。
+            orphans = [row for row in running_rows if row.id not in active_job_ids]
             if orphans:
                 now_utc = datetime.utcnow()
                 for orphan in orphans:
@@ -767,6 +892,18 @@ class MonitorEngine(
                         orphan.finished_at = None
                     s.add(orphan)
                 s.commit()
+            if len(self._collection_tasks) >= limit:
+                return
+            busy_accounts = {
+                int(row.account_id)
+                for row in running_rows
+                if row.id in active_job_ids and row.account_id
+            }
+            if active_job_ids:
+                for active_id in active_job_ids:
+                    active_row = s.get(KeywordCollectionJob, active_id)
+                    if active_row and active_row.account_id:
+                        busy_accounts.add(int(active_row.account_id))
             jobs = s.exec(
                 select(KeywordCollectionJob)
                 .where(KeywordCollectionJob.status == "pending")
@@ -778,6 +915,12 @@ class MonitorEngine(
         from app.services.login_sessions import has_active_open_browser
 
         for job in jobs:
+            if len(self._collection_tasks) >= limit:
+                break
+            if job.id in self._collection_tasks:
+                continue
+            if job.account_id and int(job.account_id) in busy_accounts:
+                continue
             if job.account_id and (
                 await has_active_open_browser(job.account_id)
                 or self.browser.lock_for(f"acc:{job.account_id}").locked()
@@ -788,7 +931,8 @@ class MonitorEngine(
                 continue
             # A held account must not block later jobs on healthy accounts.
             if self.enqueue_collection_job(job.id):
-                break
+                if job.account_id:
+                    busy_accounts.add(int(job.account_id))
 
     async def run_collection_job(self, job_id: int) -> dict:
         """执行一个持久化关键词任务，并维护可恢复的状态机。"""
@@ -867,6 +1011,10 @@ class MonitorEngine(
                     self._log_collection_operation(
                         job, "deferred", "blocked", decision.reason,
                         risk_signal=decision.signal)
+                    self._sync_collection_hub(
+                        job, status="blocked", step=job.current_step,
+                        error=decision.reason, next_allowed_at=decision.next_allowed_at,
+                        immediate=True)
             return {"ok": True, "deferred": True, "reason": decision.reason,
                     "signal": decision.signal,
                     "next_allowed_at": (decision.next_allowed_at.isoformat()
@@ -894,6 +1042,10 @@ class MonitorEngine(
                             self._log_collection_operation(
                                 job, "deferred", "blocked", decision.reason,
                                 risk_signal=decision.signal)
+                            self._sync_collection_hub(
+                                job, status="blocked", step=job.current_step,
+                                error=decision.reason, next_allowed_at=decision.next_allowed_at,
+                                immediate=True)
                     return {"ok": True, "deferred": True,
                             "reason": decision.reason, "signal": decision.signal,
                             "next_allowed_at": (decision.next_allowed_at.isoformat()
@@ -915,6 +1067,7 @@ class MonitorEngine(
                     s.add(job); s.commit()
                     account = s.get(DouyinAccount, account_id) if account_id else None
                     self._log_collection_operation(job, "started", "running")
+                    self._sync_collection_hub(job, status="running", step="准备搜索", immediate=True)
                 result = await self.keyword_collector.run(job_id, account)
 
             with get_session() as s:
@@ -969,6 +1122,14 @@ class MonitorEngine(
                                 deferred_job, "deferred", "pending", job_error,
                                 risk_signal=signal,
                                 duration_ms=int((time.monotonic() - started_clock) * 1000))
+                            self._sync_collection_hub(
+                                deferred_job,
+                                status="blocked",
+                                step=deferred_job.current_step,
+                                error=job_error,
+                                next_allowed_at=failure.next_allowed_at,
+                                immediate=True,
+                            )
                     return {
                         "ok": True, "deferred": True, "status": "pending",
                         "reason": job_error, "signal": signal,
@@ -986,6 +1147,8 @@ class MonitorEngine(
                 log_job, "completed" if status in {"done", "partial"} else "failed",
                 status, job_error,
                 duration_ms=int((time.monotonic() - started_clock) * 1000))
+            self._sync_collection_hub(log_job, status=status, error=job_error, immediate=True)
+            progress_hub.unregister_cancel(f"collection:{job_id}")
             return {"ok": status in {"done", "partial"}, "status": status, **result}
         except asyncio.CancelledError:
             with get_session() as s:
@@ -1003,6 +1166,8 @@ class MonitorEngine(
                         job, "canceled" if job.status == "canceled" else "deferred",
                         job.status, job.current_step,
                         duration_ms=int((time.monotonic() - started_clock) * 1000))
+                    self._sync_collection_hub(job, status=job.status, step=job.current_step, immediate=True)
+            progress_hub.unregister_cancel(f"collection:{job_id}")
             raise
         except Exception as exc:
             self.risk.record_failure(account_id, OperationKind.READ_HEAVY, exc)
@@ -1018,6 +1183,8 @@ class MonitorEngine(
                     self._log_collection_operation(
                         job, "failed", job.status, str(exc),
                         duration_ms=int((time.monotonic() - started_clock) * 1000))
+                    self._sync_collection_hub(job, status=job.status, step="异常中止", error=str(exc), immediate=True)
+            progress_hub.unregister_cancel(f"collection:{job_id}")
             return {"ok": False, "error": str(exc)}
 
     @staticmethod

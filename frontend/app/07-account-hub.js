@@ -324,20 +324,45 @@ async function deleteRednoteWork(workId) {
     refreshMyWorks();
   } catch (e) { toast("删除失败:" + e.message, "err"); }
 }
-async function syncMyWorks() {
-  if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
-  await withBusy(evtBtn(), "同步中", async () => {
-    try {
-      const r = await api("/api/accounts/" + HUB_ACC + "/works/sync", { method: "POST" });
-      if (r.skipped) { toast(`同步暂缓:${r.reason || "操作间隔尚未结束"}`, "info", 5000); return; }
-      toast(`同步完成:抓到 ${Number(r.fetched) || 0} 条,新增 ${Number(r.added) || 0}${transportSourceSuffix(r.source)}`, "ok");
-    }
-    catch (e) { toast("同步失败:" + e.message, "err"); }
-  });
+const _WATCHED_WORKS_SYNCS = new Set();
+window.addEventListener("creatorhub:progress:update", e => {
+  const task = e?.detail?.task;
+  if (!task || task.category !== "works_sync") return;
+  if (!_WATCHED_WORKS_SYNCS.has(task.task_key)) return;
+  if (!["completed", "failed", "canceled"].includes(task.status)) return;
+  _WATCHED_WORKS_SYNCS.delete(task.task_key);
+  const r = task.extra?.result;
+  if (task.status === "failed") {
+    toast("同步失败:" + (task.error || task.phase_label || "未知错误"), "err", 7000);
+  } else if (r && r.skipped) {
+    toast(`同步暂缓:${r.reason || "操作间隔尚未结束"}`, "info", 5000);
+  } else if (r) {
+    toast(`同步完成:抓到 ${Number(r.fetched) || 0} 条,新增 ${Number(r.added) || 0}${transportSourceSuffix(r.source)}`, "ok");
+  }
   refreshMyWorks();
   refreshHubSummary();
   if (typeof refreshAccounts === "function") refreshAccounts();
   window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
+});
+async function syncMyWorks() {
+  if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
+  await withBusy(evtBtn(), "发起中", async () => {
+    try {
+      const r = await api("/api/accounts/" + HUB_ACC + "/works/sync?async_mode=true", { method: "POST" });
+      if (r.async && r.queued) {
+        if (r.task_key) _WATCHED_WORKS_SYNCS.add(r.task_key);
+        toast("已开始后台同步本账号作品，可在右上角「活动中心」查看进度", "info", 4500);
+        return;
+      }
+      if (r.skipped) { toast(`同步暂缓:${r.reason || "操作间隔尚未结束"}`, "info", 5000); return; }
+      toast(`同步完成:抓到 ${Number(r.fetched) || 0} 条,新增 ${Number(r.added) || 0}${transportSourceSuffix(r.source)}`, "ok");
+      refreshMyWorks();
+      refreshHubSummary();
+      if (typeof refreshAccounts === "function") refreshAccounts();
+      window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
+    }
+    catch (e) { toast("同步失败:" + e.message, "err"); }
+  });
 }
 
 // ── 作品评论(弹窗:抖音直连分页 / 小红书客户端 / 快手拦截,落库后展示)──

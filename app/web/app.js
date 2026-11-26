@@ -110,6 +110,58 @@ function apiFetch(path, options) {
   return fetch(path, { ...options, credentials: "same-origin" });
 }
 
+// 支持真实上传字节进度、速率与取消的 FormData 上传封装（替代无进度的 fetch 上传）。
+function apiUploadWithProgress(path, formData, { onProgress = null, signal = null } = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", path, true);
+    xhr.withCredentials = true;
+    try {
+      const adminToken = sessionStorage.getItem("creatorhub-risk-admin-token") || "";
+      if (adminToken) xhr.setRequestHeader("X-CreatorHub-Admin-Token", adminToken);
+    } catch (e) {}
+    xhr.setRequestHeader("X-CreatorHub-Actor", "creatorhub-web");
+    const startedAt = Date.now();
+    if (xhr.upload && typeof onProgress === "function") {
+      xhr.upload.onprogress = e => {
+        const loaded = Number(e.loaded || 0);
+        const total = e.lengthComputable ? Number(e.total || 0) : 0;
+        const elapsedSec = Math.max(0.1, (Date.now() - startedAt) / 1000);
+        const speedBps = loaded / elapsedSec;
+        const percent = total > 0 ? Math.min(99, Math.round((loaded * 100) / total)) : null;
+        const etaSeconds = (total > loaded && speedBps > 0) ? Math.max(1, Math.round((total - loaded) / speedBps)) : null;
+        try { onProgress({ loaded, total, percent, speedBps, etaSeconds }); } catch (_) {}
+      };
+    }
+    const onAbort = () => { try { xhr.abort(); } catch (_) {} };
+    if (signal) {
+      if (signal.aborted) { onAbort(); reject(new Error("上传已取消")); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    const cleanup = () => { if (signal) signal.removeEventListener("abort", onAbort); };
+    xhr.onload = () => {
+      cleanup();
+      let body = {};
+      try { body = JSON.parse(xhr.responseText || "{}"); } catch (_) {}
+      if (xhr.status >= 200 && xhr.status < 300) {
+        if (typeof onProgress === "function") {
+          try { onProgress({ loaded: 1, total: 1, percent: 100, speedBps: 0, etaSeconds: 0 }); } catch (_) {}
+        }
+        resolve(body);
+        return;
+      }
+      const err = new Error(apiErrorMessage(body.detail, xhr.status));
+      err.status = xhr.status;
+      err.detail = body.detail;
+      reject(err);
+    };
+    xhr.onerror = () => { cleanup(); reject(new Error("上传网络异常，请重试")); };
+    xhr.onabort = () => { cleanup(); reject(new Error("上传已取消")); };
+    xhr.send(formData);
+  });
+}
+window.apiUploadWithProgress = apiUploadWithProgress;
+
 const api = async (path, opts) => {
   const workbenchRequest = globalThis.CreatorHubWorkbench?.requestStarted?.({ path, method: (opts?.method || "GET").toUpperCase() });
   _apiActive++; _barSync();
@@ -508,6 +560,570 @@ function uiPrompt({ title, hint, value, placeholder, multiline, rows, secret = f
     _uiOpen(title, hint, { submit, wide: !!multiline, okText: submit ? "保存修改" : "确定" });
   });
 }
+
+// 01b-progress-center.js — 全局统一 SSE 实时进度总线与顶栏「活动任务中心」浮层。
+(() => {
+  const ACTIVE_STATES = new Set(["queued", "running", "waiting_user", "blocked"]);
+  const TERMINAL_STATES = new Set(["completed", "failed", "canceled"]);
+  const CATEGORY_META = {
+    collection: { label: "内容采集", tab: "collections" },
+    share_download: { label: "链接下载", tab: "share-download" },
+    publish: { label: "内容发布", tab: "publish" },
+    monitor_download: { label: "监控下载", tab: "monitors" },
+    collection_download: { label: "采集下载", tab: "collections" },
+    monitor_scan: { label: "作品监控", tab: "monitors" },
+    follow_sync: { label: "关注/粉丝", tab: "hub" },
+    matrix_batch: { label: "矩阵批处理", tab: "accounts" },
+    works_sync: { label: "作品同步", tab: "hub" },
+    comment_rule: { label: "自动评论", tab: "autocomment" },
+    runtime: { label: "系统组件", tab: "accounts" },
+    task: { label: "后台任务", tab: "queue" },
+  };
+  const STATUS_META = {
+    queued: { label: "排队中", tone: "neutral" },
+    running: { label: "执行中", tone: "info" },
+    waiting_user: { label: "需人工处理", tone: "warn" },
+    blocked: { label: "风控延后", tone: "warn" },
+    completed: { label: "已完成", tone: "ok" },
+    failed: { label: "失败", tone: "danger" },
+    canceled: { label: "已取消", tone: "neutral" },
+  };
+
+  const tasks = new Map();
+  const listeners = new Set();
+  const eventListeners = new Map();
+  let es = null;
+  let connected = false;
+  let reconnectTimer = null;
+  let fallbackTimer = null;
+  let tickTimer = null;
+  let drawerOpen = false;
+  let started = false;
+
+  function fmtBytes(bytes) {
+    let n = Number(bytes || 0);
+    if (!Number.isFinite(n) || n <= 0) return "0 B";
+    if (n < 1024) return `${Math.round(n)} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < units.length - 1);
+    return `${n.toFixed(n >= 100 ? 0 : n >= 10 ? 1 : 2)} ${units[i]}`;
+  }
+
+  function fmtSpeed(bps) {
+    const n = Number(bps || 0);
+    if (!Number.isFinite(n) || n <= 0) return "";
+    return `${fmtBytes(n)}/s`;
+  }
+
+  function fmtDuration(sec) {
+    const s = Math.max(0, Math.round(Number(sec || 0)));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    if (m < 60) return rem ? `${m}分${String(rem).padStart(2, "0")}秒` : `${m}分`;
+    const h = Math.floor(m / 60);
+    return `${h}小时${m % 60}分`;
+  }
+
+  function fmtEta(sec) {
+    const n = Number(sec);
+    if (!Number.isFinite(n) || n <= 0) return "";
+    return `剩余约 ${fmtDuration(n)}`;
+  }
+
+  function fmtCountdown(iso) {
+    if (!iso) return "";
+    const ts = Date.parse(iso.endsWith("Z") ? iso : iso + "Z");
+    if (!Number.isFinite(ts)) return "";
+    const diff = Math.ceil((ts - Date.now()) / 1000);
+    if (diff <= 0) return "即将恢复";
+    const m = Math.floor(diff / 60);
+    const s = diff % 60;
+    if (m >= 60) return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${String(s).padStart(2, "0")} 后恢复`;
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")} 后恢复`;
+  }
+
+  function elapsedSeconds(task) {
+    if (TERMINAL_STATES.has(task.status)) return Math.max(0, Number(task.elapsed_seconds || 0));
+    const startedTs = task.started_at ? Date.parse(task.started_at.endsWith("Z") ? task.started_at : task.started_at + "Z") : NaN;
+    if (Number.isFinite(startedTs)) return Math.max(0, Math.floor((Date.now() - startedTs) / 1000));
+    return Math.max(0, Number(task.elapsed_seconds || 0));
+  }
+
+  function renderProgressBar({ determinate = false, percent = null, tone = "info", label = "任务进度", compact = false } = {}) {
+    const hasPct = determinate && percent !== null && percent !== undefined && Number.isFinite(Number(percent));
+    const pct = hasPct ? Math.max(0, Math.min(100, Number(percent))) : 0;
+    const cls = [
+      "progress-track",
+      compact ? "is-compact" : "",
+      hasPct ? "" : "is-indeterminate",
+    ].filter(Boolean).join(" ");
+    const fillCls = ["progress-fill", tone && tone !== "info" ? `tone-${tone}` : ""].filter(Boolean).join(" ");
+    const widthStyle = hasPct ? `width:${pct.toFixed(1)}%` : "";
+    const ariaVal = hasPct ? ` aria-valuenow="${Math.round(pct)}"` : "";
+    return `<div class="${cls}" role="progressbar" aria-label="${esc(label)}" aria-valuemin="0" aria-valuemax="100"${ariaVal}><div class="${fillCls}" style="${widthStyle}"></div></div>`;
+  }
+
+  function sortedTasks() {
+    const rank = { waiting_user: 0, running: 1, queued: 2, blocked: 3, failed: 4, canceled: 5, completed: 6 };
+    return [...tasks.values()].sort((a, b) => {
+      const ra = rank[a.status] ?? 9;
+      const rb = rank[b.status] ?? 9;
+      if (ra !== rb) return ra - rb;
+      return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
+    });
+  }
+
+  function notify(changedTask = null, kind = "update") {
+    for (const fn of listeners) {
+      try { fn(changedTask, kind); } catch (_) {}
+    }
+    renderTrigger();
+    if (drawerOpen) renderDrawer();
+    ensureTickLoop();
+    try {
+      window.dispatchEvent(new CustomEvent("creatorhub:progress:update", { detail: { task: changedTask, kind } }));
+    } catch (_) {}
+  }
+
+  function emitBusinessEvent(name, payload) {
+    const set = eventListeners.get(name);
+    if (set) {
+      for (const fn of set) {
+        try { fn(payload); } catch (_) {}
+      }
+    }
+    try {
+      window.dispatchEvent(new CustomEvent(`creatorhub:sse:${name}`, { detail: payload }));
+    } catch (_) {}
+  }
+
+  function applyTask(task) {
+    if (!task || !task.task_key) return;
+    const prev = tasks.get(task.task_key);
+    tasks.set(task.task_key, task);
+    if (prev && ACTIVE_STATES.has(prev.status) && TERMINAL_STATES.has(task.status)) {
+      onTaskFinished(task);
+    }
+    if (task.category === "follow_sync") {
+      syncFollowUiFromTask(task);
+    }
+    notify(task, "task");
+  }
+
+  function syncFollowUiFromTask(task) {
+    if (typeof renderFollowSyncStatus !== "function") return;
+    const dir = task.extra?.direction;
+    if (!dir || String(task.account_id || "") !== String(typeof HUB_ACC !== "undefined" ? HUB_ACC : "")) return;
+    const stMap = { queued: "queued", running: "running", blocked: "deferred", completed: "completed", failed: "failed", canceled: "canceled" };
+    const view = {
+      id: task.extra?.job_id || "",
+      account_id: task.account_id,
+      direction: dir,
+      status: stMap[task.status] || task.status,
+      phase: task.phase,
+      pages: task.metrics?.pages || 0,
+      fetched: task.metrics?.fetched || 0,
+      saved: task.metrics?.saved || 0,
+      added: task.metrics?.added || 0,
+      expected_total: task.total || 0,
+      percent: task.percent,
+      capped: !!task.extra?.capped,
+      source: task.extra?.source || "",
+      error: task.error || "",
+      cancelable: !!task.cancelable,
+    };
+    renderFollowSyncStatus(dir, view);
+    if (TERMINAL_STATES.has(task.status) || task.status === "blocked") {
+      if (task.status === "completed" && typeof refreshFollows === "function") {
+        refreshFollows(dir, 1);
+        if (typeof refreshHubSummary === "function") refreshHubSummary();
+      }
+    }
+  }
+
+  function onTaskFinished(task) {
+    // 重要后台任务完成时刷新相关视图角标；避免与用户当前操作冲突。
+    if (typeof refreshTaskQueueBadge === "function") refreshTaskQueueBadge();
+    if (typeof CURRENT_TAB !== "undefined" && CURRENT_TAB === "queue" && typeof refreshTaskQueue === "function") {
+      refreshTaskQueue();
+    }
+    if (task.category === "share_download" && task.status === "completed") {
+      if (typeof refreshShareHistory === "function") refreshShareHistory();
+    } else if (task.category === "collection") {
+      if (typeof CURRENT_TAB !== "undefined" && CURRENT_TAB === "collections" && typeof refreshCollections === "function") {
+        refreshCollections();
+      }
+    } else if (task.category === "publish") {
+      if (typeof CURRENT_TAB !== "undefined" && CURRENT_TAB === "publish" && typeof refreshPublish === "function") {
+        refreshPublish();
+      }
+    } else if (task.category === "monitor_scan" || task.category === "monitor_download") {
+      if (typeof CURRENT_TAB !== "undefined" && CURRENT_TAB === "monitors") {
+        if (typeof refreshMonitors === "function") refreshMonitors();
+        if (typeof refreshContents === "function") refreshContents();
+      }
+    } else if (task.category === "works_sync") {
+      if (typeof CURRENT_TAB !== "undefined" && CURRENT_TAB === "hub") {
+        if (typeof refreshMyWorks === "function") refreshMyWorks();
+        if (typeof refreshHubSummary === "function") refreshHubSummary();
+      }
+    }
+  }
+
+  function applySnapshot(list) {
+    tasks.clear();
+    if (Array.isArray(list)) {
+      list.forEach(item => { if (item && item.task_key) tasks.set(item.task_key, item); });
+    }
+    notify(null, "snapshot");
+  }
+
+  function renderTrigger() {
+    const btn = $("activity-trigger");
+    if (!btn) return;
+    const all = [...tasks.values()];
+    const active = all.filter(t => ACTIVE_STATES.has(t.status));
+    const waiting = active.filter(t => t.status === "waiting_user");
+    const running = active.filter(t => t.status === "running" || t.status === "queued");
+    const failedRecent = all.filter(t => t.status === "failed");
+
+    const labelEl = $("activity-trigger-label");
+    const countEl = $("activity-trigger-count");
+    const barEl = $("activity-trigger-bar");
+
+    const isIdle = active.length === 0 && failedRecent.length === 0;
+    btn.classList.toggle("is-idle", isIdle);
+    btn.classList.toggle("is-active", active.length > 0);
+    btn.classList.toggle("is-warn", waiting.length > 0);
+    btn.classList.toggle("is-error", waiting.length === 0 && active.length === 0 && failedRecent.length > 0);
+    btn.title = active.length > 0
+      ? `活动任务中心 · ${active.length} 项进行中`
+      : (failedRecent.length > 0 ? `活动任务中心 · ${failedRecent.length} 项失败` : "活动任务中心 · 查看后台实时进度");
+
+    const detTasks = running.filter(t => t.determinate && Number.isFinite(Number(t.percent)));
+    const avgPct = detTasks.length
+      ? Math.round(detTasks.reduce((sum, t) => sum + Math.max(0, Math.min(100, Number(t.percent))), 0) / detTasks.length)
+      : null;
+
+    if (waiting.length > 0) {
+      if (labelEl) labelEl.textContent = `需处理 ${waiting.length}`;
+    } else if (running.length > 0) {
+      if (labelEl) labelEl.textContent = avgPct !== null ? `进行中 · ${avgPct}%` : `进行中`;
+    } else if (active.length > 0) {
+      if (labelEl) labelEl.textContent = `等待恢复 ${active.length}`;
+    } else if (failedRecent.length > 0) {
+      if (labelEl) labelEl.textContent = `失败 ${failedRecent.length}`;
+    } else {
+      if (labelEl) labelEl.textContent = "活动中心";
+    }
+
+    if (countEl) {
+      const badgeNum = active.length || all.length;
+      countEl.hidden = badgeNum <= 0;
+      countEl.textContent = String(badgeNum);
+    }
+
+    if (barEl) {
+      const inner = barEl.firstElementChild;
+      if (running.length > 0 && inner) {
+        barEl.classList.add("on");
+        barEl.classList.toggle("indeterminate", avgPct === null);
+        inner.style.width = avgPct !== null ? `${avgPct}%` : "";
+      } else {
+        barEl.classList.remove("on", "indeterminate");
+        if (inner) inner.style.width = "0%";
+      }
+    }
+  }
+
+  function taskMetaLine(task) {
+    const bits = [];
+    if (task.unit === "bytes" && Number(task.total) > 0) {
+      bits.push(`${fmtBytes(task.current)} / ${fmtBytes(task.total)}`);
+    } else if (task.unit === "bytes" && Number(task.current) > 0) {
+      bits.push(`已下载 ${fmtBytes(task.current)}`);
+    } else if (Number(task.total) > 0 && task.unit === "items") {
+      bits.push(`${fmtNum(task.current)} / ${fmtNum(task.total)}`);
+    }
+    const spd = fmtSpeed(task.speed_bps);
+    if (spd) bits.push(spd);
+    const eta = fmtEta(task.eta_seconds);
+    if (eta) bits.push(eta);
+    if (task.status === "blocked" && task.next_allowed_at) {
+      const cd = fmtCountdown(task.next_allowed_at);
+      if (cd) bits.push(cd);
+    }
+    const sec = elapsedSeconds(task);
+    if (sec > 0 && ACTIVE_STATES.has(task.status)) bits.push(`已用 ${fmtDuration(sec)}`);
+    return bits.join(" · ");
+  }
+
+  function renderDrawerItem(task) {
+    const cat = CATEGORY_META[task.category] || CATEGORY_META.task;
+    const st = STATUS_META[task.status] || STATUS_META.running;
+    const pfName = task.platform && typeof PF_NAME !== "undefined" ? (PF_NAME[task.platform] || task.platform) : "";
+    const barTone = st.tone === "danger" ? "danger" : st.tone === "warn" ? "warn" : st.tone === "ok" ? "ok" : "info";
+    const hasPct = task.determinate && task.percent !== null && task.percent !== undefined && Number.isFinite(Number(task.percent));
+    const pctText = hasPct ? `${Math.round(Number(task.percent))}%` : (ACTIVE_STATES.has(task.status) ? "进行中" : st.label);
+    const meta = taskMetaLine(task);
+    const showBar = ACTIVE_STATES.has(task.status) || task.status === "completed";
+    const actionBtn = task.action_required
+      ? `<button type="button" class="sm" onclick="window.CreatorHubProgress.handleTaskAction(${jsArg(task.task_key)})">${esc(task.action_required.label || "去处理")}</button>`
+      : "";
+    return `<article class="act-item tone-${st.tone}" data-task-key="${esc(task.task_key)}">
+      <div class="act-item-head">
+        <div class="act-item-badges">
+          <span class="pill bare">${esc(cat.label)}</span>
+          ${pfName ? `<span class="pill bare">${esc(pfName)}</span>` : ""}
+          <span class="pill ${st.tone === "ok" ? "done" : st.tone === "danger" ? "failed" : st.tone === "warn" ? "pending" : "downloading"} bare">${esc(st.label)}</span>
+        </div>
+        <span class="act-item-pct progress-num">${esc(pctText)}</span>
+      </div>
+      <div class="act-item-title" title="${esc(task.title)}">${esc(task.title)}</div>
+      <div class="act-item-phase">
+        <span>${esc(task.phase_label || st.label)}</span>
+        ${task.detail ? `<span class="mut"> · ${esc(task.detail)}</span>` : ""}
+      </div>
+      ${showBar ? renderProgressBar({ determinate: task.determinate, percent: task.percent, tone: barTone, label: task.title, compact: true }) : ""}
+      ${meta ? `<div class="act-item-meta progress-num">${esc(meta)}</div>` : ""}
+      ${task.error ? `<div class="act-item-err" title="${esc(task.error)}">${esc(task.error)}</div>` : ""}
+      <div class="act-item-actions">
+        ${actionBtn}
+        ${task.cancelable ? `<button type="button" class="ghost sm danger" onclick="window.CreatorHubProgress.cancelTask(${jsArg(task.task_key)}, this)">取消</button>` : ""}
+        <button type="button" class="ghost sm" onclick="window.CreatorHubProgress.jumpToTask(${jsArg(task.task_key)})">定位</button>
+      </div>
+    </article>`;
+  }
+
+  function renderDrawer() {
+    const body = $("activity-drawer-body");
+    const sub = $("activity-drawer-sub");
+    const clearBtn = $("activity-clear-btn");
+    if (!body) return;
+    const all = sortedTasks();
+    const active = all.filter(t => ACTIVE_STATES.has(t.status));
+    const finished = all.filter(t => TERMINAL_STATES.has(t.status));
+    if (clearBtn) clearBtn.hidden = finished.length === 0;
+    if (sub) {
+      const connHint = connected ? "实时推送已连接" : "自动重连中";
+      sub.textContent = active.length
+        ? `${active.length} 项进行中 · ${connHint}`
+        : (finished.length ? `近期 ${finished.length} 项已结束 · ${connHint}` : `当前无后台活动任务 · ${connHint}`);
+    }
+    if (!all.length) {
+      setHtmlIfChanged(body, `<div class="act-empty"><div class="empty-ic">${ic("i-check")}</div><b>一切空闲</b><span>发起采集、链接下载、发布或批量检测后，可在这里跨页查看实时进度。</span></div>`);
+      return;
+    }
+    const groups = [
+      ["需要处理", all.filter(t => t.status === "waiting_user" || t.status === "blocked")],
+      ["正在执行", all.filter(t => t.status === "running" || t.status === "queued")],
+      ["最近结束", finished],
+    ].filter(([, list]) => list.length > 0);
+    const html = groups.map(([title, list]) =>
+      `<section class="act-group"><h4 class="act-group-title">${esc(title)} <span>${list.length}</span></h4><div class="act-list">${list.map(renderDrawerItem).join("")}</div></section>`
+    ).join("");
+    setHtmlIfChanged(body, html);
+  }
+
+  function toggleDrawer(force) {
+    const drawer = $("activity-drawer");
+    const trigger = $("activity-trigger");
+    if (!drawer) return;
+    drawerOpen = typeof force === "boolean" ? force : !drawerOpen;
+    drawer.hidden = !drawerOpen;
+    if (trigger) trigger.setAttribute("aria-expanded", String(drawerOpen));
+    if (drawerOpen) {
+      renderDrawer();
+      ensureTickLoop();
+    }
+  }
+
+  function ensureTickLoop() {
+    const hasLive = [...tasks.values()].some(t => ACTIVE_STATES.has(t.status));
+    if (drawerOpen && hasLive) {
+      if (!tickTimer) {
+        tickTimer = setInterval(() => {
+          if (drawerOpen && !document.hidden) renderDrawer();
+        }, 1000);
+      }
+    } else if (tickTimer) {
+      clearInterval(tickTimer);
+      tickTimer = null;
+    }
+  }
+
+  async function cancelTask(taskKey, btn = null) {
+    if (!taskKey) return;
+    const run = async () => {
+      try {
+        const res = await api(`/api/progress/tasks/${encodeURIComponent(taskKey)}/cancel`, { method: "POST" });
+        if (res && res.ok) toast("已发送取消请求", "info", 3000);
+      } catch (e) {
+        toast("取消失败：" + e.message, "err");
+      }
+    };
+    if (btn) await withBusy(btn, "取消中", run);
+    else await run();
+  }
+
+  async function clearFinished() {
+    try {
+      await api("/api/progress/clear-finished", { method: "POST" });
+      for (const [key, item] of [...tasks.entries()]) {
+        if (TERMINAL_STATES.has(item.status)) tasks.delete(key);
+      }
+      notify(null, "clear_finished");
+    } catch (e) {
+      toast("清理失败：" + e.message, "err");
+    }
+  }
+
+  function jumpToTask(taskKey) {
+    const task = tasks.get(taskKey);
+    if (!task) return;
+    const cat = CATEGORY_META[task.category] || CATEGORY_META.task;
+    const targetTab = task.source_tab || cat.tab || "queue";
+    if (task.platform && typeof PLATFORM !== "undefined" && task.platform !== PLATFORM && targetTab !== "share-download" && targetTab !== "accounts" && targetTab !== "queue") {
+      if (typeof switchPlatform === "function") switchPlatform(task.platform);
+    }
+    if (typeof switchTab === "function") switchTab(targetTab, true);
+    toggleDrawer(false);
+  }
+
+  function handleTaskAction(taskKey) {
+    const task = tasks.get(taskKey);
+    const act = task && task.action_required;
+    if (!act) { jumpToTask(taskKey); return; }
+    if (act.kind === "open_browser" && act.account_id && typeof openAccountBrowser === "function") {
+      openAccountBrowser(act.account_id, act.url || "");
+      return;
+    }
+    if (act.kind === "close_and_publish" && act.task_id && typeof runPublish === "function") {
+      toggleDrawer(false);
+      runPublish(act.task_id, true);
+      return;
+    }
+    jumpToTask(taskKey);
+  }
+
+  async function fetchSnapshotFallback() {
+    if (document.documentElement?.dataset?.preview === "true") return;
+    try {
+      const r = await apiFetch("/api/progress/tasks");
+      if (!r.ok) return;
+      const data = await r.json();
+      if (data && Array.isArray(data.tasks)) applySnapshot(data.tasks);
+    } catch (_) {}
+  }
+
+  function connect() {
+    if (document.documentElement?.dataset?.preview === "true") return;
+    if (typeof EventSource === "undefined") {
+      fetchSnapshotFallback();
+      if (!fallbackTimer) fallbackTimer = setInterval(fetchSnapshotFallback, 3000);
+      return;
+    }
+    if (es) { try { es.close(); } catch (_) {} es = null; }
+    clearTimeout(reconnectTimer);
+    try {
+      es = new EventSource("/api/progress/stream");
+      es.addEventListener("snapshot", e => {
+        connected = true;
+        if (fallbackTimer) { clearInterval(fallbackTimer); fallbackTimer = null; }
+        try {
+          const data = JSON.parse(e.data || "{}");
+          applySnapshot(data.tasks || []);
+        } catch (_) {}
+      });
+      es.addEventListener("task", e => {
+        connected = true;
+        try { applyTask(JSON.parse(e.data || "{}")); } catch (_) {}
+      });
+      es.addEventListener("remove", e => {
+        try {
+          const data = JSON.parse(e.data || "{}");
+          if (data.task_key && tasks.delete(data.task_key)) notify(null, "remove");
+        } catch (_) {}
+      });
+      es.addEventListener("clear_finished", e => {
+        try {
+          const data = JSON.parse(e.data || "{}");
+          (data.task_keys || []).forEach(k => tasks.delete(k));
+          notify(null, "clear_finished");
+        } catch (_) {}
+      });
+      es.addEventListener("event", e => {
+        try {
+          const data = JSON.parse(e.data || "{}");
+          if (data.name) emitBusinessEvent(data.name, data.payload || {});
+        } catch (_) {}
+      });
+      es.onerror = () => {
+        connected = false;
+        if (drawerOpen) renderDrawer();
+        if (es) { try { es.close(); } catch (_) {} es = null; }
+        if (!fallbackTimer) fallbackTimer = setInterval(fetchSnapshotFallback, 4000);
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connect, 3500);
+      };
+    } catch (_) {
+      connected = false;
+      if (!fallbackTimer) fallbackTimer = setInterval(fetchSnapshotFallback, 4000);
+    }
+  }
+
+  function start() {
+    if (started) return;
+    started = true;
+    document.addEventListener("click", e => {
+      if (!drawerOpen) return;
+      const drawer = $("activity-drawer");
+      const trigger = $("activity-trigger");
+      if (drawer && !drawer.contains(e.target) && (!trigger || !trigger.contains(e.target))) {
+        toggleDrawer(false);
+      }
+    });
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && drawerOpen) toggleDrawer(false);
+    });
+    const spinner = $("busy-spinner");
+    if (spinner) {
+      spinner.style.cursor = "pointer";
+      spinner.title = "点击打开活动任务中心";
+      spinner.addEventListener("click", () => {
+        if (tasks.size > 0) toggleDrawer(true);
+      });
+    }
+    connect();
+  }
+
+  window.CreatorHubProgress = {
+    start,
+    isConnected: () => connected,
+    getTasks: sortedTasks,
+    getTask: key => tasks.get(key) || null,
+    getActiveCount: () => [...tasks.values()].filter(t => ACTIVE_STATES.has(t.status)).length,
+    subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+    onEvent(name, fn) {
+      if (!eventListeners.has(name)) eventListeners.set(name, new Set());
+      eventListeners.get(name).add(fn);
+      return () => eventListeners.get(name)?.delete(fn);
+    },
+    toggleDrawer,
+    cancelTask,
+    clearFinished,
+    jumpToTask,
+    handleTaskAction,
+    fmtBytes,
+    fmtSpeed,
+    fmtDuration,
+    fmtEta,
+    fmtCountdown,
+    renderProgressBar,
+  };
+})();
 
 // 02-ui-controls.js — 渐进增强下拉框、自定义悬浮提示、日期时间选择器与总览趋势图。
 // ─── 自定义下拉:渐进增强原生 <select>(美化展开列表)───
@@ -1257,7 +1873,15 @@ function applyPlatformUI() {
     b.classList.toggle("active", active);
     b.setAttribute("aria-selected", active ? "true" : "false");
     b.tabIndex = active ? 0 : -1;
+    if (active) {
+      try {
+        b.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      } catch (_) {}
+    }
   });
+  if (typeof window._syncPlatformStripOverflow === "function") {
+    requestAnimationFrame(window._syncPlatformStripOverflow);
+  }
   document.querySelectorAll(".dy-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "douyin"));
   document.querySelectorAll(".xhs-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "xhs"));
   document.querySelectorAll(".ks-only").forEach(e => e.classList.toggle("hidden", PLATFORM !== "kuaishou"));
@@ -1859,6 +2483,194 @@ function switchTab(name, pushHistory = false) {
   if (name === "risk-control") refreshRiskCenter();
   if (changed && !["hub", "share-download", "collections", "queue", "risk-control"].includes(name)) loop();
 }
+
+
+// ── 单行自适应 Priority+ 平台栏：空间充足全展开，窄屏自动折叠尾部到「+N ▾」并始终保留当前平台可见 ──
+(() => {
+  const host = document.getElementById("pswitch-host");
+  const list = host ? host.querySelector(".pswitch") : document.querySelector(".pswitch");
+  const moreBtn = document.getElementById("pswitch-more-btn");
+  const moreLabel = document.getElementById("pswitch-more-label");
+  const moreDot = document.getElementById("pswitch-more-dot");
+  const popover = document.getElementById("pswitch-popover");
+  if (!host || !list || !moreBtn) return;
+
+  let popOpen = false;
+  let rafId = 0;
+  let lastLayoutSig = "";
+  const moOpts = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["class"] };
+  const mo = new MutationObserver(() => { lastLayoutSig = ""; scheduleLayout(); });
+
+  function tabButtons() {
+    return [...list.querySelectorAll('button[role="tab"][data-pf]')];
+  }
+
+  function layoutPriority() {
+    rafId = 0;
+    const available = Math.floor(host.clientWidth);
+    if (available <= 0) return;
+    const allBtns = tabButtons();
+    const activePf = allBtns.find(b => b.classList.contains("active"))?.dataset.pf || "";
+    const sig = `${available}:${activePf}:${allBtns.map(b => b.classList.contains("ps-idle-hidden") ? "0" : b.textContent.trim()).join("|")}`;
+    if (sig === lastLayoutSig) return;
+    lastLayoutSig = sig;
+
+    mo.disconnect();
+    try {
+      const candidates = allBtns.filter(b => !b.classList.contains("ps-idle-hidden"));
+      // 1. 先恢复全部可见以便准确测量自然宽度
+      allBtns.forEach(b => b.classList.remove("ps-overflow-hidden"));
+      moreBtn.hidden = true;
+
+      const widths = candidates.map(b => Math.ceil(b.getBoundingClientRect().width));
+      const gap = 2;
+      const pad = 8;
+      const totalW = pad + widths.reduce((sum, w) => sum + w, 0) + Math.max(0, candidates.length - 1) * gap;
+
+      if (totalW <= available) {
+        if (popOpen) togglePopover(false);
+        window.dispatchEvent(new Event("creatorhub:layout"));
+        return;
+      }
+
+      // 2. 空间不足：按 Priority+ 折叠，保留「全平台」+ 尽可能多的平台 + 当前选中平台 + 「+N ▾」
+      moreBtn.hidden = false;
+      if (moreLabel) moreLabel.textContent = `+${candidates.length}`;
+      const moreW = Math.max(54, Math.ceil(moreBtn.getBoundingClientRect().width) + gap);
+      const budget = Math.max(120, available - pad - moreW);
+
+      const activeIdx = candidates.findIndex(b => b.classList.contains("active"));
+      const keep = new Set();
+      let used = 0;
+
+      if (candidates.length > 0) {
+        keep.add(0);
+        used += widths[0];
+      }
+      if (activeIdx > 0 && used + gap + widths[activeIdx] <= budget) {
+        keep.add(activeIdx);
+        used += gap + widths[activeIdx];
+      }
+      for (let i = 1; i < candidates.length; i++) {
+        if (keep.has(i)) continue;
+        if (used + gap + widths[i] <= budget) {
+          keep.add(i);
+          used += gap + widths[i];
+        } else {
+          break;
+        }
+      }
+
+      let hiddenCount = 0;
+      let hiddenDanger = false;
+      let hiddenWarn = false;
+      candidates.forEach((b, idx) => {
+        const hide = !keep.has(idx);
+        b.classList.toggle("ps-overflow-hidden", hide);
+        if (hide) {
+          hiddenCount++;
+          const cnt = b.querySelector(".ps-cnt");
+          if (cnt?.classList.contains("danger")) hiddenDanger = true;
+          else if (cnt?.classList.contains("warn")) hiddenWarn = true;
+        }
+      });
+
+      if (hiddenCount <= 0) {
+        moreBtn.hidden = true;
+        if (popOpen) togglePopover(false);
+      } else {
+        moreBtn.hidden = false;
+        if (moreLabel) moreLabel.textContent = `+${hiddenCount}`;
+        moreBtn.title = `展开其余 ${hiddenCount} 个平台`;
+        if (moreDot) {
+          moreDot.hidden = !(hiddenDanger || hiddenWarn);
+          moreDot.className = "ps-more-dot" + (hiddenDanger ? " danger" : hiddenWarn ? " warn" : "");
+        }
+      }
+      if (popOpen) renderPopover();
+      window.dispatchEvent(new Event("creatorhub:layout"));
+    } finally {
+      mo.observe(list, moOpts);
+    }
+  }
+
+  function scheduleLayout() {
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(layoutPriority);
+  }
+
+  function renderPopover() {
+    if (!popover) return;
+    const btns = tabButtons().filter(b => !b.classList.contains("ps-idle-hidden"));
+    const items = btns.map(b => {
+      const pf = b.dataset.pf || "";
+      const active = b.classList.contains("active");
+      const folded = b.classList.contains("ps-overflow-hidden");
+      const label = b.querySelector(".ps-lbl")?.textContent?.trim() || b.dataset.baseLabel || b.textContent.trim();
+      const cntEl = b.querySelector(".ps-cnt");
+      const cntHtml = cntEl ? cntEl.outerHTML : "";
+      return `<button type="button" class="pswitch-pop-item${active ? " active" : ""}${folded ? " is-folded" : ""}" data-pf="${esc(pf)}"><span class="pswitch-pop-name">${esc(label)}</span>${cntHtml}</button>`;
+    }).join("");
+    popover.innerHTML = `<div class="pswitch-pop-head"><b>全部平台</b><span class="mut">共 ${btns.length} 项</span></div><div class="pswitch-pop-grid">${items}</div>`;
+    popover.querySelectorAll(".pswitch-pop-item").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const pf = btn.dataset.pf;
+        togglePopover(false);
+        if (pf && typeof switchPlatform === "function") switchPlatform(pf);
+      });
+    });
+  }
+
+  function positionPopover() {
+    if (!popover || !moreBtn) return;
+    const rect = moreBtn.getBoundingClientRect();
+    const popW = Math.min(420, window.innerWidth - 24);
+    const left = Math.max(12, Math.min(window.innerWidth - popW - 12, rect.right - popW));
+    popover.style.left = `${left}px`;
+    popover.style.right = "auto";
+    popover.style.top = `${Math.round(rect.bottom + 8)}px`;
+  }
+
+  function togglePopover(force) {
+    if (!popover) return;
+    popOpen = typeof force === "boolean" ? force : !popOpen;
+    popover.hidden = !popOpen;
+    moreBtn.setAttribute("aria-expanded", String(popOpen));
+    if (popOpen) {
+      renderPopover();
+      positionPopover();
+    }
+  }
+
+  moreBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    togglePopover();
+  });
+
+  document.addEventListener("click", e => {
+    if (!popOpen) return;
+    if (popover && !popover.contains(e.target) && !moreBtn.contains(e.target)) {
+      togglePopover(false);
+    }
+  });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && popOpen) togglePopover(false);
+  });
+
+  if (typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(scheduleLayout);
+    ro.observe(host);
+  }
+  window.addEventListener("resize", () => {
+    scheduleLayout();
+    if (popOpen) positionPopover();
+  }, { passive: true });
+  // 当 syncHeaderPlatformBadges 更新计数徽标后重新计算一次折叠
+  mo.observe(list, moOpts);
+
+  window._syncPlatformStripOverflow = () => { lastLayoutSig = ""; scheduleLayout(); };
+  scheduleLayout();
+})();
 
 // 04-auth-login.js — 多平台浏览器扫码登录、预登录指纹选择与 Cookie/Token 凭证导入。
 // ─── 扫码登录(真实浏览器窗口) ───
@@ -5510,20 +6322,45 @@ async function deleteRednoteWork(workId) {
     refreshMyWorks();
   } catch (e) { toast("删除失败:" + e.message, "err"); }
 }
-async function syncMyWorks() {
-  if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
-  await withBusy(evtBtn(), "同步中", async () => {
-    try {
-      const r = await api("/api/accounts/" + HUB_ACC + "/works/sync", { method: "POST" });
-      if (r.skipped) { toast(`同步暂缓:${r.reason || "操作间隔尚未结束"}`, "info", 5000); return; }
-      toast(`同步完成:抓到 ${Number(r.fetched) || 0} 条,新增 ${Number(r.added) || 0}${transportSourceSuffix(r.source)}`, "ok");
-    }
-    catch (e) { toast("同步失败:" + e.message, "err"); }
-  });
+const _WATCHED_WORKS_SYNCS = new Set();
+window.addEventListener("creatorhub:progress:update", e => {
+  const task = e?.detail?.task;
+  if (!task || task.category !== "works_sync") return;
+  if (!_WATCHED_WORKS_SYNCS.has(task.task_key)) return;
+  if (!["completed", "failed", "canceled"].includes(task.status)) return;
+  _WATCHED_WORKS_SYNCS.delete(task.task_key);
+  const r = task.extra?.result;
+  if (task.status === "failed") {
+    toast("同步失败:" + (task.error || task.phase_label || "未知错误"), "err", 7000);
+  } else if (r && r.skipped) {
+    toast(`同步暂缓:${r.reason || "操作间隔尚未结束"}`, "info", 5000);
+  } else if (r) {
+    toast(`同步完成:抓到 ${Number(r.fetched) || 0} 条,新增 ${Number(r.added) || 0}${transportSourceSuffix(r.source)}`, "ok");
+  }
   refreshMyWorks();
   refreshHubSummary();
   if (typeof refreshAccounts === "function") refreshAccounts();
   window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
+});
+async function syncMyWorks() {
+  if (!HUB_ACC) { toast("请先选择账号", "err"); return; }
+  await withBusy(evtBtn(), "发起中", async () => {
+    try {
+      const r = await api("/api/accounts/" + HUB_ACC + "/works/sync?async_mode=true", { method: "POST" });
+      if (r.async && r.queued) {
+        if (r.task_key) _WATCHED_WORKS_SYNCS.add(r.task_key);
+        toast("已开始后台同步本账号作品，可在右上角「活动中心」查看进度", "info", 4500);
+        return;
+      }
+      if (r.skipped) { toast(`同步暂缓:${r.reason || "操作间隔尚未结束"}`, "info", 5000); return; }
+      toast(`同步完成:抓到 ${Number(r.fetched) || 0} 条,新增 ${Number(r.added) || 0}${transportSourceSuffix(r.source)}`, "ok");
+      refreshMyWorks();
+      refreshHubSummary();
+      if (typeof refreshAccounts === "function") refreshAccounts();
+      window.dispatchEvent(new Event("creatorhub:matrix:refresh"));
+    }
+    catch (e) { toast("同步失败:" + e.message, "err"); }
+  });
 }
 
 // ── 作品评论(弹窗:抖音直连分页 / 小红书客户端 / 快手拦截,落库后展示)──
@@ -9670,6 +10507,102 @@ function renderShareResult(response, download) {
   card.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+const SHARE_LAST_SHOWN_RESULT = new Set();
+
+function renderShareLiveJobs() {
+  const card = $("sd-live-card");
+  const box = $("sd-live-list");
+  const summaryEl = $("sd-live-summary");
+  if (!card || !box || !window.CreatorHubProgress) return;
+  const P = window.CreatorHubProgress;
+  const jobs = P.getTasks().filter(t => t.category === "share_download");
+  if (!jobs.length) {
+    card.style.display = "none";
+    setHtmlIfChanged(box, "");
+    return;
+  }
+  const activeCount = jobs.filter(j => ["queued", "running"].includes(j.status)).length;
+  card.style.display = "block";
+  if (summaryEl) {
+    summaryEl.textContent = activeCount ? `${activeCount} 项进行中 · 共 ${jobs.length} 项` : `近期 ${jobs.length} 项`;
+  }
+  const html = jobs.map(task => {
+    const items = Array.isArray(task.extra?.items) ? task.extra.items : [];
+    const jobId = task.extra?.job_id || "";
+    const tone = task.status === "completed" ? "ok" : task.status === "failed" ? "danger" : task.status === "canceled" ? "neutral" : "info";
+    const statusText = { queued: "排队中", running: "下载中", completed: "已完成", failed: "失败", canceled: "已取消" }[task.status] || task.status;
+    const speedTxt = P.fmtSpeed(task.speed_bps);
+    const etaTxt = P.fmtEta(task.eta_seconds);
+    const bytesTxt = task.unit === "bytes" && Number(task.total) > 0
+      ? `${P.fmtBytes(task.current)} / ${P.fmtBytes(task.total)}`
+      : (task.unit === "bytes" && Number(task.current) > 0 ? `已下载 ${P.fmtBytes(task.current)}` : "");
+    const meta = [bytesTxt, speedTxt, etaTxt].filter(Boolean).join(" · ");
+    const subHtml = items.length > 1 ? `<div class="share-live-items">${items.map(it => {
+      const itTone = it.status === "completed" ? "ok" : it.status === "failed" ? "danger" : "info";
+      const itPct = it.determinate && Number.isFinite(Number(it.percent)) ? `${Math.round(Number(it.percent))}%` : (it.phase_label || it.status);
+      const itMeta = [
+        it.total_bytes > 0 ? `${P.fmtBytes(it.downloaded_bytes)} / ${P.fmtBytes(it.total_bytes)}` : "",
+        P.fmtSpeed(it.speed_bps),
+        P.fmtEta(it.eta_seconds),
+      ].filter(Boolean).join(" · ");
+      return `<div class="share-live-subitem">
+        <div class="share-live-subitem-row">
+          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b>${esc(it.title || it.host || it.url)}</b></span>
+          <span class="mut progress-num" style="flex:0 0 auto">${esc(itPct)}</span>
+        </div>
+        ${["queued", "running", "completed"].includes(it.status) ? P.renderProgressBar({ determinate: it.determinate, percent: it.percent, tone: itTone, label: it.title || it.url, compact: true }) : ""}
+        ${itMeta ? `<div class="mut progress-num" style="font-size:11px">${esc(itMeta)}</div>` : ""}
+        ${it.error ? `<div style="font-size:11px;color:var(--danger)">${esc(it.error)}</div>` : ""}
+      </div>`;
+    }).join("")}</div>` : "";
+    const firstHistoryId = items.find(it => it.history_id)?.history_id;
+    const hasResults = Array.isArray(task.extra?.results) && task.extra.results.length > 0;
+    return `<article class="share-live-card${task.status === "failed" ? " is-failed" : ""}" data-share-job="${esc(jobId)}">
+      <div class="share-live-head">
+        <div class="share-live-title">${esc(task.title)}</div>
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+          <span class="pill ${tone === "ok" ? "done" : tone === "danger" ? "failed" : tone === "info" ? "downloading" : "skipped"} bare">${esc(statusText)}</span>
+          ${task.determinate && Number.isFinite(Number(task.percent)) ? `<b class="progress-num" style="font-size:12px">${Math.round(Number(task.percent))}%</b>` : ""}
+          ${task.cancelable ? `<button type="button" class="ghost sm danger" onclick="window.CreatorHubProgress.cancelTask(${jsArg(task.task_key)}, this)">${ic("i-x")}取消</button>` : ""}
+          ${firstHistoryId ? `<button type="button" class="ghost sm" onclick="openShareHistoryPreview(${Number(firstHistoryId)})">${ic("i-eye")}预览</button><button type="button" class="ghost sm" onclick="revealShareHistoryPath(${Number(firstHistoryId)}, this)">${ic("i-folder")}文件夹</button>` : ""}
+          ${hasResults ? `<button type="button" class="ghost sm" onclick="showShareJobResult(${jsArg(task.task_key)})">查看结果</button>` : ""}
+        </div>
+      </div>
+      <div class="share-live-sub">
+        <span>${esc(task.phase_label || statusText)}${task.detail ? ` · ${esc(task.detail)}` : ""}</span>
+        ${meta ? `<span class="progress-num">${esc(meta)}</span>` : ""}
+      </div>
+      ${["queued", "running", "completed"].includes(task.status) ? P.renderProgressBar({ determinate: task.determinate, percent: task.percent, tone, label: task.title }) : ""}
+      ${task.error ? `<div style="font-size:12px;color:var(--danger)">${esc(task.error)}</div>` : ""}
+      ${subHtml}
+    </article>`;
+  }).join("");
+  setHtmlIfChanged(box, html);
+
+  // 最新完成且未自动展示过的任务自动刷新结果区与历史列表
+  for (const task of jobs) {
+    if (["completed", "failed"].includes(task.status) && Array.isArray(task.extra?.results) && task.extra.results.length && !SHARE_LAST_SHOWN_RESULT.has(task.task_key)) {
+      SHARE_LAST_SHOWN_RESULT.add(task.task_key);
+      renderShareResult({ results: task.extra.results }, task.extra?.download !== false);
+      if (task.extra?.download !== false) refreshShareHistory();
+    }
+  }
+}
+
+function showShareJobResult(taskKey) {
+  const task = window.CreatorHubProgress?.getTask(taskKey);
+  if (task && Array.isArray(task.extra?.results)) {
+    renderShareResult({ results: task.extra.results }, task.extra?.download !== false);
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("creatorhub:progress:update", e => {
+    const task = e.detail?.task;
+    if (!task || task.category === "share_download") renderShareLiveJobs();
+  });
+}
+
 async function runShareDownload(download, button = null) {
   const btn = button || evtBtn();
   const text = $("sd-text").value.trim();
@@ -9679,18 +10612,35 @@ async function runShareDownload(download, button = null) {
     const parsed = await parseShareLinks(null);
     if (!parsed || !parsed.count) return;
   }
-  $("sd-msg").textContent = download ? "正在解析并下载，较大视频需要等待…" : "正在读取远端作品信息…";
-  await withBusy(btn, download ? "下载中" : "读取中", async () => {
+  if (download) {
+    $("sd-msg").textContent = "正在提交后台下载任务…";
+    await withBusy(btn, "提交中", async () => {
+      try {
+        const job = await api("/api/share-download/jobs", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(shareRequestBody(true)),
+        });
+        $("sd-msg").textContent = `已提交后台下载（#${job.id}），可继续添加链接或切换页面 ✓`;
+        toast("已加入后台下载队列，实时进度可在当前页或右上角活动中心查看", "ok", 4500);
+        renderShareLiveJobs();
+      } catch (e) {
+        $("sd-msg").textContent = "提交失败：" + e.message;
+        toast("提交失败：" + e.message, "err", 7000);
+      }
+    });
+    return;
+  }
+  $("sd-msg").textContent = "正在读取远端作品信息…";
+  await withBusy(btn, "读取中", async () => {
     try {
       const response = await api("/api/share-download", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(shareRequestBody(download)),
+        body: JSON.stringify(shareRequestBody(false)),
       });
-      renderShareResult(response, download);
-      if (download) refreshShareHistory();
+      renderShareResult(response, false);
       if (response.ok) {
-        $("sd-msg").textContent = download ? "下载完成 ✓" : "作品信息读取完成 ✓";
-        toast(download ? "链接作品下载完成" : "作品信息读取完成", "ok");
+        $("sd-msg").textContent = "作品信息读取完成 ✓";
+        toast("作品信息读取完成", "ok");
       } else {
         const first = (response.results || []).find(x => !x.ok);
         $("sd-msg").textContent = "处理完成，但有失败项：" + ((first && first.error) || "");
@@ -10264,11 +11214,28 @@ function renderCollectionJobs() {
     const timeLabel = { all: "不限时间", day: "一天内", week: "一周内", half_year: "半年内" }[job.publish_time] || "不限时间";
     const typeLabel = { all: "全部类型", video: "视频", images: "图文" }[job.content_type] || "全部类型";
     const threshold = [Number(job.min_likes) > 0 ? `≥${fmtNum(job.min_likes)} 赞` : "", Number(job.min_comments) > 0 ? `≥${fmtNum(job.min_comments)} 评` : ""].filter(Boolean).join(" · ");
+    const live = window.CreatorHubProgress?.getTask?.("collection:" + job.id);
+    const useLive = live && ["queued", "running", "blocked", "waiting_user"].includes(live.status) && ["pending", "running"].includes(job.status);
+    const livePct = useLive && live.determinate && live.percent !== null && live.percent !== undefined && Number.isFinite(Number(live.percent))
+      ? Math.max(0, Math.min(100, Math.round(Number(live.percent))))
+      : null;
+    const isIndeterminate = isRunning && (useLive ? !live.determinate : (percent === 0 && !Number(job.current_item_total || 0)));
+    const displayPercent = livePct !== null ? livePct : percent;
+    const stepText = (useLive && live.phase_label) ? live.phase_label : (job.current_step || "等待执行");
+    const liveEta = useLive && live.eta_seconds ? (window.CreatorHubProgress?.fmtEta?.(live.eta_seconds) || "") : "";
+    const dlInfo = (useLive && live.metrics && Number(live.metrics.dl_total || 0) > 0)
+      ? ` · 媒体 ${Number(live.metrics.dl_done || 0)}/${Number(live.metrics.dl_total || 0)}` : "";
+    const liveMetaParts = [
+      keywordProgress + itemProgress,
+      `已采 ${fmtNum(useLive && live.metrics ? live.metrics.content_count : job.content_count)} 作品 / ${fmtNum(useLive && live.metrics ? live.metrics.comment_count : job.comment_count)} 评论`,
+      dlInfo ? dlInfo.slice(3) : "",
+      liveEta,
+    ].filter(Boolean).join(" · ");
     return `<article class="collection-task${isSelected ? " is-selected" : ""}" role="listitem" data-job-id="${job.id}" aria-label="任务 ${job.id}，${status.label}">
       <div class="collection-task-meta"><div class="collection-task-meta-head"><label class="collection-task-check${isRunning ? " is-disabled" : ""}" title="${isRunning ? "正在执行中的任务需先取消后再删除" : `选择采集任务 #${job.id}`}"><input type="checkbox" data-id="${job.id}" aria-label="选择采集任务 #${job.id}" onchange="collectionToggleOne(${job.id}, this.checked)"${isSelected ? " checked" : ""}${isRunning ? " disabled" : ""}></label><div><span class="collection-task-label">任务状态</span><span class="pill ${status.cls}">${status.label}</span></div></div><time class="collection-task-created" datetime="${esc(job.created_at || "")}">${collectionDate(job.created_at)}</time></div>
-      <div class="collection-task-keywords"><span class="collection-task-label">${sourceLabel}</span><div class="keyword-stack">${keywords}</div>${job.current_keyword ? `<div class="collection-step">当前：${esc(job.current_keyword)}</div>` : ""}</div>
+      <div class="collection-task-keywords"><span class="collection-task-label">${sourceLabel}</span><div class="keyword-stack">${keywords}</div>${job.current_keyword ? `<div class="collection-step" data-col-kw>当前：${esc(job.current_keyword)}</div>` : ""}</div>
       <div class="collection-task-config"><span class="collection-task-label">采集配置</span><div class="collection-task-config-main">${job.max_contents_per_keyword} 作品/${job.source_type === "keyword" ? "词" : "来源"} · ${job.max_pages_per_keyword || 12} 深度页${job.source_type === "keyword" ? ` · ${sortLabel}` : ""}</div><div class="collection-task-config-sub">${timeLabel} · ${typeLabel}${threshold ? ` · ${threshold}` : ""} · ${job.max_comments_per_content} 评论/作品<br>${job.include_replies ? "含二级评论 · " : ""}${job.download_media ? "下载媒体" : "仅采数据"} · 连续 ${job.stagnant_pages || 3} 页无新增停止</div></div>
-      <div class="collection-task-progress"><span class="collection-task-label">执行进度</span><div class="job-progress"><div class="job-progress-head"><span>${esc(job.current_step || "等待执行")}</span><b>${percent}%</b></div><div class="progress-track" role="progressbar" aria-label="任务 ${job.id} 进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="progress-fill" style="width:${percent}%"></div></div><div class="collection-step">${keywordProgress}${itemProgress} · 已采 ${fmtNum(job.content_count)} 作品 / ${fmtNum(job.comment_count)} 评论</div></div></div>
+      <div class="collection-task-progress"><span class="collection-task-label">执行进度</span><div class="job-progress"><div class="job-progress-head"><span data-col-step>${esc(stepText)}</span><b class="progress-num" data-col-pct>${isIndeterminate ? "进行中" : `${displayPercent}%`}</b></div><div class="progress-track${isIndeterminate ? " is-indeterminate" : ""}" data-col-track role="progressbar" aria-label="任务 ${job.id} 进度" aria-valuemin="0" aria-valuemax="100"${isIndeterminate ? "" : ` aria-valuenow="${displayPercent}"`}><div class="progress-fill" data-col-fill style="${isIndeterminate ? "" : `width:${displayPercent}%`}"></div></div><div class="collection-step progress-num" data-col-meta>${esc(liveMetaParts)}</div></div></div>
       ${job.error_count ? `<button type="button" class="collection-task-error" onclick="openCollectionResults(${job.id})" title="${esc(errorText)}">${ic("i-info")}<span class="collection-task-error-text">${job.error_count} 条异常 · ${esc(errorText)}</span><span class="collection-task-error-link">查看详情</span></button>` : ""}
       <div class="collection-task-actions" aria-label="任务 ${job.id} 操作">
         <button type="button" class="sm collection-task-primary" onclick="openCollectionResults(${job.id})">${ic("i-eye")}查看结果</button>
@@ -10284,6 +11251,50 @@ function renderCollectionJobs() {
   setHtmlIfChanged(body, html);
   updateCollectionSelBar();
 }
+window.addEventListener("creatorhub:progress:update", e => {
+  const task = e?.detail?.task;
+  if (!task || task.category !== "collection") return;
+  if (typeof CURRENT_TAB !== "undefined" && CURRENT_TAB !== "collections") return;
+  const jobId = Number(task.extra?.job_id || String(task.task_key || "").split(":")[1] || 0);
+  if (!jobId) return;
+  const card = document.querySelector(`#collection-job-table .collection-task[data-job-id="${jobId}"]`);
+  if (!card) return;
+  const job = COLLECTION_JOBS.find(j => j.id === jobId);
+  const isRunning = task.status === "running" || task.status === "queued";
+  const hasPct = task.determinate && task.percent !== null && task.percent !== undefined && Number.isFinite(Number(task.percent));
+  const pct = hasPct ? Math.max(0, Math.min(100, Math.round(Number(task.percent)))) : 0;
+  const indet = isRunning && !hasPct;
+  const stepEl = card.querySelector("[data-col-step]");
+  if (stepEl && task.phase_label) stepEl.textContent = task.phase_label;
+  const pctEl = card.querySelector("[data-col-pct]");
+  if (pctEl) pctEl.textContent = indet ? "进行中" : `${pct}%`;
+  const trackEl = card.querySelector("[data-col-track]");
+  const fillEl = card.querySelector("[data-col-fill]");
+  if (trackEl) {
+    trackEl.classList.toggle("is-indeterminate", indet);
+    if (indet) trackEl.removeAttribute("aria-valuenow");
+    else trackEl.setAttribute("aria-valuenow", String(pct));
+  }
+  if (fillEl) fillEl.style.width = indet ? "" : `${pct}%`;
+  const metaEl = card.querySelector("[data-col-meta]");
+  if (metaEl && task.metrics) {
+    const m = task.metrics;
+    const sourceLabel = job?.source_type === "keyword" ? "关键词" : "来源";
+    const kwStr = `${Number(m.processed_keyword_count || 0)}/${Number(m.total_keyword_count || 1)} ${sourceLabel}`;
+    const itemStr = Number(m.current_item_total || 0) > 0
+      ? ` · 当前作品 ${Number(m.current_item_index || 0)}/${Number(m.current_item_total || 0)}` : "";
+    const dlStr = Number(m.dl_total || 0) > 0 ? `媒体 ${Number(m.dl_done || 0)}/${Number(m.dl_total || 0)}` : "";
+    const etaStr = task.eta_seconds ? (window.CreatorHubProgress?.fmtEta?.(task.eta_seconds) || "") : "";
+    metaEl.textContent = [
+      kwStr + itemStr,
+      `已采 ${fmtNum(m.content_count || 0)} 作品 / ${fmtNum(m.comment_count || 0)} 评论`,
+      dlStr,
+      etaStr,
+    ].filter(Boolean).join(" · ");
+  }
+  const kwEl = card.querySelector("[data-col-kw]");
+  if (kwEl && task.extra?.current_keyword) kwEl.textContent = "当前：" + task.extra.current_keyword;
+});
 async function refreshCollections() {
   const isCurrent = beginViewRequest("collections");
   if (!$("collection-job-table") || !["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(PLATFORM)) return;
@@ -11126,12 +12137,72 @@ async function refreshMonitors() {
   if ($("tb-mon")) $("tb-mon").textContent = ts.length;
   renderMonitorRows();
 }
+const _WATCHED_MONITOR_SCANS = new Set();
+function renderInlineDownloadProgHtml(recordId, downloadStatus = "", liveTask = null) {
+  const prog = window.CreatorHubProgress;
+  const task = liveTask || prog?.getTask?.("download:content:" + recordId);
+  const active = task && ["queued", "running"].includes(task.status);
+  if (!active && downloadStatus !== "downloading") return "";
+  const det = !!(task && task.determinate && task.percent !== null && task.percent !== undefined && Number.isFinite(Number(task.percent)));
+  const pct = det ? Math.max(0, Math.min(100, Math.round(Number(task.percent)))) : null;
+  const bar = prog?.renderProgressBar
+    ? prog.renderProgressBar({ determinate: det, percent: pct, tone: "info", label: "媒体下载进度", compact: true })
+    : `<div class="progress-track is-compact${det ? "" : " is-indeterminate"}"><div class="progress-fill" style="${det ? `width:${pct}%` : ""}"></div></div>`;
+  const parts = [];
+  if (task?.phase_label) parts.push(task.phase_label);
+  if (det) parts.push(`${pct}%`);
+  if (task && task.unit === "bytes" && Number(task.total) > 0) {
+    parts.push(`${prog?.fmtBytes?.(task.current) || ""} / ${prog?.fmtBytes?.(task.total) || ""}`);
+  } else if (task && task.unit === "bytes" && Number(task.current) > 0) {
+    parts.push(prog?.fmtBytes?.(task.current) || "");
+  }
+  const spd = task?.speed_bps ? (prog?.fmtSpeed?.(task.speed_bps) || "") : "";
+  if (spd) parts.push(spd);
+  const eta = task?.eta_seconds ? (prog?.fmtEta?.(task.eta_seconds) || "") : "";
+  if (eta) parts.push(eta);
+  return `<div class="dl-inline-prog">${bar}<div class="dl-inline-prog-meta progress-num">${esc(parts.join(" · ") || "正在下载…")}</div></div>`;
+}
+window.addEventListener("creatorhub:progress:update", e => {
+  const task = e?.detail?.task;
+  if (!task) return;
+  if (task.category === "monitor_scan" && _WATCHED_MONITOR_SCANS.has(task.task_key)) {
+    if (["completed", "failed", "canceled"].includes(task.status)) {
+      _WATCHED_MONITOR_SCANS.delete(task.task_key);
+      const r = task.extra?.result;
+      const tid = Number(task.extra?.target_id || 0);
+      if (task.status === "failed") {
+        toast("抓取未成功:" + (task.error || task.phase_label || "未知错误"), "err", 10000);
+      } else if (r) {
+        if (r.skipped) toast(r.reason || "本轮已跳过，请查看监控状态", "info", 6000);
+        else if (r.partial) toast(`部分完成：已获取 ${r.captured ?? r.new} 条作品，${r.failed || 0} 条详情失败。${r.error || ""}`, "info", 10000);
+        else if (r.error) toast("抓取未成功:" + r.error, "err", 10000);
+        else if (r.refreshed) toast(`抓取完成，新增 ${r.new} 条记录；已刷新 ${r.refreshed} 条失败记录的访问参数，可在作品记录中手动重试。`, "info", 10000);
+        else if ((r.scanned ?? 0) === 0 && (r.new ?? 0) === 0 && !r.filtered && (r.backfill_count === 0 || monitorById(tid)?.initial_backfill_count === 0)) {
+          toast("未抓取到作品：当前「首次历史回填」为“不回填历史(0 条)”，仅监控新建之后的新发布；可在「编辑」中改为“最近 5 条”后重抓。", "info", 8000);
+        }
+        else toast(`抓取完成,检查 ${r.scanned ?? r.new} 条，筛除 ${r.filtered || 0} 条，新增 ${r.new} 条`, "ok");
+      }
+    }
+    return;
+  }
+  if (task.category === "monitor_download" && typeof CURRENT_TAB !== "undefined" && CURRENT_TAB === "monitors") {
+    const recId = Number(task.extra?.record_id || String(task.task_key || "").split(":")[2] || 0);
+    if (!recId) return;
+    document.querySelectorAll(`[data-dl-prog="${recId}"]`).forEach(slot => {
+      slot.innerHTML = renderInlineDownloadProgHtml(recId, task.status === "running" ? "downloading" : "", task);
+    });
+  }
+});
 async function runNow(id) {
   const btn = evtBtn();
-  toast("抓取中…正在按配置的获取方式读取作品", "info", 7000);
-  await withBusy(btn, "抓取中", async () => {
+  await withBusy(btn, "发起中", async () => {
     try {
-      const r = await api("/api/monitors/" + id + "/run-now", { method: "POST" });
+      const r = await api("/api/monitors/" + id + "/run-now?async_mode=true", { method: "POST" });
+      if (r.async && r.queued) {
+        if (r.task_key) _WATCHED_MONITOR_SCANS.add(r.task_key);
+        toast(r.already_running ? "该监控正在后台抓取中，可在右上角「活动中心」查看进度" : "已开始后台抓取，可在右上角「活动中心」查看实时进度", "info", 4500);
+        return;
+      }
       if (r.skipped) toast(r.reason || "本轮已跳过，请查看监控状态", "info", 6000);
       else if (r.partial) toast(`部分完成：已获取 ${r.captured ?? r.new} 条作品，${r.failed || 0} 条详情失败。${r.error || ""}`, "info", 10000);
       else if (r.error) toast("抓取未成功:" + r.error, "err", 10000);
@@ -11140,9 +12211,9 @@ async function runNow(id) {
         toast("未抓取到作品：当前「首次历史回填」为“不回填历史(0 条)”，仅监控新建之后的新发布；可在「编辑」中改为“最近 5 条”后重抓。", "info", 8000);
       }
       else toast(`抓取完成,检查 ${r.scanned ?? r.new} 条，筛除 ${r.filtered || 0} 条，新增 ${r.new} 条`, "ok");
+      refreshMonitors(); refreshContents();
     } catch (e) { toast("抓取失败:" + e.message, "err"); }
   });
-  refreshMonitors(); refreshContents();
 }
 async function toggleMon(id) { try { await api("/api/monitors/" + id + "/toggle", { method: "POST" }); refreshMonitors(); } catch (e) { toast("操作失败:" + e.message, "err"); } }
 async function delMon(id) { if (await uiConfirm({ title: "删除监控", message: "删除该监控?", okText: "删除", danger: true })) { try { await api("/api/monitors/" + id, { method: "DELETE" }); selMon.delete(id); toast("监控已删除", "ok"); refreshMonitors(); } catch (e) { toast("删除失败:" + e.message, "err"); } } }
@@ -11297,6 +12368,7 @@ function noteCard(r) {
         <span>${fmtTime(r.create_time)}</span>
         <span class="like">${ic("i-heart")}${fmtNum(r.like_count)} · 💬${fmtNum(r.comment_count)}</span>
       </div>
+      <div data-dl-prog="${r.id}">${renderInlineDownloadProgHtml(r.id, r.download_status)}</div>
       <div class="ncard-actions">
         <span class="pill ${r.download_status}" style="flex:1;justify-content:center" title="${esc(r.error || "")}">${contentStatusLabel(r.download_status)}${r.error ? " ⓘ" : ""}</span>
         ${hasLocal ? `<button class="ghost sm" style="flex:0 0 auto" onclick="revealContentPath(${r.id},this)" title="打开文件夹">${ic("i-folder")}</button>` : ""}
@@ -11473,6 +12545,7 @@ async function refreshContents(resetPage = false) {
       <td class="content-metrics num"><span class="metric like">${ic("i-heart")}${fmtNum(r.like_count)}</span><span class="metric">${ic("i-msg")}${fmtNum(r.comment_count)}</span></td>
       <td class="content-status-cell">
         <div class="content-status-row"><span class="pill ${r.download_status}">${contentStatusLabel(r.download_status)}</span>${r.error ? `<span class="warn-ic" data-tip="${esc(r.error)}" title="${esc(r.error)}">${ic("i-info")}</span>` : ""}</div>
+        <div data-dl-prog="${r.id}">${renderInlineDownloadProgHtml(r.id, r.download_status)}</div>
         ${contentPathCell(r)}
       </td>
       <td class="content-action-cell acttd">
@@ -12600,7 +13673,31 @@ function bindPubFilePicker() {
   ["dragleave", "drop"].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); if (ev === "dragleave" && zone.contains(e.relatedTarget)) return; zone.classList.remove("drag"); }));
   zone.addEventListener("drop", e => { if (e.dataTransfer && e.dataTransfer.files.length) pubAddFiles(e.dataTransfer.files); });
 }
-let PUB_SUBMITTING = false, PUB_UPLOAD_CACHE = null;
+let PUB_SUBMITTING = false, PUB_UPLOAD_CACHE = null, PUB_UPLOAD_ABORT = null;
+function renderPubUploadProgress(info) {
+  const box = $("pub-upload-progress");
+  if (!box) return;
+  if (!info) { box.hidden = true; box.innerHTML = ""; return; }
+  const P = window.CreatorHubProgress;
+  const pct = info.percent != null ? `${Math.round(info.percent)}%` : "上传中";
+  const bytes = info.total > 0 && P ? `${P.fmtBytes(info.loaded)} / ${P.fmtBytes(info.total)}` : "";
+  const spd = info.speedBps > 0 && P ? P.fmtSpeed(info.speedBps) : "";
+  const eta = info.etaSeconds > 0 && P ? P.fmtEta(info.etaSeconds) : "";
+  const meta = [bytes, spd, eta].filter(Boolean).join(" · ");
+  box.innerHTML = `
+    <div class="pub-upload-progress-head">
+      <span>正在上传素材${meta ? ` · <span class="mut progress-num">${esc(meta)}</span>` : ""}</span>
+      <span style="display:inline-flex;align-items:center;gap:8px">
+        <b class="progress-num">${esc(pct)}</b>
+        ${info.percent < 100 ? `<button type="button" class="ghost sm danger" style="min-height:22px;padding:1px 7px" onclick="cancelPubUpload()">取消</button>` : ""}
+      </span>
+    </div>
+    ${P ? P.renderProgressBar({ determinate: info.percent != null, percent: info.percent, tone: info.percent === 100 ? "ok" : "info", label: "素材上传进度", compact: true }) : ""}`;
+  box.hidden = false;
+}
+function cancelPubUpload() {
+  if (PUB_UPLOAD_ABORT) { try { PUB_UPLOAD_ABORT.abort(); } catch (_) {} }
+}
 function publishFormPayload() {
   const tiktok = PLATFORM === "tiktok", bili = PLATFORM === "bilibili", ig = PLATFORM === "instagram", tw = PLATFORM === "twitter", fb = PLATFORM === "facebook", yt = PLATFORM === "youtube";
   const mediaType = $("pub-type").value;
@@ -12703,8 +13800,21 @@ async function addPublish() {
       } else if (!PUB_UPLOAD_CACHE || PUB_UPLOAD_CACHE.files.length !== files.length ||
           !PUB_UPLOAD_CACHE.files.every((file, index) => file === files[index])) {
         const fd = new FormData(); for (const f of files) fd.append("files", f);
-        const up = await api("/api/publish/upload", { method: "POST", body: fd });
-        PUB_UPLOAD_CACHE = { files, paths: (up.files || []).map(f => f.path) };
+        PUB_UPLOAD_ABORT = new AbortController();
+        renderPubUploadProgress({ loaded: 0, total: files.reduce((s, f) => s + (f.size || 0), 0), percent: 0, speedBps: 0 });
+        try {
+          const up = await apiUploadWithProgress("/api/publish/upload", fd, {
+            signal: PUB_UPLOAD_ABORT.signal,
+            onProgress: prog => {
+              renderPubUploadProgress(prog);
+              if (prog.percent != null) $("pub-msg").textContent = `上传素材中 ${prog.percent}%…`;
+            },
+          });
+          PUB_UPLOAD_CACHE = { files, paths: (up.files || []).map(f => f.path) };
+        } finally {
+          PUB_UPLOAD_ABORT = null;
+          renderPubUploadProgress(null);
+        }
       }
       const paths = PUB_UPLOAD_CACHE.paths;
       await api("/api/publish", {
@@ -12827,6 +13937,53 @@ async function editPublish(id) {
   if (value === null) return;
   toast("发布任务已更新", "ok"); refreshPublish();
 }
+function renderPublishStepsHtml(steps = []) {
+  if (!Array.isArray(steps) || !steps.length) return "";
+  return `<div class="pub-stepper">${steps.map(st => {
+    const cls = st.state === "done" ? "done" : st.state === "warn" ? "warn" : st.state === "active" ? "active" : "";
+    return `<span class="pub-step ${cls}">${esc(st.label)}</span>`;
+  }).join("")}</div>`;
+}
+function inferPublishStepsClient(stage) {
+  const labels = ["准备环境", "上传媒体", "填写文案", "校验/验证", "提交确认"];
+  const text = String(stage || "");
+  let idx = 0;
+  if (/提交|点击发布|确认发布|完成发布|等待结果/.test(text)) idx = 4;
+  else if (/验证|滑块|扫码|验证码|校验|风控/.test(text)) idx = 3;
+  else if (/标题|正文|文案|话题|分区|标签|填写/.test(text)) idx = 2;
+  else if (/上传|素材|视频|图片|封面|转码/.test(text)) idx = 1;
+  const warn = /安全验证|验证码|滑块|扫码/.test(text);
+  return labels.map((label, i) => ({
+    label,
+    state: i < idx ? "done" : i === idx ? (warn ? "warn" : "active") : "pending",
+  }));
+}
+const PUB_VERIFY_TOASTED = new Set();
+if (typeof window !== "undefined") {
+  window.addEventListener("creatorhub:progress:update", e => {
+    const task = e.detail?.task;
+    if (!task || task.category !== "publish") return;
+    const tid = Number(task.extra?.task_id || 0);
+    if (!tid) return;
+    const stageText = String(task.phase_label || "").trim();
+    const rowStage = $(`pub-stage-${tid}`);
+    if (rowStage && stageText) rowStage.textContent = stageText;
+    const rowStepper = $(`pub-stepper-${tid}`);
+    if (rowStepper) {
+      rowStepper.innerHTML = renderPublishStepsHtml(task.steps?.length ? task.steps : inferPublishStepsClient(stageText));
+    }
+    if (task.status === "waiting_user" && stageText && !PUB_VERIFY_TOASTED.has(`${tid}:${stageText}`)) {
+      PUB_VERIFY_TOASTED.add(`${tid}:${stageText}`);
+      toast(stageText, "info", 10000);
+    }
+    if (["completed", "failed", "canceled"].includes(task.status)) {
+      if (task.status === "completed") toast(`「${task.title}」发布成功 ✓`, "ok", 5500);
+      else if (task.status === "failed" && task.error) toast(`发布未成功：${task.error}`, "err", 7000);
+      if (typeof CURRENT_TAB !== "undefined" && CURRENT_TAB === "publish") refreshPublish();
+    }
+  });
+}
+
 async function refreshPublish() {
   const isCurrent = beginViewRequest("publish");
   if (!$("pub-table")) return;
@@ -12838,13 +13995,18 @@ async function refreshPublish() {
     const accObj = (typeof findAnyAccount === "function" && findAnyAccount(t.account_id)) || ACCOUNTS.find(a => a.id === t.account_id);
     const pubAcc = accObj ? (accObj.alias || accObj.nickname || `账号 #${t.account_id}`) : (t.account_id ? `账号 #${t.account_id}` : "—");
     const pfBadge = GLOBAL_MODE ? `<span class="mx-mini-pf inline" style="margin-right:6px">${esc(PF_NAME[t.platform] || t.platform)}</span>` : "";
+    const liveTask = window.CreatorHubProgress?.getTask?.(`publish:${t.id}`);
+    const stageText = String(liveTask?.phase_label || t.live_stage || "执行中，请等待结果");
+    const stepsHtml = t.status === "publishing"
+      ? `<div id="pub-stepper-${t.id}">${renderPublishStepsHtml(liveTask?.steps?.length ? liveTask.steps : inferPublishStepsClient(stageText))}</div>`
+      : "";
     return `<tr>
     <td class="wrap" style="max-width:240px"><b>${esc(t.title || "(无标题)")}</b></td>
     <td>${pfBadge}${esc(pubAcc)}</td>
     <td>${(t.platform === "twitter" || t.platform === "facebook") && !(t.media_count || 0) ? "纯文本" : `${t.media_type === "video" ? "视频" : "图文"} · <span class="mut num">${t.media_count || 0}</span>`}</td>
     <td>${t.source_platform ? esc(PF_NAME[t.source_platform] || t.source_platform) + " 转发" : "手动"}</td>
     <td class="mut num">${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : "尽快"}${t.next_allowed_at ? `<div class="mut" title="预约保持不变，同时等待风控间隔结束">风控最早 ${esc(riskTime(t.next_allowed_at))}</div>` : ""}</td>
-    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ((["kuaishou", "shipinhao", "tiktok"].includes(t.platform) || (t.platform === "bilibili" && String(t.result_url).includes("member.bilibili.com"))) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeHttpUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}${t.status === "publishing" ? `<div class="mut" id="pub-stage-${t.id}" style="margin-top:4px;white-space:normal;max-width:200px">${esc(t.live_stage || "执行中，请等待结果")}</div>` : (t.status === "pending" && t.blocked_reason ? `<div class="mut" style="margin-top:4px;white-space:normal;max-width:220px;color:var(--warn)">${esc(t.blocked_reason)}</div>` : "")}</td>
+    <td><span class="pill ${PUB_PILL[t.status] || "pending"}">${PUB_ST[t.status] || t.status}</span>${t.error ? ` <span class="warn-ic" title="${esc(t.error)}">${ic("i-info")}</span>` : ""}${t.result_url ? ((["kuaishou", "shipinhao", "tiktok"].includes(t.platform) || (t.platform === "bilibili" && String(t.result_url).includes("member.bilibili.com"))) ? ` <a href="javascript:void(0)" onclick="openPubInBrowser(${Number(t.account_id)}, ${jsArg(t.result_url)}, ${jsArg(t.platform)})">查看</a>` : ` <a href="${esc(safeHttpUrl(t.result_url))}" target="_blank" rel="noopener noreferrer">查看</a>`) : ""}${t.status === "publishing" ? `<div class="mut" id="pub-stage-${t.id}" style="margin-top:4px;white-space:normal;max-width:240px">${esc(stageText)}</div>${stepsHtml}` : (t.status === "pending" && t.blocked_reason ? `<div class="mut" style="margin-top:4px;white-space:normal;max-width:220px;color:var(--warn)">${esc(t.blocked_reason)}</div>` : "")}</td>
     <td class="acttd">
       ${["pending", "failed"].includes(t.status) ? `<button class="ghost sm" onclick="runPublish(${t.id})">立即发布</button>` : ""}
       ${["draft", "pending", "failed", "canceled"].includes(t.status) ? `<button class="ghost sm" onclick="editPublish(${t.id})">${t.schedule_needs_confirmation ? "确认预约时间" : "编辑"}</button>` : ""}
@@ -12874,39 +14036,20 @@ async function openPubInBrowser(accountId, url, platform = "shipinhao") {
 }
 async function runPublish(id, closeOpenBrowser = false) {
   const btn = closeOpenBrowser ? null : evtBtn();
-  toast(closeOpenBrowser ? "正在关闭该账号浏览器窗口并开始发布…" : "正在启动发布…会弹出浏览器窗口完成发布", "info", 6000);
-  let lastStage = "";
-  const stageTimer = setInterval(async () => {
-    try {
-      const resp = await fetch("/api/publish?platform=" + encodeURIComponent(pfHasPublish(PLATFORM) ? PLATFORM : "xhs"));
-      if (!resp.ok) return;
-      const rows = await resp.json();
-      const row = Array.isArray(rows) ? rows.find(item => item.id === id) : null;
-      const stage = String(row?.live_stage || "").trim();
-      if (!stage) return;
-      _busyHint = stage.includes("安全验证") ? "请在弹出窗口完成验证" : stage.slice(0, 24);
-      const rowEl = $(`pub-stage-${id}`);
-      if (rowEl) rowEl.textContent = stage;
-      if (stage !== lastStage) {
-        lastStage = stage;
-        if (stage.includes("安全验证") || stage.includes("验证码") || stage.includes("扫码")) {
-          toast(stage, "info", 12000);
-        }
-      }
-    } catch (_) {}
-  }, 2000);
   let res = null;
-  await withBusy(btn, "发布中", async () => {
+  await withBusy(btn, "启动中", async () => {
     try {
-      const qs = closeOpenBrowser ? "?close_open_browser=true" : "";
+      const qs = `?async_mode=true${closeOpenBrowser ? "&close_open_browser=true" : ""}`;
       res = await api("/api/publish/" + id + "/run-now" + qs, { method: "POST" });
       if (!res?.ok && res?.blocked_by === "open_browser" && !closeOpenBrowser) {
         return;
       }
-      toast(res.ok ? "发布成功 ✓" : "发布未成功:" + (res.error || ""), res.ok ? "ok" : "err", 6000);
-    }
-    catch (e) { toast("发布失败:" + e.message, "err"); }
-    finally { clearInterval(stageTimer); _busyHint = ""; }
+      if (res?.ok && res?.queued) {
+        toast(closeOpenBrowser ? "已关闭手动窗口并启动后台发布，步骤进度将实时推送" : "已启动后台发布，步骤进度可在列表与右上角活动中心实时查看", "info", 5500);
+      } else {
+        toast(res.ok ? "发布成功 ✓" : "发布未成功:" + (res.error || ""), res.ok ? "ok" : "err", 6000);
+      }
+    } catch (e) { toast("发布启动失败:" + e.message, "err"); }
   });
   if (res && !res.ok && res.blocked_by === "open_browser" && !closeOpenBrowser) {
     const task = PUBLISH_TASKS.find(item => item.id === id);
@@ -14012,6 +15155,81 @@ function taskQueueSourceLabel(tab) {
   })[tab] || "查看";
 }
 
+function queueProgressTaskKey(item) {
+  const id = Number(item?.id || 0);
+  if (!id) return "";
+  if (item.queue_type === "collections") return `collection:${id}`;
+  if (item.queue_type === "publishes") return `publish:${id}`;
+  if (item.queue_type === "monitor_downloads") return `download:content:${id}`;
+  if (item.queue_type === "collection_downloads") return `download:collection:${id}`;
+  return "";
+}
+
+function renderTaskQueueProgressHtml(item, liveTask = null) {
+  const prog = window.CreatorHubProgress;
+  const p = liveTask
+    ? {
+        percent: liveTask.percent,
+        determinate: !!liveTask.determinate,
+        phase_label: liveTask.phase_label || "",
+        speed_bps: liveTask.speed_bps,
+        eta_seconds: liveTask.eta_seconds,
+        current: liveTask.current,
+        total: liveTask.total,
+        unit: liveTask.unit,
+        status: liveTask.status,
+        next_allowed_at: liveTask.next_allowed_at || item.next_allowed_at,
+      }
+    : (item.progress || null);
+  const st = liveTask?.status === "running"
+    ? "running"
+    : liveTask?.status === "waiting_user" || liveTask?.status === "blocked"
+      ? "blocked"
+      : liveTask?.status === "completed"
+        ? "completed"
+        : liveTask?.status === "failed"
+          ? "failed"
+          : (item.state || "pending");
+  const nextAt = p?.next_allowed_at || item.next_allowed_at;
+  if (st === "blocked" && nextAt) {
+    const cd = prog?.fmtCountdown?.(nextAt) || "等待恢复";
+    const phase = p?.phase_label || "冷却中";
+    return `<div class="queue-progress-cell"><div class="queue-progress-head"><span>${esc(phase)}</span></div><div class="queue-progress-meta progress-num" data-countdown-iso="${esc(nextAt)}">${esc(cd)}</div></div>`;
+  }
+  if (st === "running") {
+    const det = !!(p && p.determinate && p.percent !== null && p.percent !== undefined && Number.isFinite(Number(p.percent)));
+    const pct = det ? Math.max(0, Math.min(100, Math.round(Number(p.percent)))) : null;
+    const bar = prog?.renderProgressBar
+      ? prog.renderProgressBar({ determinate: det, percent: pct, tone: "info", label: item.title || "执行进度", compact: true })
+      : `<div class="progress-track is-compact${det ? "" : " is-indeterminate"}"><div class="progress-fill" style="${det ? `width:${pct}%` : ""}"></div></div>`;
+    const meta = [];
+    if (p?.unit === "bytes" && Number(p.total) > 0) {
+      meta.push(`${prog?.fmtBytes?.(p.current) || ""} / ${prog?.fmtBytes?.(p.total) || ""}`);
+    } else if (p?.unit === "bytes" && Number(p.current) > 0) {
+      meta.push(prog?.fmtBytes?.(p.current) || "");
+    }
+    const spd = p?.speed_bps ? (prog?.fmtSpeed?.(p.speed_bps) || "") : "";
+    if (spd) meta.push(spd);
+    const eta = p?.eta_seconds ? (prog?.fmtEta?.(p.eta_seconds) || "") : "";
+    if (eta) meta.push(eta);
+    return `<div class="queue-progress-cell"><div class="queue-progress-head"><span title="${esc(p?.phase_label || "执行中")}">${esc(p?.phase_label || "执行中")}</span><b class="progress-num">${det ? `${pct}%` : "进行中"}</b></div>${bar}${meta.length ? `<div class="queue-progress-meta progress-num">${esc(meta.join(" · "))}</div>` : ""}</div>`;
+  }
+  if (st === "completed") {
+    return `<div class="queue-progress-cell"><div class="queue-progress-meta">${esc(p?.phase_label || (item.status === "canceled" ? "已取消" : item.status === "skipped" ? "已跳过" : "100% · 已完成"))}</div></div>`;
+  }
+  if (st === "failed") {
+    return `<div class="queue-progress-cell"><div class="queue-progress-meta" style="color:var(--danger)">${esc(p?.phase_label || "执行中断")}</div></div>`;
+  }
+  if (p && p.determinate && Number.isFinite(Number(p.percent)) && Number(p.percent) > 0) {
+    const pct = Math.max(0, Math.min(100, Math.round(Number(p.percent))));
+    const bar = prog?.renderProgressBar
+      ? prog.renderProgressBar({ determinate: true, percent: pct, tone: "warn", label: item.title || "任务进度", compact: true })
+      : `<div class="progress-track is-compact"><div class="progress-fill tone-warn" style="width:${pct}%"></div></div>`;
+    return `<div class="queue-progress-cell"><div class="queue-progress-head"><span>${esc(p.phase_label || "等待继续")}</span><b class="progress-num">${pct}%</b></div>${bar}</div>`;
+  }
+  return `<div class="queue-progress-cell"><div class="queue-progress-meta">${esc(p?.phase_label || "等待调度")}</div></div>`;
+}
+
 function taskQueueRow(item) {
   const stateMeta = TASK_QUEUE_STATE_META[item.state] || [item.state || "未知", "skipped"];
   const rawStatus = TASK_QUEUE_RAW_STATUS[item.status] || item.status || "未知";
@@ -14023,19 +15241,44 @@ function taskQueueRow(item) {
   const reasonClass = item.error && !item.blocked_reason ? " has-error" : "";
   const signal = item.blocked_signal ? `<small>信号：${esc(item.blocked_signal)}</small>` : "";
   const stopKey = `${item.queue_type}:${Number(item.id)}`;
+  const progKey = queueProgressTaskKey(item);
+  const liveTask = progKey ? window.CreatorHubProgress?.getTask?.(progKey) : null;
   const selectable = ["collections", "publishes", "comments", "actions"].includes(item.queue_type)
     && !["done", "canceled", "skipped", "uncertain"].includes(item.status);
-  return `<tr>
+  return `<tr data-queue-key="${esc(stopKey)}"${progKey ? ` data-progress-key="${esc(progKey)}"` : ""}>
     <td><input type="checkbox" class="queue-select" data-queue-type="${esc(item.queue_type)}" data-task-id="${Number(item.id)}" aria-label="选择任务 ${Number(item.id)}" onchange="toggleTaskQueueItem(this)"${selectable ? "" : " disabled"}${TASK_QUEUE_SELECTED.has(stopKey) ? " checked" : ""}></td>
     <td><span class="pill q bare">${esc(item.queue_label)}</span><small class="mut" style="display:block;margin-top:5px">${esc(PF_NAME[item.platform] || item.platform || "—")}</small></td>
     <td><div class="queue-copy"><b title="${esc(item.title)}">${esc(item.title)}</b>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}</div></td>
     <td><div class="queue-account"><b>${esc(account)}</b>${item.account_id ? `<small>ID ${Number(item.account_id)}</small>` : ""}</div></td>
     <td><div class="queue-time">${scheduled || "尽快执行"}${created}</div></td>
     <td><span class="pill ${stateMeta[1]}">${esc(stateMeta[0])}</span><small class="mut" style="display:block;margin-top:5px">${esc(rawStatus)}</small></td>
+    <td class="queue-col-progress" data-queue-prog-cell="${esc(progKey || stopKey)}">${renderTaskQueueProgressHtml(item, liveTask)}</td>
     <td><div class="queue-reason${reasonClass}">${esc(reason)}${signal}${nextAllowed}</div></td>
     <td class="acttd">${item.status === "uncertain" ? `<button type="button" class="ghost sm" onclick="resolveTaskResult(${jsArg(item.queue_type)},${Number(item.id)})">核对结果</button>` : ""}<button type="button" class="ghost sm" onclick="openTaskQueueSource(${jsArg(item.source_tab)})">${esc(taskQueueSourceLabel(item.source_tab))}</button></td>
   </tr>`;
 }
+
+window.addEventListener("creatorhub:progress:update", e => {
+  const task = e?.detail?.task;
+  if (!task || !task.task_key) return;
+  if (typeof CURRENT_TAB !== "undefined" && CURRENT_TAB !== "queue") return;
+  const cells = document.querySelectorAll(`#queue-table td[data-queue-prog-cell]`);
+  for (const cell of cells) {
+    if (cell.dataset.queueProgCell === task.task_key) {
+      cell.innerHTML = renderTaskQueueProgressHtml({ title: task.title, state: task.status, status: task.status, next_allowed_at: task.next_allowed_at }, task);
+    }
+  }
+});
+
+setInterval(() => {
+  if (document.hidden || typeof CURRENT_TAB === "undefined" || CURRENT_TAB !== "queue") return;
+  const prog = window.CreatorHubProgress;
+  if (!prog?.fmtCountdown) return;
+  document.querySelectorAll("#queue-table [data-countdown-iso]").forEach(el => {
+    const iso = el.dataset.countdownIso;
+    if (iso) el.textContent = prog.fmtCountdown(iso) || "即将恢复";
+  });
+}, 1000);
 
 function updateTaskQueueSelection() {
   const button = $("queue-batch-stop");
@@ -14145,15 +15388,16 @@ async function refreshTaskQueue(resetPage = false) {
   try {
     const data = await api("/api/task-queue?" + params.toString());
     if (!isCurrent()) return;
-    body.innerHTML = data.items?.length
+    const html = data.items?.length
       ? data.items.map(taskQueueRow).join("")
-      : empty(8, "当前筛选范围内没有任务", "i-inbox", "切换状态或平台范围后再查看");
+      : empty(9, "当前筛选范围内没有任务", "i-inbox", "切换状态或平台范围后再查看");
+    setHtmlIfChanged(body, html);
     updateTaskQueueSelection();
     renderTaskQueueSummary(data.summary || {});
     renderTaskQueuePager(data);
   } catch (e) {
     if (!isCurrent()) return;
-    body.innerHTML = empty(8, "任务队列加载失败", "i-info", e.message || "请稍后重试");
+    setHtmlIfChanged(body, empty(9, "任务队列加载失败", "i-info", e.message || "请稍后重试"));
     if (CURRENT_TAB === "queue") toast("任务队列加载失败：" + e.message, "err");
   } finally {
     TASK_QUEUE_LOADING = false;
@@ -14170,8 +15414,8 @@ async function refreshTaskQueueBadge() {
   const isCurrent = beginViewRequest("task-queue-badge");
   TASK_QUEUE_BADGE_LOADING = true;
   try {
-    const params = new URLSearchParams({ platform: GLOBAL_MODE ? "all" : PLATFORM, state: "active", page_size: "1" });
-    const data = await api("/api/task-queue?" + params.toString());
+    const params = new URLSearchParams({ platform: GLOBAL_MODE ? "all" : PLATFORM });
+    const data = await api("/api/task-queue/summary?" + params.toString());
     if (!isCurrent() || CURRENT_TAB === "queue") return;
     globalThis.CreatorHubWorkbench?.queueSummary?.(data.summary || {});
     const badge = $("tb-queue");
@@ -14270,7 +15514,7 @@ $("danmaku-watch-table").innerHTML = skeleton(8);
 $("danmaku-table").innerHTML = skeleton(6);
 $("collection-job-table").innerHTML = collectionTaskSkeleton(3);
 $("collection-content-list").innerHTML = collectionResultSkeleton(4);
-$("queue-table").innerHTML = skeleton(8);
+$("queue-table").innerHTML = skeleton(9);
 
 // restore last-selected platform & global mode BEFORE restoring tab so global-mode tab guards apply cleanly
 PLATFORM = (() => { try { const p = localStorage.getItem("dym-pf"); return ["xhs", "rednote", "douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(p) ? p : "douyin"; } catch (e) { return "douyin"; } })();
@@ -14305,7 +15549,7 @@ updateTaskQueuePlatformLabel();
 setupMonitorInterval("t-interval", 300);
 setupMonitorInterval("w-interval", 600);
 setupMonitorInterval("d-w-interval", 0, true);
-onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshBrowserRuntimes(); refreshProxies(); refreshChannels(); loop();
+onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshBrowserRuntimes(); refreshProxies(); refreshChannels(); window.CreatorHubProgress?.start?.(); loop();
 enhanceAllSelects();   // 把所有原生 <select> 升级为美化下拉
 enhanceAllMetaControls(); // 分组/标签：当前平台词库下拉，可搜索并新增
 enhanceAllDateTime();  // 把 datetime-local 升级为自定义日期选择器
@@ -14334,9 +15578,11 @@ window.addEventListener("hashchange", () => {
 });
 document.querySelector(".pswitch").addEventListener("keydown", e => {
   if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
-  e.preventDefault();
-  const buttons = [...document.querySelectorAll(".pswitch button")];
+  const buttons = [...document.querySelectorAll('.pswitch button[role="tab"]:not(.ps-overflow-hidden):not(.ps-idle-hidden)')];
+  if (!buttons.length) return;
   let index = buttons.indexOf(document.activeElement);
+  if (index < 0) return;
+  e.preventDefault();
   if (e.key === "Home") index = 0;
   else if (e.key === "End") index = buttons.length - 1;
   else index = (index + (e.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;

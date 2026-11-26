@@ -109,6 +109,58 @@ function apiFetch(path, options) {
   return fetch(path, { ...options, credentials: "same-origin" });
 }
 
+// 支持真实上传字节进度、速率与取消的 FormData 上传封装（替代无进度的 fetch 上传）。
+function apiUploadWithProgress(path, formData, { onProgress = null, signal = null } = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", path, true);
+    xhr.withCredentials = true;
+    try {
+      const adminToken = sessionStorage.getItem("creatorhub-risk-admin-token") || "";
+      if (adminToken) xhr.setRequestHeader("X-CreatorHub-Admin-Token", adminToken);
+    } catch (e) {}
+    xhr.setRequestHeader("X-CreatorHub-Actor", "creatorhub-web");
+    const startedAt = Date.now();
+    if (xhr.upload && typeof onProgress === "function") {
+      xhr.upload.onprogress = e => {
+        const loaded = Number(e.loaded || 0);
+        const total = e.lengthComputable ? Number(e.total || 0) : 0;
+        const elapsedSec = Math.max(0.1, (Date.now() - startedAt) / 1000);
+        const speedBps = loaded / elapsedSec;
+        const percent = total > 0 ? Math.min(99, Math.round((loaded * 100) / total)) : null;
+        const etaSeconds = (total > loaded && speedBps > 0) ? Math.max(1, Math.round((total - loaded) / speedBps)) : null;
+        try { onProgress({ loaded, total, percent, speedBps, etaSeconds }); } catch (_) {}
+      };
+    }
+    const onAbort = () => { try { xhr.abort(); } catch (_) {} };
+    if (signal) {
+      if (signal.aborted) { onAbort(); reject(new Error("上传已取消")); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    const cleanup = () => { if (signal) signal.removeEventListener("abort", onAbort); };
+    xhr.onload = () => {
+      cleanup();
+      let body = {};
+      try { body = JSON.parse(xhr.responseText || "{}"); } catch (_) {}
+      if (xhr.status >= 200 && xhr.status < 300) {
+        if (typeof onProgress === "function") {
+          try { onProgress({ loaded: 1, total: 1, percent: 100, speedBps: 0, etaSeconds: 0 }); } catch (_) {}
+        }
+        resolve(body);
+        return;
+      }
+      const err = new Error(apiErrorMessage(body.detail, xhr.status));
+      err.status = xhr.status;
+      err.detail = body.detail;
+      reject(err);
+    };
+    xhr.onerror = () => { cleanup(); reject(new Error("上传网络异常，请重试")); };
+    xhr.onabort = () => { cleanup(); reject(new Error("上传已取消")); };
+    xhr.send(formData);
+  });
+}
+window.apiUploadWithProgress = apiUploadWithProgress;
+
 const api = async (path, opts) => {
   const workbenchRequest = globalThis.CreatorHubWorkbench?.requestStarted?.({ path, method: (opts?.method || "GET").toUpperCase() });
   _apiActive++; _barSync();

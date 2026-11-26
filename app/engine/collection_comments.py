@@ -1,6 +1,7 @@
 """采集作品入库、媒体下载与各短视频/笔记平台评论抓取持久化。"""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import math
 
@@ -12,6 +13,7 @@ from app.db import get_session
 from app.engine.collection_helpers import _content_error_after_download, _media_json, _tiktok_download_session
 from app.engine.monitor_helpers import log
 from app.models import KeywordCollectionComment, KeywordCollectionContent, KeywordCollectionJob
+from app.progress_hub import progress_hub
 from app.platforms.bilibili import cookie_map_from_state as bili_cookie_map
 from app.platforms.channels import ChannelsProtocolClient, flatten_channels_comments, parse_channels_comment
 from app.platforms.douyin import DouyinClient, parse_comment, safe_title
@@ -81,12 +83,32 @@ class CollectionCommentsMixin:
                         proxy: str, *, account=None, identity=None) -> None:
         if not job.download_media or not aweme.medias or content.download_status == "done":
             return
+        task_key = f"download:collection:{content.id}"
+        title = (content.desc or aweme.desc or f"作品 {content.aweme_id}")[:80]
         with get_session() as session:
             row = session.get(KeywordCollectionContent, content.id)
             if row:
                 row.download_status = "downloading"
                 session.add(row)
                 session.commit()
+        progress_hub.upsert(
+            task_key,
+            immediate=True,
+            category="collection_download",
+            title=title,
+            platform=str(job.platform or ""),
+            account_id=job.account_id,
+            source_tab="collections",
+            status="running",
+            phase="downloading",
+            phase_label="准备下载媒体",
+            detail=f"采集任务 #{job.id} · {content.keyword}",
+            determinate=False,
+            percent=None,
+            unit="bytes",
+            cancelable=False,
+            extra={"job_id": job.id, "content_id": content.id},
+        )
         root = Path(job.download_dir).expanduser() if job.download_dir else \
             Path(self.cfg.engine.media_dir) / "keyword-collections"
         base_dir = root / f"job_{job.id}" / safe_title(content.keyword)
@@ -124,12 +146,66 @@ class CollectionCommentsMixin:
                 if raw_st:
                     download_cookies = yt_cookie_map(raw_st)
             download_referer = "https://www.youtube.com/"
-        ok, local_path, error = await self.downloader.download_aweme(
-            aweme, str(base_dir), routed_proxy,
-            user_agent=download_ua,
-            cookies=download_cookies,
-            referer=download_referer,
-        )
+
+        def _on_dl_progress(info: dict) -> None:
+            downloaded = int(info.get("downloaded_bytes") or 0)
+            total = int(info.get("total_bytes") or 0)
+            pct = info.get("percent")
+            if pct is None and total > 0:
+                pct = round(min(99.5, downloaded * 100.0 / total), 1)
+            progress_hub.upsert(
+                task_key,
+                category="collection_download",
+                title=title,
+                platform=str(job.platform or ""),
+                account_id=job.account_id,
+                source_tab="collections",
+                status="running",
+                phase=str(info.get("phase") or "downloading"),
+                phase_label=str(info.get("phase_label") or "正在下载媒体"),
+                detail=f"采集任务 #{job.id} · {content.keyword}",
+                determinate=bool(pct is not None),
+                percent=float(pct) if pct is not None else None,
+                current=downloaded,
+                total=total,
+                unit="bytes",
+                speed_bps=info.get("speed_bps"),
+                eta_seconds=info.get("eta_seconds"),
+                cancelable=False,
+                extra={"job_id": job.id, "content_id": content.id},
+            )
+
+        try:
+            ok, local_path, error = await self.downloader.download_aweme(
+                aweme, str(base_dir), routed_proxy,
+                user_agent=download_ua,
+                cookies=download_cookies,
+                referer=download_referer,
+                on_progress=_on_dl_progress,
+            )
+        except asyncio.CancelledError:
+            with get_session() as session:
+                row = session.get(KeywordCollectionContent, content.id)
+                if row and row.download_status == "downloading":
+                    row.download_status = "pending"
+                    session.add(row)
+                    session.commit()
+            progress_hub.upsert(
+                task_key,
+                immediate=True,
+                category="collection_download",
+                title=title,
+                platform=str(job.platform or ""),
+                account_id=job.account_id,
+                source_tab="collections",
+                status="canceled",
+                phase="canceled",
+                phase_label="已取消",
+                determinate=False,
+                percent=None,
+                cancelable=False,
+            )
+            raise
         with get_session() as session:
             row = session.get(KeywordCollectionContent, content.id)
             if row:
@@ -138,6 +214,24 @@ class CollectionCommentsMixin:
                 row.error = _content_error_after_download(row.error, error)
                 session.add(row)
                 session.commit()
+        progress_hub.upsert(
+            task_key,
+            immediate=True,
+            category="collection_download",
+            title=title,
+            platform=str(job.platform or ""),
+            account_id=job.account_id,
+            source_tab="collections",
+            status="completed" if ok else "failed",
+            phase="done" if ok else "failed",
+            phase_label="下载完成" if ok else "下载失败",
+            detail=f"采集任务 #{job.id} · {content.keyword}",
+            error="" if ok else str(error or "下载器未返回成功状态")[:300],
+            determinate=ok,
+            percent=100.0 if ok else None,
+            cancelable=False,
+            extra={"job_id": job.id, "content_id": content.id},
+        )
         if not ok:
             if aweme.cover:
                 thumb_cache.schedule_thumb_prewarm([aweme.cover], platform=job.platform, proxy=routed_proxy)
