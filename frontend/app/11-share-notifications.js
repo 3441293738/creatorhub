@@ -194,6 +194,27 @@ function shareHistoryQuality(row) {
 function shareHistoryPlatform(row) {
   return String((row && row.platform) || shareHistoryMetadata(row).platform || "generic");
 }
+function normalizeShareHistoryPlatform(platform) {
+  const p = String(platform || "").trim().toLowerCase();
+  if (p === "wechat" || p === "channels") return "shipinhao";
+  if (p === "x") return "twitter";
+  return p || "generic";
+}
+function shareHistoryScopedRows() {
+  if (GLOBAL_MODE) return SHARE_HISTORY;
+  return SHARE_HISTORY.filter(row => normalizeShareHistoryPlatform(shareHistoryPlatform(row)) === PLATFORM);
+}
+function syncShareHistoryPlatformControl(notify = true) {
+  const select = $("sd-history-platform");
+  if (!select) return;
+  const host = select.closest(".cs") || select;
+  host.classList.toggle("hidden", !GLOBAL_MODE);
+  if (!GLOBAL_MODE && select.value) {
+    select.value = "";
+    if (select._csSync) select._csSync();
+    if (notify) select.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+}
 function shareHistoryFiles(row) {
   return Array.isArray(row && row.files) ? row.files.filter(file => file && typeof file === "object") : [];
 }
@@ -230,15 +251,16 @@ function populateShareHistoryFacets() {
   const sharePf = { wechat: "视频号", channels: "视频号", youtube: "YouTube", weibo: "微博", twitter: "X", x: "X", facebook: "Facebook", generic: "通用站点" };
   select.innerHTML = `<option value="">全部平台</option>` + platforms.map(platform =>
     `<option value="${esc(platform)}">${esc(PF_NAME[platform] || sharePf[platform] || platform)}</option>`).join("");
-  select.value = platforms.includes(old) ? old : "";
+  select.value = GLOBAL_MODE && platforms.includes(old) ? old : "";
   if (select._csSync) select._csSync();
+  syncShareHistoryPlatformControl(false);
 }
 function shareHistoryFilteredRows() {
   const query = (($('sd-history-search') && $('sd-history-search').value) || "").trim().toLocaleLowerCase();
-  const platform = ($('sd-history-platform') && $('sd-history-platform').value) || "";
+  const platform = GLOBAL_MODE ? (($('sd-history-platform') && $('sd-history-platform').value) || "") : "";
   const type = ($('sd-history-type') && $('sd-history-type').value) || "";
   const status = ($('sd-history-status') && $('sd-history-status').value) || "";
-  return SHARE_HISTORY.filter(row => {
+  return shareHistoryScopedRows().filter(row => {
     if (platform && shareHistoryPlatform(row) !== platform) return false;
     if (type && shareHistoryType(row) !== type) return false;
     if (status && (row.status || row.download_status) !== status) return false;
@@ -325,15 +347,22 @@ function renderShareHistoryRows(resetPage = false) {
   if (resetPage) SHARE_HISTORY_PAGE = 1;
   const body = $("sd-history-body");
   if (!body) return;
+  syncShareHistoryPlatformControl(false);
+  const scoped = shareHistoryScopedRows();
   const rows = shareHistoryFilteredRows();
   const pages = Math.max(1, Math.ceil(rows.length / SHARE_HISTORY_PAGE_SIZE));
   if (SHARE_HISTORY_PAGE > pages) { SHARE_HISTORY_PAGE = pages; return renderShareHistoryRows(); }
   SHARE_HISTORY_TOTAL = rows.length;
   const start = (SHARE_HISTORY_PAGE - 1) * SHARE_HISTORY_PAGE_SIZE;
   const pageRows = rows.slice(start, start + SHARE_HISTORY_PAGE_SIZE);
-  $("sd-history-count").textContent = `${SHARE_HISTORY.length} 条`;
-  if ($("sd-history-filter-count")) $("sd-history-filter-count").textContent = `显示 ${rows.length} / ${SHARE_HISTORY.length}`;
-  body.innerHTML = pageRows.map(shareHistoryRow).join("") || empty(8, rows.length ? "暂无下载历史" : (SHARE_HISTORY.length ? "没有匹配的下载历史" : "暂无下载历史"), "i-download", SHARE_HISTORY.length ? "调整筛选条件" : "开始下载后会自动记录；旧下载会从元数据文件补录");
+  $("sd-history-count").textContent = `${scoped.length} 条`;
+  if ($("sd-history-filter-count")) $("sd-history-filter-count").textContent = `显示 ${rows.length} / ${scoped.length}`;
+  body.innerHTML = pageRows.map(shareHistoryRow).join("") || empty(
+    8,
+    rows.length ? "暂无下载历史" : (scoped.length ? "没有匹配的下载历史" : (GLOBAL_MODE ? "暂无下载历史" : `暂无 ${PF_NAME[PLATFORM] || PLATFORM} 链接下载历史`)),
+    "i-download",
+    scoped.length ? "调整筛选条件" : "开始下载后会自动记录；旧下载会从元数据文件补录"
+  );
   updateShareHistorySelBar();
   renderShareHistoryPager(rows.length);
 }
@@ -356,7 +385,8 @@ async function refreshShareHistory() {
 }
 
 function _shareHistoryReportParams(full) {
-  const params = new URLSearchParams({ platform: PLATFORM });
+  const params = new URLSearchParams();
+  if (!GLOBAL_MODE) params.set("platform", PLATFORM);
   if (full) {
     params.set("full", "true");
     return params;
@@ -367,7 +397,7 @@ function _shareHistoryReportParams(full) {
     }
   };
   put("q", $("sd-history-search") && $("sd-history-search").value);
-  put("platform", $("sd-history-platform") && $("sd-history-platform").value);
+  if (GLOBAL_MODE) put("platform", $("sd-history-platform") && $("sd-history-platform").value);
   put("media_type", $("sd-history-type") && $("sd-history-type").value);
   put("status", $("sd-history-status") && $("sd-history-status").value);
   return params;

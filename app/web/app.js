@@ -1788,13 +1788,31 @@ const SINGLE_PF_ONLY_TABS = ["monitors", "collections", "comments", "danmaku", "
 function updatePageContext(name = CURRENT_TAB) {
   const meta = PAGE_META[name] || PAGE_META.overview;
   const showGlobalLabel = GLOBAL_MODE && !SINGLE_PF_ONLY_TABS.includes(name);
-  const effectiveTitle = (GLOBAL_MODE && name === "publish") ? "矩阵群发与排期" : meta.title;
-  const effectiveDesc = (GLOBAL_MODE && name === "publish")
-    ? "一次上传素材与主文案，按跨平台矩阵组一键错峰群发，并统一追踪全平台发布进度。"
-    : meta.desc;
+  const pfName = PF_NAME[PLATFORM] || "当前平台";
+  let effectiveTitle = meta.title;
+  let effectiveDesc = meta.desc;
+  if (GLOBAL_MODE) {
+    if (name === "publish") {
+      effectiveTitle = "矩阵群发与排期";
+      effectiveDesc = "一次上传素材与主文案，按跨平台矩阵组一键错峰群发，并统一追踪全平台发布进度。";
+    }
+  } else {
+    if (name === "overview") {
+      effectiveDesc = `查看 ${pfName} 账号健康态势、高赞内容快览与今日发布排期。`;
+    } else if (name === "media-hub") {
+      effectiveDesc = `统一画廊预览 ${pfName} 监控作品、批量采集、自有作品与本地下载素材，支持右侧分栏快览。`;
+    } else if (name === "accounts") {
+      effectiveDesc = `管理 ${pfName} 账号登录态、分组归类、独立代理与浏览器指纹环境。`;
+    } else if (name === "hub") {
+      effectiveTitle = "数据与私信";
+      effectiveDesc = `对比 ${pfName} 各账号涨粉、播放、0播异常与聚合私信，或下钻单账号明细。`;
+    } else if (name === "publish") {
+      effectiveDesc = `支持 ${pfName} 单账号精细发布或同平台多账号错峰群发。`;
+    }
+  }
   if ($("page-title")) $("page-title").textContent = effectiveTitle;
   if ($("page-desc")) $("page-desc").textContent = effectiveDesc;
-  if ($("page-platform")) $("page-platform").textContent = showGlobalLabel ? "全平台矩阵" : (PF_NAME[PLATFORM] || "当前平台");
+  if ($("page-platform")) $("page-platform").textContent = showGlobalLabel ? "全平台矩阵" : pfName;
   if ($("page-kicker")) $("page-kicker").textContent = showGlobalLabel ? "跨 11 大平台全局视角" : (pfIsChannels(PLATFORM) ? "本账号工作台" : "单平台精细工作台");
   document.title = `${effectiveTitle} · ${showGlobalLabel ? "全平台" : (PF_NAME[PLATFORM] || "")} | CreatorHub`;
   globalThis.CreatorHubWorkbench?.navigate?.();
@@ -1838,15 +1856,17 @@ function switchPlatform(pf) {
     if (!wantGlobal) localStorage.setItem("dym-pf", pf);
   } catch (e) {}
   if ($("queue-platform")) {
-    $("queue-platform").value = wantGlobal ? "all" : "current";
+    $("queue-platform").value = wantGlobal ? "all" : PLATFORM;
     $("queue-platform")._csSync?.();
   }
+  if (typeof selShareHistory !== "undefined") selShareHistory.clear();
   applyPlatformUI();
   ["t-interval", "w-interval", "d-w-interval"].forEach(id => $(id)?._monitorIntervalSync?.());
   // 切换后立刻刷新对应数据
   refreshAccounts(); refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshCollections();
   updateTaskQueuePlatformLabel();
   if (CURRENT_TAB === "queue") refreshTaskQueue(true); else refreshTaskQueueBadge();
+  if (CURRENT_TAB === "share-download" && typeof renderShareHistoryRows === "function") renderShareHistoryRows(true);
   if (CURRENT_TAB === "risk-control") refreshRiskCenter(true, false);
   populateAcAccount(); onAcMode(); refreshCommentRules(); refreshCommentTasks();
   if (pfHasPublish(PLATFORM)) refreshPublish();
@@ -2071,6 +2091,8 @@ function applyPlatformUI() {
     if (pub && pub.style.display !== "none") switchTab("overview");
   }
   csSyncAll();   // 平台切换可能改了下拉选项/值,同步自定义下拉显示
+  if (typeof syncShareHistoryPlatformControl === "function") syncShareHistoryPlatformControl();
+  if (typeof updateTaskQueuePlatformLabel === "function") updateTaskQueuePlatformLabel();
   requestAnimationFrame(() => window.dispatchEvent(new Event("creatorhub:layout")));
   updatePageContext();
 }
@@ -10195,6 +10217,27 @@ function shareHistoryQuality(row) {
 function shareHistoryPlatform(row) {
   return String((row && row.platform) || shareHistoryMetadata(row).platform || "generic");
 }
+function normalizeShareHistoryPlatform(platform) {
+  const p = String(platform || "").trim().toLowerCase();
+  if (p === "wechat" || p === "channels") return "shipinhao";
+  if (p === "x") return "twitter";
+  return p || "generic";
+}
+function shareHistoryScopedRows() {
+  if (GLOBAL_MODE) return SHARE_HISTORY;
+  return SHARE_HISTORY.filter(row => normalizeShareHistoryPlatform(shareHistoryPlatform(row)) === PLATFORM);
+}
+function syncShareHistoryPlatformControl(notify = true) {
+  const select = $("sd-history-platform");
+  if (!select) return;
+  const host = select.closest(".cs") || select;
+  host.classList.toggle("hidden", !GLOBAL_MODE);
+  if (!GLOBAL_MODE && select.value) {
+    select.value = "";
+    if (select._csSync) select._csSync();
+    if (notify) select.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+}
 function shareHistoryFiles(row) {
   return Array.isArray(row && row.files) ? row.files.filter(file => file && typeof file === "object") : [];
 }
@@ -10231,15 +10274,16 @@ function populateShareHistoryFacets() {
   const sharePf = { wechat: "视频号", channels: "视频号", youtube: "YouTube", weibo: "微博", twitter: "X", x: "X", facebook: "Facebook", generic: "通用站点" };
   select.innerHTML = `<option value="">全部平台</option>` + platforms.map(platform =>
     `<option value="${esc(platform)}">${esc(PF_NAME[platform] || sharePf[platform] || platform)}</option>`).join("");
-  select.value = platforms.includes(old) ? old : "";
+  select.value = GLOBAL_MODE && platforms.includes(old) ? old : "";
   if (select._csSync) select._csSync();
+  syncShareHistoryPlatformControl(false);
 }
 function shareHistoryFilteredRows() {
   const query = (($('sd-history-search') && $('sd-history-search').value) || "").trim().toLocaleLowerCase();
-  const platform = ($('sd-history-platform') && $('sd-history-platform').value) || "";
+  const platform = GLOBAL_MODE ? (($('sd-history-platform') && $('sd-history-platform').value) || "") : "";
   const type = ($('sd-history-type') && $('sd-history-type').value) || "";
   const status = ($('sd-history-status') && $('sd-history-status').value) || "";
-  return SHARE_HISTORY.filter(row => {
+  return shareHistoryScopedRows().filter(row => {
     if (platform && shareHistoryPlatform(row) !== platform) return false;
     if (type && shareHistoryType(row) !== type) return false;
     if (status && (row.status || row.download_status) !== status) return false;
@@ -10326,15 +10370,22 @@ function renderShareHistoryRows(resetPage = false) {
   if (resetPage) SHARE_HISTORY_PAGE = 1;
   const body = $("sd-history-body");
   if (!body) return;
+  syncShareHistoryPlatformControl(false);
+  const scoped = shareHistoryScopedRows();
   const rows = shareHistoryFilteredRows();
   const pages = Math.max(1, Math.ceil(rows.length / SHARE_HISTORY_PAGE_SIZE));
   if (SHARE_HISTORY_PAGE > pages) { SHARE_HISTORY_PAGE = pages; return renderShareHistoryRows(); }
   SHARE_HISTORY_TOTAL = rows.length;
   const start = (SHARE_HISTORY_PAGE - 1) * SHARE_HISTORY_PAGE_SIZE;
   const pageRows = rows.slice(start, start + SHARE_HISTORY_PAGE_SIZE);
-  $("sd-history-count").textContent = `${SHARE_HISTORY.length} 条`;
-  if ($("sd-history-filter-count")) $("sd-history-filter-count").textContent = `显示 ${rows.length} / ${SHARE_HISTORY.length}`;
-  body.innerHTML = pageRows.map(shareHistoryRow).join("") || empty(8, rows.length ? "暂无下载历史" : (SHARE_HISTORY.length ? "没有匹配的下载历史" : "暂无下载历史"), "i-download", SHARE_HISTORY.length ? "调整筛选条件" : "开始下载后会自动记录；旧下载会从元数据文件补录");
+  $("sd-history-count").textContent = `${scoped.length} 条`;
+  if ($("sd-history-filter-count")) $("sd-history-filter-count").textContent = `显示 ${rows.length} / ${scoped.length}`;
+  body.innerHTML = pageRows.map(shareHistoryRow).join("") || empty(
+    8,
+    rows.length ? "暂无下载历史" : (scoped.length ? "没有匹配的下载历史" : (GLOBAL_MODE ? "暂无下载历史" : `暂无 ${PF_NAME[PLATFORM] || PLATFORM} 链接下载历史`)),
+    "i-download",
+    scoped.length ? "调整筛选条件" : "开始下载后会自动记录；旧下载会从元数据文件补录"
+  );
   updateShareHistorySelBar();
   renderShareHistoryPager(rows.length);
 }
@@ -10357,7 +10408,8 @@ async function refreshShareHistory() {
 }
 
 function _shareHistoryReportParams(full) {
-  const params = new URLSearchParams({ platform: PLATFORM });
+  const params = new URLSearchParams();
+  if (!GLOBAL_MODE) params.set("platform", PLATFORM);
   if (full) {
     params.set("full", "true");
     return params;
@@ -10368,7 +10420,7 @@ function _shareHistoryReportParams(full) {
     }
   };
   put("q", $("sd-history-search") && $("sd-history-search").value);
-  put("platform", $("sd-history-platform") && $("sd-history-platform").value);
+  if (GLOBAL_MODE) put("platform", $("sd-history-platform") && $("sd-history-platform").value);
   put("media_type", $("sd-history-type") && $("sd-history-type").value);
   put("status", $("sd-history-status") && $("sd-history-status").value);
   return params;
@@ -15127,14 +15179,26 @@ const TASK_QUEUE_STATE_META = {
 };
 
 function updateTaskQueuePlatformLabel() {
-  const option = $("queue-platform-current");
-  if (option) option.textContent = `当前平台（${PF_NAME[PLATFORM] || PLATFORM}）`;
+  const wrap = $("queue-platform-wrap");
+  if (wrap) wrap.classList.toggle("hidden", !GLOBAL_MODE);
   const select = $("queue-platform");
-  if (select && select._csSync) select._csSync();
+  if (!select) return;
+  if (GLOBAL_MODE) {
+    const prev = select.value;
+    const opts = ['<option value="all">全部平台</option>']
+      .concat(Object.entries(PF_NAME).map(([pf, label]) => `<option value="${esc(pf)}">${esc(label)}</option>`));
+    select.innerHTML = opts.join("");
+    select.value = (prev === "all" || PF_NAME[prev]) ? prev : "all";
+  } else {
+    select.innerHTML = `<option value="${esc(PLATFORM)}">当前平台（${esc(PF_NAME[PLATFORM] || PLATFORM)}）</option>`;
+    select.value = PLATFORM;
+  }
+  if (select._csSync) select._csSync();
 }
 
 function taskQueuePlatform() {
-  const value = $("queue-platform")?.value || "current";
+  if (!GLOBAL_MODE) return PLATFORM;
+  const value = $("queue-platform")?.value || "all";
   return value === "current" ? PLATFORM : value;
 }
 
@@ -15390,7 +15454,7 @@ async function refreshTaskQueue(resetPage = false) {
     if (!isCurrent()) return;
     const html = data.items?.length
       ? data.items.map(taskQueueRow).join("")
-      : empty(9, "当前筛选范围内没有任务", "i-inbox", "切换状态或平台范围后再查看");
+      : empty(9, "当前筛选范围内没有任务", "i-inbox", GLOBAL_MODE ? "切换状态或平台范围后再查看" : "切换任务状态或队列类型后再查看");
     setHtmlIfChanged(body, html);
     updateTaskQueueSelection();
     renderTaskQueueSummary(data.summary || {});
@@ -15551,6 +15615,7 @@ setupMonitorInterval("w-interval", 600);
 setupMonitorInterval("d-w-interval", 0, true);
 onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshBrowserRuntimes(); refreshProxies(); refreshChannels(); window.CreatorHubProgress?.start?.(); loop();
 enhanceAllSelects();   // 把所有原生 <select> 升级为美化下拉
+if (typeof syncShareHistoryPlatformControl === "function") syncShareHistoryPlatformControl();
 enhanceAllMetaControls(); // 分组/标签：当前平台词库下拉，可搜索并新增
 enhanceAllDateTime();  // 把 datetime-local 升级为自定义日期选择器
 // 编辑弹窗和异步列表会动态插入控件；统一做渐进增强，避免新旧样式混用。
@@ -15655,7 +15720,11 @@ window.CreatorHubBridge = {
     refreshAll: () => { refreshAccounts(); refreshProxies(); },
   },
   openQueue(state, allPlatforms = GLOBAL_MODE) {
-    if ($("queue-platform")) { $("queue-platform").value = allPlatforms ? "all" : "current"; $("queue-platform")._csSync?.(); }
+    updateTaskQueuePlatformLabel();
+    if ($("queue-platform")) {
+      $("queue-platform").value = GLOBAL_MODE ? (allPlatforms ? "all" : PLATFORM) : PLATFORM;
+      $("queue-platform")._csSync?.();
+    }
     $("queue-state").value = state; $("queue-state")._csSync?.();
     $("queue-query").value = ""; $("queue-type").value = ""; $("queue-type")._csSync?.();
     TASK_QUEUE_PAGE = 1;

@@ -93,11 +93,13 @@ export function MatrixOverviewCommand({ ctx }) {
     bridge?.navigate?.("hub", true);
   };
 
-  const jumpMatrixPublish = () => {
+  const jumpPublish = () => {
     bridge?.navigate?.("publish", true);
-    setTimeout(() => window.CreatorHubWorkbench?.showSection?.("publish", "matrix"), 0);
+    setTimeout(() => window.CreatorHubWorkbench?.showSection?.("publish", ctx.globalMode ? "matrix" : "editor"), 0);
   };
 
+  const pfMeta = PF_MAP[ctx.platform] || { name: ctx.platform || "当前平台", color: "#3b82f6" };
+  const pfName = pfMeta.name;
   const alerts = data?.alerts || {};
   const totals = data?.totals || {};
   const strip = data?.platform_strip || [];
@@ -133,7 +135,7 @@ export function MatrixOverviewCommand({ ctx }) {
     },
     alerts.unread_dm > 0 && {
       key: "dm", tone: "accent", icon: "msg",
-      label: `${alerts.unread_dm} 条未读私信待处理`, sub: "打开跨平台收件箱",
+      label: `${alerts.unread_dm} 条未读私信待处理`, sub: ctx.globalMode ? "打开跨平台收件箱" : `打开 ${pfName} 私信收件箱`,
       onClick: () => jumpHubMode("inbox"),
     },
     alerts.abnormal_works > 0 && {
@@ -161,23 +163,27 @@ export function MatrixOverviewCommand({ ctx }) {
       {/* Scope Bar & Global KPI Ribbon */}
       <div className="mx-ov-topbar">
         <div className="mx-ov-scope">
-          <button
-            type="button"
-            className={`mx-chip-btn ${ctx.globalMode ? "active" : ""}`}
-            onClick={() => bridge?.selectPlatform?.("all")}
-          >
-            <Icon name="globe" />
-            <span>全平台全局大盘</span>
-          </button>
-          {!ctx.globalMode && (
-            <span className="mx-scope-current">
-              当前聚焦：<b>{PF_MAP[ctx.platform]?.name || ctx.platform}</b>
+          {ctx.globalMode ? (
+            <>
+              <button
+                type="button"
+                className="mx-chip-btn active"
+                onClick={() => bridge?.selectPlatform?.("all")}
+              >
+                <Icon name="globe" />
+                <span>全平台全局大盘</span>
+              </button>
+              <button type="button" className="ghost sm mx-fold-toggle" onClick={toggleIdle}>
+                <Icon name={hideIdlePlatforms ? "eye" : "eye-off"} />
+                <span>{hideIdlePlatforms ? "显示全部 11 平台" : "收纳空置平台"}</span>
+              </button>
+            </>
+          ) : (
+            <span className="mx-scope-current" style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+              <span className="mx-sel-dot" style={{ background: pfMeta.color }} aria-hidden="true" />
+              当前聚焦：<b>{pfName}</b>
             </span>
           )}
-          <button type="button" className="ghost sm mx-fold-toggle" onClick={toggleIdle}>
-            <Icon name={hideIdlePlatforms ? "eye" : "eye-off"} />
-            <span>{hideIdlePlatforms ? "显示全部 11 平台" : "收纳空置平台"}</span>
-          </button>
         </div>
         <div className="mx-ov-quick-btns">
           <button type="button" className="ghost sm" onClick={() => bridge?.navigate?.("accounts", true)}>
@@ -189,8 +195,8 @@ export function MatrixOverviewCommand({ ctx }) {
           <button type="button" className="ghost sm" onClick={() => window.exportMonitorReport?.()}>
             <Icon name="download" /><span>导出监控报表</span>
           </button>
-          <button type="button" className="sm" onClick={jumpMatrixPublish}>
-            <Icon name="send" /><span>矩阵多号群发</span>
+          <button type="button" className="sm" onClick={jumpPublish}>
+            <Icon name="send" /><span>{ctx.globalMode ? "矩阵多号群发" : `发布 ${pfName} 内容`}</span>
           </button>
         </div>
       </div>
@@ -202,10 +208,14 @@ export function MatrixOverviewCommand({ ctx }) {
           <div className="mx-kpi-val">
             <b>{loading && !data ? "—" : `${totals.active_accounts || 0} / ${totals.accounts || 0}`}</b>
           </div>
-          <span className="mx-kpi-sub">跨 {strip.filter(x => x.accounts_total > 0).length} 个已接入平台</span>
+          <span className="mx-kpi-sub">
+            {ctx.globalMode
+              ? `跨 ${strip.filter(x => x.accounts_total > 0).length} 个已接入平台`
+              : `当前 ${pfName} 平台账号`}
+          </span>
         </div>
         <div className="mx-kpi-box" onClick={() => jumpHubMode("analytics")} role="button" tabIndex={0}>
-          <span className="mx-kpi-label">矩阵总粉丝</span>
+          <span className="mx-kpi-label">{ctx.globalMode ? "矩阵总粉丝" : `${pfName} 总粉丝`}</span>
           <div className="mx-kpi-val">
             <b>{loading && !data ? "—" : fmtCount(totals.followers || 0)}</b>
             {totals.fans_delta ? (
@@ -380,8 +390,8 @@ export function MatrixOverviewCommand({ ctx }) {
           <section className="mx-ov-card">
             <div className="mx-sec-head">
               <h3><Icon name="calendar" />发布排期与动态</h3>
-              <button type="button" className="ghost sm" onClick={jumpMatrixPublish}>
-                <Icon name="plus" />群发
+              <button type="button" className="ghost sm" onClick={jumpPublish}>
+                <Icon name="plus" />{ctx.globalMode ? "群发" : "发布"}
               </button>
             </div>
             {(data?.schedule_items || []).length > 0 ? (
@@ -403,14 +413,18 @@ export function MatrixOverviewCommand({ ctx }) {
               </div>
             ) : (
               <div className="mx-empty-compact">
-                <span>今日暂无待发排期，支持一套素材一键错峰分发至多平台账号。</span>
+                <span>
+                  {ctx.globalMode
+                    ? "今日暂无待发排期，支持一套素材一键错峰分发至多平台账号。"
+                    : `今日暂无待发排期，可前往「内容发布」创建 ${pfName} 发布任务。`}
+                </span>
               </div>
             )}
           </section>
 
           <section className="mx-ov-card">
             <div className="mx-sec-head">
-              <h3><Icon name="bolt" />近 7 日跨平台产出趋势</h3>
+              <h3><Icon name="bolt" />{ctx.globalMode ? "近 7 日跨平台产出趋势" : `近 7 日 ${pfName} 产出趋势`}</h3>
               <span className="mut" style={{ fontSize: "11.5px" }}>作品 / 评论 / 发布</span>
             </div>
             <div className="mx-mini-bars">

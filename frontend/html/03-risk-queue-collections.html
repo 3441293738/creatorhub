@@ -382,7 +382,7 @@
         <h2>任务明细 <span class="sub">统一查看采集、发布、评论、账号动作和下载任务</span></h2>
       </div>
       <div class="queue-toolbar" aria-label="任务队列筛选">
-        <div class="form-field"><label for="queue-platform">平台范围</label><select id="queue-platform" onchange="refreshTaskQueue(true)"><option value="current" id="queue-platform-current">当前平台</option><option value="all">全部平台</option></select></div>
+        <div class="form-field" id="queue-platform-wrap"><label for="queue-platform">平台范围</label><select id="queue-platform" onchange="refreshTaskQueue(true)"><option value="all">全部平台</option></select></div>
         <div class="form-field"><label for="queue-type">队列类型</label><select id="queue-type" onchange="refreshTaskQueue(true)"><option value="">全部队列</option><option value="collections">关键词采集</option><option value="publishes">内容发布</option><option value="comments">自动评论</option><option value="actions">账号动作</option><option value="monitor_downloads">监控下载</option><option value="collection_downloads">采集下载</option></select></div>
         <div class="form-field"><label for="queue-state">任务状态</label><select id="queue-state" onchange="refreshTaskQueue(true)"><option value="active">活动任务</option><option value="pending">等待执行</option><option value="running">正在执行</option><option value="blocked">风控延后</option><option value="failed">失败任务</option><option value="completed">已完成</option><option value="all">全部状态</option></select></div>
         <div class="form-field"><label for="queue-query">搜索</label><input id="queue-query" type="search" placeholder="任务内容、账号、错误或风控原因" onkeydown="if(event.key==='Enter'){event.preventDefault();refreshTaskQueue(true)}"></div>

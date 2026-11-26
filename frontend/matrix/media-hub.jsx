@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Icon, SelectBox } from "../ui/primitives";
 import {
   PLATFORMS,
@@ -42,11 +42,19 @@ export function MediaHubGallery({ ctx }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [slideIdx, setSlideIdx] = useState(0);
 
-  const effectivePf = pfFilter === "auto" ? (ctx.globalMode ? "all" : ctx.platform) : pfFilter;
+  const pfName = PF_MAP[ctx.platform]?.name || ctx.platform || "当前平台";
+  const effectivePf = ctx.globalMode ? (pfFilter === "auto" ? "all" : pfFilter) : ctx.platform;
+  const scopeKeyRef = useRef(`${ctx.globalMode ? "all" : ctx.platform}`);
 
   useEffect(() => {
+    const nextScope = `${ctx.globalMode ? "all" : ctx.platform}`;
     setPfFilter("auto");
     setPage(1);
+    if (scopeKeyRef.current !== nextScope) {
+      scopeKeyRef.current = nextScope;
+      setSelected(null);
+      setDetail(null);
+    }
   }, [ctx.platform, ctx.globalMode]);
 
   const loadList = useCallback(async () => {
@@ -65,8 +73,13 @@ export function MediaHubGallery({ ctx }) {
       if (query.trim()) params.set("q", query.trim());
       const res = await matrixApi(`/api/matrix/media-hub?${params.toString()}`);
       setData(res);
-      if (res.items?.length && !selected) {
-        setSelected({ uid: res.items[0].uid, source_kind: res.items[0].source_kind, id: res.items[0].id });
+      if (res.items?.length) {
+        setSelected(prev => (prev && res.items.some(item => item.uid === prev.uid)
+          ? prev
+          : { uid: res.items[0].uid, source_kind: res.items[0].source_kind, id: res.items[0].id }));
+      } else {
+        setSelected(null);
+        setDetail(null);
       }
     } catch (e) {
       matrixToast("加载汇总预览库失败：" + e.message, "err");
@@ -84,7 +97,7 @@ export function MediaHubGallery({ ctx }) {
     const onSelect = e => {
       if (e.detail?.source_kind && e.detail?.id) {
         setSourceKind("all");
-        setPfFilter("all");
+        if (ctx.globalMode) setPfFilter("all");
         setSelected(e.detail);
       }
     };
@@ -94,7 +107,7 @@ export function MediaHubGallery({ ctx }) {
       window.removeEventListener("creatorhub:matrix:refresh", onRefresh);
       window.removeEventListener("creatorhub:media-select", onSelect);
     };
-  }, [loadList, ctx.tab]);
+  }, [loadList, ctx.tab, ctx.globalMode]);
 
   // Load Quick-Look Detail whenever selected item changes
   useEffect(() => {
@@ -172,7 +185,12 @@ export function MediaHubGallery({ ctx }) {
     window.dispatchEvent(new CustomEvent("creatorhub:publish-preset", { detail: preset }));
     bridge?.navigate?.("publish", true);
     setTimeout(() => window.CreatorHubWorkbench?.showSection?.("publish", "matrix"), 0);
-    matrixToast("已将本地素材与文案载入「矩阵多号群发」编辑器", "ok");
+    matrixToast(
+      ctx.globalMode
+        ? "已将本地素材与文案载入「矩阵多号群发」编辑器"
+        : `已将本地素材与文案载入「${pfName} 同平台多号群发」编辑器`,
+      "ok"
+    );
   };
 
   // Assemble playable / viewable slides for Quick-Look right pane
@@ -221,15 +239,17 @@ export function MediaHubGallery({ ctx }) {
           />
         </label>
 
-        <SelectBox
-          value={effectivePf}
-          onChange={val => { setPfFilter(val); setPage(1); }}
-          ariaLabel="按平台筛选"
-          options={[
-            { value: "all", label: "全部平台", icon: "globe" },
-            ...PLATFORMS.map(p => ({ value: p.id, label: p.name, dot: p.color })),
-          ]}
-        />
+        {ctx.globalMode && (
+          <SelectBox
+            value={effectivePf}
+            onChange={val => { setPfFilter(val); setPage(1); }}
+            ariaLabel="按平台筛选"
+            options={[
+              { value: "all", label: "全部平台", icon: "globe" },
+              ...PLATFORMS.map(p => ({ value: p.id, label: p.name, dot: p.color })),
+            ]}
+          />
+        )}
 
         <SelectBox
           value={mediaType}
@@ -287,7 +307,7 @@ export function MediaHubGallery({ ctx }) {
       <div className="mx-split-layout">
         <div className="mx-split-master">
           {loading && !data.items.length ? (
-            <div className="mx-empty-box"><span>正在汇聚多平台作品库…</span></div>
+            <div className="mx-empty-box"><span>{ctx.globalMode ? "正在汇聚多平台作品库…" : `正在加载 ${pfName} 作品库…`}</span></div>
           ) : data.items.length === 0 ? (
             <div className="mx-empty-box">
               <Icon name="image" />
@@ -496,7 +516,7 @@ export function MediaHubGallery({ ctx }) {
                   )}
                   {detail.can_repost && (
                     <button type="button" className="sm" onClick={sendToMatrixPublish}>
-                      <Icon name="send" />转入矩阵群发
+                      <Icon name="send" />{ctx.globalMode ? "转入矩阵群发" : "转入同平台群发"}
                     </button>
                   )}
                 </div>

@@ -216,7 +216,11 @@ async def export_share_download_history_report(
             ShareDownloadRecord.created_at.desc(), ShareDownloadRecord.id.desc()
         )
         if platform:
-            statement = statement.where(ShareDownloadRecord.platform == platform)
+            pf_aliases = {
+                "shipinhao": ("shipinhao", "wechat", "channels"),
+                "twitter": ("twitter", "x"),
+            }.get(platform, (platform,))
+            statement = statement.where(ShareDownloadRecord.platform.in_(pf_aliases))
         if media_type:
             statement = statement.where(ShareDownloadRecord.media_type == media_type)
         if status:

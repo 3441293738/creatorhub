@@ -766,14 +766,26 @@ const TASK_QUEUE_STATE_META = {
 };
 
 function updateTaskQueuePlatformLabel() {
-  const option = $("queue-platform-current");
-  if (option) option.textContent = `当前平台（${PF_NAME[PLATFORM] || PLATFORM}）`;
+  const wrap = $("queue-platform-wrap");
+  if (wrap) wrap.classList.toggle("hidden", !GLOBAL_MODE);
   const select = $("queue-platform");
-  if (select && select._csSync) select._csSync();
+  if (!select) return;
+  if (GLOBAL_MODE) {
+    const prev = select.value;
+    const opts = ['<option value="all">全部平台</option>']
+      .concat(Object.entries(PF_NAME).map(([pf, label]) => `<option value="${esc(pf)}">${esc(label)}</option>`));
+    select.innerHTML = opts.join("");
+    select.value = (prev === "all" || PF_NAME[prev]) ? prev : "all";
+  } else {
+    select.innerHTML = `<option value="${esc(PLATFORM)}">当前平台（${esc(PF_NAME[PLATFORM] || PLATFORM)}）</option>`;
+    select.value = PLATFORM;
+  }
+  if (select._csSync) select._csSync();
 }
 
 function taskQueuePlatform() {
-  const value = $("queue-platform")?.value || "current";
+  if (!GLOBAL_MODE) return PLATFORM;
+  const value = $("queue-platform")?.value || "all";
   return value === "current" ? PLATFORM : value;
 }
 
@@ -1029,7 +1041,7 @@ async function refreshTaskQueue(resetPage = false) {
     if (!isCurrent()) return;
     const html = data.items?.length
       ? data.items.map(taskQueueRow).join("")
-      : empty(9, "当前筛选范围内没有任务", "i-inbox", "切换状态或平台范围后再查看");
+      : empty(9, "当前筛选范围内没有任务", "i-inbox", GLOBAL_MODE ? "切换状态或平台范围后再查看" : "切换任务状态或队列类型后再查看");
     setHtmlIfChanged(body, html);
     updateTaskQueueSelection();
     renderTaskQueueSummary(data.summary || {});
@@ -1190,6 +1202,7 @@ setupMonitorInterval("w-interval", 600);
 setupMonitorInterval("d-w-interval", 0, true);
 onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshBrowserRuntimes(); refreshProxies(); refreshChannels(); window.CreatorHubProgress?.start?.(); loop();
 enhanceAllSelects();   // 把所有原生 <select> 升级为美化下拉
+if (typeof syncShareHistoryPlatformControl === "function") syncShareHistoryPlatformControl();
 enhanceAllMetaControls(); // 分组/标签：当前平台词库下拉，可搜索并新增
 enhanceAllDateTime();  // 把 datetime-local 升级为自定义日期选择器
 // 编辑弹窗和异步列表会动态插入控件；统一做渐进增强，避免新旧样式混用。
@@ -1294,7 +1307,11 @@ window.CreatorHubBridge = {
     refreshAll: () => { refreshAccounts(); refreshProxies(); },
   },
   openQueue(state, allPlatforms = GLOBAL_MODE) {
-    if ($("queue-platform")) { $("queue-platform").value = allPlatforms ? "all" : "current"; $("queue-platform")._csSync?.(); }
+    updateTaskQueuePlatformLabel();
+    if ($("queue-platform")) {
+      $("queue-platform").value = GLOBAL_MODE ? (allPlatforms ? "all" : PLATFORM) : PLATFORM;
+      $("queue-platform")._csSync?.();
+    }
     $("queue-state").value = state; $("queue-state")._csSync?.();
     $("queue-query").value = ""; $("queue-type").value = ""; $("queue-type")._csSync?.();
     TASK_QUEUE_PAGE = 1;

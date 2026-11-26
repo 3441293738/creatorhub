@@ -71,6 +71,43 @@ export function MatrixBatchPublisher({ ctx }) {
     };
   }, [loadAccounts]);
 
+  const pfMeta = PF_MAP[ctx.platform] || PLATFORMS[0];
+  const pfName = pfMeta.name;
+  const videoOnlyPlatform = !ctx.globalMode && (ctx.platform === "tiktok" || ctx.platform === "youtube");
+
+  const scopedAccounts = useMemo(
+    () => (ctx.globalMode ? accounts : accounts.filter(a => a.platform === ctx.platform)),
+    [accounts, ctx.globalMode, ctx.platform]
+  );
+
+  const scopedGroups = useMemo(() => {
+    if (ctx.globalMode) return groups;
+    const used = new Set(scopedAccounts.map(a => a.group_name).filter(Boolean));
+    return groups.filter(g => used.has(g.name));
+  }, [groups, scopedAccounts, ctx.globalMode]);
+
+  useEffect(() => {
+    if (videoOnlyPlatform && mediaType !== "video") {
+      setMediaType("video");
+      setUploadedFiles([]);
+    }
+  }, [videoOnlyPlatform, mediaType]);
+
+  useEffect(() => {
+    if (ctx.globalMode || !accounts.length) return;
+    const allowedIds = new Set(scopedAccounts.map(a => a.id));
+    setSelectedAccIds(prev => {
+      if (!prev.size) return prev;
+      let changed = false;
+      const next = new Set();
+      prev.forEach(id => {
+        if (allowedIds.has(id)) next.add(id);
+        else changed = true;
+      });
+      return changed ? next : prev;
+    });
+  }, [ctx.globalMode, ctx.platform, accounts.length, scopedAccounts]);
+
   const toggleAcc = id => {
     setSelectedAccIds(prev => {
       const next = new Set(prev);
@@ -80,7 +117,7 @@ export function MatrixBatchPublisher({ ctx }) {
   };
 
   const selectByGroup = groupName => {
-    const matching = accounts.filter(a => a.group_name === groupName && a.status !== "invalid").map(a => a.id);
+    const matching = scopedAccounts.filter(a => a.group_name === groupName && a.status !== "invalid").map(a => a.id);
     if (!matching.length) {
       matrixToast("该分组下暂无可用的在线账号", "info");
       return;
@@ -94,9 +131,9 @@ export function MatrixBatchPublisher({ ctx }) {
   };
 
   const selectAllPublishRoles = () => {
-    const ids = accounts.filter(a => a.status !== "invalid" && a.account_role === "publish").map(a => a.id);
+    const ids = scopedAccounts.filter(a => a.status !== "invalid" && a.account_role === "publish").map(a => a.id);
     if (!ids.length) {
-      const fallback = accounts.filter(a => a.status !== "invalid" && a.account_role !== "crawler").map(a => a.id);
+      const fallback = scopedAccounts.filter(a => a.status !== "invalid" && a.account_role !== "crawler").map(a => a.id);
       setSelectedAccIds(new Set(fallback));
       return;
     }
@@ -134,8 +171,8 @@ export function MatrixBatchPublisher({ ctx }) {
   };
 
   const selectedAccounts = useMemo(
-    () => accounts.filter(a => selectedAccIds.has(a.id)),
-    [accounts, selectedAccIds]
+    () => scopedAccounts.filter(a => selectedAccIds.has(a.id)),
+    [scopedAccounts, selectedAccIds]
   );
 
   const selectedPlatforms = useMemo(
@@ -208,20 +245,26 @@ export function MatrixBatchPublisher({ ctx }) {
     <form className="mx-pub-wrap" onSubmit={submitBatch}>
       <div className="mx-sec-head">
         <div>
-          <h3><Icon name="send" />跨平台 / 多账号矩阵错峰群发</h3>
+          <h3><Icon name="send" />{ctx.globalMode ? "跨平台 / 多账号矩阵错峰群发" : `${pfName} · 同平台多账号错峰群发`}</h3>
           <p className="mut" style={{ margin: "4px 0 0", fontSize: "12.5px" }}>
-            一次上传素材与主文案，按「跨平台矩阵组」一键勾选多号，自动适配各平台标题上限并按设定间隔错峰入队。
+            {ctx.globalMode
+              ? "一次上传素材与主文案，按「跨平台矩阵组」一键勾选多号，自动适配各平台标题上限并按设定间隔错峰入队。"
+              : `一次上传素材与主文案，勾选多个 ${pfName} 账号按设定间隔错峰入队。`}
           </p>
         </div>
       </div>
 
-      {/* Multi-Platform Account Matrix Picker */}
+      {/* Account Matrix Picker */}
       <div className="mx-pub-step">
         <div className="mx-pub-step-head">
-          <b>1. 选择分发目标账号（已选 {selectedAccounts.length} 个账号，跨 {selectedPlatforms.length} 个平台）</b>
+          <b>
+            {ctx.globalMode
+              ? `1. 选择分发目标账号（已选 ${selectedAccounts.length} 个账号，跨 ${selectedPlatforms.length} 个平台）`
+              : `1. 选择 ${pfName} 发布账号（已选 ${selectedAccounts.length} 个账号）`}
+          </b>
           <div className="mx-pub-quick-picks">
             <button type="button" className="ghost sm" onClick={selectAllPublishRoles}>一键勾选创作主号</button>
-            {groups.map(g => (
+            {scopedGroups.map(g => (
               <button key={g.name} type="button" className="ghost sm" onClick={() => selectByGroup(g.name)}>
                 <Icon name="folder" /><span>{g.name}</span>
               </button>
@@ -240,18 +283,24 @@ export function MatrixBatchPublisher({ ctx }) {
         )}
 
         <div className="mx-pub-acc-grid">
-          {accounts.length === 0 ? (
-            <div className="mx-empty-compact">暂无已接入账号，请先前往「账号矩阵」扫码添加账号。</div>
+          {scopedAccounts.length === 0 ? (
+            <div className="mx-empty-compact">
+              {ctx.globalMode
+                ? "暂无已接入账号，请先前往「账号矩阵」扫码添加账号。"
+                : `暂无已接入的 ${pfName} 账号，请先前往「账号矩阵」添加账号。`}
+            </div>
           ) : (
-            accounts.map(acc => {
+            scopedAccounts.map(acc => {
               const pf = PF_MAP[acc.platform] || { short: acc.platform, color: "#64748b" };
               const checked = selectedAccIds.has(acc.id);
-              const disabled = acc.status === "invalid" || (acc.platform === "xhs" && !acc.has_creator) || (mediaType === "images" && acc.platform === "tiktok");
+              const disabled = acc.status === "invalid"
+                || (acc.platform === "xhs" && !acc.has_creator)
+                || (mediaType === "images" && (acc.platform === "tiktok" || acc.platform === "youtube"));
               return (
                 <label
                   key={acc.id}
                   className={`mx-pub-acc-item ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}`}
-                  title={disabled ? "登录失效、缺创作者授权或 TikTok 仅支持视频" : acc.display_name}
+                  title={disabled ? "登录失效、缺创作者授权或该平台仅支持视频" : acc.display_name}
                 >
                   <input
                     type="checkbox"
@@ -281,9 +330,11 @@ export function MatrixBatchPublisher({ ctx }) {
                 value={mediaType}
                 onChange={val => { setMediaType(val); setUploadedFiles([]); }}
                 ariaLabel="素材载体类型"
-                options={[
-                  { value: "video", label: "短视频（单视频全平台通用）", icon: "film" },
-                  { value: "images", label: "图文 / 图集（多图轮播，TikTok 除外）", icon: "image" },
+                options={videoOnlyPlatform ? [
+                  { value: "video", label: `视频（${pfName} 仅支持视频）`, icon: "film" },
+                ] : [
+                  { value: "video", label: ctx.globalMode ? "短视频（单视频全平台通用）" : "视频", icon: "film" },
+                  { value: "images", label: ctx.globalMode ? "图文 / 图集（多图轮播，TikTok / YouTube 除外）" : "图文 / 图集（多图轮播）", icon: "image" },
                 ]}
               />
             </div>
@@ -393,9 +444,13 @@ export function MatrixBatchPublisher({ ctx }) {
 
         {/* Right Preview & Per-Platform Title Cap / Override Inspector */}
         <aside className="mx-pub-side">
-          <h4>各平台适配检查与微调</h4>
+          <h4>{ctx.globalMode ? "各平台适配检查与微调" : `${pfName} 标题字数校验与微调`}</h4>
           {selectedPlatforms.length === 0 ? (
-            <p className="mut" style={{ fontSize: "12.5px" }}>先在上方勾选账号，这里会实时显示各目标平台的字数校验与单独改写框。</p>
+            <p className="mut" style={{ fontSize: "12.5px" }}>
+              {ctx.globalMode
+                ? "先在上方勾选账号，这里会实时显示各目标平台的字数校验与单独改写框。"
+                : `先在上方勾选 ${pfName} 账号，这里会实时显示标题字数上限校验。`}
+            </p>
           ) : (
             <div className="mx-pf-overrides">
               {selectedPlatforms.map(pfId => {

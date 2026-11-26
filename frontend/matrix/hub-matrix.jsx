@@ -34,10 +34,12 @@ export function HubMatrixDashboard({ ctx }) {
   const [groups, setGroups] = useState([]);
   const [syncingAll, setSyncingAll] = useState(false);
 
-  const effectivePf = pfFilter === "auto" ? (ctx.globalMode ? "all" : ctx.platform) : pfFilter;
+  const pfName = PF_MAP[ctx.platform]?.name || ctx.platform || "当前平台";
+  const effectivePf = ctx.globalMode ? (pfFilter === "auto" ? "all" : pfFilter) : ctx.platform;
 
   useEffect(() => {
     setPfFilter("auto");
+    setGroupFilter("");
     if (ctx.globalMode && mode === "single") setMode("analytics");
   }, [ctx.platform, ctx.globalMode]);
 
@@ -85,9 +87,20 @@ export function HubMatrixDashboard({ ctx }) {
       ]);
       setAnalytics(anaRes);
       setInbox(dmRes);
-      if (Array.isArray(accRes.groups)) setGroups(accRes.groups);
+      if (Array.isArray(accRes.groups)) {
+        if (ctx.globalMode) {
+          setGroups(accRes.groups);
+        } else {
+          const usedNames = new Set(
+            (Array.isArray(accRes.items) ? accRes.items : [])
+              .filter(a => a.platform === ctx.platform && a.group_name)
+              .map(a => a.group_name)
+          );
+          setGroups(accRes.groups.filter(g => usedNames.has(g.name)));
+        }
+      }
     } catch (_) {}
-  }, [ctx.tab, effectivePf, groupFilter, workFilter, workSort, query, unreadOnly]);
+  }, [ctx.tab, ctx.globalMode, ctx.platform, effectivePf, groupFilter, workFilter, workSort, query, unreadOnly]);
 
   useEffect(() => {
     loadData();
@@ -126,16 +139,16 @@ export function HubMatrixDashboard({ ctx }) {
   return (
     <div className="mx-hub-wrap">
       {/* Top Mode Switcher */}
-      <div className="mx-source-tabs" role="tablist" aria-label="矩阵运营视图切换">
+      <div className="mx-source-tabs" role="tablist" aria-label={ctx.globalMode ? "矩阵运营视图切换" : `${pfName} 运营视图切换`}>
         <button type="button" role="tab" aria-selected={mode === "analytics"} className={`mx-stab ${mode === "analytics" ? "active" : ""}`} onClick={() => setMode("analytics")}>
-          <Icon name="overview" /><span>全矩阵账号对比</span><b>{kpi.accounts_count || 0}</b>
+          <Icon name="overview" /><span>{ctx.globalMode ? "全矩阵账号对比" : `${pfName} 账号对比`}</span><b>{kpi.accounts_count || 0}</b>
         </button>
         <button type="button" role="tab" aria-selected={mode === "works"} className={`mx-stab ${mode === "works" ? "active" : ""}`} onClick={() => setMode("works")}>
-          <Icon name="film" /><span>全矩阵已发作品墙</span>
+          <Icon name="film" /><span>{ctx.globalMode ? "全矩阵已发作品墙" : `${pfName} 已发作品墙`}</span>
           {kpi.abnormal_works_total > 0 && <b className="warn">{kpi.abnormal_works_total} 异常</b>}
         </button>
         <button type="button" role="tab" aria-selected={mode === "inbox"} className={`mx-stab ${mode === "inbox" ? "active" : ""}`} onClick={() => setMode("inbox")}>
-          <Icon name="msg" /><span>全平台聚合私信</span>
+          <Icon name="msg" /><span>{ctx.globalMode ? "全平台聚合私信" : `${pfName} 聚合私信`}</span>
           {(inbox.unread || kpi.unread_dm_total) > 0 && <b className="accent">{inbox.unread || kpi.unread_dm_total}</b>}
         </button>
         {!ctx.globalMode && (
@@ -190,15 +203,17 @@ export function HubMatrixDashboard({ ctx }) {
                 aria-label="搜索矩阵账号与作品"
               />
             </label>
-            <SelectBox
-              value={effectivePf}
-              onChange={setPfFilter}
-              ariaLabel="按平台筛选"
-              options={[
-                { value: "all", label: "全部平台", icon: "globe" },
-                ...PLATFORMS.map(p => ({ value: p.id, label: p.name, dot: p.color })),
-              ]}
-            />
+            {ctx.globalMode && (
+              <SelectBox
+                value={effectivePf}
+                onChange={setPfFilter}
+                ariaLabel="按平台筛选"
+                options={[
+                  { value: "all", label: "全部平台", icon: "globe" },
+                  ...PLATFORMS.map(p => ({ value: p.id, label: p.name, dot: p.color })),
+                ]}
+              />
+            )}
             <SelectBox
               value={groupFilter}
               onChange={setGroupFilter}
@@ -366,7 +381,11 @@ export function HubMatrixDashboard({ ctx }) {
             <div className="mx-empty-box">
               <Icon name="film" />
               <b>暂无匹配的自有已发作品</b>
-              <span>点击「全矩阵账号对比 → 一键同步各号作品」，即可在此跨平台复盘爆款与 0 播作品。</span>
+              <span>
+                {ctx.globalMode
+                  ? "点击「全矩阵账号对比 → 一键同步各号作品」，即可在此跨平台复盘爆款与 0 播作品。"
+                  : `点击「${pfName} 账号对比 → 一键同步各号作品」，即可在此复盘本平台爆款与 0 播作品。`}
+              </span>
             </div>
           ) : (
             <div className="mx-gallery-grid">

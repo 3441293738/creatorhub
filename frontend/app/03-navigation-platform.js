@@ -241,13 +241,31 @@ const SINGLE_PF_ONLY_TABS = ["monitors", "collections", "comments", "danmaku", "
 function updatePageContext(name = CURRENT_TAB) {
   const meta = PAGE_META[name] || PAGE_META.overview;
   const showGlobalLabel = GLOBAL_MODE && !SINGLE_PF_ONLY_TABS.includes(name);
-  const effectiveTitle = (GLOBAL_MODE && name === "publish") ? "矩阵群发与排期" : meta.title;
-  const effectiveDesc = (GLOBAL_MODE && name === "publish")
-    ? "一次上传素材与主文案，按跨平台矩阵组一键错峰群发，并统一追踪全平台发布进度。"
-    : meta.desc;
+  const pfName = PF_NAME[PLATFORM] || "当前平台";
+  let effectiveTitle = meta.title;
+  let effectiveDesc = meta.desc;
+  if (GLOBAL_MODE) {
+    if (name === "publish") {
+      effectiveTitle = "矩阵群发与排期";
+      effectiveDesc = "一次上传素材与主文案，按跨平台矩阵组一键错峰群发，并统一追踪全平台发布进度。";
+    }
+  } else {
+    if (name === "overview") {
+      effectiveDesc = `查看 ${pfName} 账号健康态势、高赞内容快览与今日发布排期。`;
+    } else if (name === "media-hub") {
+      effectiveDesc = `统一画廊预览 ${pfName} 监控作品、批量采集、自有作品与本地下载素材，支持右侧分栏快览。`;
+    } else if (name === "accounts") {
+      effectiveDesc = `管理 ${pfName} 账号登录态、分组归类、独立代理与浏览器指纹环境。`;
+    } else if (name === "hub") {
+      effectiveTitle = "数据与私信";
+      effectiveDesc = `对比 ${pfName} 各账号涨粉、播放、0播异常与聚合私信，或下钻单账号明细。`;
+    } else if (name === "publish") {
+      effectiveDesc = `支持 ${pfName} 单账号精细发布或同平台多账号错峰群发。`;
+    }
+  }
   if ($("page-title")) $("page-title").textContent = effectiveTitle;
   if ($("page-desc")) $("page-desc").textContent = effectiveDesc;
-  if ($("page-platform")) $("page-platform").textContent = showGlobalLabel ? "全平台矩阵" : (PF_NAME[PLATFORM] || "当前平台");
+  if ($("page-platform")) $("page-platform").textContent = showGlobalLabel ? "全平台矩阵" : pfName;
   if ($("page-kicker")) $("page-kicker").textContent = showGlobalLabel ? "跨 11 大平台全局视角" : (pfIsChannels(PLATFORM) ? "本账号工作台" : "单平台精细工作台");
   document.title = `${effectiveTitle} · ${showGlobalLabel ? "全平台" : (PF_NAME[PLATFORM] || "")} | CreatorHub`;
   globalThis.CreatorHubWorkbench?.navigate?.();
@@ -291,15 +309,17 @@ function switchPlatform(pf) {
     if (!wantGlobal) localStorage.setItem("dym-pf", pf);
   } catch (e) {}
   if ($("queue-platform")) {
-    $("queue-platform").value = wantGlobal ? "all" : "current";
+    $("queue-platform").value = wantGlobal ? "all" : PLATFORM;
     $("queue-platform")._csSync?.();
   }
+  if (typeof selShareHistory !== "undefined") selShareHistory.clear();
   applyPlatformUI();
   ["t-interval", "w-interval", "d-w-interval"].forEach(id => $(id)?._monitorIntervalSync?.());
   // 切换后立刻刷新对应数据
   refreshAccounts(); refreshMonitors(); refreshContents(); refreshWatches(); refreshComments(); refreshDanmakuWatches(); refreshDanmaku(); refreshCollections();
   updateTaskQueuePlatformLabel();
   if (CURRENT_TAB === "queue") refreshTaskQueue(true); else refreshTaskQueueBadge();
+  if (CURRENT_TAB === "share-download" && typeof renderShareHistoryRows === "function") renderShareHistoryRows(true);
   if (CURRENT_TAB === "risk-control") refreshRiskCenter(true, false);
   populateAcAccount(); onAcMode(); refreshCommentRules(); refreshCommentTasks();
   if (pfHasPublish(PLATFORM)) refreshPublish();
@@ -524,6 +544,8 @@ function applyPlatformUI() {
     if (pub && pub.style.display !== "none") switchTab("overview");
   }
   csSyncAll();   // 平台切换可能改了下拉选项/值,同步自定义下拉显示
+  if (typeof syncShareHistoryPlatformControl === "function") syncShareHistoryPlatformControl();
+  if (typeof updateTaskQueuePlatformLabel === "function") updateTaskQueuePlatformLabel();
   requestAnimationFrame(() => window.dispatchEvent(new Event("creatorhub:layout")));
   updatePageContext();
 }

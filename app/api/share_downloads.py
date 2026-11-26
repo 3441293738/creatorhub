@@ -774,7 +774,12 @@ async def get_share_download_history(limit: int = 100, platform: str = ""):
     with get_session() as s:
         query = select(ShareDownloadRecord)
         if platform.strip():
-            query = query.where(ShareDownloadRecord.platform == platform.strip())
+            pf_key = platform.strip()
+            pf_aliases = {
+                "shipinhao": ("shipinhao", "wechat", "channels"),
+                "twitter": ("twitter", "x"),
+            }.get(pf_key, (pf_key,))
+            query = query.where(ShareDownloadRecord.platform.in_(pf_aliases))
         rows = s.exec(
             query.order_by(ShareDownloadRecord.created_at.desc()).limit(limit)
         ).all()

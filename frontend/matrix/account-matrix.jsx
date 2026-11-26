@@ -236,6 +236,9 @@ export function AccountMatrixCenter({ ctx }) {
 
   useEffect(() => {
     setPfFilter("auto");
+    setGroupFilter("");
+    setSelectedIds(new Set());
+    setContextMenu(null);
     if (!ctx.globalMode && ctx.platform) setLoginPf(ctx.platform);
   }, [ctx.globalMode, ctx.platform]);
 
@@ -243,7 +246,10 @@ export function AccountMatrixCenter({ ctx }) {
     if (ctx.tab !== "accounts") setContextMenu(null);
   }, [ctx.tab]);
 
-  const effectivePf = pfFilter === "auto" ? (ctx.globalMode ? "all" : ctx.platform) : pfFilter;
+  const effectivePf = ctx.globalMode
+    ? (pfFilter === "auto" ? "all" : pfFilter)
+    : ctx.platform;
+  const activeLoginPf = ctx.globalMode ? loginPf : (ctx.platform || "douyin");
 
   const load = useCallback(async () => {
     try {
@@ -429,16 +435,27 @@ export function AccountMatrixCenter({ ctx }) {
         map.get(acc.group_name).accounts.push(acc);
       }
     });
-    const out = [...map.values()].filter(b => b.accounts.length > 0 || (!query && healthFilter === "all" && !roleFilter && (!groupFilter || groupFilter === b.meta.name)));
+    const out = [...map.values()].filter(b => (
+      b.accounts.length > 0
+      || (ctx.globalMode && !query && healthFilter === "all" && !roleFilter && (!groupFilter || groupFilter === b.meta.name))
+      || (!ctx.globalMode && groupFilter && groupFilter === b.meta.name)
+    ));
     if (ungrouped.length > 0 || out.length === 0) {
       out.push({
-        meta: { name: "", label: "未分组账号", color: "slate", description: "建议按跨平台 IP 人设或业务团队归入矩阵组，便于一键群发与批量运维" },
+        meta: {
+          name: "",
+          label: "未分组账号",
+          color: "slate",
+          description: ctx.globalMode
+            ? "建议按跨平台 IP 人设或业务团队归入矩阵组，便于一键群发与批量运维"
+            : "可按业务线或人设归入分组，便于批量管理与同平台多号群发",
+        },
         accounts: ungrouped,
         isUngrouped: true,
       });
     }
     return out;
-  }, [filteredItems, payload.groups, query, healthFilter, roleFilter, groupFilter]);
+  }, [filteredItems, payload.groups, query, healthFilter, roleFilter, groupFilter, ctx.globalMode]);
 
   const toggleOne = id => {
     setSelectedIds(prev => {
@@ -834,39 +851,47 @@ export function AccountMatrixCenter({ ctx }) {
   };
 
   const jumpGroupPublish = accounts => {
-    const validIds = accounts.filter(a => a.status !== "invalid").map(a => a.id);
+    const scoped = ctx.globalMode ? accounts : accounts.filter(a => a.platform === ctx.platform);
+    const validIds = scoped.filter(a => a.status !== "invalid").map(a => a.id);
     window.__chPublishPresetAccounts = validIds;
     window.dispatchEvent(new CustomEvent("creatorhub:publish-preset", { detail: { accountIds: validIds } }));
     bridge?.navigate?.("publish", true);
     setTimeout(() => window.CreatorHubWorkbench?.showSection?.("publish", "matrix"), 0);
   };
 
-  const loginPfMeta = PF_MAP[loginPf] || PLATFORMS[0];
+  const loginPfMeta = PF_MAP[activeLoginPf] || PLATFORMS[0];
   const openCount = pfScopedItems.filter(a => a.browser_open).length;
   const invalidInScope = pfScopedItems.filter(a => a.health_state === "invalid");
+  const visibleFilterGroups = useMemo(() => {
+    if (ctx.globalMode) return payload.groups;
+    const usedNames = new Set(pfScopedItems.map(a => a.group_name).filter(Boolean));
+    return payload.groups.filter(g => usedNames.has(g.name) || g.name === groupFilter);
+  }, [payload.groups, pfScopedItems, ctx.globalMode, groupFilter]);
 
   return (
     <div className="mx-acc-wrap">
-      {/* Cross-Platform Add Account & Fast Actions Ribbon */}
+      {/* Add Account & Fast Actions Ribbon */}
       <div className="mx-add-acc-bar">
         <div className="mx-add-acc-left">
-          <span className="mx-bar-kicker"><Icon name="plus" />快速接入新账号</span>
-          <SelectBox
-            value={loginPf}
-            onChange={setLoginPf}
-            ariaLabel="选择要添加账号的目标平台"
-            options={PLATFORMS.map(p => ({ value: p.id, label: p.name, dot: p.color }))}
-          />
-          <button type="button" className="sm" onClick={() => bridge?.launchPlatformLogin?.(loginPf, "main")}>
+          <span className="mx-bar-kicker"><Icon name="plus" />{ctx.globalMode ? "快速接入新账号" : `接入${loginPfMeta.name}账号`}</span>
+          {ctx.globalMode && (
+            <SelectBox
+              value={loginPf}
+              onChange={setLoginPf}
+              ariaLabel="选择要添加账号的目标平台"
+              options={PLATFORMS.map(p => ({ value: p.id, label: p.name, dot: p.color }))}
+            />
+          )}
+          <button type="button" className="sm" onClick={() => bridge?.launchPlatformLogin?.(activeLoginPf, "main")}>
             <Icon name="qr" /><span>{loginPfMeta.name}扫码 / 网页登录</span>
           </button>
           {loginPfMeta.hasCreatorLogin && (
-            <button type="button" className="ghost sm" onClick={() => bridge?.launchPlatformLogin?.(loginPf, "creator")}>
+            <button type="button" className="ghost sm" onClick={() => bridge?.launchPlatformLogin?.(activeLoginPf, "creator")}>
               <Icon name="send" /><span>创作者中心登录</span>
             </button>
           )}
           {loginPfMeta.hasCookie && (
-            <button type="button" className="ghost sm" onClick={() => bridge?.launchPlatformLogin?.(loginPf, "cookie")}>
+            <button type="button" className="ghost sm" onClick={() => bridge?.launchPlatformLogin?.(activeLoginPf, "cookie")}>
               <Icon name="cookie" /><span>Cookie / Token 导入</span>
             </button>
           )}
@@ -1025,20 +1050,22 @@ export function AccountMatrixCenter({ ctx }) {
           />
         </label>
 
-        <SelectBox
-          value={effectivePf}
-          onChange={setPfFilter}
-          ariaLabel="平台筛选"
-          options={[
-            { value: "all", label: "全部平台", icon: "globe", count: payload.items.length },
-            ...PLATFORMS.map(p => ({
-              value: p.id,
-              label: p.name,
-              dot: p.color,
-              count: payload.items.filter(x => x.platform === p.id).length,
-            })),
-          ]}
-        />
+        {ctx.globalMode && (
+          <SelectBox
+            value={effectivePf}
+            onChange={setPfFilter}
+            ariaLabel="平台筛选"
+            options={[
+              { value: "all", label: "全部平台", icon: "globe", count: payload.items.length },
+              ...PLATFORMS.map(p => ({
+                value: p.id,
+                label: p.name,
+                dot: p.color,
+                count: payload.items.filter(x => x.platform === p.id).length,
+              })),
+            ]}
+          />
+        )}
 
         <SelectBox
           value={groupFilter}
@@ -1046,7 +1073,7 @@ export function AccountMatrixCenter({ ctx }) {
           ariaLabel="矩阵分组筛选"
           options={[
             { value: "", label: "全部矩阵组", icon: "layers" },
-            ...payload.groups.map(g => ({
+            ...visibleFilterGroups.map(g => ({
               value: g.name,
               label: g.name,
               dot: GROUP_COLOR_META[g.color]?.dot || "#3b82f6",
@@ -1142,9 +1169,9 @@ export function AccountMatrixCenter({ ctx }) {
             <button
               type="button"
               className="sm"
-              onClick={() => jumpGroupPublish(payload.items.filter(a => selectedIds.has(a.id)))}
+              onClick={() => jumpGroupPublish(pfScopedItems.filter(a => selectedIds.has(a.id)))}
             >
-              <Icon name="send" />去多号群发
+              <Icon name="send" />{ctx.globalMode ? "去多号群发" : "同平台群发"}
             </button>
             <button
               type="button"
@@ -1162,12 +1189,16 @@ export function AccountMatrixCenter({ ctx }) {
       {viewMode === "groups" && (
         <div className="mx-groups-stack">
           {loading && !payload.items.length ? (
-            <div className="mx-empty-box"><span>正在读取多平台账号矩阵…</span></div>
-          ) : filteredItems.length === 0 && payload.items.length === 0 ? (
+            <div className="mx-empty-box"><span>{ctx.globalMode ? "正在读取多平台账号矩阵…" : `正在读取 ${loginPfMeta.name} 账号列表…`}</span></div>
+          ) : filteredItems.length === 0 && pfScopedItems.length === 0 ? (
             <div className="mx-empty-box">
               <Icon name="card" />
-              <b>尚未接入任何平台账号</b>
-              <span>在上方选择目标平台点击「扫码 / 网页登录」，建议将跨平台同一人设的账号归入同一矩阵组。</span>
+              <b>{ctx.globalMode ? "尚未接入任何平台账号" : `尚未接入任何 ${loginPfMeta.name} 账号`}</b>
+              <span>
+                {ctx.globalMode
+                  ? "在上方选择目标平台点击「扫码 / 网页登录」，建议将跨平台同一人设的账号归入同一矩阵组。"
+                  : `点击上方「${loginPfMeta.name}扫码 / 网页登录」${loginPfMeta.hasCookie ? "或「Cookie / Token 导入」" : ""}即可接入账号。`}
+              </span>
             </div>
           ) : (
             groupedBuckets.map(bucket => {

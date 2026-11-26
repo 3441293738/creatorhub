@@ -1738,7 +1738,11 @@ async def list_media_hub(
         # 4) 分享链接解析下载记录
         s_stmt = select(ShareDownloadRecord)
         if pf_filter:
-            s_stmt = s_stmt.where(ShareDownloadRecord.platform == pf_filter)
+            share_pf_aliases = {
+                "shipinhao": ("shipinhao", "wechat", "channels"),
+                "twitter": ("twitter", "x"),
+            }.get(pf_filter, (pf_filter,))
+            s_stmt = s_stmt.where(ShareDownloadRecord.platform.in_(share_pf_aliases))
         for r in session.exec(s_stmt).all():
             source_counts["share"] += 1
             if src not in {"all", "share"}:
@@ -1753,11 +1757,12 @@ async def list_media_hub(
                 continue
             if query_text and query_text not in f"{r.title} {r.author} {r.item_id}".lower():
                 continue
+            norm_share_pf = {"wechat": "shipinhao", "channels": "shipinhao", "x": "twitter"}.get(r.platform, r.platform)
             unified.append({
                 "uid": f"share:{r.id}",
                 "source_kind": "share",
                 "id": r.id,
-                "platform": r.platform if r.platform in ALL_PLATFORMS else "douyin",
+                "platform": norm_share_pf if norm_share_pf in ALL_PLATFORMS else "douyin",
                 "aweme_id": r.item_id or "",
                 "desc": r.title or "（分享链接下载素材）",
                 "author_name": r.author or "分享链接解析",

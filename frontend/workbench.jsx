@@ -78,7 +78,7 @@ const groupSpecs = {
   comments: [["targets", "监控目标"], ["records", "评论记录"]],
   danmaku: [["targets", "监控目标"], ["records", "弹幕记录"]],
   autocomment: [["rules", "评论规则"], ["tasks", "任务与审核"]],
-  publish: [["matrix", "矩阵多号群发"], ["editor", "单号精细发布", null, true], ["records", "发布记录"], ["published", "已发布作品", ["xhs", "rednote"], true]],
+  publish: [["editor", "单号精细发布", null, true], ["matrix", "矩阵多号群发", null, false, "同平台多号群发"], ["records", "发布记录"], ["published", "已发布作品", ["xhs", "rednote"], true]],
   notifications: [["channels", "通知渠道"], ["webhooks", "Webhook 订阅"]],
   "risk-control": [["status", "账号状态"], ["rules", "风控规则"]],
   "youtube-tools": [["yt-interact", "互动操作"], ["yt-watch", "真实观看"], ["yt-warmup", "关键词养号"], ["yt-discover", "发现与多频道"]],
@@ -91,8 +91,8 @@ const groups = Object.entries(groupSpecs).map(([key, spec]) => {
   panel.prepend(target);
   // Match stable section keys, not card positions: inserting a card must never
   // put its content under another tab's label.
-  const items = spec.map(([value, label, platforms, singlePfOnly]) => ({
-    value, label, platforms, singlePfOnly: !!singlePfOnly, node: nodes.find(node => node.dataset.section === value),
+  const items = spec.map(([value, label, platforms, singlePfOnly, singleLabel]) => ({
+    value, label, singleLabel: singleLabel || "", platforms, singlePfOnly: !!singlePfOnly, node: nodes.find(node => node.dataset.section === value),
   })).filter(x => x.node);
   items.forEach(item => parking.append(item.node));
   // Risk counts belong with status, not above every configuration view.
@@ -187,14 +187,25 @@ function NodeHost({ node, className = "" }) {
 }
 const tabSetters = new Map();
 function SectionTabs({ group, platform, globalMode }) {
-  const [value, setValue] = useState(group.items[0].value);
-  const root = useRef(null), list = useRef(null), previous = useRef(value);
-  const visible = group.items.filter(item => (!item.singlePfOnly || !globalMode) && !item.node.hidden && (!item.platforms || item.platforms.includes(platform)));
+  const visible = group.items
+    .filter(item => (!item.singlePfOnly || !globalMode) && !item.node.hidden && (!item.platforms || item.platforms.includes(platform)))
+    .map(item => ({ ...item, label: !globalMode && item.singleLabel ? item.singleLabel : item.label }));
+  const [value, setValue] = useState(() => visible[0]?.value || group.items[0].value);
+  const root = useRef(null), list = useRef(null), previous = useRef(value), prevGlobal = useRef(globalMode);
   useLayoutEffect(() => {
     tabSetters.set(group.key, setValue);
     return () => tabSetters.delete(group.key);
   }, [group]);
-  useEffect(() => { if (visible.length && !visible.some(item => item.value === value)) setValue(visible[0].value); }, [platform, globalMode]);
+  useEffect(() => {
+    const modeChanged = prevGlobal.current !== globalMode;
+    prevGlobal.current = globalMode;
+    if (!visible.length) return;
+    if (!visible.some(item => item.value === value)) {
+      setValue(visible[0].value);
+    } else if (modeChanged && group.key === "publish" && !globalMode && value === "matrix") {
+      setValue(visible[0].value);
+    }
+  }, [platform, globalMode]);
   useLayoutEffect(() => selectionMarker(list.current, '[data-state="active"]', "line"), []);
   useLayoutEffect(() => {
     if (previous.current !== value) {
@@ -477,8 +488,6 @@ function App() {
         <button type="button" className="ghost wb-icon-button" aria-label="刷新当前页面" title="刷新当前页面" aria-busy={retrying} data-feedback={refreshFeedback === "已刷新" ? "success" : undefined} onClick={retry} disabled={retrying || !online}><Icon name={refreshFeedback === "已刷新" ? "check" : "refresh"} /></button>
         <span className="wb-refresh-feedback" role="status">{retrying ? "正在刷新…" : refreshFeedback}</span>
       </span>
-      {ctx.tab === "accounts" && !ctx.globalMode && <ActionMenu label="添加平台账号" triggerLabel="添加账号" heading="选择登录方式" icon="plus"
-        buttons={[...loginChoices.querySelectorAll("button")].filter(button => !button.classList.contains("hidden"))} onOpenChange={open => { menuOpen = open; }} />}
       {composers[ctx.tab] && !ctx.globalMode && <button type="button" id="wb-create" onClick={() => openComposer(ctx.tab)}><Icon name="plus" />{composerTitle(ctx.tab, ctx.platform)}</button>}
       {ctx.tab === "overview" && <button type="button" onClick={() => bridge.navigate("publish", true)}><Icon name="plus" />{ctx.globalMode ? "矩阵群发" : "创作内容"}</button>}
     </div>, actionTarget)}
