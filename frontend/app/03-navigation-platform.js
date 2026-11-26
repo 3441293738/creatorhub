@@ -321,6 +321,7 @@ function switchPlatform(pf) {
   if (CURRENT_TAB === "queue") refreshTaskQueue(true); else refreshTaskQueueBadge();
   if (CURRENT_TAB === "share-download" && typeof renderShareHistoryRows === "function") renderShareHistoryRows(true);
   if (CURRENT_TAB === "risk-control") refreshRiskCenter(true, false);
+  resetAcReviewDefaultForPlatform(PLATFORM);
   populateAcAccount(); onAcMode(); refreshCommentRules(); refreshCommentTasks();
   if (pfHasPublish(PLATFORM)) refreshPublish();
   if (CURRENT_TAB === "overview") loop();

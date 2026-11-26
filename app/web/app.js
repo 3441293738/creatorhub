@@ -1868,6 +1868,7 @@ function switchPlatform(pf) {
   if (CURRENT_TAB === "queue") refreshTaskQueue(true); else refreshTaskQueueBadge();
   if (CURRENT_TAB === "share-download" && typeof renderShareHistoryRows === "function") renderShareHistoryRows(true);
   if (CURRENT_TAB === "risk-control") refreshRiskCenter(true, false);
+  resetAcReviewDefaultForPlatform(PLATFORM);
   populateAcAccount(); onAcMode(); refreshCommentRules(); refreshCommentTasks();
   if (pfHasPublish(PLATFORM)) refreshPublish();
   if (CURRENT_TAB === "overview") loop();
@@ -8293,6 +8294,18 @@ function openAiSettingsSection() {
   if (typeof switchTab === "function") switchTab("settings", true);
   globalThis.CreatorHubWorkbench?.showSection?.("settings", "ai");
 }
+function openEngineSettingsSection(focusFieldId = "") {
+  if (typeof switchTab === "function") switchTab("settings", true);
+  globalThis.CreatorHubWorkbench?.showSection?.("settings", "engine");
+  if (focusFieldId) {
+    setTimeout(() => {
+      const el = $(focusFieldId);
+      if (!el) return;
+      for (let d = el.closest("details"); d; d = d.parentElement?.closest("details")) d.open = true;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 140);
+  }
+}
 function _aiSelectedChannel() {
   const cid = $("ai-channel-id")?.value || AI_CHANNELS_STATE.active_channel_id || "default";
   return (AI_CHANNELS_STATE.channels || []).find(c => c.id === cid) || null;
@@ -14416,6 +14429,8 @@ async function submitRepost() {
 let AC_RULES = [];
 let AC_TASKS = [];
 let AC_POLICY_META = null;
+let AC_REVIEW_USER_CHOICE = null;
+let AC_REVIEW_PLATFORM = "";
 const AC_SELECTED_TASKS = new Set();
 
 const AC_MODE_T = { auto_reply: "自动回复", auto_comment: "自动评论" };
@@ -14513,10 +14528,37 @@ function populateAcAiSelectors() {
   }
   csSyncAll();
 }
+function openAcEngineReviewSettings(policyOverride = null) {
+  const p = policyOverride || AC_POLICY_META?.policy;
+  const pf = p?.platform || PLATFORM;
+  const focusId = p?.xhs_manual_only
+    ? "engine-xhs_comment_write_mode"
+    : (pf === "xhs" ? "engine-xhs_comment_review_before_publish" : "");
+  if ($("uimodal") && getComputedStyle($("uimodal")).display !== "none" && typeof _uiClose === "function") {
+    _uiClose(null);
+  }
+  if (typeof openEngineSettingsSection === "function") {
+    openEngineSettingsSection(focusId);
+  }
+}
+function resetAcReviewDefaultForPlatform(pf = PLATFORM) {
+  AC_REVIEW_PLATFORM = pf;
+  AC_REVIEW_USER_CHOICE = null;
+  const cb = $("ac-review");
+  if (cb) {
+    cb.disabled = false;
+    cb.checked = pf === "xhs";
+  }
+  syncAcCreatePolicySummary();
+}
+function onAcReviewToggle() {
+  AC_REVIEW_PLATFORM = PLATFORM;
+  AC_REVIEW_USER_CHOICE = Boolean($("ac-review")?.checked);
+  syncAcCreatePolicySummary();
+}
 function renderAcPolicyBars() {
   const p = AC_POLICY_META?.policy;
-  if (!p) return;
-  const aiOk = p.ai_enabled && p.ai_route?.ready;
+  if (!p || p.platform !== PLATFORM) return;
   const aiTxt = !p.ai_enabled
     ? "AI 文案总开关未开启"
     : p.ai_route?.ready
@@ -14529,29 +14571,65 @@ function renderAcPolicyBars() {
     capParts.push(`全局最小间隔 ${Math.max(p.risk_comment_min_gap_seconds, p.legacy_comment_min_gap_seconds)} 秒`);
   }
   const limitTxt = capParts.length ? capParts.join(" · ") : "风控评论限额未开启（仅按规则自身参数）";
+  const xhsLocked = Boolean(p.xhs_manual_only || p.xhs_review_forced);
   const reviewTxt = p.xhs_manual_only
-    ? "小红书当前为「仅保存草稿」模式，不会自动发送"
+    ? "小红书当前为「仅保存草稿」模式，不会自动发送（可在采集与运行设置修改）"
     : p.xhs_review_forced
-      ? "小红书已开启「全局先审后发」，所有规则生成后均先入草稿"
-      : "审核状态由各规则单独控制";
+      ? "小红书已开启「全局强制先审」，将覆盖单条规则设置并全部先入草稿（可在采集与运行设置关闭）"
+      : "审核状态由各规则自身「发布前审核」开关决定";
 
   const rulesBar = $("ac-rules-policy-bar");
   if (rulesBar) {
-    rulesBar.dataset.state = (p.ai_enabled && !p.ai_route?.ready) ? "warn" : "ok";
+    rulesBar.dataset.state = ((p.ai_enabled && !p.ai_route?.ready) || xhsLocked) ? "warn" : "ok";
     if ($("ac-rules-policy-title")) $("ac-rules-policy-title").textContent = `${PF_NAME[PLATFORM] || PLATFORM} 生效策略 · ${aiTxt}`;
     if ($("ac-rules-policy-desc")) $("ac-rules-policy-desc").textContent = `${limitTxt} · ${reviewTxt}`;
   }
   syncAcCreatePolicySummary();
 }
 function syncAcCreatePolicySummary() {
-  const p = AC_POLICY_META?.policy;
+  const rawPolicy = AC_POLICY_META?.policy;
+  const p = (rawPolicy && rawPolicy.platform === PLATFORM) ? rawPolicy : null;
+  if (AC_REVIEW_PLATFORM !== PLATFORM) {
+    AC_REVIEW_PLATFORM = PLATFORM;
+    AC_REVIEW_USER_CHOICE = null;
+  }
+  const userReviewChoice = AC_REVIEW_USER_CHOICE !== null ? AC_REVIEW_USER_CHOICE : (PLATFORM === "xhs");
+  const xhsManualOnly = Boolean(p?.xhs_manual_only);
+  const xhsReviewForced = Boolean(p?.xhs_review_forced);
+  const reviewLocked = xhsManualOnly || xhsReviewForced;
+
+  const reviewCb = $("ac-review");
+  if (reviewCb) {
+    reviewCb.disabled = reviewLocked;
+    reviewCb.checked = reviewLocked ? true : userReviewChoice;
+  }
+  if ($("ac-review-row")) $("ac-review-row").classList.toggle("is-locked", reviewLocked);
+  if ($("ac-review-title")) {
+    $("ac-review-title").textContent = reviewLocked
+      ? "发布前先存草稿人工审核（已被全局设置锁定）"
+      : "发布前先存草稿人工审核";
+  }
+  if ($("ac-review-unlock-btn")) {
+    $("ac-review-unlock-btn").hidden = !reviewLocked;
+    $("ac-review-unlock-btn").textContent = xhsManualOnly ? "去修改发送方式 →" : "去设置关闭 →";
+  }
+  if ($("ac-review-help")) {
+    $("ac-review-help").textContent = xhsManualOnly
+      ? "当前小红书评论通道为「仅保存草稿」，无论单条规则如何设置，所有任务均只存草稿不会自动发送。"
+      : xhsReviewForced
+        ? "当前「设置 → 采集与运行」开启了小红书全局强制先审，将覆盖单条规则设置；关闭全局锁后即可自由切换。"
+        : PLATFORM === "xhs"
+          ? "小红书新建规则默认勾选以降低风控；取消勾选后，新生成的评论将直接排队发送。"
+          : "推荐开启：生成后进入「任务与审核」核对原文与拟发文案，通过后再按节流发出。";
+  }
+
   const banner = $("ac-create-policy-banner");
   if (!banner || !p) return;
   const cm = $("ac-compose-mode")?.value || "template_only";
   const ruleGap = Math.max(1, Number($("ac-gap")?.value) || 90);
   const ruleCap = Math.max(0, Number($("ac-cap")?.value) || 0);
   const effGap = Math.max(ruleGap, p.risk_comment_min_gap_seconds || 0, p.legacy_comment_min_gap_seconds || 0);
-  const reviewOn = Boolean($("ac-review")?.checked) || p.xhs_review_forced || p.xhs_manual_only;
+  const reviewOn = reviewLocked || userReviewChoice;
   const warnReasons = [];
   if (acUsesAi(cm) && !p.ai_enabled) warnReasons.push("当前选了 AI 生成，但「设置 → AI 文案」总开关尚未开启");
   else if (acUsesAi(cm) && !p.ai_route?.ready) warnReasons.push(`AI 模型未就绪（${p.ai_route?.reason || "请先配置"}）`);
@@ -14561,12 +14639,10 @@ function syncAcCreatePolicySummary() {
   if ($("ac-mode")?.value === "auto_comment" && acc && String(acc.account_role || "hybrid").toLowerCase() === "publish") {
     warnReasons.push("所选账号为「发布主号 (publish)」，不允许创建主动评论规则");
   }
-  if ($("ac-review-help")) {
-    $("ac-review-help").textContent = p.xhs_manual_only
-      ? "当前小红书评论通道为「仅保存草稿」，无论是否勾选均只存草稿。"
-      : p.xhs_review_forced
-        ? "当前「设置 → 采集与运行」开启了小红书全局先审后发，本规则会自动先存草稿。"
-        : "推荐开启：生成后进入「任务与审核」核对原文与拟发文案，通过后再按节流发出。";
+  if (xhsManualOnly) {
+    warnReasons.push("小红书评论发送方式为「仅保存草稿」，生成的任务不会自动发送");
+  } else if (xhsReviewForced) {
+    warnReasons.push("小红书已开启「全局强制先审」，将覆盖单条规则设置并全部先入草稿");
   }
   banner.dataset.state = warnReasons.length ? "warn" : "ok";
   if ($("ac-create-policy-title")) {
@@ -14581,8 +14657,10 @@ function syncAcCreatePolicySummary() {
   }
 }
 async function refreshAcPolicyMeta() {
+  const reqPlatform = PLATFORM;
   try {
-    const data = await api("/api/comment-rules/effective-policy?platform=" + encodeURIComponent(PLATFORM));
+    const data = await api("/api/comment-rules/effective-policy?platform=" + encodeURIComponent(reqPlatform));
+    if (reqPlatform !== PLATFORM) return;
     AC_POLICY_META = data;
     populateAcAiSelectors();
     renderAcPolicyBars();
@@ -14644,6 +14722,11 @@ async function addCommentRule() {
   }
   const inc = acParseKwInput($("ac-include-kw")?.value || "");
   const exc = acParseKwInput($("ac-skip")?.value || "");
+  const activePolicy = (AC_POLICY_META?.policy?.platform === PLATFORM) ? AC_POLICY_META.policy : null;
+  const reviewLocked = Boolean(activePolicy && (activePolicy.xhs_review_forced || activePolicy.xhs_manual_only));
+  const requireReviewVal = reviewLocked
+    ? Boolean(AC_REVIEW_USER_CHOICE !== null ? AC_REVIEW_USER_CHOICE : (PLATFORM === "xhs"))
+    : Boolean($("ac-review").checked);
   const body = {
     platform: PLATFORM,
     name: ($("ac-name")?.value || "").trim(),
@@ -14659,7 +14742,7 @@ async function addCommentRule() {
     ai_preset_id: $("ac-ai-preset")?.value || "",
     ai_prompt: ($("ac-ai-prompt")?.value || "").trim(),
     ai_max_chars: Math.max(0, Number($("ac-ai-max-chars")?.value) || 0),
-    require_review: $("ac-review").checked,
+    require_review: requireReviewVal,
     match_mode: $("ac-match-mode")?.value || "any",
     include_keywords: inc,
     exclude_keywords: exc,
@@ -14684,6 +14767,7 @@ async function addCommentRule() {
       if ($("ac-ai-prompt")) $("ac-ai-prompt").value = "";
       if ($("ac-include-kw")) $("ac-include-kw").value = "";
       if ($("ac-skip")) $("ac-skip").value = "";
+      resetAcReviewDefaultForPlatform(PLATFORM);
       $("ac-msg").textContent = "规则已创建（默认关闭），点「试跑预览」核对命中与文案后再启用 ✓";
       toast("规则已创建", "ok"); refreshCommentRules();
       globalThis.CreatorHubWorkbench?.completed?.("autocomment");
@@ -14723,6 +14807,10 @@ function editRule(id) {
   const r = AC_RULES.find(x => x.id === id); if (!r) return;
   EM_PF = r.platform;
   const accOpts = accOptions(ACCOUNTS.filter(a => a.platform === EM_PF), `请选择${PF_NAME[EM_PF] || "对应平台"}账号`);
+  const activePolicy = (AC_POLICY_META?.policy?.platform === EM_PF) ? AC_POLICY_META.policy : null;
+  const emManualOnly = EM_PF === "xhs" && Boolean(activePolicy?.xhs_manual_only);
+  const emReviewForced = EM_PF === "xhs" && Boolean(activePolicy?.xhs_review_forced);
+  const emReviewLocked = emManualOnly || emReviewForced;
   new Promise(res => {
     _uiResolve = res; _uiCancelVal = null;
     _uiGetVal = () => {
@@ -14743,7 +14831,7 @@ function editRule(id) {
         ai_preset_id: $("em-ai-preset").value || "",
         ai_prompt: $("em-ai-prompt").value.trim(),
         ai_max_chars: Math.max(0, Number($("em-ai-max-chars").value) || 0),
-        require_review: $("em-review").checked,
+        require_review: emReviewLocked ? !!r.require_review : $("em-review").checked,
         match_mode: $("em-match-mode").value || "any",
         include_keywords: inc,
         exclude_keywords: exc,
@@ -14809,7 +14897,21 @@ function editRule(id) {
         </div>
       </fieldset>
       <fieldset class="ui-form-group"><legend>审核与执行频率</legend>
-        <label class="ui-toggle"><span><b>发布前审核</b><small>先生成草稿，由你核对原文后通过再发送</small></span><input type="checkbox" role="switch" id="em-review"></label>
+        <label class="ui-toggle${emReviewLocked ? " is-locked" : ""}">
+          <span>
+            <b>发布前审核${emReviewLocked ? "（已被全局设置锁定）" : ""}</b>
+            <small>${emManualOnly
+              ? `当前小红书评论通道为「仅保存草稿」，所有任务均只存草稿；本规则原设置为「${r.require_review ? "开启" : "关闭"}」。`
+              : emReviewForced
+                ? `当前「设置 → 采集与运行」开启了小红书全局强制先审，将覆盖此开关；本规则原设置为「${r.require_review ? "开启" : "关闭"}」。`
+                : "先生成草稿，由你核对原文后通过再发送"}</small>
+          </span>
+          <input type="checkbox" role="switch" id="em-review"${emReviewLocked ? " disabled" : ""}>
+        </label>
+        ${emReviewLocked ? `<div class="ac-lock-notice">
+          <span>如需按本规则设置直接排队发送，请先前往「设置 → 采集与运行」关闭全局限制。</span>
+          <button type="button" class="ghost sm" onclick="openAcEngineReviewSettings()">${emManualOnly ? "去修改发送方式 →" : "去关闭全局强制先审 →"}</button>
+        </div>` : ""}
         <div class="form-grid">
           <div><label class="field" for="em-cap">每日上限（0=跟随账号风控）</label><input type="number" id="em-cap" min="0" inputmode="numeric"></div>
           <div><label class="field" for="em-gap">最小间隔（秒）</label><input type="number" id="em-gap" min="1" inputmode="numeric"></div>
@@ -14838,7 +14940,7 @@ function editRule(id) {
     $("em-max-age").value = String(r.max_source_age_hours || 0);
     $("em-recent-works").value = String(r.recent_works || 0);
     $("em-recent-days").value = String(r.recent_days || 0);
-    $("em-review").checked = !!r.require_review;
+    $("em-review").checked = emReviewLocked ? true : !!r.require_review;
     $("em-cap").value = r.daily_cap; $("em-gap").value = r.min_gap_seconds;
     $("em-max").value = r.max_per_run;
     if ([...$("em-interval").options].some(o => o.value === String(r.interval_seconds))) $("em-interval").value = String(r.interval_seconds);
@@ -14878,12 +14980,16 @@ async function duplicateRule(id) {
 async function refreshCommentRules() {
   const isCurrent = beginViewRequest("comment-rules");
   if (!$("ac-rule-table")) return;
-  refreshAcPolicyMeta();
-  const rows = await api("/api/comment-rules?platform=" + PLATFORM);
+  const [, rows] = await Promise.all([
+    refreshAcPolicyMeta(),
+    api("/api/comment-rules?platform=" + PLATFORM),
+  ]);
   if (!isCurrent()) return;
   if ($("tb-ac")) $("tb-ac").textContent = rows.length;
   AC_RULES = rows;
   const presets = AC_POLICY_META?.ai_presets || [];
+  const policy = (AC_POLICY_META?.policy?.platform === PLATFORM) ? AC_POLICY_META.policy : null;
+  const xhsLocked = Boolean(policy && (policy.xhs_manual_only || policy.xhs_review_forced));
   $("ac-rule-table").innerHTML = rows.map(r => {
     const tgt = r.mode === "auto_comment"
       ? (r.target_kind === "keyword" ? "#" + esc(r.keyword) : esc((r.sec_uid || "").slice(0, 14)))
@@ -14894,7 +15000,11 @@ async function refreshCommentRules() {
     const badges = [
       `<span class="pill ${acUsesAi(cm) ? "downloading" : "skipped"} bare" style="font-size:10px">${esc(AC_COMPOSE_T[cm] || cm)}</span>`,
       presetName ? `<span class="pill bare" style="font-size:10px">${esc(presetName)}</span>` : "",
-      r.require_review ? `<span class="pill pending bare" style="font-size:10px">草稿审核</span>` : "",
+      r.require_review
+        ? `<span class="pill pending bare" style="font-size:10px">草稿审核</span>`
+        : (r.platform === "xhs" && xhsLocked)
+          ? `<span class="pill downloading bare" style="font-size:10px" title="该规则未勾选审核，但正被小红书全局设置强制转草稿">${policy.xhs_manual_only ? "全局仅存草稿" : "全局强制先审"}</span>`
+          : "",
       (r.include_keywords?.length) ? `<span class="pill bare" style="font-size:10px">含 ${r.include_keywords.length} 词</span>` : "",
       (r.comment_scope && r.comment_scope !== "all" && r.mode === "auto_reply") ? `<span class="pill bare" style="font-size:10px">${esc(AC_SCOPE_T[r.comment_scope] || r.comment_scope)}</span>` : "",
     ].filter(Boolean).join("");
@@ -14933,16 +15043,23 @@ async function previewRule(id) {
   if (!res.ok) { toast("预览未通过：" + (res.error || "未知原因"), "err", 8000); return; }
 
   const items = res.items || [];
+  const ep = res.effective_policy || {};
+  const willReview = Boolean(res.review || res.manual_only);
+  const forcedByGlobal = Boolean(ep.xhs_manual_only || ep.xhs_review_forced);
   const action = await new Promise(resolve => {
-    _uiResolve = resolve; _uiCancelVal = null; _uiGetVal = () => "draft";
+    _uiResolve = resolve; _uiCancelVal = null; _uiGetVal = () => (willReview ? "draft" : "live");
     $("ui-body").innerHTML = `
       <div class="stack" style="gap:10px">
-        <div class="ac-policy-strip" data-state="${res.ai_warning ? "warn" : "ok"}">
+        <div class="ac-policy-strip" data-state="${(res.ai_warning || forcedByGlobal) ? "warn" : "ok"}">
           <div class="ac-policy-copy">
             <b>发现 ${res.candidates || 0} 个候选 · 本次命中 ${items.length} 条（纯预览，未发任何评论）</b>
             <p>${esc(res.note || "所有候选均已按当前筛选与去重条件过滤。")}${res.ai_warning ? ` ⚠️ ${esc(res.ai_warning)}` : ""}</p>
           </div>
         </div>
+        ${forcedByGlobal && !(rule && rule.require_review) ? `<div class="ac-lock-notice">
+          <span>${ep.xhs_manual_only ? "当前小红书评论通道为「仅保存草稿」，正式运行也只会保存草稿。" : "本规则未勾选审核，但「设置 → 采集与运行」已开启小红书全局强制先审，因此仍会先入草稿。"}</span>
+          <button type="button" class="ghost sm" id="ac-prev-open-engine">${ep.xhs_manual_only ? "去修改发送方式 →" : "去关闭全局强制先审 →"}</button>
+        </div>` : ""}
         ${items.length ? `<div class="ac-preview-list">${items.map(it => {
           const [srcLabel, srcCls] = AC_SRC_META[it.content_source] || ["模板", ""];
           return `<div class="ac-preview-item">
@@ -14958,15 +15075,18 @@ async function previewRule(id) {
             ${it.ai_error ? `<div class="mut" style="color:var(--warn);font-size:11px">AI 提示：${esc(it.ai_error)}</div>` : ""}
           </div>`;
         }).join("")}</div>` : `<div class="empty"><div class="empty-t">本次未命中可生成的目标</div><div class="empty-sub">${esc(res.note || "可检查关键词筛选或近期作品范围")}</div></div>`}
-        ${items.length ? `<div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px">
-          <button type="button" class="ghost sm" id="ac-prev-run-live">按规则配置正式执行一轮</button>
+        ${items.length && !willReview ? `<div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px">
+          <button type="button" class="ghost sm" id="ac-prev-run-draft">本次仅存草稿待审</button>
         </div>` : ""}
       </div>`;
-    if ($("ac-prev-run-live")) {
-      $("ac-prev-run-live").onclick = () => { _uiClose("live"); };
+    if ($("ac-prev-run-draft")) {
+      $("ac-prev-run-draft").onclick = () => { _uiClose("draft"); };
     }
-    _uiOpen(`试跑预览 · ${rule ? rule.name : "#" + id}`, "仅抓取与生成样例，不写入队列也不发送。确认满意后再生成草稿或正式运行。", {
-      okText: items.length ? "生成草稿待审" : "关闭",
+    if ($("ac-prev-open-engine")) {
+      $("ac-prev-open-engine").onclick = () => { openAcEngineReviewSettings(ep); };
+    }
+    _uiOpen(`试跑预览 · ${rule ? rule.name : "#" + id}`, "仅抓取与生成样例，不写入队列也不发送。确认满意后再执行本轮。", {
+      okText: items.length ? (willReview ? (res.manual_only ? "生成人工发布草稿" : "生成草稿待审") : "按规则正式执行一轮") : "关闭",
       wide: true,
       icon: "i-sparkles",
     });
@@ -15157,6 +15277,7 @@ async function delTask(id) {
 }
 window.addEventListener("creatorhub:ai-config:updated", () => refreshAcPolicyMeta());
 window.addEventListener("creatorhub:ai-channels:updated", () => refreshAcPolicyMeta());
+window.addEventListener("creatorhub:engine-settings:updated", () => refreshAcPolicyMeta());
 
 // ─── 统一任务队列 ───
 let TASK_QUEUE_PAGE = 1;
@@ -15613,7 +15734,7 @@ updateTaskQueuePlatformLabel();
 setupMonitorInterval("t-interval", 300);
 setupMonitorInterval("w-interval", 600);
 setupMonitorInterval("d-w-interval", 0, true);
-onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); onAcMode(); loadSettings(); refreshAccounts(); refreshBrowserRuntimes(); refreshProxies(); refreshChannels(); window.CreatorHubProgress?.start?.(); loop();
+onTypeChange(); bindPubFilePicker(); onPubType(); populateWatchAccount(); applyDanmakuForm(); resetAcReviewDefaultForPlatform(PLATFORM); onAcMode(); loadSettings(); refreshAccounts(); refreshBrowserRuntimes(); refreshProxies(); refreshChannels(); window.CreatorHubProgress?.start?.(); loop();
 enhanceAllSelects();   // 把所有原生 <select> 升级为美化下拉
 if (typeof syncShareHistoryPlatformControl === "function") syncShareHistoryPlatformControl();
 enhanceAllMetaControls(); // 分组/标签：当前平台词库下拉，可搜索并新增

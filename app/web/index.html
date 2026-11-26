@@ -761,6 +761,26 @@
   .switch-row:hover { border-color:color-mix(in srgb,var(--line) 60%,var(--fg)); background:var(--control-bg-hover); }
   .switch-row:has(input:checked) { border-color:color-mix(in srgb,var(--acc) 24%,var(--line)); background:color-mix(in srgb,var(--acc) 4%,var(--control-bg)); box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
   .switch-row:has(input:focus-visible) { border-color:var(--acc); box-shadow:0 0 0 3px var(--acc-ring); }
+  .switch-row.is-locked {
+    cursor:default;
+    border-color:color-mix(in srgb,var(--warn) 42%,var(--line));
+    background:color-mix(in srgb,var(--warn-soft) 55%,var(--surface));
+  }
+  .switch-row.is-locked:hover {
+    border-color:color-mix(in srgb,var(--warn) 48%,var(--line));
+    background:color-mix(in srgb,var(--warn-soft) 65%,var(--surface));
+  }
+  .switch-row.is-locked .switch-copy { flex:1 1 auto; }
+  .switch-row.is-locked button { flex:0 0 auto; white-space:nowrap; }
+  .switch-row input[type="checkbox"]:disabled { opacity:.65; cursor:not-allowed; }
+  .ac-lock-notice {
+    display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+    padding:9px 11px; border-radius:var(--r-xs);
+    border:1px solid color-mix(in srgb,var(--warn) 42%,var(--line));
+    background:color-mix(in srgb,var(--warn-soft) 60%,var(--surface));
+    color:var(--fg); font-size:12px; line-height:1.45;
+  }
+  .ac-lock-notice span { flex:1 1 220px; }
   .switch-row input[type="checkbox"] {
     appearance:none; -webkit-appearance:none; display:block; position:relative;
     width:38px!important; min-width:38px; height:22px; min-height:22px; flex:0 0 38px; align-self:center;
@@ -5558,7 +5578,7 @@
         <div class="eng-section-head">
           <div>
             <h3>一键运行方案</h3>
-            <p>按电脑配置和使用习惯一键切换，套用后仍可在下方卡片自由微调（不会改动你的监控范围和私信/健康提醒开关）。</p>
+            <p>按电脑配置和使用习惯一键切换，套用后仍可在下方卡片自由微调（不会改动你的监控范围、评论审核锁和私信/健康提醒开关）。</p>
           </div>
         </div>
         <div class="eng-presets" role="group" aria-label="快捷运行方案">
@@ -5572,7 +5592,7 @@
           </button>
           <button type="button" class="eng-preset" data-eng-preset="compat" onclick="CreatorHubEngineSettings.applyPreset('compat')">
             <div class="eng-preset-top"><b>稳妥兼容</b><span class="eng-preset-tag">网络波动 / 防验证</span></div>
-            <p>拉长关键词采集间隔与请求等待时间，遇阻自动回退浏览器并保持审核与可见窗口。</p>
+            <p>拉长关键词采集间隔与请求等待时间，遇阻自动回退浏览器并保持可见窗口。</p>
           </button>
         </div>
       </div>
@@ -5679,14 +5699,14 @@
                     <b>互动、私信与下载体验</b>
                     <span class="eng-module-badge" id="eng-badge-interact">推荐值</span>
                   </div>
-                  <p>决定自动评论要不要人工先审核、是否显示浏览器窗口，以及小红书私信监听。</p>
+                  <p>管理小红书全局审核保险锁、评论浏览器窗口显示，以及小红书私信监听。</p>
                 </div>
               </div>
             </div>
             <div class="eng-module-main stack">
               <label class="switch-row" for="engine-xhs_comment_review_before_publish">
                 <input id="engine-xhs_comment_review_before_publish" name="xhs_comment_review_before_publish" type="checkbox" disabled>
-                <span class="switch-copy"><b>小红书自动评论先审核再发</b><span>推荐开启。关闭后，命中的评论将直接进入发送队列。</span></span>
+                <span class="switch-copy"><b>强制小红书评论先审核再发（覆盖单条规则）</b><span>默认关闭，由每条自动评论规则自身的「发布前审核」开关决定；开启后将作为全局保险锁，忽略单条规则设置并强制全部先存草稿。</span></span>
               </label>
               <label class="switch-row" for="engine-comment_browser_headed">
                 <input id="engine-comment_browser_headed" name="comment_browser_headed" type="checkbox" disabled>
@@ -6753,6 +6773,7 @@
           <div class="ac-policy-actions">
             <button type="button" class="ghost sm" onclick="openAiSettingsSection()">配置 AI 文案 →</button>
             <button type="button" class="ghost sm" onclick="openRiskRulesSection()">风控规则 →</button>
+            <button type="button" class="ghost sm" onclick="openAcEngineReviewSettings()">采集与运行 →</button>
           </div>
         </div>
 
@@ -6897,9 +6918,10 @@
         <!-- 4. 审核与频率 -->
         <div class="ac-section-box">
           <div class="ac-section-title"><span>4. 审核方式与执行频率</span></div>
-          <label class="switch-row">
-            <input type="checkbox" id="ac-review" onchange="syncAcCreatePolicySummary()">
-            <span class="switch-copy"><b>发布前先存草稿人工审核</b><span id="ac-review-help">推荐开启：生成后进入「任务与审核」页核对原文与回复，人工通过后再按节流发送。</span></span>
+          <label class="switch-row" id="ac-review-row">
+            <input type="checkbox" id="ac-review" onchange="onAcReviewToggle()">
+            <span class="switch-copy"><b id="ac-review-title">发布前先存草稿人工审核</b><span id="ac-review-help">推荐开启：生成后进入「任务与审核」页核对原文与回复，人工通过后再按节流发送。</span></span>
+            <button type="button" class="ghost sm" id="ac-review-unlock-btn" hidden onclick="event.preventDefault();event.stopPropagation();openAcEngineReviewSettings()">去设置关闭 →</button>
           </label>
           <div class="form-grid">
             <div class="form-field">
@@ -6947,6 +6969,7 @@
         <div class="ac-policy-actions">
           <button type="button" class="ghost sm" onclick="openAiSettingsSection()">AI 文案设置 →</button>
           <button type="button" class="ghost sm" onclick="openRiskRulesSection()">风控规则 →</button>
+          <button type="button" class="ghost sm" onclick="openAcEngineReviewSettings()">采集与运行 →</button>
         </div>
       </div>
       <div class="table-wrap"><table aria-label="自动评论规则列表"><thead><tr>

@@ -89,7 +89,6 @@
         block_media_resources: false,
         route_download_via_proxy: true,
         comment_browser_headed: true,
-        xhs_comment_review_before_publish: true,
         request_timeout_seconds: 20,
         download_timeout_seconds: 120,
         douyin_keyword_gap_seconds: 8,
@@ -131,7 +130,6 @@
         block_media_resources: false,
         route_download_via_proxy: true,
         comment_browser_headed: true,
-        xhs_comment_review_before_publish: true,
         request_timeout_seconds: 20,
         download_timeout_seconds: 120,
         douyin_keyword_gap_seconds: 8,
@@ -173,7 +171,6 @@
         block_media_resources: false,
         route_download_via_proxy: true,
         comment_browser_headed: true,
-        xhs_comment_review_before_publish: true,
         request_timeout_seconds: 35,
         download_timeout_seconds: 240,
         douyin_keyword_gap_seconds: 15,
@@ -446,8 +443,12 @@
         text: `负载：${tierLabel} (${draft.worker_pool_size}下载/${draft.scan_concurrency}采集/${draft.max_live_contexts}浏览器)`,
       });
       chips.push({
-        text: draft.xhs_comment_review_before_publish ? "小红书评论：先审后发" : "小红书评论：免审直发",
-        tone: draft.xhs_comment_review_before_publish ? "is-on" : "is-warn",
+        text: draft.xhs_comment_write_mode === "manual"
+          ? "小红书评论：仅存草稿"
+          : draft.xhs_comment_review_before_publish
+            ? "小红书评论：全局强制先审"
+            : "小红书评论：按规则审核设置",
+        tone: (draft.xhs_comment_write_mode === "manual" || draft.xhs_comment_review_before_publish) ? "is-warn" : "",
       });
       if (draft.xhs_dm_monitor_enabled) {
         chips.push({ text: draft.xhs_dm_auto_reply_enabled ? "小红书私信：监控+自动回复" : "小红书私信：监控已开启", tone: "is-on" });
@@ -933,6 +934,7 @@
       message(okMsg, "success");
       if (typeof toast === "function") toast(okMsg, "ok", needsRestart ? 5200 : 3200);
       globalThis.CreatorHubTransportMatrix?.load?.();
+      window.dispatchEvent(new Event("creatorhub:engine-settings:updated"));
     } catch (error) {
       dirty = true;
       if (stickyBar) stickyBar.classList.add("is-dirty");

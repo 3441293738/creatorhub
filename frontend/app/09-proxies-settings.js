@@ -800,6 +800,18 @@ function openAiSettingsSection() {
   if (typeof switchTab === "function") switchTab("settings", true);
   globalThis.CreatorHubWorkbench?.showSection?.("settings", "ai");
 }
+function openEngineSettingsSection(focusFieldId = "") {
+  if (typeof switchTab === "function") switchTab("settings", true);
+  globalThis.CreatorHubWorkbench?.showSection?.("settings", "engine");
+  if (focusFieldId) {
+    setTimeout(() => {
+      const el = $(focusFieldId);
+      if (!el) return;
+      for (let d = el.closest("details"); d; d = d.parentElement?.closest("details")) d.open = true;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 140);
+  }
+}
 function _aiSelectedChannel() {
   const cid = $("ai-channel-id")?.value || AI_CHANNELS_STATE.active_channel_id || "default";
   return (AI_CHANNELS_STATE.channels || []).find(c => c.id === cid) || null;

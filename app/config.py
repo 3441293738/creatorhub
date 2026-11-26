@@ -129,8 +129,8 @@ class EngineConfig:
     comment_risk_cooldown_seconds: int = 21600  # 平台拒绝/验证后暂停该账号写操作参考时长(默认6小时)
     # 小红书评论发布通道:browser=页面操作;api=显式兼容;manual=只保留草稿。
     xhs_comment_write_mode: str = "browser"  # browser | api | manual
-    # true=先存草稿,人工点击“通过”后由队列自动发布; false=生成后直接排队发布。
-    xhs_comment_review_before_publish: bool = True
+    # 全局强制保险锁(默认关闭): true=强制所有小红书评论先存草稿审核(覆盖单条规则); false=按各规则自身「发布前审核」开关决定。
+    xhs_comment_review_before_publish: bool = False
     # 抖音发评论用有头浏览器(弹真实窗口):抖音对无头写操作常降级/拦截,有头更稳,
     # 且能让你手动过验证码;量大嫌弹窗可设 false 试无头。
     comment_browser_headed: bool = True

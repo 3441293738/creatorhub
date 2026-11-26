@@ -228,7 +228,7 @@ class CommentRuleRunnerMixin:
         xhs_manual_only = (platform == "xhs" and self._xhs_comment_write_mode() == "manual")
         xhs_review_forced = (
             platform == "xhs"
-            and bool(getattr(self.cfg.engine, "xhs_comment_review_before_publish", True))
+            and bool(getattr(self.cfg.engine, "xhs_comment_review_before_publish", False))
         )
         eff_review = bool(rule_require_review) or xhs_review_forced or xhs_manual_only
 

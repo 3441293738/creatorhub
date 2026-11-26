@@ -344,6 +344,7 @@
           <div class="ac-policy-actions">
             <button type="button" class="ghost sm" onclick="openAiSettingsSection()">配置 AI 文案 →</button>
             <button type="button" class="ghost sm" onclick="openRiskRulesSection()">风控规则 →</button>
+            <button type="button" class="ghost sm" onclick="openAcEngineReviewSettings()">采集与运行 →</button>
           </div>
         </div>
 
@@ -488,9 +489,10 @@
         <!-- 4. 审核与频率 -->
         <div class="ac-section-box">
           <div class="ac-section-title"><span>4. 审核方式与执行频率</span></div>
-          <label class="switch-row">
-            <input type="checkbox" id="ac-review" onchange="syncAcCreatePolicySummary()">
-            <span class="switch-copy"><b>发布前先存草稿人工审核</b><span id="ac-review-help">推荐开启：生成后进入「任务与审核」页核对原文与回复，人工通过后再按节流发送。</span></span>
+          <label class="switch-row" id="ac-review-row">
+            <input type="checkbox" id="ac-review" onchange="onAcReviewToggle()">
+            <span class="switch-copy"><b id="ac-review-title">发布前先存草稿人工审核</b><span id="ac-review-help">推荐开启：生成后进入「任务与审核」页核对原文与回复，人工通过后再按节流发送。</span></span>
+            <button type="button" class="ghost sm" id="ac-review-unlock-btn" hidden onclick="event.preventDefault();event.stopPropagation();openAcEngineReviewSettings()">去设置关闭 →</button>
           </label>
           <div class="form-grid">
             <div class="form-field">
@@ -538,6 +540,7 @@
         <div class="ac-policy-actions">
           <button type="button" class="ghost sm" onclick="openAiSettingsSection()">AI 文案设置 →</button>
           <button type="button" class="ghost sm" onclick="openRiskRulesSection()">风控规则 →</button>
+          <button type="button" class="ghost sm" onclick="openAcEngineReviewSettings()">采集与运行 →</button>
         </div>
       </div>
       <div class="table-wrap"><table aria-label="自动评论规则列表"><thead><tr>

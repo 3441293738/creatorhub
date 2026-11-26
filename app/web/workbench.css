@@ -1176,6 +1176,8 @@ button, input, textarea, select, .cs-trg, .dt-trg { border-radius:10px; }
 .ui-toggle input[type="checkbox"]::after { content:""; display:block; position:absolute; left:2px; top:2px; width:20px; height:20px; border:0; border-radius:50%; transform:none; background:var(--surface-raised); box-shadow:0 1px 3px rgba(0,0,0,.18); transition:transform 200ms var(--ease-out); }
 .ui-toggle input[type="checkbox"]:checked { background:var(--acc-solid); border-color:var(--acc-solid); }
 .ui-toggle input[type="checkbox"]:checked::after { transform:translateX(18px); background:var(--on-accent); }
+.ui-toggle.is-locked { cursor:default; }
+.ui-toggle input[type="checkbox"]:disabled { opacity:.65; cursor:not-allowed; }
 #uimodal .ui-modal-footer { flex:0 0 auto; display:flex; align-items:center; gap:16px; padding:16px 28px; border-top:1px solid var(--line-soft); background:var(--surface-raised); }
 #uimodal .ui-feedback { flex:1; min-width:0; max-height:60px; overflow:auto; color:var(--mut); font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
 #uimodal .ui-feedback[data-tone="error"] { color:var(--danger); }

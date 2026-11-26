@@ -346,7 +346,7 @@
         <div class="eng-section-head">
           <div>
             <h3>一键运行方案</h3>
-            <p>按电脑配置和使用习惯一键切换，套用后仍可在下方卡片自由微调（不会改动你的监控范围和私信/健康提醒开关）。</p>
+            <p>按电脑配置和使用习惯一键切换，套用后仍可在下方卡片自由微调（不会改动你的监控范围、评论审核锁和私信/健康提醒开关）。</p>
           </div>
         </div>
         <div class="eng-presets" role="group" aria-label="快捷运行方案">
@@ -360,7 +360,7 @@
           </button>
           <button type="button" class="eng-preset" data-eng-preset="compat" onclick="CreatorHubEngineSettings.applyPreset('compat')">
             <div class="eng-preset-top"><b>稳妥兼容</b><span class="eng-preset-tag">网络波动 / 防验证</span></div>
-            <p>拉长关键词采集间隔与请求等待时间，遇阻自动回退浏览器并保持审核与可见窗口。</p>
+            <p>拉长关键词采集间隔与请求等待时间，遇阻自动回退浏览器并保持可见窗口。</p>
           </button>
         </div>
       </div>
@@ -467,14 +467,14 @@
                     <b>互动、私信与下载体验</b>
                     <span class="eng-module-badge" id="eng-badge-interact">推荐值</span>
                   </div>
-                  <p>决定自动评论要不要人工先审核、是否显示浏览器窗口，以及小红书私信监听。</p>
+                  <p>管理小红书全局审核保险锁、评论浏览器窗口显示，以及小红书私信监听。</p>
                 </div>
               </div>
             </div>
             <div class="eng-module-main stack">
               <label class="switch-row" for="engine-xhs_comment_review_before_publish">
                 <input id="engine-xhs_comment_review_before_publish" name="xhs_comment_review_before_publish" type="checkbox" disabled>
-                <span class="switch-copy"><b>小红书自动评论先审核再发</b><span>推荐开启。关闭后，命中的评论将直接进入发送队列。</span></span>
+                <span class="switch-copy"><b>强制小红书评论先审核再发（覆盖单条规则）</b><span>默认关闭，由每条自动评论规则自身的「发布前审核」开关决定；开启后将作为全局保险锁，忽略单条规则设置并强制全部先存草稿。</span></span>
               </label>
               <label class="switch-row" for="engine-comment_browser_headed">
                 <input id="engine-comment_browser_headed" name="comment_browser_headed" type="checkbox" disabled>
