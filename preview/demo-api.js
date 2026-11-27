@@ -4,7 +4,7 @@
   let demoDiagLevel = "info";
   const realFetch = window.fetch.bind(window);
   const engineDefaults = {
-    worker_pool_size: 2, scan_concurrency: 2, active_accounts: 3, max_live_contexts: 6,
+    worker_pool_size: 2, scan_concurrency: 2, collection_concurrency: 2, active_accounts: 3, max_live_contexts: 6,
     resident_browser_sessions: true, browser_session_idle_seconds: 1800,
     xhs_read_mode: "api", rednote_read_mode: "hybrid", douyin_read_mode: "hybrid", douyin_write_mode: "browser",
     tiktok_read_mode: "native", channels_read_mode: "auto",
@@ -23,7 +23,7 @@
     danmaku_recent_works: 5, danmaku_recent_days: 7, danmaku_max_scrolls: 6,
     request_timeout_seconds: 20,
     download_timeout_seconds: 120, xhs_item_gap_seconds: 2.5, xhs_request_jitter: .35,
-    xhs_publish_mode: "browser", rednote_publish_mode: "browser", xhs_comment_write_mode: "browser", xhs_comment_review_before_publish: true,
+    xhs_publish_mode: "browser", rednote_publish_mode: "browser", xhs_comment_write_mode: "browser", xhs_comment_review_before_publish: false,
     work_health_enabled: false, work_health_interval_seconds: 3600, work_health_zero_play_hours: 6,
     work_health_recent_days: 7, work_health_stat_snapshots: true,
     scan_interval_seconds: 300, idle_keepalive_hours: 6,
@@ -70,10 +70,10 @@
   };
   const demoRiskConfig = {
     risk_control: {
-      enabled: false, mode: "custom",
-      cooldown_enabled: false, write_limits_enabled: false, pacing_enabled: false,
-      network_guard_enabled: false, jitter_enabled: false,
-      network_group_concurrency: 1, read_light_gap_seconds: 15, read_heavy_gap_seconds: 45,
+      enabled: true, mode: "custom",
+      cooldown_enabled: true, write_limits_enabled: false, pacing_enabled: true,
+      network_guard_enabled: true, jitter_enabled: true,
+      network_group_concurrency: 1, read_light_gap_seconds: 8, read_heavy_gap_seconds: 20,
       shared_write_gap_seconds: 180,
       comment_min_gap_seconds: 300, comment_hourly_cap: 6, comment_daily_cap: 20,
       social_min_gap_seconds: 480, social_hourly_cap: 4, social_daily_cap: 15,
@@ -84,15 +84,15 @@
       recovery_successes: 3, recovery_probe_gap_seconds: 600, event_retention_days: 30,
       network_group_risk_accounts: 2, network_group_risk_window_seconds: 900,
       network_group_cooldown_seconds: 7200,
-      operation_gap_min_seconds: 6, operation_gap_max_seconds: 18,
-      session_operation_limit: 15, session_rest_min_seconds: 120, session_rest_max_seconds: 300,
+      operation_gap_min_seconds: 3, operation_gap_max_seconds: 8,
+      session_operation_limit: 15, session_rest_min_seconds: 90, session_rest_max_seconds: 210,
       network_retry_jitter_seconds: 30,
     },
     schedule: {
       quiet_hours_enabled: false, quiet_hours_include_reads: false, quiet_hours_wake_jitter_minutes: 0,
       active_hours_start: 8, active_hours_end: 24,
       account_check_interval_seconds: 1800, douyin_captcha_wait_seconds: 300,
-      scan_jitter: 0, comment_jitter: 0, xhs_dm_poll_jitter: 0, initial_scan_spread_seconds: 0,
+      scan_jitter: 0.2, comment_jitter: 0.2, xhs_dm_poll_jitter: 0.3, initial_scan_spread_seconds: 15,
       native_write_gate_enabled: false, native_write_require_system_chrome: true,
       native_write_require_verified_proxy: true, native_write_proxy_max_age_seconds: 86400,
     },
@@ -273,7 +273,12 @@
   ];
 
   function publishTasks(platform) {
-    return [{ id: 51, platform, account_id: platformAccount(platform).id, title: "夏日城市漫游", media_type: "images", media_count: 6, source_platform: "", scheduled_at: null, status: "pending", error: "", result_url: "" }];
+    return [{
+      id: 51, platform, account_id: platformAccount(platform).id, title: "夏日城市漫游",
+      media_type: "images", media_count: 6, source_platform: "", scheduled_at: null,
+      status: "pending", publish_action: "publish", cover_path: "", has_cover: false,
+      cover_name: "", cover_url: "", error: "", result_url: "",
+    }];
   }
 
   function taskQueue(url) {
@@ -417,7 +422,10 @@
       downloaded: platform === "shipinhao" ? 0 : contents(platform).filter(item => item.download_status === "done").length,
       comments: platform === "shipinhao" ? 0 : comments(platform).length,
     };
+    if (path === "/api/progress/tasks") return { tasks: [] };
+    if (path === "/api/task-queue/summary") return { summary: taskQueue(url).summary, generated_at: new Date().toISOString() };
     if (path === "/api/task-queue") return taskQueue(url);
+    if (path === "/api/share-download/jobs") return { jobs: [] };
     if (path === "/api/accounts") return url.searchParams.has("platform") ? accounts.filter((item) => item.platform === platform) : accounts;
     if (path === "/api/proxies/options") return proxies.map((item) => ({
       id: item.id, url: item.url_full || item.url, label: item.label, raw_label: item.label,
@@ -725,7 +733,16 @@
       };
     }
     if (path === "/api/share-download/links") return { count: 1, links: [{ platform: "douyin", host: "v.douyin.com", url: "https://v.douyin.com/DEMO/" }] };
+    if (path === "/api/share-download/jobs") return { id: "demo-share-1", status: "completed", total: 1, done: 1 };
     if (path === "/api/share-download") return { ok: true, results: [{ ok: true, platform: "douyin", title: "示例作品", author: "示例创作者", media_type: "video", media_count: 1, output_dir: "data/media/demo", files: [] }] };
+    if (path === "/api/matrix/batch-jobs") {
+      const ids = Array.isArray(body.account_ids) ? body.account_ids : [];
+      const labels = { test_proxy: "批量检测代理与出口", refresh_profile: "批量刷新资料与登录态", delete_accounts: "批量删除账号" };
+      return { id: "demo-batch-1", label: labels[body.action] || "批量任务", total: ids.length, concurrency: 2, status: "completed" };
+    }
+    if (path === "/api/progress/clear-finished") return { ok: true, cleared: 0 };
+    if (/^\/api\/progress\/tasks\/.+\/cancel$/.test(path)) return { ok: true };
+    if (/^\/api\/publish\/\d+\/enqueue$/.test(path)) return { ok: true, status: "pending" };
     if (/^\/api\/comment-rules\/\d+\/preview$/.test(path)) {
       return {
         ok: true, dry_run: true, candidates: 3, matched: 1, skipped: { dup: 1, filter: 1 },
@@ -858,6 +875,8 @@
 
   window.EventSource = class DemoEventSource {
     constructor() { this.readyState = 1; }
+    addEventListener() {}
+    removeEventListener() {}
     close() { this.readyState = 2; }
   };
 
