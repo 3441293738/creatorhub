@@ -1,4 +1,4 @@
-"""关键词与创作者作品采集任务创建、进度查询、媒体预览及报表导出接口。"""
+"""关键词采集任务创建、进度查询、媒体预览及报表导出接口。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -25,24 +25,23 @@ from app.submissions import submit_once
 router = APIRouter()
 
 
-def _collection_requires_account(platform: str, source_type: str) -> bool:
-    """视频号关键词/外部创作者采集走本机微信通道，无需网页创作者助手登录态。"""
-    return not (platform == "shipinhao" and source_type in {"keyword", "creator"})
+def _collection_requires_account(platform: str, source_type: str = "keyword") -> bool:
+    """视频号关键词采集走本机微信通道，无需网页创作者助手登录态。"""
+    return platform != "shipinhao"
 
 
 def _resolve_collection_account_id(
-    session, *, platform: str, source_type: str, requested_id: int | None
+    session, *, platform: str, source_type: str = "keyword", requested_id: int | None
 ) -> int:
     acc_id = int(requested_id or 0)
     account = session.get(DouyinAccount, acc_id) if acc_id else None
     if (
         account is not None
-        and source_type in {"keyword", "creator"}
         and str(account.account_role or "hybrid").strip().lower() == "publish"
     ):
         raise HTTPException(
             400,
-            "该账号角色设为「发布主号 (publish)」，已物理禁止执行外部关键词/竞品创作者采集以免连坐主号；请改用「仅采集号 (crawler)」或「混合号 (hybrid)」",
+            "该账号角色设为「发布主号 (publish)」，已物理禁止执行外部关键词采集以免连坐主号；请改用「仅采集号 (crawler)」或「混合号 (hybrid)」",
         )
     if _collection_requires_account(platform, source_type):
         if (not account or account.platform != platform
@@ -58,14 +57,6 @@ def _resolve_collection_account_id(
 
 @router.post("/api/collections")
 async def create_keyword_collection(body: collections_service.KeywordCollectionIn, request: Request = None):
-    await collections_service._resolve_ks_creator_source(body)
-    await collections_service._resolve_channels_creator_source(body)
-    await collections_service._resolve_bili_creator_source(body)
-    await collections_service._resolve_rednote_creator_source(body)
-    await collections_service._resolve_ig_creator_source(body)
-    await collections_service._resolve_twitter_creator_source(body)
-    await collections_service._resolve_facebook_creator_source(body)
-    await collections_service._resolve_youtube_creator_source(body)
     with get_session() as session:
         def create():
             platform, keywords, quality, download_dir, options = collections_service._validated_collection_input(body)
@@ -93,27 +84,20 @@ async def create_keyword_collection(body: collections_service.KeywordCollectionI
         record_account_operation(
             platform=payload["platform"], account_id=payload["account_id"],
             task_type="collection", task_id=payload["id"], action="queued",
-            status="pending", target=payload.get("source_name") or
-            "、".join(payload.get("keywords") or []), channel="queue")
+            status="pending", target="、".join(payload.get("keywords") or []), channel="queue")
     return payload
 
 
 @router.put("/api/collections/{job_id}")
 async def update_keyword_collection(job_id: int, body: collections_service.KeywordCollectionIn):
     """修改已结束任务的配置；历史作品/评论保留，续跑时按任务去重。"""
-    await collections_service._resolve_ks_creator_source(body)
-    await collections_service._resolve_channels_creator_source(body)
-    await collections_service._resolve_bili_creator_source(body)
-    await collections_service._resolve_rednote_creator_source(body)
-    await collections_service._resolve_ig_creator_source(body)
-    await collections_service._resolve_twitter_creator_source(body)
-    await collections_service._resolve_facebook_creator_source(body)
-    await collections_service._resolve_youtube_creator_source(body)
     platform, keywords, quality, download_dir, options = collections_service._validated_collection_input(body)
     with get_session() as session:
         job = session.get(KeywordCollectionJob, job_id)
         if not job:
             raise HTTPException(404, "采集任务不存在")
+        if str(job.source_type or "keyword") != "keyword":
+            raise HTTPException(400, "历史非关键词采集任务已下线，无法继续编辑或续跑；请新建关键词采集任务或前往「主页作品监控」")
         if platform != job.platform:
             raise HTTPException(400, "采集任务创建后不能变更平台")
         if job.status in {"pending", "running"}:
@@ -146,8 +130,7 @@ async def update_keyword_collection(job_id: int, body: collections_service.Keywo
     record_account_operation(
         platform=payload["platform"], account_id=payload["account_id"],
         task_type="collection", task_id=payload["id"], action="configured",
-        status=payload["status"], target=payload.get("source_name") or
-        "、".join(payload.get("keywords") or []), channel="api")
+        status=payload["status"], target="、".join(payload.get("keywords") or []), channel="api")
     return payload
 
 
@@ -418,6 +401,8 @@ async def retry_keyword_collection(job_id: int):
         job = session.get(KeywordCollectionJob, job_id)
         if not job:
             raise HTTPException(404, "采集任务不存在")
+        if str(job.source_type or "keyword") != "keyword":
+            raise HTTPException(400, "历史非关键词采集任务已下线，无法续跑；请新建关键词采集任务或前往「主页作品监控」")
         if job.status in {"pending", "running"}:
             raise HTTPException(409, "任务仍在等待或执行中")
         job.status = "pending"

@@ -11,7 +11,6 @@ let MONITORS = [], WATCHES = [], CONTENTS = [];
 let COLLECTION_JOBS = [], COLLECTION_JOB_ID = 0, COLLECTION_PAGE = 1;
 let COLLECTION_COMMENT_CONTENT_ID = 0, COLLECTION_COMMENT_PAGE = 1;
 let COLLECTION_COMMENT_TIMER = null, COLLECTION_COMMENT_REQUEST = 0;
-let COLLECTION_FAVORITE_BOARDS = [];
 let DANMAKU_WATCHES = [];
 let CHANNELS = [], PUBLISH_TASKS = [], WEBHOOKS = [], WEBHOOK_EDIT_ID = 0;
 let CONTENT_SRC = "", CONTENT_GROUP = "", CONTENT_TAG = "";
@@ -333,7 +332,7 @@ function contentSource(r) {
 }
 function contentSourceMarkup(r) {
   const source = contentSource(r), id = Number(source.id);
-  const kind = source.deleted ? "原任务已删除，历史记录保留" : source.target_kind === "keyword" ? "关键词监控" : "作品监控";
+  const kind = source.deleted ? "原任务已删除，历史记录保留" : source.target_kind === "keyword" ? "历史关键词监控（已下线）" : "主页作品监控";
   const label = esc(source.name || `任务 #${id}`);
   return `<div class="content-origin"><span class="content-origin-label">来源任务</span>
     ${Number.isSafeInteger(id) && id > 0 ? `<button type="button" class="content-source-link" onclick="showMonitorRecords(${id})" title="查看此任务的记录">${label}</button>` : `<span>${label}</span>`}
@@ -452,7 +451,7 @@ function backToWatchTasks(kind) {
 function watchRecordSourceMarkup(kind, row) {
   const view = watchRecordConfig(kind), source = watchRecordSource(kind, row), id = Number(source.id);
   const label = esc(source.name), linked = Number.isSafeInteger(id) && id >= 0;
-  const detail = source.unassigned ? "来源监控信息未记录" : `${view.label}任务 #${id}${source.deleted ? " · 原任务已删除，历史记录保留" : source.kind === "user" ? " · 账号监控" : " · 作品监控"}`;
+  const detail = source.unassigned ? "来源监控信息未记录" : `${view.label}任务 #${id}${source.deleted ? " · 原任务已删除，历史记录保留" : source.kind === "user" ? " · 账号监控" : " · 单条作品"}`;
   return `<div class="content-origin"><span class="content-origin-label">来源任务</span>
     ${linked ? `<button type="button" class="content-source-link" onclick="showWatchRecords('${kind}',${id})" title="查看此来源的记录">${label}</button>` : `<span>${label}</span>`}
     <span class="content-origin-meta">${esc(detail)}</span>
@@ -687,9 +686,10 @@ async function refreshAccounts() {
   globalThis.CreatorHubWorkbench?.accountsUpdated?.();
   if ($("tb-acc")) $("tb-acc").textContent = accs.length;
   populateAccountSelect();
-  populateWatchAccount();
+  if (typeof applyWatchForm === "function") applyWatchForm(false);
+  else populateWatchAccount();
   populateCollectionAccount();
-  if (PLATFORM === "douyin") applyDanmakuForm();
+  if (["douyin", "bilibili"].includes(PLATFORM)) applyDanmakuForm(false);
   else populateDanmakuAccount();
   populatePubAcc();
   populateAcAccount();

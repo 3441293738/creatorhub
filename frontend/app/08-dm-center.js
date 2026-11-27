@@ -287,41 +287,66 @@ async function sendDm() {
     } catch (e) { toast("发送失败:" + e.message, "err"); }
   });
 }
-function accOptions(list, ph) {
+const MONITOR_ACCOUNT_REQUIRED = ["douyin", "xhs", "rednote", "tiktok", "instagram", "twitter", "facebook", "youtube"];
+const WATCH_ACCOUNT_REQUIRED = ["xhs", "rednote", "tiktok", "instagram", "twitter", "facebook", "youtube"];
+
+function _accountRoleTag(a, showCrawlWarn = false) {
+  const role = String(a?.account_role || "hybrid").toLowerCase();
+  if (role === "publish") return showCrawlWarn ? " · 发布主号(禁外采)" : " · 发布主号";
+  if (role === "crawler") return " · 仅采集号";
+  return "";
+}
+function _preferCrawlAccounts(list) {
+  return [...list].sort((a, b) => {
+    const aPub = String(a?.account_role || "hybrid").toLowerCase() === "publish" ? 1 : 0;
+    const bPub = String(b?.account_role || "hybrid").toLowerCase() === "publish" ? 1 : 0;
+    if (aPub !== bPub) return aPub - bPub;
+    const aAct = a?.status === "active" ? 0 : 1;
+    const bAct = b?.status === "active" ? 0 : 1;
+    return aAct - bAct;
+  });
+}
+function accOptions(list, ph, opts = {}) {
+  const ordered = opts.preferCrawler ? _preferCrawlAccounts(list) : list;
   return `<option value="">${ph}</option>` +
-    list.map(a => `<option value="${a.id}">${esc(a.nickname)}${a.has_creator ? " · 创作号" : ""}</option>`).join("");
+    ordered.map(a => `<option value="${a.id}">${esc(a.nickname)}${a.has_creator ? " · 创作号" : ""}${_accountRoleTag(a, !!opts.preferCrawler)}${a.status === "invalid" ? "（登录失效）" : ""}</option>`).join("");
 }
 function populateAccountSelect() {
   const sel = $("t-acc"); if (!sel) return;
-  const required = ["xhs", "douyin", "tiktok"].includes(PLATFORM);
+  const current = sel.value;
+  const required = MONITOR_ACCOUNT_REQUIRED.includes(PLATFORM);
   const channels = PLATFORM === "shipinhao";
   const platformName = PF_NAME[PLATFORM] || "当前平台";
-  const list = PLATFORM === "tiktok"
-    ? ACCOUNTS.filter(a => a.status === "active" && a.has_storage)
-    : ACCOUNTS;
+  const list = required
+    ? _preferCrawlAccounts(ACCOUNTS.filter(a => a.status === "active" && (a.has_storage || a.has_creator)))
+    : _preferCrawlAccounts(ACCOUNTS);
   sel.innerHTML = accOptions(
     list,
-    required ? `请选择${platformName}账号(必选)` : channels ? "默认走本机微信客户端（无需账号）" : "不指定账号",
+    required ? (list.length ? `请选择${platformName}账号(必选)` : `暂无可用${platformName}账号`) : channels ? "默认走本机微信客户端（无需账号）" : "不指定账号（匿名抓取）",
+    { preferCrawler: true },
   );
-  // 抖音匿名主页可能返回风控后的旧快照；作品监控与小红书一样必须使用登录态。
-  if (required && list.length) sel.value = String(list[0].id);
-  else if (channels) sel.value = "";
+  // 需登录平台默认优先选中非 publish 角色的活跃账号
+  if (channels) sel.value = "";
+  else if (list.some(a => String(a.id) === current)) sel.value = current;
+  else if (required && list.length) sel.value = String(list[0].id);
+  else sel.value = "";
   if ($("t-acc-wrap")) $("t-acc-wrap").style.display = channels ? "none" : "";
+  if (sel._csSync) sel._csSync();
 }
-function collectionRequiresAccount(platform = PLATFORM, source = collectionSourceValue()) {
-  return !(platform === "shipinhao" && ["keyword", "creator"].includes(source));
+function collectionRequiresAccount(platform = PLATFORM) {
+  return platform !== "shipinhao";
 }
 function populateCollectionAccount() {
   const sel = $("col-account"); if (!sel) return;
   const current = sel.value;
   const platformName = PF_NAME[PLATFORM] || "平台";
-  const requiresAccount = collectionRequiresAccount(PLATFORM, collectionSourceValue());
+  const requiresAccount = collectionRequiresAccount(PLATFORM);
   const channels = PLATFORM === "shipinhao";
-  const list = ACCOUNTS.filter(a => a.platform === PLATFORM && a.status !== "invalid" && a.has_storage);
+  const list = _preferCrawlAccounts(ACCOUNTS.filter(a => a.platform === PLATFORM && a.status !== "invalid" && a.has_storage));
   const placeholder = requiresAccount
     ? (list.length ? `请选择${platformName}账号` : `暂无可用${platformName}账号`)
     : "使用本机微信通道（无需网页账号）";
-  sel.innerHTML = accOptions(list, placeholder);
+  sel.innerHTML = accOptions(list, placeholder, { preferCrawler: true });
   sel.required = requiresAccount;
   if ($("col-account-wrap")) $("col-account-wrap").style.display = (channels && !requiresAccount) ? "none" : "";
   if (!requiresAccount) {
@@ -332,44 +357,79 @@ function populateCollectionAccount() {
   else sel.value = "";
   if (sel._csSync) sel._csSync();
 }
+function onWatchKindChange() {
+  applyWatchForm(true);
+}
+function onWatchModeChange() {
+  if (PLATFORM === "douyin" && $("w-mode")?.value === "creator" && $("w-kind")?.value === "video") {
+    $("w-kind").value = "user";
+    $("w-kind")._csSync?.();
+  }
+  applyWatchForm(false);
+}
+function applyWatchForm(resetFeedback = false) {
+  const kind = $("w-kind")?.value || "auto";
+  const isVideo = kind === "video";
+  const isDouyin = PLATFORM === "douyin";
+  if ($("w-recent-wrap")) $("w-recent-wrap").hidden = isVideo;
+  if ($("w-days-wrap")) $("w-days-wrap").hidden = isVideo;
+  // 抖音创作中心模式只支持「账号」类型；切为单条视频时自动回退到公开评论区并隐藏来源切换
+  if (isDouyin && isVideo && $("w-mode") && $("w-mode").value === "creator") {
+    $("w-mode").value = "public";
+    $("w-mode")._csSync?.();
+  }
+  if ($("w-mode-wrap")) {
+    $("w-mode-wrap").style.display = (isDouyin && !isVideo) ? "" : "none";
+  }
+  populateWatchAccount();
+  if (resetFeedback && typeof resetWatchTargetState === "function") resetWatchTargetState();
+}
 function populateWatchAccount() {
   const sel = $("w-acc"); if (!sel) return;
-  const xhs = PLATFORM === "xhs";
-  const tiktok = PLATFORM === "tiktok";
+  const current = sel.value;
   const channels = PLATFORM === "shipinhao";
-  const required = xhs || PLATFORM === "rednote" || tiktok;
+  const required = WATCH_ACCOUNT_REQUIRED.includes(PLATFORM);
   const creatorOnly = PLATFORM === "douyin" && $("w-mode") && $("w-mode").value === "creator";
-  const list = tiktok
-    ? ACCOUNTS.filter(a => a.status === "active" && a.has_storage)
+  const baseList = required
+    ? ACCOUNTS.filter(a => a.status === "active" && (a.has_storage || a.has_creator))
     : creatorOnly ? ACCOUNTS.filter(a => a.has_creator) : ACCOUNTS;
-  const ph = required ? "请选择" + PF_NAME[PLATFORM] + "账号(必选)"
-    : (creatorOnly && list.length === 0 ? "无创作者账号,请先创作者登录" : channels ? "默认走本机微信客户端（无需账号）" : "不指定账号");
-  sel.innerHTML = accOptions(list, ph);
-  if (required && list.length) sel.value = String(list[0].id);
-  else if (channels) sel.value = "";
+  const list = creatorOnly ? baseList : _preferCrawlAccounts(baseList);
+  const ph = required
+    ? (list.length ? `请选择${PF_NAME[PLATFORM] || "当前平台"}账号(必选)` : `暂无可用${PF_NAME[PLATFORM] || "当前平台"}账号`)
+    : (creatorOnly ? (list.length ? "请选择创作者账号(必选)" : "无创作者账号,请先创作者登录") : channels ? "默认走本机微信客户端（无需账号）" : "不指定账号");
+  sel.innerHTML = accOptions(list, ph, { preferCrawler: !creatorOnly });
+  if (channels) sel.value = "";
+  else if (list.some(a => String(a.id) === current)) sel.value = current;
+  else if ((required || creatorOnly) && list.length) sel.value = String(list[0].id);
+  else sel.value = "";
   if ($("w-acc-wrap")) $("w-acc-wrap").style.display = channels ? "none" : "";
   if (sel._csSync) sel._csSync();
 }
 function populateDanmakuAccount() {
   const sel = $("d-w-acc"); if (!sel) return;
+  const current = sel.value;
   const pf = PLATFORM === "bilibili" ? "bilibili" : "douyin";
   const creatorOnly = pf === "douyin" && $("d-w-mode") && $("d-w-mode").value === "creator";
-  const list = creatorOnly
+  const baseList = creatorOnly
     ? ACCOUNTS.filter(a => a.platform === "douyin" && a.has_creator)
     : ACCOUNTS.filter(a => a.platform === pf);
-  const ph = creatorOnly && !list.length ? "无创作者账号,请先创作者登录" : "不指定账号";
-  sel.innerHTML = accOptions(list, ph);
-  if (creatorOnly && list.length) sel.value = String(list[0].id);
+  const list = creatorOnly ? baseList : _preferCrawlAccounts(baseList);
+  const ph = creatorOnly ? (list.length ? "请选择创作者账号(必选)" : "无创作者账号,请先创作者登录") : "不指定账号";
+  sel.innerHTML = accOptions(list, ph, { preferCrawler: !creatorOnly });
+  if (list.some(a => String(a.id) === current)) sel.value = current;
+  else if (creatorOnly && list.length) sel.value = String(list[0].id);
+  else sel.value = "";
   if (sel._csSync) sel._csSync();
 }
-function applyDanmakuForm() {
+function applyDanmakuForm(resetFeedback = false) {
   const isBili = PLATFORM === "bilibili";
   if (isBili && $("d-w-mode") && $("d-w-mode").value === "creator") {
     $("d-w-mode").value = "public";
     $("d-w-mode")._csSync?.();
   }
+  if ($("d-w-mode-wrap")) $("d-w-mode-wrap").style.display = isBili ? "none" : "";
   const kind = $("d-w-kind") ? $("d-w-kind").value : "auto";
-  const mode = $("d-w-mode") ? $("d-w-mode").value : "public";
+  const mode = !isBili && $("d-w-mode") ? $("d-w-mode").value : "public";
   const isVideo = kind === "video";
   const recentWrap = $("d-w-recent-wrap");
   const daysWrap = $("d-w-days-wrap");
@@ -382,7 +442,7 @@ function applyDanmakuForm() {
   if ($("d-w-url")) $("d-w-url").placeholder = isBili
     ? (isVideo ? "粘贴哔哩哔哩视频分享文案、链接或 BV/av 号" : kind === "user" ? "粘贴空间主页链接或 UP 主 mid" : "直接粘贴整段哔哩哔哩分享文案，将自动识别视频或 UP 主")
     : (isVideo ? "粘贴视频分享文案、作品链接或 aweme_id" : kind === "user" ? "粘贴主页分享文案、账号主页或 sec_uid" : "直接粘贴整段抖音分享文案，将自动识别视频或账号");
-  resetDanmakuTargetState();
+  if (resetFeedback) resetDanmakuTargetState();
   const accLabel = $("d-w-acc-label");
   if (accLabel) accLabel.textContent = mode === "creator"
     ? "创作中心账号（必选）" : "播放页账号（可选）";

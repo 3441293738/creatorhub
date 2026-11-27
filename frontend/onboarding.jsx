@@ -11,9 +11,9 @@ const platforms = {
   tiktok: { name: "TikTok", task: "完成首次关键词视频采集", target: "collections", hint: "登录 TikTok 账号后，输入 1 个关键词做小规模视频与评论采集，再按需开启媒体下载。" },
   bilibili: { name: "哔哩哔哩", task: "下载第一条视频或监控弹幕", target: "share-download", hint: "粘贴整段哔哩哔哩分享文案或 BV 号到链接下载，也可在弹幕监控中拉取视频时间轴弹幕。" },
   instagram: { name: "Instagram", task: "下载第一条帖子或采集话题", target: "share-download", hint: "登录 Instagram 账号后，粘贴 /p/ 或 /reel/ 链接到链接下载保存原图、轮播或视频，也可在关键词采集中搜索 #话题。" },
-  twitter: { name: "Twitter", task: "下载推文原片或实时搜索采集", target: "share-download", hint: "绑定海外代理并登录 X (Twitter) 账号后，粘贴 x.com/.../status/... 或 t.co 短链下载最高清视频与原图，或进行关键词与创作者批量采集。" },
-  facebook: { name: "Facebook", task: "下载帖子视频或采集主页/群组动态", target: "share-download", hint: "绑定海外代理并登录 Facebook 账号后，粘贴帖子/Reel/Watch 链接或 fb.watch 短链下载原片，也可批量采集公共主页与群组动态，或使用 i_user 切换公共主页发布内容。" },
-  youtube: { name: "YouTube", task: "下载高清视频或采集频道/关键词", target: "share-download", hint: "绑定海外代理并登录 YouTube (Google) 账号后，粘贴 watch/shorts/youtu.be 链接即可无损合流下载，也可批量采集频道视频与评论、通过 YouTube Studio 上传发布与多频道切换互动。" },
+  twitter: { name: "Twitter", task: "下载推文原片或实时搜索采集", target: "share-download", hint: "绑定海外代理并登录 X (Twitter) 账号后，粘贴 x.com/.../status/... 或 t.co 短链下载最高清视频与原图，或进行关键词采集与主页作品监控。" },
+  facebook: { name: "Facebook", task: "下载帖子视频或追踪主页/群组动态", target: "share-download", hint: "绑定海外代理并登录 Facebook 账号后，粘贴帖子/Reel/Watch 链接或 fb.watch 短链下载原片，也可进行关键词采集、主页/群组监控，或使用 i_user 切换公共主页发布内容。" },
+  youtube: { name: "YouTube", task: "下载高清视频或关键词采集", target: "share-download", hint: "绑定海外代理并登录 YouTube (Google) 账号后，粘贴 watch/shorts/youtu.be 链接即可无损合流下载，也可进行关键词采集、频道主页作品监控、YouTube Studio 上传发布与多频道切换互动。" },
 };
 function savedState() {
   try {

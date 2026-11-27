@@ -267,6 +267,22 @@ function onAcMode() {
   if ([...k.options].some(o => o.value === prev)) k.value = prev;
   onAcKind();
 }
+function syncAcFilterLinkage() {
+  const matchMode = $("ac-match-mode")?.value || "any";
+  const kwInput = $("ac-include-kw");
+  const kwWrap = $("ac-include-kw-wrap");
+  const disabled = matchMode === "all";
+  if (kwInput) {
+    kwInput.disabled = disabled;
+    kwInput.placeholder = disabled
+      ? "当前为「不过滤」模式，包含关键词不生效"
+      : "例如：链接, 哪里买, 教程, 多少钱（留空=不限）";
+  }
+  if (kwWrap) kwWrap.style.opacity = disabled ? "0.55" : "";
+  const isSingleWork = $("ac-mode")?.value === "auto_reply" && $("ac-kind")?.value === "work";
+  if ($("ac-recent-works-wrap")) $("ac-recent-works-wrap").style.display = isSingleWork ? "none" : "";
+  if ($("ac-recent-days-wrap")) $("ac-recent-days-wrap").style.display = isSingleWork ? "none" : "";
+}
 function onAcKind() {
   const mode = $("ac-mode").value, kind = $("ac-kind").value;
   const meta = acTargetMeta(PLATFORM, mode, kind);
@@ -275,6 +291,7 @@ function onAcKind() {
   $("ac-target").placeholder = meta.ph;
   if ($("ac-scope-wrap")) $("ac-scope-wrap").style.display = mode === "auto_reply" ? "" : "none";
   onAcComposeModeChange();
+  syncAcFilterLinkage();
   syncAcCreatePolicySummary();
   csSyncAll();
 }
@@ -358,6 +375,19 @@ function emOnMode() {
   if ([...k.options].some(o => o.value === prev)) k.value = prev;
   emOnKind();
 }
+function emSyncFilterLinkage() {
+  const disabled = ($("em-match-mode")?.value || "any") === "all";
+  const kwInput = $("em-include-kw");
+  const kwWrap = $("em-include-kw-wrap");
+  if (kwInput) {
+    kwInput.disabled = disabled;
+    kwInput.placeholder = disabled ? "当前为「不过滤」模式，包含关键词不生效" : "逗号/中文逗号/换行分隔，留空不限";
+  }
+  if (kwWrap) kwWrap.style.opacity = disabled ? "0.55" : "";
+  const isSingleWork = $("em-mode")?.value === "auto_reply" && $("em-kind")?.value === "work";
+  if ($("em-recent-works-wrap")) $("em-recent-works-wrap").style.display = isSingleWork ? "none" : "";
+  if ($("em-recent-days-wrap")) $("em-recent-days-wrap").style.display = isSingleWork ? "none" : "";
+}
 function emOnKind() {
   const mode = $("em-mode").value, kind = $("em-kind").value;
   const meta = acTargetMeta(EM_PF, mode, kind);
@@ -365,6 +395,7 @@ function emOnKind() {
   $("em-target-label").textContent = meta.label;
   $("em-target").placeholder = meta.ph;
   if ($("em-scope-wrap")) $("em-scope-wrap").style.display = mode === "auto_reply" ? "" : "none";
+  emSyncFilterLinkage();
   csSyncAll();
 }
 function emOnComposeMode() {
@@ -456,18 +487,18 @@ function editRule(id) {
       </fieldset>
       <fieldset class="ui-form-group"><legend>筛选与发现范围</legend>
         <div class="form-grid">
-          <div><label class="field" for="em-match-mode">包含词匹配方式</label><select id="em-match-mode">
+          <div><label class="field" for="em-match-mode">包含词匹配方式</label><select id="em-match-mode" onchange="emSyncFilterLinkage()">
             <option value="any">命中任一包含词</option><option value="all_terms">同时命中全部词</option><option value="regex">正则匹配</option><option value="all">不过滤</option>
           </select></div>
           <div id="em-scope-wrap"><label class="field" for="em-comment-scope">评论层级</label><select id="em-comment-scope">
             <option value="all">全部评论</option><option value="top_only">仅一级顶层评论</option><option value="reply_only">仅二级子评论</option>
           </select></div>
-          <div><label class="field" for="em-include-kw">包含关键词</label><input id="em-include-kw" placeholder="逗号/中文逗号/换行分隔，留空不限"></div>
+          <div id="em-include-kw-wrap"><label class="field" for="em-include-kw">包含关键词</label><input id="em-include-kw" placeholder="逗号/中文逗号/换行分隔，留空不限"></div>
           <div><label class="field" for="em-skip">排除 / 跳过关键词</label><input id="em-skip" placeholder="命中任一即跳过"></div>
           <div><label class="field" for="em-min-len">最少字数（0=不限）</label><input type="number" id="em-min-len" min="0" max="500"></div>
           <div><label class="field" for="em-max-age">最近 N 小时内（0=按天）</label><input type="number" id="em-max-age" min="0" max="8760"></div>
-          <div><label class="field" for="em-recent-works">扫描近期作品数（0=全局）</label><input type="number" id="em-recent-works" min="0" max="50"></div>
-          <div><label class="field" for="em-recent-days">扫描近期天数（0=全局）</label><input type="number" id="em-recent-days" min="0" max="365"></div>
+          <div id="em-recent-works-wrap"><label class="field" for="em-recent-works">扫描近期作品数（0=全局）</label><input type="number" id="em-recent-works" min="0" max="50"></div>
+          <div id="em-recent-days-wrap"><label class="field" for="em-recent-days">扫描近期天数（0=全局）</label><input type="number" id="em-recent-days" min="0" max="365"></div>
         </div>
       </fieldset>
       <fieldset class="ui-form-group"><legend>审核与执行频率</legend>
@@ -514,6 +545,7 @@ function editRule(id) {
     $("em-max-age").value = String(r.max_source_age_hours || 0);
     $("em-recent-works").value = String(r.recent_works || 0);
     $("em-recent-days").value = String(r.recent_days || 0);
+    emSyncFilterLinkage();
     $("em-review").checked = emReviewLocked ? true : !!r.require_review;
     $("em-cap").value = r.daily_cap; $("em-gap").value = r.min_gap_seconds;
     $("em-max").value = r.max_per_run;
@@ -909,8 +941,8 @@ function taskQueueDate(value) {
 
 function taskQueueSourceLabel(tab) {
   return ({
-    collections: "采集任务", publish: "发布任务", autocomment: "评论任务",
-    hub: "账号管理", monitors: "作品监控",
+    collections: "关键词采集", publish: "发布任务", autocomment: "评论任务",
+    hub: "账号管理", monitors: "主页作品监控",
   })[tab] || "查看";
 }
 

@@ -1,4 +1,4 @@
-"""关键词与创作者采集输入校验、目标源解析及媒体结果序列化。"""
+"""关键词采集输入校验与媒体结果序列化。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,20 +13,14 @@ from sqlmodel import select
 
 from app import runtime as app_runtime
 from app.models import KeywordCollectionComment, KeywordCollectionContent, KeywordCollectionJob
-from app.platforms.bilibili import resolve_bili_mid
 from app.platforms.channels import resolve_channels_creator
-from app.platforms.instagram import looks_like_ig_work, resolve_ig_user_target
-from app.platforms.kuaishou import resolve_ks_user_id
-from app.platforms.rednote import build_rednote_note_url, resolve_rednote_user
-from app.platforms.twitter import looks_like_twitter_tweet, resolve_twitter_short_url, resolve_twitter_user_target
-from app.platforms.facebook import looks_like_facebook_post, resolve_facebook_short_url, resolve_facebook_user_target
-from app.platforms.youtube import looks_like_youtube_video, resolve_youtube_channel_target
+from app.platforms.rednote import build_rednote_note_url
 from app.risk import RiskController
 from app.services import metadata as metadata_service
 from app.services import thumb_cache
 
 
-# ─────────── 抖音 / 小红书 / 快手 / 视频号批量采集 ───────────
+# ─────────── 十一平台关键词采集 ───────────
 class KeywordCollectionIn(BaseModel):
     platform: str = "douyin"
     account_id: int | None = None
@@ -51,46 +45,23 @@ class KeywordCollectionIn(BaseModel):
 
 def _validated_collection_input(body: KeywordCollectionIn) \
         -> tuple[str, list[str], str, str, dict]:
-    """校验创建/编辑共用的任务配置并返回规范化值。"""
+    """校验创建/编辑共用的关键词采集配置并返回规范化值。"""
     platform = body.platform.strip().lower()
     if platform not in {"douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"}:
-        raise HTTPException(400, "批量采集仅支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram、Twitter、Facebook 或 YouTube")
+        raise HTTPException(400, "关键词采集仅支持抖音、小红书、海外小红书、快手、视频号、TikTok、哔哩哔哩、Instagram、Twitter、Facebook 或 YouTube")
     source_type = body.source_type.strip().lower() or "keyword"
-    if source_type not in {
-            "keyword", "favorite_all", "favorite_board", "creator",
-            "account_works"}:
-        raise HTTPException(400, "采集来源须为关键词、创作者主页、全部收藏、指定收藏夹或本账号作品")
-    if platform not in {"shipinhao", "bilibili", "instagram", "twitter", "facebook", "youtube"} and source_type == "account_works":
-        raise HTTPException(400, "本账号作品来源仅支持视频号、哔哩哔哩、Instagram、Twitter、Facebook 或 YouTube")
-    if platform == "tiktok" and source_type != "keyword":
-        raise HTTPException(400, "TikTok 首版批量采集仅支持关键词视频搜索")
-    if source_type in {"favorite_all", "favorite_board"} and platform not in {"xhs", "rednote"}:
-        raise HTTPException(400, "收藏来源仅支持小红书或海外小红书")
-    source_ref = body.source_ref.strip()
-    source_name = body.source_name.strip()
-    if source_type == "account_works":
-        source_ref = ""
-        source_name = "本账号作品"
-    if source_type == "favorite_board" and not source_ref:
-        raise HTTPException(400, "指定收藏夹采集必须提供收藏夹 ID")
-    if source_type == "creator" and not source_ref:
-        raise HTTPException(400, "创作者主页采集必须提供用户 ID")
-    if len(source_ref) > 200 or len(source_name) > 120:
-        raise HTTPException(400, "采集来源标识或名称过长")
+    if source_type != "keyword":
+        raise HTTPException(
+            400,
+            "关键词采集仅支持关键词搜索来源；追踪创作者主页请使用「主页作品监控」，查看自有作品请前往「数据与私信」",
+        )
     keywords = _collection_keywords(body.keywords)
-    if source_type == "keyword":
-        if not keywords:
-            raise HTTPException(400, "请至少填写一个关键词")
-        if len(keywords) > 20:
-            raise HTTPException(400, "单个任务最多包含 20 个关键词")
-        if any(len(value) > 80 for value in keywords):
-            raise HTTPException(400, "单个关键词不能超过 80 个字符")
-    else:
-        keywords = []
-        source_name = source_name or ("全部收藏" if source_type == "favorite_all" else
-                                      "收藏夹" if source_type == "favorite_board" else
-                                      "本账号作品" if source_type == "account_works" else
-                                      f"创作者 {source_ref}")
+    if not keywords:
+        raise HTTPException(400, "请至少填写一个关键词")
+    if len(keywords) > 20:
+        raise HTTPException(400, "单个任务最多包含 20 个关键词")
+    if any(len(value) > 80 for value in keywords):
+        raise HTTPException(400, "单个关键词不能超过 80 个字符")
     if not 1 <= body.max_contents_per_keyword <= 100:
         raise HTTPException(400, "每个关键词作品数须为 1~100")
     if not 1 <= body.max_pages_per_keyword <= 40:
@@ -122,9 +93,9 @@ def _validated_collection_input(body: KeywordCollectionIn) \
         except Exception as exc:
             raise HTTPException(400, f"下载目录不可用: {exc}")
     options = {
-        "source_type": source_type,
-        "source_ref": source_ref,
-        "source_name": source_name,
+        "source_type": "keyword",
+        "source_ref": "",
+        "source_name": "",
         "max_pages_per_keyword": body.max_pages_per_keyword,
         "stagnant_pages": body.stagnant_pages,
         "search_sort": search_sort,
@@ -134,24 +105,6 @@ def _validated_collection_input(body: KeywordCollectionIn) \
         "min_comments": body.min_comments,
     }
     return platform, keywords, quality, download_dir, options
-
-
-async def _resolve_ks_creator_source(body: KeywordCollectionIn) -> None:
-    """把快手创作者采集的 source_ref 解析为可直开主页的 3x user_id。"""
-    if (body.platform.strip().lower() == "kuaishou"
-            and body.source_type.strip().lower() == "creator"):
-        original_ref = body.source_ref.strip()
-        eff_proxy = metadata_service._resolve_ephemeral_proxy("kuaishou", body.account_id)
-        resolved = await metadata_service._call_resolver(
-            resolve_ks_user_id, original_ref, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
-        )
-        if not resolved:
-            raise HTTPException(
-                400, "无法解析快手创作者主页，请粘贴完整分享文案、"
-                     "创作者主页链接 / v.kuaishou.com 短链 / user_id")
-        body.source_ref = resolved
-        if not body.source_name or body.source_name == f"创作者 {original_ref}":
-            body.source_name = f"创作者 {resolved}"
 
 
 async def _resolve_channels_creator_target(raw_input: str):
@@ -167,169 +120,6 @@ async def _resolve_channels_creator_target(raw_input: str):
             ),
         )
     return res
-
-
-async def _resolve_channels_creator_source(body: KeywordCollectionIn) -> None:
-    """把视频号创作者采集的 source_ref 规范化为 finderUsername(v2_...@finder) 或视频号标识。"""
-    if (body.platform.strip().lower() == "shipinhao"
-            and body.source_type.strip().lower() == "creator"):
-        original_ref = body.source_ref.strip()
-        res = await _resolve_channels_creator_target(original_ref)
-        body.source_ref = res.username
-        if not body.source_name or body.source_name == f"创作者 {original_ref}":
-            body.source_name = (
-                f"创作者 {res.nickname} ({res.username})"
-                if res.nickname
-                else f"创作者 {res.username}"
-            )
-
-
-async def _resolve_bili_creator_source(body: KeywordCollectionIn) -> None:
-    """把哔哩哔哩创作者采集的 source_ref 解析为数字 mid。"""
-    if (body.platform.strip().lower() == "bilibili"
-            and body.source_type.strip().lower() == "creator"):
-        original_ref = body.source_ref.strip()
-        cleaned = metadata_service._clean_platform_target_input(original_ref, "bilibili")
-        eff_proxy = metadata_service._resolve_ephemeral_proxy("bilibili", body.account_id)
-        mid = await metadata_service._call_resolver(
-            resolve_bili_mid, cleaned, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
-        )
-        if not mid:
-            raise HTTPException(
-                400,
-                "无法解析哔哩哔哩 UP 主标识，请填写数字 mid、space.bilibili.com 主页链接或视频分享链接",
-            )
-        body.source_ref = mid
-        if not body.source_name or body.source_name == f"创作者 {original_ref}":
-            body.source_name = f"创作者 {mid}"
-
-
-async def _resolve_rednote_creator_source(body: KeywordCollectionIn) -> None:
-    """把海外小红书创作者采集的 source_ref 解析为 24 位 user_id。"""
-    if (body.platform.strip().lower() == "rednote"
-            and body.source_type.strip().lower() == "creator"):
-        original_ref = body.source_ref.strip()
-        cleaned = metadata_service._clean_platform_target_input(original_ref, "rednote")
-        eff_proxy = metadata_service._resolve_ephemeral_proxy("rednote", body.account_id)
-        ref = await metadata_service._call_resolver(
-            resolve_rednote_user, cleaned, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
-        )
-        if not ref or not ref.user_id:
-            raise HTTPException(
-                400,
-                "无法解析海外小红书创作者 user_id，请填写 www.rednote.com/zh/user/profile/... 主页链接或 24 位 user_id",
-            )
-        body.source_ref = ref.user_id
-        if not body.source_name or body.source_name == f"创作者 {original_ref}":
-            body.source_name = f"创作者 {ref.user_id}"
-
-
-async def _resolve_ig_creator_source(body: KeywordCollectionIn) -> None:
-    """把 Instagram 创作者采集的 source_ref 规范化为 @username 或数字 pk。"""
-    if (body.platform.strip().lower() == "instagram"
-            and body.source_type.strip().lower() == "creator"):
-        original_ref = body.source_ref.strip()
-        cleaned = metadata_service._clean_platform_target_input(original_ref, "instagram")
-        if looks_like_ig_work(cleaned):
-            raise HTTPException(
-                400,
-                "检测到 Instagram 单帖/Reels 链接；创作者采集请填写 @username、主页链接或数字 UID",
-            )
-        target = resolve_ig_user_target(cleaned)
-        if not target:
-            raise HTTPException(
-                400,
-                "无法解析 Instagram 创作者标识，请填写 @username、instagram.com/<username> 主页链接或数字 UID",
-            )
-        body.source_ref = target
-        if not body.source_name or body.source_name == f"创作者 {original_ref}":
-            body.source_name = f"创作者 @{target}" if not target.isdigit() else f"创作者 {target}"
-
-
-async def _resolve_twitter_creator_source(body: KeywordCollectionIn) -> None:
-    """把 Twitter 创作者采集的 source_ref 规范化为 @screen_name 或数字 rest_id。"""
-    if (
-        body.platform.strip().lower() == "twitter"
-        and body.source_type.strip().lower() == "creator"
-    ):
-        original_ref = body.source_ref.strip()
-        cleaned = metadata_service._clean_platform_target_input(original_ref, "twitter")
-        eff_proxy = metadata_service._resolve_ephemeral_proxy("twitter", body.account_id)
-        expanded = await metadata_service._call_resolver(
-            resolve_twitter_short_url,
-            cleaned,
-            user_agent=app_runtime.cfg.engine.user_agent,
-            proxy=eff_proxy,
-        )
-        if looks_like_twitter_tweet(expanded):
-            raise HTTPException(
-                400,
-                "检测到 X (Twitter) 单条推文链接；创作者采集请填写 @username、x.com/<username> 主页链接或数字 UID",
-            )
-        target = resolve_twitter_user_target(expanded)
-        if not target:
-            raise HTTPException(
-                400,
-                "无法解析 X (Twitter) 创作者标识，请填写 @username、x.com/<username> 主页链接或数字 UID",
-            )
-        body.source_ref = target
-        if not body.source_name or body.source_name == f"创作者 {original_ref}":
-            body.source_name = f"创作者 @{target}" if not target.isdigit() else f"创作者 {target}"
-
-
-async def _resolve_facebook_creator_source(body: KeywordCollectionIn) -> None:
-    """把 Facebook 创作者/公共主页/群组采集的 source_ref 规范化为用户名、数字 UID 或 `groups/<id>`。"""
-    if (
-        body.platform.strip().lower() == "facebook"
-        and body.source_type.strip().lower() == "creator"
-    ):
-        original_ref = body.source_ref.strip()
-        cleaned = metadata_service._clean_platform_target_input(original_ref, "facebook")
-        eff_proxy = metadata_service._resolve_ephemeral_proxy("facebook", body.account_id)
-        expanded = await metadata_service._call_resolver(
-            resolve_facebook_short_url,
-            cleaned,
-            user_agent=app_runtime.cfg.engine.user_agent,
-            proxy=eff_proxy,
-        )
-        if looks_like_facebook_post(expanded):
-            raise HTTPException(
-                400,
-                "检测到 Facebook 单条帖子/视频链接；创作者采集请填写个人主页、公共主页或群组链接 / 用户名 / 数字 UID",
-            )
-        target = resolve_facebook_user_target(expanded)
-        if not target:
-            raise HTTPException(
-                400,
-                "无法解析 Facebook 主页或群组标识，请填写 facebook.com/<主页>、profile.php?id=... 或 groups/<群组ID>",
-            )
-        body.source_ref = target
-        if not body.source_name or body.source_name == f"创作者 {original_ref}":
-            body.source_name = f"群组 {target[7:]}" if target.startswith("groups/") else f"主页 {target}"
-
-
-async def _resolve_youtube_creator_source(body: KeywordCollectionIn) -> None:
-    """把 YouTube 频道采集的 source_ref 规范化为 `@handle` 或 `UC...` 频道 ID。"""
-    if (
-        body.platform.strip().lower() == "youtube"
-        and body.source_type.strip().lower() == "creator"
-    ):
-        original_ref = body.source_ref.strip()
-        cleaned = metadata_service._clean_platform_target_input(original_ref, "youtube")
-        if looks_like_youtube_video(cleaned):
-            raise HTTPException(
-                400,
-                "检测到 YouTube 单条视频/Shorts 链接；创作者采集请填写频道链接（如 youtube.com/@handle 或 /channel/UC...）",
-            )
-        key, _url = resolve_youtube_channel_target(cleaned)
-        if not key:
-            raise HTTPException(
-                400,
-                "无法解析 YouTube 频道标识，请填写 youtube.com/@handle、@handle 或 UC 开头的频道 ID",
-            )
-        body.source_ref = key
-        if not body.source_name or body.source_name == f"创作者 {original_ref}":
-            body.source_name = f"频道 {key}"
 
 
 def _collection_keywords(values: list[str]) -> list[str]:

@@ -708,7 +708,6 @@
   @media(pointer:coarse) { .proxy-input-grid .form-field > label, .proxy-address-label, .proxy-format-disclosure > summary { min-height:44px; } }
   .form-field > label, .form-label { display:flex; align-items:center; gap:6px; margin:0 0 6px; color:var(--mut); font-size:12px; font-weight:550; }
   .form-field > input, .form-field > textarea, .form-field > select, .form-field > .cs, .form-field > .input-affix, .form-field > .smart-target-input { width:100%; }
-  #col-source-ref-wrap { grid-column:2 / -1; }
   .field-help { margin-top:5px; color:var(--mut-2); font-size:11.5px; line-height:1.45; }
   .field-error { margin:5px 0 0; color:var(--danger); font-size:11.5px; line-height:1.4; }
   .input-affix { position:relative; }
@@ -1930,7 +1929,6 @@
     .option-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   }
   @media(max-width:860px) {
-    #col-source-ref-wrap { grid-column:auto; }
     main { padding:20px 18px; }
     .page-context { align-items:center; }
     .page-context h2 { font-size:20px; }

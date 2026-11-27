@@ -24,9 +24,7 @@ from app.browser import (
     fetch_facebook_entities_search,
     fetch_facebook_groups,
     fetch_facebook_pages,
-    fetch_rednote_favorite_boards,
     fetch_twitter_users,
-    fetch_xhs_favorite_boards,
     fetch_youtube_channels_search,
     fetch_youtube_managed_channels,
     fetch_youtube_search,
@@ -38,11 +36,9 @@ from app.models import CommentTask, DouyinAccount
 from app.operations import record_account_operation
 from app.platforms.bilibili import CREATION_STATEMENT_OPTIONS as BILI_CREATION_STATEMENT_OPTIONS, FALLBACK_PARTITIONS as BILI_FALLBACK_PARTITIONS, BilibiliClient
 from app.platforms.facebook import FacebookClient, normalize_facebook_url, resolve_facebook_post_ref
-from app.platforms.rednote import RednoteApiClient, cookie_str_from_state as rednote_cookie_str_from_state, has_a1 as rednote_has_a1
 from app.platforms.tiktok import TikTokNativeClient, native_protocol_summary
 from app.platforms.tiktok.urls import parse_video_reference
 from app.platforms.twitter import resolve_twitter_tweet_ref
-from app.platforms.xhs import XhsApiClient, has_a1, cookie_str_from_state as xhs_cookie_str_from_state
 from app.services import account_profiles as account_profiles_service
 from app.platforms.youtube import YouTubeClient, normalize_youtube_url, resolve_youtube_video_ref
 from app.risk import OperationKind
@@ -958,105 +954,6 @@ async def youtube_warmup(body: YouTubeWarmupIn):
     if not ok:
         raise HTTPException(400, err or "YouTube 养号执行失败")
     return {"ok": True, "keyword": kw, "summary": summary}
-
-
-@router.get("/api/accounts/{account_id}/xhs/favorite-boards")
-async def list_xhs_favorite_boards(account_id: int):
-    """List the signed-in account's XHS favorite boards without exposing cookies."""
-    if app_runtime.browser is None or app_runtime.engine is None:
-        raise HTTPException(503, "采集引擎未就绪")
-    with get_session() as session:
-        account = session.get(DouyinAccount, account_id)
-        if (not account or account.platform != "xhs" or account.status != "active"
-                or not account.storage_state):
-            raise HTTPException(400, "请选择有效的小红书登录账号")
-        identity = app_runtime.browser.identity_for(account)
-        user_id = account.sec_uid
-        cookie = xhs_cookie_str_from_state(account.storage_state)
-        proxy = account.proxy or ""
-
-    async def read_boards():
-        if (app_runtime.cfg.engine.xhs_read_mode == "browser"
-                and callable(getattr(app_runtime.browser, "visible_page", None))):
-            return await fetch_xhs_favorite_boards(app_runtime.browser, identity, user_id)
-        if not has_a1(cookie):
-            return [], "小红书登录态缺少 a1，请重新扫码登录"
-        client = XhsApiClient(
-            cookie, (app_runtime.browser.direct_request_user_agent(identity)
-                     if callable(getattr(app_runtime.browser, "direct_request_user_agent", None))
-                     else identity.ua),
-            timeout=app_runtime.cfg.engine.request_timeout_seconds, proxy=proxy)
-        async with client.session_scope():
-            return await client.favorite_boards(user_id), ""
-
-    boards, error = await app_runtime.engine.guarded_interactive_read_pair(
-        account_id, OperationKind.READ_HEAVY,
-        f"favorite-boards:{account_id}", read_boards, empty_result=[])
-    if error.startswith("risk_deferred:"):
-        raise HTTPException(429, error.split(":", 1)[-1])
-    if error and not boards:
-        raise HTTPException(400, error)
-    return [{
-        "id": str(value.get("id") or value.get("board_id") or ""),
-        "name": str(value.get("name") or value.get("title") or "未命名收藏夹"),
-        "total": int(value.get("total") or value.get("note_count") or 0),
-        "images": value.get("images") or [],
-    } for value in boards if value.get("id") or value.get("board_id")]
-
-
-@router.get("/api/accounts/{account_id}/rednote/favorite-boards")
-async def list_rednote_favorite_boards(account_id: int):
-    """List the signed-in account's Rednote (海外小红书) favorite boards without exposing cookies."""
-    if app_runtime.browser is None or app_runtime.engine is None:
-        raise HTTPException(503, "采集引擎未就绪")
-    with get_session() as session:
-        account = session.get(DouyinAccount, account_id)
-        if (not account or account.platform != "rednote" or account.status != "active"
-                or not (account.storage_state or account.creator_storage_state)):
-            raise HTTPException(400, "请选择有效的海外小红书登录账号")
-        identity = app_runtime.browser.identity_for(account)
-        user_id = account.sec_uid
-        rn_state = account.storage_state or account.creator_storage_state or ""
-        cookie = rednote_cookie_str_from_state(rn_state)
-        proxy = account.proxy or ""
-
-    async def read_boards():
-        rmode = str(getattr(app_runtime.cfg.engine, "rednote_read_mode", "hybrid") or "hybrid").lower()
-        if rmode in {"api", "hybrid"} and cookie and rednote_has_a1(cookie):
-            client = RednoteApiClient(
-                cookie,
-                (app_runtime.browser.direct_request_user_agent(identity)
-                 if callable(getattr(app_runtime.browser, "direct_request_user_agent", None))
-                 else identity.ua),
-                timeout=app_runtime.cfg.engine.request_timeout_seconds,
-                proxy=proxy,
-                storage_state=rn_state,
-            )
-            try:
-                async with client.session_scope():
-                    boards_api = await client.favorite_boards(user_id)
-                if boards_api or rmode == "api":
-                    return boards_api, ""
-            except Exception as exc:
-                if rmode == "api":
-                    return [], str(exc)
-        elif rmode == "api":
-            return [], "海外小红书登录态缺少 a1，请重新扫码登录或切换为浏览器读取"
-        return await fetch_rednote_favorite_boards(app_runtime.browser, identity, user_id)
-
-    boards, error = await app_runtime.engine.guarded_interactive_read_pair(
-        account_id, OperationKind.READ_HEAVY,
-        f"rednote-favorite-boards:{account_id}", read_boards, empty_result=[])
-    if error.startswith("risk_deferred:"):
-        raise HTTPException(429, error.split(":", 1)[-1])
-    if error and not boards:
-        raise HTTPException(400, error)
-    return [{
-        "id": str(value.get("id") or value.get("board_id") or ""),
-        "name": str(value.get("name") or value.get("title") or "未命名收藏夹"),
-        "total": int(value.get("total") or value.get("note_count") or 0),
-        "images": value.get("images") or [],
-    } for value in boards if value.get("id") or value.get("board_id")]
 
 
 @router.get("/api/accounts/{account_id}/bili/partitions")

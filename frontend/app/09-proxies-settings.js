@@ -704,7 +704,7 @@ function pollReloginTask(tid) {
 }
 async function delAccount(id) {
   const a = findAnyAccount(id);
-  const warn = a && a.monitor_count > 0 ? `\n关联的 ${a.monitor_count} 个作品监控也会暂停。` : "";
+  const warn = a && a.monitor_count > 0 ? `\n关联的 ${a.monitor_count} 个主页作品监控也会暂停。` : "";
   if (!await uiConfirm({ title: "删除账号", message: "删除该账号将取消未执行任务、停用关联规则并清理独占登录环境；历史内容保留。执行中的操作需要先结束。" + warn, okText: "删除并停止关联任务", danger: true })) return;
   try {
     const result = await api("/api/accounts/" + id, { method: "DELETE" });

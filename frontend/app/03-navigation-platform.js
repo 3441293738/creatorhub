@@ -189,7 +189,7 @@ const PAGE_META = {
     title: "指挥概览", desc: "跨平台查看账号健康态势、高赞内容快览与今日发布排期。"
   },
   "media-hub": {
-    title: "汇总预览库", desc: "跨平台统一画廊预览监控作品、批量采集、自有作品与本地下载素材，支持右侧分栏快览。"
+    title: "汇总预览库", desc: "跨平台统一画廊预览主页作品监控、关键词采集、自有作品与本地下载素材，支持右侧分栏快览。"
   },
   accounts: {
     title: "账号矩阵", desc: "按跨平台人设组管理多账号，支持异常快筛、批量配代理与连续扫码补登。"
@@ -198,10 +198,10 @@ const PAGE_META = {
     title: "风控中心", desc: "统一管理风控规则，查看账号状态、触发原因、恢复进度与事件记录。"
   },
   monitors: {
-    title: "作品监控", desc: "追踪关注的创作者，检查采集进度与新作品。"
+    title: "主页作品监控", desc: "持续追踪关注的创作者主页新作品，检查采集进度与自动下载（单条作品请用「链接下载」）。"
   },
   collections: {
-    title: "批量作品采集", desc: "按平台支持的来源批量采集作品、评论与可用媒体。"
+    title: "关键词采集", desc: "按关键词批量搜索作品、抓取评论并按需下载媒体。"
   },
   comments: {
     title: "评论监控", desc: "订阅作品或账号评论，按来源、分组和标签筛选。"
@@ -253,7 +253,7 @@ function updatePageContext(name = CURRENT_TAB) {
     if (name === "overview") {
       effectiveDesc = `查看 ${pfName} 账号健康态势、高赞内容快览与今日发布排期。`;
     } else if (name === "media-hub") {
-      effectiveDesc = `统一画廊预览 ${pfName} 监控作品、批量采集、自有作品与本地下载素材，支持右侧分栏快览。`;
+      effectiveDesc = `统一画廊预览 ${pfName} 主页作品监控、关键词采集、自有作品与本地下载素材，支持右侧分栏快览。`;
     } else if (name === "accounts") {
       effectiveDesc = `管理 ${pfName} 账号登录态、分组归类、独立代理与浏览器指纹环境。`;
     } else if (name === "hub") {
@@ -463,14 +463,20 @@ function applyPlatformUI() {
   }
   if (typeof updatePubCoverHelp === "function") updatePubCoverHelp();
   if (typeof onPubActionChange === "function") onPubActionChange();
+  if (typeof syncPublishPlatformFields === "function") syncPublishPlatformFields();
   // 评论监控「类型」下拉随平台改写文案
   const wk = $("w-kind");
   if (wk) {
     const cur = wk.value;
-    wk.innerHTML = (PLATFORM === "xhs" || PLATFORM === "rednote")
-      ? '<option value="auto">类型:自动识别</option><option value="video">单条笔记</option><option value="user">创作者近期笔记</option>'
-      : '<option value="auto">类型:自动识别</option><option value="video">单条视频</option><option value="user">账号近期作品</option>';
+    const isNotePf = PLATFORM === "xhs" || PLATFORM === "rednote";
+    const isTweetPf = PLATFORM === "twitter";
+    const isPostPf = PLATFORM === "instagram" || PLATFORM === "facebook";
+    const isYtPf = PLATFORM === "youtube";
+    const videoText = isNotePf ? "单条笔记" : isTweetPf ? "单条推文" : isPostPf ? "单条帖子" : "单条视频";
+    const userText = isNotePf ? "创作者近期笔记" : isTweetPf ? "账号近期推文" : isPostPf ? "主页近期帖子" : isYtPf ? "频道近期视频" : "账号近期作品";
+    wk.innerHTML = `<option value="auto">自动识别（粘贴链接自动联动）</option><option value="video">${videoText}</option><option value="user">${userText}</option>`;
     if ([...wk.options].some(o => o.value === cur)) wk.value = cur;
+    wk._csSync?.();
   }
   const wl = $("w-url-label");
   if (wl) wl.textContent = (PLATFORM === "xhs" || PLATFORM === "rednote")
@@ -495,7 +501,8 @@ function applyPlatformUI() {
     : PLATFORM === "facebook" ? "粘贴 facebook.com 帖子/Reel/Watch 链接、fb.watch 短链、公共主页或群组链接"
     : PLATFORM === "youtube" ? "粘贴 youtube.com/watch?v=...、youtu.be/...、/shorts/... 或频道 /@handle 链接"
     : "直接粘贴整段抖音分享文案，将自动提取视频或主页链接";
-  resetWatchTargetState();
+  if (typeof applyWatchForm === "function") applyWatchForm(true);
+  else resetWatchTargetState();
   const ckl = $("ck-label");
   if (ckl) ckl.textContent = PLATFORM === "xhs"
     ? "完整 Cookie(含 a1;发布需创作者会话)"
@@ -519,8 +526,7 @@ function applyPlatformUI() {
     : "从浏览器开发者工具复制完整 Cookie";
   applyMonitorForm();
   applyCollectionForm();
-  if (["douyin", "bilibili"].includes(PLATFORM)) applyDanmakuForm();
-  if ($("t-kind") && !["xhs", "rednote"].includes(PLATFORM)) $("t-kind").value = "creator";
+  if (["douyin", "bilibili"].includes(PLATFORM)) applyDanmakuForm(true);
   // 全平台视角下不展示单平台专属面板：若当前停留在单平台页，自动回到指挥概览
   if (GLOBAL_MODE && SINGLE_PF_ONLY_TABS.includes(CURRENT_TAB)) {
     switchTab("overview");
@@ -611,9 +617,13 @@ async function copyTextValue(value, okMsg = "已复制", errMsg = "复制失败�
   }
 }
 
+const QUALITY_PLATFORMS = ["douyin", "kuaishou", "tiktok", "shipinhao", "bilibili", "youtube"];
+
 async function normalizePlatformShareTarget({
-  inputId, feedbackId, platform, button = null, quiet = false, resolveChannelsCreator = false,
+  inputId, feedbackId, platform, button = null, quiet = false, toastErrors = false,
+  resolveChannelsCreator = false, mode = "generic", accountSelectId = "",
 }) {
+  const showErrorToast = !quiet || toastErrors;
   const input = $(inputId);
   if (!input) return null;
   const raw = input.value.trim();
@@ -627,43 +637,37 @@ async function normalizePlatformShareTarget({
     button.innerHTML = `<span class="spin"></span><span>识别中</span>`;
   }
   input.removeAttribute("aria-invalid");
-  setSmartTargetFeedback(feedbackId, "正在清洗分享文案并识别链接…", "parsing");
+  setSmartTargetFeedback(feedbackId, "正在识别链接与对象类型…", "parsing");
   try {
-    const result = await api("/api/share-download/links", {
+    const accountId = accountSelectId && $(accountSelectId)?.value ? Number($(accountSelectId).value) : null;
+    const result = await api("/api/targets/detect", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ share_text: raw, limit: 20 }),
+      body: JSON.stringify({
+        raw_input: raw,
+        platform,
+        account_id: accountId || null,
+        expand_short_links: true,
+      }),
     });
     if (seq !== SMART_TARGET_PARSE_SEQ[inputId]) return input.value.trim();
-    const links = Array.isArray(result.links) ? result.links : [];
-    let candidate = raw;
-    let changed = false;
-    if (!links.length) {
-      if (platform === "shipinhao" && isChannelsCreatorId(raw)) {
-        setSmartTargetFeedback(feedbackId, "视频号创作者标识已识别 ✓", "success");
-        return raw;
-      }
-      if (!(platform === "shipinhao" && resolveChannelsCreator && isChannelsWorkUrl(raw))) {
-        setSmartTargetFeedback(feedbackId, "未发现链接，将按作品或用户 ID 直接解析");
-        if (!quiet) toast("没有发现链接；也可以直接填写作品或用户 ID", "err");
-        return raw;
-      }
-    } else {
-      const expectedPlatform = platform === "shipinhao" ? "wechat" : platform;
-      const matched = links.find(item => item && item.platform === expectedPlatform);
-      if (!matched) {
-        const names = [...new Set(links.map(item => smartTargetPlatformName(item.platform)))].join("、");
-        const message = `识别到${names}链接，与当前${smartTargetPlatformName(platform)}页面不匹配`;
-        input.setAttribute("aria-invalid", "true");
-        setSmartTargetFeedback(feedbackId, message, "error");
-        if (!quiet) toast(message, "err");
-        return null;
-      }
-      candidate = String(matched.url || "").trim() || raw;
-      changed = candidate !== raw;
-      if (changed) input.value = candidate;
+    if (result.mismatch) {
+      const message = result.error || `识别到其他平台链接，与当前${smartTargetPlatformName(platform)}页面不匹配`;
+      input.setAttribute("aria-invalid", "true");
+      setSmartTargetFeedback(feedbackId, message, "error");
+      if (showErrorToast) toast(message, "err");
+      return null;
     }
+    const links = Array.isArray(result.links) ? result.links : [];
+    const candidate = String(result.cleaned || raw).trim() || raw;
+    const changed = candidate !== raw;
+    if (changed) input.value = candidate;
+    const detectedKind = String(result.target_kind || "unknown");
+    const kindLabel = String(result.kind_label || "");
+    const canExtractCreator = Boolean(result.can_extract_creator);
+    const pfLabel = result.platform_name || smartTargetPlatformName(platform);
 
-    if (platform === "shipinhao" && resolveChannelsCreator && isChannelsWorkUrl(candidate)) {
+    // 1) 视频号单条作品在「主页作品监控」或「账号评论监控」里自动反查创作者
+    if (platform === "shipinhao" && resolveChannelsCreator && (isChannelsWorkUrl(candidate) || detectedKind === "video")) {
       if (quiet) {
         setSmartTargetFeedback(
           feedbackId,
@@ -697,11 +701,102 @@ async function normalizePlatformShareTarget({
       }
     }
 
+    // 2) 主页作品监控联动：误贴单条作品链接给出明确提醒与引导
+    if (mode === "monitor") {
+      if (detectedKind === "video" && !canExtractCreator) {
+        const msg = `检测到${pfLabel}${kindLabel || "单条作品"}链接，不是创作者主页；主页作品监控请粘贴创作者主页链接（单条作品下载请用「链接下载」，单条评论请用「评论监控」）`;
+        input.setAttribute("aria-invalid", "true");
+        setSmartTargetFeedback(feedbackId, msg, "error");
+        if (showErrorToast) toast(msg, "err", 5500);
+        return null;
+      }
+      if (detectedKind === "video" && canExtractCreator) {
+        setSmartTargetFeedback(
+          feedbackId,
+          `已识别${pfLabel}${kindLabel || "作品"}链接，提交后将自动提取创作者主页并监控 ✓`,
+          "success",
+        );
+        return candidate;
+      }
+      if (detectedKind === "user") {
+        setSmartTargetFeedback(
+          feedbackId,
+          `${changed ? "已清洗文案并" : ""}识别为${pfLabel}${kindLabel || "创作者主页"} ✓`,
+          "success",
+        );
+        return candidate;
+      }
+      if (!links.length) {
+        if (platform === "shipinhao" && isChannelsCreatorId(raw)) {
+          setSmartTargetFeedback(feedbackId, "视频号创作者标识已识别 ✓", "success");
+          return raw;
+        }
+        setSmartTargetFeedback(feedbackId, "未发现链接，将按创作者 ID 或主页标识直接解析");
+        if (!quiet) toast("未发现链接；也可以直接填写创作者 ID 或 @用户名", "info");
+        return raw;
+      }
+    }
+
+    // 3) 评论监控联动：按识别出的单条作品/创作者主页自动切换「监控对象类型」并联动相关表单项
+    if (mode === "watch") {
+      const wk = $("w-kind");
+      if (wk && (detectedKind === "video" || detectedKind === "user")) {
+        const prevKind = wk.value;
+        wk.value = detectedKind;
+        wk._csSync?.();
+        if (typeof applyWatchForm === "function") applyWatchForm(false);
+        const optText = wk.selectedOptions?.[0]?.textContent || (detectedKind === "video" ? "单条作品" : "账号近期作品");
+        const switchedHint = prevKind !== detectedKind ? `，已自动切换监控对象为「${optText}」` : `（${optText}）`;
+        setSmartTargetFeedback(
+          feedbackId,
+          `已识别为${pfLabel}${kindLabel || (detectedKind === "video" ? "单条作品" : "创作者主页")}${switchedHint} ✓`,
+          "success",
+        );
+        return candidate;
+      }
+      if (!links.length) {
+        setSmartTargetFeedback(feedbackId, "未发现链接，将按作品或用户 ID 自动解析");
+        if (!quiet) toast("没有发现链接；也可以直接填写作品或用户 ID", "info");
+        return raw;
+      }
+    }
+
+    // 4) 弹幕监控联动：按识别出的视频/账号自动切换「监控对象」，并拦截 B 站图文动态
+    if (mode === "danmaku") {
+      if (result.is_bili_opus) {
+        const msg = "检测到哔哩哔哩图文动态链接；弹幕监控仅支持 BV 视频或 UP 主空间主页";
+        input.setAttribute("aria-invalid", "true");
+        setSmartTargetFeedback(feedbackId, msg, "error");
+        if (showErrorToast) toast(msg, "err", 4500);
+        return null;
+      }
+      const dk = $("d-w-kind");
+      if (dk && (detectedKind === "video" || detectedKind === "user")) {
+        const prevKind = dk.value;
+        dk.value = detectedKind;
+        dk._csSync?.();
+        if (typeof applyDanmakuForm === "function") applyDanmakuForm(false);
+        const optText = dk.selectedOptions?.[0]?.textContent || (detectedKind === "video" ? "单条视频" : "账号近期作品");
+        const switchedHint = prevKind !== detectedKind ? `，已自动切换监控对象为「${optText}」` : `（${optText}）`;
+        setSmartTargetFeedback(
+          feedbackId,
+          `已识别为${pfLabel}${kindLabel || (detectedKind === "video" ? "单条视频" : "创作者主页")}${switchedHint} ✓`,
+          "success",
+        );
+        return candidate;
+      }
+      if (!links.length) {
+        setSmartTargetFeedback(feedbackId, "未发现链接，将按视频 BV/ID 或账号 UID 自动解析");
+        if (!quiet) toast("没有发现链接；也可以直接填写 BV 号、视频 ID 或账号 UID", "info");
+        return raw;
+      }
+    }
+
     setSmartTargetFeedback(
       feedbackId,
       changed
-        ? `已去除无关文案，提取出${smartTargetPlatformName(platform)}链接 ✓`
-        : `${smartTargetPlatformName(platform)}链接已识别 ✓`,
+        ? `已去除无关文案，提取出${pfLabel}链接 ✓`
+        : `${pfLabel}链接已识别 ✓`,
       "success",
     );
     return candidate || raw;
@@ -719,20 +814,22 @@ async function normalizePlatformShareTarget({
 }
 
 function resetMonitorTargetState() {
-  const keywordMode = ["xhs", "rednote"].includes(PLATFORM) && $("t-kind") && $("t-kind").value === "keyword";
-  resetSmartTargetState("t-url", "t-url-feedback", keywordMode
-    ? "输入要持续监控的搜索关键词"
-    : PLATFORM === "shipinhao"
+  resetSmartTargetState("t-url", "t-url-feedback",
+    PLATFORM === "shipinhao"
     ? "支持视频号主页链接、v2_...@finder、sph 标识，或单条视频 weixin.qq.com/sph/... 链接（自动反查作者）"
-    : "支持完整分享文案、主页长链、平台短链或用户 ID");
+    : PLATFORM === "tiktok"
+    ? "支持 TikTok 创作者主页链接、@username，或单条视频分享链接（自动提取作者）"
+    : PLATFORM === "bilibili"
+    ? "请粘贴 UP 主空间主页链接（space.bilibili.com/<mid>）、b23.tv 空间短链或纯数字 UID"
+    : "请粘贴创作者主页完整分享文案、主页长链、平台短链或用户 ID（单条作品请前往「链接下载」）");
 }
 
-async function normalizeMonitorTarget(button = null, { quiet = false } = {}) {
-  const keywordMode = ["xhs", "rednote"].includes(PLATFORM) && $("t-kind") && $("t-kind").value === "keyword";
-  if (keywordMode) return $("t-url").value.trim();
+async function normalizeMonitorTarget(button = null, { quiet = false, toastErrors = false } = {}) {
   return normalizePlatformShareTarget({
-    inputId: "t-url", feedbackId: "t-url-feedback", platform: PLATFORM, button, quiet,
+    inputId: "t-url", feedbackId: "t-url-feedback", platform: PLATFORM, button, quiet, toastErrors,
     resolveChannelsCreator: PLATFORM === "shipinhao",
+    mode: "monitor",
+    accountSelectId: "t-acc",
   });
 }
 
@@ -746,42 +843,22 @@ function handleMonitorTargetKeydown(event) {
   addMonitor();
 }
 
-function resetCollectionCreatorState() {
-  resetSmartTargetState(
-    "col-source-ref", "col-source-ref-feedback",
-    PLATFORM === "shipinhao"
-      ? "可粘贴视频号 v2_...@finder、主页链接，或直接粘贴单条视频 weixin.qq.com/sph/... 链接（自动反查作者）"
-      : PLATFORM === "kuaishou"
-      ? "使用公开主页作品列表；可粘贴完整分享文案、主页链接、v.kuaishou.com 短链或 user_id"
-      : "使用公开主页作品列表，评论和下载继续沿用下方设置",
-  );
-}
-
-async function normalizeCollectionCreatorTarget(button = null, { quiet = false } = {}) {
-  return normalizePlatformShareTarget({
-    inputId: "col-source-ref", feedbackId: "col-source-ref-feedback", platform: PLATFORM,
-    button, quiet, resolveChannelsCreator: PLATFORM === "shipinhao",
-  });
-}
-
-function handleCollectionCreatorPaste() {
-  setTimeout(() => normalizeCollectionCreatorTarget(null, { quiet: true }), 0);
-}
-
 function resetWatchTargetState() {
   resetSmartTargetState(
     "w-url", "w-url-feedback",
     PLATFORM === "shipinhao" && $("w-kind")?.value === "user"
       ? "已选「账号近期作品」：可粘贴 v2_...@finder、主页链接或单条视频 weixin.qq.com/sph/...（自动反查作者）"
-      : "支持完整分享文案、作品链接、创作者主页、平台短链或 ID",
+      : "粘贴单条作品或创作者主页链接，将自动识别并联动下方「监控对象类型」",
   );
 }
 
 function normalizeWatchTarget(button = null, options = {}) {
   return normalizePlatformShareTarget({
     inputId: "w-url", feedbackId: "w-url-feedback", platform: PLATFORM,
-    button, quiet: !!options.quiet,
+    button, quiet: !!options.quiet, toastErrors: !!options.toastErrors,
     resolveChannelsCreator: PLATFORM === "shipinhao" && $("w-kind")?.value === "user",
+    mode: "watch",
+    accountSelectId: "w-acc",
   });
 }
 
@@ -799,15 +876,17 @@ function resetDanmakuTargetState() {
   resetSmartTargetState(
     "d-w-url", "d-w-url-feedback",
     PLATFORM === "bilibili"
-      ? "支持完整哔哩哔哩分享文案、BV/av 号、视频链接、空间主页或短链"
-      : "支持完整抖音分享文案、视频链接、账号主页、短链或 ID",
+      ? "粘贴哔哩哔哩 BV 视频链接或 UP 主空间链接，将自动联动下方「监控对象」"
+      : "粘贴抖音视频或账号主页分享文案，将自动联动下方「监控对象」",
   );
 }
 
 function normalizeDanmakuTarget(button = null, options = {}) {
   return normalizePlatformShareTarget({
     inputId: "d-w-url", feedbackId: "d-w-url-feedback", platform: PLATFORM,
-    button, quiet: !!options.quiet,
+    button, quiet: !!options.quiet, toastErrors: !!options.toastErrors,
+    mode: "danmaku",
+    accountSelectId: "d-w-acc",
   });
 }
 
@@ -823,7 +902,24 @@ function handleDanmakuTargetKeydown(event) {
 
 let _LAST_MONITOR_PLATFORM = "";
 
-function applyMonitorForm() {
+function applyMonitorDownloadLinkage() {
+  const dlMode = $("t-download")?.value || "all";
+  const recMedia = $("t-record-media")?.value || "all";
+  const isNone = dlMode === "none";
+  const showQuality = QUALITY_PLATFORMS.includes(PLATFORM) && !isNone && dlMode !== "images";
+  if ($("t-dir-wrap")) $("t-dir-wrap").style.display = isNone ? "none" : "";
+  if ($("t-quality-wrap")) $("t-quality-wrap").style.display = showQuality ? "" : "none";
+  const conflictEl = $("t-download-conflict");
+  if (conflictEl) {
+    const conflict = !isNone && ((recMedia === "video" && dlMode === "images") || (recMedia === "images" && dlMode === "video"));
+    conflictEl.hidden = !conflict;
+    conflictEl.textContent = conflict
+      ? `提示：高级筛选设为「${recMedia === "video" ? "仅视频入库" : "仅图文入库"}」，与自动下载范围「${dlMode === "images" ? "仅图集" : "仅视频"}」互斥，将不会下载任何媒体。`
+      : "";
+  }
+}
+
+function applyMonitorForm(resetFeedback = true) {
   const title = $("mon-add-title");
   const lbl = $("t-url-label");
   const parseButton = document.querySelector('[data-panel="monitors"] .smart-target-action');
@@ -837,67 +933,60 @@ function applyMonitorForm() {
     $("t-backfill")._csSync?.();
   }
   _LAST_MONITOR_PLATFORM = PLATFORM;
-  if (["douyin", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(PLATFORM)) {
-    const isKs = PLATFORM === "kuaishou";
-    const isTikTok = PLATFORM === "tiktok";
-    const isBili = PLATFORM === "bilibili";
-    const isIg = PLATFORM === "instagram";
-    const isTw = PLATFORM === "twitter";
-    const isFb = PLATFORM === "facebook";
-    const isYt = PLATFORM === "youtube";
-    if (title) title.innerHTML = (isKs || isSph || isBili || isIg || isTw || isFb || isYt ? '添加创作者监控' : '添加作品监控')
-      + ' <span class="sub">监控并下载新作品</span>';
-    if (lbl) lbl.textContent = isTikTok
-      ? "创作者主页 / 完整分享文案 / @username"
-      : isIg
-      ? "Instagram 主页链接 / @username / 数字 UID"
-      : isTw
-      ? "Twitter (X) 主页链接 / @username / 数字 UID"
-      : isFb
-      ? "Facebook 个人主页 / 公共主页 / 群组链接或数字 ID"
-      : isYt
-      ? "YouTube 频道链接 / @handle / UC... 频道 ID"
-      : isSph
-      ? "创作者主页 / v2_...@finder / 单条视频分享链接"
-      : isKs
-      ? "创作者主页 / 完整分享文案 / user_id"
-      : isBili
-      ? "UP 主空间主页 / 完整分享文案 / mid"
-      : "创作者主页 / 完整分享文案 / sec_uid";
-    $("t-url").placeholder = isTikTok
-      ? "直接粘贴整段 TikTok 主页或作品分享文案，将自动提取 @username"
-      : isIg
-      ? "粘贴 https://www.instagram.com/<username>/ 或填写 @username"
-      : isTw
-      ? "粘贴 https://x.com/<username> 或填写 @username"
-      : isFb
-      ? "粘贴 https://www.facebook.com/<page>、/groups/<id> 或 profile.php?id=..."
-      : isYt
+
+  const isKs = PLATFORM === "kuaishou";
+  const isTikTok = PLATFORM === "tiktok";
+  const isBili = PLATFORM === "bilibili";
+  const isIg = PLATFORM === "instagram";
+  const isTw = PLATFORM === "twitter";
+  const isFb = PLATFORM === "facebook";
+  const isYt = PLATFORM === "youtube";
+  const isXhs = PLATFORM === "xhs";
+  const isRn = PLATFORM === "rednote";
+  if (title) title.innerHTML = '添加主页作品监控 <span class="sub">持续追踪创作者主页新作品，单条作品请用「链接下载」</span>';
+  if (lbl) lbl.textContent = isTikTok
+    ? "创作者主页 / 完整分享文案 / @username"
+    : isIg
+    ? "Instagram 主页链接 / @username / 数字 UID"
+    : isTw
+    ? "Twitter (X) 主页链接 / @username / 数字 UID"
+    : isFb
+    ? "Facebook 个人主页 / 公共主页 / 群组链接或数字 ID"
+    : isYt
+    ? "YouTube 频道链接 / @handle / UC... 频道 ID"
+    : isSph
+    ? "创作者主页 / v2_...@finder / 单条视频分享链接"
+    : isKs
+    ? "创作者主页 / 完整分享文案 / user_id"
+    : isBili
+    ? "UP 主空间主页 / mid"
+    : (isXhs || isRn)
+    ? "创作者主页 / 完整分享文案 / user_id"
+    : "创作者主页 / 完整分享文案 / sec_uid";
+  $("t-url").placeholder = isTikTok
+    ? "粘贴 TikTok 主页或作品分享文案，将自动提取 @username"
+    : isIg
+    ? "粘贴 https://www.instagram.com/<username>/ 或填写 @username"
+    : isTw
+    ? "粘贴 https://x.com/<username> 或填写 @username"
+    : isFb
+    ? "粘贴 https://www.facebook.com/<page>、/groups/<id> 或 profile.php?id=..."
+    : isYt
       ? "粘贴 https://www.youtube.com/@handle、/channel/UC... 或填写 @handle"
       : isSph
       ? "粘贴视频号主页链接、v2_...@finder、sph 标识或单条视频 weixin.qq.com/sph/... 链接"
       : isKs
       ? "直接粘贴整段快手主页分享文案，将自动提取有效链接"
       : isBili
-      ? "直接粘贴整段哔哩哔哩空间或视频分享文案，或填写 UP 主 mid"
+      ? "粘贴 https://space.bilibili.com/<mid> 空间主页链接、b23.tv 空间短链或填写数字 mid"
+      : isRn
+      ? "粘贴 www.rednote.com/zh/user/profile/... 主页链接或 24 位 user_id"
+      : isXhs
+      ? "直接粘贴整段小红书主页分享文案，将自动提取有效链接"
       : "直接粘贴整段抖音主页分享文案，将自动提取有效链接";
-    if (parseButton) parseButton.classList.remove("hidden");
-    resetMonitorTargetState();
-    return;
-  }
-  const kind = $("t-kind") ? $("t-kind").value : "creator";
-  if (kind === "keyword") {
-    if (title) title.innerHTML = '添加关键词监控 <span class="sub">盯一个搜索词的新笔记</span>';
-    if (lbl) lbl.textContent = "搜索关键词";
-    $("t-url").placeholder = "例如:口红试色 / 露营装备";
-    if (parseButton) parseButton.classList.add("hidden");
-  } else {
-    if (title) title.innerHTML = '添加创作者监控 <span class="sub">监控并下载新笔记</span>';
-    if (lbl) lbl.textContent = "创作者主页 / 完整分享文案 / user_id";
-    $("t-url").placeholder = PLATFORM === "rednote" ? "粘贴 www.rednote.com/zh/user/profile/... 主页链接或 24 位 user_id" : "直接粘贴整段小红书主页分享文案，将自动提取有效链接";
-    if (parseButton) parseButton.classList.remove("hidden");
-  }
-  resetMonitorTargetState();
+  if (parseButton) parseButton.classList.remove("hidden");
+  applyMonitorDownloadLinkage();
+  if (resetFeedback) resetMonitorTargetState();
 }
 
 // ─── 标签页切换 ───

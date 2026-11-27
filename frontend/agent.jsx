@@ -38,7 +38,7 @@ function WorkflowCard({ workflow, busy, onApply }) {
     <div className="agent-section-head"><h3>{workflow.plan.title}</h3><span className="agent-status-pill">{statusText[workflow.status] || workflow.status}</span></div>
     <p>{workflow.effect}</p>
     <ol className="agent-plan-steps">{workflow.plan.steps.map((step, index) => <li key={index}>
-      <b>{step.kind === "create_collection" ? "创建关键词采集" : "创建持续作品监控"}</b>
+      <b>{step.kind === "create_collection" ? "创建关键词采集" : "创建持续主页作品监控"}</b>
       <dl><dt>执行账号</dt><dd>{platformText[step.platform]} · 账号 #{step.account_id}</dd>
         <dt>{step.kind === "create_collection" ? "关键词" : "目标"}</dt><dd>{step.kind === "create_collection" ? step.keywords.join("、") : step.target}</dd>
         {step.kind === "create_monitor" && <><dt>检查间隔</dt><dd>{step.interval_seconds} 秒 · 首次不回填历史</dd></>}
@@ -403,7 +403,7 @@ export function AgentAssistant({ page }) {
               <div className="agent-suggestions">{[
                 ["分析最近异常", "chat", "分析最近的失败任务，列出证据、可能原因和修复验证步骤。"],
                 ["汇总运行情况", "chat", "总结最近七天的任务与账号指标，说明异常和数据缺口。"],
-                ["创建工作流", "workflow", "帮我规划关键词采集和作品监控；缺少的参数请先问我。"],
+                ["创建工作流", "workflow", "帮我规划关键词采集和主页作品监控；缺少的参数请先问我。"],
               ].map(([label, nextMode, value]) => <button key={label} type="button" className="ghost" disabled={busy} onClick={() => { setMode(nextMode); setPrompt(value); focusComposer(); }}>{label}<Icon name="next" /></button>)}</div>
             </div>}
             {hasOlderTurns && <p className="field-help">当前显示最近 30 轮消息；更早记录仍保留在本地。</p>}

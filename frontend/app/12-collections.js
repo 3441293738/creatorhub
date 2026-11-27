@@ -1,6 +1,5 @@
-// 12-collections.js — 关键词与创作者批量作品采集任务管理、结果筛选与报表导出。
-// ─── 监控 ───
-// ═══════════ 抖音 / 小红书关键词批量采集 ═══════════
+// 12-collections.js — 十一平台关键词采集任务管理、结果筛选与报表导出。
+// ═══════════ 关键词采集 ═══════════
 function parseCollectionKeywords(raw) {
   const seen = new Set();
   return String(raw || "")
@@ -13,149 +12,87 @@ function parseCollectionKeywords(raw) {
 function collectionKeywords() {
   return parseCollectionKeywords($("col-keywords") ? $("col-keywords").value : "");
 }
-function collectionSourceValue() {
-  return $("col-source") ? ($("col-source").value || "keyword") : "keyword";
-}
-async function loadCollectionFavoriteBoards() {
-  const accountId = Number($("col-account")?.value || 0);
-  const select = $("col-board");
-  if (!select || !accountId || !["xhs", "rednote"].includes(PLATFORM)) return;
-  const requestedAccount = accountId;
-  select.disabled = true;
-  select.innerHTML = '<option value="">正在加载收藏夹…</option>';
-  $("col-board-help").textContent = "";
-  try {
-    const boards = await api(`/api/accounts/${accountId}/${PLATFORM === "rednote" ? "rednote" : "xhs"}/favorite-boards`);
-    if (Number($("col-account")?.value || 0) !== requestedAccount) return;
-    COLLECTION_FAVORITE_BOARDS = boards || [];
-    select.innerHTML = '<option value="">请选择收藏夹</option>' + COLLECTION_FAVORITE_BOARDS.map(board =>
-      `<option value="${esc(board.id)}">${esc(board.name)}${Number(board.total) ? `（${fmtNum(board.total)}）` : ""}</option>`).join("");
-    $("col-board-help").textContent = boards.length ? `已读取 ${boards.length} 个收藏夹` : "当前账号没有可用收藏夹";
-  } catch (e) {
-    COLLECTION_FAVORITE_BOARDS = [];
-    select.innerHTML = '<option value="">加载失败，请重新选择账号</option>';
-    $("col-board-help").textContent = e.message;
-  } finally {
-    select.disabled = false;
-    select._csSync?.();
-  }
-}
-function collectionAccountChanged() {
-  if (collectionSourceValue() === "favorite_board") loadCollectionFavoriteBoards();
-}
-function collectionSourceChanged() {
-  applyCollectionForm();
-  if (collectionSourceValue() === "favorite_board") loadCollectionFavoriteBoards();
-}
-// 采集来源下拉按平台重建:不适用当前平台的选项直接移除(而非 disabled/hidden),
-// 部分浏览器(如 Firefox)对 <option hidden> 不生效,仍会显示灰色禁用项。
-const COL_SOURCE_DEFS = [
-  { value: "keyword", label: "关键词搜索" },
-  { value: "creator", label: "创作者主页" },
-  { value: "favorite_all", label: "全部收藏", xhs: true },
-  { value: "favorite_board", label: "指定收藏夹", xhs: true },
-  { value: "account_works", label: "本账号作品", channels: true },
-];
-function rebuildCollectionSources(xhs, channels, tiktok) {
-  const sel = $("col-source");
-  if (!sel) return;
-  const current = sel.value;
-  const bilibili = PLATFORM === "bilibili";
-  const rednote = PLATFORM === "rednote";
-  const instagram = PLATFORM === "instagram";
-  const twitter = PLATFORM === "twitter";
-  const facebook = PLATFORM === "facebook";
-  const youtube = PLATFORM === "youtube";
-  sel.innerHTML = "";
-  for (const o of COL_SOURCE_DEFS) {
-    let keep;
-    if (o.channels) keep = channels || bilibili || instagram || twitter || facebook || youtube;
-    else if (o.xhs) keep = xhs || rednote;
-    else keep = !(tiktok && o.value !== "keyword");
-    if (!keep) continue;
-    const opt = document.createElement("option");
-    opt.value = o.value;
-    opt.textContent = o.label;
-    sel.appendChild(opt);
-  }
-  const hasActiveChannelsAccount = channels && ACCOUNTS.some(
-    a => a.platform === "shipinhao" && a.status !== "invalid" && a.has_storage
-  );
-  if ([...sel.options].some(o => o.value === current)) sel.value = current;
-  else if (channels) sel.value = hasActiveChannelsAccount ? "account_works" : "keyword";
-  else if (tiktok) sel.value = "keyword";
-  else sel.value = "keyword";
-}
 function applyCollectionForm() {
-  const enabled = !!($("col-download") && $("col-download").checked);
-  if ($("col-dir-wrap")) $("col-dir-wrap").style.display = enabled ? "" : "none";
+  const downloadOn = !!($("col-download") && $("col-download").checked);
+  const contentType = $("col-content-type")?.value || "all";
+  const commentLimit = Number($("col-comment-limit")?.value ?? 20);
   const xhs = PLATFORM === "xhs";
   const channels = PLATFORM === "shipinhao";
   const tiktok = PLATFORM === "tiktok";
   const platformName = PF_NAME[PLATFORM] || "平台";
-  rebuildCollectionSources(xhs, channels, tiktok);
   populateCollectionAccount();
-  const source = collectionSourceValue();
-  const channelsAccountOnly = channels && source === "account_works";
-  const biliAccountOnly = PLATFORM === "bilibili" && source === "account_works";
-  const igAccountOnly = PLATFORM === "instagram" && source === "account_works";
-  const twAccountOnly = PLATFORM === "twitter" && source === "account_works";
-  const fbAccountOnly = PLATFORM === "facebook" && source === "account_works";
-  const ytAccountOnly = PLATFORM === "youtube" && source === "account_works";
-  const accountWorksOnly = channelsAccountOnly || biliAccountOnly || igAccountOnly || twAccountOnly || fbAccountOnly || ytAccountOnly;
-  const favorite = ["favorite_all", "favorite_board"].includes(source);
-  const alternate = source !== "keyword";
-  if ($("col-keywords-wrap")) $("col-keywords-wrap").style.display = alternate ? "none" : "";
-  if ($("col-board-wrap")) $("col-board-wrap").style.display = source === "favorite_board" ? "" : "none";
-  if ($("col-source-ref-wrap")) $("col-source-ref-wrap").style.display = source === "creator" ? "" : "none";
-  if ($("collection-create-title")) {
-    $("collection-create-title").textContent = channelsAccountOnly
-      ? "新建视频号本账号作品采集"
-      : biliAccountOnly
-      ? "新建哔哩哔哩本账号作品采集"
-      : igAccountOnly
-      ? "新建 Instagram 本账号作品采集"
-      : twAccountOnly
-      ? "新建 Twitter 本账号作品采集"
-      : fbAccountOnly
-      ? "新建 Facebook 本账号作品采集"
-      : ytAccountOnly
-      ? "新建 YouTube 本账号频道作品采集"
-      : favorite
-      ? `新建${platformName}收藏采集`
-      : source === "creator"
-        ? `新建${platformName}创作者采集`
-        : `新建${platformName}关键词采集`;
+  if ($("col-dir-wrap")) $("col-dir-wrap").style.display = downloadOn ? "" : "none";
+  if ($("col-quality-wrap")) {
+    const showQuality = QUALITY_PLATFORMS.includes(PLATFORM) && downloadOn && contentType !== "images";
+    $("col-quality-wrap").style.display = showQuality ? "" : "none";
   }
-  if ($("collection-create-sub")) $("collection-create-sub").textContent = channelsAccountOnly ? "同步当前登录账号的视频与图文，并按需采集评论与解密媒体" : biliAccountOnly ? "同步当前登录账号的投稿稿件，并按需采集评论与下载视频" : igAccountOnly ? "同步当前登录账号的帖子与 Reels，并按需采集评论与下载原图/视频" : twAccountOnly ? "同步当前登录账号的推文与媒体，并按需采集回复与下载高清原图/视频" : fbAccountOnly ? "同步当前登录账号的 Facebook 动态与媒体，并按需采集评论与下载图片/视频" : ytAccountOnly ? "同步当前登录频道的视频与 Shorts，并按需采集评论与无损合流下载" : channels ? "通过微信原生 Finder 协议采集作品、解密视频并拉取全量评论线程" : favorite ? "导入收藏笔记并继续抓取详情与评论" : source === "creator" ? "导入创作者公开作品并抓取评论" : xhs ? "批量搜索笔记并抓取评论" : tiktok ? "通过离线签名 API 批量搜索 TikTok 视频并抓取评论" : PLATFORM === "bilibili" ? "通过离线 WBI 签名接口批量搜索视频并抓取评论" : PLATFORM === "instagram" ? "通过 Instagram 双栈协议接口批量搜索话题/帖子并抓取评论" : PLATFORM === "twitter" ? "通过 Twitter 混合协议搜索推文并采集回复线程" : PLATFORM === "facebook" ? "通过 Facebook 隔离浏览器拦截 GraphQL 搜索帖子、群组或主页并采集评论" : PLATFORM === "youtube" ? "通过 YouTube SSR + Innertube 协议批量搜索视频/频道并抓取评论，下载自动无损合流" : "批量搜索视频并抓取评论";
-  if ($("nav-collections-label")) $("nav-collections-label").textContent = channels ? "作品批量采集" : "关键词采集";
-  if ($("col-content-limit-label")) $("col-content-limit-label").textContent = accountWorksOnly ? "作品上限" : "每词作品上限";
-  if ($("col-page-limit-label")) $("col-page-limit-label").innerHTML = accountWorksOnly ? '作品页采集深度 <span class="field-scope">1–40 页</span>' : '每词采集深度 <span class="field-scope">1–40 页</span>';
-  if ($("col-sort-wrap")) $("col-sort-wrap").style.display = (accountWorksOnly || source === "creator") ? "none" : "";
-  if ($("col-page-help")) $("col-page-help").textContent = channelsAccountOnly ? "依次读取视频与图文管理页(或复用微信原生 Finder 主页协议)。" : biliAccountOnly ? "依次读取创作中心稿件列表接口分页。" : igAccountOnly ? "依次读取 Instagram 用户时间线 feed/user 分页。" : twAccountOnly ? "依次读取当前账号时间线 UserTweets 分页。" : fbAccountOnly ? "依次读取当前 Facebook 账号主页时间线滚动分页。" : ytAccountOnly ? "依次读取当前 YouTube 频道视频与 Shorts 分页。" : channels ? "一页对应一次微信原生 Finder 搜索或主页翻页请求。" : (xhs || PLATFORM === "rednote") ? "一页对应一次搜索结果下滑或接口翻页。" : PLATFORM === "bilibili" ? "一页对应一次 WBI 搜索或 UP 主空间投稿接口翻页。" : PLATFORM === "instagram" ? "一页对应一次 tags/sections 或 feed/user 接口翻页。" : PLATFORM === "twitter" ? "一页对应一次 SearchTimeline 或 UserTweets 时间线翻页。" : PLATFORM === "facebook" ? "一页对应一次 Facebook 搜索或主页/群组时间线滚动拦截。" : PLATFORM === "youtube" ? "一页对应一次 Innertube 搜索或频道视频/Shorts 翻页请求。" : "一页对应一次搜索结果下滑。";
-  if ($("col-source-ref")) $("col-source-ref").placeholder = PLATFORM === "douyin" ? "抖音 sec_uid" : PLATFORM === "xhs" ? "小红书 user_id" : PLATFORM === "rednote" ? "海外小红书 user_id / www.rednote.com 主页链接" : PLATFORM === "shipinhao" ? "视频号 v2_...@finder / sph 标识 / 主页链接" : PLATFORM === "bilibili" ? "哔哩哔哩 UP 主 mid / space 主页链接 / 视频分享文案" : PLATFORM === "instagram" ? "Instagram @username / 主页链接 / 数字 UID" : PLATFORM === "twitter" ? "Twitter @username / x.com 主页链接 / 数字 UID" : PLATFORM === "facebook" ? "Facebook 个人主页 / 公共主页 / 群组链接或数字 ID" : PLATFORM === "youtube" ? "YouTube 频道链接 / @handle / UC... 频道 ID" : "快手 user_id / 主页链接 / 短链 / 分享文案";
-  resetCollectionCreatorState();
-  if ($("col-replies-help")) $("col-replies-help").textContent = `采集${platformName}当前可返回的回复`;
-  if ($("collection-callout-title")) $("collection-callout-title").textContent = channelsAccountOnly ? "支持创作者助手本账号同步与微信原生 Finder 协议增强" : channels ? "连接本机已登录微信即可搜索、采主页、抓全量评论与解密下载（无需网页账号）" : "作品上限、采集深度和停止条件任一满足即结束";
-  if ($("collection-callout-copy")) $("collection-callout-copy").textContent = channels
-    ? "视频号采用双通道架构：「关键词搜索 / 创作者主页」直接走「设置 → 视频号微信通道」一键连接的本机微信，无需登录创作者助手；「本账号作品」则读取创作者助手中已登录的本账号视频与图文。"
+  const repliesCb = $("col-replies");
+  const repliesRow = $("col-replies-row");
+  const commentsOff = !(Number.isFinite(commentLimit) && commentLimit > 0);
+  if (repliesCb) {
+    repliesCb.disabled = commentsOff;
+    if (commentsOff) repliesCb.checked = false;
+  }
+  if (repliesRow) repliesRow.style.opacity = commentsOff ? "0.55" : "";
+  if ($("col-replies-help")) {
+    $("col-replies-help").textContent = commentsOff
+      ? "当前每作品评论上限为 0，已自动跳过二级评论"
+      : `采集${platformName}当前可返回的回复`;
+  }
+  if ($("collection-create-title")) {
+    $("collection-create-title").textContent = `新建${platformName}关键词采集`;
+  }
+  if ($("collection-create-sub")) $("collection-create-sub").textContent = channels
+    ? "通过微信原生 Finder 协议按关键词搜索作品、解密视频并拉取评论线程"
+    : xhs || PLATFORM === "rednote"
+    ? "按关键词批量搜索笔记并抓取评论"
     : tiktok
-    ? "TikTok 当前默认 native：关键词、评论和二级回复均由离线签名 API 直连，全程不打开浏览器；只有在设置中手动选择 auto/browser 才会使用页面。直播不在采集范围；视频发布请使用独立发布入口。"
+    ? "通过离线签名 API 按关键词批量搜索 TikTok 视频并抓取评论"
     : PLATFORM === "bilibili"
-    ? "哔哩哔哩默认使用离线 WBI 签名 API 直连搜索视频、读取 UP 主空间与本账号稿件、抓取主评论与楼中楼回复，并携带 Referer 下载渐进式 MP4 媒体；仅在普通接口兼容失败时按设置回退浏览器。"
+    ? "通过离线 WBI 签名接口按关键词批量搜索视频并抓取评论"
     : PLATFORM === "instagram"
-    ? "Instagram 默认使用 Mobile v1 / Web API 直连搜索标签与关键词、读取创作者主页与 Reels、通过 stream_comments 抓取评论与回复，并按序号保存单帖或混合轮播原图/视频；普通兼容失败时自动回退独立浏览器。"
+    ? "通过 Instagram 双栈协议按关键词/话题批量搜索帖子并抓取评论"
     : PLATFORM === "twitter"
-    ? "Twitter 默认结合轻量 Syndication/REST 与独立浏览器拦截 GraphQL 时间线，支持关键词搜索、创作者主页、本账号推文及回复线程采集，并自动选取最高码率 MP4 与 ?name=orig 原图下载。"
+    ? "通过 Twitter 混合协议按关键词搜索推文并采集回复线程"
     : PLATFORM === "facebook"
-    ? "Facebook 采用独立隔离浏览器拦截原生 GraphQL 与 DOM 双层提取，支持关键词帖子搜索、个人/公共主页、公开或已加入群组及本账号动态采集与评论抓取；纯文字帖子将自动标记跳过媒体下载。"
+    ? "通过 Facebook 协议/隔离浏览器按关键词搜索帖子并采集评论"
     : PLATFORM === "youtube"
-    ? "YouTube 优先通过 SSR ytInitialData 与 Innertube Web (/youtubei/v1/*) 协议批量采集关键词视频、频道视频/Shorts 及评论区，异常时自动回退隔离浏览器；勾选下载后将使用 yt-dlp + 内置 FFmpeg 无损合流保存 MP4。"
-    : xhs
-    ? "小红书采集复用所选账号的可见浏览器或显式 API 读取模式；最新、类型、时间和数据门槛会在入库前复核；任务串行执行，可随时取消，已入库结果会保留。"
+    ? "通过 YouTube SSR + Innertube 协议按关键词批量搜索视频并抓取评论，下载自动无损合流"
+    : "按关键词批量搜索视频并抓取评论";
+  if ($("nav-collections-label")) $("nav-collections-label").textContent = "关键词采集";
+  if ($("col-content-limit-label")) $("col-content-limit-label").textContent = "每词作品上限";
+  if ($("col-page-limit-label")) $("col-page-limit-label").innerHTML = '每词采集深度 <span class="field-scope">1–40 页</span>';
+  if ($("col-page-help")) $("col-page-help").textContent = channels
+    ? "一页对应一次微信原生 Finder 关键词搜索翻页请求。"
+    : (xhs || PLATFORM === "rednote") ? "一页对应一次搜索结果下滑或接口翻页。"
+    : PLATFORM === "bilibili" ? "一页对应一次 WBI 搜索接口翻页。"
+    : PLATFORM === "instagram" ? "一页对应一次 tags/sections 搜索接口翻页。"
+    : PLATFORM === "twitter" ? "一页对应一次 SearchTimeline 翻页。"
+    : PLATFORM === "facebook" ? "一页对应一次 Facebook 关键词搜索分页。"
+    : PLATFORM === "youtube" ? "一页对应一次 Innertube 搜索翻页请求。"
+    : "一页对应一次搜索结果下滑。";
+  if ($("collection-callout-title")) $("collection-callout-title").textContent = channels
+    ? "连接本机已登录微信即可按关键词搜索、抓评论与解密下载（无需网页账号）"
+    : "作品上限、采集深度和停止条件任一满足即结束";
+  if ($("collection-callout-copy")) $("collection-callout-copy").textContent = channels
+    ? "视频号关键词搜索直接走「设置 → 视频号微信通道」一键连接的本机微信，无需登录创作者助手；如需追踪创作者主页请前往「主页作品监控」，查看自有作品请前往「数据与私信」。"
+    : tiktok
+    ? "TikTok 当前默认 native：关键词、评论和二级回复均由离线签名 API 直连，全程不打开浏览器；只有在设置中手动选择 auto/browser 才会使用页面。持续追踪博主请前往「主页作品监控」。"
+    : PLATFORM === "bilibili"
+    ? "哔哩哔哩默认使用离线 WBI 签名 API 直连搜索视频、抓取主评论与楼中楼回复，并携带 Referer 下载渐进式 MP4 媒体；持续追踪 UP 主请前往「主页作品监控」。"
+    : PLATFORM === "instagram"
+    ? "Instagram 默认使用 Mobile v1 / Web API 直连搜索标签与关键词、抓取评论与回复，并按序号保存单帖或混合轮播原图/视频；持续追踪创作者请前往「主页作品监控」。"
+    : PLATFORM === "twitter"
+    ? "Twitter 默认结合轻量 Syndication/REST 与独立浏览器拦截 GraphQL 时间线，支持关键词搜索与回复线程采集，并自动选取最高码率 MP4 与 ?name=orig 原图下载；持续追踪创作者请前往「主页作品监控」。"
+    : PLATFORM === "facebook"
+    ? "Facebook 采用 SSR/RelayModern 协议优先与独立隔离浏览器回退，支持关键词帖子搜索与评论抓取；纯文字帖子将自动标记跳过媒体下载。持续追踪主页/群组请前往「主页作品监控」。"
+    : PLATFORM === "youtube"
+    ? "YouTube 优先通过 SSR ytInitialData 与 Innertube Web (/youtubei/v1/*) 协议批量采集关键词视频及评论区，勾选下载后使用 yt-dlp + 内置 FFmpeg 无损合流保存 MP4；持续追踪频道请前往「主页作品监控」。"
+    : xhs || PLATFORM === "rednote"
+    ? `${platformName}关键词采集复用所选账号的可见浏览器或 API 读取模式；最新、类型、时间和数据门槛会在入库前复核；持续追踪博主请前往「主页作品监控」。`
     : PLATFORM === "kuaishou"
-      ? "快手采集复用所选账号的登录浏览器，拦截页面签名后的搜索、主页和评论响应；类型、时间和数据门槛会在入库前复核。"
-      : "抖音采集会临时打开可见浏览器窗口；平台筛选后还会在本地复核类型、时间和数据门槛；任务串行执行，可随时取消，已入库结果会保留。";
+      ? "快手关键词采集复用所选账号的登录浏览器，拦截页面签名后的搜索和评论响应；类型、时间和数据门槛会在入库前复核；持续追踪博主请前往「主页作品监控」。"
+      : "抖音关键词采集优先按全局读取模式执行，平台筛选后会在本地复核类型、时间和数据门槛；任务串行执行，可随时取消，已入库结果会保留。";
 }
 function collectionStatus(status) {
   const labels = { pending: "等待中", running: "采集中", done: "已完成", partial: "部分完成", failed: "失败", canceled: "已取消" };
@@ -173,16 +110,8 @@ function collectionDate(value) {
 }
 async function createCollection() {
   const keywords = collectionKeywords();
-  const sourceType = collectionSourceValue();
-  const board = $("col-board");
-  if (sourceType === "creator") {
-    const normalizedCreator = await normalizeCollectionCreatorTarget(null, { quiet: true });
-    if (normalizedCreator === null) return;
-  }
-  const sourceRef = sourceType === "favorite_board" ? (board?.value || "") : sourceType === "creator" ? ($("col-source-ref")?.value.trim() || "") : "";
-  const sourceName = sourceType === "account_works" ? "本账号作品" : sourceType === "favorite_all" ? "全部收藏" : sourceType === "favorite_board" ? (board?.selectedOptions?.[0]?.textContent || "").replace(/（[\d,.万亿]+）$/, "") : sourceType === "creator" ? `创作者 ${sourceRef}` : "";
-  const requiresAccount = collectionRequiresAccount(PLATFORM, sourceType);
-  const accountId = requiresAccount || PLATFORM !== "shipinhao" ? Number($("col-account").value || 0) : 0;
+  const requiresAccount = collectionRequiresAccount(PLATFORM);
+  const accountId = requiresAccount ? Number($("col-account").value || 0) : 0;
   const contentLimit = Number($("col-content-limit").value || 0);
   const commentLimit = Number($("col-comment-limit").value || 0);
   const pageLimit = Number($("col-page-limit").value || 0);
@@ -190,9 +119,7 @@ async function createCollection() {
   const minLikes = Number($("col-min-likes").value || 0);
   const minComments = Number($("col-min-comments").value || 0);
   let valid = true;
-  valid = setFieldError($("col-keywords"), sourceType === "keyword" && !keywords.length ? "请至少填写一个关键词" : keywords.length > 20 ? "单个任务最多 20 个关键词" : "") && valid;
-  if (sourceType === "favorite_board") valid = setFieldError(board, !sourceRef ? "请选择收藏夹" : "") && valid;
-  if (sourceType === "creator") valid = setFieldError($("col-source-ref"), !sourceRef ? "请填写创作者用户 ID" : "") && valid;
+  valid = setFieldError($("col-keywords"), !keywords.length ? "请至少填写一个关键词" : keywords.length > 20 ? "单个任务最多 20 个关键词" : "") && valid;
   valid = requiresAccount
     ? setFieldError($("col-account"), !accountId ? "请选择一个已登录账号" : "") && valid
     : setFieldError($("col-account"), "") && valid;
@@ -215,7 +142,7 @@ async function createCollection() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           platform: PLATFORM, account_id: accountId, keywords,
-          source_type: sourceType, source_ref: sourceRef, source_name: sourceName,
+          source_type: "keyword", source_ref: "", source_name: "",
           max_contents_per_keyword: contentLimit,
           max_pages_per_keyword: pageLimit,
           stagnant_pages: stagnantPages,
@@ -225,15 +152,15 @@ async function createCollection() {
           min_likes: minLikes,
           min_comments: minComments,
           max_comments_per_content: commentLimit,
-          include_replies: $("col-replies").checked,
+          include_replies: commentLimit > 0 && $("col-replies").checked,
           download_media: $("col-download").checked,
-          video_quality: $("col-quality").value || "highest",
-          download_dir: $("col-download-dir").value.trim(),
+          video_quality: QUALITY_PLATFORMS.includes(PLATFORM) ? ($("col-quality").value || "highest") : "highest",
+          download_dir: $("col-download").checked ? $("col-download-dir").value.trim() : "",
         }),
       });
       $("col-create-msg").textContent = `任务 #${job.id} 已进入队列`;
-      if (sourceType === "keyword") $("col-keywords").value = "";
-      toast(`${sourceType === "account_works" ? "本账号作品" : sourceType === "keyword" ? "关键词" : sourceType === "creator" ? "创作者" : "收藏"}采集任务已创建`, "ok");
+      $("col-keywords").value = "";
+      toast("关键词采集任务已创建", "ok");
       globalThis.CreatorHubWorkbench?.completed?.("collections");
       await refreshCollections();
     } catch (e) {
@@ -250,7 +177,7 @@ function collectionTaskSkeleton(count = 3) {
 }
 function collectionTaskEmpty() {
   return `<div class="empty collection-task-empty"><div class="empty-ic">${ic("i-hash")}</div>
-    <div class="empty-t">还没有采集任务</div><div class="empty-sub">可按平台支持的来源创建作品采集任务。</div><button class="ghost sm" data-open-composer="collections">新建采集任务</button></div>`;
+    <div class="empty-t">还没有关键词采集任务</div><div class="empty-sub">输入搜索关键词即可批量采集作品、评论与媒体。</div><button class="ghost sm" data-open-composer="collections">新建关键词采集</button></div>`;
 }
 function collectionProgress(job) {
   if (job.status === "done") return 100;
@@ -387,15 +314,16 @@ function renderCollectionJobs() {
   const html = COLLECTION_JOBS.map(job => {
     const status = collectionStatus(job.status);
     const percent = collectionProgress(job);
-    const sourceLabel = job.source_type === "keyword" ? "关键词" : "来源";
-    const keywordProgress = `${Number(job.processed_keyword_count || 0)}/${Number(job.total_keyword_count || 0)} ${sourceLabel}`;
+    const isLegacySource = (job.source_type || "keyword") !== "keyword";
+    const sourceLabel = isLegacySource ? "历史来源（已下线）" : "关键词";
+    const keywordProgress = `${Number(job.processed_keyword_count || 0)}/${Number(job.total_keyword_count || 0)} ${isLegacySource ? "来源" : "关键词"}`;
     const itemProgress = Number(job.current_item_total || 0) > 0
       ? ` · 当前作品 ${Number(job.current_item_index || 0)}/${Number(job.current_item_total || 0)}` : "";
-    const sourceValues = job.source_type === "keyword" ? (job.keywords || []) : [job.source_name || (job.source_type === "account_works" ? "本账号作品" : job.source_type === "favorite_all" ? "全部收藏" : "收藏夹")];
+    const sourceValues = !isLegacySource ? (job.keywords || []) : [job.source_name || "历史采集来源"];
     const keywords = sourceValues.slice(0, 5).map(k => `<span class="meta-chip">${esc(k)}</span>`).join("") +
       (sourceValues.length > 5 ? `<span class="meta-chip more">+${sourceValues.length - 5}</span>` : "");
     const canCancel = ["pending", "running"].includes(job.status);
-    const canRetry = ["done", "partial", "failed", "canceled"].includes(job.status);
+    const canRetry = !isLegacySource && ["done", "partial", "failed", "canceled"].includes(job.status);
     const canEdit = canRetry && ["douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube"].includes(job.platform);
     const isRunning = job.status === "running";
     const isSelected = !isRunning && selCollection.has(job.id);
@@ -518,13 +446,15 @@ async function refreshCollections() {
 async function editCollection(jobId, draft = null) {
   const job = COLLECTION_JOBS.find(item => item.id === Number(jobId));
   if (!job) return;
+  if ((job.source_type || "keyword") !== "keyword") {
+    toast("历史非关键词采集任务已下线，请新建关键词采集或前往「主页作品监控」", "info", 4500);
+    return;
+  }
   const platformName = PF_NAME[job.platform] || "平台";
-  const accounts = ACCOUNTS.filter(a => a.platform === job.platform && a.status !== "invalid" && a.has_storage);
+  const accounts = _preferCrawlAccounts(ACCOUNTS.filter(a => a.platform === job.platform && a.status !== "invalid" && a.has_storage));
+  const supportsQuality = QUALITY_PLATFORMS.includes(job.platform);
   const initial = draft || {
     account_id: job.account_id,
-    source_type: job.source_type || "keyword",
-    source_ref: job.source_ref || "",
-    source_name: job.source_name || "",
     keywords: (job.keywords || []).join("\n"),
     max_contents_per_keyword: job.max_contents_per_keyword,
     max_pages_per_keyword: job.max_pages_per_keyword || 12,
@@ -540,17 +470,32 @@ async function editCollection(jobId, draft = null) {
     video_quality: job.video_quality || "highest",
     download_dir: job.download_dir || "",
   };
+  const syncEditCollectionLinkage = () => {
+    const dlOn = !!$("ecol-download")?.checked;
+    const cType = $("ecol-content-type")?.value || "all";
+    const cmtLimit = Number($("ecol-comment-limit")?.value ?? 0);
+    if ($("ecol-dir-wrap")) $("ecol-dir-wrap").style.display = dlOn ? "" : "none";
+    if ($("ecol-quality-wrap")) $("ecol-quality-wrap").style.display = (supportsQuality && dlOn && cType !== "images") ? "" : "none";
+    const rep = $("ecol-replies");
+    const repRow = $("ecol-replies-row");
+    const cmtOff = !(Number.isFinite(cmtLimit) && cmtLimit > 0);
+    if (rep) {
+      rep.disabled = cmtOff;
+      if (cmtOff) rep.checked = false;
+    }
+    if (repRow) repRow.style.opacity = cmtOff ? "0.55" : "";
+  };
   const value = await new Promise(resolve => {
     _uiResolve = resolve; _uiCancelVal = null;
     $("ui-body").innerHTML = `
-      <fieldset class="ui-form-group"><legend>采集范围</legend>
-      ${initial.source_type === "keyword" ? `<div class="form-field"><label for="ecol-keywords">关键词 <span class="field-scope">最多 20 个</span></label>
-        <textarea id="ecol-keywords" rows="5" placeholder="每行一个关键词">${esc(initial.keywords)}</textarea></div>` : `<div class="form-note"><svg aria-hidden="true"><use href="#i-library"/></svg><span>采集来源：<b>${esc(initial.source_name || (initial.source_type === "account_works" ? "本账号作品" : initial.source_type === "favorite_all" ? "全部收藏" : "收藏夹"))}</b>。来源不可在续跑时切换，可新建任务选择其他来源。</span></div>`}
+      <fieldset class="ui-form-group"><legend>关键词与账号</legend>
+      <div class="form-field"><label for="ecol-keywords">关键词 <span class="field-scope">最多 20 个</span></label>
+        <textarea id="ecol-keywords" rows="5" placeholder="每行一个关键词">${esc(initial.keywords)}</textarea></div>
       <div class="form-grid">
-        ${collectionRequiresAccount(job.platform, initial.source_type) || job.platform !== "shipinhao"
-          ? `<div class="form-field"><label for="ecol-account">使用账号</label><select id="ecol-account">${accOptions(accounts, !collectionRequiresAccount(job.platform, initial.source_type) ? "使用本机微信通道（无需网页账号）" : (accounts.length ? `请选择${platformName}账号` : `暂无可用${platformName}账号`))}</select></div>`
+        ${collectionRequiresAccount(job.platform)
+          ? `<div class="form-field"><label for="ecol-account">使用账号</label><select id="ecol-account">${accOptions(accounts, accounts.length ? `请选择${platformName}账号` : `暂无可用${platformName}账号`, { preferCrawler: true })}</select></div>`
           : ""}
-        ${job.platform === "douyin" ? '<div class="form-field"><label for="ecol-quality">视频画质</label><select id="ecol-quality"><option value="highest">原画 / 最高</option><option value="1080">1080P</option><option value="720">720P</option><option value="540">540P</option><option value="lowest">最低省流</option></select></div>' : ""}
+        ${supportsQuality ? '<div class="form-field" id="ecol-quality-wrap"><label for="ecol-quality">视频画质</label><select id="ecol-quality"><option value="highest">原画 / 最高</option><option value="1080">1080P</option><option value="720">720P</option><option value="540">540P</option><option value="lowest">最低省流</option></select></div>' : ""}
         <div class="form-field"><label for="ecol-content-limit">每词作品上限</label><input id="ecol-content-limit" type="number" min="1" max="100" value="${Number(initial.max_contents_per_keyword) || 20}"></div>
         <div class="form-field"><label for="ecol-comment-limit">每作品评论上限</label><input id="ecol-comment-limit" type="number" min="0" max="200" value="${Number(initial.max_comments_per_content) || 0}"></div>
       </div>
@@ -568,8 +513,8 @@ async function editCollection(jobId, draft = null) {
       </fieldset>
       <fieldset class="ui-form-group"><legend>评论与下载</legend>
       <div class="option-grid" aria-label="采集选项">
-        <label class="switch-row"><input type="checkbox" id="ecol-download"${initial.download_media ? " checked" : ""} onchange="$('ecol-dir-wrap').style.display=this.checked?'':'none'"><span class="switch-copy"><b>下载媒体</b><span>保存视频和封面来源</span></span></label>
-        <label class="switch-row"><input type="checkbox" id="ecol-replies"${initial.include_replies ? " checked" : ""}><span class="switch-copy"><b>包含二级评论</b><span>采集${platformName}当前可返回的回复</span></span></label>
+        <label class="switch-row"><input type="checkbox" id="ecol-download"${initial.download_media ? " checked" : ""}><span class="switch-copy"><b>下载媒体</b><span>保存视频、图集和封面来源</span></span></label>
+        <label class="switch-row" id="ecol-replies-row"><input type="checkbox" id="ecol-replies"${initial.include_replies ? " checked" : ""}><span class="switch-copy"><b>包含二级评论</b><span>采集${platformName}当前可返回的回复</span></span></label>
       </div>
       <div class="form-field" id="ecol-dir-wrap" style="display:${initial.download_media ? "" : "none"}"><label for="ecol-download-dir">下载目录（可选）</label><input id="ecol-download-dir" value="${esc(initial.download_dir)}" placeholder="留空使用默认目录"></div>
       </fieldset>`;
@@ -578,34 +523,42 @@ async function editCollection(jobId, draft = null) {
     $("ecol-sort").value = initial.search_sort || "general";
     $("ecol-publish-time").value = initial.publish_time || "all";
     $("ecol-content-type").value = initial.content_type || "all";
+    $("ecol-download")?.addEventListener("change", syncEditCollectionLinkage);
+    $("ecol-content-type")?.addEventListener("change", syncEditCollectionLinkage);
+    $("ecol-comment-limit")?.addEventListener("input", syncEditCollectionLinkage);
     enhanceAllSelects($("ui-body")); csSyncAll();
-    _uiGetVal = () => ({
-      account_id: $("ecol-account") ? Number($("ecol-account").value || 0) : 0,
-      source_type: initial.source_type,
-      source_ref: initial.source_ref,
-      source_name: initial.source_name,
-      keywords: $("ecol-keywords") ? $("ecol-keywords").value : "",
-      max_contents_per_keyword: Number($("ecol-content-limit").value || 0),
-      max_pages_per_keyword: Number($("ecol-page-limit").value || 0),
-      stagnant_pages: Number($("ecol-stagnant-pages").value || 0),
-      search_sort: $("ecol-sort").value || "general",
-      publish_time: $("ecol-publish-time").value || "all",
-      content_type: $("ecol-content-type").value || "all",
-      min_likes: Number($("ecol-min-likes").value || 0),
-      min_comments: Number($("ecol-min-comments").value || 0),
-      max_comments_per_content: Number($("ecol-comment-limit").value || 0),
-      include_replies: $("ecol-replies").checked,
-      download_media: $("ecol-download").checked,
-      video_quality: $("ecol-quality") ? ($("ecol-quality").value || "highest") : "highest",
-      download_dir: $("ecol-download-dir").value.trim(),
-    });
-    _uiOpen(`编辑采集任务 #${job.id}`, "已有作品和评论会保留。保存后点击「续跑」应用新配置，系统会自动去重。", {
+    syncEditCollectionLinkage();
+    _uiGetVal = () => {
+      const cmtLim = Number($("ecol-comment-limit").value || 0);
+      const dlOn = $("ecol-download").checked;
+      return {
+        account_id: $("ecol-account") ? Number($("ecol-account").value || 0) : 0,
+        source_type: "keyword",
+        source_ref: "",
+        source_name: "",
+        keywords: $("ecol-keywords") ? $("ecol-keywords").value : "",
+        max_contents_per_keyword: Number($("ecol-content-limit").value || 0),
+        max_pages_per_keyword: Number($("ecol-page-limit").value || 0),
+        stagnant_pages: Number($("ecol-stagnant-pages").value || 0),
+        search_sort: $("ecol-sort").value || "general",
+        publish_time: $("ecol-publish-time").value || "all",
+        content_type: $("ecol-content-type").value || "all",
+        min_likes: Number($("ecol-min-likes").value || 0),
+        min_comments: Number($("ecol-min-comments").value || 0),
+        max_comments_per_content: cmtLim,
+        include_replies: cmtLim > 0 && $("ecol-replies").checked,
+        download_media: dlOn,
+        video_quality: $("ecol-quality") ? ($("ecol-quality").value || "highest") : "highest",
+        download_dir: dlOn ? $("ecol-download-dir").value.trim() : "",
+      };
+    };
+    _uiOpen(`编辑关键词采集任务 #${job.id}`, "已有作品和评论会保留。保存后点击「续跑」应用新配置，系统会自动去重。", {
       okText: "保存配置", wide: true, icon: "i-library",
       submit: value => {
         const keywords = parseCollectionKeywords(value.keywords);
-        if (value.source_type === "keyword" && !keywords.length) uiEditorError("请至少填写一个关键词", "ecol-keywords");
+        if (!keywords.length) uiEditorError("请至少填写一个关键词", "ecol-keywords");
         if (keywords.length > 20) uiEditorError("单个任务最多 20 个关键词", "ecol-keywords");
-        if (collectionRequiresAccount(job.platform, value.source_type) && !value.account_id) uiEditorError(`请选择一个可用${platformName}账号`, "ecol-account");
+        if (collectionRequiresAccount(job.platform) && !value.account_id) uiEditorError(`请选择一个可用${platformName}账号`, "ecol-account");
         if (value.max_contents_per_keyword < 1 || value.max_contents_per_keyword > 100) uiEditorError("每词作品上限须为 1–100", "ecol-content-limit");
         if (value.max_pages_per_keyword < 1 || value.max_pages_per_keyword > 40) uiEditorError("每词采集深度须为 1–40 页", "ecol-page-limit");
         if (value.stagnant_pages < 1 || value.stagnant_pages > 8) uiEditorError("连续无新增停止阈值须为 1–8 页", "ecol-stagnant-pages");
@@ -755,7 +708,7 @@ function revealCollectionFile(jobId, contentId, button) { return collectionLocal
 function copyCollectionAuthorId(button) {
   return copyTextValue(
     button?.dataset?.authorId || "",
-    "创作者 ID 已复制，可用于创作者采集或作品监控",
+    "创作者 ID 已复制，可用于主页作品监控",
     "复制失败，请手动复制创作者 ID",
   );
 }

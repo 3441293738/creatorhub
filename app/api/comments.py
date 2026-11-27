@@ -277,7 +277,7 @@ async def add_watch(body: WatchIn):
             if not sec_uid:
                 raise HTTPException(400, "无法解析哔哩哔哩 UP 主 UID，请粘贴空间链接、b23.tv 短链或纯数字 UID")
             title = "UP主 " + sec_uid
-        mode = body.mode if body.mode in ("public", "creator") else "public"
+        mode = "public"
     elif platform == "instagram":
         kind = body.kind if body.kind in {"auto", "video", "user"} else "auto"
         work_ref = resolve_ig_work_ref(target_input) if looks_like_ig_work(target_input) else None
@@ -413,8 +413,12 @@ async def add_watch(body: WatchIn):
                     400,
                     "该账号角色设为「发布主号 (publish)」，禁止绑定公开作品评论轮询采集；请使用「创作中心模式」或改选「仅采集号 (crawler)」/「混合号 (hybrid)」",
                 )
-        if platform in {"tiktok", "instagram", "twitter", "facebook", "youtube"}:
-            pname = {"instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook", "youtube": "YouTube"}.get(platform, "TikTok")
+        if platform in {"xhs", "rednote", "tiktok", "instagram", "twitter", "facebook", "youtube"}:
+            pname = {
+                "xhs": "小红书", "rednote": "海外小红书",
+                "instagram": "Instagram", "twitter": "Twitter",
+                "facebook": "Facebook", "youtube": "YouTube",
+            }.get(platform, "TikTok")
             account = s.get(DouyinAccount, body.account_id) if body.account_id else None
             if not account or account.platform != platform or account.status != "active":
                 raise HTTPException(400, f"{pname} 评论监控必须选择一个登录有效的 {pname} 账号")
@@ -474,10 +478,22 @@ async def update_watch(wid: int, body: WatchUpdate):
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != w.platform or acc.status != "active":
                 raise HTTPException(400, "账号不存在、登录态失效或与评论监控平台不匹配")
-            if (w.platform in {"tiktok", "instagram", "twitter", "facebook", "youtube"}
+            if (w.platform in {"xhs", "rednote", "tiktok", "instagram", "twitter", "facebook", "youtube"}
                     and not (acc.storage_state or acc.creator_storage_state or acc.cookie)):
-                pname_w = {"instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook", "youtube": "YouTube"}.get(w.platform, "TikTok")
+                pname_w = {
+                    "xhs": "小红书", "rednote": "海外小红书",
+                    "instagram": "Instagram", "twitter": "Twitter",
+                    "facebook": "Facebook", "youtube": "YouTube",
+                }.get(w.platform, "TikTok")
                 raise HTTPException(400, f"所选 {pname_w} 账号缺少登录会话，请重新登录")
+            if (
+                new_mode == "public"
+                and str(acc.account_role or "hybrid").strip().lower() == "publish"
+            ):
+                raise HTTPException(
+                    400,
+                    "该账号角色设为「发布主号 (publish)」，禁止绑定公开作品评论轮询采集；请使用「创作中心模式」或改选「仅采集号 (crawler)」/「混合号 (hybrid)」",
+                )
             w.account_id = body.account_id
         if new_mode == "creator":
             if w.platform != "douyin" or w.kind != "user":

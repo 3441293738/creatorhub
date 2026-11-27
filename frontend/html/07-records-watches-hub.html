@@ -13,8 +13,8 @@
       <span class="filter-count" id="mon-filter-count" role="status" aria-live="polite"></span>
       <div class="toolbar-actions"><span class="toolbar-actions-label">操作</span><div class="export-actions" role="group" aria-label="监控列表 Excel 导出"><span class="export-caption" title="导出当前模块数据"><svg aria-hidden="true"><use href="#i-download"/></svg>Excel</span><button type="button" class="export-btn filtered" onclick="exportModuleReport('monitors', false, this)" title="导出当前条件下的全部匹配记录" aria-label="导出监控列表当前结果"><svg aria-hidden="true"><use href="#i-download"/></svg>当前结果</button><button type="button" class="export-btn full" onclick="exportModuleReport('monitors', true, this)" title="导出当前平台全部记录" aria-label="导出监控列表全部数据"><svg aria-hidden="true"><use href="#i-download"/></svg>全部数据</button></div><button class="ghost sm" id="mon-selall-btn" type="button" onclick="monSelAllToggle()" disabled>全选</button><span id="mon-selbar" style="display:none;align-items:center;gap:8px"><span class="mut" id="mon-selcount">已选 0 项</span><button class="ghost sm" type="button" onclick="monSelClear()">取消</button><button class="sm danger" type="button" onclick="monBatchDelete()"><svg><use href="#i-trash"/></svg>批量删除</button></span></div>
     </div>
-    <div class="table-wrap"><table aria-label="作品监控列表"><thead><tr>
-      <th class="task-check-col"><input type="checkbox" id="mon-selall" onchange="monToggleAll(this.checked)" aria-label="全选当前显示的作品监控"></th>
+    <div class="table-wrap"><table aria-label="主页作品监控列表"><thead><tr>
+      <th class="task-check-col"><input type="checkbox" id="mon-selall" onchange="monToggleAll(this.checked)" aria-label="全选当前显示的主页作品监控"></th>
       <th>监控对象</th><th>分组 / 标签</th><th>已采记录</th><th>检查间隔</th><th>抓取与下载策略</th><th>上次扫描</th><th>状态</th><th style="text-align:right">操作</th>
     </tr></thead><tbody id="mon-table"></tbody></table></div>
   </div>
@@ -139,10 +139,10 @@
           </div>
         </div>
         <div class="form-grid cols-auto">
-          <div class="form-field"><label for="w-kind">监控对象类型</label><select id="w-kind" onchange="resetWatchTargetState()">
-              <option value="auto">自动识别</option><option value="video">单条视频</option><option value="user">账号近期作品</option>
+          <div class="form-field"><label for="w-kind">监控对象类型</label><select id="w-kind" onchange="onWatchKindChange()">
+              <option value="auto">自动识别</option><option value="video">单条视频 / 作品</option><option value="user">账号近期作品</option>
           </select></div>
-          <div class="form-field dy-only"><label for="w-mode">评论来源</label><select id="w-mode" onchange="populateWatchAccount()">
+          <div class="form-field dy-only" id="w-mode-wrap"><label for="w-mode">评论来源</label><select id="w-mode" onchange="onWatchModeChange()">
               <option value="public">公开评论区</option><option value="creator">创作中心（仅自有账号）</option>
           </select></div>
           <div class="form-field" id="w-acc-wrap"><label for="w-acc">使用账号</label><select id="w-acc"></select></div>
@@ -168,15 +168,15 @@
           </div>
         </div>
         <div class="form-grid cols-auto">
-          <div class="form-field"><label for="w-recent">近期作品数</label><select id="w-recent">
+          <div class="form-field" id="w-recent-wrap"><label for="w-recent">近期作品数</label><select id="w-recent">
               <option value="0">跟随全局设置</option><option value="3">最近 3 个作品</option>
               <option value="5">最近 5 个作品</option><option value="10">最近 10 个作品</option><option value="20">最近 20 个作品</option>
           </select></div>
-          <div class="form-field"><label for="w-days">作品时间范围</label><select id="w-days">
+          <div class="form-field" id="w-days-wrap"><label for="w-days">作品时间范围</label><select id="w-days">
               <option value="0">跟随全局设置</option><option value="3">最近 3 天</option>
               <option value="7">最近 7 天</option><option value="14">最近 14 天</option><option value="30">最近 30 天</option>
           </select></div>
-          <div class="form-field"><label for="w-depth">评论抓取深度</label><select id="w-depth">
+          <div class="form-field" id="w-depth-wrap"><label for="w-depth">评论抓取深度</label><select id="w-depth">
               <option value="0">跟随全局设置</option><option value="3">浅层抓取</option>
               <option value="6">标准抓取</option><option value="12">深度抓取</option><option value="20">最大抓取</option>
           </select></div>
@@ -314,10 +314,10 @@
           </div>
         </div>
         <div class="form-grid cols-auto">
-          <div class="form-field"><label for="d-w-kind">监控对象</label><select id="d-w-kind" onchange="applyDanmakuForm()">
+          <div class="form-field"><label for="d-w-kind">监控对象</label><select id="d-w-kind" onchange="applyDanmakuForm(false)">
             <option value="auto">自动识别</option><option value="video">单条视频</option><option value="user">账号近期作品</option>
           </select></div>
-          <div class="form-field"><label for="d-w-mode">弹幕来源</label><select id="d-w-mode" onchange="applyDanmakuForm()">
+          <div class="form-field" id="d-w-mode-wrap"><label for="d-w-mode">弹幕来源</label><select id="d-w-mode" onchange="applyDanmakuForm(false)">
             <option value="public">公开视频播放页</option><option value="creator" class="dy-only">创作中心（自己的视频）</option>
           </select></div>
           <div class="form-field"><label for="d-w-acc" id="d-w-acc-label">播放页账号（可选）</label><select id="d-w-acc"></select></div>

@@ -121,7 +121,7 @@ async def inspect_or_download_channels_share(
         raise ShareDownloadError("无法识别该视频号链接格式，请粘贴 weixin.qq.com/sph/... 或视频号作品链接")
     if ref.kind == "creator":
         raise ShareDownloadError(
-            f"该链接对应视频号创作者主页({ref.username})，不是单条作品；请在「作品采集 → 创作者主页」或「作品监控」中使用"
+            f"该链接对应视频号创作者主页({ref.username})，不是单条作品；请在「主页作品监控」中使用"
         )
 
     read_mode = str(getattr(cfg.engine, "channels_read_mode", "auto") or "auto").strip().lower()

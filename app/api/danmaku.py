@@ -294,6 +294,8 @@ async def update_danmaku_watch(wid: int, body: DanmakuWatchUpdate):
             raise HTTPException(400, "弹幕来源须为 public 或 creator")
         new_account_id = body.account_id if body.account_id is not None else watch.account_id
         if new_mode == "creator":
+            if watch.platform != "douyin":
+                raise HTTPException(400, "创作中心弹幕模式仅支持抖音平台")
             acc = s.get(DouyinAccount, new_account_id) if new_account_id else None
             if not acc or acc.platform != "douyin" or not acc.creator_storage_state:
                 raise HTTPException(400, "创作中心弹幕模式需要绑定已完成创作者登录的抖音账号")

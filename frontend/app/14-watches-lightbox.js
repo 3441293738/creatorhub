@@ -142,7 +142,7 @@ async function addDanmakuWatch() {
   const btn = evtBtn() || document.querySelector('button[onclick="addDanmakuWatch()"]');
   if (btn?.disabled) return;
   await withBusy(btn, "识别中", async () => {
-  const normalizedTarget = await normalizeDanmakuTarget(null, { quiet: true });
+  const normalizedTarget = await normalizeDanmakuTarget(null, { quiet: true, toastErrors: true });
   if (normalizedTarget === null) return;
   const url = $("d-w-url").value.trim();
   if (!url) { toast("请粘贴视频链接 / 账号主页 / aweme_id", "err"); return; }
@@ -223,16 +223,18 @@ async function editDanmakuWatch(id) {
   const probeOptions = numericSelectOptions(item.probe_step_seconds || 0, [
     [0, "跟随全局设置"], [0.5, "每 0.5 秒"], [1, "每 1 秒"], [2, "每 2 秒"], [5, "每 5 秒"],
   ], " 秒");
+  const isUserKind = item.kind === "user";
+  const showProbe = item.platform === "douyin" && item.mode !== "creator";
   const value = await new Promise(res => {
     _uiResolve = res; _uiCancelVal = null;
     _uiGetVal = () => ({
       interval_seconds: monitorIntervalSeconds("edw-interval"),
-      recent_works: +$("edw-recent").value,
-      recent_days: +$("edw-days").value,
+      recent_works: $("edw-recent") ? +$("edw-recent").value : (item.recent_works || 0),
+      recent_days: $("edw-days") ? +$("edw-days").value : (item.recent_days || 0),
       max_scrolls: +$("edw-depth").value,
       time_start_ms: Math.round(Math.max(0, +$("edw-start").value || 0) * 1000),
       time_end_ms: Math.round(Math.max(0, +$("edw-end").value || 0) * 1000),
-      probe_step_seconds: +$("edw-probe").value || 0,
+      probe_step_seconds: $("edw-probe") ? (+$("edw-probe").value || 0) : (item.probe_step_seconds || 0),
       include_keywords: parseDanmakuKeywords($("edw-include").value),
       exclude_keywords: parseDanmakuKeywords($("edw-exclude").value),
       min_text_length: Math.max(0, +$("edw-min-len").value || 0),
@@ -246,15 +248,15 @@ async function editDanmakuWatch(id) {
         <div class="row">
           <div><label class="field" for="edw-start">视频内起点(秒)</label><input id="edw-start" type="number" min="0" step="0.1" value="${(item.time_start_ms || 0) / 1000}"></div>
           <div><label class="field" for="edw-end">视频内终点(秒)</label><input id="edw-end" type="number" min="0" step="0.1" value="${(item.time_end_ms || 0) / 1000}"></div>
-          <div><label class="field" for="edw-probe">时间轴扫描步长</label><select id="edw-probe">${probeOptions}</select></div>
+          ${showProbe ? `<div><label class="field" for="edw-probe">时间轴扫描步长</label><select id="edw-probe">${probeOptions}</select></div>` : ""}
           <div><label class="field" for="edw-interval">检查频率</label><select id="edw-interval">${intervalOptions}</select></div>
         </div>
       </fieldset>
-      <fieldset class="monitor-config-group"><legend>账号模式与容量</legend>
+      <fieldset class="monitor-config-group"><legend>${isUserKind ? "账号模式与容量" : "抓取深度与容量"}</legend>
         <div class="row">
-          <div><label class="field" for="edw-recent">近期作品数</label><select id="edw-recent">${recentOptions}</select></div>
-          <div><label class="field" for="edw-days">作品时间范围</label><select id="edw-days">${dayOptions}</select></div>
-          <div><label class="field" for="edw-depth">加载轮次</label><select id="edw-depth">${depthOptions}</select></div>
+          ${isUserKind ? `<div><label class="field" for="edw-recent">近期作品数</label><select id="edw-recent">${recentOptions}</select></div>
+          <div><label class="field" for="edw-days">作品时间范围</label><select id="edw-days">${dayOptions}</select></div>` : ""}
+          <div><label class="field" for="edw-depth">${item.mode === "creator" ? "创作中心翻页深度" : "弹幕加载轮次"}</label><select id="edw-depth">${depthOptions}</select></div>
         </div>
         <div class="row">
           <div><label class="field" for="edw-scan-cap">单轮入库上限</label><input id="edw-scan-cap" type="number" min="0" value="${item.max_records_per_scan || 0}"></div>
@@ -274,10 +276,10 @@ async function editDanmakuWatch(id) {
     ["edw-interval", "edw-recent", "edw-days", "edw-depth", "edw-probe"].forEach(key => {
       const el = $(key); if (el) enhanceSelect(el);
     });
-    $("edw-recent").value = String(item.recent_works || 0);
-    $("edw-days").value = String(item.recent_days || 0);
+    if ($("edw-recent")) $("edw-recent").value = String(item.recent_works || 0);
+    if ($("edw-days")) $("edw-days").value = String(item.recent_days || 0);
     $("edw-depth").value = String(item.max_scrolls || 0);
-    $("edw-probe").value = String(item.probe_step_seconds || 0);
+    if ($("edw-probe")) $("edw-probe").value = String(item.probe_step_seconds || 0);
     ["edw-interval", "edw-recent", "edw-days", "edw-depth", "edw-probe"].forEach(key => {
       const el = $(key); if (el && el._csSync) el._csSync();
     });
@@ -458,16 +460,19 @@ async function addWatch() {
   const btn = evtBtn() || document.querySelector('button[onclick="addWatch()"]');
   if (btn?.disabled) return;
   await withBusy(btn, "识别中", async () => {
-  const normalizedTarget = await normalizeWatchTarget(null, { quiet: true });
+  const normalizedTarget = await normalizeWatchTarget(null, { quiet: true, toastErrors: true });
   if (normalizedTarget === null) return;
   const url_or_id = $("w-url").value.trim();
-  if (!url_or_id) { toast("请粘贴视频链接 / 账号主页 / sec_uid", "err"); return; }
-  if (["xhs", "tiktok"].includes(PLATFORM) && !$("w-acc").value) {
+  if (!url_or_id) { toast("请粘贴作品链接 / 账号主页 / ID", "err"); return; }
+  const kind = $("w-kind").value;
+  const mode = PLATFORM === "douyin" && kind !== "video" ? $("w-mode").value : "public";
+  if (mode === "creator" && !$("w-acc").value) {
+    toast("创作中心模式必须选择一个已完成创作者登录的抖音账号", "err"); return;
+  }
+  if (WATCH_ACCOUNT_REQUIRED.includes(PLATFORM) && !$("w-acc").value) {
     const platformName = PF_NAME[PLATFORM] || "当前平台";
-    const available = PLATFORM === "tiktok"
-      ? ACCOUNTS.filter(a => a.status === "active" && a.has_storage)
-      : ACCOUNTS;
-    if (!available.length) { toast("请先在「账号」里完成" + platformName + "登录", "err"); switchTab("accounts"); return; }
+    const available = ACCOUNTS.filter(a => a.status === "active" && (a.has_storage || a.has_creator));
+    if (!available.length) { toast("请先在「账号矩阵」里完成" + platformName + "登录", "err"); switchTab("accounts"); return; }
     toast(platformName + "评论监控必须选择一个已登录账号", "err"); return;
   }
   $("w-msg").textContent = "解析中…";
@@ -476,12 +481,12 @@ async function addWatch() {
       await api("/api/comment-watches", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          url_or_id, platform: PLATFORM, kind: $("w-kind").value,
-          mode: PLATFORM === "douyin" ? $("w-mode").value : "public",
+          url_or_id, platform: PLATFORM, kind,
+          mode,
           account_id: PLATFORM === "shipinhao" ? null : ($("w-acc").value ? +$("w-acc").value : null),
           interval_seconds: monitorIntervalSeconds("w-interval"),
-          recent_works: +$("w-recent").value,
-          recent_days: +$("w-days").value,
+          recent_works: kind === "video" ? 0 : +$("w-recent").value,
+          recent_days: kind === "video" ? 0 : +$("w-days").value,
           max_scrolls: +$("w-depth").value,
           alias: $("w-alias").value.trim(), group_name: getMetaValue("w-group").trim(),
           tags: parseTags(getMetaValue("w-tags")),
@@ -621,12 +626,17 @@ async function refreshWatches() {
 }
 async function editWatchMeta(id) {
   const item = watchById(id); if (!item) return;
-  const accounts = ACCOUNTS.filter(a => a.platform === item.platform && a.status !== "invalid");
+  const allAccounts = ACCOUNTS.filter(a => a.platform === item.platform && a.status !== "invalid");
   const canCreator = item.platform === "douyin" && item.kind === "user";
-  const accountOptions = [
-    `<option value="">${item.account_id ? "保持当前绑定" : "不指定账号"}</option>`,
-    ...accounts.map(a => `<option value="${a.id}">${esc(a.nickname)}${a.has_creator ? " · 创作号" : ""}</option>`),
-  ].join("");
+  const buildWatchAccountOptions = (modeVal) => {
+    const creatorOnly = canCreator && modeVal === "creator";
+    const list = creatorOnly ? allAccounts.filter(a => a.has_creator) : _preferCrawlAccounts(allAccounts);
+    const ph = creatorOnly
+      ? (list.length ? "请选择创作者账号(必选)" : "无创作者账号，请先创作者登录")
+      : (item.account_id ? "保持当前绑定" : "不指定账号");
+    return accOptions(list, ph, { preferCrawler: !creatorOnly });
+  };
+  const initialMode = canCreator ? (item.mode || "public") : "public";
   const intervalOptions = monitorIntervalOptions(item.interval_seconds || 600);
   const recentOptions = numericSelectOptions(item.recent_works || 0, [
     [0, "跟随全局设置"], [3, "最近 3 个作品"], [5, "最近 5 个作品"],
@@ -650,7 +660,7 @@ async function editWatchMeta(id) {
       account_id: item.platform === "shipinhao"
         ? null
         : ($("ew-account") && $("ew-account").value ? +$("ew-account").value : null),
-      mode: $("ew-mode").value,
+      mode: $("ew-mode") ? $("ew-mode").value : "public",
       recent_works: $("ew-recent") ? +$("ew-recent").value : item.recent_works || 0,
       recent_days: $("ew-days") ? +$("ew-days").value : item.recent_days || 0,
       max_scrolls: $("ew-depth") ? +$("ew-depth").value : item.max_scrolls || 0,
@@ -672,10 +682,10 @@ async function editWatchMeta(id) {
             <select id="ew-interval">${intervalOptions}</select></div>
           ${item.platform === "shipinhao"
             ? ""
-            : `<div><label class="field" for="ew-account">抓取账号</label><select id="ew-account">${accountOptions}</select></div>`}
+            : `<div><label class="field" for="ew-account">抓取账号</label><select id="ew-account">${buildWatchAccountOptions(initialMode)}</select></div>`}
         </div>
-        <div><label class="field" for="ew-mode">评论来源</label>
-          <select id="ew-mode"><option value="public">公开评论区</option>${canCreator ? '<option value="creator">创作中心（仅自有账号）</option>' : ""}</select></div>
+        ${canCreator ? `<div><label class="field" for="ew-mode">评论来源</label>
+          <select id="ew-mode"><option value="public">公开评论区</option><option value="creator">创作中心（仅自有账号）</option></select></div>` : ""}
         ${item.kind === "user" ? `<div class="row">
           <div><label class="field" for="ew-recent">检查近期作品数</label><select id="ew-recent">${recentOptions}</select></div>
           <div><label class="field" for="ew-days">作品时间范围</label><select id="ew-days">${dayOptions}</select></div>
@@ -687,7 +697,19 @@ async function editWatchMeta(id) {
     setMetaValue("ew-group", item.group_name || ""); setMetaValue("ew-tags", itemTags(item).join(","));
     setupMonitorInterval("ew-interval", item.interval_seconds || 600);
     if ($("ew-account")) $("ew-account").value = item.account_id ? String(item.account_id) : "";
-    $("ew-mode").value = canCreator ? (item.mode || "public") : "public";
+    if ($("ew-mode")) {
+      $("ew-mode").value = initialMode;
+      $("ew-mode").addEventListener("change", () => {
+        const accSel = $("ew-account");
+        if (!accSel) return;
+        const prev = accSel.value;
+        const m = $("ew-mode").value;
+        accSel.innerHTML = buildWatchAccountOptions(m);
+        if ([...accSel.options].some(o => o.value === prev)) accSel.value = prev;
+        else if (m === "creator" && accSel.options.length > 1) accSel.value = accSel.options[1].value;
+        accSel._csSync?.();
+      });
+    }
     if ($("ew-recent")) $("ew-recent").value = String(item.recent_works || 0);
     if ($("ew-days")) $("ew-days").value = String(item.recent_days || 0);
     if ($("ew-depth")) $("ew-depth").value = String(item.max_scrolls || 0);

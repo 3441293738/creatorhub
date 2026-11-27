@@ -77,7 +77,7 @@ class MediaDownloadMixin:
             channels = [{"type": c.type, "config": _loads(c.config)} for c in chans]
         if not channels:
             return
-        title = f"作品监控 · {target_name} 新增 {len(awemes)} 个作品"
+        title = f"主页作品监控 · {target_name} 新增 {len(awemes)} 个作品"
         lines = []
         for aw in awemes[:6]:
             tag = "图集" if aw.media_type == "images" else "视频"

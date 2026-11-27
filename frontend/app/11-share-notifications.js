@@ -77,12 +77,24 @@ function renderShareLinks(links) {
   box.innerHTML = `<b>已识别 ${SHARE_LINKS.length} 条候选链接</b>${labels}`;
 }
 
-async function parseShareLinks(button = null) {
+let _SD_PASTE_TIMER = null;
+function handleShareTextPaste() {
+  clearTimeout(_SD_PASTE_TIMER);
+  _SD_PASTE_TIMER = setTimeout(() => {
+    const val = ($("sd-text")?.value || "").trim();
+    if (val && /https?:\/\/|[a-z0-9-]+\.(com|cn|tv|be|co|watch|me)\//i.test(val)) {
+      parseShareLinks(null, { quiet: true });
+    }
+  }, 60);
+}
+
+async function parseShareLinks(button = null, options = {}) {
+  const quiet = !!options.quiet;
   const text = $("sd-text").value.trim();
-  if (!text) { toast("请粘贴分享链接或完整分享文案", "err"); return null; }
-  const btn = button || evtBtn();
+  if (!text) { if (!quiet) toast("请粘贴分享链接或完整分享文案", "err"); return null; }
+  const btn = button || (quiet ? null : evtBtn());
   $("sd-msg").textContent = "正在清洗文案并识别链接…";
-  return await withBusy(btn, "识别中", async () => {
+  const work = async () => {
     try {
       const result = await api("/api/share-download/links", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -90,15 +102,16 @@ async function parseShareLinks(button = null) {
       });
       SHARE_SOURCE = text;
       renderShareLinks(result.links);
-      $("sd-msg").textContent = result.count ? `已识别 ${result.count} 条链接 ✓` : "未识别到链接";
-      if (!result.count) toast("没有识别到 http(s) 链接", "err");
+      $("sd-msg").textContent = result.count ? `已自动识别 ${result.count} 条链接 ✓` : "未识别到链接";
+      if (!result.count && !quiet) toast("没有识别到 http(s) 链接", "err");
       return result;
     } catch (e) {
       $("sd-msg").textContent = "识别失败：" + e.message;
-      toast("识别失败：" + e.message, "err");
+      if (!quiet) toast("识别失败：" + e.message, "err");
       return null;
     }
-  });
+  };
+  return btn ? await withBusy(btn, "识别中", work) : await work();
 }
 
 function shareRequestBody(download) {

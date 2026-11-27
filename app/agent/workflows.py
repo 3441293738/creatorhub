@@ -28,7 +28,7 @@ class WorkflowStep(BaseModel):
     account_id: int = Field(gt=0)
     keywords: list[str] = Field(default_factory=list, max_length=10)
     target: str = Field(default="", max_length=2000)
-    monitor_kind: Literal["creator", "keyword"] = "creator"
+    monitor_kind: Literal["creator"] = "creator"
     interval_seconds: int = Field(default=900, ge=60, le=86400)
     max_contents: int = Field(default=20, ge=1, le=100)
     download_media: bool = False
@@ -40,15 +40,12 @@ class WorkflowStep(BaseModel):
         if self.kind == "create_collection":
             if not self.keywords or any(len(value) > 80 for value in self.keywords):
                 raise ValueError("采集需填写 1–10 个关键词，每项最多 80 字")
-            if self.target or self.monitor_kind != "creator":
+            if self.target:
                 raise ValueError("关键词采集不接受监控目标")
         else:
             if not self.target or self.keywords:
-                raise ValueError("监控需填写目标，关键词列表仅用于采集")
-            if self.monitor_kind == "keyword":
-                if self.platform not in {"xhs", "rednote", "instagram", "twitter", "facebook", "youtube"} or len(self.target) > 80:
-                    raise ValueError("关键词监控适用于小红书/海外小红书/Instagram/Twitter/Facebook/YouTube，最多 80 字")
-            elif "://" in self.target:
+                raise ValueError("主页作品监控需填写创作者主页目标，关键词列表仅用于「关键词采集」")
+            if "://" in self.target:
                 parsed = urlsplit(self.target)
                 domains = {"douyin": ("douyin.com", "iesdouyin.com"), "xhs": ("xiaohongshu.com", "xhslink.com"),
                            "rednote": ("rednote.com",),
@@ -74,7 +71,7 @@ class WorkflowStep(BaseModel):
             return {**common, "keywords": self.keywords, "source_type": "keyword",
                     "max_contents_per_keyword": self.max_contents,
                     "max_comments_per_content": 0, "download_media": self.download_media}
-        return {**common, "url_or_secuid": self.target, "target_kind": self.monitor_kind,
+        return {**common, "url_or_secuid": self.target, "target_kind": "creator",
                 "interval_seconds": self.interval_seconds, "initial_backfill_count": 0,
                 "max_items_per_scan": self.max_contents, "download_enabled": self.download_media}
 
@@ -190,6 +187,6 @@ async def apply_plan(plan_id: str, plan_hash: str, executors: dict) -> dict:
 
 
 PLAN_TOOL = {"name": "propose_workflow", "description": (
-    "仅生成待确认草稿，不执行。支持关键词采集和作品监控（抖音/小红书/海外小红书/快手/视频号/TikTok/哔哩哔哩/Instagram/Twitter/Facebook/YouTube）。"
+    "仅生成待确认草稿，不执行。支持关键词采集和主页作品监控（抖音/小红书/海外小红书/快手/视频号/TikTok/哔哩哔哩/Instagram/Twitter/Facebook/YouTube）。"
     "先查询真实账号 ID；缺少目标先询问。日报定时发送、代码修改、发布等未支持需求须列入 unsupported。"
     "每次只提交一个计划，最多五步。"), "inputSchema": WorkflowPlan.model_json_schema()}

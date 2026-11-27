@@ -1,18 +1,11 @@
   <section data-panel="monitors">
-    <!-- 添加作品监控 -->
+    <!-- 添加主页作品监控 -->
     <div class="card">
       <div class="card-head">
         <span class="card-ic"><svg><use href="#i-plus"/></svg></span>
-        <h2 id="mon-add-title">添加作品监控 <span class="sub">监控并下载新作品</span></h2>
+        <h2 id="mon-add-title">添加主页作品监控 <span class="sub">持续追踪创作者主页新作品</span></h2>
       </div>
       <div class="stack">
-        <div class="xhs-rn-only">
-          <label class="field" for="t-kind">监控类型</label>
-          <select id="t-kind" aria-label="监控类型" onchange="applyMonitorForm()">
-            <option value="creator">创作者笔记(盯一个博主)</option>
-            <option value="keyword">关键词(盯一个搜索词)</option>
-          </select>
-        </div>
         <div>
           <label class="field" for="t-url" id="t-url-label">创作者主页 / 完整分享文案 / sec_uid</label>
           <div class="smart-target-input">
@@ -29,7 +22,7 @@
             支持完整分享文案、主页长链、平台短链或用户 ID
           </div>
         </div>
-        <div>
+        <div id="t-dir-wrap">
           <label class="field" for="t-dir">下载目录(可选)</label>
           <input id="t-dir" placeholder="留空使用全局默认目录">
         </div>
@@ -56,7 +49,7 @@
               <option value="1800">每 30 分钟</option><option value="3600">每小时</option>
               <option value="custom">自定义…</option>
           </select><p id="t-interval-help" class="field-help">支持秒、分钟和自定义间隔；实际执行仍受任务耗时、错峰和账号限制影响。</p></div>
-          <div class="form-field dy-only"><label for="t-quality">视频画质</label><select id="t-quality">
+          <div class="form-field" id="t-quality-wrap"><label for="t-quality">视频画质</label><select id="t-quality">
               <option value="">跟随全局设置</option><option value="highest">原画 / 最高</option>
               <option value="1080">1080P</option><option value="720">720P</option>
               <option value="540">540P</option><option value="lowest">最低省流</option>
@@ -66,10 +59,10 @@
               <option value="0">不下载历史作品</option><option value="5">最近 5 条</option>
               <option value="20">最近 20 条</option><option value="-1">尽可能全量</option>
           </select></div>
-          <div class="form-field"><label for="t-download">自动下载范围</label><select id="t-download">
+          <div class="form-field"><label for="t-download">自动下载范围</label><select id="t-download" onchange="applyMonitorDownloadLinkage()">
               <option value="all">全部作品</option><option value="video">仅视频</option>
               <option value="images">仅图集</option><option value="none">仅记录，不下载</option>
-          </select></div>
+          </select><p id="t-download-conflict" class="field-help" style="color:var(--warn)" hidden></p></div>
         </div>
         <details class="collection-advanced monitor-advanced">
           <summary>高级抓取与筛选 <span>控制翻页深度、单轮上限和入库条件</span></summary>
@@ -85,7 +78,7 @@
                 <option value="12">12 条</option><option value="20">20 条</option>
                 <option value="50">50 条</option><option value="100">100 条</option>
               </select></div>
-              <div class="form-field"><label for="t-record-media">作品类型</label><select id="t-record-media">
+              <div class="form-field"><label for="t-record-media">作品类型</label><select id="t-record-media" onchange="applyMonitorDownloadLinkage()">
                 <option value="all">全部入库</option><option value="video">仅视频</option>
                 <option value="images">仅图文/图集</option>
               </select></div>
@@ -123,7 +116,7 @@
       <div class="stack">
         <div>
           <label class="field" for="sd-text">分享链接 / 分享口令 / 含中文和符号的完整文案</label>
-          <textarea id="sd-text" rows="5" placeholder="例如：复制这段内容，打开对应平台查看作品 https://v.douyin.com/xxxx/ 😄&#10;支持全角符号、HTML 实体、URL 编码、Unicode 转义和一段文字中的多个链接"></textarea>
+          <textarea id="sd-text" rows="5" onpaste="handleShareTextPaste()" placeholder="例如：复制这段内容，打开对应平台查看作品 https://v.douyin.com/xxxx/ 😄&#10;支持全角符号、HTML 实体、URL 编码、Unicode 转义和一段文字中的多个链接"></textarea>
         </div>
         <div class="form-grid cols-4">
           <div class="form-field">

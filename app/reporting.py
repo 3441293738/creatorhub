@@ -954,7 +954,7 @@ def build_keyword_collection_report(job: Any, contents: Sequence[Any],
     _write_module_summary(
         workbook,
         report_title=report_title,
-        module_name="内容采集",
+        module_name="关键词采集" if source_type == "keyword" else "内容采集",
         detail_sheet="作品",
         record_count=len(contents),
         filters=(

@@ -3,7 +3,45 @@
 const BILI_PARTITION_CACHE = new Map();
 function onBiliCopyrightChange() {
   const wrap = $("pub-bili-source-wrap");
-  if (wrap) wrap.style.display = $("pub-bili-copyright")?.value === "2" ? "" : "none";
+  const isVideo = ($("pub-type")?.value || "video") === "video";
+  if (wrap) wrap.style.display = (isVideo && $("pub-bili-copyright")?.value === "2") ? "" : "none";
+}
+function syncPublishPlatformFields() {
+  const mediaType = $("pub-type")?.value || "images";
+  // B站：图文动态隐藏仅视频投稿适用的分区/自制转载/二创/弹幕项
+  if (PLATFORM === "bilibili") {
+    const isVideo = mediaType === "video";
+    ["pub-bili-tid-wrap", "pub-bili-copyright-wrap", "pub-bili-statement-wrap", "pub-bili-recreate-wrap", "pub-bili-close-danmu-wrap"].forEach(id => {
+      if ($(id)) $(id).style.display = isVideo ? "" : "none";
+    });
+    onBiliCopyrightChange();
+  }
+  // Facebook：按发布目标（个人动态/公共主页/群组/快拍）联动 Page ID、群组链接、可见范围与首评
+  if (PLATFORM === "facebook") {
+    const target = $("pub-fb-target")?.value || "profile";
+    if ($("pub-fb-page-wrap")) $("pub-fb-page-wrap").style.display = target === "profile" ? "none" : "";
+    if ($("pub-fb-group-wrap")) $("pub-fb-group-wrap").style.display = target === "group" ? "" : "none";
+    if ($("pub-fb-privacy-wrap")) $("pub-fb-privacy-wrap").style.display = target === "profile" ? "" : "none";
+    if ($("pub-fb-first-comment-wrap")) $("pub-fb-first-comment-wrap").style.display = target === "story" ? "none" : "";
+  }
+  // YouTube：即时首映仅公开常规视频有效；切为 Shorts 或非公开时自动重置并隐藏
+  if (PLATFORM === "youtube") {
+    const ytKind = $("pub-yt-kind")?.value || "video";
+    const ytVis = $("pub-yt-visibility")?.value || "public";
+    const allowPremiere = ytKind === "video" && ytVis === "public";
+    if ($("pub-yt-premiere-wrap")) $("pub-yt-premiere-wrap").style.display = allowPremiere ? "" : "none";
+    if (!allowPremiere && $("pub-yt-premiere") && $("pub-yt-premiere").value !== "0") {
+      $("pub-yt-premiere").value = "0";
+      $("pub-yt-premiere")._csSync?.();
+    }
+  }
+  // Instagram：Reels 同步主页仅 auto/reels 显示；Story 快拍隐藏评论开关
+  if (PLATFORM === "instagram") {
+    const igKind = $("pub-ig-kind")?.value || "auto";
+    if ($("pub-ig-share-feed-wrap")) $("pub-ig-share-feed-wrap").style.display = (igKind === "auto" || igKind === "reels") ? "" : "none";
+    if ($("pub-ig-comment-wrap")) $("pub-ig-comment-wrap").style.display = igKind === "story" ? "none" : "";
+  }
+  onPubActionChange();
 }
 async function loadBiliPartitions(accountId) {
   const sel = $("pub-bili-tid");
@@ -191,7 +229,7 @@ function onPubType() {
   }
   pubFilesClear();
   updatePubCoverHelp();
-  onPubActionChange();
+  syncPublishPlatformFields();
 }
 function pubFilesClear() { pubFilesDT = new DataTransfer(); _pubSync(); }
 function _pubSync() { const inp = $("pub-files"); if (inp) inp.files = pubFilesDT.files; renderPubFiles(); }
@@ -238,7 +276,7 @@ function bindPubFilePicker() {
   bindPubCoverPicker();
   bindRepostCoverPicker();
   updatePubCoverHelp();
-  onPubActionChange();
+  syncPublishPlatformFields();
 }
 let PUB_SUBMITTING = false, PUB_UPLOAD_CACHE = null, PUB_UPLOAD_ABORT = null;
 function renderPubUploadProgress(info) {

@@ -506,7 +506,7 @@ async def matrix_overview(platform: str = ""):
                 "like_count": int(rec.like_count or 0),
                 "comment_count": int(rec.comment_count or 0),
                 "author_name": mon_name_map.get(rec.target_id, f"监控 #{rec.target_id}"),
-                "source_label": "作品监控",
+                "source_label": "主页作品监控",
                 "download_status": rec.download_status or "pending",
                 "local_ready": bool(rec.download_status == "done" and rec.local_path),
                 "create_time": int(rec.create_time or 0),
@@ -526,8 +526,8 @@ async def matrix_overview(platform: str = ""):
                 "media_type": rec.media_type or "video",
                 "like_count": int(rec.like_count or 0),
                 "comment_count": int(rec.comment_count or 0),
-                "author_name": rec.author_name or (f"#{rec.keyword}" if rec.keyword else "批量采集"),
-                "source_label": f"采集 · {rec.keyword}" if rec.keyword else "批量采集",
+                "author_name": rec.author_name or (f"#{rec.keyword}" if rec.keyword else "关键词采集"),
+                "source_label": f"采集 · {rec.keyword}" if rec.keyword else "关键词采集",
                 "download_status": rec.download_status or "skipped",
                 "local_ready": bool(rec.download_status == "done" and rec.local_path),
                 "create_time": int(rec.create_time or 0),
@@ -1634,7 +1634,7 @@ async def list_media_hub(
                 "desc": r.desc or "（无标题描述）",
                 "author_name": src_info["label"],
                 "group_name": src_info["group_name"],
-                "source_label": "作品监控",
+                "source_label": "主页作品监控",
                 "media_type": r.media_type or "video",
                 "cover_url": (
                     f"/api/contents/{r.id}/cover"

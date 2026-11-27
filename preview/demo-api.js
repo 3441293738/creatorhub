@@ -344,7 +344,7 @@
     };
     return { settings: { ...engineValues }, rows: [
       row("douyin", "keyword_collection", "关键词采集", "douyin_read_mode", true, true),
-      row("douyin", "public_monitor", "公开作品/评论/弹幕监控", "douyin_read_mode", true, true),
+      row("douyin", "public_monitor", "公开主页作品/评论/弹幕监控", "douyin_read_mode", true, true),
       row("douyin", "account_works", "本账号作品同步", "douyin_read_mode", true, true),
       row("douyin", "own_work_comments", "本账号作品评论抓取", "douyin_read_mode", true, true),
       row("douyin", "following_list", "关注列表同步", "douyin_read_mode", true, true),
@@ -359,7 +359,7 @@
       row("xhs", "public_monitor", "作品/关键词/公开评论读取", "xhs_read_mode", true, true),
       row("xhs", "comment_write", "评论/回复发送", "xhs_comment_write_mode", true, true),
       row("xhs", "publish", "发布作品", "xhs_publish_mode", true, true),
-      row("rednote", "public_monitor", "作品/关键词/收藏/只读评论读取", "rednote_read_mode", true, true),
+      row("rednote", "public_monitor", "主页作品/关键词/只读评论读取", "rednote_read_mode", true, true),
       row("rednote", "account_works", "本账号作品同步与可见性/删除管理", "rednote_read_mode", true, true),
       row("rednote", "publish", "图文与视频笔记发布", "rednote_publish_mode", true, true, "支持 creator.rednote.com 页面流或实验性 XYS + b1 纯协议直发"),
       row("rednote", "comment_write", "自动评论/回复规则", "", false, false, "海外版暂未开放自动评论与互动写入"),
@@ -526,7 +526,7 @@
         uid: `monitor:${pf}-${c.id}`, source_kind: "monitor", id: c.id, platform: pf,
         aweme_id: c.aweme_id, desc: c.desc, cover_url: c.cover_url || "", media_type: c.media_type,
         like_count: c.like_count, comment_count: c.comment_count || 26, author_name: "示例监控源",
-        source_label: "作品监控", download_status: c.download_status, local_ready: c.download_status === "done",
+        source_label: "主页作品监控", download_status: c.download_status, local_ready: c.download_status === "done",
         create_time: c.create_time, captured_at: c.captured_at,
       })));
       return {
@@ -584,7 +584,7 @@
     if (path === "/api/matrix/media-hub") {
       const items = ["douyin", "xhs", "bilibili"].flatMap(pf => contents(pf).map(c => ({
         uid: `monitor:${c.id}-${pf}`, source_kind: "monitor", id: c.id, platform: pf, aweme_id: c.aweme_id,
-        desc: c.desc, author_name: "示例创作者", group_name: "行业精选", source_label: "作品监控",
+        desc: c.desc, author_name: "示例创作者", group_name: "行业精选", source_label: "主页作品监控",
         media_type: c.media_type, cover_url: c.cover_url || "", duration: 42,
         like_count: c.like_count, comment_count: 28, play_count: 0, download_status: c.download_status,
         local_ready: c.download_status === "done", local_path: c.local_path || "", create_time: c.create_time, captured_at: c.captured_at,
@@ -709,6 +709,20 @@
     }
     if (path === "/api/channels/protocol/config" || path === "/api/channels/protocol/bridge/start" || path === "/api/channels/protocol/bridge/stop") {
       return getData(new URL("/api/channels/protocol/status", window.location.href));
+    }
+    if (path === "/api/targets/detect") {
+      const text = String(body.raw_input || "").trim();
+      const pf = String(body.platform || "douyin").toLowerCase();
+      const isVideo = /\/video\/|\/explore\/|\/short-video\/|\/BV[0-9A-Za-z]+|\/status\/|\/p\/|\/reel\/|\/watch|youtu\.be\/|\/shorts\//i.test(text);
+      const isUser = /\/user\/|\/profile\/|space\.bilibili\.com\/|\/@[^/\s]+|\/channel\/|\/groups\//i.test(text);
+      const target_kind = isVideo ? "video" : isUser ? "user" : "unknown";
+      const kind_label = target_kind === "video" ? "单条作品" : target_kind === "user" ? "创作者主页" : "";
+      const is_bili_opus = pf === "bilibili" && (/\/opus\//i.test(text) || /t\.bilibili\.com/i.test(text));
+      return {
+        ok: Boolean(text), mismatch: false, platform: pf, platform_name: platformName[pf] || pf,
+        cleaned: text, resolved_url: text, short_expanded: false,
+        target_kind, kind_label, can_extract_creator: false, is_bili_opus, links: [],
+      };
     }
     if (path === "/api/share-download/links") return { count: 1, links: [{ platform: "douyin", host: "v.douyin.com", url: "https://v.douyin.com/DEMO/" }] };
     if (path === "/api/share-download") return { ok: true, results: [{ ok: true, platform: "douyin", title: "示例作品", author: "示例创作者", media_type: "video", media_count: 1, output_dir: "data/media/demo", files: [] }] };

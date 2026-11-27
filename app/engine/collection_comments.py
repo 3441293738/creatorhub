@@ -7,7 +7,7 @@ import math
 
 from sqlmodel import select
 
-from app.browser import fetch_channels_comments, fetch_comments, fetch_ks_comments, fetch_xhs_comments
+from app.browser import fetch_comments, fetch_ks_comments, fetch_xhs_comments
 from app.browser.tiktok_fetcher import fetch_tiktok_comments
 from app.db import get_session
 from app.engine.collection_helpers import _content_error_after_download, _media_json, _tiktok_download_session
@@ -15,7 +15,7 @@ from app.engine.monitor_helpers import log
 from app.models import KeywordCollectionComment, KeywordCollectionContent, KeywordCollectionJob
 from app.progress_hub import progress_hub
 from app.platforms.bilibili import cookie_map_from_state as bili_cookie_map
-from app.platforms.channels import ChannelsProtocolClient, flatten_channels_comments, parse_channels_comment
+from app.platforms.channels import ChannelsProtocolClient
 from app.platforms.douyin import DouyinClient, parse_comment, safe_title
 from app.platforms.douyin.extract import Aweme
 from app.platforms.kuaishou import flatten_ks_comments, parse_ks_comment
@@ -391,26 +391,13 @@ class CollectionCommentsMixin:
                                  include_replies: bool, *,
                                  object_nonce_id: str = "",
                                  proto_client: ChannelsProtocolClient | None = None,
-                                 source_type: str = "account_works") -> tuple[list[dict], str]:
+                                 source_type: str = "keyword") -> tuple[list[dict], str]:
         if limit <= 0:
             return [], ""
         mode = self._channels_read_mode()
         max_proto_pages = max(2, min(50, math.ceil(limit / 15) + 2))
         counts_cache = self.__dict__.setdefault("_last_channels_counts", {})
-        if mode == "protocol":
-            if proto_client is None:
-                return [], "视频号原生评论采集尚未连接本机微信通道（请在「设置 → 视频号微信通道」开启一键本地代理或配置 CDP）"
-            comments, audit, err = await proto_client.collect_comments(
-                object_id,
-                object_nonce_id,
-                limit=limit,
-                include_replies=include_replies,
-                max_pages=max_proto_pages,
-            )
-            counts_cache[object_id] = self._extract_channels_audit_counts(audit)
-            return self._dedupe_comments(comments, limit), err
-
-        if mode == "auto" and proto_client is not None:
+        if mode in {"protocol", "auto"} and proto_client is not None:
             comments, audit, proto_err = await proto_client.collect_comments(
                 object_id,
                 object_nonce_id,
@@ -419,29 +406,12 @@ class CollectionCommentsMixin:
                 max_pages=max_proto_pages,
             )
             counts_cache[object_id] = self._extract_channels_audit_counts(audit)
-            if comments or not proto_err or source_type != "account_works":
-                return self._dedupe_comments(comments, limit), proto_err
+            return self._dedupe_comments(comments, limit), proto_err
 
-        if source_type != "account_works":
-            return (
-                [],
-                "非本账号视频号作品评论采集需要连接本机已登录微信（请在「设置 → 视频号微信通道」开启一键本地代理并在微信内打开一次视频号页面）",
-            )
-
-        raw, error = await fetch_channels_comments(
-            self.browser,
-            identity,
-            object_id,
-            set(),
-            max_scrolls=max(1, min(20, math.ceil(limit / 10) + 1)),
-            block_media=self.cfg.engine.block_media_resources,
+        return (
+            [],
+            "视频号关键词作品评论采集需要连接本机已登录微信（请在「设置 → 视频号微信通道」开启一键本地代理并在微信内打开一次视频号页面）",
         )
-        values = flatten_channels_comments(raw) if include_replies else raw
-        parsed = [item for item in
-                  (parse_channels_comment(value) for value in values) if item]
-        if not include_replies:
-            parsed = [item for item in parsed if not item.get("reply_to")]
-        return self._dedupe_comments(parsed, limit), error
 
     async def _tiktok_comments(self, identity, aweme_id: str, limit: int,
                                include_replies: bool, *, author_unique_id: str = "",

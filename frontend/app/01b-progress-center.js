@@ -3,12 +3,12 @@
   const ACTIVE_STATES = new Set(["queued", "running", "waiting_user", "blocked"]);
   const TERMINAL_STATES = new Set(["completed", "failed", "canceled"]);
   const CATEGORY_META = {
-    collection: { label: "内容采集", tab: "collections" },
+    collection: { label: "关键词采集", tab: "collections" },
     share_download: { label: "链接下载", tab: "share-download" },
     publish: { label: "内容发布", tab: "publish" },
     monitor_download: { label: "监控下载", tab: "monitors" },
     collection_download: { label: "采集下载", tab: "collections" },
-    monitor_scan: { label: "作品监控", tab: "monitors" },
+    monitor_scan: { label: "主页作品监控", tab: "monitors" },
     follow_sync: { label: "关注/粉丝", tab: "hub" },
     matrix_batch: { label: "矩阵批处理", tab: "accounts" },
     works_sync: { label: "作品同步", tab: "hub" },

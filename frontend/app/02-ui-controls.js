@@ -119,6 +119,7 @@ function enhanceSelect(sel) {
     panel.setAttribute("role", "listbox");
     panel.setAttribute("aria-label", selectLabel.trim());
     Array.from(sel.options).forEach((o, i) => {
+      if (o.hidden || o.classList.contains("hidden")) return;
       const it = document.createElement("div");
       it.className = "cs-opt" + (i === sel.selectedIndex ? " sel" : "") + (o.disabled ? " dis" : "");
       const optionLabel = document.createElement("span");

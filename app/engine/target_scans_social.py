@@ -1,4 +1,4 @@
-"""哔哩哔哩、Instagram、X (Twitter)、Facebook 与 YouTube 作品监控扫描。"""
+"""哔哩哔哩、Instagram、X (Twitter)、Facebook 与 YouTube 主页作品监控扫描。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -6,7 +6,7 @@ import json
 
 from sqlmodel import select
 
-from app.browser import fetch_bili_search, fetch_bili_videos, fetch_facebook_comments, fetch_facebook_search, fetch_facebook_user_posts, fetch_ig_posts, fetch_ig_search, fetch_twitter_comments, fetch_twitter_search, fetch_twitter_user_tweets, fetch_youtube_channel_videos, fetch_youtube_comments, fetch_youtube_search
+from app.browser import fetch_bili_videos, fetch_facebook_comments, fetch_facebook_search, fetch_facebook_user_posts, fetch_ig_posts, fetch_twitter_comments, fetch_twitter_search, fetch_twitter_user_tweets, fetch_youtube_channel_videos, fetch_youtube_comments, fetch_youtube_search
 from app.db import get_session
 from app.engine.monitor_helpers import _douyin_scan_since, _monitor_content_matches, _monitor_strategy
 from app.models import ContentRecord, DouyinAccount, MonitorTarget
@@ -54,9 +54,7 @@ class SocialTargetScanMixin:
             known_create_times = list(
                 s.exec(select(ContentRecord.create_time).where(ContentRecord.target_id == target_id)).all()
             )
-            target_kind = target.target_kind or "creator"
             sec_uid = (target.sec_uid or "").strip()
-            keyword = (target.keyword or "").strip()
             base_dir = target.download_dir or get_setting("download_dir", self.cfg.engine.media_dir)
             quality = target.video_quality or get_setting("video_quality", "highest")
             monitor_since = int(target.created_at.timestamp())
@@ -83,14 +81,9 @@ class SocialTargetScanMixin:
                 bili_pacer = PagePacer(0.65)
                 for pn in range(1, max_pages + 1):
                     await bili_pacer.step()
-                    if target_kind == "keyword":
-                        batch, has_more, err = await bcli.search_videos(
-                            keyword, page=pn, page_size=20, order="pubdate"
-                        )
-                    else:
-                        batch, has_more, err = await bcli.fetch_user_videos(
-                            sec_uid, pn=pn, ps=30, order="pubdate"
-                        )
+                    batch, has_more, err = await bcli.fetch_user_videos(
+                        sec_uid, pn=pn, ps=30, order="pubdate"
+                    )
                     if err:
                         error = err
                         break
@@ -99,23 +92,14 @@ class SocialTargetScanMixin:
                         break
 
             if (mode == "browser" or (mode == "hybrid" and not raw_items and error)) and identity is not None:
-                if target_kind == "keyword":
-                    b_items, b_err = await fetch_bili_search(
-                        self.browser, identity, keyword, max_scrolls=max(1, min(4, strategy["max_scrolls"] or 2))
-                    )
-                    if b_items:
-                        raw_items, error = b_items, ""
-                    elif mode == "browser":
-                        error = b_err
-                else:
-                    b_items, b_author, b_err = await fetch_bili_videos(
-                        self.browser, identity, sec_uid, known,
-                        max_scrolls=max(1, min(4, strategy["max_scrolls"] or 2))
-                    )
-                    if b_items:
-                        raw_items, author_name, error = b_items, b_author, ""
-                    elif mode == "browser":
-                        error = b_err
+                b_items, b_author, b_err = await fetch_bili_videos(
+                    self.browser, identity, sec_uid, known,
+                    max_scrolls=max(1, min(4, strategy["max_scrolls"] or 2))
+                )
+                if b_items:
+                    raw_items, author_name, error = b_items, b_author, ""
+                elif mode == "browser":
+                    error = b_err
 
             candidates: list[Aweme] = []
             seen_ids: set[str] = set()
@@ -124,9 +108,9 @@ class SocialTargetScanMixin:
                 if aw is None or aw.aweme_id in known or aw.aweme_id in seen_ids:
                     continue
                 seen_ids.add(aw.aweme_id)
-                if aw.author_name and not author_name and target_kind == "creator":
+                if aw.author_name and not author_name:
                     author_name = aw.author_name
-                if aw.avatar and not author_avatar and target_kind == "creator":
+                if aw.avatar and not author_avatar:
                     author_avatar = aw.avatar
                 candidates.append(aw)
 
@@ -206,12 +190,11 @@ class SocialTargetScanMixin:
             if t:
                 t.last_scan_at = datetime.utcnow()
                 t.last_error = error
-                if target_kind == "creator":
-                    if author_name and (not t.nickname or t.nickname == t.sec_uid):
-                        t.nickname = author_name
-                    if author_avatar and not t.avatar:
-                        t.avatar = author_avatar
-                target_name = t.nickname or t.keyword or t.sec_uid
+                if author_name and (not t.nickname or t.nickname == t.sec_uid):
+                    t.nickname = author_name
+                if author_avatar and not t.avatar:
+                    t.avatar = author_avatar
+                target_name = t.nickname or t.sec_uid
                 target_avatar = t.avatar or ""
                 s.add(t)
             else:
@@ -267,7 +250,7 @@ class SocialTargetScanMixin:
             first_scan = target.last_scan_at is None
             if not target.account_id:
                 return self._mark_target_skip(
-                    target_id, "Instagram 作品监控必须绑定已登录的 Instagram 账号"
+                    target_id, "Instagram 主页作品监控必须绑定已登录的 Instagram 账号"
                 )
             acc = s.get(DouyinAccount, target.account_id)
             if not acc or acc.platform != "instagram" or acc.status != "active":
@@ -302,9 +285,7 @@ class SocialTargetScanMixin:
             known_create_times = list(
                 s.exec(select(ContentRecord.create_time).where(ContentRecord.target_id == target_id)).all()
             )
-            target_kind = target.target_kind or "creator"
             sec_uid = (target.sec_uid or "").strip()
-            keyword = (target.keyword or "").strip()
             base_dir = target.download_dir or get_setting("download_dir", self.cfg.engine.media_dir)
             monitor_since = int(target.created_at.timestamp())
             scan_since = _douyin_scan_since(monitor_since, known_create_times)
@@ -331,37 +312,34 @@ class SocialTargetScanMixin:
         async with icli.session_scope():
             if mode in {"api", "hybrid"}:
                 max_pages = max(1, min(6, strategy["max_scrolls"] or 2))
-                if target_kind == "keyword":
-                    raw_items, error = await icli.search_posts(keyword, max_pages=max_pages)
-                else:
-                    from app.pacing import PagePacer
-                    cursor = ""
-                    ig_pacer = PagePacer(0.85)
-                    for _ in range(max_pages):
-                        await ig_pacer.step()
-                        batch, next_cursor, more, err = await icli.fetch_user_feed(
-                            sec_uid, max_id=cursor
-                        )
-                        if err:
-                            error = err
-                            break
-                        raw_items.extend(batch)
-                        if (
-                            not more
-                            or not next_cursor
-                            or next_cursor == cursor
-                            or (
-                                known
-                                and batch
-                                and all(
-                                    (parse_ig_aweme(r, require_media=False) is not None)
-                                    and parse_ig_aweme(r, require_media=False).aweme_id in known  # type: ignore[union-attr]
-                                    for r in batch
-                                )
+                from app.pacing import PagePacer
+                cursor = ""
+                ig_pacer = PagePacer(0.85)
+                for _ in range(max_pages):
+                    await ig_pacer.step()
+                    batch, next_cursor, more, err = await icli.fetch_user_feed(
+                        sec_uid, max_id=cursor
+                    )
+                    if err:
+                        error = err
+                        break
+                    raw_items.extend(batch)
+                    if (
+                        not more
+                        or not next_cursor
+                        or next_cursor == cursor
+                        or (
+                            known
+                            and batch
+                            and all(
+                                (parse_ig_aweme(r, require_media=False) is not None)
+                                and parse_ig_aweme(r, require_media=False).aweme_id in known  # type: ignore[union-attr]
+                                for r in batch
                             )
-                        ):
-                            break
-                        cursor = next_cursor
+                        )
+                    ):
+                        break
+                    cursor = next_cursor
 
             err_category = classify_platform_error(error)[0] if error else RiskCategory.BUSINESS
             hard_block = err_category in {RiskCategory.AUTH, RiskCategory.RISK}
@@ -370,25 +348,16 @@ class SocialTargetScanMixin:
                 or (mode == "hybrid" and not raw_items and error and not hard_block)
             ) and identity is not None:
                 scrolls = max(1, min(4, strategy["max_scrolls"] or 2))
-                if target_kind == "keyword":
-                    b_items, b_err = await fetch_ig_search(
-                        self.browser, identity, keyword, max_scrolls=scrolls
-                    )
-                    if b_items:
-                        raw_items, error = b_items, ""
-                    elif mode == "browser":
-                        error = b_err
-                else:
-                    b_items, b_author, b_err = await fetch_ig_posts(
-                        self.browser, identity, sec_uid, known, max_scrolls=scrolls
-                    )
-                    if b_items:
-                        raw_items, error = b_items, ""
-                        if isinstance(b_author, dict):
-                            author_name = str(b_author.get("nickname") or author_name)
-                            author_avatar = str(b_author.get("avatar") or author_avatar)
-                    elif mode == "browser":
-                        error = b_err
+                b_items, b_author, b_err = await fetch_ig_posts(
+                    self.browser, identity, sec_uid, known, max_scrolls=scrolls
+                )
+                if b_items:
+                    raw_items, error = b_items, ""
+                    if isinstance(b_author, dict):
+                        author_name = str(b_author.get("nickname") or author_name)
+                        author_avatar = str(b_author.get("avatar") or author_avatar)
+                elif mode == "browser":
+                    error = b_err
 
             candidates: list[Aweme] = []
             seen_ids: set[str] = set()
@@ -397,9 +366,9 @@ class SocialTargetScanMixin:
                 if aw is None or aw.aweme_id in known or aw.aweme_id in seen_ids:
                     continue
                 seen_ids.add(aw.aweme_id)
-                if aw.author_name and not author_name and target_kind == "creator":
+                if aw.author_name and not author_name:
                     author_name = aw.author_name
-                if aw.avatar and not author_avatar and target_kind == "creator":
+                if aw.avatar and not author_avatar:
                     author_avatar = aw.avatar
                 candidates.append(aw)
 
@@ -469,12 +438,11 @@ class SocialTargetScanMixin:
             if t:
                 t.last_scan_at = datetime.utcnow()
                 t.last_error = error
-                if target_kind == "creator":
-                    if author_name and (not t.nickname or t.nickname == t.sec_uid):
-                        t.nickname = author_name
-                    if author_avatar and not t.avatar:
-                        t.avatar = author_avatar
-                target_name = t.nickname or t.keyword or t.sec_uid
+                if author_name and (not t.nickname or t.nickname == t.sec_uid):
+                    t.nickname = author_name
+                if author_avatar and not t.avatar:
+                    t.avatar = author_avatar
+                target_name = t.nickname or t.sec_uid
                 target_avatar = t.avatar or ""
                 s.add(t)
             else:
@@ -632,7 +600,7 @@ class SocialTargetScanMixin:
             first_scan = target.last_scan_at is None
             if not target.account_id:
                 return self._mark_target_skip(
-                    target_id, "X (Twitter) 作品监控必须绑定已登录的 Twitter 账号"
+                    target_id, "X (Twitter) 主页作品监控必须绑定已登录的 Twitter 账号"
                 )
             acc = s.get(DouyinAccount, target.account_id)
             if not acc or acc.platform != "twitter" or acc.status != "active":
@@ -657,9 +625,7 @@ class SocialTargetScanMixin:
             known_create_times = list(
                 s.exec(select(ContentRecord.create_time).where(ContentRecord.target_id == target_id)).all()
             )
-            target_kind = target.target_kind or "creator"
             sec_uid = (target.sec_uid or "").strip()
-            keyword = (target.keyword or "").strip()
             base_dir = target.download_dir or get_setting("download_dir", self.cfg.engine.media_dir)
             monitor_since = int(target.created_at.timestamp())
             scan_since = _douyin_scan_since(monitor_since, known_create_times)
@@ -678,43 +644,31 @@ class SocialTargetScanMixin:
         error = ""
         scrolls = max(1, min(6, strategy["max_scrolls"] or 3))
 
-        if target_kind == "keyword":
-            raw_items, error = await self._tw_read_search(
-                identity,
-                keyword,
-                latest=True,
-                content_type=strategy.get("media_type") or "all",
-                max_pages=scrolls,
-                state=state,
-                ua=ua,
-                proxy=proxy,
-            )
-        else:
-            raw_items, b_author, error = await self._tw_read_user_tweets(
-                identity,
-                sec_uid,
-                known,
-                max_pages=scrolls,
-                state=state,
-                ua=ua,
-                proxy=proxy,
-            )
-            if isinstance(b_author, dict):
-                author_name = str(b_author.get("nickname") or author_name)
-                author_avatar = str(b_author.get("avatar") or author_avatar)
+        raw_items, b_author, error = await self._tw_read_user_tweets(
+            identity,
+            sec_uid,
+            known,
+            max_pages=scrolls,
+            state=state,
+            ua=ua,
+            proxy=proxy,
+        )
+        if isinstance(b_author, dict):
+            author_name = str(b_author.get("nickname") or author_name)
+            author_avatar = str(b_author.get("avatar") or author_avatar)
         if error == "empty":
             error = ""
 
         candidates: list[Aweme] = []
         seen_ids: set[str] = set()
         for r in raw_items:
-            aw = parse_twitter_aweme(r, skip_retweets=(target_kind == "creator"))
+            aw = parse_twitter_aweme(r, skip_retweets=True)
             if aw is None or aw.aweme_id in known or aw.aweme_id in seen_ids:
                 continue
             seen_ids.add(aw.aweme_id)
-            if aw.author_name and not author_name and target_kind == "creator":
+            if aw.author_name and not author_name:
                 author_name = aw.author_name
-            if aw.avatar and not author_avatar and target_kind == "creator":
+            if aw.avatar and not author_avatar:
                 author_avatar = aw.avatar
             candidates.append(aw)
 
@@ -792,12 +746,11 @@ class SocialTargetScanMixin:
             if t:
                 t.last_scan_at = datetime.utcnow()
                 t.last_error = error
-                if target_kind == "creator":
-                    if author_name and (not t.nickname or t.nickname == t.sec_uid):
-                        t.nickname = author_name
-                    if author_avatar and not t.avatar:
-                        t.avatar = author_avatar
-                target_name = t.nickname or t.keyword or t.sec_uid
+                if author_name and (not t.nickname or t.nickname == t.sec_uid):
+                    t.nickname = author_name
+                if author_avatar and not t.avatar:
+                    t.avatar = author_avatar
+                target_name = t.nickname or t.sec_uid
                 target_avatar = t.avatar or ""
                 s.add(t)
             else:
@@ -1104,9 +1057,7 @@ class SocialTargetScanMixin:
             known_create_times = list(
                 s.exec(select(ContentRecord.create_time).where(ContentRecord.target_id == target_id)).all()
             )
-            target_kind = target.target_kind or "creator"
             sec_uid = (target.sec_uid or "").strip()
-            keyword = (target.keyword or "").strip()
             base_dir = target.download_dir or get_setting("download_dir", self.cfg.engine.media_dir)
             monitor_since = int(target.created_at.timestamp())
             scan_since = _douyin_scan_since(monitor_since, known_create_times)
@@ -1126,32 +1077,19 @@ class SocialTargetScanMixin:
         error = ""
         scrolls = max(1, min(6, strategy["max_scrolls"] or 3))
 
-        if target_kind == "keyword":
-            raw_items, error = await self._fb_read_search(
-                identity,
-                keyword,
-                recent=True,
-                content_type=strategy.get("media_type") or "all",
-                max_pages=scrolls,
-                max_items=max(20, int(strategy.get("max_items") or 0) * 2 or 40),
-                state=state,
-                ua=ua,
-                proxy=proxy,
-            )
-        else:
-            raw_items, b_author, error = await self._fb_read_user_posts(
-                identity,
-                sec_uid,
-                known,
-                max_pages=scrolls,
-                max_items=max(20, int(strategy.get("max_items") or 0) * 2 or 40),
-                state=state,
-                ua=ua,
-                proxy=proxy,
-            )
-            if isinstance(b_author, dict):
-                author_name = str(b_author.get("nickname") or author_name)
-                author_avatar = str(b_author.get("avatar") or author_avatar)
+        raw_items, b_author, error = await self._fb_read_user_posts(
+            identity,
+            sec_uid,
+            known,
+            max_pages=scrolls,
+            max_items=max(20, int(strategy.get("max_items") or 0) * 2 or 40),
+            state=state,
+            ua=ua,
+            proxy=proxy,
+        )
+        if isinstance(b_author, dict):
+            author_name = str(b_author.get("nickname") or author_name)
+            author_avatar = str(b_author.get("avatar") or author_avatar)
         if error in {"empty", "api_empty_search", "api_empty_timeline"}:
             error = ""
 
@@ -1162,9 +1100,9 @@ class SocialTargetScanMixin:
             if aw is None or aw.aweme_id in known or aw.aweme_id in seen_ids:
                 continue
             seen_ids.add(aw.aweme_id)
-            if aw.author_name and not author_name and target_kind == "creator":
+            if aw.author_name and not author_name:
                 author_name = aw.author_name
-            if aw.avatar and not author_avatar and target_kind == "creator":
+            if aw.avatar and not author_avatar:
                 author_avatar = aw.avatar
             candidates.append(aw)
 
@@ -1240,12 +1178,11 @@ class SocialTargetScanMixin:
             if t:
                 t.last_scan_at = datetime.utcnow()
                 t.last_error = error
-                if target_kind == "creator":
-                    if author_name and (not t.nickname or t.nickname == t.sec_uid):
-                        t.nickname = author_name
-                    if author_avatar and not t.avatar:
-                        t.avatar = author_avatar
-                target_name = t.nickname or t.keyword or t.sec_uid
+                if author_name and (not t.nickname or t.nickname == t.sec_uid):
+                    t.nickname = author_name
+                if author_avatar and not t.avatar:
+                    t.avatar = author_avatar
+                target_name = t.nickname or t.sec_uid
                 target_avatar = t.avatar or ""
                 s.add(t)
             else:
@@ -1448,7 +1385,7 @@ class SocialTargetScanMixin:
         return rows[:max_count], ("" if rows or err == "empty" else err), source
 
     async def _scan_youtube_target_locked(self, target_id: int) -> dict:
-        """扫描单个 YouTube 监控目标（频道或搜索词，支持 Videos & Shorts 与 yt-dlp 无损下载）。"""
+        """扫描单个 YouTube 频道主页监控目标（支持 Videos & Shorts 与 yt-dlp 无损下载）。"""
         with get_session() as s:
             target = s.get(MonitorTarget, target_id)
             if not target:
@@ -1467,9 +1404,7 @@ class SocialTargetScanMixin:
             state = (acc.storage_state or acc.creator_storage_state or acc.cookie or "") if acc else ""
             ua = self._direct_request_ua(identity if identity is not None else acc)
             proxy = (acc.proxy or "") if acc else ""
-            target_kind = target.target_kind or "creator"
             sec_uid = target.sec_uid or ""
-            keyword = target.keyword or ""
             base_dir = target.download_dir or get_setting("download_dir", self.cfg.engine.media_dir)
             quality = target.video_quality or get_setting("video_quality", "highest")
             auto_download = bool(target.download_enabled)
@@ -1498,31 +1433,19 @@ class SocialTargetScanMixin:
         author_name = ""
         author_avatar = ""
         error = ""
-        if target_kind == "keyword":
-            raw_items, error = await self._yt_read_search(
-                identity,
-                keyword,
-                sort_by="date",
-                max_pages=max(1, min(8, int(strategy["max_scrolls"] or 4))),
-                max_items=max(30, int(strategy["max_items"] or 30)),
-                state=state,
-                ua=ua,
-                proxy=proxy,
-            )
-        else:
-            raw_items, prof, error = await self._yt_read_channel_videos(
-                identity,
-                sec_uid,
-                max_pages=max(1, min(8, int(strategy["max_scrolls"] or 4))),
-                max_items=max(30, int(strategy["max_items"] or 30)),
-                include_shorts=True,
-                state=state,
-                ua=ua,
-                proxy=proxy,
-            )
-            if isinstance(prof, dict):
-                author_name = str(prof.get("nickname") or "")
-                author_avatar = str(prof.get("avatar") or "")
+        raw_items, prof, error = await self._yt_read_channel_videos(
+            identity,
+            sec_uid,
+            max_pages=max(1, min(8, int(strategy["max_scrolls"] or 4))),
+            max_items=max(30, int(strategy["max_items"] or 30)),
+            include_shorts=True,
+            state=state,
+            ua=ua,
+            proxy=proxy,
+        )
+        if isinstance(prof, dict):
+            author_name = str(prof.get("nickname") or "")
+            author_avatar = str(prof.get("avatar") or "")
 
         if error and not raw_items:
             with get_session() as s:
@@ -1625,12 +1548,11 @@ class SocialTargetScanMixin:
             if t:
                 t.last_scan_at = datetime.utcnow()
                 t.last_error = error
-                if target_kind == "creator":
-                    if author_name and (not t.nickname or t.nickname == t.sec_uid):
-                        t.nickname = author_name
-                    if author_avatar and not t.avatar:
-                        t.avatar = author_avatar
-                target_name = t.nickname or t.keyword or t.sec_uid
+                if author_name and (not t.nickname or t.nickname == t.sec_uid):
+                    t.nickname = author_name
+                if author_avatar and not t.avatar:
+                    t.avatar = author_avatar
+                target_name = t.nickname or t.sec_uid
                 target_avatar = t.avatar or ""
                 s.add(t)
             s.commit()

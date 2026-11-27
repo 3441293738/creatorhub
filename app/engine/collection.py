@@ -1,4 +1,4 @@
-"""十一平台关键词与创作者批量作品采集主调度器。"""
+"""十一平台关键词采集主调度器。"""
 from __future__ import annotations
 
 import asyncio
@@ -282,16 +282,11 @@ class KeywordCollector(
         job = self._job(job_id)
         if not job:
             raise RuntimeError("采集任务不存在")
+        if str(job.source_type or "keyword") != "keyword":
+            raise RuntimeError("关键词采集仅支持关键词来源，历史非关键词任务已下线不可继续执行")
         keywords = _loads_keywords(job.keywords)
-        if job.source_type in {
-                "favorite_all", "favorite_board", "creator", "account_works"}:
-            default_name = ("全部收藏" if job.source_type == "favorite_all" else
-                            "收藏夹" if job.source_type == "favorite_board" else
-                            "本账号作品" if job.source_type == "account_works" else
-                            f"创作者 {job.source_ref}")
-            keywords = [job.source_name or default_name]
         if not keywords:
-            raise RuntimeError("采集任务没有可执行来源")
+            raise RuntimeError("采集任务没有可执行关键词")
 
         if account is not None:
             identity = self.browser.identity_for(account)
@@ -599,118 +594,48 @@ class KeywordCollector(
             self._progress(
                 job_id,
                 keyword=keyword,
-                step=(
-                    "同步本账号作品"
-                    if (job.platform in {"shipinhao", "bilibili", "instagram", "twitter", "facebook"} and job.source_type == "account_works")
-                    else "读取创作者作品"
-                    if (job.platform in {"shipinhao", "bilibili", "instagram", "twitter", "facebook"} and job.source_type == "creator")
-                    else "搜索作品"
-                ),
+                step="搜索作品",
                 processed_keyword_count=keyword_index,
                 current_item_index=0,
                 current_item_total=0,
             )
             if job.platform == "douyin":
-                if job.source_type == "creator":
-                    raw_items, search_error = await self._discover_douyin_creator(
-                        account, job, douyin_client)
-                else:
-                    raw_items, search_error = await self._discover_douyin(
-                        account, keyword, job, client=douyin_client,
-                        context=context)
+                raw_items, search_error = await self._discover_douyin(
+                    account, keyword, job, client=douyin_client,
+                    context=context)
             elif job.platform == "kuaishou":
-                if job.source_type == "creator":
-                    raw_items, search_error = await self._discover_ks_creator(
-                        account, job)
-                else:
-                    raw_items, search_error = await self._discover_ks(
-                        account, keyword, job)
+                raw_items, search_error = await self._discover_ks(
+                    account, keyword, job)
             elif job.platform == "tiktok":
                 raw_items, search_error = await self._discover_tiktok(
                     account, identity, keyword, job)
             elif job.platform == "bilibili":
-                if job.source_type == "creator":
-                    raw_items, search_error = await self._discover_bilibili_creator(
-                        job, bili_client=bili_client, identity=identity)
-                elif job.source_type == "account_works":
-                    raw_items, search_error = await self._discover_bilibili_account(
-                        account, job, bili_client=bili_client, identity=identity)
-                else:
-                    raw_items, search_error = await self._discover_bilibili_keyword(
-                        keyword, job, bili_client=bili_client, identity=identity)
+                raw_items, search_error = await self._discover_bilibili_keyword(
+                    keyword, job, bili_client=bili_client, identity=identity)
             elif job.platform == "instagram":
-                if job.source_type == "creator":
-                    raw_items, search_error = await self._discover_instagram_creator(
-                        job, ig_client=ig_client, identity=identity)
-                elif job.source_type == "account_works":
-                    raw_items, search_error = await self._discover_instagram_account(
-                        account, job, ig_client=ig_client, identity=identity)
-                else:
-                    raw_items, search_error = await self._discover_instagram_keyword(
-                        keyword, job, ig_client=ig_client, identity=identity)
+                raw_items, search_error = await self._discover_instagram_keyword(
+                    keyword, job, ig_client=ig_client, identity=identity)
             elif job.platform == "twitter":
-                if job.source_type == "creator":
-                    raw_items, search_error = await self._discover_twitter_creator(
-                        job, tw_client=tw_client, identity=identity)
-                elif job.source_type == "account_works":
-                    raw_items, search_error = await self._discover_twitter_account(
-                        account, job, tw_client=tw_client, identity=identity)
-                else:
-                    raw_items, search_error = await self._discover_twitter_keyword(
-                        keyword, job, tw_client=tw_client, identity=identity)
+                raw_items, search_error = await self._discover_twitter_keyword(
+                    keyword, job, tw_client=tw_client, identity=identity)
             elif job.platform == "facebook":
-                if job.source_type == "creator":
-                    raw_items, search_error = await self._discover_facebook_creator(
-                        job, fb_client=fb_client, identity=identity)
-                elif job.source_type == "account_works":
-                    raw_items, search_error = await self._discover_facebook_account(
-                        account, job, fb_client=fb_client, identity=identity)
-                else:
-                    raw_items, search_error = await self._discover_facebook_keyword(
-                        keyword, job, fb_client=fb_client, identity=identity)
+                raw_items, search_error = await self._discover_facebook_keyword(
+                    keyword, job, fb_client=fb_client, identity=identity)
             elif job.platform == "youtube":
-                if job.source_type == "creator":
-                    raw_items, search_error = await self._discover_youtube_creator(
-                        job, yt_client=yt_client, identity=identity)
-                elif job.source_type == "account_works":
-                    raw_items, search_error = await self._discover_youtube_account(
-                        account, job, yt_client=yt_client, identity=identity)
-                else:
-                    raw_items, search_error = await self._discover_youtube_keyword(
-                        keyword, job, yt_client=yt_client, identity=identity)
+                raw_items, search_error = await self._discover_youtube_keyword(
+                    keyword, job, yt_client=yt_client, identity=identity)
             elif job.platform == "shipinhao":
-                if job.source_type == "creator":
-                    raw_items, search_error = await self._discover_channels_creator(
-                        job, proto_client=channels_client)
-                elif job.source_type == "keyword":
-                    raw_items, search_error = await self._discover_channels_keyword(
-                        keyword, job, proto_client=channels_client)
-                else:
-                    raw_items, search_error = await self._discover_channels_account(
-                        identity, job, account=account, proto_client=channels_client)
+                raw_items, search_error = await self._discover_channels_keyword(
+                    keyword, job, proto_client=channels_client)
             elif job.platform == "rednote":
                 raw_items, search_error = await self._discover_rednote_source(
                     identity, account, keyword, job, rednote_client=rednote_client)
             elif browser_reads:
-                if job.source_type in {"favorite_all", "favorite_board"}:
-                    raw_items, search_error = await self._discover_xhs_favorites_browser(
-                        identity, account, job)
-                elif job.source_type == "creator":
-                    raw_items, search_error = await self._discover_xhs_creator_browser(
-                        identity, job)
-                else:
-                    raw_items, search_error = await self._discover_xhs_browser(
-                        identity, keyword, job)
+                raw_items, search_error = await self._discover_xhs_browser(
+                    identity, keyword, job)
             else:
-                if job.source_type in {"favorite_all", "favorite_board"}:
-                    raw_items, search_error = await self._discover_xhs_favorites_api(
-                        xhs_client, job)
-                elif job.source_type == "creator":
-                    raw_items, search_error = await self._discover_xhs_creator_api(
-                        xhs_client, job)
-                else:
-                    raw_items, search_error = await self._discover_xhs(
-                        xhs_client, keyword, job)
+                raw_items, search_error = await self._discover_xhs(
+                    xhs_client, keyword, job)
             if search_error:
                 self._record_error(job_id, f"{keyword}: {search_error}")
                 if "登录态已失效" in search_error and account is not None:
@@ -789,9 +714,6 @@ class KeywordCollector(
                                     detail_aweme.desc = aweme.desc
                                 aweme = detail_aweme
                                 detail_raw = detail_obj
-                    if (aweme is not None and not aweme.author_name
-                            and job.source_type == "account_works"):
-                        aweme.author_name = str(getattr(account, "nickname", "") or "")
                     token = (aweme.object_nonce_id if aweme is not None else "") or ""
                 elif job.platform == "tiktok":
                     aweme = parse_tiktok_aweme(raw, job.video_quality or "highest")
@@ -821,9 +743,7 @@ class KeywordCollector(
                     card = parts.get("card") or {}
                     detail_raw = card or raw
                     token = brief.get("xsec_token") or ""
-                    source = brief.get("xsec_source") or (
-                        "pc_feed" if job.source_type == "creator" else
-                        "pc_user" if job.source_type != "keyword" else "pc_search")
+                    source = brief.get("xsec_source") or "pc_search"
                 elif job.platform == "instagram":
                     aweme = parse_ig_aweme(raw, require_media=False)
                     if (
@@ -913,18 +833,14 @@ class KeywordCollector(
                     card = parts.get("card") or {}
                     detail_raw = card or raw
                     token = brief.get("xsec_token") or ""
-                    source = brief.get("xsec_source") or (
-                        "pc_feed" if job.source_type == "creator" else
-                        "pc_user" if job.source_type != "keyword" else "pc_search")
+                    source = brief.get("xsec_source") or "pc_search"
                 else:
                     aweme, parts, detail_error = await self._materialize_xhs(xhs_client, raw)
                     brief = parts.get("brief") or {}
                     card = parts.get("card") or {}
                     detail_raw = card or raw
                     token = brief.get("xsec_token") or ""
-                    source = brief.get("xsec_source") or (
-                        "pc_feed" if job.source_type == "creator" else
-                        "pc_user" if job.source_type != "keyword" else "pc_search")
+                    source = brief.get("xsec_source") or "pc_search"
                 if job.platform in {"xhs", "rednote"} and detail_error:
                     category, _ = classify_platform_error(detail_error)
                     if category in {
@@ -947,9 +863,6 @@ class KeywordCollector(
                 author_id = _author_id(detail_raw, job.platform)
                 if job.platform in {"xhs", "rednote"} and not author_id:
                     author_id = brief.get("author_id") or ""
-                if (job.platform == "shipinhao" and not author_id
-                        and job.source_type == "account_works"):
-                    author_id = str(getattr(account, "sec_uid", "") or "")
                 content = self._upsert_content(
                     current, keyword, aweme, author_id,
                     token, source, detail_error)

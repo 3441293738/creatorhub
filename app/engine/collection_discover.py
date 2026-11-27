@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import math
 
-from app.browser import fetch_channels_works, fetch_douyin_search, fetch_ks_search, fetch_ks_videos, fetch_rednote_comments, fetch_rednote_favorites, fetch_rednote_note_detail, fetch_rednote_notes, fetch_rednote_search, fetch_videos, fetch_xhs_favorites, fetch_xhs_note_detail, fetch_xhs_notes, fetch_xhs_search
+from app.browser import fetch_douyin_search, fetch_ks_search, fetch_rednote_comments, fetch_rednote_note_detail, fetch_rednote_search, fetch_xhs_note_detail, fetch_xhs_search
 from app.browser.tiktok_fetcher import fetch_tiktok_search
 from app.engine.collection_helpers import _XHS_NOTE_TYPE, _XHS_SEARCH_SORT, _sort_channels_search_items, _sort_xhs_search_items
 from app.engine.monitor_helpers import log
 from app.models import KeywordCollectionJob
-from app.platforms.channels import ChannelsProtocolClient, parse_channels_feed
+from app.platforms.channels import ChannelsProtocolClient
 from app.platforms.douyin import DouyinClient
 from app.platforms.douyin.extract import Aweme
 from app.platforms.rednote import RednoteApiClient, flatten_rednote_comments, parse_rednote_brief, parse_rednote_comment, parse_rednote_detail
@@ -101,27 +101,6 @@ class CollectionDiscoverMixin:
             context=context,
         )
 
-    async def _discover_douyin_creator(
-            self, account, job: KeywordCollectionJob,
-            client: DouyinClient | None) -> tuple[list[dict], str]:
-        mode = str(getattr(self.cfg.engine, "douyin_read_mode", "hybrid") or "hybrid")
-        if mode in {"api", "hybrid"} and client is not None:
-            try:
-                values = await client.fetch_all_video_list(
-                    job.source_ref,
-                    max_pages=job.max_pages_per_keyword,
-                    count=min(20, job.max_contents_per_keyword))
-                if values or mode == "api":
-                    return values[:job.max_contents_per_keyword], ""
-            except Exception as exc:
-                if mode == "api":
-                    return [], f"抖音创作者作品读取失败: {exc}"
-        values, _author, error = await fetch_videos(
-            self.browser, self.browser.identity_for(account), job.source_ref, set(),
-            max_scrolls=job.max_pages_per_keyword,
-            block_media=self.cfg.engine.block_media_resources)
-        return values[:job.max_contents_per_keyword], error
-
     async def _discover_ks(self, account, keyword: str,
                            job: KeywordCollectionJob) -> tuple[list[dict], str]:
         return await fetch_ks_search(
@@ -175,91 +154,6 @@ class CollectionDiscoverMixin:
             stagnant_limit=job.stagnant_pages,
             block_media=self.cfg.engine.block_media_resources,
         )
-
-    async def _discover_ks_creator(
-            self, account, job: KeywordCollectionJob) -> tuple[list[dict], str]:
-        values, _author, error = await fetch_ks_videos(
-            self.browser,
-            self.browser.identity_for(account),
-            job.source_ref,
-            set(),
-            max_scrolls=max(1, min(40, int(job.max_pages_per_keyword or 1))),
-            block_media=self.cfg.engine.block_media_resources,
-        )
-        return values[:job.max_contents_per_keyword], error
-
-    async def _discover_channels_account(
-            self, identity, job: KeywordCollectionJob, *,
-            account=None,
-            proto_client: ChannelsProtocolClient | None = None) -> tuple[list[dict], str]:
-        mode = self._channels_read_mode()
-        sec_uid = str(getattr(account, "sec_uid", "") or "").strip()
-        has_finder_username = bool(sec_uid and (sec_uid.startswith("v2_") or "@finder" in sec_uid))
-
-        if mode == "protocol":
-            if proto_client is None:
-                return [], "视频号原生协议采集尚未连接本机微信通道（请在「设置 → 视频号微信通道」开启一键本地代理或配置 CDP）"
-            if not has_finder_username:
-                return [], "当前视频号账号缺少 finderUsername(v2_...@finder)，无法走原生协议读取作品"
-            values, _author, err = await proto_client.fetch_user_feeds(
-                sec_uid,
-                max_results=job.max_contents_per_keyword,
-                max_pages=job.max_pages_per_keyword,
-            )
-            return values[:job.max_contents_per_keyword], err
-
-        if mode == "auto" and proto_client is not None and has_finder_username:
-            values, _author, proto_err = await proto_client.fetch_user_feeds(
-                sec_uid,
-                max_results=job.max_contents_per_keyword,
-                max_pages=job.max_pages_per_keyword,
-            )
-            if values or not proto_err:
-                return values[:job.max_contents_per_keyword], proto_err
-
-        needed_pages = max(
-            int(job.max_pages_per_keyword or 1),
-            ((max(1, int(job.max_contents_per_keyword or 20)) + 4) // 5) + 1,
-        )
-        values, _author, error = await fetch_channels_works(
-            self.browser,
-            identity,
-            set(),
-            max_scrolls=max(1, min(40, int(job.max_pages_per_keyword or 1))),
-            block_media=self.cfg.engine.block_media_resources,
-            max_pages=min(120, needed_pages),
-        )
-        if job.max_contents_per_keyword and job.max_contents_per_keyword > 0:
-            values = values[:job.max_contents_per_keyword]
-        if values and job.download_media and proto_client is not None:
-            enriched: list[dict] = []
-            for item in values:
-                brief = parse_channels_feed(item, job.video_quality or "highest")
-                if brief is not None and not brief.medias and brief.aweme_id:
-                    detail_obj, _ = await proto_client.fetch_feed_detail(
-                        object_id=brief.aweme_id
-                    )
-                    if detail_obj:
-                        enriched.append(detail_obj)
-                        continue
-                enriched.append(item)
-            values = enriched
-        return values, error
-
-    async def _discover_channels_creator(
-            self, job: KeywordCollectionJob, *,
-            proto_client: ChannelsProtocolClient | None = None) -> tuple[list[dict], str]:
-        if self._channels_read_mode() == "browser" or proto_client is None:
-            return (
-                [],
-                "视频号创作者主页采集需要连接本机已登录微信（请在「设置 → 视频号微信通道」开启一键本地代理并在微信内打开一次视频号页面）",
-            )
-        values, _author, err = await proto_client.fetch_user_feeds(
-            job.source_ref,
-            max_results=job.max_contents_per_keyword,
-            max_pages=job.max_pages_per_keyword,
-        )
-        return values[:job.max_contents_per_keyword], err
 
     async def _discover_channels_keyword(
             self, keyword: str, job: KeywordCollectionJob, *,
@@ -352,88 +246,6 @@ class CollectionDiscoverMixin:
         )
         return _sort_xhs_search_items(values, job.search_sort), error
 
-    async def _discover_xhs_favorites_browser(
-            self, identity, account,
-            job: KeywordCollectionJob) -> tuple[list[dict], str]:
-        values, error = await fetch_xhs_favorites(
-            self.browser, identity, str(getattr(account, "sec_uid", "") or ""),
-            board_id=job.source_ref if job.source_type == "favorite_board" else "",
-            board_name=job.source_name,
-            max_scrolls=max(1, min(40, int(job.max_pages_per_keyword or 1))),
-            stagnant_limit=max(1, min(8, int(job.stagnant_pages or 1))),
-        )
-        return values, error
-
-    async def _discover_xhs_favorites_api(
-            self, client: XhsApiClient, job: KeywordCollectionJob) -> tuple[list[dict], str]:
-        found: dict[str, dict] = {}
-        cursor = ""
-        pages = max(1, min(40, int(job.max_pages_per_keyword or 1)))
-        try:
-            for page in range(pages):
-                data = await client.favorite_notes(
-                    board_id=(job.source_ref if job.source_type == "favorite_board" else ""),
-                    cursor=cursor, page_size=min(50, job.max_contents_per_keyword))
-                values = data.get("notes") or data.get("items") or []
-                before = len(found)
-                for raw in values:
-                    brief = parse_note_brief(raw)
-                    if brief:
-                        raw.setdefault("xsec_source", "pc_user")
-                        found.setdefault(brief["note_id"], raw)
-                    if len(found) >= job.max_contents_per_keyword:
-                        break
-                if len(found) >= job.max_contents_per_keyword:
-                    break
-                next_cursor = str(data.get("cursor") or data.get("next_cursor") or "")
-                has_more = bool(data.get("has_more"))
-                if len(found) == before or not has_more or not next_cursor or next_cursor == cursor:
-                    break
-                cursor = next_cursor
-                if page + 1 < pages:
-                    await self._xhs_gap(0.6)
-        except Exception as exc:
-            return list(found.values()), f"小红书收藏读取失败: {exc}"
-        return list(found.values()), ""
-
-    async def _discover_xhs_creator_browser(
-            self, identity, job: KeywordCollectionJob) -> tuple[list[dict], str]:
-        values, _author, error = await fetch_xhs_notes(
-            self.browser, identity, job.source_ref, set(),
-            max_scrolls=max(1, min(40, job.max_pages_per_keyword)),
-            block_media=self.cfg.engine.block_media_resources,
-            ssr_fallback=True)
-        return values[:job.max_contents_per_keyword], error
-
-    async def _discover_xhs_creator_api(
-            self, client: XhsApiClient, job: KeywordCollectionJob) -> tuple[list[dict], str]:
-        found: dict[str, dict] = {}
-        cursor = ""
-        try:
-            for page in range(max(1, min(40, job.max_pages_per_keyword))):
-                data = await client.notes_by_creator(
-                    job.source_ref, cursor=cursor,
-                    page_size=min(30, job.max_contents_per_keyword),
-                    xsec_source="pc_feed")
-                values = data.get("notes") or []
-                for raw in values:
-                    brief = parse_note_brief(raw)
-                    if brief:
-                        raw.setdefault("xsec_source", "pc_feed")
-                        found.setdefault(brief["note_id"], raw)
-                    if len(found) >= job.max_contents_per_keyword:
-                        break
-                next_cursor = str(data.get("cursor") or data.get("next_cursor") or "")
-                if (len(found) >= job.max_contents_per_keyword or not data.get("has_more")
-                        or not next_cursor or next_cursor == cursor):
-                    break
-                cursor = next_cursor
-                if page + 1 < job.max_pages_per_keyword:
-                    await self._xhs_gap(0.6)
-        except Exception as exc:
-            return list(found.values()), f"小红书创作者作品读取失败: {exc}"
-        return list(found.values()), ""
-
     async def _materialize_xhs(self, client: XhsApiClient, raw: dict) \
             -> tuple[Aweme | None, dict, str]:
         brief = parse_note_brief(raw)
@@ -483,12 +295,7 @@ class CollectionDiscoverMixin:
         items: list[dict] = []
         err = ""
         if mode in {"api", "hybrid"} and rednote_client is not None:
-            if job.source_type in {"favorite_all", "favorite_board"}:
-                items, err = await self._discover_xhs_favorites_api(rednote_client, job)
-            elif job.source_type == "creator":
-                items, err = await self._discover_xhs_creator_api(rednote_client, job)
-            else:
-                items, err = await self._discover_xhs(rednote_client, keyword, job)
+            items, err = await self._discover_xhs(rednote_client, keyword, job)
             if err:
                 err = err.replace("小红书", "海外小红书")
             if items or mode == "api":
@@ -501,28 +308,6 @@ class CollectionDiscoverMixin:
         elif mode == "api":
             return [], "海外小红书 API 客户端不可用"
 
-        if job.source_type in {"favorite_all", "favorite_board"}:
-            values, b_err = await fetch_rednote_favorites(
-                self.browser,
-                identity,
-                str(getattr(account, "sec_uid", "") or ""),
-                board_id=job.source_ref if job.source_type == "favorite_board" else "",
-                board_name=job.source_name,
-                max_scrolls=max(1, min(40, int(job.max_pages_per_keyword or 1))),
-                stagnant_limit=max(1, min(8, int(job.stagnant_pages or 1))),
-            )
-            return values, b_err
-        if job.source_type == "creator":
-            values, _author, b_err = await fetch_rednote_notes(
-                self.browser,
-                identity,
-                job.source_ref,
-                set(),
-                max_scrolls=max(1, min(40, int(job.max_pages_per_keyword or 1))),
-                block_media=self.cfg.engine.block_media_resources,
-                ssr_fallback=True,
-            )
-            return values[: job.max_contents_per_keyword], b_err
         values, b_err = await fetch_rednote_search(
             self.browser,
             identity,

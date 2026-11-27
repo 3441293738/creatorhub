@@ -377,10 +377,10 @@ export function MatrixOverviewCommand({ ctx }) {
             <div className="mx-empty-box">
               <Icon name="image" />
               <b>暂无捕获到的作品内容</b>
-              <span>添加「作品监控」或发起「关键词采集」后，最新作品封面与互动数据会实时汇聚在此预览。</span>
+              <span>添加「主页作品监控」或发起「关键词采集」后，最新作品封面与互动数据会实时汇聚在此预览。</span>
               <div className="mx-empty-actions">
-                <button type="button" className="ghost sm" onClick={() => bridge?.navigate?.("monitors", true)}>去添加作品监控</button>
-                <button type="button" className="ghost sm" onClick={() => bridge?.navigate?.("collections", true)}>去新建批量采集</button>
+                <button type="button" className="ghost sm" onClick={() => bridge?.navigate?.("monitors", true)}>去添加主页作品监控</button>
+                <button type="button" className="ghost sm" onClick={() => bridge?.navigate?.("collections", true)}>去新建关键词采集</button>
               </div>
             </div>
           )}

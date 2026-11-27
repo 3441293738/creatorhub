@@ -1,4 +1,4 @@
-"""作品监控目标增删改查、启停切换与立即扫描接口。"""
+"""主页作品监控目标增删改查、启停切换与立即扫描接口。"""
 from __future__ import annotations
 
 import asyncio
@@ -34,9 +34,9 @@ router = APIRouter()
 
 
 class TargetIn(BaseModel):
-    url_or_secuid: str                       # 抖音/小红书主页链接 或 小红书关键词
-    platform: str = "douyin"                # douyin | xhs
-    target_kind: str = "creator"            # creator | keyword(仅小红书)
+    url_or_secuid: str                       # 创作者主页链接 / 分享文案 / ID
+    platform: str = "douyin"                # 平台标识
+    target_kind: str = "creator"            # 仅支持 creator（创作者主页）
     account_id: int | None = None
     interval_seconds: int = 300
     initial_backfill_count: int | None = None
@@ -125,27 +125,21 @@ async def add_monitor(body: TargetIn, request: Request = None):
         if replay is not None:
             return replay
     platform = body.platform if body.platform in ("douyin", "xhs", "rednote", "kuaishou", "shipinhao", "tiktok", "bilibili", "instagram", "twitter", "facebook", "youtube") else "douyin"
-    sec_uid = keyword = xsec_token = ""
+    if str(body.target_kind or "creator").strip().lower() != "creator":
+        raise HTTPException(400, "主页作品监控仅支持监控创作者主页；按关键词搜索请使用「关键词采集」")
+    sec_uid = xsec_token = ""
     nickname = avatar = ""
-    kind = "creator"
-
-    if platform in ("xhs", "rednote", "instagram", "twitter", "facebook", "youtube") and body.target_kind == "keyword":
-        kind = "keyword"
-        keyword = body.url_or_secuid.strip()
-        if not keyword:
-            raise HTTPException(400, "请输入要监控的搜索关键词")
-    else:
-        target_input = metadata_service._clean_platform_target_input(body.url_or_secuid, platform)
+    target_input = metadata_service._clean_platform_target_input(body.url_or_secuid, platform)
 
     eff_proxy = metadata_service._resolve_ephemeral_proxy(platform, body.account_id)
-    if platform == "xhs" and kind != "keyword":
+    if platform == "xhs":
         ref = await metadata_service._call_resolver(
             xhs_resolve_user, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
         )
         if not ref:
             raise HTTPException(400, "无法解析小红书 user_id,请粘贴完整分享文案、创作者主页链接 / xhslink 短链 / 24 位 user_id")
         sec_uid, xsec_token = ref.user_id, ref.xsec_token
-    elif platform == "rednote" and kind != "keyword":
+    elif platform == "rednote":
         ref = await metadata_service._call_resolver(
             resolve_rednote_user, target_input, app_runtime.cfg.engine.user_agent, proxy=eff_proxy
         )
@@ -176,15 +170,15 @@ async def add_monitor(body: TargetIn, request: Request = None):
         )
         if not sec_uid:
             raise HTTPException(400, "无法解析哔哩哔哩 UP 主 UID，请粘贴空间链接 space.bilibili.com/<mid>、b23.tv 短链或纯数字 UID")
-    elif platform == "instagram" and kind != "keyword":
+    elif platform == "instagram":
         if looks_like_ig_work(target_input):
-            raise HTTPException(400, "检测到 Instagram 单帖/Reels 链接；作品监控请填写创作者 @username、主页链接或切换为关键词监控")
+            raise HTTPException(400, "检测到 Instagram 单帖/Reels 链接；主页作品监控请填写创作者 @username 或主页链接（单条作品请用「链接下载」）")
         sec_uid = resolve_ig_user_target(target_input)
         if not sec_uid:
             raise HTTPException(400, "无法解析 Instagram 创作者，请粘贴 instagram.com/<username> 主页链接、@username 或数字 UID")
         if not sec_uid.isdigit():
             nickname = f"@{sec_uid}"
-    elif platform == "twitter" and kind != "keyword":
+    elif platform == "twitter":
         expanded_tw = await metadata_service._call_resolver(
             resolve_twitter_short_url,
             target_input,
@@ -192,13 +186,13 @@ async def add_monitor(body: TargetIn, request: Request = None):
             proxy=eff_proxy,
         )
         if looks_like_twitter_tweet(expanded_tw):
-            raise HTTPException(400, "检测到 X (Twitter) 单条推文链接；作品监控请填写创作者 @username、x.com/<username> 主页链接或切换为关键词监控")
+            raise HTTPException(400, "检测到 X (Twitter) 单条推文链接；主页作品监控请填写创作者 @username 或 x.com/<username> 主页链接（单条作品请用「链接下载」）")
         sec_uid = resolve_twitter_user_target(expanded_tw)
         if not sec_uid:
             raise HTTPException(400, "无法解析 X (Twitter) 创作者，请粘贴 x.com/<username> 主页链接、@username 或数字 UID")
         if not sec_uid.isdigit():
             nickname = f"@{sec_uid}"
-    elif platform == "facebook" and kind != "keyword":
+    elif platform == "facebook":
         expanded_fb = await metadata_service._call_resolver(
             resolve_facebook_short_url,
             target_input,
@@ -206,15 +200,15 @@ async def add_monitor(body: TargetIn, request: Request = None):
             proxy=eff_proxy,
         )
         if looks_like_facebook_post(expanded_fb):
-            raise HTTPException(400, "检测到 Facebook 单条帖子链接；作品监控请填写个人主页、公共主页、群组链接或切换为关键词监控")
+            raise HTTPException(400, "检测到 Facebook 单条帖子链接；主页作品监控请填写个人主页、公共主页或群组链接（单条作品请用「链接下载」）")
         sec_uid = resolve_facebook_user_target(expanded_fb)
         if not sec_uid:
             raise HTTPException(400, "无法解析 Facebook 目标，请粘贴个人主页/公共主页/群组链接、用户名或数字 ID")
         if not sec_uid.isdigit() and not sec_uid.startswith("http"):
             nickname = sec_uid
-    elif platform == "youtube" and kind != "keyword":
+    elif platform == "youtube":
         if looks_like_youtube_video(target_input):
-            raise HTTPException(400, "检测到 YouTube 单条视频链接；作品监控请填写频道主页链接（/@handle 或 /channel/UC...）或切换为关键词监控")
+            raise HTTPException(400, "检测到 YouTube 单条视频链接；主页作品监控请填写频道主页链接（/@handle 或 /channel/UC...）（单条视频请用「链接下载」）")
         sec_uid, _yt_ch_url = resolve_youtube_channel_target(target_input)
         if not sec_uid:
             raise HTTPException(400, "无法解析 YouTube 频道目标，请粘贴 youtube.com/@handle、/channel/UC... 链接或 @handle")
@@ -246,23 +240,25 @@ async def add_monitor(body: TargetIn, request: Request = None):
             raise HTTPException(400, f"下载目录不可用: {e}")
     with get_session() as s:
         def create():
-            if platform in {"douyin", "tiktok", "instagram", "twitter", "facebook", "youtube"}:
-                platform_name = (
-                    "TikTok" if platform == "tiktok"
-                    else "Instagram" if platform == "instagram"
-                    else "Twitter" if platform == "twitter"
-                    else "Facebook" if platform == "facebook"
-                    else "YouTube" if platform == "youtube"
-                    else "抖音"
-                )
+            if platform in {"douyin", "xhs", "rednote", "tiktok", "instagram", "twitter", "facebook", "youtube"}:
+                platform_name = {
+                    "douyin": "抖音",
+                    "xhs": "小红书",
+                    "rednote": "海外小红书",
+                    "tiktok": "TikTok",
+                    "instagram": "Instagram",
+                    "twitter": "Twitter",
+                    "facebook": "Facebook",
+                    "youtube": "YouTube",
+                }.get(platform, platform)
                 if not body.account_id:
                     raise HTTPException(
-                        400, f"{platform_name}作品监控必须选择已登录账号")
+                        400, f"{platform_name}主页作品监控必须选择已登录账号")
                 monitor_acc = s.get(DouyinAccount, body.account_id)
                 if (not monitor_acc or monitor_acc.platform != platform
                         or monitor_acc.status != "active"):
                     raise HTTPException(400, f"所选{platform_name}账号不存在或登录态已失效")
-                if (platform in {"tiktok", "instagram", "twitter", "facebook", "youtube"}
+                if (platform in {"xhs", "rednote", "tiktok", "instagram", "twitter", "facebook", "youtube"}
                         and not (monitor_acc.storage_state
                                  or monitor_acc.creator_storage_state
                                  or monitor_acc.cookie)):
@@ -276,27 +272,18 @@ async def add_monitor(body: TargetIn, request: Request = None):
             if (
                 monitor_acc is not None
                 and str(monitor_acc.account_role or "hybrid").strip().lower() == "publish"
-                and (
-                    kind == "keyword"
-                    or not (
-                        (monitor_acc.sec_uid and monitor_acc.sec_uid == sec_uid)
-                        or (monitor_acc.uid and monitor_acc.uid == sec_uid)
-                        or (monitor_acc.douyin_id and monitor_acc.douyin_id == sec_uid)
-                    )
+                and not (
+                    (monitor_acc.sec_uid and monitor_acc.sec_uid == sec_uid)
+                    or (monitor_acc.uid and monitor_acc.uid == sec_uid)
+                    or (monitor_acc.douyin_id and monitor_acc.douyin_id == sec_uid)
                 )
             ):
                 raise HTTPException(
                     400,
-                    "该账号角色设为「发布主号 (publish)」，禁止绑定外部竞品或关键词监控以免高频巡检牵连主号；请改选「仅采集号 (crawler)」或「混合号 (hybrid)」",
+                    "该账号角色设为「发布主号 (publish)」，禁止绑定外部竞品主页监控以免高频巡检牵连主号；请改选「仅采集号 (crawler)」或「混合号 (hybrid)」",
                 )
-            if kind == "keyword":
-                dup = s.exec(select(MonitorTarget).where(MonitorTarget.platform == platform)
-                             .where(MonitorTarget.keyword == keyword)).first()
-                if dup:
-                    raise HTTPException(409, "该监控目标已存在")
-            else:
-                _ensure_creator_monitor_available(
-                    s, platform=platform, sec_uid=sec_uid, account_id=body.account_id)
+            _ensure_creator_monitor_available(
+                s, platform=platform, sec_uid=sec_uid, account_id=body.account_id)
             q = body.video_quality.strip()
             if q and q not in metadata_service.QUALITY_CHOICES:
                 raise HTTPException(400, f"画质取值无效: {q}")
@@ -305,9 +292,9 @@ async def add_monitor(body: TargetIn, request: Request = None):
                               else body.initial_backfill_count)
             if backfill_count < -1 or backfill_count > 1000:
                 raise HTTPException(400, "首次回填数须为 -1(尽可能全量)或 0~1000")
-            t = MonitorTarget(platform=platform, target_kind=kind, keyword=keyword,
+            t = MonitorTarget(platform=platform, target_kind="creator", keyword="",
                               sec_uid=sec_uid, xsec_token=xsec_token,
-                              nickname=("#" + keyword) if kind == "keyword" else nickname,
+                              nickname=nickname,
                               avatar=avatar,
                               alias=metadata_service._meta_text(body.alias, 60),
                               group_name=metadata_service._meta_text(body.group_name, 40),
@@ -340,6 +327,8 @@ async def update_monitor(tid: int, body: TargetUpdate):
         t = s.get(MonitorTarget, tid)
         if not t:
             raise HTTPException(404)
+        if (t.target_kind or "creator") != "creator":
+            raise HTTPException(400, "历史关键词监控已下线，仅支持查看或删除；按关键词搜索请使用「关键词采集」")
         if body.download_dir is not None:
             dl = body.download_dir.strip()
             if dl:
@@ -403,14 +392,29 @@ async def update_monitor(tid: int, body: TargetUpdate):
             acc = s.get(DouyinAccount, body.account_id)
             if not acc or acc.platform != t.platform or acc.status != "active":
                 raise HTTPException(400, "账号不存在、登录态失效或与监控平台不匹配")
-            if (t.platform in {"tiktok", "instagram", "twitter", "facebook", "youtube"}
+            if (t.platform in {"xhs", "rednote", "tiktok", "instagram", "twitter", "facebook", "youtube"}
                     and not (acc.storage_state or acc.creator_storage_state or acc.cookie)):
-                pname_t = {"instagram": "Instagram", "twitter": "Twitter", "facebook": "Facebook", "youtube": "YouTube"}.get(t.platform, "TikTok")
+                pname_t = {
+                    "xhs": "小红书", "rednote": "海外小红书",
+                    "instagram": "Instagram", "twitter": "Twitter",
+                    "facebook": "Facebook", "youtube": "YouTube",
+                }.get(t.platform, "TikTok")
                 raise HTTPException(400, f"所选 {pname_t} 账号缺少登录会话，请重新登录")
-            if t.target_kind != "keyword":
-                _ensure_creator_monitor_available(
-                    s, platform=t.platform, sec_uid=t.sec_uid,
-                    account_id=body.account_id, exclude_id=t.id)
+            if (
+                str(acc.account_role or "hybrid").strip().lower() == "publish"
+                and not (
+                    (acc.sec_uid and acc.sec_uid == t.sec_uid)
+                    or (acc.uid and acc.uid == t.sec_uid)
+                    or (acc.douyin_id and acc.douyin_id == t.sec_uid)
+                )
+            ):
+                raise HTTPException(
+                    400,
+                    "该账号角色设为「发布主号 (publish)」，禁止绑定外部竞品主页监控以免高频巡检牵连主号；请改选「仅采集号 (crawler)」或「混合号 (hybrid)」",
+                )
+            _ensure_creator_monitor_available(
+                s, platform=t.platform, sec_uid=t.sec_uid,
+                account_id=body.account_id, exclude_id=t.id)
             t.account_id = body.account_id
         if body.alias is not None:
             t.alias = metadata_service._meta_text(body.alias, 60)
@@ -446,6 +450,8 @@ async def toggle_monitor(tid: int):
         t = s.get(MonitorTarget, tid)
         if not t:
             raise HTTPException(404)
+        if (t.target_kind or "creator") != "creator" and not t.enabled:
+            raise HTTPException(400, "历史关键词监控已下线，无法重新启用；按关键词搜索请使用「关键词采集」")
         t.enabled = not t.enabled
         s.add(t); s.commit()
         return {"enabled": t.enabled}
@@ -455,22 +461,23 @@ async def toggle_monitor(tid: int):
 async def run_now(tid: int, async_mode: bool = False):
     if not app_runtime.engine:
         raise HTTPException(503, "引擎未就绪")
-    if not async_mode:
-        return await app_runtime.engine.scan_target(tid)
     with get_session() as s:
         target = s.get(MonitorTarget, tid)
         if not target:
             raise HTTPException(404, "监控目标不存在")
+        if (target.target_kind or "creator") != "creator":
+            raise HTTPException(400, "历史关键词监控已下线，无法继续抓取；按关键词搜索请使用「关键词采集」")
         label = (
             target.alias
             or target.nickname
-            or (f"#{target.keyword}" if target.keyword else "")
             or target.sec_uid
             or f"监控 #{tid}"
         )
         platform = str(target.platform or "")
         account_id = target.account_id
         backfill_count = int(target.initial_backfill_count or 0)
+    if not async_mode:
+        return await app_runtime.engine.scan_target(tid)
 
     task_key = f"monitor_scan:{tid}"
     if tid in getattr(app_runtime.engine, "_inflight", set()):

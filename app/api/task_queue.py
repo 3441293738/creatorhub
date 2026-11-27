@@ -253,7 +253,7 @@ async def list_task_queue(platform: str | None = None, queue_type: str = "",
                     "eta_seconds": None,
                 }
             add(
-                queue="collections", queue_label="内容采集", row_id=row.id,
+                queue="collections", queue_label="关键词采集", row_id=row.id,
                 row_platform=row.platform, account_id=row.account_id,
                 title=collection_title,
                 detail=(f"{col_progress['phase_label'] or '等待执行'} · 已采集 {row.content_count} 个作品 / "
@@ -332,7 +332,7 @@ async def list_task_queue(platform: str | None = None, queue_type: str = "",
             target = targets.get(row.target_id)
             account_id = target.account_id if target else None
             target_name = ((target.alias or target.nickname or target.keyword)
-                           if target else "作品监控")
+                           if target else "主页作品监控")
             live_dl = progress_hub.get(f"download:content:{row.id}")
             dl_progress = None
             if live_dl is not None:

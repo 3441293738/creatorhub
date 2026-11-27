@@ -1,4 +1,4 @@
-"""小红书与海外小红书 (RedNote) 作品监控目标扫描。"""
+"""小红书与海外小红书 (RedNote) 主页作品监控目标扫描。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,7 +8,7 @@ import random
 
 from sqlmodel import select
 
-from app.browser import fetch_rednote_note_detail, fetch_rednote_notes, fetch_rednote_search, fetch_xhs_note_detail, fetch_xhs_notes, fetch_xhs_search
+from app.browser import fetch_rednote_note_detail, fetch_rednote_notes, fetch_xhs_note_detail, fetch_xhs_notes
 from app.db import get_session
 from app.engine.monitor_helpers import _loads, _monitor_content_matches, _monitor_strategy, log
 from app.models import ContentRecord, DouyinAccount, MonitorTarget
@@ -21,15 +21,14 @@ from app.settings import get_setting
 
 
 class NoteTargetScanMixin:
-    # ── 小红书:创作者笔记 / 关键词 监控 ──
+    # ── 小红书:创作者主页笔记监控 ──
     async def _scan_xhs_target_locked(self, target_id: int) -> dict:
         with get_session() as s:
             target = s.get(MonitorTarget, target_id)
             if not target:
                 return {"ok": False, "error": "target not found"}
             first_scan = target.last_scan_at is None
-            kind = target.target_kind
-            user_id, keyword = target.sec_uid, target.keyword
+            user_id = target.sec_uid
             xsec_token = target.xsec_token or ""
             state = ""
             proxy = ""
@@ -98,16 +97,7 @@ class NoteTargetScanMixin:
         author = None
         briefs_raw: list = []
         try:
-            if browser_reads and kind == "keyword":
-                briefs_raw, browser_error = await fetch_xhs_search(
-                    self.browser, identity, keyword, known,
-                    max_scrolls=strategy["max_scrolls"],
-                    search_sort="latest",
-                    block_media=self.cfg.engine.block_media_resources,
-                    keep_context=True)
-                if browser_error:
-                    error = browser_error
-            elif browser_reads:
+            if browser_reads:
                 briefs_raw, author, browser_error = await fetch_xhs_notes(
                     self.browser, identity, user_id, known,
                     xsec_token=xsec_token, xsec_source="pc_feed",
@@ -116,9 +106,6 @@ class NoteTargetScanMixin:
                     keep_context=True)
                 if browser_error:
                     error = browser_error
-            elif kind == "keyword":
-                briefs_raw = await client.search_notes(
-                    keyword, sort="time_descending")
             else:
                 d = await client.notes_by_creator(user_id, xsec_token=xsec_token)
                 briefs_raw = d.get("notes") or []
@@ -151,7 +138,7 @@ class NoteTargetScanMixin:
         consecutive_detail_failures = 0
         first_detail_error = None
         access_updates = {}
-        default_note_source = "pc_search" if kind == "keyword" else "pc_feed" if browser_reads else "pc_user"
+        default_note_source = "pc_feed" if browser_reads else "pc_user"
         next_long_pause = random.randint(3, 5)
         for raw in briefs_raw:
             if error and classify_platform_error(error)[0] in {
@@ -270,9 +257,8 @@ class NoteTargetScanMixin:
 
         _scan_fn = log.warning if error else (log.info if new_records else log.debug)
         _scan_fn(
-            "小红书监控扫描(target=%s, kind=%s): 候选=%d 新增=%d 详情=%d 过滤=%d%s",
+            "小红书主页监控扫描(target=%s): 候选=%d 新增=%d 详情=%d 过滤=%d%s",
             target_id,
-            kind,
             len(briefs_raw),
             len(new_records),
             detail_attempts,
@@ -302,8 +288,7 @@ class NoteTargetScanMixin:
                     if not t.avatar:
                         t.avatar = p.get("avatar") or t.avatar
                 s.add(t)
-                target_name = t.nickname or (("#" + keyword) if kind == "keyword"
-                                             else (user_id[:12] if user_id else "xhs"))
+                target_name = t.nickname or (user_id[:12] if user_id else "xhs")
                 target_avatar = t.avatar or ""
             else:
                 target_avatar = ""
@@ -329,15 +314,14 @@ class NoteTargetScanMixin:
                 "captured": len(captured), "failed": detail_failures,
                 "partial": bool(captured and error), "refreshed": refreshed_access}
 
-    # ── 海外小红书(Rednote):创作者笔记 / 关键词 监控 ──
+    # ── 海外小红书(Rednote):创作者主页笔记监控 ──
     async def _scan_rednote_target_locked(self, target_id: int) -> dict:
         with get_session() as s:
             target = s.get(MonitorTarget, target_id)
             if not target:
                 return {"ok": False, "error": "target not found"}
             first_scan = target.last_scan_at is None
-            kind = target.target_kind
-            user_id, keyword = target.sec_uid, target.keyword
+            user_id = target.sec_uid
             xsec_token = target.xsec_token or ""
             state = ""
             proxy = ""
@@ -406,52 +390,33 @@ class NoteTargetScanMixin:
         try:
             if not use_browser and client is not None:
                 async with client.session_scope():
-                    if kind == "keyword":
-                        briefs_raw = await client.search_notes(keyword, sort="time_descending")
-                    else:
-                        d = await client.notes_by_creator(user_id, xsec_token=xsec_token)
-                        briefs_raw = d.get("notes") or []
-                        try:
-                            author = await client.user_info(user_id)
-                        except Exception:
-                            author = None
+                    d = await client.notes_by_creator(user_id, xsec_token=xsec_token)
+                    briefs_raw = d.get("notes") or []
+                    try:
+                        author = await client.user_info(user_id)
+                    except Exception:
+                        author = None
             if use_browser or (rmode == "hybrid" and not briefs_raw):
                 use_browser = True
-                if kind == "keyword":
-                    briefs_raw, browser_error = await fetch_rednote_search(
-                        self.browser, identity, keyword, known,
-                        max_scrolls=strategy["max_scrolls"],
-                        search_sort="latest",
-                        block_media=self.cfg.engine.block_media_resources,
-                        keep_context=True)
-                else:
-                    briefs_raw, author, browser_error = await fetch_rednote_notes(
-                        self.browser, identity, user_id, known,
-                        xsec_token=xsec_token, xsec_source="pc_feed",
-                        max_scrolls=strategy["max_scrolls"],
-                        block_media=self.cfg.engine.block_media_resources,
-                        ssr_fallback=True,
-                        keep_context=True)
+                briefs_raw, author, browser_error = await fetch_rednote_notes(
+                    self.browser, identity, user_id, known,
+                    xsec_token=xsec_token, xsec_source="pc_feed",
+                    max_scrolls=strategy["max_scrolls"],
+                    block_media=self.cfg.engine.block_media_resources,
+                    ssr_fallback=True,
+                    keep_context=True)
                 if browser_error:
                     error = browser_error
         except RednoteApiError as e:
             if rmode == "hybrid" and e.category != "auth":
                 use_browser = True
-                if kind == "keyword":
-                    briefs_raw, browser_error = await fetch_rednote_search(
-                        self.browser, identity, keyword, known,
-                        max_scrolls=strategy["max_scrolls"],
-                        search_sort="latest",
-                        block_media=self.cfg.engine.block_media_resources,
-                        keep_context=True)
-                else:
-                    briefs_raw, author, browser_error = await fetch_rednote_notes(
-                        self.browser, identity, user_id, known,
-                        xsec_token=xsec_token, xsec_source="pc_feed",
-                        max_scrolls=strategy["max_scrolls"],
-                        block_media=self.cfg.engine.block_media_resources,
-                        ssr_fallback=True,
-                        keep_context=True)
+                briefs_raw, author, browser_error = await fetch_rednote_notes(
+                    self.browser, identity, user_id, known,
+                    xsec_token=xsec_token, xsec_source="pc_feed",
+                    max_scrolls=strategy["max_scrolls"],
+                    block_media=self.cfg.engine.block_media_resources,
+                    ssr_fallback=True,
+                    keep_context=True)
                 if browser_error:
                     error = browser_error
             else:
@@ -470,7 +435,7 @@ class NoteTargetScanMixin:
         consecutive_detail_failures = 0
         first_detail_error = None
         access_updates = {}
-        default_note_source = "pc_search" if kind == "keyword" else ("pc_feed" if use_browser else "pc_user")
+        default_note_source = "pc_feed" if use_browser else "pc_user"
         next_long_pause = random.randint(3, 5)
         for raw in briefs_raw:
             if error and classify_platform_error(error)[0] in {
@@ -612,8 +577,7 @@ class NoteTargetScanMixin:
                     if not t.avatar:
                         t.avatar = p.get("avatar") or t.avatar
                 s.add(t)
-                target_name = t.nickname or (("#" + keyword) if kind == "keyword"
-                                             else (user_id[:12] if user_id else "rednote"))
+                target_name = t.nickname or (user_id[:12] if user_id else "rednote")
                 target_avatar = t.avatar or ""
             else:
                 target_avatar = ""

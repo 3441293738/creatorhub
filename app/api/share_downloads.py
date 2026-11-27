@@ -36,6 +36,291 @@ class ShareLinksIn(BaseModel):
     limit: int = 10
 
 
+class TargetDetectIn(BaseModel):
+    raw_input: str
+    platform: str = ""
+    account_id: int | None = None
+    expand_short_links: bool = True
+
+
+_DETECT_PLATFORM_NAMES = {
+    "douyin": "抖音",
+    "xhs": "小红书",
+    "rednote": "海外小红书",
+    "kuaishou": "快手",
+    "shipinhao": "视频号",
+    "wechat": "视频号",
+    "tiktok": "TikTok",
+    "bilibili": "哔哩哔哩",
+    "instagram": "Instagram",
+    "twitter": "X (Twitter)",
+    "facebook": "Facebook",
+    "youtube": "YouTube",
+    "generic": "其他站点",
+}
+
+_SHORT_LINK_HOSTS = {
+    "douyin": ("v.douyin.com",),
+    "xhs": ("xhslink.com",),
+    "kuaishou": ("v.kuaishou.com",),
+    "bilibili": ("b23.tv", "bili2233.cn"),
+    "tiktok": ("vm.tiktok.com", "vt.tiktok.com"),
+    "twitter": ("t.co",),
+    "facebook": ("fb.watch", "fb.me"),
+}
+
+
+async def _expand_short_url_once(url: str, platform: str, account_id: int | None = None) -> tuple[str, bool]:
+    """安全展开平台短链以判定是单条作品还是创作者主页（严格隔离系统代理）。"""
+    import re as _re
+    from urllib.parse import urlsplit as _urlsplit
+    from app.services import metadata as metadata_service
+
+    raw = str(url or "").strip()
+    if "://" not in raw:
+        return raw, False
+    parsed = _urlsplit(raw)
+    host = (parsed.hostname or "").lower()
+    path_low = (parsed.path or "").lower()
+    short_hosts = _SHORT_LINK_HOSTS.get(platform, ())
+    is_short = any(host == h or host.endswith("." + h) for h in short_hosts)
+    if not is_short:
+        if platform == "kuaishou" and "/f/" in path_low:
+            is_short = True
+        elif platform == "tiktok" and _re.match(r"^/t/[a-z0-9_-]+", path_low):
+            is_short = True
+        elif platform == "facebook" and _re.match(r"^/share/[a-z0-9/_-]+", path_low):
+            is_short = True
+    if not is_short:
+        return raw, False
+    eff_proxy = metadata_service._resolve_ephemeral_proxy(platform, account_id)
+    try:
+        from curl_cffi.requests import AsyncSession
+        from app.netfp import curl_proxies
+
+        async with AsyncSession(
+            impersonate="chrome136",
+            trust_env=False,
+            proxies=curl_proxies(eff_proxy),
+            timeout=8,
+            headers={"User-Agent": app_runtime.cfg.engine.user_agent},
+        ) as client:
+            resp = await client.get(raw, allow_redirects=True)
+            final_url = str(getattr(resp, "url", "") or "").strip()
+            if final_url and final_url != raw:
+                return final_url, True
+    except Exception:
+        pass
+    return raw, False
+
+
+def _classify_target_kind(platform: str, text: str) -> tuple[str, str, bool]:
+    """返回 (target_kind, kind_label, can_extract_creator)。
+    target_kind ∈ {"video", "user", "unknown"}。
+    """
+    import re as _re
+    from urllib.parse import parse_qs as _parse_qs, urlsplit as _urlsplit
+
+    raw = str(text or "").strip()
+    if not raw:
+        return "unknown", "", False
+    low = raw.lower()
+    is_url = "://" in raw
+    parsed = _urlsplit(raw) if is_url else None
+    path = (parsed.path or "") if parsed else ""
+    path_low = path.lower()
+    qs = _parse_qs(parsed.query) if parsed else {}
+
+    if platform == "douyin":
+        if is_url:
+            if qs.get("modal_id") or qs.get("vid") or _re.search(r"/(video|note|slides|share/video|share/note|share/slides)/", path_low):
+                return "video", "单条视频/图文", False
+            if _re.search(r"/(user|share/user)/", path_low):
+                return "user", "创作者主页", False
+            return "unknown", "", False
+        if raw.startswith("MS4wLjABAAAA") and len(raw) >= 20:
+            return "user", "创作者 sec_uid", False
+        if _re.fullmatch(r"\d{15,21}", raw):
+            return "video", "单条视频 ID", False
+        return "unknown", "", False
+
+    if platform in ("xhs", "rednote"):
+        if is_url:
+            if _re.search(r"/(explore|discovery/item|note)/", path_low):
+                return "video", "单条笔记", False
+            if "/user/profile/" in path_low:
+                return "user", "创作者主页", False
+        return "unknown", "", False
+
+    if platform == "kuaishou":
+        if is_url:
+            if _re.search(r"/(short-video|fw/photo|photo)/", path_low) or qs.get("photoId") or qs.get("photo_id"):
+                return "video", "单条作品", False
+            if "/profile/" in path_low:
+                return "user", "创作者主页", False
+            return "unknown", "", False
+        if _re.fullmatch(r"3x[a-z0-9]{10,}", raw, _re.I):
+            return "user", "创作者 user_id", False
+        return "unknown", "", False
+
+    if platform == "shipinhao":
+        from app.platforms.channels import looks_like_photo as channels_looks_like_photo, parse_channels_url
+
+        ref = parse_channels_url(raw)
+        if ref is not None:
+            if ref.kind == "creator":
+                return "user", "创作者主页", False
+            return "video", "单条视频号作品", True
+        if raw.startswith("v2_") and "@finder" in raw:
+            return "user", "视频号创作者", False
+        if channels_looks_like_photo(raw):
+            return "video", "单条视频号作品", True
+        return "unknown", "", False
+
+    if platform == "tiktok":
+        from app.platforms.tiktok.urls import parse_profile_reference, parse_video_reference
+
+        if parse_video_reference(raw):
+            return "video", "单条视频", True
+        if (is_url or raw.startswith("@")) and parse_profile_reference(raw):
+            return "user", "创作者主页", False
+        return "unknown", "", False
+
+    if platform == "bilibili":
+        from app.platforms.bilibili import looks_like_bili_work
+
+        if is_url:
+            host = (parsed.hostname or "").lower()
+            if host == "space.bilibili.com" and _re.search(r"/\d+", path_low):
+                return "user", "UP 主空间", False
+            if "/opus/" in path_low or host == "t.bilibili.com":
+                return "video", "单条图文动态", False
+            if looks_like_bili_work(raw):
+                return "video", "单条视频", False
+            return "unknown", "", False
+        if _re.fullmatch(r"BV1[0-9A-Za-z]{9}", raw, _re.I) or _re.fullmatch(r"av\d+", raw, _re.I):
+            return "video", "单条视频 BV/av 号", False
+        if _re.fullmatch(r"\d{1,14}", raw):
+            return "user", "UP 主 UID", False
+        return "unknown", "", False
+
+    if platform == "instagram":
+        from app.platforms.instagram import looks_like_ig_work, resolve_ig_user_target
+
+        if looks_like_ig_work(raw):
+            return "video", "单条帖子/Reels", False
+        if (is_url or raw.startswith("@")) and resolve_ig_user_target(raw):
+            return "user", "创作者主页", False
+        return "unknown", "", False
+
+    if platform == "twitter":
+        from app.platforms.twitter import looks_like_twitter_tweet, resolve_twitter_user_target
+
+        if looks_like_twitter_tweet(raw):
+            return "video", "单条推文", False
+        if (is_url or raw.startswith("@")) and resolve_twitter_user_target(raw):
+            return "user", "创作者主页", False
+        return "unknown", "", False
+
+    if platform == "facebook":
+        from app.platforms.facebook import looks_like_facebook_post, resolve_facebook_user_target
+
+        if looks_like_facebook_post(raw):
+            return "video", "单条帖子/视频", False
+        if (is_url or low.startswith("groups/")) and resolve_facebook_user_target(raw):
+            label = "Facebook 群组" if "/groups/" in low or low.startswith("groups/") else "Facebook 主页"
+            return "user", label, False
+        return "unknown", "", False
+
+    if platform == "youtube":
+        from app.platforms.youtube import looks_like_youtube_video, resolve_youtube_channel_target
+
+        if looks_like_youtube_video(raw):
+            return "video", "单条视频/Shorts", False
+        if is_url or raw.startswith("@") or _re.fullmatch(r"UC[0-9A-Za-z_-]{20,}", raw):
+            ch_key, _ = resolve_youtube_channel_target(raw)
+            if ch_key:
+                return "user", "频道主页", False
+        return "unknown", "", False
+
+    return "unknown", "", False
+
+
+@router.post("/api/targets/detect")
+async def detect_target_input(body: TargetDetectIn):
+    """清洗粘贴文本、按需展开短链，并自动判断是单条作品链接还是创作者主页链接。"""
+    text = str(body.raw_input or "").strip()
+    if not text:
+        return {"ok": False, "error": "请输入链接、分享文案或目标 ID"}
+    req_platform = str(body.platform or "").strip().lower()
+    normalized = normalize_share_text(text)
+    links = extract_share_urls(normalized, limit=5)
+
+    def _canon_pf(p: str) -> str:
+        return "shipinhao" if p == "wechat" else p
+
+    if req_platform and links:
+        expected_share_pf = "wechat" if req_platform == "shipinhao" else req_platform
+        matched = [item for item in links if item.platform == expected_share_pf]
+        if not matched:
+            found_names = "、".join(
+                dict.fromkeys(_DETECT_PLATFORM_NAMES.get(item.platform, item.platform) for item in links)
+            )
+            cur_name = _DETECT_PLATFORM_NAMES.get(req_platform, req_platform)
+            return {
+                "ok": False,
+                "mismatch": True,
+                "platform": _canon_pf(links[0].platform),
+                "platform_name": found_names,
+                "target_kind": "unknown",
+                "cleaned": text,
+                "links": [item.to_dict() for item in links],
+                "error": f"检测到{found_names}链接，但当前页面是{cur_name}；请切换到对应平台或粘贴{cur_name}链接",
+            }
+        cleaned = matched[0].url
+        detected_pf = req_platform
+    elif links:
+        cleaned = links[0].url
+        detected_pf = _canon_pf(links[0].platform)
+    else:
+        cleaned = text
+        detected_pf = req_platform
+
+    inspect_target = cleaned
+    short_expanded = False
+    target_kind, kind_label, can_extract_creator = _classify_target_kind(detected_pf, inspect_target)
+    if (
+        target_kind == "unknown"
+        and body.expand_short_links
+        and "://" in cleaned
+        and detected_pf in _SHORT_LINK_HOSTS
+    ):
+        expanded_url, short_expanded = await _expand_short_url_once(
+            cleaned, detected_pf, account_id=body.account_id
+        )
+        if short_expanded and expanded_url:
+            inspect_target = expanded_url
+            target_kind, kind_label, can_extract_creator = _classify_target_kind(detected_pf, inspect_target)
+
+    return {
+        "ok": True,
+        "mismatch": False,
+        "platform": detected_pf,
+        "platform_name": _DETECT_PLATFORM_NAMES.get(detected_pf, detected_pf),
+        "cleaned": cleaned,
+        "resolved_url": inspect_target if short_expanded else cleaned,
+        "short_expanded": short_expanded,
+        "target_kind": target_kind,
+        "kind_label": kind_label,
+        "can_extract_creator": can_extract_creator,
+        "is_bili_opus": bool(
+            detected_pf == "bilibili"
+            and ("/opus/" in inspect_target.lower() or "t.bilibili.com" in inspect_target.lower())
+        ),
+        "links": [item.to_dict() for item in links],
+    }
+
+
 class ShareDownloadIn(BaseModel):
     share_text: str
     download: bool = True             # False = 只请求远端并解析作品信息

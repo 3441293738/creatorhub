@@ -57,7 +57,7 @@ def prepare(page, scene: Scene) -> None:
     page.locator(scene.ready).first.wait_for(state="visible")
     if scene.action == "monitor":
         page.locator("#wb-create").click()
-        page.get_by_role("dialog", name="新建作品监控").wait_for()
+        page.get_by_role("dialog", name="新建主页作品监控").wait_for()
         page.locator("#t-url").fill("https://www.douyin.com/user/DEMO_CREATOR")
         page.locator("#t-interval").locator("..").locator(".cs-trg").click()
         page.get_by_role("option", name="自定义…", exact=True).click()

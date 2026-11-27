@@ -13,8 +13,8 @@ import {
 
 const SOURCE_TABS = [
   { key: "all", label: "全部内容" },
-  { key: "monitor", label: "作品监控" },
-  { key: "collection", label: "批量采集" },
+  { key: "monitor", label: "主页作品监控" },
+  { key: "collection", label: "关键词采集" },
   { key: "own", label: "自有已发" },
   { key: "share", label: "链接下载" },
 ];
@@ -312,7 +312,7 @@ export function MediaHubGallery({ ctx }) {
             <div className="mx-empty-box">
               <Icon name="image" />
               <b>没有匹配的内容记录</b>
-              <span>调整筛选条件，或前往「作品监控 / 关键词采集 / 链接下载」捕获新内容。</span>
+              <span>调整筛选条件，或前往「主页作品监控 / 关键词采集 / 链接下载」捕获新内容。</span>
             </div>
           ) : layout === "grid" ? (
             <div className="mx-gallery-grid">
