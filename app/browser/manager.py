@@ -42,6 +42,7 @@ from .cdp import (CdpLaunchError, CdpProfileConflictError, CdpProxyError,
                   CdpProxyAuthController, XhsCdpBackend, profile_is_locked)
 from .proxy import (HttpProxyAuthRelay, ProxyConfigError, ProxyPlan,
                     Socks5AuthRelay, try_proxy_plan)
+from .storage_state import capture_context_storage_state
 from .xhs_interaction import XhsInteractionPolicy, XhsVisibleActionGate
 
 _PROXY_WEBRTC_ARGS = [
@@ -2017,16 +2018,18 @@ class BrowserManager:
             await self._close_key_unlocked(key)
 
     async def capture_live_storage_state(self, identity: Identity) -> Optional[dict]:
-        """读取当前已常驻的账号 BrowserContext 最新 storage_state（不主动拉起新浏览器）。"""
+        """读取当前已常驻的账号 BrowserContext 最新 storage_state（不主动拉起新浏览器，也不新建临时标签页）。"""
         key = identity.key
         ctx = self._contexts.get(key)
         if ctx is None:
             return None
-        storage_fn = getattr(ctx, "storage_state", None)
-        if not callable(storage_fn):
-            return None
+        platform = str(getattr(identity, "platform", "") or "").strip().lower()
         try:
-            state = await storage_fn()
+            state = await capture_context_storage_state(
+                ctx,
+                platform=platform,
+                filter_cookies_by_platform=(platform == "rednote"),
+            )
             if isinstance(state, dict) and isinstance(state.get("cookies"), list) and state["cookies"]:
                 return state
         except Exception:

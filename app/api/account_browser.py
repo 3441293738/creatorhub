@@ -492,7 +492,7 @@ async def open_account_browser(
     close_callback = lambda: app_runtime.browser.close_context(identity.key)
     lease = login_sessions_service._OpenBrowserLease(
         ctx, guard, close_callback=close_callback, page=page,
-        account_id=account_id, open_scope=open_scope)
+        account_id=account_id, open_scope=open_scope, platform=platform)
     app_runtime.open_browsers[account_id] = lease
     lease.start_state_sync()
 

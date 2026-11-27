@@ -9,6 +9,7 @@ import json
 from app.browser.identity import Identity
 from app.browser.login_common import _LOG, _focus, _open_first_environment_check, _read_xhs_nickname
 from app.browser.manager import BrowserManager
+from app.browser.storage_state import capture_context_storage_state
 
 
 # 创作服务平台登录后才会写入的 Cookie(发布需要)
@@ -332,7 +333,10 @@ async def interactive_xhs_login(mgr: BrowserManager, identity: Identity,
                     and "passport" not in active_url
                     and not _is_xhs_security_verification_url(active_url)):
                 try:
-                    state_json = json.dumps(await ctx.storage_state())
+                    state_json = json.dumps(
+                        await capture_context_storage_state(ctx, platform="xhs"),
+                        ensure_ascii=False,
+                    )
                     logged = True
                 except Exception:
                     pass
@@ -404,7 +408,10 @@ async def interactive_xhs_creator_login(mgr: BrowserManager, identity: Identity,
             if (names & _XHS_CREATOR_COOKIES) or \
                     (on_creator and ws and len(ws) >= 20 and ws != init_ws):
                 try:
-                    state_json = json.dumps(await ctx.storage_state())
+                    state_json = json.dumps(
+                        await capture_context_storage_state(ctx, platform="xhs"),
+                        ensure_ascii=False,
+                    )
                     logged = True
                 except Exception:
                     pass

@@ -11,6 +11,7 @@ from app.browser.identity import Identity
 from app.browser.login_common import _LOG, _focus, _open_first_environment_check, _read_xhs_nickname
 from app.browser.login_xhs import _XHS_IDENTITY_RECHECK_DELAY_SECONDS, _XHS_PAGE_IDENTITY_POLL_SECONDS, _XHS_QRCODE_STATUS_API, _XHS_USER_ME_API, _xhs_page_identity
 from app.browser.manager import BrowserManager
+from app.browser.storage_state import capture_context_storage_state
 
 
 # ── 海外小红书（Rednote）登录 ──
@@ -324,6 +325,14 @@ async def interactive_rednote_login(
                         nickname = await _read_xhs_nickname(active_page)
                     except Exception:
                         pass
+                # 在跳转到创作者中心之前先采集 www.rednote.com 主站 localStorage (b1/dsllt/sc)
+                front_state = None
+                try:
+                    front_state = await capture_context_storage_state(
+                        ctx, platform="rednote", filter_cookies_by_platform=True
+                    )
+                except Exception:
+                    front_state = None
                 # Best-effort SSO hop to creator.rednote.com/new/note-manager (matching 22366 frontLogin redirectTo)
                 try:
                     await active_page.goto(
@@ -344,7 +353,15 @@ async def interactive_rednote_login(
                 except Exception:
                     pass
                 try:
-                    state_json = json.dumps(await ctx.storage_state())
+                    state_json = json.dumps(
+                        await capture_context_storage_state(
+                            ctx,
+                            platform="rednote",
+                            existing_state=front_state,
+                            filter_cookies_by_platform=True,
+                        ),
+                        ensure_ascii=False,
+                    )
                     logged = True
                 except Exception:
                     pass
@@ -412,7 +429,12 @@ async def interactive_rednote_creator_login(
                 or (on_creator and ws and len(ws) >= 20)
             ):
                 try:
-                    state_json = json.dumps(await ctx.storage_state())
+                    state_json = json.dumps(
+                        await capture_context_storage_state(
+                            ctx, platform="rednote", filter_cookies_by_platform=True
+                        ),
+                        ensure_ascii=False,
+                    )
                     logged = True
                 except Exception:
                     pass

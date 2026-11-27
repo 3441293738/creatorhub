@@ -675,7 +675,14 @@ async def refresh_rednote_sign_context(
                 sc: window.localStorage.getItem('sc')
             })"""
         )
-        new_state_dict = await ctx.storage_state()
+        from app.browser.storage_state import capture_context_storage_state
+
+        new_state_dict = await capture_context_storage_state(
+            ctx,
+            platform="rednote",
+            existing_state=storage_state_json,
+            filter_cookies_by_platform=True,
+        )
         # Ensure non-rednote origins are never persisted into Rednote state.
         if isinstance(new_state_dict.get("origins"), list):
             new_state_dict["origins"] = [

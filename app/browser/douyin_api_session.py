@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 from ..platforms.douyin.auth import parse_self_profile_response
 from ..platforms.douyin.detail import parse_detail_response
 from ..platforms.douyin.web_session import DETAIL_ORIGINS, DETAIL_PATH, observed_detail_context
+from .storage_state import capture_context_storage_state
 
 
 _ENVIRONMENT_JS = """() => ({
@@ -75,7 +76,7 @@ def observe_douyin_api_session(context, identity, callback):
                     # the self response arrived immediately before the detail.
                     if not recipe or recipe.get("saved"):
                         return
-                state = await context.storage_state()
+                state = await capture_context_storage_state(context, platform="douyin")
                 result = callback(identity, profile, state, recipe)
                 if inspect.isawaitable(result):
                     result = await result

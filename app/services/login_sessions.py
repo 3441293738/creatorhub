@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlmodel import select
 
 from app import runtime as app_runtime
+from app.browser.storage_state import capture_context_storage_state, merge_state_origins
 from app.db import get_session
 from app.models import AccountActionTask, CommentTask, DouyinAccount, PublishTask
 from app.windowing import CHROMIUM_WINDOW_CLASSES, bring_window_to_front, capture_window_snapshot
@@ -176,13 +177,15 @@ class _OpenBrowserLease:
     """Keep the unified account/network guard until a headed context closes."""
 
     def __init__(self, context, guard, close_callback=None, page=None,
-                 *, account_id: int | None = None, open_scope: str = "read"):
+                 *, account_id: int | None = None, open_scope: str = "read",
+                 platform: str = ""):
         self.context = context
         self.guard = guard
         self.close_callback = close_callback
         self.page = page
         self.account_id = account_id
         self.open_scope = open_scope
+        self.platform = str(platform or "").strip().lower()
         self._released = False
         self._closed = False
         self._release_lock = asyncio.Lock()
@@ -281,25 +284,48 @@ class _OpenBrowserLease:
     async def _persist_context_state(self, *, force: bool = True) -> bool:
         if not self.account_id or self.context is None:
             return False
-        storage_fn = getattr(self.context, "storage_state", None)
-        if not callable(storage_fn):
-            return False
         async with self._persist_lock:
             if not force and not self.active:
                 return False
             try:
-                state_obj = await asyncio.wait_for(storage_fn(), timeout=5.0)
-                if not isinstance(state_obj, dict) or not state_obj.get("cookies"):
+                if not self.platform:
+                    with get_session() as session:
+                        account = session.get(DouyinAccount, self.account_id)
+                        if account is None:
+                            return False
+                        self.platform = str(account.platform or "").strip().lower()
+                live_state = await capture_context_storage_state(
+                    self.context,
+                    platform=self.platform,
+                    timeout=5.0,
+                    filter_cookies_by_platform=(self.platform == "rednote"),
+                )
+                if not isinstance(live_state, dict) or not live_state.get("cookies"):
                     return False
-                state_json = json.dumps(state_obj, ensure_ascii=False)
-                digest = hashlib.sha256(state_json.encode("utf-8")).hexdigest()
-                if not force and digest == self._last_cookie_digest:
+                live_digest = hashlib.sha256(
+                    json.dumps(live_state, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+                if not force and live_digest == self._last_cookie_digest:
                     return False
                 with get_session() as session:
                     account = session.get(DouyinAccount, self.account_id)
                     if account is None:
                         return False
-                    if account.platform == "douyin" and account.storage_state:
+                    platform = str(account.platform or self.platform or "").strip().lower()
+                    self.platform = platform
+                    is_creator_scope = (
+                        self.open_scope == "creator" and platform in {"xhs", "rednote"}
+                    )
+                    prev_raw = (
+                        account.creator_storage_state if is_creator_scope else account.storage_state
+                    ) or ""
+                    state_obj = {
+                        "cookies": live_state["cookies"],
+                        "origins": merge_state_origins(
+                            prev_raw, live_state.get("origins"), platform=platform
+                        ),
+                    }
+                    if platform == "douyin" and account.storage_state:
                         try:
                             prev_state = json.loads(account.storage_state)
                         except Exception:
@@ -310,22 +336,23 @@ class _OpenBrowserLease:
                             and not self._has_douyin_auth_cookies(state_obj)
                         ):
                             return False
+                    state_json = json.dumps(state_obj, ensure_ascii=False)
                     now_utc = datetime.utcnow()
-                    if self.open_scope == "creator" and account.platform in {"xhs", "rednote"}:
+                    if is_creator_scope:
                         account.creator_storage_state = state_json
                     else:
                         account.storage_state = state_json
-                        if account.platform in {"kuaishou", "shipinhao", "bilibili", "instagram", "twitter", "facebook", "youtube"}:
+                        if platform in {"kuaishou", "shipinhao", "bilibili", "instagram", "twitter", "facebook", "youtube"}:
                             account.creator_storage_state = state_json
                     account.last_keepalive_at = now_utc
                     account.last_cookie_refresh_at = now_utc
                     account.keepalive_note = "已从账号浏览器窗口同步最新登录态"
                     session.add(account)
                     session.commit()
-                self._last_cookie_digest = digest
+                self._last_cookie_digest = live_digest
                 return True
             except Exception:
-                # 窗口若已被用户直接点 X 关闭，storage_state() 可能抛 TargetClosedError；静默跳过即可
+                # 窗口若已被用户直接点 X 关闭，cookies() 可能抛 TargetClosedError；静默跳过即可
                 return False
 
     async def release(self) -> None:
@@ -439,7 +466,11 @@ def _persist_douyin_read_session(identity, profile: dict, state: dict, recipe: d
         if not binding:
             return False
         now_utc = datetime.utcnow()
-        account.storage_state = json.dumps(state, ensure_ascii=False)
+        merged_state = dict(state)
+        merged_state["origins"] = merge_state_origins(
+            account.storage_state, state.get("origins"), platform="douyin"
+        )
+        account.storage_state = json.dumps(merged_state, ensure_ascii=False)
         account.last_keepalive_at = now_utc
         account.last_cookie_refresh_at = now_utc
         account.keepalive_note = "抖音浏览器被动同步最新登录态"

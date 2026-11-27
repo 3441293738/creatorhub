@@ -14,6 +14,7 @@ from app.browser.human_interaction import (
 from app.browser.identity import Identity
 from app.browser.login_common import _LOGIN_COOKIES, _focus, _open_first_environment_check, _read_ks_nickname, _read_nickname
 from app.browser.manager import BrowserManager
+from app.browser.storage_state import capture_context_storage_state
 
 
 async def interactive_login(mgr: BrowserManager, identity: Identity,
@@ -73,8 +74,8 @@ async def interactive_login(mgr: BrowserManager, identity: Identity,
 
         if logged:
             await human_wait(page, 800)   # 给登录跳转/localStorage 一次落盘机会
-            state = await ctx.storage_state()
-            state_json = json.dumps(state)
+            state = await capture_context_storage_state(ctx, platform="douyin")
+            state_json = json.dumps(state, ensure_ascii=False)
             nickname = await _read_nickname(page)
     finally:
         try:
@@ -198,7 +199,10 @@ async def interactive_ks_login(mgr: BrowserManager, identity: Identity,
             waited += 0.5
         if logged:
             await human_wait(page, 1500)
-            state_json = json.dumps(await ctx.storage_state())
+            state_json = json.dumps(
+                await capture_context_storage_state(ctx, platform="kuaishou"),
+                ensure_ascii=False,
+            )
             nickname = await _read_ks_nickname(page)
     finally:
         try:
@@ -242,7 +246,10 @@ async def interactive_ks_creator_login(mgr: BrowserManager, identity: Identity,
                     on_cp and _ks_web_login_ready(names)):
                 await human_wait(page, 1500)
                 try:
-                    state_json = json.dumps(await ctx.storage_state())
+                    state_json = json.dumps(
+                        await capture_context_storage_state(ctx, platform="kuaishou"),
+                        ensure_ascii=False,
+                    )
                     logged = True
                     nickname = await _read_ks_nickname(page)
                 except Exception:
@@ -308,7 +315,10 @@ async def interactive_tiktok_login(
             waited += 0.5
         if logged:
             await human_wait(page, 800)
-            state_json = json.dumps(await ctx.storage_state())
+            state_json = json.dumps(
+                await capture_context_storage_state(ctx, platform="tiktok"),
+                ensure_ascii=False,
+            )
     finally:
         try:
             await ctx.close()
@@ -437,7 +447,10 @@ async def interactive_channels_login(mgr: BrowserManager, identity: Identity,
             logged = _channels_login_ready(
                 names, auth_verified.is_set(), still_on_platform)
             if logged:
-                state_json = json.dumps(await ctx.storage_state())
+                state_json = json.dumps(
+                    await capture_context_storage_state(ctx, platform="shipinhao"),
+                    ensure_ascii=False,
+                )
     finally:
         try:
             await ctx.close()
@@ -542,7 +555,7 @@ async def interactive_bilibili_login(
 
         if logged:
             await human_wait(page, 1200)
-            state_obj = await ctx.storage_state()
+            state_obj = await capture_context_storage_state(ctx, platform="bilibili")
             from ..services.session_keepalive import (
                 extract_bili_refresh_token,
                 upsert_local_storage_value,
@@ -559,7 +572,9 @@ async def interactive_bilibili_login(
                     ac_val = await page.evaluate(
                         "() => (window.localStorage && window.localStorage.getItem('ac_time_value')) || ''"
                     )
-                    state_obj = await ctx.storage_state()
+                    state_obj = await capture_context_storage_state(
+                        ctx, platform="bilibili", existing_state=state_obj
+                    )
                     if ac_val and not extract_bili_refresh_token(state_obj):
                         upsert_local_storage_value(
                             state_obj,
@@ -684,7 +699,10 @@ async def interactive_instagram_login(
                         nickname = str(fd.get("first_name") or fd.get("username") or "").strip()[:40]
                 except Exception:
                     pass
-                state_json = json.dumps(await ctx.storage_state())
+                state_json = json.dumps(
+                    await capture_context_storage_state(ctx, platform="instagram"),
+                    ensure_ascii=False,
+                )
             else:
                 logged = False
     finally:
@@ -794,7 +812,10 @@ async def interactive_twitter_login(
                         nickname = str(nav_info).strip()[:40]
                 except Exception:
                     pass
-                state_json = json.dumps(await ctx.storage_state())
+                state_json = json.dumps(
+                    await capture_context_storage_state(ctx, platform="twitter"),
+                    ensure_ascii=False,
+                )
             else:
                 logged = False
     finally:
@@ -905,7 +926,10 @@ async def interactive_facebook_login(
                         nickname = str(nav_name).strip()[:40]
                 except Exception:
                     pass
-                state_json = json.dumps(await ctx.storage_state())
+                state_json = json.dumps(
+                    await capture_context_storage_state(ctx, platform="facebook"),
+                    ensure_ascii=False,
+                )
             else:
                 logged = False
     finally:
@@ -1027,7 +1051,10 @@ async def interactive_youtube_login(
                         nickname = str(nav_name).strip()[:48]
             except Exception:
                 pass
-            state_json = json.dumps(await ctx.storage_state())
+            state_json = json.dumps(
+                await capture_context_storage_state(ctx, platform="youtube"),
+                ensure_ascii=False,
+            )
     finally:
         try:
             await ctx.close()
