@@ -345,6 +345,7 @@ class BrowserManager:
         self._runtime_by_key: Dict[Any, str] = {}
         self._fallback_reason_by_key: Dict[Any, str] = {}
         self._proxy_signature_by_key: Dict[Any, str] = {}
+        self._profile_dir_by_key: Dict[Any, str] = {}
         self._proxy_relays: Dict[Any, HttpProxyAuthRelay | Socks5AuthRelay] = {}
         self._profile_process_locks: Dict[Any, _ProfileProcessLock] = {}
         self._cdp_backend = None
@@ -1029,6 +1030,62 @@ class BrowserManager:
             lock.release()
 
     @staticmethod
+    def _normalized_profile_dir(profile_dir: str | os.PathLike[str] | Path) -> str:
+        raw = str(profile_dir or "").strip()
+        if not raw:
+            return ""
+        return os.path.normcase(str(Path(raw).expanduser().resolve()))
+
+    async def _close_same_profile_aliases_unlocked(
+            self, profile_dir: str | os.PathLike[str] | Path,
+            *, exclude_key: Any = None) -> int:
+        """Close idle managed contexts/locks registered under another key for the same Profile dir.
+
+        Prevents an orphaned temporary key (such as ``_anon:*``) inside this
+        same BrowserManager process from blocking the permanent account key from
+        launching Chrome on its own persistent Profile directory.
+        """
+        target = self._normalized_profile_dir(profile_dir)
+        if not target:
+            return 0
+        aliases: list[Any] = []
+        for other_key, tracked_dir in list(self._profile_dir_by_key.items()):
+            if other_key != exclude_key and tracked_dir == target:
+                aliases.append(other_key)
+        for other_key, lock in list(self._profile_process_locks.items()):
+            if other_key == exclude_key or other_key in aliases:
+                continue
+            if self._normalized_profile_dir(lock.path.parent) == target:
+                aliases.append(other_key)
+        closed = 0
+        for alias_key in aliases:
+            if self._key_locked(alias_key):
+                continue
+            await self._close_key_unlocked(alias_key)
+            closed += 1
+        return closed
+
+    async def _close_same_profile_aliases(self, identity: Identity) -> int:
+        pdir = self._environment_profile_dir(identity)
+        async with self._cv_lock:
+            return await self._close_same_profile_aliases_unlocked(
+                pdir, exclude_key=identity.key)
+
+    @staticmethod
+    async def _wait_for_profile_unlock(
+            pdir: Path, *, timeout_seconds: float = 1.5,
+            step_seconds: float = 0.15) -> bool:
+        """Return True once *pdir* is unlocked, allowing a brief exit window on Windows."""
+        if not profile_is_locked(pdir):
+            return True
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        while time.monotonic() < deadline:
+            await asyncio.sleep(max(0.05, float(step_seconds)))
+            if not profile_is_locked(pdir):
+                return True
+        return not profile_is_locked(pdir)
+
+    @staticmethod
     def _seed_fingerprint_profile_preferences(profile_dir: Path) -> bool:
         """Let a new dedicated fingerprint Profile accept third-party cookies.
 
@@ -1133,11 +1190,7 @@ class BrowserManager:
         # Chrome 会把相同 Profile 的持久化启动转发给已运行的浏览器后退出，
         # Patchright 随后表现为 TargetClosedError。先探测原生锁，将其转换为
         # 明确的 Profile 冲突，并避免在已有窗口中重复创建 about:blank 标签页。
-        if profile_is_locked(pdir):
-            # 刚关闭的 Chromium 在写回 Profile 时可能短暂持有文件句柄，
-            # 先等待一小段时间；如果仍被占用，则不再启动新的浏览器。
-            await asyncio.sleep(0.25)
-        if profile_is_locked(pdir):
+        if not await self._wait_for_profile_unlock(pdir):
             raise BrowserProfileConflictError(
                 f"Chrome profile is already in use: {pdir}")
         was_empty = not any(p.name != ".browser.lock" for p in pdir.iterdir())
@@ -1380,6 +1433,7 @@ class BrowserManager:
         self._runtime_by_key.pop(key, None)
         self._fallback_reason_by_key.pop(key, None)
         self._proxy_signature_by_key.pop(key, None)
+        self._profile_dir_by_key.pop(key, None)
         relay = self._proxy_relays.pop(key, None)
         try:
             if ctx is not None:
@@ -1466,6 +1520,7 @@ class BrowserManager:
             self._runtime_by_key.pop(key, None)
             self._fallback_reason_by_key.pop(key, None)
             self._proxy_signature_by_key.pop(key, None)
+            self._profile_dir_by_key.pop(key, None)
             relay = self._proxy_relays.pop(key, None)
             if relay is not None:
                 with suppress(RuntimeError):
@@ -1502,6 +1557,7 @@ class BrowserManager:
                 self._runtime_by_key,
                 self._fallback_reason_by_key,
                 self._proxy_signature_by_key,
+                self._profile_dir_by_key,
                 self._proxy_relays,
                 self._profile_process_locks,
             )
@@ -1537,6 +1593,13 @@ class BrowserManager:
                 ctx = None
                 session = None
             if ctx is None:
+                target_pdir = (
+                    self._runtime_profile_dir(identity, runtime_id)
+                    if effective_backend == FINGERPRINT_CHROMIUM_BACKEND
+                    else Path(identity.profile_dir)
+                )
+                await self._close_same_profile_aliases_unlocked(
+                    target_pdir, exclude_key=key)
                 await self._evict_if_needed()
                 if self._uses_xhs_cdp(identity):
                     if self._cdp_backend is None:
@@ -1576,6 +1639,7 @@ class BrowserManager:
                     if effective_backend == FINGERPRINT_CHROMIUM_BACKEND:
                         self._runtime_by_key[key] = runtime_id
                 self._contexts[key] = ctx
+                self._profile_dir_by_key[key] = self._normalized_profile_dir(target_pdir)
                 self._startup_pages[key] = tuple(
                     page for page in (getattr(ctx, "pages", ()) or ())
                     if getattr(page, "url", "") == "about:blank")
@@ -1620,7 +1684,7 @@ class BrowserManager:
             }
         finally:
             with suppress(Exception):
-                await page.close()
+                await self.release_task_page(identity, page)
 
     async def probe_fingerprint_runtime(
             self, runtime_id: str, profile_root: str | Path) -> Dict[str, Any]:
@@ -2074,14 +2138,21 @@ class BrowserManager:
             return ctx
         snapshot = capture_window_snapshot(CHROMIUM_WINDOW_CLASSES)
         await self.close_context(identity.key)
+        await self._close_same_profile_aliases(identity)
         ctx = await self._launch_persistent(identity, headless=False)
         effective_backend = self.effective_browser_backend(identity)
         runtime_id = (
             self.effective_fingerprint_runtime_id(identity)
             if effective_backend == FINGERPRINT_CHROMIUM_BACKEND else "")
+        target_pdir = (
+            self._runtime_profile_dir(identity, runtime_id)
+            if effective_backend == FINGERPRINT_CHROMIUM_BACKEND
+            else Path(identity.profile_dir)
+        )
         proxy_signature = self.proxy_signature(identity.proxy)
         async with self._cv_lock:
             self._contexts[identity.key] = ctx
+            self._profile_dir_by_key[identity.key] = self._normalized_profile_dir(target_pdir)
             self._startup_pages[identity.key] = tuple(
                 page for page in (getattr(ctx, "pages", ()) or ())
                 if getattr(page, "url", "") == "about:blank")

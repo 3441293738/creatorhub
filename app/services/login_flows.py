@@ -56,6 +56,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
         status="waiting", platform=platform, creator=creator,
         account_id=account_id)
     fresh_account = account_id is None
+    acc_id = account_id
     tmp_profile = ""
     proxy = ""
     proxy_reservation_key = ""
@@ -447,9 +448,11 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
                 acc.status = "active"
                 s.add(acc); s.commit()
 
-            if fresh_account and platform in {"xhs", "rednote", "tiktok", "instagram", "twitter", "facebook"}:
-                # Promote the successful temporary login session to the new
-                # durable account id without closing/reopening Chromium.
+            if fresh_account and acc_id is not None:
+                # Promote the successful temporary login identity/session to the
+                # new durable account id across all platforms so subsequent exit
+                # probes, profile enrichment, merges, and manual browser opens
+                # never collide with a lingering temporary `_anon:*` context.
                 rebound = getattr(app_runtime.browser, "rebind_context", None)
                 if callable(rebound):
                     await rebound(temporary_identity_key, acc_id)
@@ -551,7 +554,7 @@ async def _run_login(task_id: str, creator: bool = False, account_id: int | None
             _lg.warning("账号登录需完成安全验证 [%s]: %s", platform, e)
         else:
             _lg.exception("交互式登录失败 [%s, account=%s]", platform, account_id)
-        if fresh_account and tmp_profile:
+        if fresh_account and acc_id is None and tmp_profile:
             try:
                 await app_runtime.browser.close_context(identity.key)
             except Exception:

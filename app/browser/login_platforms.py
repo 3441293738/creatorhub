@@ -17,6 +17,20 @@ from app.browser.manager import BrowserManager
 from app.browser.storage_state import capture_context_storage_state
 
 
+async def _close_login_context(mgr: BrowserManager, identity: Identity, ctx) -> None:
+    """Close a headed login context through BrowserManager so locks and relays are released."""
+    closer = getattr(mgr, "close_context", None)
+    if callable(closer):
+        try:
+            await closer(identity.key)
+        except Exception:
+            pass
+    try:
+        await ctx.close()
+    except Exception:
+        pass
+
+
 async def interactive_login(mgr: BrowserManager, identity: Identity,
                             timeout_seconds: int = 180,
                             start_url: str = "https://www.douyin.com/",
@@ -78,10 +92,7 @@ async def interactive_login(mgr: BrowserManager, identity: Identity,
             state_json = json.dumps(state, ensure_ascii=False)
             nickname = await _read_nickname(page)
     finally:
-        try:
-            await ctx.close()
-        except Exception:
-            pass
+        await _close_login_context(mgr, identity, ctx)
 
     return logged, state_json, nickname
 
@@ -205,10 +216,7 @@ async def interactive_ks_login(mgr: BrowserManager, identity: Identity,
             )
             nickname = await _read_ks_nickname(page)
     finally:
-        try:
-            await ctx.close()
-        except Exception:
-            pass
+        await _close_login_context(mgr, identity, ctx)
     return logged, state_json, nickname
 
 
@@ -259,10 +267,7 @@ async def interactive_ks_creator_login(mgr: BrowserManager, identity: Identity,
             await asyncio.sleep(0.5)
             waited += 0.5
     finally:
-        try:
-            await ctx.close()
-        except Exception:
-            pass
+        await _close_login_context(mgr, identity, ctx)
     return logged, state_json, nickname
 
 
@@ -320,10 +325,7 @@ async def interactive_tiktok_login(
                 ensure_ascii=False,
             )
     finally:
-        try:
-            await ctx.close()
-        except Exception:
-            pass
+        await _close_login_context(mgr, identity, ctx)
     return logged, state_json, nickname
 
 
@@ -452,10 +454,7 @@ async def interactive_channels_login(mgr: BrowserManager, identity: Identity,
                     ensure_ascii=False,
                 )
     finally:
-        try:
-            await ctx.close()
-        except Exception:
-            pass
+        await _close_login_context(mgr, identity, ctx)
     return logged, state_json, nickname
 
 
@@ -590,10 +589,7 @@ async def interactive_bilibili_login(
             page.remove_listener("response", on_response)
         except Exception:
             pass
-        try:
-            await ctx.close()
-        except Exception:
-            pass
+        await _close_login_context(mgr, identity, ctx)
     return logged, state_json, nickname
 
 
@@ -706,10 +702,7 @@ async def interactive_instagram_login(
             else:
                 logged = False
     finally:
-        try:
-            await ctx.close()
-        except Exception:
-            pass
+        await _close_login_context(mgr, identity, ctx)
     return logged, state_json, nickname
 
 
@@ -819,10 +812,7 @@ async def interactive_twitter_login(
             else:
                 logged = False
     finally:
-        try:
-            await ctx.close()
-        except Exception:
-            pass
+        await _close_login_context(mgr, identity, ctx)
     return logged, state_json, nickname
 
 
@@ -933,10 +923,7 @@ async def interactive_facebook_login(
             else:
                 logged = False
     finally:
-        try:
-            await ctx.close()
-        except Exception:
-            pass
+        await _close_login_context(mgr, identity, ctx)
     return logged, state_json, nickname
 
 
@@ -1056,10 +1043,7 @@ async def interactive_youtube_login(
                 ensure_ascii=False,
             )
     finally:
-        try:
-            await ctx.close()
-        except Exception:
-            pass
+        await _close_login_context(mgr, identity, ctx)
     return logged, state_json, nickname
 
 
