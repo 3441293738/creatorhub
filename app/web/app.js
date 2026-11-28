@@ -10509,8 +10509,8 @@ function shareHistoryRow(row) {
     <td class="content-check-cell"><input type="checkbox" data-id="${Number(row.id)}" onchange="shareHistoryToggleOne(${Number(row.id)},this.checked)" ${selShareHistory.has(row.id) ? "checked" : ""} aria-label="选择下载记录"></td>
     <td class="content-cover-cell"><span class="content-cover-box" onclick="openShareHistoryPreview(${Number(row.id)})" title="点击站内预览">${cover ? `<img class="thumb" src="${esc(safeMediaUrl(cover))}" alt="${esc(title.slice(0, 20))}" referrerpolicy="no-referrer" loading="lazy">` : `<span class="content-cover-empty">${ic(type === "images" ? "i-image" : "i-film")}</span>`}${durBadge}</span></td>
     <td class="content-desc-cell"><div class="content-desc-text clickable" title="${esc(title)}" onclick="openShareHistoryPreview(${Number(row.id)})">${esc(title)}</div>${descriptionMeta}</td>
-    <td><span class="content-kind">${esc(typeName)}</span>${specSub ? `<span class="content-quality">${esc(specSub)}</span>` : ""}</td>
-    <td class="mut num">${contentTimeCell(createTime)}</td>
+    <td class="content-type-cell"><span class="content-kind">${esc(typeName)}</span>${specSub ? `<span class="content-quality">${esc(specSub)}</span>` : ""}</td>
+    <td class="content-record-time mut num">${contentTimeCell(createTime)}</td>
     <td class="content-metrics num"><span class="metric like">${ic("i-heart")}${fmtNum(likeCount)}</span>${commentCount ? `<span class="metric">${ic("i-msg")}${fmtNum(commentCount)}</span>` : ""}</td>
     <td class="content-status-cell"><div class="content-status-row"><span class="pill ${status}">${contentStatusLabel(status)}</span>${error}</div>${shareHistoryPathCell(row)}${row.error ? `<div class="content-error-preview" data-tip="${esc(row.error)}" title="${esc(row.error)}">${esc(row.error)}</div>` : ""}</td>
     <td class="content-action-cell acttd"><div class="content-action-buttons"><button type="button" class="ghost sm content-icon-btn" onclick="openShareHistoryPreview(${Number(row.id)})" data-tip="站内预览" title="站内预览" aria-label="预览媒体">${ic("i-eye")}</button>${hasPath ? `<button type="button" class="ghost sm content-icon-btn local-path-action reveal" onclick="revealShareHistoryPath(${Number(row.id)},this)" data-tip="在文件夹中显示" title="在文件夹中显示" aria-label="在文件夹中显示">${ic("i-folder")}</button>` : ""}<button type="button" class="ghost sm content-action-delete danger" onclick="deleteShareHistory(${Number(row.id)})" data-tip="删除记录" title="删除记录" aria-label="删除下载记录">${ic("i-trash")}</button></div></td>
@@ -16073,9 +16073,9 @@ function taskQueueRow(item) {
   const selectable = ["collections", "publishes", "comments", "actions"].includes(item.queue_type)
     && !["done", "canceled", "skipped", "uncertain"].includes(item.status);
   return `<tr data-queue-key="${esc(stopKey)}"${progKey ? ` data-progress-key="${esc(progKey)}"` : ""}>
-    <td><input type="checkbox" class="queue-select" data-queue-type="${esc(item.queue_type)}" data-task-id="${Number(item.id)}" aria-label="选择任务 ${Number(item.id)}" onchange="toggleTaskQueueItem(this)"${selectable ? "" : " disabled"}${TASK_QUEUE_SELECTED.has(stopKey) ? " checked" : ""}></td>
+    <td class="task-check-cell"><input type="checkbox" class="queue-select" data-queue-type="${esc(item.queue_type)}" data-task-id="${Number(item.id)}" aria-label="选择任务 ${Number(item.id)}" onchange="toggleTaskQueueItem(this)"${selectable ? "" : " disabled"}${TASK_QUEUE_SELECTED.has(stopKey) ? " checked" : ""}></td>
     <td><span class="pill q bare">${esc(item.queue_label)}</span><small class="mut" style="display:block;margin-top:5px">${esc(PF_NAME[item.platform] || item.platform || "—")}</small></td>
-    <td><div class="queue-copy"><b title="${esc(item.title)}">${esc(item.title)}</b>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}</div></td>
+    <td><div class="queue-copy"><b title="${esc(item.title)}">${esc(item.title)}</b>${item.detail ? `<small title="${esc(item.detail)}">${esc(item.detail)}</small>` : ""}</div></td>
     <td><div class="queue-account"><b>${esc(account)}</b>${item.account_id ? `<small>ID ${Number(item.account_id)}</small>` : ""}</div></td>
     <td><div class="queue-time">${scheduled || "尽快执行"}${created}</div></td>
     <td><span class="pill ${stateMeta[1]}">${esc(stateMeta[0])}</span><small class="mut" style="display:block;margin-top:5px">${esc(rawStatus)}</small></td>

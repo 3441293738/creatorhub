@@ -956,7 +956,7 @@
   tbody tr:has(input[type="checkbox"]:checked) { background:color-mix(in srgb,var(--acc) 7%,var(--surface)); }
   tbody tr:has(input[type="checkbox"]:checked):hover { background:color-mix(in srgb,var(--acc) 11%,var(--surface)); }
   tbody tr:last-child td { border-bottom:0; }
-  td.wrap { white-space:normal; }
+  td.wrap { white-space:normal; overflow-wrap:anywhere; min-width:140px; }
   td.num { font-family:var(--mono); font-size:12.5px; }
   .acttd { text-align:right; white-space:nowrap; }
   .acttd button { margin-left:4px; }
@@ -973,7 +973,7 @@
   .local-path-empty { color:var(--mut-2); font-size:12px; }
 
   /* 作品列表：主信息左对齐紧凑排布，只读状态与右侧操作列彻底解耦 */
-  .content-record-table { table-layout:fixed; min-width:920px; }
+  .content-record-table { table-layout:fixed; min-width:1120px; }
   .content-record-table .content-col-check { width:42px; }
   .content-record-table .content-col-cover { width:68px; }
   .content-record-table .content-col-type { width:100px; }
@@ -1044,7 +1044,7 @@
   button.content-action-delete:hover { color:var(--danger); border-color:color-mix(in srgb,var(--danger) 45%,var(--line)); }
   button.content-action-delete.danger:hover { color:#fff; border-color:var(--danger); }
   .content-record-table .local-path-cell { width:auto; min-width:0; max-width:none; }
-  .share-history-table { min-width:920px; }
+  .share-history-table { min-width:1120px; }
   .share-history-meta { display:flex; align-items:center; flex-wrap:wrap; gap:5px; margin-top:6px; color:var(--mut); font-size:11px; line-height:1.35; }
   .share-history-meta .src-chip { max-width:120px; }
   .share-history-meta .share-history-author,
@@ -1872,26 +1872,38 @@
   .queue-stat[data-tone="warn"] b { color:var(--warn); }
   .queue-stat[data-tone="danger"] b { color:var(--danger); }
   .queue-toolbar {
-    display:grid; grid-template-columns:minmax(130px,.8fr) minmax(150px,1fr) minmax(130px,.8fr) minmax(220px,1.6fr) auto auto;
+    display:grid; grid-template-columns:minmax(118px,.8fr) minmax(132px,1fr) minmax(118px,.8fr) minmax(176px,1.5fr) auto auto;
     gap:10px; align-items:end; margin-bottom:14px;
   }
   .queue-toolbar .form-field { min-width:0; }
   .queue-toolbar button { min-height:40px; }
-  .queue-table { min-width:1020px; table-layout:fixed; }
-  .queue-table .queue-col-type { width:112px; }
+  /* 8 个固定列总宽 1000px，min-width:1260px 确保「任务内容」列始终至少保留 260px，避免小窗下压成 0px 竖排撑爆 */
+  .queue-table { min-width:1260px; table-layout:fixed; }
+  .queue-table .queue-col-check { width:44px; text-align:center; }
+  .queue-table .queue-col-type { width:104px; }
   .queue-table .queue-col-content { width:auto; }
-  .queue-table .queue-col-account { width:138px; }
-  .queue-table .queue-col-time { width:148px; }
-  .queue-table .queue-col-status { width:112px; }
-  .queue-table .queue-col-reason { width:206px; }
-  .queue-table .queue-col-action { width:164px; }
+  .queue-table .queue-col-account { width:128px; }
+  .queue-table .queue-col-time { width:144px; }
+  .queue-table .queue-col-status { width:108px; }
+  .queue-table .queue-col-progress { width:148px; }
+  .queue-table .queue-col-reason { width:176px; }
+  .queue-table .queue-col-action { width:148px; }
+  .queue-table td.acttd { white-space:normal; }
+  .queue-table td.acttd button { margin:2px 0 2px 4px; }
   .queue-copy, .queue-reason { white-space:normal; min-width:0; line-height:1.45; overflow-wrap:anywhere; }
-  .queue-copy b { display:block; color:var(--fg-strong); font-weight:620; }
-  .queue-copy small, .queue-reason small, .queue-account small, .queue-time small {
+  .queue-copy b {
+    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;
+    color:var(--fg-strong); font-weight:620;
+  }
+  .queue-copy small {
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+    margin-top:3px; color:var(--mut); font-size:11px; line-height:1.4;
+  }
+  .queue-reason small, .queue-account small, .queue-time small {
     display:block; margin-top:3px; color:var(--mut); font-size:11px; line-height:1.4;
   }
-  .queue-account { white-space:normal; }
-  .queue-time { font:500 11px/1.45 var(--mono); white-space:normal; color:var(--mut); }
+  .queue-account { white-space:normal; min-width:0; overflow-wrap:anywhere; }
+  .queue-time { font:500 11px/1.45 var(--mono); white-space:normal; min-width:0; overflow-wrap:anywhere; color:var(--mut); }
   .queue-reason { color:var(--mut); font-size:12px; }
   .queue-reason.has-error { color:var(--danger); }
   .queue-blocked { background:var(--warn-soft); color:var(--warn); border-color:rgba(251,191,36,.3); }
@@ -1902,14 +1914,16 @@
   .queue-pager button { min-width:40px; min-height:38px; padding:8px 11px; }
   .queue-pager .form-field { grid-template-columns:auto auto; align-items:center; gap:7px; }
   .queue-pager select { min-width:82px; }
-  @media(max-width:1050px) {
-    .queue-stats { grid-template-columns:repeat(3,1fr); }
+  @media(max-width:1220px) {
     .queue-toolbar { grid-template-columns:repeat(2,minmax(0,1fr)); }
-    .queue-toolbar > button { grid-column:1/-1; }
+    .queue-toolbar > button { grid-column:auto; }
+  }
+  @media(max-width:1050px) {
+    .queue-stats { grid-template-columns:repeat(3,minmax(0,1fr)); }
   }
   @media(max-width:640px) {
     .queue-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
-    .queue-toolbar { grid-template-columns:1fr; }
+    .queue-toolbar { grid-template-columns:minmax(0,1fr); }
     .queue-toolbar > button { grid-column:auto; }
     .queue-pager, .queue-pager-actions { justify-content:center; }
   }
@@ -2540,7 +2554,10 @@
     color:var(--success); font-size:12.5px;
   }
 
+  .wb-react-island, .mx-media-hub, .mx-acc-wrap, .mx-pub-wrap,
+  .mx-ov-side, .mx-split-master, .mx-split-detail, .mx-pub-step, .mx-pub-side, .mx-group-card { min-width:0; }
   .mx-pf-section, .mx-ov-card {
+    min-width:0;
     padding:16px 18px; border-radius:var(--r); background:var(--surface-card, var(--surface));
     border:1px solid var(--border-card, var(--line)); box-shadow:var(--sh-sm);
   }
@@ -2905,7 +2922,11 @@
   .mx-cmt-like { margin-left:auto; color:var(--acc); font-weight:650; }
   .mx-cmt-row p { margin:0; color:var(--fg); line-height:1.45; }
   .mx-pager { display:flex; align-items:center; justify-content:center; gap:12px; margin-top:14px; }
-  .mx-clamp-2 { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .mx-clamp-2 {
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+    white-space:normal; overflow-wrap:anywhere;
+  }
+  .mx-dense-table td > .mx-clamp-2 { min-width:160px; }
 
   /* ── Matrix Batch Publisher & Modals ── */
   .mx-pub-wrap { display:grid; gap:16px; }
@@ -2984,11 +3005,11 @@
 
   @media(max-width:1080px) {
     .mx-kpi-strip { grid-template-columns:repeat(2, minmax(0, 1fr)); }
-    .mx-ov-columns, .mx-split-layout, .mx-pub-columns { grid-template-columns:1fr; }
+    .mx-ov-columns, .mx-split-layout, .mx-pub-columns { grid-template-columns:minmax(0, 1fr); }
     .mx-split-detail { position:static; max-height:none; }
   }
   @media(max-width:640px) {
-    .mx-kpi-strip { grid-template-columns:1fr; }
+    .mx-kpi-strip { grid-template-columns:minmax(0, 1fr); }
   }
 
   /* ── 日志与诊断面板（精致工作台风格） ── */
@@ -3824,8 +3845,7 @@
   .pub-upload-progress { display:grid; gap:5px; margin-top:8px; padding:9px 11px; border-radius:9px; background:var(--surface-2); border:1px solid var(--line-soft); }
   .pub-upload-progress-head { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; color:var(--fg); }
 
-  .queue-table .queue-col-progress { width:158px; }
-  .queue-progress-cell { display:grid; gap:4px; min-width:128px; }
+  .queue-progress-cell { display:grid; gap:4px; min-width:0; }
   .queue-progress-head { display:flex; align-items:center; justify-content:space-between; gap:6px; font-size:11px; color:var(--mut); }
   .queue-progress-head b { color:var(--fg-strong); font-family:var(--mono); }
   .dl-inline-prog { display:grid; gap:4px; margin-top:5px; min-width:120px; }
@@ -4869,7 +4889,7 @@
       </div>
       <div class="table-wrap" id="queue-table-wrap">
         <table class="queue-table" aria-label="任务队列明细">
-          <thead><tr><th style="width:44px"><input type="checkbox" aria-label="选择本页全部任务" onchange="toggleTaskQueuePage(this.checked)"></th><th class="queue-col-type">队列</th><th class="queue-col-content">任务内容</th><th class="queue-col-account">账号</th><th class="queue-col-time">时间</th><th class="queue-col-status">状态</th><th class="queue-col-progress">进度 / 阶段</th><th class="queue-col-reason">阻塞 / 错误</th><th class="queue-col-action">操作</th></tr></thead>
+          <thead><tr><th class="queue-col-check"><input type="checkbox" aria-label="选择本页全部任务" onchange="toggleTaskQueuePage(this.checked)"></th><th class="queue-col-type">队列</th><th class="queue-col-content">任务内容</th><th class="queue-col-account">账号</th><th class="queue-col-time">时间</th><th class="queue-col-status">状态</th><th class="queue-col-progress">进度 / 阶段</th><th class="queue-col-reason">阻塞 / 错误</th><th class="queue-col-action">操作</th></tr></thead>
           <tbody id="queue-table"></tbody>
         </table>
       </div>
