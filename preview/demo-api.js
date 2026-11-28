@@ -783,12 +783,15 @@
     }
     await new Promise((resolve) => setTimeout(resolve, 90));
     const method = String((init && init.method) || "GET").toUpperCase();
-    if (method === "GET" && url.pathname === "/api/reports/share-download-history.xlsx") {
-      return new Response("CreatorHub demo share-download history export", {
+    if (method === "GET" && (url.pathname === "/api/reports/share-download-history.xlsx" || /^\/api\/collections\/\d+\/export\.xlsx$/.test(url.pathname))) {
+      const filename = url.pathname.includes("/collections/")
+        ? "creatorhub_keyword_collection_demo.xlsx"
+        : "creatorhub_share_download_history_demo.xlsx";
+      return new Response("CreatorHub demo Excel export", {
         status: 200,
         headers: {
           "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          "Content-Disposition": 'attachment; filename="creatorhub_share_download_history_demo.xlsx"',
+          "Content-Disposition": `attachment; filename="${filename}"`,
         },
       });
     }

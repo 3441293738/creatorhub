@@ -249,7 +249,7 @@ def update_health_check() -> int:
             from app.platforms.channels.local_ca import LocalCaManager
             from app.browser.human_interaction import HumanInteractionEngine
             from app.services import login_sessions, session_keepalive, thumb_cache
-            from app import ai_copywriting, pacing, risk_admin
+            from app import ai_copywriting, pacing, reporting, risk_admin
             from app.progress_hub import progress_hub
             from app.logging_setup import configure_logging, read_log_tail
             from app.diagnostics import build_diagnostic_summary, build_diagnostic_zip
@@ -269,7 +269,7 @@ def update_health_check() -> int:
             assert TwitterClient and publish_twitter
             assert FacebookClient and publish_facebook
             assert YouTubeClient and publish_youtube and youtube_fetcher and youtube_actions
-            assert HumanInteractionEngine and browser_storage_state.capture_context_storage_state and thumb_cache and session_keepalive and ai_copywriting and pacing.PagePacer and risk_admin and progress_hub
+            assert HumanInteractionEngine and browser_storage_state.capture_context_storage_state and thumb_cache and session_keepalive and ai_copywriting and pacing.PagePacer and reporting._clean_xml_text and risk_admin and progress_hub
             assert login_sessions.has_active_open_browser and login_sessions.close_open_browser_for_account
             assert configure_logging and read_log_tail and build_diagnostic_summary and build_diagnostic_zip and api_diagnostics and api_matrix and api_progress
             assert websockets.asyncio.client and Controller and ShellServer and SHELL_ASSET_TYPES.get("app.css") and webview
