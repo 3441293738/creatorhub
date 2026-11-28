@@ -488,10 +488,10 @@ async def batch_delete_keyword_collections(body: CollectionBatchDeleteIn):
 
 
 @router.get("/api/collections/{job_id}/export.xlsx")
-async def export_keyword_collection(job_id: int, content_id: int | None = None,
-                                    q: str = "", ip_label: str = "",
-                                    user_sec_uid: str = "",
-                                    dedupe_users: bool = False):
+def export_keyword_collection(job_id: int, content_id: int | None = None,
+                              q: str = "", ip_label: str = "",
+                              user_sec_uid: str = "",
+                              dedupe_users: bool = False):
     with get_session() as session:
         job, statement = collections_service._collection_comment_query(
             session, job_id, content_id=content_id, q=q, ip_label=ip_label,

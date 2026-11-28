@@ -6,9 +6,11 @@ from datetime import date, datetime
 from io import BytesIO
 import json
 from pathlib import Path
+import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
@@ -54,21 +56,34 @@ _NUMBER = Alignment(horizontal="right", vertical="top")
 _PAGE_MARGINS = PageMargins(left=0.25, right=0.25, top=0.45, bottom=0.45, header=0.2, footer=0.2)
 
 
+_ILLEGAL_XML_RE = re.compile(
+    rf"{ILLEGAL_CHARACTERS_RE.pattern}|[\uD800-\uDFFF\uFFFE\uFFFF]"
+)
+
+
 def _value(obj: Any, name: str, default: Any = "") -> Any:
     if isinstance(obj, dict):
         return obj.get(name, default)
     return getattr(obj, name, default)
 
 
+def _clean_xml_text(value: Any) -> str:
+    """Strip control and non-XML-1.0 characters rejected by openpyxl/Excel."""
+    if value is None:
+        return ""
+    text = str(value)
+    if not text:
+        return ""
+    return _ILLEGAL_XML_RE.sub("", text)
+
+
 def _text(value: Any) -> str:
     """Turn user-controlled text into a harmless Excel string.
 
-    A leading formula character in a description or comment must not be
-    interpreted as an Excel formula when the exported file is opened.
+    Strips illegal XML control characters before checking for a leading formula
+    character, so scraped content never crashes openpyxl or becomes a formula.
     """
-    if value is None:
-        return ""
-    result = str(value)
+    result = _clean_xml_text(value)
     if result[:1] in ("=", "+", "-", "@"):
         return "'" + result
     return result
@@ -131,7 +146,7 @@ def _local_hyperlink_formula(value: str) -> str:
     consistently.  HYPERLINK keeps the absolute path in the worksheet
     formula, which WPS supports for both files and folders.
     """
-    escaped = value.replace('"', '""')
+    escaped = _clean_xml_text(value).replace('"', '""')
     return f'=HYPERLINK("{escaped}","{escaped}")'
 
 
@@ -188,7 +203,8 @@ def _watch_record_label(row: Any, names: dict[Any, str]) -> str:
 
 def _safe_sheet_title(value: str) -> str:
     # Excel forbids these characters in worksheet titles.
-    return "".join(ch for ch in value if ch not in "[]:*?/\\")[:31] or "数据"
+    cleaned = _clean_xml_text(value)
+    return "".join(ch for ch in cleaned if ch not in "[]:*?/\\")[:31] or "数据"
 
 
 def _status_style(cell: Any, header: str, value: Any) -> None:
@@ -272,7 +288,7 @@ def _write_table(
     link_columns = link_columns or set()
 
     for col, header in enumerate(headers, 1):
-        cell = worksheet.cell(row=1, column=col, value=header)
+        cell = worksheet.cell(row=1, column=col, value=_clean_xml_text(header))
         cell.fill = _HEADER_FILL
         cell.font = _HEADER_FONT
         cell.alignment = _CENTER
@@ -332,7 +348,7 @@ def _write_table(
     worksheet.print_area = worksheet.auto_filter.ref
     worksheet.oddFooter.center.text = "&A  ·  第 &P / &N 页"
     if materialized:
-        table_name = "Table_" + "".join(ch for ch in title if ch.isalnum())
+        table_name = "Table_" + "".join(ch for ch in _clean_xml_text(title) if ch.isalnum())
         table_name = (table_name or "Table_Data")[:240]
         # Workbook table names must be unique even if a future caller uses
         # two titles that normalize to the same identifier.
@@ -369,7 +385,7 @@ def _write_module_summary(
     worksheet.sheet_format.defaultRowHeight = 22
     worksheet.merge_cells("A1:F1")
     title = worksheet["A1"]
-    title.value = report_title
+    title.value = _clean_xml_text(report_title)
     title.fill = _TITLE_FILL
     title.font = _TITLE_FONT
     title.alignment = Alignment(horizontal="left", vertical="center")
@@ -389,12 +405,16 @@ def _write_module_summary(
         ("生成时间", generated_at),
     ]
     for row, (key, value) in enumerate(metadata, 3):
-        label = worksheet.cell(row=row, column=1, value=key)
+        label = worksheet.cell(row=row, column=1, value=_clean_xml_text(key))
         label.font = _LABEL_FONT
         label.fill = _META_LABEL_FILL
         label.alignment = _CENTER
         label.border = _THIN_BORDER
-        cell = worksheet.cell(row=row, column=2, value=value)
+        cell = worksheet.cell(
+            row=row,
+            column=2,
+            value=_text(value) if isinstance(value, str) else value,
+        )
         cell.font = _BODY_FONT
         cell.alignment = _WRAP
         cell.fill = _KPI_FILL if key == "记录数" else _META_VALUE_FILL
@@ -418,7 +438,7 @@ def _write_module_summary(
     for index, (key, value) in enumerate(filters):
         row = 8 + index // 2
         column = 1 + (index % 2) * 3
-        label = worksheet.cell(row=row, column=column, value=key)
+        label = worksheet.cell(row=row, column=column, value=_clean_xml_text(key))
         label.font = _LABEL_FONT
         label.fill = _META_LABEL_FILL
         label.alignment = _CENTER
@@ -476,8 +496,8 @@ def build_module_report(
     _configure_workbook(workbook)
     generated_at = generated_at or datetime.now()
     workbook.properties.creator = "CreatorHub"
-    workbook.properties.title = report_title
-    workbook.properties.subject = f"{module_name} Excel 导出"
+    workbook.properties.title = _clean_xml_text(report_title)
+    workbook.properties.subject = _clean_xml_text(f"{module_name} Excel 导出")
     _write_module_summary(
         workbook,
         report_title=report_title,
@@ -938,7 +958,12 @@ def build_keyword_collection_report(job: Any, contents: Sequence[Any],
     source_ref = _text(_value(job, "source_ref"))
     keyword_value = _value(job, "keywords", "[]")
     try:
-        keyword_text = ", ".join(json.loads(keyword_value or "[]"))
+        parsed_keywords = json.loads(keyword_value or "[]")
+        keyword_text = (
+            ", ".join(_clean_xml_text(item) for item in parsed_keywords)
+            if isinstance(parsed_keywords, list)
+            else _text(parsed_keywords)
+        )
     except (TypeError, ValueError, json.JSONDecodeError):
         keyword_text = _text(keyword_value)
     if source_type == "keyword":
@@ -949,7 +974,7 @@ def build_keyword_collection_report(job: Any, contents: Sequence[Any],
         report_title = "CreatorHub 内容采集报告"
         source_label = "采集来源"
         source_text = source_name or source_ref or source_type
-    workbook.properties.title = report_title
+    workbook.properties.title = _clean_xml_text(report_title)
     lead_comments = comments if lead_comments is None else lead_comments
     _write_module_summary(
         workbook,
@@ -1108,12 +1133,16 @@ def _write_summary(
         ("统计口径", "按记录采集时间筛选；作品/评论/弹幕明细保留原始发布时间"),
     ]
     for row, (key, value) in enumerate(metadata, 3):
-        label = worksheet.cell(row=row, column=1, value=key)
+        label = worksheet.cell(row=row, column=1, value=_clean_xml_text(key))
         label.font = _LABEL_FONT
         label.fill = _META_LABEL_FILL
         label.alignment = _CENTER
         label.border = _THIN_BORDER
-        cell = worksheet.cell(row=row, column=2, value=value)
+        cell = worksheet.cell(
+            row=row,
+            column=2,
+            value=_text(value) if isinstance(value, str) else value,
+        )
         cell.font = _BODY_FONT
         cell.alignment = _WRAP
         cell.fill = _META_VALUE_FILL

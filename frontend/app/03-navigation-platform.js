@@ -39,7 +39,7 @@ async function exportMonitorReport(explicitBtn = null) {
 async function _downloadExcelReport(path, fallbackName) {
   const response = await apiFetch(path);
   if (!response.ok) {
-    let message = response.status;
+    let message = response.status >= 500 ? `服务端异常 (${response.status})` : `HTTP ${response.status}`;
     try {
       const body = await response.json();
       message = body.detail || message;

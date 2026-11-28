@@ -48,7 +48,7 @@ async def stats_series(platform: str | None = None, days: int = 7):
 
 
 @router.get("/api/reports/monitor.xlsx")
-async def export_monitor_report(
+def export_monitor_report(
     platform: str | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -193,7 +193,7 @@ def _report_bounds(
 
 
 @router.get("/api/reports/share-download-history.xlsx")
-async def export_share_download_history_report(
+def export_share_download_history_report(
     platform: str | None = None,
     q: str = "",
     media_type: str = "",
@@ -262,7 +262,7 @@ def _report_filter_pairs(pairs: list[tuple[str, Any]]) -> list[tuple[str, Any]]:
 
 
 @router.get("/api/reports/monitors.xlsx")
-async def export_monitors_report(
+def export_monitors_report(
     platform: str | None = None,
     q: str = "",
     group_name: str = "",
@@ -308,7 +308,7 @@ async def export_monitors_report(
 
 
 @router.get("/api/reports/comment-watches.xlsx")
-async def export_comment_watches_report(
+def export_comment_watches_report(
     platform: str | None = None,
     q: str = "",
     group_name: str = "",
@@ -346,7 +346,7 @@ async def export_comment_watches_report(
 
 
 @router.get("/api/reports/danmaku-watches.xlsx")
-async def export_danmaku_watches_report(
+def export_danmaku_watches_report(
     platform: str | None = None,
     q: str = "",
     group_name: str = "",
@@ -384,7 +384,7 @@ async def export_danmaku_watches_report(
 
 
 @router.get("/api/reports/contents.xlsx")
-async def export_contents_report(
+def export_contents_report(
     platform: str | None = None,
     target_id: int | None = None,
     group_name: str = "",
@@ -471,7 +471,7 @@ async def export_contents_report(
 
 
 @router.get("/api/reports/comments.xlsx")
-async def export_comments_report(
+def export_comments_report(
     platform: str | None = None,
     watch_id: int | None = None,
     aweme_id: str | None = None,
@@ -562,7 +562,7 @@ async def export_comments_report(
 
 
 @router.get("/api/reports/danmaku.xlsx")
-async def export_danmaku_report(
+def export_danmaku_report(
     platform: str | None = None,
     watch_id: int | None = None,
     aweme_id: str | None = None,

@@ -1587,7 +1587,7 @@ async function exportMonitorReport(explicitBtn = null) {
 async function _downloadExcelReport(path, fallbackName) {
   const response = await apiFetch(path);
   if (!response.ok) {
-    let message = response.status;
+    let message = response.status >= 500 ? `服务端异常 (${response.status})` : `HTTP ${response.status}`;
     try {
       const body = await response.json();
       message = body.detail || message;
@@ -11399,7 +11399,7 @@ function renderCollectionJobs() {
         <button type="button" class="sm collection-task-primary" onclick="openCollectionResults(${job.id})">${ic("i-eye")}查看结果</button>
         ${needsManualClear ? `<button type="button" class="ghost sm" onclick="openCollectionVerifyBrowser(${job.id})" title="直接打开对应搜索/站点页面检查并完成验证">打开验证页</button><button type="button" class="ghost sm" onclick="clearRiskAccount(${job.account_id})" title="确认验证已完成或无需验证后，解除风控并立即恢复任务">解除风控继续</button>` : ""}
         ${canEdit ? `<button type="button" class="ghost sm" onclick="editCollection(${job.id})">${ic("i-settings")}编辑</button>` : ""}
-        <button type="button" class="ghost sm" onclick="exportCollection(${job.id})"${job.content_count ? "" : " disabled"}>${ic("i-download")}导出</button>
+        <button type="button" class="ghost sm" onclick="exportCollection(${job.id}, this)"${job.content_count ? "" : " disabled"}>${ic("i-download")}导出</button>
         ${canCancel ? `<button type="button" class="ghost sm" onclick="cancelCollection(${job.id})">${ic("i-x")}取消任务</button>` : ""}
         ${canRetry ? `<button type="button" class="ghost sm" onclick="retryCollection(${job.id})">${ic("i-play")}续跑</button>` : ""}
         ${job.status !== "running" ? `<button type="button" class="ghost sm danger collection-task-delete" onclick="deleteCollection(${job.id})" aria-label="删除任务 ${job.id}">${ic("i-trash")}删除</button>` : ""}
@@ -11904,11 +11904,19 @@ async function deleteCollection(jobId) {
     catch (e) { toast("删除失败：" + e.message, "err"); }
   });
 }
-function exportCollection(jobId) {
-  const link = document.createElement("a");
-  link.href = `/api/collections/${jobId}/export.xlsx`;
-  link.download = `keyword-collection-${jobId}.xlsx`;
-  document.body.appendChild(link); link.click(); link.remove();
+async function exportCollection(jobId, explicitBtn = null) {
+  const btn = explicitBtn || evtBtn();
+  await withBusy(btn, "导出中", async () => {
+    try {
+      await _downloadExcelReport(
+        `/api/collections/${jobId}/export.xlsx`,
+        `keyword-collection-${jobId}.xlsx`,
+      );
+      toast("采集报告已导出", "ok");
+    } catch (e) {
+      toast("导出失败：" + e.message, "err");
+    }
+  });
 }
 
 // 13-monitors-contents.js — 主页作品监控目标管理、已捕获内容库检索、批量操作与本地文件定位。
